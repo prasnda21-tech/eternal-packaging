@@ -1,0 +1,136 @@
+import { useRef, useState } from "react";
+import { Upload, Image as ImageIcon } from "lucide-react";
+import api from "../lib/api";
+import { formatDate, ROLES } from "../lib/constants";
+
+export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [preview, setPreview] = useState(null);
+  const designInput = useRef(null);
+  const sampleInput = useRef(null);
+
+  // Permission-based gating (Effective Permission = Role Default + User Override).
+  const perms = user?.permissions || [];
+  const canUploadDesign = perms.includes("design.upload");
+  const canUploadSample = perms.includes("operator.sample_upload");
+
+  const handleFile = async (file, kind) => {
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setErr("Ukuran file maksimal 4MB");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const res = await api.addAttachment(order.id, {
+            name: file.name,
+            data_url: reader.result,
+            kind,
+          });
+          onUpdated(res.order);
+        } catch (e) {
+          setErr(e.response?.data?.detail || "Gagal upload file");
+        } finally {
+          setBusy(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (e) {
+      setErr("Gagal membaca file");
+      setBusy(false);
+    }
+  };
+
+  const renderList = (files, kind) => (
+    <div className="attachments-grid" data-testid={`${kind}-files`}>
+      {(files || []).length === 0 && <p className="empty">Belum ada file.</p>}
+      {(files || []).map((f) => (
+        <button
+          key={f.id}
+          className="attachment-card"
+          type="button"
+          onClick={() => setPreview(f)}
+          data-testid={`${kind}-file-${f.id}`}
+        >
+          {f.data_url?.startsWith("data:image") ? (
+            <img src={f.data_url} alt={f.name} />
+          ) : (
+            <div className="file-thumb"><ImageIcon size={22} /><span>{f.name.split(".").pop().toUpperCase()}</span></div>
+          )}
+          <div className="attachment-meta">
+            <strong>{f.name}</strong>
+            <span>{formatDate(f.uploaded_at)}</span>
+            <span className="role-tag">{ROLES[f.uploaded_by_role] || f.uploaded_by_role}</span>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <section className="panel" data-testid="attachments-panel">
+      <header className="panel-head">
+        <h3>File Desain & Sample</h3>
+      </header>
+
+      <div className="attachments-block">
+        <div className="attachments-block-head">
+          <h4>Desain</h4>
+          {canUploadDesign && (
+            <>
+              <input
+                type="file"
+                ref={designInput}
+                hidden
+                accept="image/*,application/pdf"
+                onChange={(e) => handleFile(e.target.files?.[0], "design")}
+                data-testid="design-file-input"
+              />
+              <button className="ghost sm" onClick={() => designInput.current?.click()} disabled={busy} data-testid="upload-design-button">
+                <Upload size={14} /> Upload desain
+              </button>
+            </>
+          )}
+        </div>
+        {renderList(order.design_files, "design")}
+        {designSlot}
+      </div>
+
+      <div className="attachments-block">
+        <div className="attachments-block-head">
+          <h4>Sample cetak</h4>
+          {canUploadSample && (
+            <>
+              <input
+                type="file"
+                ref={sampleInput}
+                hidden
+                accept="image/*"
+                onChange={(e) => handleFile(e.target.files?.[0], "sample")}
+                data-testid="sample-file-input"
+              />
+              <button className="ghost sm" onClick={() => sampleInput.current?.click()} disabled={busy} data-testid="upload-sample-button">
+                <Upload size={14} /> Upload sample
+              </button>
+            </>
+          )}
+        </div>
+        {renderList(order.sample_files, "sample")}
+        {sampleSlot}
+      </div>
+
+      {err && <div className="error" data-testid="attachment-error">{err}</div>}
+
+      {preview && (
+        <div className="lightbox" onClick={() => setPreview(null)} data-testid="attachment-preview">
+          <img src={preview.data_url} alt={preview.name} />
+        </div>
+      )}
+    </section>
+  );
+}

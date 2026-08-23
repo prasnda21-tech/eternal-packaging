@@ -1,0 +1,44 @@
+# ===== SECRETS =====
+.env
+.env.*
+!.env.example
+
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# ===== PYTHON =====
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+# ===== NODE =====
+node_modules/
+**/node_modules/
+build/
+**/build/
+
+# ===== BACKUPS / ARCHIVES =====
+backup/
+backups/
+*.archive.gz
+*.tar.gz
+*.zip
+
+# ===== LOGS / TEMP =====
+*.log
+.cache/
+
+# ===== EDITOR / OS =====
+.vscode/
+.DS_Store
+Thumbs.db

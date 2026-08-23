@@ -1,0 +1,101 @@
+{
+  "project": "Eternal Packaging Production & Delivery OS",
+  "context": "Hybrid full-stack operations app: mobile-first shop-floor workflows with a laptop command center for Head of Production",
+  "phase_1_discovery": {
+    "audiences": ["CRM", "Admin", "Designer", "Head of Production", "Screener", "Helper", "Operator", "Driver"],
+    "primary_tasks": ["move a Sales Order through production without losing ownership", "complete the next role-specific task in under 10 seconds", "surface blockers, approvals, deadlines, and delivery risk", "maintain one auditable record across design, payment, print, packing, loading, and delivery"],
+    "success_actions": ["approve design", "approve payment", "schedule split quantities by operator", "confirm sample/design", "mark packed", "complete loading checklist", "mark delivered or not delivered"],
+    "emotional_tone": "calm urgency: tactile print-shop warmth with operational precision",
+    "theme": "light-first, with optional dark mode for low-light production areas",
+    "archetype": "Swiss & High-Contrast with Organic & Earthy material cues",
+    "design_direction": "A production ledger meets a dispatch board meets a print proof wall. Use warm paper surfaces, ink-black text, signal red for exceptions, and a restrained cobalt action color."
+  },
+  "phase_2_research": {
+    "references": [
+      {"source": "TeepTrak manufacturing dashboard guide 2026", "descriptor": "5-KPI rule, threshold-based green/yellow/red statuses, refresh cadence matched to operator decisions."},
+      {"source": "MDCPlus manufacturing mobile dashboard", "descriptor": "Single-column mobile summary, one above-the-fold answer, 48px+ tap targets, visible last-updated state, stale-data banner."},
+      {"source": "ioma ARIA Mobile", "descriptor": "Station dashboards, alarms opening history and ownership, one-tap dispatch, mobile confirmations tied to one operational truth."},
+      {"source": "Mobbin delivery flows and Swiggy delivery partner architecture", "descriptor": "Progress indicators, photo/OTP proof, checklist-driven handoff, resilient sync for unreliable networks."}
+    ],
+    "synthesis": "Borrow glanceable shop-floor status from MES dashboards, checklist confidence from logistics apps, and physical proof-board cues from print studios; avoid copying generic SaaS cards."
+  },
+  "design_variants": [
+    {"name": "Ink Ledger", "probability": 0.32, "description": "Warm off-white paper, black ruled grid, cobalt actions, red exception stamps; best balance of trust and speed."},
+    {"name": "Dispatch Signal", "probability": 0.24, "description": "Charcoal shell with white work surfaces and red/amber operational signals; optimized for Head of Production command-center use."},
+    {"name": "Print Room Index", "probability": 0.18, "description": "Editorial serif headings, monospace metadata, oversized PO labels and proof thumbnails; strongest for design and quality review."},
+    {"name": "Route Card", "probability": 0.14, "description": "Flat blue-grey surfaces, bold route bands, compact driver checklists and delivery proof; strongest for dispatch and drivers."},
+    {"name": "Tactile Utility", "probability": 0.12, "description": "Soft sand panels with crisp 1px borders, subtle inset controls, and large thumb-first actions; strongest for helpers and operators."}
+  ],
+  "typography": {
+    "heading": "IBM Plex Sans, 700/500; compact, technical, humanist",
+    "body": "IBM Plex Sans, 400/500",
+    "metadata": "IBM Plex Mono, 500",
+    "fallbacks": "ui-sans-serif, system-ui, sans-serif",
+    "rules": ["Do not use Inter for headings", "H1 text-4xl sm:text-5xl lg:text-6xl maximum", "H2 text-2xl sm:text-3xl lg:text-4xl", "labels uppercase text-xs tracking-[0.2em]", "headings tracking-tight leading-none; body leading-relaxed"]
+  },
+  "colors": {
+    "background": "#F4F1EA",
+    "surface": "#FFFDF8",
+    "surface_muted": "#E9E5DC",
+    "ink": "#172126",
+    "ink_muted": "#58656A",
+    "border": "#C9C8BF",
+    "primary": "#174A78",
+    "primary_hover": "#0F385D",
+    "signal_red": "#B52E2E",
+    "warning_amber": "#9B6417",
+    "success_forest": "#286044",
+    "focus": "#174A78",
+    "rules": ["No pure black or grey; use tinted ink and warm grey", "Color is functional: cobalt means action, red means blocked/urgent, amber means waiting, forest means complete", "No full-screen gradients; use texture and borders", "All text and interactive states must meet WCAG AA, preferably APCA"]
+  },
+  "visual_enhancers": ["subtle paper grain via CSS pseudo-element at low opacity", "ruled grid lines in desktop schedule", "stamp-like status badges with crisp borders", "layered ambient shadows only on floating drawers", "custom scrollbar without gutter", "no decorative emoji icons; use lucide-react"],
+  "component_name": {
+    "app_shell": "OperationsShell",
+    "mobile_today": "TodayJobsView",
+    "desktop_dashboard": "ProductionCommandCenter",
+    "order_detail": "SalesOrderWorkspace",
+    "schedule": "SplitProductionSchedule",
+    "workflow_stepper": "OrderJourneyStepper",
+    "attachment_review": "DesignProofPanel",
+    "checklists": "LoadingChecklist",
+    "delivery": "DeliveryProofPanel",
+    "sync_status": "AccurateSyncBanner"
+  },
+  "component_path": "/app/frontend/src/components/",
+  "grids": {
+    "mobile": "grid-cols-1, bottom navigation or compact header, one primary action per screen, 16px minimum gutters, 48px minimum targets",
+    "desktop_dashboard": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 or gap-6; primary schedule col-span-2 row-span-2, alerts/feed col-span-1 row-span-2, KPI summaries col-span-1",
+    "schedule": "desktop table-like ruled grid; mobile stacked order lanes with direct action buttons; never hide PO/outlet/operator context",
+    "split_quantities": "Each operator assignment is a direct row with operator name, quantity, deadline, status, and audit timestamp; show total assigned vs PO quantity prominently"
+  },
+  "layouts": {
+    "navigation": "Every page has visible brand, 3-5 desktop links (Today, Orders, Schedule, Approvals, Delivery), role label, and primary action. Use solid warm surface or opaque glass, never transparent.",
+    "mobile_today": "Header with date and sync state; urgent strip; role-specific queue; large next-action rows; completed section below; sticky bottom action only when needed.",
+    "head_of_production": "Asymmetric command center: KPI rail, production schedule as dominant region, blockers/approvals rail, delivery risk footer. Use dense dashboard mode but retain generous section spacing.",
+    "order_workspace": "PO identity and customer/outlet at top; journey stepper; line items; attachments; payment; production split; packing; delivery records. Keep audit timestamps visible.",
+    "permissions": "Render allowed actions only, but also show read-only status context. CRM gets progress visibility without mutation controls. Head of Production can edit all.",
+    "empty_states": "Explain what will appear and offer the permitted next action; never leave blank cards."
+  },
+  "workflow": ["Order In", "Design", "Design Approval", "Payment", "Payment Approval", "Scheduled", "Screener", "Helper Preparation", "Operator", "Print", "Helper Packing", "Delivery Note", "Vehicle Loading", "Driver Delivery"],
+  "motion": {
+    "entrance": "stagger queue rows by 40ms, respecting prefers-reduced-motion",
+    "interaction": "specific transitions for transform, opacity, background-color, border-color; 160-220ms ease-out",
+    "feedback": "status change briefly highlights the updated row; upload shows progress; checklist completion uses a short check animation",
+    "loading": "skeleton rows matching final layout; show cached data immediately with last-updated label",
+    "reduced_motion": "disable parallax and stagger; preserve focus and state-change text"
+  },
+  "accessibility": ["all interactive and key informational elements include data-testid in kebab-case", "keyboard-visible focus ring with 2px cobalt ring", "never rely on color alone; pair status with text/icon", "minimum 48px touch targets", "left-align operational text and forms", "use semantic headings and labels", "announce async upload, sync, approval, and delivery outcomes", "confirm destructive or irreversible status changes with Shadcn AlertDialog"],
+  "media": {
+    "image_urls": [],
+    "policy": "No stock imagery is required for this operations app. Use user-uploaded design proofs and sample print photos only; render them with object-contain, filename, uploader, timestamp, and approval state. Do not use placeholder image URLs."
+  },
+  "3d_libraries": {"use": false, "reason": "This is a clarity-first production dashboard; 3D would add cognitive and performance cost. Use CSS grain and ruled geometry instead."},
+  "integrations": {
+    "accurate_online": "Build a secure backend boundary with OAuth/token storage server-side, sync status, import mapping, idempotency keys, retry queue, and audit logs. Demo orders are MOCKED until credentials are provided; clearly label demo data.",
+    "payments": "Internal payment status and approval only; no payment gateway. Payment flow is MOCKED as an internal workflow until backend integration is connected.",
+    "offline": "Prefer cached read state with stale banner and queued mutations; never silently claim a sync succeeded."
+  },
+  "implementation_for_js": {"file_type": ".js/.jsx only; do not provide TSX", "stack": "React JS, Tailwind CSS, FastAPI, shadcn/ui primitives", "forms": "Use Shadcn Input, Select, Checkbox, Form; never native select/date inputs", "feedback": "Use Sonner from /app/frontend/src/components/ui/sonner.jsx or existing project equivalent", "icons": "Use lucide-react", "charts": "Use Recharts/Shadcn chart patterns only where useful; provide text summaries and accessible labels"},
+  "general_ui_ux_design_guidelines": ["mobile-first and thumb-reachable", "one clear next action per shop-floor screen", "show PO number or outlet name and operator, never machine as the primary schedule identity", "support three-day standard deadline from PO entry and visibly mark Head of Operations-only urgent priority", "model one Sales Order with multiple line items and preserve line-level operator/color/notes data", "show progress timestamps and ownership at every transition", "avoid generic centered layouts, excessive rounded cards, full-screen gradients, and transparent surfaces", "use generous p-6/p-8 inside bordered containers", "use flat rectangular dashboard surfaces with subtle borders; reserve shadows for floating elements", "all hover states explicitly set text color; all buttons have hover, active, and focus states"],
+  "instructions_to_main_agent": "Implement the Ink Ledger direction first. Keep mobile Today Jobs as the primary experience and make the Head of Production dashboard responsive rather than a shrunken desktop. Add stable data-testid attributes to buttons, links, inputs, menus, status badges, balances, confirmation text, upload controls, schedule rows, checklist items, and error states. Preserve the Accurate boundary and label demo data and MOCKED payment integration in the UI until real credentials/backend endpoints exist."
+}

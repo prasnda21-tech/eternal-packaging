@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root { --paper:#f4f1ea; --surface:#fffdf8; --muted:#e9e5dc; --ink:#172126; --soft:#58656a; --line:#c9c8bf; --blue:#174a78; --red:#b52e2e; --amber:#9b6417; --green:#286044; }
+* { box-sizing:border-box; } body { margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; } button,input { font:inherit; } button { cursor:pointer; } ::selection { background:#b8cee0; }

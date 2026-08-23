@@ -1,0 +1,692 @@
+"""
+Accurate Online integration boundary.
+
+- MOCK mode (default): returns bundled fixtures.
+- LIVE mode: enabled when ACCURATE_CLIENT_ID + ACCURATE_CLIENT_SECRET +
+  ACCURATE_DB_ID + (ACCURATE_ACCESS_TOKEN or ACCURATE_REFRESH_TOKEN) are set.
+  Follows the Accurate Online OAuth flow:
+    1. Refresh access token if only refresh token provided (POST /oauth/token).
+    2. GET /api/open-db.do?id={db_id} to obtain per-database host + session.
+    3. GET {host}/accurate/api/sales-order/detail.do?id=... or ?number=...
+       with headers Authorization: Bearer {token} and X-Session-ID: {session}.
+  READ-ONLY: only GET calls are ever issued.
+
+Credentials are read from environment variables only. Nothing about the
+credentials is logged, returned to the frontend, or stored in MongoDB.
+"""
+from __future__ import annotations
+import base64
+import hashlib
+import hmac
+import os
+import time
+import uuid
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional, Tuple
+
+import httpx
+
+
+# In-memory cache for the recent-SO list (survives Accurate rate-limits gracefully)
+_SO_LIST_CACHE: Dict[str, Any] = {}
+_LIST_CACHE_TTL = 60  # seconds
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class AccurateClient:
+    """Read-only Accurate Online client. Falls back to MOCK when creds absent.
+
+    Auth modes (in priority order):
+      1. api_token  — ACCURATE_API_TOKEN + ACCURATE_DB_ID  (long-lived Bearer
+         token issued via Accurate Developer Console; identical header format
+         to an OAuth access_token per accurate.id API docs).
+      2. oauth      — ACCURATE_CLIENT_ID + ACCURATE_CLIENT_SECRET + ACCURATE_DB_ID
+                      + (ACCURATE_ACCESS_TOKEN or ACCURATE_REFRESH_TOKEN)
+      3. mock       — no credentials
+    Credentials are never logged or returned to the frontend.
+    """
+
+    def __init__(self) -> None:
+        # API Token mode (preferred when set) — needs both token + signature secret
+        self.api_token = os.environ.get("ACCURATE_API_TOKEN") or ""
+        self.api_signature_secret = (
+            os.environ.get("ACCURATE_API_SIGNATURE_SECRET")
+            or os.environ.get("ACCURATE_SIGNATURE_SECRET")
+            or os.environ.get("ACCURATE_API_SECRET")
+            or ""
+        )
+        # OAuth mode (legacy / fallback)
+        self.client_id = os.environ.get("ACCURATE_CLIENT_ID") or ""
+        self.client_secret = os.environ.get("ACCURATE_CLIENT_SECRET") or ""
+        self.access_token = os.environ.get("ACCURATE_ACCESS_TOKEN") or ""
+        self.refresh_token = os.environ.get("ACCURATE_REFRESH_TOKEN") or ""
+        # Shared
+        self.db_id = os.environ.get("ACCURATE_DB_ID") or ""
+        self.account_base_url = (os.environ.get("ACCURATE_ACCOUNT_BASE_URL") or "https://account.accurate.id").rstrip("/")
+        self.host = os.environ.get("ACCURATE_HOST") or self.account_base_url
+
+    @property
+    def auth_mode(self) -> str:
+        """Return which auth strategy will be used ('api_token' / 'oauth' / 'mock')."""
+        if self.api_token and self.api_signature_secret and self.db_id:
+            return "api_token"
+        if (self.client_id and self.client_secret and self.db_id
+                and (self.access_token or self.refresh_token)):
+            return "oauth"
+        return "mock"
+
+    @property
+    def is_live(self) -> bool:
+        return self.auth_mode != "mock"
+
+    def _signed_headers(self, bearer: str) -> Dict[str, str]:
+        """Compute Accurate API-Token signed headers. Bearer + timestamp + HMAC-SHA256(secret, ts_ms) hex."""
+        ts = str(int(time.time() * 1000))
+        sig = hmac.new(self.api_signature_secret.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+        return {
+            "Authorization": f"Bearer {bearer}",
+            "X-Api-Timestamp": ts,
+            "X-Api-Signature": sig,
+        }
+
+    # --- Live-mode helpers ------------------------------------------------
+    async def _obtain_token(self) -> str:
+        # API Token: long-lived bearer, no refresh flow.
+        if self.api_token:
+            return self.api_token
+        if self.access_token:
+            return self.access_token
+        if not self.refresh_token:
+            raise RuntimeError("No Accurate access/refresh token configured")
+        basic = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            r = await client.post(
+                f"{self.account_base_url}/oauth/token",
+                headers={"Authorization": f"Basic {basic}"},
+                data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
+            )
+        if r.is_error:
+            raise RuntimeError("Accurate token refresh failed")
+        return r.json()["access_token"]
+
+    async def _open_db(self, token: str) -> Tuple[str, str]:
+        """Return (host, session) for the configured database.
+
+        - api_token mode: use GET /api/api-token.do to resolve the host; session
+          is not required for signed API-Token requests, so we return an empty
+          string and downstream requests won't send X-Session-ID.
+        - oauth mode: legacy open-db.do flow returns host + session.
+        """
+        if self.auth_mode == "api_token":
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                r = await client.get(
+                    f"{self.account_base_url}/api/api-token.do",
+                    headers=self._signed_headers(token),
+                )
+            if r.is_error:
+                raise RuntimeError(f"Accurate api-token.do failed ({r.status_code})")
+            body = r.json()
+            if body.get("s") is False:
+                raise RuntimeError("Accurate api-token.do returned auth error")
+            d = body.get("d") if isinstance(body.get("d"), dict) else {}
+            database = d.get("database") if isinstance(d.get("database"), dict) else {}
+            host = database.get("host") or ""
+            if not host:
+                raise RuntimeError("Accurate returned no database host for API Token")
+            return host.rstrip("/"), ""
+
+        # oauth mode
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            r = await client.get(
+                f"{self.account_base_url}/api/open-db.do",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"id": self.db_id},
+            )
+        if r.is_error:
+            raise RuntimeError(f"Accurate open-db failed ({r.status_code})")
+        body = r.json()
+        host = body.get("host") or ""
+        session = body.get("session") or ""
+        if not host or not session:
+            nested = body.get("data") if isinstance(body.get("data"), dict) else {}
+            host = host or nested.get("host") or ""
+            session = session or nested.get("session") or ""
+        if not host or not session:
+            raise RuntimeError("Accurate returned no database host/session")
+        return host.rstrip("/"), session
+
+    async def _live_fetch_so(self, so_number: str) -> Optional[Dict[str, Any]]:
+        token = await self._obtain_token()
+        host, session = await self._open_db(token)
+        # Signed headers for api_token mode; simple Bearer + X-Session-ID for oauth
+        if self.auth_mode == "api_token":
+            headers = self._signed_headers(token)
+        else:
+            headers = {"Authorization": f"Bearer {token}", "X-Session-ID": session}
+        params = {"id": so_number} if so_number.isdigit() else {"number": so_number}
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+            r = await client.get(
+                f"{host}/accurate/api/sales-order/detail.do",
+                headers=headers, params=params,
+            )
+        if r.status_code == 404:
+            return None
+        if r.is_error:
+            raise RuntimeError(f"Accurate SO fetch failed ({r.status_code})")
+        payload = r.json()
+        if payload.get("s") is False:
+            # Auth or business error — bubble a generic message (no credential info)
+            raise RuntimeError("Accurate SO fetch returned failure")
+        d = payload.get("d") if isinstance(payload.get("d"), dict) else None
+        if d is None:
+            d = payload.get("data") if isinstance(payload.get("data"), dict) else None
+        if d is None:
+            d = payload.get("r") if isinstance(payload.get("r"), dict) else None
+        if d is None:
+            return None
+        return _normalize_accurate_so(d)
+
+    # --- Public API -------------------------------------------------------
+    async def fetch_sales_orders(self) -> List[Dict[str, Any]]:
+        """Bulk sync is intentionally disabled in live mode."""
+        if self.is_live:
+            raise NotImplementedError("Bulk sync disabled — use single-PO import.")
+        return _MOCK_SALES_ORDERS
+
+    async def fetch_single_sales_order(self, so_number: str) -> Optional[Dict[str, Any]]:
+        """Fetch ONE Sales Order (READ-ONLY). Returns None if not found."""
+        so_number = (so_number or "").strip()
+        if not so_number:
+            return None
+        if self.is_live:
+            return await self._live_fetch_so(so_number)
+        key = so_number.upper()
+        for so in _MOCK_SALES_ORDERS:
+            if so.get("po_number", "").upper() == key or so.get("accurate_id", "").upper() == key:
+                return dict(so)
+        return None
+
+    async def list_recent_sales_orders(
+        self,
+        limit: int = 20,
+        force: bool = False,
+        page: int = 1,
+        keyword: str = "",
+    ) -> Dict[str, Any]:
+        """List Sales Orders sorted by transDate desc (READ-ONLY). Enriches
+        with customer + total via detail.do. Uses in-memory cache (60s TTL)
+        keyed by (page, limit, keyword) to survive Accurate rate-limits.
+
+        NOTE: Accurate `sales-order/list.do` REJECTS custom `fields` param
+        AND `sp.sort` values that contain spaces (returns
+        `{s:false, d:["Upsss..."]}`). Correct sort syntax is
+        `transDate|desc`. We keep params MINIMAL and let Accurate return its
+        default row schema.
+
+        Returns {rows, total, page, pageSize, pageCount, host, mode,
+                 cached, fetched_at}.
+        """
+        import time as _t
+        limit = max(1, min(int(limit or 20), 100))
+        page = max(1, int(page or 1))
+        keyword = (keyword or "").strip()
+        cache_key = f"list:{self.auth_mode}:{page}:{limit}:{keyword.lower()}"
+        entry = _SO_LIST_CACHE.get(cache_key)
+        if not force and entry and (_t.time() - entry["at"]) < _LIST_CACHE_TTL:
+            return {**entry["data"], "cached": True, "fetched_at": entry["at"]}
+
+        if not self.is_live:
+            all_mock = _MOCK_SALES_ORDERS
+            if keyword:
+                kw = keyword.lower()
+                all_mock = [
+                    so for so in all_mock
+                    if kw in (so.get("po_number") or "").lower()
+                    or kw in (so.get("customer") or "").lower()
+                ]
+            start = (page - 1) * limit
+            page_rows = all_mock[start:start + limit]
+            rows = []
+            for so in page_rows:
+                rows.append({
+                    "accurate_id": so.get("accurate_id"),
+                    "number": so.get("po_number"),
+                    "transDate": so.get("order_date"),
+                    "customer": so.get("customer"),
+                    "totalAmount": so.get("total"),
+                    "statusName": so.get("status_label", "Mock"),
+                })
+            total = len(all_mock)
+            payload = {
+                "rows": rows, "total": total, "page": page, "pageSize": limit,
+                "pageCount": max(1, (total + limit - 1) // limit),
+                "host": self.host, "mode": "mock",
+            }
+            _SO_LIST_CACHE[cache_key] = {"data": payload, "at": _t.time()}
+            return {**payload, "cached": False, "fetched_at": _t.time()}
+
+        import asyncio as _aio
+        token = await self._obtain_token()
+        host, session = await self._open_db(token)
+
+        # Step 1: list — MINIMAL params (no `fields`, sort uses pipe syntax)
+        list_params: Dict[str, Any] = {
+            "sp.pageSize": limit,
+            "sp.page": page,
+            "sp.sort": "transDate|desc",
+        }
+        if keyword:
+            # Accurate supports simple keyword filter via `keywords` param on
+            # most list endpoints; fall back to filter.number if it fails.
+            list_params["keywords"] = keyword
+
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+            r = await client.get(
+                f"{host}/accurate/api/sales-order/list.do",
+                headers=self._signed_headers(token) if self.auth_mode == "api_token"
+                        else {"Authorization": f"Bearer {token}", "X-Session-ID": session},
+                params=list_params,
+            )
+        if r.is_error:
+            if entry:
+                return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
+            raise RuntimeError(f"Accurate list HTTP {r.status_code}")
+        body = r.json()
+        if body.get("s") is False:
+            # Log the tenant-side error message (safe — no credential in payload) for diagnosis
+            err_msg = ""
+            d = body.get("d")
+            if isinstance(d, list) and d:
+                err_msg = str(d[0])[:180]
+            _last_list_error["message"] = err_msg
+            _last_list_error["at"] = _t.time()
+            _last_list_error["operation"] = "sales-order/list.do"
+            if entry:
+                return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
+            raise RuntimeError(f"Accurate list rejected: {err_msg or 'unknown tenant error'}")
+        rows_raw = body.get("d") or []
+        sp = body.get("sp") or {}
+        total = sp.get("rowCount") or len(rows_raw)
+        page_count = sp.get("pageCount") or 1
+
+        # Step 2: enrich each row with detail (customer/total/status) — parallel best-effort
+        sem = _aio.Semaphore(4)
+
+        async def _enrich(row):
+            oid = row.get("id")
+            async with sem:
+                try:
+                    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                        d = await client.get(
+                            f"{host}/accurate/api/sales-order/detail.do",
+                            headers=self._signed_headers(token) if self.auth_mode == "api_token"
+                                    else {"Authorization": f"Bearer {token}", "X-Session-ID": session},
+                            params={"id": oid},
+                        )
+                    det_body = d.json() if not d.is_error else {}
+                    det = det_body.get("d") if isinstance(det_body.get("d"), dict) else {}
+                    cust = det.get("customer") if isinstance(det.get("customer"), dict) else {}
+                    return {
+                        "accurate_id": str(oid) if oid is not None else None,
+                        "number": det.get("number") or row.get("number"),
+                        "transDate": det.get("transDate") or row.get("transDate"),
+                        "customer": (cust or {}).get("name") or "-",
+                        "totalAmount": det.get("totalAmount"),
+                        "statusName": det.get("statusName") or det.get("orderStatus") or None,
+                    }
+                except Exception:
+                    return {
+                        "accurate_id": str(oid) if oid is not None else None,
+                        "number": row.get("number"),
+                        "transDate": row.get("transDate"),
+                        "customer": None,
+                        "totalAmount": None,
+                        "statusName": None,
+                    }
+
+        enriched = await _aio.gather(*[_enrich(r) for r in rows_raw])
+        payload = {
+            "rows": enriched, "total": total, "page": page, "pageSize": limit,
+            "pageCount": page_count, "host": host, "mode": "live",
+        }
+        _SO_LIST_CACHE[cache_key] = {"data": payload, "at": _t.time()}
+        return {**payload, "cached": False, "fetched_at": _t.time()}
+
+
+# Last known list.do error from tenant (safe — no credential/token/signature)
+_last_list_error: Dict[str, Any] = {"message": "", "at": 0, "operation": ""}
+
+
+def get_last_list_error() -> Dict[str, Any]:
+    return dict(_last_list_error)
+
+
+def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce Accurate's Sales Order detail payload into our internal shape.
+
+    Accurate's live schema varies by tenant; unknown fields are set to None so
+    the UI shows 'Perlu verifikasi' rather than guessing.
+    """
+    so_notes = _extract_so_notes_text(d)
+    so_colors = _detect_colors(so_notes)
+    lines_raw = d.get("detailItem") or d.get("detailItems") or d.get("items") or []
+    lines: List[Dict[str, Any]] = []
+    multi_line = len(lines_raw) > 1
+    for li in lines_raw:
+        item = li.get("item") or {}
+        # Fields to scan for color, in priority order
+        explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
+        desc = li.get("description") or li.get("detailNotes") or li.get("itemDesc") or ""
+        item_notes = li.get("notes") or li.get("memo") or ""
+        item_name_text = item.get("name") or li.get("itemName") or ""
+
+        color_val: Optional[str] = None
+        color_source: Optional[str] = None
+        color_candidates: List[str] = []
+        needs_verify: bool = False
+
+        if explicit_color and str(explicit_color).strip():
+            color_val = str(explicit_color).strip()
+            color_source = "item.color"
+        else:
+            # scan item-level free text (desc + notes + item name)
+            item_text = " ".join([desc or "", item_notes or "", item_name_text or ""]).strip()
+            colors_in_item = _detect_colors(item_text)
+            if len(colors_in_item) == 1:
+                color_val = colors_in_item[0]
+                color_source = "item.description"
+            elif len(colors_in_item) > 1:
+                color_candidates = colors_in_item
+                needs_verify = True
+                color_source = "item.description"
+            else:
+                # Fallback to SO-level memo
+                if len(so_colors) == 1 and not multi_line:
+                    color_val = so_colors[0]
+                    color_source = "so.notes"
+                elif so_colors:
+                    color_candidates = so_colors
+                    needs_verify = True
+                    color_source = "so.notes"
+
+        line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
+        line: Dict[str, Any] = {
+            "item_code": item.get("no") or li.get("itemNo") or None,
+            "name": item.get("name") or li.get("itemName") or li.get("description") or "-",
+            "quantity": int(li.get("quantity") or li.get("qty") or 0),
+            "unit": li.get("itemUnitName") or li.get("unit") or "pcs",
+            "color": color_val,
+            "notes": line_notes,
+        }
+        if color_candidates:
+            line["color_candidates"] = color_candidates
+        if needs_verify:
+            line["color_needs_verify"] = True
+        if color_source:
+            line["color_source"] = color_source
+        lines.append(line)
+    cust = d.get("customer") or {}
+    ship = d.get("shipToAddress") or d.get("shipTo") or {}
+    salesperson = (d.get("salesman") or {}).get("name") if isinstance(d.get("salesman"), dict) else d.get("salesman")
+    created_by = (d.get("createUser") or d.get("createdByUser") or {})
+    created_by_name = created_by.get("name") if isinstance(created_by, dict) else created_by
+    return {
+        "accurate_id": str(d.get("id") or d.get("number") or ""),
+        "po_number": str(d.get("number") or d.get("orderNumber") or ""),
+        "customer": cust.get("name") if isinstance(cust, dict) else str(cust) if cust else None,
+        "outlet": d.get("branchName") or (d.get("branch") or {}).get("name"),
+        "recipient": ship.get("attention") or ship.get("name") or None,
+        "address": ship.get("address") or d.get("shipAddress") or None,
+        "payment_terms": (d.get("paymentTerm") or {}).get("name") if isinstance(d.get("paymentTerm"), dict) else d.get("paymentTerm"),
+        "sales": salesperson,
+        "created_by_user": created_by_name,
+        "expedition": d.get("expedition") or None,
+        "delivery_zone": (d.get("shipVia") or {}).get("name") if isinstance(d.get("shipVia"), dict) else d.get("shipVia"),
+        "seller": salesperson,
+        "order_date_offset_days": 0,
+        "line_items": lines,
+        "so_notes_raw": so_notes or None,
+    }
+
+
+# -------- Color detection helpers --------
+# Standard color palette (Indonesian + English + some brand-common variants)
+_COLOR_PATTERNS: List[Tuple[str, List[str]]] = [
+    ("PUTIH", ["putih", "white"]),
+    ("HITAM", ["hitam", "black"]),
+    ("MERAH", ["merah", "red"]),
+    ("BIRU", ["biru", "blue", "navy"]),
+    ("HIJAU", ["hijau", "green", "tosca", "toska"]),
+    ("KUNING", ["kuning", "yellow"]),
+    ("ORANGE", ["orange", "oranye", "jingga"]),
+    ("UNGU", ["ungu", "purple", "violet", "lilac", "lavender"]),
+    ("COKLAT", ["coklat", "cokelat", "brown", "kraft"]),
+    ("PINK", ["pink", "merah muda", "peach", "salem"]),
+    ("GOLD", ["gold", "emas"]),
+    ("SILVER", ["silver", "perak"]),
+    ("BENING", ["bening", "transparan", "transparent", "clear"]),
+    ("ABU-ABU", ["abu-abu", "abu abu", "grey", "gray"]),
+    ("KREM", ["krem", "cream", "ivory", "beige"]),
+    ("MAROON", ["maroon", "marun"]),
+]
+
+
+def _detect_colors(text: str) -> List[str]:
+    """Detect explicit color mentions in the given text. Returns a
+    de-duplicated list of canonical color names (uppercase Indonesian).
+    Returns empty list when no color word is present.
+    """
+    if not text:
+        return []
+    import re
+    hay = text.lower()
+    found: List[str] = []
+    for canonical, variants in _COLOR_PATTERNS:
+        for v in variants:
+            # word boundary — avoid matching 'pink' inside 'pinkusan' etc.
+            if re.search(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", hay):
+                if canonical not in found:
+                    found.append(canonical)
+                break
+    return found
+
+
+def _extract_so_notes_text(d: Dict[str, Any]) -> str:
+    """Aggregate SO-level free text where color hints may appear."""
+    parts = []
+    for key in ("description", "memo", "notes", "poNumberFromCustomer", "orderNotes", "note"):
+        v = d.get(key)
+        if v:
+            parts.append(str(v))
+    return " ".join(parts).strip()
+
+
+# ---- Mock data ----
+_MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
+    {
+        "accurate_id": "ACC-SO-1049",
+        "po_number": "PO-1049",
+        "customer": "Kopi Rumah",
+        "outlet": "Kopi Rumah — Kelapa Gading",
+        "recipient": "Dimas Putra",
+        "address": "Jl. Boulevard Raya, Kelapa Gading",
+        "payment_terms": "Net 14",
+        "sales": "Vira",
+        "created_by_user": "Rina (Sales Admin)",
+        "expedition": "Internal fleet",
+        "delivery_zone": "Jakarta Utara",
+        "seller": "Vira",
+        "order_date_offset_days": 0,
+        "line_items": [
+            {"item_code": "PC-12", "name": "Paper cup 12oz", "quantity": 900, "unit": "pcs", "color": "Navy / putih", "notes": ""},
+        ],
+    },
+    {
+        "accurate_id": "ACC-SO-1050",
+        "po_number": "PO-1050",
+        "customer": "Sate Padang Uni",
+        "outlet": "Sate Padang Uni — Tebet",
+        "recipient": "Uni Sari",
+        "address": "Jl. Tebet Barat Dalam 8",
+        "payment_terms": "Cash on delivery",
+        "sales": "Alfi",
+        "expedition": "Third-party",
+        "delivery_zone": "Jakarta Selatan",
+        "seller": "Alfi",
+        "order_date_offset_days": 0,
+        "line_items": [
+            {"item_code": "LB-M", "name": "Lunchbox medium", "quantity": 600, "unit": "pcs", "color": "Merah / krem", "notes": "Logo tengah, ukuran 60mm"},
+            {"item_code": "JP-1L", "name": "Jumbo plastic 1L", "quantity": 400, "unit": "pcs", "color": "Krem", "notes": ""},
+        ],
+    },
+    {
+        "accurate_id": "ACC-SO-2001",
+        "po_number": "PO-2001",
+        "customer": "Warung Sate Pak Gino",
+        "outlet": "Warung Sate Pak Gino — Cipete",
+        "recipient": "Pak Gino",
+        "address": "Jl. Cipete Raya No. 22, Jakarta Selatan",
+        "payment_terms": "Net 7",
+        "sales": "Alfi",
+        "created_by_user": "Rina (Sales Admin)",
+        "expedition": "Internal fleet",
+        "delivery_zone": "Jakarta Selatan",
+        "seller": "Alfi",
+        "order_date_offset_days": 0,
+        "line_items": [
+            {"item_code": "PC-16", "name": "Paper cup 16oz", "quantity": 2500, "unit": "pcs", "color": "Merah / kuning", "notes": "Logo pak Gino, tinta food-grade"},
+            {"item_code": "PC-8", "name": "Paper cup 8oz", "quantity": 1500, "unit": "pcs", "color": "Merah / kuning", "notes": ""},
+        ],
+    },
+    {
+        "accurate_id": "ACC-SO-2002",
+        "po_number": "PO-2002",
+        "customer": "Roti Sederhana",
+        "outlet": "Roti Sederhana — PIK",
+        "recipient": "Bu Rini",
+        "address": "Ruko PIK Avenue Blok C-14, Jakarta Utara",
+        "payment_terms": "Net 30",
+        "sales": "Vira",
+        "created_by_user": "Rina (Sales Admin)",
+        "expedition": "Third-party",
+        "delivery_zone": "Jakarta Utara",
+        "seller": "Vira",
+        "order_date_offset_days": -1,
+        "line_items": [
+            {"item_code": "PB-M", "name": "Paper bag medium", "quantity": 3000, "unit": "pcs", "color": "Cokelat kraft", "notes": "Logo emboss di depan"},
+        ],
+    },
+]
+
+
+# Fields that Accurate owns and can safely refresh on existing PO
+_SALES_FIELDS = (
+    "customer", "outlet", "recipient", "address", "payment_terms",
+    "sales", "created_by_user",
+    "expedition", "delivery_zone", "seller", "order_date",
+    "estimated_delivery", "line_items", "total_quantity", "item_count",
+)
+
+
+async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
+    """Pull Sales Orders from Accurate (or mock) and upsert into `orders` collection.
+
+    Deduplication: uses `po_number` as the natural key. Never overwrites
+    workflow state on existing docs.
+    """
+    now = datetime.now(timezone.utc)
+    src_orders = await client.fetch_sales_orders()
+
+    imported = 0
+    updated = 0
+    skipped = 0
+    imported_pos: List[str] = []
+    updated_pos: List[str] = []
+
+    for so in src_orders:
+        po_number = so["po_number"]
+        existing = await db.orders.find_one({"po_number": po_number})
+
+        offset = so.get("order_date_offset_days", 0)
+        order_date = (now + timedelta(days=offset)).isoformat()
+        deadline = (now + timedelta(days=offset + 3)).isoformat()
+
+        total_qty = sum(int(li.get("quantity", 0)) for li in so.get("line_items", []))
+        sales_payload = {
+            "customer": so["customer"],
+            "outlet": so["outlet"],
+            "recipient": so["recipient"],
+            "address": so["address"],
+            "payment_terms": so["payment_terms"],
+            "sales": so.get("sales"),                    # tenaga penjual
+            "created_by_user": so.get("created_by_user"),  # pembuat PO / user input di Accurate
+            "expedition": so["expedition"],
+            "delivery_zone": so["delivery_zone"],
+            "seller": so["seller"],
+            "order_date": existing["order_date"] if existing else order_date,
+            "estimated_delivery": existing["estimated_delivery"] if existing else deadline,
+            "line_items": so["line_items"],
+            "total_quantity": total_qty,
+            "item_count": len(so["line_items"]),
+            "updated_at": now_iso(),
+            "accurate_synced_at": now_iso(),
+            "accurate_source": "mock" if not client.is_live else "live",
+        }
+
+        if existing:
+            # Only refresh sales-side fields. Preserve all workflow state.
+            update = {k: v for k, v in sales_payload.items() if k in _SALES_FIELDS or k in ("updated_at", "accurate_synced_at", "accurate_source")}
+            await db.orders.update_one({"po_number": po_number}, {"$set": update})
+            updated += 1
+            updated_pos.append(po_number)
+        else:
+            new = {
+                "id": str(uuid.uuid4()),
+                "po_number": po_number,
+                "priority": "normal",
+                "urgency_approved_by": None,
+                "payment_status": "Waiting",
+                "design_status": "Waiting",
+                "operator_splits": [],
+                "design_files": [],
+                "sample_files": [],
+                "notes": "",
+                "current_stage": 0,
+                "status_label": "Order Masuk",
+                "packing_status": "Belum",
+                "delivery_status": "Belum Terkirim",
+                "delivery_note_number": "",
+                "loading_checklist": None,
+                "timeline": [{
+                    "stage": 0,
+                    "stage_label": "Order Masuk",
+                    "at": now_iso(),
+                    "by_email": "accurate-sync",
+                    "by_role": "system",
+                    "by_name": "Accurate Sync",
+                    "note": f"Diimport dari Accurate ({'mock' if not client.is_live else 'live'})",
+                }],
+                "created_at": now_iso(),
+                "deadline": deadline,
+                **sales_payload,
+            }
+            await db.orders.insert_one(new)
+            imported += 1
+            imported_pos.append(po_number)
+
+    return {
+        "status": "ok",
+        "mode": "live" if client.is_live else "mock",
+        "imported": imported,
+        "imported_po_numbers": imported_pos,
+        "updated": updated,
+        "updated_po_numbers": updated_pos,
+        "skipped": skipped,
+        "message": (
+            f"{imported} PO baru diimport, {updated} PO existing di-refresh (workflow tidak diubah)."
+            if imported or updated else "Semua PO sudah sinkron."
+        ),
+    }
