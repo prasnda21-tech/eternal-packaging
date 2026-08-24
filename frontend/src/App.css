@@ -6,6 +6,15 @@
 .app-sidebar .top-nav-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;color:#C5D9CF;font:500 13.5px 'IBM Plex Sans',sans-serif;letter-spacing:0;text-transform:none;border-bottom:0;text-decoration:none}
 .app-sidebar .top-nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
 .app-sidebar .top-nav-link.active{background:var(--ep-primary);color:#fff;font-weight:600;border-bottom-color:transparent}
+.app-sidebar .nav-group{display:flex;flex-direction:column;gap:1px}
+.app-sidebar .nav-group-toggle{width:100%;border:0;background:transparent;cursor:pointer;text-align:left}
+.app-sidebar .nav-group-toggle.parent-open{background:rgba(255,255,255,.1);color:#fff;font-weight:600}
+.app-sidebar .nav-group-toggle .nav-chevron{margin-left:auto;opacity:.7;flex-shrink:0;transition:transform .15s ease}
+.app-sidebar .nav-group-toggle[aria-expanded="false"] .nav-chevron{transform:rotate(-90deg)}
+.app-sidebar .nav-sub{display:flex;flex-direction:column;gap:1px;padding:0 0 2px}
+.app-sidebar .nav-sub .top-nav-link{padding:7px 10px 7px 22px;font-size:13px;font-weight:500;color:#B7C9C0}
+.app-sidebar .nav-sub .top-nav-link.active{color:#fff;font-weight:600}
+.coming-soon-note{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;color:var(--soft);font-size:13.5px;line-height:1.5;max-width:540px;box-shadow:var(--shadow)}
 .app-main{min-width:0;display:flex;flex-direction:column;min-height:100vh}
 .topbar{height:48px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:16px;position:sticky;top:0;z-index:30}
 .brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit}
@@ -1309,8 +1318,10 @@
   .app-sidebar{position:sticky;top:0;height:auto;flex-direction:row;align-items:stretch;overflow:auto;z-index:50}
   .app-sidebar .brand{border-bottom:0;border-right:1px solid rgba(255,255,255,.08);padding:8px 12px;flex-shrink:0}
   .app-sidebar .brand-copy{display:none}
-  .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px}
+  .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px;align-items:stretch}
   .app-sidebar .top-nav-link{white-space:nowrap;padding:8px 10px;font-size:12.5px}
+  .app-sidebar .nav-group{flex-shrink:0;min-width:max-content}
+  .app-sidebar .nav-sub .top-nav-link{padding:6px 10px 6px 16px;font-size:12px}
   .dash-kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ind-metrics.cols-5{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prod-filter-kicker{flex:1 1 100%}

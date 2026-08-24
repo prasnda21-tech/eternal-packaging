@@ -10,6 +10,8 @@ import SuratJalan from "./pages/SuratJalan";
 import AnalyticsOperators from "./pages/AnalyticsOperators";
 import ImportPO from "./pages/ImportPO";
 import Settings from "./pages/Settings";
+import ComingSoon from "./pages/ComingSoon";
+import AnalitikOutput from "./pages/AnalitikOutput";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import "@/App.css";
 
@@ -50,6 +52,10 @@ export default function App() {
             <Route path="/produksi" element={<PermGate anyOf={["schedule.view"]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={["po.import.view"]}><ImportPO /></PermGate>} />
+            <Route path="/pembelian" element={<ComingSoon title="Pembelian" eyebrow="Pembelian" testid="pembelian-page" />} />
+            <Route path="/persediaan" element={<ComingSoon title="Persediaan" eyebrow="Persediaan" testid="persediaan-page" />} />
+            <Route path="/laporan/analitik-output" element={<PermGate anyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
+            <Route path="/laporan" element={<Navigate to="/laporan/analitik-output" replace />} />
             <Route path="/settings" element={<PermGate anyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id" element={<PODetail />} />
             <Route path="/po/:id/surat-jalan" element={<SuratJalan />} />
