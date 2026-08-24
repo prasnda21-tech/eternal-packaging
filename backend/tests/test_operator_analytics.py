@@ -1152,8 +1152,13 @@ def test_packing_and_prep_read_only_period_on_kpis():
 
 from output_reports import (
     compute_design_report,
+    compute_designer_report,
     compute_screener_report,
+    export_filename,
+    iter_helper_export_rows,
     iter_operator_export_rows,
+    iter_screener_export_rows,
+    iter_design_export_rows,
     normalize_daily_targets,
     screener_activity_events,
 )
@@ -1420,4 +1425,252 @@ def test_revision_cups_use_line_item_name():
     row = _run([order])["operators"][0]
     assert row["cups"][0]["item"] == "Cup 12 oz"
     assert row["cups"][0]["qty"] == 12500
+
+
+def test_report_operator_columns_not_joined():
+    op = "nanda@x.com"
+    order = _order(
+        "PO001",
+        customer="Outlet ABC",
+        item="Cup 12",
+        splits=[{**_split(op, "Nanda", 500, 500, day=24, split_id="n1"), "line_idx": 0}],
+        timeline=[_qty_note("Nanda", 500, 500, 24, op)],
+    )
+    order["outlet"] = "Outlet ABC"
+    rows = iter_operator_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["operator"] == "Nanda"
+    assert r["customer"] == "Outlet ABC"
+    assert r["no_po"] == "PO001"
+    assert r["cup_item"] == "Cup 12"
+    assert r["qty_completed"] == 500
+    assert r["order_id"] == "PO001"
+    assert " - " not in str(r["operator"])
+    assert r["tanggal"] == "2026-08-24"
+
+
+def test_report_multi_line_two_rows():
+    op = "nanda@x.com"
+    order = _order("PO001", customer="ABC", splits=[
+        {**_split(op, "Nanda", 500, 500, day=24, split_id="l0"), "line_idx": 0},
+        {**_split(op, "Nanda", 300, 300, day=24, split_id="l1"), "line_idx": 1},
+    ], timeline=[
+        _qty_note("Nanda", 500, 500, 24, op),
+        _qty_note("Nanda", 300, 300, 24, op),
+    ])
+    order["line_items"] = [
+        {"name": "Cup 12", "quantity": 500, "production_process": "print"},
+        {"name": "Cup 16", "quantity": 300, "production_process": "print"},
+    ]
+    rows = iter_operator_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert len(rows) == 2
+    by_item = {r["cup_item"]: r["qty_completed"] for r in rows}
+    assert by_item["Cup 12"] == 500
+    assert by_item["Cup 16"] == 300
+    assert all(r["no_po"] == "PO001" for r in rows)
+    kpis = _run([order])
+    assert kpis["kpis"]["total_completed"] == 800
+    assert sum(r["qty_completed"] for r in rows) == 800
+
+
+def test_report_multi_operator_600_400():
+    a, b = "nanda@x.com", "rafi@x.com"
+    order = _order("PO-SHARE", total_quantity=1000, splits=[
+        {**_split(a, "Nanda", 600, 600, day=5, split_id="sa"), "line_idx": 0},
+        {**_split(b, "Rafi", 400, 400, day=5, split_id="sb"), "line_idx": 0},
+    ], timeline=[
+        _qty_note("Nanda", 600, 600, 5, a),
+        _qty_note("Rafi", 400, 400, 5, b),
+    ])
+    rows = iter_operator_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    by = {r["operator"]: r["qty_completed"] for r in rows}
+    assert by["Nanda"] == 600
+    assert by["Rafi"] == 400
+    only_nanda = iter_operator_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO, operator_id=a)
+    assert only_nanda and all(r["operator"] == "Nanda" for r in only_nanda)
+    assert all(r["operator"] != "Rafi" for r in only_nanda)
+
+
+def test_report_summary_equals_detail():
+    op = "nanda@x.com"
+    orders = [
+        _order("PO1", item="Cup 12", splits=[{**_split(op, "Nanda", 500, 500, day=5, split_id="a"), "line_idx": 0}],
+               timeline=[_qty_note("Nanda", 500, 500, 5, op)]),
+        _order("PO2", item="Cup 12", splits=[{**_split(op, "Nanda", 300, 300, day=6, split_id="b"), "line_idx": 0}],
+               timeline=[_qty_note("Nanda", 300, 300, 6, op)]),
+        _order("PO3", item="Cup 16", splits=[{**_split(op, "Nanda", 200, 200, day=7, split_id="c"), "line_idx": 0}],
+               timeline=[_qty_note("Nanda", 200, 200, 7, op)]),
+    ]
+    rows = iter_operator_export_rows(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    out = _run(orders)
+    assert sum(r["qty_completed"] for r in rows) == 1000
+    assert out["kpis"]["total_completed"] == 1000
+
+
+def test_report_helper_structured_600():
+    a = "helper.a@x.com"
+    orders = [
+        _prep_order("PO-H", [("Cup 12", 1000, 600)], timeline=[_prep_note(600, 1000, 5, a, name="Helper A")]),
+    ]
+    rows = iter_helper_export_rows(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert len(rows) == 1
+    assert rows[0]["helper"] == "Helper A"
+    assert rows[0]["cup_item"] == "Cup 12"
+    assert rows[0]["qty_prepared"] == 600
+    assert rows[0]["qty_packed"] is None
+    assert ";" not in str(rows[0]["cup_item"])
+
+
+def test_report_helper_packing_same_actor_not_cumulative_sum():
+    a = "helper.a@x.com"
+    order = _prep_order("PO-HP", [("Cup 12", 1000, 600)], timeline=[
+        _prep_note(600, 1000, 5, a, name="Helper A"),
+        _pack_note(200, "#0=200", 5, a, name="Helper A"),
+        _pack_note(500, "#0=500", 6, a, name="Helper A"),
+    ])
+    order["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 500}], "qty_packed": 500}
+    rows = iter_helper_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    packed = sum(r["qty_packed"] or 0 for r in rows)
+    assert packed == 500
+    assert packed != 700
+    prep = sum(r["qty_prepared"] or 0 for r in rows)
+    assert prep == 600
+
+
+def test_report_helper_packing_other_actor_is_na():
+    a, b = "helper.a@x.com", "other@x.com"
+    order = _prep_order("PO-HN", [("Cup 12", 1000, 600)], timeline=[
+        _prep_note(600, 1000, 5, a, name="Helper A"),
+        _pack_note(600, "#0=600", 5, b, name="Other"),
+    ])
+    rows = iter_helper_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO, user_id=a)
+    assert rows[0]["qty_prepared"] == 600
+    assert rows[0]["qty_packed"] is None
+
+
+def test_report_screener_structured_800():
+    a = "scr.a@x.com"
+    order = {
+        "id": "oid-1",
+        "po_number": "PO-SC",
+        "customer": "Cust",
+        "outlet": "Outlet ABC",
+        "line_items": [{"name": "Cup 12", "item_code": "C12", "quantity": 800, "production_process": "print"}],
+        "screener_info": {"screen_qty": 800, "updated_by": a, "updated_at": _at(6)},
+        "timeline": [_screen_note(800, 6, a, name="Screener A")],
+        "cancelled": False,
+    }
+    rows = iter_screener_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert len(rows) == 1
+    assert rows[0]["screener"] == "Screener A"
+    assert rows[0]["cup_item"] == "Cup 12"
+    assert rows[0]["qty_screener"] == 800
+    assert rows[0]["customer"] == "Outlet ABC"
+    assert rows[0]["order_id"] == "oid-1"
+    assert ";" not in str(rows[0]["cup_item"])
+    out = compute_screener_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["kpis"]["total_qty"] == 800
+    assert sum(r["qty_screener"] or 0 for r in rows) == 800
+
+
+def test_report_screener_multi_line_no_double_count():
+    a = "scr.a@x.com"
+    order = {
+        "id": "PO-ML", "po_number": "PO-ML", "customer": "C",
+        "line_items": [
+            {"name": "Cup 12", "quantity": 500, "production_process": "print"},
+            {"name": "Cup 16", "quantity": 300, "production_process": "print"},
+        ],
+        "timeline": [_screen_note(800, 6, a, name="Screener A")],
+        "cancelled": False,
+    }
+    rows = iter_screener_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert len(rows) == 2
+    assert {r["cup_item"] for r in rows} == {"Cup 12", "Cup 16"}
+    assert sum(r["qty_screener"] or 0 for r in rows) == 800
+
+
+def test_designer_three_uploads_one_design():
+    order = {
+        "id": "PO-001", "po_number": "PO-001", "customer": "Cust", "outlet": "Outlet X",
+        "line_items": [{"name": "Cup 12 oz", "quantity": 100, "production_process": "print"}],
+        "design_files": [
+            {"id": "f1", "uploaded_by": "des.a@x.com", "uploaded_by_name": "Designer A",
+             "uploaded_by_role": "designer", "uploaded_at": _at(5)},
+            {"id": "f2", "uploaded_by": "des.a@x.com", "uploaded_by_name": "Designer A",
+             "uploaded_by_role": "designer", "uploaded_at": _at(6)},
+            {"id": "f3", "uploaded_by": "des.a@x.com", "uploaded_by_name": "Designer A",
+             "uploaded_by_role": "designer", "uploaded_at": _at(7)},
+        ],
+        "cancelled": False,
+    }
+    out = compute_designer_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["kpis"]["total_designs"] == 1
+    assert out["designers"][0]["design_count"] == 1
+    assert out["designers"][0]["name"] == "Designer A"
+    assert out["designer_attribution"]["valid"] is True
+    rows = iter_design_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert len(rows) == 1
+    assert rows[0]["designer"] == "Designer A"
+    assert rows[0]["cup_item"] == "Cup 12 oz"
+    assert rows[0]["jumlah_design"] == 1
+    assert rows[0]["order_id"] == "PO-001"
+
+
+def test_designer_three_distinct_lines():
+    order = {
+        "id": "PO-3", "po_number": "PO-3", "customer": "C",
+        "line_items": [
+            {"name": "Cup 12 oz", "quantity": 1, "production_process": "print"},
+            {"name": "Cup 16 oz", "quantity": 1, "production_process": "print"},
+            {"name": "Cup 22 oz", "quantity": 1, "production_process": "print"},
+        ],
+        "design_files": [{
+            "uploaded_by": "des.a@x.com", "uploaded_by_name": "Designer A",
+            "uploaded_at": _at(5),
+        }],
+        "cancelled": False,
+    }
+    out = compute_designer_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["kpis"]["total_designs"] == 3
+    assert out["designers"][0]["design_count"] == 3
+
+
+def test_designer_missing_uploader_is_data_limitation():
+    order = {
+        "id": "PO-N", "po_number": "PO-N", "customer": "C",
+        "line_items": [{"name": "Cup 12", "quantity": 1, "production_process": "print"}],
+        "design_files": [{"id": "f1", "uploaded_at": _at(5)}],
+        "cancelled": False,
+    }
+    out = compute_designer_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["designer_attribution"]["valid"] is False
+    assert out["rows"][0]["designer"] != "Designer A"
+    assert out["rows"][0]["attributed"] is False
+
+
+def test_export_filename_and_separate_columns():
+    name = export_filename("operator", date(2026, 8, 1), date(2026, 8, 31), "xlsx")
+    assert name == "Laporan_Operator_2026-08-01_2026-08-31.xlsx"
+    from output_reports import EXPORT_COLUMNS
+    keys = [c[0] for c in EXPORT_COLUMNS["operator"]]
+    assert "tanggal" in keys and "operator" in keys and "customer" in keys
+    assert "no_po" in keys and "cup_item" in keys and "qty_completed" in keys
+    assert keys.count("operator") == 1
+
+
+def test_outlet_preferred_over_customer():
+    op = "nanda@x.com"
+    order = _order("PO-O", customer="PT Customer", item="Cup 12",
+                   splits=[{**_split(op, "Nanda", 100, 100, day=5), "line_idx": 0}],
+                   timeline=[_qty_note("Nanda", 100, 100, 5, op)])
+    order["outlet"] = "Kopi Rumah — Kemang"
+    rows = iter_operator_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert rows[0]["customer"] == "Kopi Rumah — Kemang"
+    filtered = iter_operator_export_rows(
+        [order], date_from=PERIOD_FROM, date_to=PERIOD_TO, customer="Kopi Rumah — Kemang",
+    )
+    assert filtered and filtered[0]["qty_completed"] == 100
+
 

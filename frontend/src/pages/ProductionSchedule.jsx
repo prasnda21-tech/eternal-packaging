@@ -21,26 +21,26 @@ const STATUS_OPTS = [
 ];
 
 const TABLE_COLS = [
-  { key: "deadline", label: "Deadline", width: 118 },
-  { key: "deadline_ship", label: "Deadline Pengiriman", width: 196, testid: "prod-th-deadline-effective" },
-  { key: "work_date", label: "Tgl Pengerjaan", width: 136, testid: "prod-th-work-date" },
-  { key: "prio", label: "Prio", width: 88 },
-  { key: "buffer", label: "Buffer", width: 88, testid: "prod-th-buffer" },
-  { key: "po", label: "No PO", width: 128 },
-  { key: "customer", label: "Customer", width: 220 },
-  { key: "outlet", label: "Outlet", width: 168 },
-  { key: "qty", label: "Total Qty", width: 96, num: true },
-  { key: "operator", label: "Operator", width: 248 },
-  { key: "design", label: "Design", width: 118 },
-  { key: "payment", label: "Payment", width: 118 },
-  { key: "hold", label: "HOLD", width: 80 },
-  { key: "screen", label: "Qty Screen", width: 100, num: true },
-  { key: "helper", label: "Persiapan", width: 132 },
-  { key: "packing", label: "Packing", width: 100 },
-  { key: "sj", label: "Surat Jalan", width: 136 },
-  { key: "loading", label: "Loading", width: 88 },
-  { key: "driver", label: "Driver", width: 132 },
-  { key: "status", label: "Status Akhir", width: 136 },
+  { key: "deadline", label: "Deadline", fit: true },
+  { key: "deadline_ship", label: "Deadline Pengiriman", testid: "prod-th-deadline-effective" },
+  { key: "work_date", label: "Tgl Pengerjaan", testid: "prod-th-work-date" },
+  { key: "prio", label: "Prio", fit: true },
+  { key: "buffer", label: "Buffer", fit: true, testid: "prod-th-buffer" },
+  { key: "po", label: "No PO", fit: true },
+  { key: "customer", label: "Customer" },
+  { key: "outlet", label: "Outlet" },
+  { key: "qty", label: "Total Qty", num: true },
+  { key: "operator", label: "Operator" },
+  { key: "design", label: "Design", fit: true },
+  { key: "payment", label: "Payment", fit: true },
+  { key: "hold", label: "HOLD", fit: true },
+  { key: "screen", label: "Qty Screen", num: true },
+  { key: "helper", label: "Persiapan", fit: true },
+  { key: "packing", label: "Packing", fit: true },
+  { key: "sj", label: "Surat Jalan", fit: true },
+  { key: "loading", label: "Loading", fit: true },
+  { key: "driver", label: "Driver" },
+  { key: "status", label: "Status Akhir", fit: true },
 ];
 
 export default function ProductionSchedule() {
@@ -308,15 +308,10 @@ export default function ProductionSchedule() {
       {mode === "tabel" ? (
         <div className="prod-table-wrap" data-testid="prod-table">
           <table className="prod-table">
-            <colgroup>
-              {TABLE_COLS.map((c) => (
-                <col key={c.key} style={{ width: c.width, minWidth: c.width }} />
-              ))}
-            </colgroup>
             <thead>
               <tr>
                 {TABLE_COLS.map((c) => (
-                  <th key={c.key} className={c.num ? "num" : undefined} data-testid={c.testid} scope="col">
+                  <th key={c.key} className={[c.num ? "num" : "", (c.num || c.fit) ? "col-fit" : "col-text"].filter(Boolean).join(" ")} data-testid={c.testid} scope="col">
                     {c.label}
                   </th>
                 ))}
@@ -325,8 +320,8 @@ export default function ProductionSchedule() {
             <tbody>
               {sorted.map((r) => (
                 <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
-                  <td className="mono small">{formatDate(r.deadline)}</td>
-                  <td className="mono small prod-cell-stack" data-testid={`prod-deadline-effective-${r.po_number}`}>
+                  <td className="mono small col-fit">{formatDate(r.deadline)}</td>
+                  <td className="mono small prod-cell-stack col-text" data-testid={`prod-deadline-effective-${r.po_number}`}>
                     {r.delivery_deadline_effective ? (
                       <>
                         {formatDate(r.delivery_deadline_effective)}
@@ -358,7 +353,7 @@ export default function ProductionSchedule() {
                       <span className="muted small">Menunggu approval</span>
                     )}
                   </td>
-                  <td className="mono small prod-cell-stack" data-testid={`prod-work-date-${r.po_number}`}>
+                  <td className="mono small prod-cell-stack col-text" data-testid={`prod-work-date-${r.po_number}`}>
                     {(r.operator_work_dates || []).length > 0 ? (
                       (r.operator_work_dates || []).map((o, i) => (
                         <div key={i} className="prod-date-line" data-testid={`prod-op-work-date-${r.po_number}-${i}`}>
@@ -371,15 +366,15 @@ export default function ProductionSchedule() {
                       <span className="muted small">Belum Dijadwalkan</span>
                     )}
                   </td>
-                  <td>{r.urgent ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>}</td>
-                  <td data-testid={`prod-buffer-${r.po_number}`}>
+                  <td className="col-fit">{r.urgent ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>}</td>
+                  <td className="col-fit" data-testid={`prod-buffer-${r.po_number}`}>
                     {r.buffer_stock ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span> : <span className="muted small">—</span>}
                   </td>
-                  <td className="mono"><Link to={`/po/${r.id}`} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
-                  <td className="prod-cell-wrap"><strong>{r.customer || "-"}</strong></td>
-                  <td className="muted small prod-cell-wrap">{r.outlet || "-"}</td>
-                  <td className="num">{(r.total_quantity || 0).toLocaleString("id-ID")}</td>
-                  <td className="prod-ops">
+                  <td className="mono col-fit"><Link to={`/po/${r.id}`} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
+                  <td className="prod-cell-wrap col-text"><strong>{r.customer || "-"}</strong></td>
+                  <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
+                  <td className="num col-fit">{(r.total_quantity || 0).toLocaleString("id-ID")}</td>
+                  <td className="prod-ops col-text">
                     {(r.operators || []).length === 0 ? <span className="muted small">-</span> :
                       (r.operators || []).map((op, i) => (
                         <div key={i} className="prod-op-line">
@@ -389,30 +384,30 @@ export default function ProductionSchedule() {
                       ))
                     }
                   </td>
-                  <td>
+                  <td className="col-fit">
                     <span className={"pill sm " + ((r.design_status === "Approved") ? "pill-ok" : "pill-warn")}>{r.design_status || "-"}</span>
                     {r.design_bypassed && <span className="pill sm pill-bypass" title="Bypass">BYPASS</span>}
                   </td>
-                  <td>
+                  <td className="col-fit">
                     <span className={"pill sm " + ((r.payment_status === "Approved") ? "pill-ok" : "pill-warn")}>{r.payment_status || "-"}</span>
                     {r.payment_bypassed && <span className="pill sm pill-bypass" title="Bypass">BYPASS</span>}
                   </td>
-                  <td>{r.hold ? <span className="pill sm pill-hold" title={(r.hold_reasons || []).join("; ")}>HOLD</span> : <span className="muted small">-</span>}</td>
-                  <td className="num">{r.screen_qty ?? "-"}</td>
-                  <td className="small">
+                  <td className="col-fit">{r.hold ? <span className="pill sm pill-hold" title={(r.hold_reasons || []).join("; ")}>HOLD</span> : <span className="muted small">-</span>}</td>
+                  <td className="num col-fit">{r.screen_qty ?? "-"}</td>
+                  <td className="small col-fit">
                     {r.helper_required != null ? (
                       <span className={r.helper_shortage_status === "Barang Kurang" ? "prod-helper-warn" : ""}>{r.helper_prepared ?? 0}/{r.helper_required} {r.helper_shortage ? `(-${r.helper_shortage})` : ""}</span>
                     ) : <span className="muted">-</span>}
                   </td>
-                  <td data-testid={`prod-packing-${r.po_number}`}>
+                  <td className="col-fit" data-testid={`prod-packing-${r.po_number}`}>
                     {r.packing_status === "Sudah" ? <span className="pill sm pill-ok">Sudah</span> :
                      r.packing_status === "Berjalan" ? <span className="pill sm">Berjalan</span> :
                      <span className="pill sm">Belum</span>}
                   </td>
-                  <td className="mono small">{r.delivery_note_number || "-"}</td>
-                  <td>{r.loading_ok ? <span className="pill sm pill-ok">OK</span> : <span className="muted small">-</span>}</td>
-                  <td className="small">{r.driver_name || "-"}</td>
-                  <td>
+                  <td className="mono small col-fit">{r.delivery_note_number || "-"}</td>
+                  <td className="col-fit">{r.loading_ok ? <span className="pill sm pill-ok">OK</span> : <span className="muted small">-</span>}</td>
+                  <td className="small col-text">{r.driver_name || "-"}</td>
+                  <td className="col-fit">
                     {r.cancelled ? <span className="pill sm pill-cancel"><XCircle size={10}/> Cancelled</span> :
                      r.status_final === "HOLD" ? <span className="pill sm pill-hold">HOLD</span> :
                      r.status_final === "Terkirim" ? <span className="pill sm pill-ok">Terkirim</span> :

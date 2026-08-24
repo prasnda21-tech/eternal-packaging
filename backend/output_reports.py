@@ -27,9 +27,12 @@ from operator_analytics import (
     is_print_line_item,
     line_item_label,
     line_item_name,
+    line_matches_item,
     month_key,
+    order_matches_customer,
     order_matches_item,
     order_matches_po,
+    outlet_customer_label,
     packing_activity_events,
     parse_iso_datetime_date,
     prep_activity_events,
@@ -127,13 +130,10 @@ def compute_output_series(
     op_filter = (operator_id or "").strip()
     if op_filter in ("all", ""):
         op_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -145,6 +145,8 @@ def compute_output_series(
             if not email:
                 continue
             if op_filter and email != op_filter:
+                continue
+            if not line_matches_item(order, split.get("line_idx"), item):
                 continue
             rec = per_op.setdefault(email, {
                 "operator_id": email, "email": email,
@@ -294,16 +296,13 @@ def compute_screener_report(
     role_filter = (role or "").strip()
     if role_filter in ("all", ""):
         role_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
     roles: set = set()
     user_opts: Dict[str, str] = {}
 
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -311,7 +310,7 @@ def compute_screener_report(
             continue
         po_id = order.get("id") or order.get("po_number")
         po_num = _order_po_number(order) or str(po_id)
-        cust = (order.get("customer") or "").strip()
+        cust = outlet_customer_label(order)
         print_rows = _print_item_rows(order)
         events = screener_activity_events(order)
         for ev in events:
@@ -471,14 +470,11 @@ def compute_design_report(
     op_filter = (operator_id or "").strip()
     if op_filter in ("all", ""):
         op_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
 
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -486,13 +482,15 @@ def compute_design_report(
             continue
         po_id = order.get("id") or order.get("po_number")
         po_num = _order_po_number(order) or str(po_id)
-        cust = (order.get("customer") or "").strip()
+        cust = outlet_customer_label(order)
         events = _timeline_qty_events(order)
         for split in order.get("operator_splits") or []:
             email = (split.get("operator_email") or "").strip()
             if not email:
                 continue
             if op_filter and email != op_filter:
+                continue
+            if not line_matches_item(order, split.get("line_idx"), item):
                 continue
             assigned = max(0, safe_int(split.get("quantity")))
             completed, days_list = completed_in_period_for_split(split, events, date_from, date_to)
@@ -577,6 +575,20 @@ def compute_design_report(
     }
 
 
+def _line_no(line_idx) -> Any:
+    try:
+        return int(line_idx) + 1
+    except (TypeError, ValueError):
+        return line_idx
+
+
+def _export_na(value):
+    """Packing/qty cells: None means N/A (not guessed as 0)."""
+    if value is None:
+        return "N/A"
+    return value
+
+
 def iter_operator_export_rows(
     orders: Iterable[dict],
     *,
@@ -591,26 +603,26 @@ def iter_operator_export_rows(
     op_filter = (operator_id or "").strip()
     if op_filter in ("all", ""):
         op_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
     targets = daily_targets or {}
     out: List[dict] = []
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
         if not order_matches_po(order, po):
             continue
-        po_num = _order_po_number(order) or str(order.get("id") or "")
-        cust = (order.get("customer") or "").strip()
+        po_id = order.get("id") or order.get("po_number")
+        po_num = _order_po_number(order) or str(po_id or "")
+        cust = outlet_customer_label(order)
         events = _timeline_qty_events(order)
         for split in order.get("operator_splits") or []:
             email = (split.get("operator_email") or "").strip()
             if not email or (op_filter and email != op_filter):
+                continue
+            if not line_matches_item(order, split.get("line_idx"), item):
                 continue
             name = split.get("operator_name") or email
             target = targets.get(email)
@@ -640,25 +652,41 @@ def iter_operator_export_rows(
                 qty = cap
                 if qty > 0 and day and in_period(day, date_from, date_to):
                     day_qty[day] += qty
-            try:
-                line_no = int(line_idx) + 1
-            except (TypeError, ValueError):
-                line_no = line_idx
+            line_no = _line_no(line_idx)
             for day, qty in sorted(day_qty.items()):
+                ach = ""
+                if target:
+                    ach = achievement_pct_cell(qty, target)
                 out.append({
                     "tanggal": day.isoformat(),
                     "minggu": iso_week_key(day),
                     "operator": name,
                     "operator_id": email,
+                    "employee_id": email,
+                    "employee_name": name,
+                    "order_id": po_id,
                     "no_po": po_num,
                     "customer": cust,
                     "cup_item": cup,
+                    "item_name": cup,
                     "line": line_no,
+                    "line_id": line_idx,
+                    "design_id": dkey,
                     "design_line": dlabel,
                     "qty_completed": qty,
+                    "qty": qty,
                     "target_per_hari": target if target is not None else "",
+                    "achievement": ach,
+                    "date": day.isoformat(),
                 })
+    out.sort(key=lambda r: (r.get("tanggal") or "", r.get("operator") or "", r.get("no_po") or "", r.get("line") or 0))
     return out
+
+
+def achievement_pct_cell(qty: int, target: int):
+    if not target:
+        return ""
+    return round((qty / target) * 100.0, 2)
 
 
 def iter_helper_export_rows(
@@ -672,38 +700,26 @@ def iter_helper_export_rows(
     item: Optional[str] = None,
     po: Optional[str] = None,
 ) -> List[dict]:
+    """Helper × date × PO × line. Qty Packing = N/A unless the same helper saved packing."""
     user_filter = (user_id or "").strip()
     if user_filter in ("all", ""):
         user_filter = ""
-    packed_by: Dict[Tuple[str, Any, Optional[date]], int] = defaultdict(int)
-    for order in orders:
-        if order.get("cancelled") or not order_matches_item(order, item) or not order_matches_po(order, po):
-            continue
-        po_id = order.get("id") or order.get("po_number")
-        for ev in packing_activity_events(order):
-            if not in_period(ev.get("day"), date_from, date_to):
-                continue
-            if ev["email"] == UNATTRIBUTED_ID:
-                continue
-            packed_by[(ev["email"], po_id, ev.get("day"))] += ev["delta"]
-    out: List[dict] = []
+    collapsed: Dict[Tuple[Any, ...], dict] = {}
     for order in orders:
         if order.get("cancelled"):
             continue
-        if customer and customer not in ("all", "") and (order.get("customer") or "") != customer:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item) or not order_matches_po(order, po):
             continue
         po_id = order.get("id") or order.get("po_number")
         po_num = _order_po_number(order) or str(po_id)
-        cust = (order.get("customer") or "").strip()
-        print_rows = _print_item_rows(order)
-        item_label = print_rows[0]["item"] if len(print_rows) == 1 else "; ".join(p["item"] for p in print_rows)
-        line_val = print_rows[0]["line_idx"] if len(print_rows) == 1 else ""
-        try:
-            line_no = int(line_val) + 1 if line_val != "" else ""
-        except (TypeError, ValueError):
-            line_no = line_val
+        cust = outlet_customer_label(order)
+        all_print = _print_item_rows(order)
+        print_rows = [pr for pr in all_print if line_matches_item(order, pr["line_idx"], item)]
+        if not print_rows:
+            continue
+        prep_actors = set()
         for ev in prep_activity_events(order):
             email = ev["email"]
             if user_filter and email != user_filter:
@@ -712,19 +728,81 @@ def iter_helper_export_rows(
                 continue
             if not in_period(ev.get("day"), date_from, date_to):
                 continue
-            packed = packed_by.get((email, po_id, ev.get("day")))
-            out.append({
+            prep_actors.add(email)
+            single_line = len(all_print) == 1
+            for i, pr in enumerate(print_rows):
+                if single_line:
+                    qty_prep = ev["delta"]
+                elif len(print_rows) == len(all_print) and i == 0:
+                    qty_prep = ev["delta"]
+                else:
+                    qty_prep = None
+                key = (email, po_id, pr["line_idx"], ev.get("day"))
+                rec = collapsed.setdefault(key, {
+                    "tanggal": ev["day"].isoformat() if ev.get("day") else "",
+                    "minggu": iso_week_key(ev["day"]) if ev.get("day") else "",
+                    "helper": ev.get("name") or email,
+                    "helper_id": email,
+                    "employee_id": email,
+                    "employee_name": ev.get("name") or email,
+                    "order_id": po_id,
+                    "no_po": po_num,
+                    "customer": cust,
+                    "cup_item": pr["item"],
+                    "item_name": pr["item"],
+                    "line": _line_no(pr["line_idx"]),
+                    "line_id": pr["line_idx"],
+                    "qty_prepared": None,
+                    "qty_packed": None,
+                    "date": ev["day"].isoformat() if ev.get("day") else "",
+                })
+                if ev.get("name"):
+                    rec["helper"] = ev["name"]
+                    rec["employee_name"] = ev["name"]
+                if qty_prep is not None:
+                    rec["qty_prepared"] = (rec["qty_prepared"] or 0) + qty_prep
+        for ev in packing_activity_events(order):
+            email = ev["email"]
+            if email == UNATTRIBUTED_ID:
+                continue
+            if email not in prep_actors:
+                continue
+            if user_filter and email != user_filter:
+                continue
+            if role and role not in ("all", "") and (ev.get("role") or "") != role:
+                continue
+            if not in_period(ev.get("day"), date_from, date_to):
+                continue
+            idx = ev.get("line_idx")
+            if idx is None:
+                idx = all_print[0]["line_idx"] if len(all_print) == 1 else None
+            if idx is None:
+                continue
+            if not line_matches_item(order, idx, item):
+                continue
+            item_name = line_item_name(order, idx)
+            key = (email, po_id, idx, ev.get("day"))
+            rec = collapsed.setdefault(key, {
                 "tanggal": ev["day"].isoformat() if ev.get("day") else "",
                 "minggu": iso_week_key(ev["day"]) if ev.get("day") else "",
                 "helper": ev.get("name") or email,
                 "helper_id": email,
+                "employee_id": email,
+                "employee_name": ev.get("name") or email,
+                "order_id": po_id,
                 "no_po": po_num,
                 "customer": cust,
-                "cup_item": item_label,
-                "line": line_no,
-                "qty_prepared": ev["delta"],
-                "qty_packed": packed if packed is not None else "",
+                "cup_item": item_name,
+                "item_name": item_name,
+                "line": _line_no(idx),
+                "line_id": idx,
+                "qty_prepared": None,
+                "qty_packed": None,
+                "date": ev["day"].isoformat() if ev.get("day") else "",
             })
+            rec["qty_packed"] = (rec["qty_packed"] or 0) + ev["delta"]
+    out = list(collapsed.values())
+    out.sort(key=lambda r: (r.get("tanggal") or "", r.get("helper") or "", r.get("no_po") or "", r.get("line") or 0))
     return out
 
 
@@ -746,19 +824,17 @@ def iter_screener_export_rows(
     for order in orders:
         if order.get("cancelled"):
             continue
-        if customer and customer not in ("all", "") and (order.get("customer") or "") != customer:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item) or not order_matches_po(order, po):
             continue
-        po_num = _order_po_number(order) or str(order.get("id") or "")
-        cust = (order.get("customer") or "").strip()
-        print_rows = _print_item_rows(order)
-        item_label = print_rows[0]["item"] if len(print_rows) == 1 else "; ".join(p["item"] for p in print_rows)
-        line_val = print_rows[0]["line_idx"] if len(print_rows) == 1 else ""
-        try:
-            line_no = int(line_val) + 1 if line_val != "" else ""
-        except (TypeError, ValueError):
-            line_no = line_val
+        po_id = order.get("id") or order.get("po_number")
+        po_num = _order_po_number(order) or str(po_id or "")
+        cust = outlet_customer_label(order)
+        all_print = _print_item_rows(order)
+        print_rows = [pr for pr in all_print if line_matches_item(order, pr["line_idx"], item)]
+        if not print_rows:
+            continue
         for ev in screener_activity_events(order):
             email = ev["email"]
             if user_filter and email != user_filter:
@@ -767,18 +843,191 @@ def iter_screener_export_rows(
                 continue
             if not in_period(ev.get("day"), date_from, date_to):
                 continue
-            out.append({
-                "tanggal": ev["day"].isoformat() if ev.get("day") else "",
-                "minggu": iso_week_key(ev["day"]) if ev.get("day") else "",
-                "screener": ev.get("name") or email,
-                "screener_id": email,
+            single_line = len(all_print) == 1
+            for i, pr in enumerate(print_rows):
+                if single_line:
+                    qty = ev["delta"]
+                elif len(print_rows) == len(all_print) and i == 0:
+                    qty = ev["delta"]
+                else:
+                    qty = None
+                out.append({
+                    "tanggal": ev["day"].isoformat() if ev.get("day") else "",
+                    "minggu": iso_week_key(ev["day"]) if ev.get("day") else "",
+                    "screener": ev.get("name") or email,
+                    "screener_id": email,
+                    "employee_id": email,
+                    "employee_name": ev.get("name") or email,
+                    "order_id": po_id,
+                    "no_po": po_num,
+                    "customer": cust,
+                    "cup_item": pr["item"],
+                    "item_name": pr["item"],
+                    "line": _line_no(pr["line_idx"]),
+                    "line_id": pr["line_idx"],
+                    "qty_screener": qty,
+                    "qty": qty,
+                    "qty_split": len(print_rows) == 1,
+                    "date": ev["day"].isoformat() if ev.get("day") else "",
+                })
+    out.sort(key=lambda r: (r.get("tanggal") or "", r.get("screener") or "", r.get("no_po") or "", r.get("line") or 0))
+    return out
+
+
+def _first_design_uploader(order: dict) -> dict:
+    files = list(order.get("design_files") or [])
+    files.sort(key=lambda f: parse_iso_datetime_date(f.get("uploaded_at")) or date.min)
+    for f in files:
+        email = (f.get("uploaded_by") or "").strip()
+        if email:
+            return {
+                "email": email,
+                "name": (f.get("uploaded_by_name") or "").strip() or email,
+                "role": (f.get("uploaded_by_role") or "").strip(),
+            }
+    return {"email": UNATTRIBUTED_ID, "name": UNATTRIBUTED_NAME, "role": ""}
+
+
+def compute_designer_report(
+    orders: Iterable[dict],
+    *,
+    date_from: date,
+    date_to: date,
+    user_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> dict:
+    """Designer payroll report from design_files.uploaded_by. Never invents a name."""
+    user_filter = (user_id or "").strip()
+    if user_filter in ("all", ""):
+        user_filter = ""
+    rows: List[dict] = []
+    designers: Dict[str, dict] = {}
+    user_opts: Dict[str, str] = {}
+    seen_designs: set = set()
+    files_seen = 0
+    attributed_files = 0
+    week_meta = weeks_covering(date_from, date_to)
+    per_week: Dict[str, set] = defaultdict(set)
+
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        if not order_matches_customer(order, customer):
+            continue
+        if not order_matches_item(order, item) or not order_matches_po(order, po):
+            continue
+        files = list(order.get("design_files") or [])
+        if not files:
+            continue
+        files_seen += len(files)
+        attributed_files += sum(1 for f in files if (f.get("uploaded_by") or "").strip())
+        in_period_days: List[date] = []
+        for f in files:
+            d = parse_iso_datetime_date(f.get("uploaded_at"))
+            if d and in_period(d, date_from, date_to):
+                in_period_days.append(d)
+        if not in_period_days:
+            continue
+        actor = _first_design_uploader(order)
+        email = actor["email"]
+        if email != UNATTRIBUTED_ID:
+            user_opts[email] = actor["name"]
+        if user_filter and email != user_filter:
+            continue
+        po_id = order.get("id") or order.get("po_number")
+        po_num = _order_po_number(order) or str(po_id or "")
+        cust = outlet_customer_label(order)
+        activity_day = min(in_period_days)
+        print_rows = _print_item_rows(order)
+        rec = designers.setdefault(email, {
+            "designer_id": email,
+            "email": email,
+            "name": actor["name"],
+            "design_count": 0,
+            "po_ids": set(),
+            "items": set(),
+        })
+        if actor["name"] and rec["name"] in (email, UNATTRIBUTED_NAME):
+            rec["name"] = actor["name"]
+        for pr in print_rows:
+            dkey, dlabel = design_line_identity(order, pr["line_idx"])
+            if dkey in seen_designs:
+                continue
+            seen_designs.add(dkey)
+            rec["design_count"] += 1
+            rec["po_ids"].add(po_id)
+            rec["items"].add(pr["item"])
+            per_week[iso_week_key(activity_day)].add(dkey)
+            rows.append({
+                "tanggal": activity_day.isoformat(),
+                "designer": rec["name"],
+                "designer_id": email,
+                "employee_id": email,
+                "employee_name": rec["name"],
+                "order_id": po_id,
                 "no_po": po_num,
                 "customer": cust,
-                "cup_item": item_label,
-                "line": line_no,
-                "qty_screener": ev["delta"],
+                "cup_item": pr["item"],
+                "item_name": pr["item"],
+                "line": _line_no(pr["line_idx"]),
+                "line_id": pr["line_idx"],
+                "design_line": dlabel,
+                "design_id": dkey,
+                "jumlah_design": 1,
+                "qty": 1,
+                "date": activity_day.isoformat(),
+                "attributed": email != UNATTRIBUTED_ID,
             })
-    return out
+
+    people = []
+    for email, rec in designers.items():
+        people.append({
+            "designer_id": email,
+            "email": email,
+            "name": rec["name"],
+            "design_count": rec["design_count"],
+            "po_count": len(rec["po_ids"]),
+            "item_count": len(rec["items"]),
+        })
+    people.sort(key=lambda r: (-r["design_count"], r["name"] or r["email"]))
+    weekly = [{**meta, "design_count": len(per_week.get(meta["week"]) or set()), "qty": 0} for meta in week_meta]
+    attributed_rows = [r for r in rows if r.get("attributed")]
+    valid = bool(attributed_rows)
+    return {
+        "kpis": {
+            "total_designs": len(rows),
+            "designer_count": len([p for p in people if p["email"] != UNATTRIBUTED_ID]),
+            "po_count": len({r["order_id"] for r in rows}),
+            "item_count": len({r["cup_item"] for r in rows}),
+            "label": "Design / Line Cetak",
+        },
+        "designers": people,
+        "operators": people,
+        "rows": rows,
+        "lines": rows,
+        "weekly": weekly,
+        "filters": {
+            "users": [{"id": e, "name": n} for e, n in sorted(user_opts.items(), key=lambda x: x[1] or x[0])],
+        },
+        "designer_attribution": {
+            "valid": valid,
+            "source": "design_files.uploaded_by",
+            "unattributed": not valid,
+            "files_seen": files_seen,
+            "files_with_uploader": attributed_files,
+            "limitation": DATA_SOURCES["designer"],
+        },
+        "identity": DATA_SOURCES["designer"],
+        "period": {
+            "from": date_from.isoformat(),
+            "to": date_to.isoformat(),
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "read_only": True,
+        "sources": DATA_SOURCES,
+    }
 
 
 def iter_design_export_rows(
@@ -787,76 +1036,116 @@ def iter_design_export_rows(
     date_from: date,
     date_to: date,
     operator_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
     po: Optional[str] = None,
 ) -> List[dict]:
-    report = compute_design_report(
+    who = user_id or operator_id
+    report = compute_designer_report(
         orders, date_from=date_from, date_to=date_to,
-        operator_id=operator_id, customer=customer, item=item, po=po,
+        user_id=who, customer=customer, item=item, po=po,
     )
-    out = []
-    for r in report.get("lines") or []:
-        try:
-            line_no = int(r["line_idx"]) + 1
-        except (TypeError, ValueError):
-            line_no = r.get("line_idx")
-        out.append({
-            "operator": r.get("operator"),
-            "operator_id": r.get("operator_id"),
-            "no_po": r.get("po_number"),
-            "customer": r.get("customer"),
-            "cup_item": r.get("item"),
-            "line": line_no,
-            "design_identity": r.get("design_label"),
-            "qty_completed": r.get("qty_completed"),
-            "tanggal": r.get("last_activity_at") or "",
+    return list(report.get("rows") or [])
+
+
+def export_filename(tab: str, date_from: date, date_to: date, fmt: str) -> str:
+    labels = {
+        "operator": "Operator",
+        "helper": "Helper",
+        "screener": "Screener",
+        "design": "Designer",
+    }
+    ext = "xlsx" if (fmt or "").strip().lower() == "xlsx" else "csv"
+    return f"Laporan_{labels.get(tab, tab)}_{date_from.isoformat()}_{date_to.isoformat()}.{ext}"
+
+
+def summarize_people(rows: Sequence[dict], *, id_key: str, name_key: str, qty_key: str) -> List[dict]:
+    acc: Dict[str, dict] = {}
+    for r in rows:
+        eid = r.get(id_key) or ""
+        rec = acc.setdefault(eid, {
+            "id": eid,
+            "email": eid,
+            "name": r.get(name_key) or eid,
+            "qty": 0,
+            "po_ids": set(),
+            "items": set(),
+            "designs": set(),
+            "packing": 0,
+            "days": set(),
         })
+        if r.get(name_key):
+            rec["name"] = r[name_key]
+        q = r.get(qty_key)
+        if q is not None and q != "N/A":
+            rec["qty"] += safe_int(q)
+        packed = r.get("qty_packed")
+        if packed is not None and packed != "N/A":
+            rec["packing"] += safe_int(packed)
+        if r.get("order_id") or r.get("no_po"):
+            rec["po_ids"].add(r.get("order_id") or r.get("no_po"))
+        if r.get("cup_item"):
+            rec["items"].add(r.get("cup_item"))
+        if r.get("design_id"):
+            rec["designs"].add(r.get("design_id"))
+        if r.get("tanggal") or r.get("date"):
+            rec["days"].add(r.get("tanggal") or r.get("date"))
+    out = []
+    for rec in acc.values():
+        days_n = len(rec["days"])
+        out.append({
+            "id": rec["id"],
+            "email": rec["email"],
+            "name": rec["name"],
+            "qty": rec["qty"],
+            "packing": rec["packing"],
+            "po_count": len(rec["po_ids"]),
+            "item_count": len(rec["items"]),
+            "design_count": len(rec["designs"]),
+            "active_days": days_n,
+            "avg_daily_qty": round(rec["qty"] / days_n, 2) if days_n else 0.0,
+        })
+    out.sort(key=lambda r: (-r["qty"], r["name"] or r["email"]))
     return out
 
 
 EXPORT_COLUMNS = {
     "operator": [
         ("tanggal", "Tanggal"),
-        ("minggu", "Minggu"),
         ("operator", "Operator"),
+        ("customer", "Outlet / Customer"),
         ("no_po", "No PO"),
-        ("customer", "Customer"),
         ("cup_item", "Cup / Item"),
-        ("line", "Line"),
         ("design_line", "Design / Line"),
-        ("qty_completed", "Qty Completed"),
-        ("target_per_hari", "Target / Hari"),
+        ("qty_completed", "Qty Cetak Selesai"),
+        ("target_per_hari", "Target Harian"),
+        ("achievement", "Achievement"),
     ],
     "helper": [
         ("tanggal", "Tanggal"),
-        ("minggu", "Minggu"),
         ("helper", "Helper"),
+        ("customer", "Outlet / Customer"),
         ("no_po", "No PO"),
-        ("customer", "Customer"),
         ("cup_item", "Cup / Item"),
-        ("line", "Line"),
-        ("qty_prepared", "Qty Prepared"),
-        ("qty_packed", "Qty Packed"),
+        ("qty_prepared", "Qty Persiapan"),
+        ("qty_packed", "Qty Packing"),
     ],
     "screener": [
         ("tanggal", "Tanggal"),
-        ("minggu", "Minggu"),
         ("screener", "Screener"),
+        ("customer", "Outlet / Customer"),
         ("no_po", "No PO"),
-        ("customer", "Customer"),
         ("cup_item", "Cup / Item"),
-        ("line", "Line"),
         ("qty_screener", "Qty Screener"),
     ],
     "design": [
-        ("operator", "Operator"),
-        ("no_po", "No PO"),
-        ("customer", "Customer"),
-        ("cup_item", "Cup / Item"),
-        ("line", "Line"),
-        ("design_identity", "Design Identity"),
-        ("qty_completed", "Qty Completed"),
         ("tanggal", "Tanggal"),
+        ("designer", "Designer"),
+        ("customer", "Outlet / Customer"),
+        ("no_po", "No PO"),
+        ("cup_item", "Cup / Item"),
+        ("design_line", "Design / Line"),
+        ("jumlah_design", "Jumlah Design"),
     ],
 }

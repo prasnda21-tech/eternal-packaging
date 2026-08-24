@@ -7,7 +7,7 @@ import os, logging, uuid, base64, re, secrets, hashlib
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
 from services.accurate import AccurateClient, sync_sales_orders, get_last_list_error
@@ -20,6 +20,7 @@ from permissions import (
 )
 from operator_analytics import (
     build_activity_analytics_pipeline,
+    build_design_analytics_pipeline,
     build_operator_analytics_pipeline,
     compute_operator_detail,
     compute_operator_kpis,
@@ -30,14 +31,17 @@ from operator_analytics import (
 )
 from output_reports import (
     EXPORT_COLUMNS,
-    compute_design_report,
+    compute_designer_report,
     compute_output_series,
     compute_screener_report,
+    export_filename,
     iter_design_export_rows,
     iter_helper_export_rows,
     iter_operator_export_rows,
     iter_screener_export_rows,
     normalize_daily_targets,
+    summarize_people,
+    _export_na,
 )
 from quantity_rules import (
     available_for_packing as _qr_available_for_packing,
@@ -5007,6 +5011,16 @@ async def analytics_operator_kpis(
             if (o.get("po_number") or o.get("id"))
         }),
     }
+    docs = blob.get("docs") or []
+    result["rows"] = iter_operator_export_rows(
+        docs, date_from=start, date_to=end,
+        operator_id=operator_id, customer=customer, item=item, po=po, daily_targets=targets,
+    )
+    result["people"] = summarize_people(
+        result["rows"], id_key="operator_id", name_key="operator", qty_key="qty_completed",
+    )
+    result["kpis"]["operator_count"] = len(result.get("operators") or [])
+    result["kpis"]["po_count"] = result["kpis"].get("total_jobs")
     result["generated_at"] = now_iso()
     result["note"] = (
         "Read-only. Qty selesai = qty yang diselesaikan masing-masing operator "
@@ -5131,6 +5145,20 @@ async def analytics_preparation(
         "items": extra_items,
         "pos": extra_pos,
     }
+    result["rows"] = iter_helper_export_rows(
+        blob.get("docs") or [], date_from=start, date_to=end,
+        user_id=user_id, role=role, customer=customer, item=item, po=po,
+    )
+    result["people"] = summarize_people(
+        result["rows"], id_key="helper_id", name_key="helper", qty_key="qty_prepared",
+    )
+    result["kpis"]["total_qty_packing"] = sum(
+        int(r["qty_packed"]) for r in result["rows"] if r.get("qty_packed") is not None
+    )
+    result["kpis"]["total_qty"] = sum(
+        int(r["qty_prepared"]) for r in result["rows"] if r.get("qty_prepared") is not None
+    )
+    result["kpis"]["item_count"] = len({r.get("cup_item") for r in result["rows"] if r.get("cup_item")})
     result["generated_at"] = now_iso()
     return result
 
@@ -5182,6 +5210,17 @@ async def analytics_screener(
         "items": extra_items,
         "pos": extra_pos,
     }
+    result["rows"] = iter_screener_export_rows(
+        blob.get("docs") or [], date_from=start, date_to=end,
+        user_id=user_id, role=role, customer=customer, item=item, po=po,
+    )
+    result["people"] = summarize_people(
+        result["rows"], id_key="screener_id", name_key="screener", qty_key="qty_screener",
+    )
+    result["kpis"]["item_count"] = len({r.get("cup_item") for r in result["rows"] if r.get("cup_item")})
+    result["kpis"]["total_qty"] = sum(
+        int(r["qty_screener"]) for r in result["rows"] if r.get("qty_screener") is not None
+    )
     result["generated_at"] = now_iso()
     return result
 
@@ -5192,35 +5231,59 @@ async def analytics_designs(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     operator_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
     po: Optional[str] = None,
     user=Depends(require_perm("schedule.view")),
 ):
-    """Distinct Design / Line Cetak with actual operator completed print qty."""
+    """Designer report from design_files.uploaded_by. Distinct printable line = 1 design."""
     start, end, preset = resolve_period(period, date_from, date_to)
-    pipeline = build_operator_analytics_pipeline(operator_id, customer, item, po)
+    who = user_id or operator_id
+    pipeline = build_design_analytics_pipeline(customer, item, po)
     facet_rows = await db.orders.aggregate(pipeline).to_list(1)
     blob = facet_rows[0] if facet_rows else {}
-    result = compute_design_report(
+    result = compute_designer_report(
         blob.get("docs") or [],
         date_from=start,
         date_to=end,
-        operator_id=operator_id,
+        user_id=who,
         customer=customer,
         item=item,
         po=po,
     )
     result["period"]["preset"] = preset
+    extra_customers = [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")]
+    extra_items = [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")]
+    extra_pos = [x.get("_id") for x in (blob.get("pos") or []) if x.get("_id")]
+    result["filters"] = {
+        **(result.get("filters") or {}),
+        "customers": extra_customers,
+        "items": extra_items,
+        "pos": extra_pos,
+    }
+    result["people"] = [
+        {
+            "id": p.get("email"),
+            "email": p.get("email"),
+            "name": p.get("name"),
+            "qty": p.get("design_count") or 0,
+            "po_count": p.get("po_count") or 0,
+            "item_count": p.get("item_count") or 0,
+            "design_count": p.get("design_count") or 0,
+        }
+        for p in (result.get("designers") or [])
+    ]
     result["generated_at"] = now_iso()
     return result
 
 
-def _analytics_export_bytes(tab: str, rows: List[dict], fmt: str) -> Tuple[bytes, str, str]:
+def _analytics_export_bytes(tab: str, rows: List[dict], fmt: str, date_from=None, date_to=None) -> Tuple[bytes, str, str]:
     cols = EXPORT_COLUMNS.get(tab) or EXPORT_COLUMNS["operator"]
     keys = [c[0] for c in cols]
     headers = [c[1] for c in cols]
     fmt = (fmt or "csv").strip().lower()
+    filename = export_filename(tab, date_from or date.today(), date_to or date.today(), fmt)
     if fmt == "xlsx":
         from io import BytesIO
         from openpyxl import Workbook
@@ -5229,10 +5292,10 @@ def _analytics_export_bytes(tab: str, rows: List[dict], fmt: str) -> Tuple[bytes
         ws.title = tab[:31] or "export"
         ws.append(headers)
         for row in rows:
-            ws.append([row.get(k, "") for k in keys])
+            ws.append([_export_na(row.get(k, "")) for k in keys])
         buf = BytesIO()
         wb.save(buf)
-        return buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"analitik-output-{tab}.xlsx"
+        return buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename
     import csv
     from io import StringIO
     buf = StringIO()
@@ -5240,8 +5303,8 @@ def _analytics_export_bytes(tab: str, rows: List[dict], fmt: str) -> Tuple[bytes
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(headers)
     for row in rows:
-        writer.writerow([row.get(k, "") for k in keys])
-    return buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8", f"analitik-output-{tab}.csv"
+        writer.writerow([_export_na(row.get(k, "")) for k in keys])
+    return buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8", filename
 
 
 @api_router.get("/analytics/output/export")
@@ -5288,13 +5351,13 @@ async def analytics_output_export(
             user_id=who, role=role, customer=customer, item=item, po=po,
         )
     else:
-        pipeline = build_operator_analytics_pipeline(who, customer, item, po)
+        pipeline = build_design_analytics_pipeline(customer, item, po)
         blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
         rows = iter_design_export_rows(
             blob.get("docs") or [], date_from=start, date_to=end,
-            operator_id=who, customer=customer, item=item, po=po,
+            operator_id=who, user_id=who, customer=customer, item=item, po=po,
         )
-    payload, media, filename = _analytics_export_bytes(key, rows, fmt)
+    payload, media, filename = _analytics_export_bytes(key, rows, fmt, start, end)
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return FastAPIResponse(content=payload, media_type=media, headers=headers)
 
