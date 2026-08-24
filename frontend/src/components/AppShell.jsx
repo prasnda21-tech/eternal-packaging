@@ -1,16 +1,21 @@
-import { Download, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, Table } from "lucide-react";
-import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { BarChart3, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table, Warehouse } from "lucide-react";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import BrandMark from "./BrandMark";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "schedule.edit"];
+const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
 
 export default function AppShell() {
   const { user, hasPerm, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const importActive = location.pathname.startsWith("/admin/import");
+  const reportsActive = location.pathname.startsWith("/laporan");
+  const [salesOpen, setSalesOpen] = useState(true);
+  const [reportsOpen, setReportsOpen] = useState(true);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -30,12 +35,18 @@ export default function AppShell() {
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
+  useEffect(() => {
+    if (importActive) setSalesOpen(true);
+  }, [importActive]);
+
+  useEffect(() => {
+    if (reportsActive) setReportsOpen(true);
+  }, [reportsActive]);
+
   const doLogout = async () => {
     await logout();
     navigate("/login");
   };
-
-  const canOpenSettings = SETTINGS_PERMS.some((p) => hasPerm(p));
 
   const healthLabel = health.ok === true
     ? "Operasional · MongoDB Terhubung"
@@ -62,29 +73,63 @@ export default function AppShell() {
           <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav">
-          <NavLink to="/" end className={({ isActive }) => "top-nav-link" + (isActive ? " active" : "")} data-testid="top-nav-jobs">
-            <Package size={16} /> Pekerjaan
-          </NavLink>
           {hasPerm("dashboard.production.view") && (
-            <NavLink to="/dashboard" className={({ isActive }) => "top-nav-link" + (isActive ? " active" : "")} data-testid="top-nav-dashboard">
+            <NavLink to="/dashboard" end className={navClass} data-testid="top-nav-dashboard">
               <LayoutDashboard size={16} /> Dashboard
             </NavLink>
           )}
+          <div className="nav-group">
+            <button
+              type="button"
+              className={"top-nav-link nav-group-toggle" + (importActive ? " parent-open" : "")}
+              aria-expanded={salesOpen}
+              onClick={() => setSalesOpen((open) => !open)}
+              data-testid="top-nav-sales"
+            >
+              <ShoppingCart size={16} /> Penjualan
+              <ChevronDown size={14} className="nav-chevron" />
+            </button>
+            {salesOpen && (
+              <div className="nav-sub">
+                <NavLink to="/admin/import" className={navClass} data-testid="top-nav-import">
+                  <Download size={16} /> Import PO
+                </NavLink>
+              </div>
+            )}
+          </div>
           {hasPerm("schedule.view") && (
-            <NavLink to="/produksi" className={({ isActive }) => "top-nav-link" + (isActive ? " active" : "")} data-testid="top-nav-produksi">
+            <NavLink to="/produksi" end className={navClass} data-testid="top-nav-produksi">
               <Table size={16} /> Jadwal Produksi
             </NavLink>
           )}
-          {hasPerm("po.import.view") && (
-            <NavLink to="/admin/import" className={({ isActive }) => "top-nav-link" + (isActive ? " active" : "")} data-testid="top-nav-import">
-              <Download size={16} /> Import PO
-            </NavLink>
-          )}
-          {canOpenSettings && (
-            <NavLink to="/settings" className={({ isActive }) => "top-nav-link" + (isActive ? " active" : "")} data-testid="top-nav-settings">
-              <SettingsIcon size={16} /> Pengaturan
-            </NavLink>
-          )}
+          <NavLink to="/pembelian" className={navClass} data-testid="top-nav-pembelian">
+            <ShoppingBag size={16} /> Pembelian
+          </NavLink>
+          <NavLink to="/persediaan" className={navClass} data-testid="top-nav-persediaan">
+            <Warehouse size={16} /> Persediaan
+          </NavLink>
+          <div className="nav-group">
+            <button
+              type="button"
+              className={"top-nav-link nav-group-toggle" + (reportsActive ? " parent-open" : "")}
+              aria-expanded={reportsOpen}
+              onClick={() => setReportsOpen((open) => !open)}
+              data-testid="top-nav-laporan"
+            >
+              <BarChart3 size={16} /> Laporan
+              <ChevronDown size={14} className="nav-chevron" />
+            </button>
+            {reportsOpen && (
+              <div className="nav-sub">
+                <NavLink to="/laporan/analitik-output" className={navClass} data-testid="top-nav-analitik-output">
+                  <FileBarChart size={16} /> Analitik Output
+                </NavLink>
+              </div>
+            )}
+          </div>
+          <NavLink to="/settings" className={navClass} data-testid="top-nav-settings">
+            <SettingsIcon size={16} /> Pengaturan
+          </NavLink>
         </nav>
       </aside>
       <div className="app-main">

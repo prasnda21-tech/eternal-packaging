@@ -5,7 +5,6 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import useAutoRefresh from "../lib/useAutoRefresh";
-import OperatorAnalyticsPanel from "../components/OperatorAnalyticsPanel";
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
@@ -46,7 +45,6 @@ const TABLE_COLS = [
 export default function ProductionSchedule() {
   const { hasPerm } = useAuth();
   const canExport = hasPerm("dashboard.production.export");
-  const [pageTab, setPageTab] = useState("jadwal"); // 'jadwal' | 'analitik'
   const [mode, setMode] = useState("tabel"); // 'kartu' | 'tabel'
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -183,44 +181,15 @@ export default function ProductionSchedule() {
             )}
           </p>
         </div>
-        {pageTab === "jadwal" && (
-          <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
-            <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
-              <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
-            </button>
-            <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
-            <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
-          </div>
-        )}
+        <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
+          <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
+            <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
+          </button>
+          <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
+          <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
+        </div>
       </div>
 
-      <div className="prod-section-tabs" role="tablist" data-testid="prod-section-tabs">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={pageTab === "jadwal"}
-          className={pageTab === "jadwal" ? "active" : ""}
-          onClick={() => setPageTab("jadwal")}
-          data-testid="prod-tab-jadwal"
-        >
-          Jadwal Produksi
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={pageTab === "analitik"}
-          className={pageTab === "analitik" ? "active" : ""}
-          onClick={() => setPageTab("analitik")}
-          data-testid="prod-tab-analitik"
-        >
-          Analitik Output
-        </button>
-      </div>
-
-      {pageTab === "analitik" ? (
-        <OperatorAnalyticsPanel />
-      ) : (
-      <>
       <section className="prod-filters" data-testid="prod-filters">
         <div className="prod-filter-row">
           <span className="prod-filter-kicker">Cari &amp; status</span>
@@ -449,8 +418,6 @@ export default function ProductionSchedule() {
       <p className="muted small" style={{marginTop:12}}>
         <AlertCircle size={12} style={{verticalAlign:"-2px"}}/> Semua data diambil dari MongoDB real-time. Export Excel adalah satu arah — tidak mengubah data.
       </p>
-      </>
-      )}
     </div>
   );
 }

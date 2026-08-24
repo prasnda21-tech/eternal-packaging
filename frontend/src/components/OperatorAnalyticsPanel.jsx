@@ -393,7 +393,7 @@ export default function OperatorAnalyticsPanel() {
     <section className="op-an" data-testid="operator-analytics-panel">
       <div className="op-an-head">
         <div>
-          <p className="eyebrow">Jadwal Produksi · Laporan Produksi</p>
+          <p className="eyebrow">Laporan · Analitik Output</p>
           <h2 data-testid="op-an-title">Analitik Output</h2>
         </div>
         <div className="op-an-head-actions">
