@@ -15,10 +15,13 @@ from services.accurate import (
     AccurateClient,
     _MOCK_ITEMS,
     _MOCK_SALES_ORDERS,
+    _ITEM_DETAIL_CONCURRENCY,
     _extract_accurate_item_id,
     _normalize_accurate_so,
     get_last_list_error,
+    item_list_row_incomplete,
     log_master_items_sync_failure,
+    merge_accurate_item_row,
     normalize_accurate_item,
     sanitize_accurate_error,
 )
@@ -224,6 +227,43 @@ def test_normalize_does_not_invent_price_or_stock():
     assert n["item_type"] is None
 
 
+def test_normalize_id_only_list_row_leaves_metadata_none():
+    n = normalize_accurate_item({"id": 5700})
+    assert n["accurate_item_id"] == "5700"
+    assert n["item_code"] is None
+    assert n["item_name"] is None
+    assert n["unit"] is None
+    assert n["item_type"] is None
+    assert n["is_active"] is None
+    assert n["item_name"] != "5700"
+
+
+def test_normalize_unit1_nested_name():
+    n = normalize_accurate_item({
+        "id": 5700,
+        "no": "PC-12",
+        "name": "Paper cup 12oz",
+        "itemType": "INVENTORY",
+        "unit1": {"id": 9, "name": "pcs"},
+        "suspended": False,
+    })
+    assert n["unit"] == "pcs"
+    assert n["item_type"] == "INVENTORY"
+    assert n["is_active"] is True
+
+
+def test_item_list_row_incomplete_and_merge():
+    incomplete = normalize_accurate_item({"id": 5700})
+    assert item_list_row_incomplete(incomplete) is True
+    complete = normalize_accurate_item(_raw(5700, name="Cup", code="PC-12"))
+    assert item_list_row_incomplete(complete) is False
+    merged = merge_accurate_item_row(incomplete, complete)
+    assert merged["accurate_item_id"] == "5700"
+    assert merged["item_name"] == "Cup"
+    assert merged["item_code"] == "PC-12"
+    assert merge_accurate_item_row(complete, None)["item_name"] == "Cup"
+
+
 def test_normalize_suspended_to_is_active():
     assert normalize_accurate_item({"id": 1, "name": "A", "suspended": True})["is_active"] is False
     assert normalize_accurate_item({"id": 1, "name": "A", "suspended": False})["is_active"] is True
@@ -287,6 +327,33 @@ def test_name_change_updates_same_record():
     assert r2["unchanged"] == 1
     doc2 = _await(db.master_items.find_one({"accurate_item_id": "101"}))
     assert doc2["id"] == first_id
+
+
+def test_existing_incomplete_row_enriched_same_id():
+    db = FakeDB()
+    _await(upsert_master_item(db, {
+        "accurate_item_id": "5700",
+        "item_code": None,
+        "item_name": None,
+        "item_type": None,
+        "unit": None,
+        "is_active": None,
+    }))
+    assert _await(db.master_items.count_documents({})) == 1
+    before = _await(db.master_items.find_one({"accurate_item_id": "5700"}))
+    r = _await(sync_master_items(db, FakeAccurate([
+        _raw(5700, name="Paper cup 12oz", code="PC-12", unit="pcs"),
+    ])))
+    assert r["created"] == 0
+    assert r["updated"] == 1
+    assert r["failed"] == 0
+    assert _await(db.master_items.count_documents({})) == 1
+    doc = _await(db.master_items.find_one({"accurate_item_id": "5700"}))
+    assert doc["id"] == before["id"]
+    assert doc["accurate_item_id"] == "5700"
+    assert doc["item_name"] == "Paper cup 12oz"
+    assert doc["item_code"] == "PC-12"
+    assert doc["unit"] == "pcs"
 
 
 def test_same_name_different_id_two_records():
@@ -531,6 +598,10 @@ def _live_client(monkeypatch, client_cls=_CapturingAsyncClient):
     client_cls.captured = []
     if hasattr(client_cls, "created"):
         client_cls.created = 0
+    if hasattr(client_cls, "inflight"):
+        client_cls.inflight = 0
+    if hasattr(client_cls, "max_inflight"):
+        client_cls.max_inflight = 0
     monkeypatch.setattr(acc.httpx, "AsyncClient", client_cls)
 
     async def _nosleep(_s):
@@ -722,6 +793,7 @@ def test_fetch_all_items_reuses_session_and_http_client(monkeypatch):
     assert pages == [1, 2, 3]
     assert all("fields" not in r["params"] for r in _CapturingAsyncClient.captured)
     assert len(c.signed_header_calls) == 3
+    assert all("item/detail.do" not in r["url"] for r in _CapturingAsyncClient.captured)
 
 
 def test_fetch_all_items_paginates_three_pages(monkeypatch):
@@ -777,6 +849,183 @@ def test_connect_timeout_exhausted_does_not_truncate(monkeypatch, caplog):
     assert err.get("exception") == "ConnectTimeout"
     assert "unit-test-token" not in caplog.text
     assert "unit-test-secret" not in caplog.text
+
+
+class _IdOnlyListDetailClient(_CapturingAsyncClient):
+    """item/list.do returns ids only (production default without `fields`)."""
+
+    created = 0
+    inflight = 0
+    max_inflight = 0
+    details = {}
+
+    def __init__(self, *args, **kwargs):
+        _IdOnlyListDetailClient.created += 1
+
+    async def get(self, url, headers=None, params=None):
+        rec = {
+            "url": url,
+            "params": dict(params or {}),
+            "header_names": sorted((headers or {}).keys()),
+            "timestamp": (headers or {}).get("X-Api-Timestamp"),
+        }
+        _CapturingAsyncClient.captured.append(rec)
+        assert "fields" not in rec["params"]
+        if url.endswith("/item/list.do"):
+            page = int(rec["params"].get("sp.page") or 1)
+            ids = list(_IdOnlyListDetailClient.details.keys())
+            return _FakeHTTPResponse(200, {
+                "s": True,
+                "d": [{"id": int(i)} for i in ids],
+                "sp": {"page": page, "pageSize": 100, "pageCount": 1, "rowCount": len(ids)},
+            })
+        if url.endswith("/item/detail.do"):
+            _IdOnlyListDetailClient.inflight += 1
+            try:
+                _IdOnlyListDetailClient.max_inflight = max(
+                    _IdOnlyListDetailClient.max_inflight,
+                    _IdOnlyListDetailClient.inflight,
+                )
+                await asyncio.sleep(0.02)
+                oid = str((params or {}).get("id"))
+                raw = _IdOnlyListDetailClient.details.get(oid)
+                if not raw:
+                    return _FakeHTTPResponse(404, {"s": False, "d": ["not found"]})
+                return _FakeHTTPResponse(200, {"s": True, "d": raw})
+            finally:
+                _IdOnlyListDetailClient.inflight -= 1
+        raise AssertionError(f"unexpected Accurate URL {url}")
+
+
+class _MixedListDetailClient(_IdOnlyListDetailClient):
+    created = 0
+    inflight = 0
+    max_inflight = 0
+
+    def __init__(self, *args, **kwargs):
+        _MixedListDetailClient.created += 1
+
+    async def get(self, url, headers=None, params=None):
+        rec = {
+            "url": url,
+            "params": dict(params or {}),
+            "header_names": sorted((headers or {}).keys()),
+            "timestamp": (headers or {}).get("X-Api-Timestamp"),
+        }
+        _CapturingAsyncClient.captured.append(rec)
+        assert "fields" not in rec["params"]
+        if url.endswith("/item/list.do"):
+            return _FakeHTTPResponse(200, {
+                "s": True,
+                "d": [
+                    {"id": 5700},
+                    {"id": 101, "no": "PC-12", "name": "Paper cup 12oz", "unit1Name": "pcs"},
+                ],
+                "sp": {"page": 1, "pageSize": 100, "pageCount": 1, "rowCount": 2},
+            })
+        if url.endswith("/item/detail.do"):
+            _MixedListDetailClient.inflight += 1
+            try:
+                _MixedListDetailClient.max_inflight = max(
+                    _MixedListDetailClient.max_inflight,
+                    _MixedListDetailClient.inflight,
+                )
+                oid = str((params or {}).get("id"))
+                assert oid != "101", "complete list row must not fetch detail"
+                raw = {
+                    "id": 5700,
+                    "no": "PC-OLD",
+                    "name": "Paper cup 12oz (detail)",
+                    "itemType": "INVENTORY",
+                    "unit1Name": "pcs",
+                    "suspended": False,
+                }
+                return _FakeHTTPResponse(200, {"s": True, "d": raw})
+            finally:
+                _MixedListDetailClient.inflight -= 1
+        raise AssertionError(f"unexpected Accurate URL {url}")
+
+
+def test_incomplete_list_enriches_from_detail_same_session(monkeypatch):
+    details = {}
+    for i in range(5700, 5708):
+        details[str(i)] = {
+            "id": i,
+            "no": f"SKU-{i}",
+            "name": f"Item {i}",
+            "itemType": "INVENTORY",
+            "unit1Name": "pcs",
+            "suspended": False,
+        }
+    _IdOnlyListDetailClient.details = details
+    c = _live_client(monkeypatch, client_cls=_IdOnlyListDetailClient)
+    db = FakeDB()
+    result = _await(sync_master_items(db, c))
+    assert result["created"] == 8
+    assert result["failed"] == 0
+    assert _await(db.master_items.count_documents({})) == 8
+    doc = _await(db.master_items.find_one({"accurate_item_id": "5700"}))
+    assert doc["item_code"] == "SKU-5700"
+    assert doc["item_name"] == "Item 5700"
+    assert doc["unit"] == "pcs"
+    assert doc["item_type"] == "INVENTORY"
+    assert doc["is_active"] is True
+    urls = [r["url"] for r in _CapturingAsyncClient.captured]
+    assert urls[0].endswith("/item/list.do")
+    assert urls[0].count("/accurate/api") == 1
+    assert sum(1 for u in urls if u.endswith("/item/list.do")) == 1
+    assert sum(1 for u in urls if u.endswith("/item/detail.do")) == 8
+    assert all("fields" not in r["params"] for r in _CapturingAsyncClient.captured)
+    assert len(c.open_db_calls) == 1
+    assert len(c.token_calls) == 1
+    assert _IdOnlyListDetailClient.created == 1
+    assert _IdOnlyListDetailClient.max_inflight <= _ITEM_DETAIL_CONCURRENCY
+    assert _IdOnlyListDetailClient.max_inflight >= 1
+    assert len(c.signed_header_calls) == 1 + 8
+    assert len({d["accurate_item_id"] for d in db.master_items.docs}) == 8
+
+
+def test_complete_list_row_skips_detail_fetch(monkeypatch):
+    c = _live_client(monkeypatch, client_cls=_MixedListDetailClient)
+    rows = _await(c.fetch_all_items())
+    by_id = {r["accurate_item_id"]: r for r in rows}
+    assert by_id["5700"]["item_name"] == "Paper cup 12oz (detail)"
+    assert by_id["5700"]["item_code"] == "PC-OLD"
+    assert by_id["5700"]["unit"] == "pcs"
+    assert by_id["101"]["item_name"] == "Paper cup 12oz"
+    assert by_id["101"]["item_code"] == "PC-12"
+    detail_ids = [
+        str(r["params"].get("id"))
+        for r in _CapturingAsyncClient.captured
+        if r["url"].endswith("/item/detail.do")
+    ]
+    assert detail_ids == ["5700"]
+    assert len(c.open_db_calls) == 1
+    assert _MixedListDetailClient.created == 1
+
+
+def test_detail_enrichment_updates_existing_incomplete_mongo_row(monkeypatch):
+    db = FakeDB()
+    _await(upsert_master_item(db, {"accurate_item_id": "5700"}))
+    _IdOnlyListDetailClient.details = {
+        "5700": {
+            "id": 5700,
+            "no": "PC-12",
+            "name": "Paper cup 12oz",
+            "itemType": "INVENTORY",
+            "unit1Name": "pcs",
+            "suspended": False,
+        },
+    }
+    c = _live_client(monkeypatch, client_cls=_IdOnlyListDetailClient)
+    result = _await(sync_master_items(db, c))
+    assert result["created"] == 0
+    assert result["updated"] == 1
+    assert _await(db.master_items.count_documents({})) == 1
+    doc = _await(db.master_items.find_one({"accurate_item_id": "5700"}))
+    assert doc["item_name"] == "Paper cup 12oz"
+    assert doc["item_code"] == "PC-12"
+    assert doc["unit"] == "pcs"
 
 
 # ---------- RBAC ----------

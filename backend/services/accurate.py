@@ -39,6 +39,7 @@ _ITEM_LIST_MAX_ATTEMPTS = 2
 _ITEM_LIST_RETRY_WAIT_S = 0.4
 _ITEM_LIST_MAX_PAGES = 200
 _ITEM_LIST_RETRYABLE = (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError)
+_ITEM_DETAIL_CONCURRENCY = 4
 
 
 def now_iso() -> str:
@@ -385,28 +386,17 @@ class AccurateClient:
                 if str(raw.get("id")) == item_id:
                     return normalize_accurate_item(raw)
             return None
-        host, headers = await self._live_session()
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-            r = await client.get(
-                f"{host}/accurate/api/item/detail.do",
-                headers=headers,
-                params={"id": item_id},
+        token = await self._obtain_token()
+        host, session = await self._open_db(token)
+        async with httpx.AsyncClient(timeout=_ITEM_HTTP_TIMEOUT, follow_redirects=True) as client:
+            return await self._fetch_item_detail_live(
+                client,
+                token=token,
+                host=host,
+                session=session,
+                item_id=item_id,
+                raise_on_error=True,
             )
-        if r.status_code == 404:
-            return None
-        if r.is_error:
-            raise RuntimeError(f"Accurate item fetch failed ({r.status_code})")
-        payload = r.json()
-        if payload.get("s") is False:
-            raise RuntimeError("Accurate item fetch returned failure")
-        d = payload.get("d") if isinstance(payload.get("d"), dict) else None
-        if d is None:
-            d = payload.get("data") if isinstance(payload.get("data"), dict) else None
-        if d is None:
-            d = payload.get("r") if isinstance(payload.get("r"), dict) else None
-        if d is None:
-            return None
-        return normalize_accurate_item(d)
 
     async def list_items(
         self,
@@ -602,7 +592,7 @@ class AccurateClient:
                 if page >= page_count or not rows:
                     break
                 page += 1
-            return all_rows
+            return await self._enrich_incomplete_item_rows(all_rows)
 
         token = await self._obtain_token()
         host, session = await self._open_db(token)
@@ -619,7 +609,125 @@ class AccurateClient:
                 if page >= page_count or not rows:
                     break
                 page += 1
+            all_rows = await self._enrich_incomplete_item_rows(
+                all_rows, http=http, token=token, host=host, session=session,
+            )
         return all_rows
+
+    async def _fetch_item_detail_live(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        token: str,
+        host: str,
+        session: str,
+        item_id: str,
+        raise_on_error: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """GET item/detail.do on an existing session/http client. Fresh signed headers per try."""
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, _ITEM_LIST_MAX_ATTEMPTS + 1):
+            headers = self._request_headers(token, session)
+            try:
+                r = await http.get(
+                    f"{host}/accurate/api/item/detail.do",
+                    headers=headers,
+                    params={"id": item_id},
+                )
+            except _ITEM_LIST_RETRYABLE as e:
+                last_exc = e
+                if attempt < _ITEM_LIST_MAX_ATTEMPTS:
+                    await asyncio.sleep(_ITEM_LIST_RETRY_WAIT_S)
+                    continue
+                if raise_on_error:
+                    raise RuntimeError("Accurate item fetch timeout") from e
+                return None
+            except httpx.HTTPError as e:
+                if raise_on_error:
+                    raise RuntimeError("Accurate item fetch request failed") from e
+                return None
+            if r.status_code == 404:
+                return None
+            if r.is_error:
+                if raise_on_error:
+                    raise RuntimeError(f"Accurate item fetch failed ({r.status_code})")
+                return None
+            try:
+                payload = r.json()
+            except Exception as e:
+                if raise_on_error:
+                    raise RuntimeError(
+                        f"Accurate item fetch invalid response ({r.status_code})"
+                    ) from e
+                return None
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("s") is False:
+                if raise_on_error:
+                    raise RuntimeError("Accurate item fetch returned failure")
+                return None
+            d = _item_detail_body(payload)
+            if d is None:
+                return None
+            return normalize_accurate_item(d)
+        if raise_on_error:
+            raise RuntimeError("Accurate item fetch timeout") from last_exc
+        return None
+
+    async def _enrich_incomplete_item_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        http: Optional[httpx.AsyncClient] = None,
+        token: str = "",
+        host: str = "",
+        session: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Fill missing code/name from item/detail.do. Skip rows that already have both.
+
+        Live path reuses the sync http client + token/host. Concurrency is chunked
+        to _ITEM_DETAIL_CONCURRENCY — never one unbounded gather of the whole set.
+        """
+        if not rows:
+            return rows
+        incomplete = [r for r in rows if item_list_row_incomplete(r)]
+        if not incomplete:
+            return rows
+
+        async def _one(row: Dict[str, Any]) -> Dict[str, Any]:
+            aid = str(row.get("accurate_item_id") or "").strip()
+            try:
+                if http is None:
+                    detail = await self.fetch_item_detail(aid)
+                else:
+                    detail = await self._fetch_item_detail_live(
+                        http,
+                        token=token,
+                        host=host,
+                        session=session,
+                        item_id=aid,
+                        raise_on_error=False,
+                    )
+            except Exception:
+                return row
+            return merge_accurate_item_row(row, detail)
+
+        enriched_by_id: Dict[str, Dict[str, Any]] = {}
+        for i in range(0, len(incomplete), _ITEM_DETAIL_CONCURRENCY):
+            chunk = incomplete[i:i + _ITEM_DETAIL_CONCURRENCY]
+            parts = await asyncio.gather(*[_one(r) for r in chunk], return_exceptions=True)
+            for row, part in zip(chunk, parts):
+                aid = str(row.get("accurate_item_id") or "")
+                if isinstance(part, Exception) or not isinstance(part, dict):
+                    enriched_by_id[aid] = row
+                else:
+                    enriched_by_id[aid] = part
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            aid = str(row.get("accurate_item_id") or "")
+            out.append(enriched_by_id.get(aid, row) if aid in enriched_by_id else row)
+        return out
 
 
 def sanitize_accurate_error(client: AccurateClient, msg: str) -> str:
@@ -700,11 +808,74 @@ def _extract_accurate_item_id(li: Dict[str, Any], item: Any) -> Optional[str]:
     return str(raw)
 
 
+def _blank_to_none(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
+def _item_detail_body(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    d = payload.get("d") if isinstance(payload.get("d"), dict) else None
+    if d is None:
+        d = payload.get("data") if isinstance(payload.get("data"), dict) else None
+    if d is None:
+        d = payload.get("r") if isinstance(payload.get("r"), dict) else None
+    return d if isinstance(d, dict) else None
+
+
+def _extract_item_unit(raw: Dict[str, Any]) -> Optional[str]:
+    """Unit from Accurate item list/detail. Only documented Accurate keys."""
+    for key in ("unit1Name", "itemUnitName", "unitName"):
+        unit = _blank_to_none(raw.get(key))
+        if unit:
+            return unit
+    for key in ("unit1", "itemUnit"):
+        nested = raw.get(key)
+        if isinstance(nested, dict):
+            unit = _blank_to_none(nested.get("name") or nested.get("unitName"))
+            if unit:
+                return unit
+    return None
+
+
+def item_list_row_incomplete(row: Optional[Dict[str, Any]]) -> bool:
+    """True when list.do left code or name empty — those live on item/detail.do."""
+    if not isinstance(row, dict):
+        return False
+    if not str(row.get("accurate_item_id") or "").strip():
+        return False
+    name = str(row.get("item_name") or "").strip()
+    code = str(row.get("item_code") or "").strip()
+    return not name or not code
+
+
+def merge_accurate_item_row(
+    base: Dict[str, Any],
+    detail: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Overlay detail fields onto a list row. Never invent values. Never use id as name."""
+    if not isinstance(detail, dict):
+        return base
+    out = dict(base)
+    for key in ("item_code", "item_name", "item_type", "unit", "accurate_updated_at"):
+        val = detail.get(key)
+        if val is None or val == "":
+            continue
+        out[key] = val
+    if detail.get("is_active") is not None:
+        out["is_active"] = detail["is_active"]
+    return out
+
+
 def normalize_accurate_item(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Coerce an Accurate item/list or item/detail row into Master Item shape.
 
-    Only maps fields Accurate actually returns. Missing optional fields stay None
-    — we do not invent harga, stok, barcode, kategori, or satuan.
+    Official item/list.do example uses fields=id,name,no. This tenant rejects
+    custom `fields` (HTTP 400), so default list rows may only contain `id`.
+    item/detail.do returns no/name/itemType and unit1Name when present.
+    Missing optional fields stay None — we do not invent harga, stok, barcode,
+    kategori, or satuan, and we never use Accurate id as the name.
     Identity is always `accurate_item_id` (Accurate `id`).
     """
     if not isinstance(raw, dict):
@@ -712,8 +883,8 @@ def normalize_accurate_item(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     item_id = raw.get("id")
     if item_id is None or str(item_id).strip() == "":
         return None
-    item_type = raw.get("itemType") or raw.get("item_type")
-    unit = raw.get("unit1Name") or raw.get("itemUnitName") or raw.get("unitName")
+    item_type = _blank_to_none(raw.get("itemType") or raw.get("item_type"))
+    unit = _extract_item_unit(raw)
     suspended = raw.get("suspended")
     inactive = raw.get("inactive")
     is_active: Optional[bool] = None
@@ -722,14 +893,17 @@ def normalize_accurate_item(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     elif isinstance(inactive, bool):
         is_active = not inactive
     accurate_updated = raw.get("lastUpdate") or raw.get("lastUpdated") or None
-    name = raw.get("name") or raw.get("itemName") or ""
-    code = raw.get("no") or raw.get("itemNo") or None
+    name = _blank_to_none(raw.get("name") if raw.get("name") not in (None, "") else raw.get("itemName"))
+    code = raw.get("no")
+    if code in (None, ""):
+        code = raw.get("itemNo")
+    code = _blank_to_none(code)
     return {
         "accurate_item_id": str(item_id),
-        "item_code": str(code).strip() if code not in (None, "") else None,
-        "item_name": str(name).strip() if name is not None else "",
-        "item_type": str(item_type).strip() if item_type not in (None, "") else None,
-        "unit": str(unit).strip() if unit not in (None, "") else None,
+        "item_code": code,
+        "item_name": name,
+        "item_type": item_type,
+        "unit": unit,
         "is_active": is_active,
         "accurate_updated_at": str(accurate_updated) if accurate_updated else None,
     }
