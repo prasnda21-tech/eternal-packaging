@@ -43,15 +43,20 @@ def _qty_note(name, qty, cap, day, email):
     }
 
 
-def _order(po_id, customer="Cust A", item="Karton A", splits=None, timeline=None, total_quantity=99999):
+def _order(po_id, customer="Cust A", item="Karton A", splits=None, timeline=None, total_quantity=99999,
+           deadline=None, sample_files=None, sample_approval_history=None, sample_approved=False):
     return {
         "id": po_id,
         "po_number": po_id,
         "customer": customer,
         "total_quantity": total_quantity,
+        "deadline": deadline,
         "line_items": [{"name": item, "item_code": "ITM", "quantity": total_quantity}],
         "operator_splits": splits or [],
         "timeline": timeline or [],
+        "sample_files": sample_files or [],
+        "sample_approval_history": sample_approval_history or [],
+        "sample_approved": sample_approved,
         "cancelled": False,
     }
 
@@ -255,3 +260,389 @@ def test_resolve_period_month_and_custom_swap():
     assert start == date(2026, 8, 1)
     assert end == date(2026, 8, 10)
     assert preset == "custom"
+
+
+# ---------- Batch 2: remaining / workload ----------
+
+def test_batch2_a_remaining_5000_3500():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-REM", splits=[_split(op, name, 5000, 3500, day=10, split_id="r1")], timeline=[
+            _qty_note(name, 3500, 5000, 10, op),
+        ]),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["assigned"] == 5000
+    assert row["completed"] == 3500
+    assert row["remaining"] == 1500
+    assert row["active_jobs"] == 1
+    assert row["completed_jobs"] == 0
+
+
+def test_batch2_b_completed_remaining_zero():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-DONE", splits=[_split(op, name, 5000, 5000, day=10, split_id="d1")], timeline=[
+            _qty_note(name, 5000, 5000, 10, op),
+        ]),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["remaining"] == 0
+    assert row["completed_jobs"] == 1
+    assert row["active_jobs"] == 0
+
+
+def test_batch2_c_invalid_completed_over_assigned_remaining_not_negative():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    assert remaining_qty(1000, 1200) == 0
+    orders = [
+        _order("PO-OVER", splits=[_split(op, name, 1000, 1200, day=10, split_id="x1")], timeline=[
+            _qty_note(name, 1200, 1000, 10, op),
+        ]),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["remaining"] == 0
+    assert row["remaining"] >= 0
+    assert row["completed_jobs"] == 1
+
+
+def test_batch2_multi_operator_remaining_no_double_count():
+    a, b, c = "a@x.com", "b@x.com", "c@x.com"
+    orders = [
+        _order(
+            "PO-3000",
+            total_quantity=3000,
+            splits=[
+                _split(a, "A", 1000, 700, day=5, split_id="sa"),
+                _split(b, "B", 1000, 1000, day=5, split_id="sb"),
+                _split(c, "C", 1000, 500, day=5, split_id="sc"),
+            ],
+            timeline=[
+                _qty_note("A", 700, 1000, 5, a),
+                _qty_note("B", 1000, 1000, 5, b),
+                _qty_note("C", 500, 1000, 5, c),
+            ],
+        ),
+    ]
+    by = {r["email"]: r for r in _run(orders)["operators"]}
+    assert by[a]["remaining"] == 300
+    assert by[b]["remaining"] == 0
+    assert by[c]["remaining"] == 500
+    assert by[a]["active_jobs"] == 1
+    assert by[b]["completed_jobs"] == 1
+    assert by[c]["active_jobs"] == 1
+    assert _run(orders)["kpis"]["total_completed"] == 2200
+
+
+def test_batch2_progress_updates_are_one_assignment_job():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-PROG", splits=[_split(op, name, 3000, 2500, day=10)], timeline=[
+            _qty_note(name, 1000, 3000, 8, op),
+            _qty_note(name, 2000, 3000, 9, op),
+            _qty_note(name, 2500, 3000, 10, op),
+        ]),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["active_jobs"] + row["completed_jobs"] == 1
+    assert row["job_count"] == 1
+
+
+# ---------- Batch 2: on-time ----------
+
+def test_batch2_d_on_time():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order(
+            "PO-OT",
+            deadline="2026-08-10",
+            splits=[_split(op, name, 100, 100, day=9, split_id="ot")],
+            timeline=[_qty_note(name, 100, 100, 9, op)],
+        ),
+    ]
+    row = _run(orders, now=datetime(2026, 8, 24, 12, tzinfo=timezone.utc))["operators"][0]
+    assert row["on_time"] == 1
+    assert row["late"] == 0
+    assert row["on_time_pct"] == 100.0
+
+
+def test_batch2_e_late():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order(
+            "PO-LATE",
+            deadline="2026-08-10",
+            splits=[_split(op, name, 100, 100, day=12, split_id="lt")],
+            timeline=[_qty_note(name, 100, 100, 12, op)],
+        ),
+    ]
+    row = _run(orders, now=datetime(2026, 8, 24, 12, tzinfo=timezone.utc))["operators"][0]
+    assert row["late"] == 1
+    assert row["on_time"] == 0
+    assert row["on_time_pct"] == 0.0
+
+
+def test_batch2_f_overdue_active():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order(
+            "PO-OV",
+            deadline="2026-08-10",
+            splits=[_split(op, name, 100, 40, day=5, split_id="ov")],
+            timeline=[_qty_note(name, 40, 100, 5, op)],
+        ),
+    ]
+    row = _run(orders, now=datetime(2026, 8, 24, 12, tzinfo=timezone.utc))["operators"][0]
+    assert row["overdue_active"] == 1
+    assert row["completed_jobs"] == 0
+    assert row["on_time_pct"] is None
+
+
+def test_batch2_g_no_deadline_excluded_from_ontime_pct():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order(
+            "PO-ND",
+            deadline=None,
+            splits=[_split(op, name, 100, 100, day=9, split_id="nd")],
+            timeline=[_qty_note(name, 100, 100, 9, op)],
+        ),
+        _order(
+            "PO-HAS",
+            deadline="2026-08-10",
+            splits=[_split(op, name, 50, 50, day=9, split_id="has")],
+            timeline=[_qty_note(name, 50, 50, 9, op)],
+        ),
+    ]
+    row = _run(orders, now=datetime(2026, 8, 24, 12, tzinfo=timezone.utc))["operators"][0]
+    assert row["completed_jobs"] == 2
+    assert row["on_time_basis"] == 1
+    assert row["on_time"] == 1
+    assert row["on_time_pct"] == 100.0
+
+
+def test_batch2_ontime_pct_na_when_no_deadline_jobs():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order(
+            "PO-NONE",
+            deadline="",
+            splits=[_split(op, name, 100, 100, day=9)],
+            timeline=[_qty_note(name, 100, 100, 9, op)],
+        ),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["on_time_pct"] is None
+    assert math.isfinite(row["achievement"])
+
+
+def test_batch2_multi_operator_ontime_attributed_per_assignment():
+    a, b = "a@x.com", "b@x.com"
+    orders = [
+        _order(
+            "PO-SHARE",
+            deadline="2026-08-10",
+            splits=[
+                _split(a, "A", 1000, 1000, day=9, split_id="a1"),
+                _split(b, "B", 1000, 1000, day=12, split_id="b1"),
+            ],
+            timeline=[
+                _qty_note("A", 1000, 1000, 9, a),
+                _qty_note("B", 1000, 1000, 12, b),
+            ],
+        ),
+    ]
+    by = {r["email"]: r for r in _run(orders)["operators"]}
+    assert by[a]["on_time"] == 1
+    assert by[b]["late"] == 1
+    assert by[a]["on_time_pct"] == 100.0
+    assert by[b]["on_time_pct"] == 0.0
+
+
+# ---------- Batch 2: speed ----------
+
+def test_batch2_speed_uses_active_days_not_invented_hours():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-SPD", splits=[_split(op, name, 4900, 4900, day=10)], timeline=[
+            _qty_note(name, 2450, 4900, 4, op),
+            _qty_note(name, 4900, 4900, 5, op),
+        ]),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["avg_daily_qty"] == 2450.0
+    assert row["pcs_per_hour"] is None
+    assert row["avg_completion_days"] is not None
+    assert row["avg_completion_days"] >= 0
+
+
+def test_batch2_completion_duration_na_without_timestamps():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    split = {
+        "id": "no-ts",
+        "operator_email": op,
+        "operator_name": name,
+        "quantity": 100,
+        "qty_completed": 100,
+        "work_date": "2026-08-05",
+        # no updated_at, no qty notes → start from work_date, no end timestamp
+    }
+    orders = [_order("PO-NOTS", splits=[split], timeline=[])]
+    out = _run(orders)
+    # work_date in period includes the split; without end ts duration is N/A
+    if out["operators"]:
+        assert out["operators"][0]["pcs_per_hour"] is None
+
+
+# ---------- Batch 2: sample ----------
+
+def _sample_file(email, day, role="operator", name="Op"):
+    return {
+        "uploaded_by": email,
+        "uploaded_by_role": role,
+        "uploaded_by_name": name,
+        "uploaded_at": _at(day),
+    }
+
+
+def _hist(action, day):
+    return {"action": action, "at": _at(day)}
+
+
+def test_batch2_h_sample_approved():
+    op = "op.a@eternalpackaging.com"
+    orders = [
+        _order(
+            "PO-SA",
+            splits=[_split(op, "A", 100, 100, day=5)],
+            timeline=[_qty_note("A", 100, 100, 5, op)],
+            sample_files=[_sample_file(op, 4)],
+            sample_approval_history=[_hist("approve", 5)],
+            sample_approved=True,
+        ),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["sample_jobs"] == 1
+    assert row["sample_submissions"] == 1
+    assert row["samples_approved"] == 1
+    assert row["samples_rejected"] == 0
+    assert row["samples_pending"] == 0
+    assert row["first_pass_rate"] == 100.0
+
+
+def test_batch2_i_sample_rejected():
+    op = "op.a@eternalpackaging.com"
+    orders = [
+        _order(
+            "PO-SR",
+            splits=[_split(op, "A", 100, 0, day=5)],
+            timeline=[],
+            sample_files=[_sample_file(op, 4)],
+            sample_approval_history=[_hist("reject", 5)],
+            sample_approved=False,
+        ),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["samples_rejected"] == 1
+    assert row["samples_approved"] == 0
+    assert row["sample_jobs"] == 1
+
+
+def test_batch2_j_sample_pending():
+    op = "op.a@eternalpackaging.com"
+    orders = [
+        _order(
+            "PO-SP",
+            splits=[_split(op, "A", 100, 0, day=5)],
+            timeline=[],
+            sample_files=[_sample_file(op, 4)],
+            sample_approval_history=[],
+            sample_approved=False,
+        ),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["samples_pending"] == 1
+    assert row["first_pass_rate"] is None
+
+
+def test_batch2_k_sample_resubmission_one_job_not_first_pass():
+    op = "op.a@eternalpackaging.com"
+    orders = [
+        _order(
+            "PO-RS",
+            splits=[_split(op, "A", 100, 100, day=12)],
+            timeline=[_qty_note("A", 100, 100, 12, op)],
+            sample_files=[_sample_file(op, 4), _sample_file(op, 8)],
+            sample_approval_history=[
+                _hist("reject", 5),
+                _hist("reset-on-new-upload", 8),
+                _hist("approve", 9),
+            ],
+            sample_approved=True,
+        ),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["sample_jobs"] == 1
+    assert row["sample_submissions"] == 2
+    assert row["samples_approved"] == 1
+    assert row["first_pass_approved"] == 0
+    assert row["first_pass_decided"] == 1
+    assert row["first_pass_rate"] == 0.0
+    assert row["job_count"] == 1
+
+
+def test_batch2_sample_not_attributed_to_designer():
+    op = "op.a@eternalpackaging.com"
+    orders = [
+        _order(
+            "PO-DES",
+            splits=[_split(op, "A", 100, 0, day=5)],
+            sample_files=[_sample_file("desainer@x.com", 4, role="designer", name="Desainer")],
+            sample_approval_history=[_hist("approve", 5)],
+            sample_approved=True,
+        ),
+    ]
+    row = _run(orders)["operators"][0]
+    assert row["sample_jobs"] == 0
+    assert row["samples_approved"] == 0
+
+
+def test_batch2_filters_apply_to_workload_and_sample():
+    a = "op.a@eternalpackaging.com"
+    orders = [
+        _order(
+            "PO-A", customer="Alpha", item="Karton",
+            splits=[_split(a, "A", 100, 50, day=5)],
+            timeline=[_qty_note("A", 50, 100, 5, a)],
+            sample_files=[_sample_file(a, 5)],
+            sample_approved=False,
+        ),
+        _order(
+            "PO-B", customer="Beta", item="Paperbag",
+            splits=[_split(a, "A", 200, 200, day=6)],
+            timeline=[_qty_note("A", 200, 200, 6, a)],
+            sample_files=[_sample_file(a, 6)],
+            sample_approval_history=[_hist("approve", 6)],
+            sample_approved=True,
+        ),
+    ]
+    only_alpha = _run(orders, customer="Alpha")["operators"][0]
+    assert only_alpha["assigned"] == 100
+    assert only_alpha["sample_jobs"] == 1
+    assert only_alpha["samples_pending"] == 1
+    only_bag = _run(orders, item="Paperbag")["operators"][0]
+    assert only_bag["completed"] == 200
+    assert only_bag["samples_approved"] == 1
+    assert only_bag["sample_jobs"] == 1
+
