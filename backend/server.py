@@ -4806,6 +4806,8 @@ async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
                 "endpoint": (last_err.get("operation") or "item/list.do")[:80],
                 "exception": type(e).__name__,
                 "status": last_err.get("status"),
+                "page": last_err.get("page"),
+                "attempt": last_err.get("attempt"),
                 "detail": msg[:200],
                 "tenant_message": sanitize_accurate_error(
                     _accurate_client, last_err.get("message") or "",

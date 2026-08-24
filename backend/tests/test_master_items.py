@@ -6,6 +6,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from permissions import ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, effective_permissions
@@ -525,8 +527,16 @@ class _CapturingAsyncClient:
 
 def _live_client(monkeypatch, client_cls=_CapturingAsyncClient):
     import services.accurate as acc
+    _CapturingAsyncClient.captured = []
     client_cls.captured = []
+    if hasattr(client_cls, "created"):
+        client_cls.created = 0
     monkeypatch.setattr(acc.httpx, "AsyncClient", client_cls)
+
+    async def _nosleep(_s):
+        return None
+
+    monkeypatch.setattr(acc.asyncio, "sleep", _nosleep)
     c = AccurateClient()
     c.api_token = "unit-test-token"
     c.api_signature_secret = "unit-test-secret"
@@ -534,15 +544,28 @@ def _live_client(monkeypatch, client_cls=_CapturingAsyncClient):
     c.client_secret = ""
     c.access_token = ""
     c.refresh_token = ""
+    c.open_db_calls = []
+    c.token_calls = []
+    c.signed_header_calls = []
 
     async def _tok():
+        c.token_calls.append(1)
         return "unit-test-token"
 
     async def _open(token):
-        return "https://example.accurate.id", ""
+        c.open_db_calls.append(token)
+        return "https://odin.accurate.id", ""
+
+    real_signed = c._signed_headers
+
+    def _signed(bearer):
+        headers = real_signed(bearer)
+        c.signed_header_calls.append(headers.get("X-Api-Timestamp"))
+        return headers
 
     c._obtain_token = _tok
     c._open_db = _open
+    c._signed_headers = _signed
     assert c.is_live
     return c
 
@@ -563,7 +586,7 @@ def test_live_item_list_does_not_send_fields(monkeypatch):
     assert listed["rows"][0]["accurate_item_id"] == "101"
     assert _CapturingAsyncClient.captured, "item/list.do was not called"
     first = _CapturingAsyncClient.captured[0]
-    assert first["url"] == "https://example.accurate.id/accurate/api/item/list.do"
+    assert first["url"] == "https://odin.accurate.id/accurate/api/item/list.do"
     assert first["url"].count("/accurate/api") == 1
     assert "fields" not in first["params"]
     assert first["params"]["sp.page"] == 1
@@ -572,7 +595,7 @@ def test_live_item_list_does_not_send_fields(monkeypatch):
 
 def test_item_and_sales_order_list_urls_share_host_prefix(monkeypatch):
     c = _live_client(monkeypatch)
-    host = "https://example.accurate.id"
+    host = "https://odin.accurate.id"
     item_url = f"{host}/accurate/api/item/list.do"
     so_url = f"{host}/accurate/api/sales-order/list.do"
     assert item_url.replace("item/list.do", "sales-order/list.do") == so_url
@@ -643,6 +666,117 @@ def test_default_list_row_parses_without_optional_fields():
     assert n["item_type"] is None
     assert n["unit"] is None
     assert n["is_active"] is None
+
+
+def _paged_raw(page):
+    if page == 1:
+        ids = range(1, 101)
+    elif page == 2:
+        ids = range(101, 201)
+    elif page == 3:
+        ids = range(201, 226)
+    else:
+        ids = []
+    return [{"id": i, "no": f"SKU-{i}", "name": f"Item {i}"} for i in ids]
+
+
+class _PagedItemClient(_CapturingAsyncClient):
+    created = 0
+    timeout_on = {}
+
+    def __init__(self, *args, **kwargs):
+        _PagedItemClient.created += 1
+
+    async def get(self, url, headers=None, params=None):
+        rec = {
+            "url": url,
+            "params": dict(params or {}),
+            "header_names": sorted((headers or {}).keys()),
+            "timestamp": (headers or {}).get("X-Api-Timestamp"),
+        }
+        _CapturingAsyncClient.captured.append(rec)
+        assert "fields" not in rec["params"]
+        page = int(rec["params"].get("sp.page") or 1)
+        remaining = int(_PagedItemClient.timeout_on.get(page) or 0)
+        if remaining > 0:
+            _PagedItemClient.timeout_on[page] = remaining - 1
+            raise httpx.ConnectTimeout("connect timed out")
+        rows = _paged_raw(page)
+        return _FakeHTTPResponse(200, {
+            "s": True,
+            "d": rows,
+            "sp": {"page": page, "pageSize": 100, "pageCount": 3, "rowCount": 225},
+        })
+
+
+def test_fetch_all_items_reuses_session_and_http_client(monkeypatch):
+    _PagedItemClient.timeout_on = {}
+    c = _live_client(monkeypatch, client_cls=_PagedItemClient)
+    rows = _await(c.fetch_all_items())
+    assert len(rows) == 225
+    assert len({r["accurate_item_id"] for r in rows}) == 225
+    assert len(c.open_db_calls) == 1
+    assert len(c.token_calls) == 1
+    assert _PagedItemClient.created == 1
+    pages = [int(r["params"]["sp.page"]) for r in _CapturingAsyncClient.captured]
+    assert pages == [1, 2, 3]
+    assert all("fields" not in r["params"] for r in _CapturingAsyncClient.captured)
+    assert len(c.signed_header_calls) == 3
+
+
+def test_fetch_all_items_paginates_three_pages(monkeypatch):
+    _PagedItemClient.timeout_on = {}
+    c = _live_client(monkeypatch, client_cls=_PagedItemClient)
+    db = FakeDB()
+    result = _await(sync_master_items(db, c))
+    assert result["created"] == 225
+    assert result["failed"] == 0
+    assert _await(db.master_items.count_documents({})) == 225
+
+
+def test_connect_timeout_retries_same_page_then_succeeds(monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    _PagedItemClient.timeout_on = {3: 1}
+    c = _live_client(monkeypatch, client_cls=_PagedItemClient)
+    db = FakeDB()
+    result = _await(sync_master_items(db, c))
+    assert result["created"] == 225
+    assert _await(db.master_items.count_documents({})) == 225
+    assert len({d["accurate_item_id"] for d in db.master_items.docs}) == 225
+    pages = [int(r["params"]["sp.page"]) for r in _CapturingAsyncClient.captured]
+    assert pages == [1, 2, 3, 3]
+    assert len(c.open_db_calls) == 1
+    assert "page=3" in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "ConnectTimeout" in caplog.text
+    assert "result=success" in caplog.text
+    assert "unit-test-token" not in caplog.text
+    assert "Authorization" not in caplog.text
+
+
+def test_connect_timeout_exhausted_does_not_truncate(monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.WARNING)
+    db = FakeDB()
+    _await(sync_master_items(db, FakeAccurate([_raw(1), _raw(2)])))
+    assert _await(db.master_items.count_documents({})) == 2
+    _PagedItemClient.timeout_on = {3: 99}
+    c = _live_client(monkeypatch, client_cls=_PagedItemClient)
+    try:
+        _await(sync_master_items(db, c))
+        assert False, "expected timeout after bounded retry"
+    except RuntimeError as e:
+        assert "timeout" in str(e).lower()
+    assert _await(db.master_items.count_documents({})) == 2
+    pages = [int(r["params"]["sp.page"]) for r in _CapturingAsyncClient.captured]
+    assert pages == [1, 2, 3, 3]
+    err = get_last_list_error()
+    assert err.get("page") == 3
+    assert err.get("attempt") == 2
+    assert err.get("exception") == "ConnectTimeout"
+    assert "unit-test-token" not in caplog.text
+    assert "unit-test-secret" not in caplog.text
 
 
 # ---------- RBAC ----------
