@@ -863,7 +863,8 @@
 .op-an-subnav button.active{background:var(--ep-primary);color:#fff}
 .op-an-section-label{font:10.5px 'IBM Plex Mono';letter-spacing:.12em;text-transform:uppercase;color:var(--soft);margin:4px 0 0}
 .op-an-kpi-row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
-.op-an-kpi-row-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.op-an-kpi-row-6{grid-template-columns:repeat(6,minmax(0,1fr))}
+.op-an-head-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .op-an-kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;display:flex;flex-direction:column;gap:4px;box-shadow:var(--shadow);min-width:0}
 .op-an-kpi span{font:10px 'IBM Plex Mono';letter-spacing:.1em;text-transform:uppercase;color:var(--soft)}
 .op-an-kpi strong{font:650 20px/1.15 'IBM Plex Mono';font-variant-numeric:tabular-nums;color:var(--ep-dark);overflow-wrap:anywhere}
@@ -920,7 +921,7 @@
 [data-testid="op-an-rank-table"] .op-an-table{min-width:0}
 @media (max-width:1100px){
   .op-an-kpi-row{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .op-an-kpi-row-4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .op-an-kpi-row-4,.op-an-kpi-row-6{grid-template-columns:repeat(2,minmax(0,1fr))}
   .op-an-charts{grid-template-columns:1fr}
 }
 @media (max-width:700px){
@@ -928,7 +929,7 @@
   .prod-section-tabs button{flex:1;padding:8px 10px;font-size:11px}
   .op-an-subnav{width:100%;flex-wrap:wrap}
   .op-an-subnav button{flex:1 1 auto;min-width:calc(33.33% - 1px)}
-  .op-an-kpi-row,.op-an-kpi-row-4{grid-template-columns:1fr 1fr}
+  .op-an-kpi-row,.op-an-kpi-row-4,.op-an-kpi-row-6{grid-template-columns:1fr 1fr}
   .op-an-kpi strong{font-size:16px}
   .op-an-desktop{display:none}
   .op-an-mobile{display:grid}

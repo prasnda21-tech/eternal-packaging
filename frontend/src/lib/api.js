@@ -74,6 +74,12 @@ export const api = {
     client.get(`/analytics/operators/${encodeURIComponent(operatorId)}`, { params }).then((r) => r.data),
   analyticsPacking: (params = {}) => client.get(`/analytics/packing`, { params }).then((r) => r.data),
   analyticsPreparation: (params = {}) => client.get(`/analytics/preparation`, { params }).then((r) => r.data),
+  analyticsScreener: (params = {}) => client.get(`/analytics/screener`, { params }).then((r) => r.data),
+  analyticsDesigns: (params = {}) => client.get(`/analytics/designs`, { params }).then((r) => r.data),
+  analyticsOperatorTargets: () => client.get(`/analytics/operator-targets`).then((r) => r.data),
+  updateOperatorTargets: (payload) => client.put(`/analytics/operator-targets`, payload).then((r) => r.data),
+  analyticsOutputExport: (params = {}) =>
+    client.get(`/analytics/output/export`, { params, responseType: "blob" }).then((r) => r.data),
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),
   dashboardSummary: () => client.get(`/dashboard/summary`).then((r) => r.data),
   updateOperatorProgress: (id, operatorId, qtyCompleted) =>

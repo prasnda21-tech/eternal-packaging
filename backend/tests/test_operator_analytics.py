@@ -1147,3 +1147,277 @@ def test_packing_and_prep_read_only_period_on_kpis():
     assert _run([_order("PO-Z", splits=[_split("a@x.com", "A", 1, 1, day=5)],
                         timeline=[_qty_note("A", 1, 1, 5, "a@x.com")])])["read_only"] is True
 
+
+# ---------- Analitik Output revision ----------
+
+from output_reports import (
+    compute_design_report,
+    compute_screener_report,
+    iter_operator_export_rows,
+    normalize_daily_targets,
+    screener_activity_events,
+)
+
+
+def _screen_note(qty, day, email, role="screener", name="Screener"):
+    return {
+        "at": _at(day),
+        "note": f"Screen qty: {qty}",
+        "by_email": email,
+        "by_role": role,
+        "by_name": name,
+    }
+
+
+def test_revision_operator_weekly_1000_2000_then_2500():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-W1A", splits=[_split(op, name, 1000, 1000, day=3, split_id="w1a")], timeline=[
+            _qty_note(name, 1000, 1000, 3, op),
+        ]),
+        _order("PO-W1B", splits=[_split(op, name, 2000, 2000, day=4, split_id="w1b")], timeline=[
+            _qty_note(name, 2000, 2000, 4, op),
+        ]),
+        _order("PO-W2", splits=[_split(op, name, 2500, 2500, day=10, split_id="w2")], timeline=[
+            _qty_note(name, 2500, 2500, 10, op),
+        ]),
+    ]
+    trend = compute_weekly_trend(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    by = {w["week"]: w["qty"] for w in trend["weeks"]}
+    w1 = iso_week_key(date(2026, 8, 3))
+    w2 = iso_week_key(date(2026, 8, 10))
+    assert by[w1] == 3000
+    assert by[w2] == 2500
+    row = _run(orders)["operators"][0]
+    assert row["completed"] == 5500
+    assert row["completed"] != 3000 + 2500 + 5500
+
+
+def test_revision_multi_operator_same_line_600_400():
+    a, b = "a@x.com", "b@x.com"
+    order = _order(
+        "PO-SHARE",
+        total_quantity=1000,
+        splits=[
+            {**_split(a, "A", 600, 600, day=5, split_id="sa"), "line_idx": 0},
+            {**_split(b, "B", 400, 400, day=5, split_id="sb"), "line_idx": 0},
+        ],
+        timeline=[
+            _qty_note("A", 600, 600, 5, a),
+            _qty_note("B", 400, 400, 5, b),
+        ],
+    )
+    out = _run([order])
+    by = {r["email"]: r for r in out["operators"]}
+    assert by[a]["completed"] == 600
+    assert by[b]["completed"] == 400
+    assert out["kpis"]["total_completed"] == 1000
+
+
+def test_revision_helper_multi_user_600_400():
+    a, b = "andi@x.com", "budi@x.com"
+    orders = [
+        _prep_order(
+            "PO-H",
+            [("Cup 12 oz", 1000, 1000)],
+            timeline=[
+                _prep_note(600, 1000, 5, a, name="Andi"),
+                _prep_note(1000, 1000, 6, b, name="Budi"),
+            ],
+        ),
+    ]
+    out = compute_preparation_report(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    by = {r["email"]: r for r in out["users"]}
+    assert by[a]["total_qty"] == 600
+    assert by[b]["total_qty"] == 400
+
+
+def test_revision_screener_actors_1200_800():
+    a, b = "scr.a@x.com", "scr.b@x.com"
+    order = {
+        "id": "PO-SC",
+        "po_number": "PO-SC",
+        "customer": "Cust",
+        "line_items": [{"name": "Cup 12 oz", "item_code": "C12", "quantity": 2000, "production_process": "print"}],
+        "screener_info": {"screen_qty": 2000, "updated_by": b, "updated_at": _at(6)},
+        "timeline": [
+            _screen_note(1200, 5, a, name="Screener A"),
+            _screen_note(2000, 6, b, name="Screener B"),
+        ],
+        "cancelled": False,
+    }
+    out = compute_screener_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    by = {r["email"]: r for r in out["users"]}
+    assert by[a]["total_qty"] == 1200
+    assert by[b]["total_qty"] == 800
+    assert out["kpis"]["total_qty"] == 2000
+    assert out["kpis"]["total_qty"] != 1200 + 2000
+
+
+def test_revision_design_four_updates_is_one_line():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-D1", splits=[{**_split(op, name, 4000, 4000, day=10), "line_idx": 0}], timeline=[
+            _qty_note(name, 1000, 4000, 7, op),
+            _qty_note(name, 2000, 4000, 8, op),
+            _qty_note(name, 3000, 4000, 9, op),
+            _qty_note(name, 4000, 4000, 10, op),
+        ]),
+    ]
+    out = compute_design_report(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["kpis"]["total_designs"] == 1
+    assert out["operators"][0]["design_count"] == 1
+    row = _run(orders)["operators"][0]
+    assert row["design_count"] == 1
+
+
+def test_revision_design_three_distinct_lines():
+    op = "op.a@eternalpackaging.com"
+    name = "A"
+    order = _order(
+        "PO-3L",
+        splits=[
+            {**_split(op, name, 100, 100, day=5, split_id="l0"), "line_idx": 0},
+            {**_split(op, name, 200, 200, day=5, split_id="l1"), "line_idx": 1},
+            {**_split(op, name, 300, 300, day=5, split_id="l2"), "line_idx": 2},
+        ],
+        timeline=[
+            _qty_note(name, 100, 100, 5, op),
+            _qty_note(name, 200, 200, 5, op),
+            _qty_note(name, 300, 300, 5, op),
+        ],
+    )
+    order["line_items"] = [
+        {"name": "Cup 12 oz", "quantity": 100, "production_process": "print"},
+        {"name": "Cup 16 oz", "quantity": 200, "production_process": "print"},
+        {"name": "Cup 22 oz", "quantity": 300, "production_process": "print"},
+    ]
+    out = compute_design_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["kpis"]["total_designs"] == 3
+    assert _run([order])["operators"][0]["design_count"] == 3
+
+
+def test_revision_daily_target_achievement_120():
+    op = "op.a@eternalpackaging.com"
+    name = "Operator A"
+    orders = [
+        _order("PO-T", splits=[_split(op, name, 12000, 12000, day=5)], timeline=[
+            _qty_note(name, 12000, 12000, 5, op),
+        ]),
+    ]
+    out = compute_operator_kpis(
+        orders, date_from=PERIOD_FROM, date_to=PERIOD_TO,
+        daily_targets={op: 10000},
+    )
+    row = out["operators"][0]
+    assert row["avg_daily_qty"] == 12000
+    assert row["daily_target"] == 10000
+    assert row["target_achievement_pct"] == 120.0
+
+
+def test_revision_packing_cumulative_200_then_500():
+    u = "pack.a@eternalpackaging.com"
+    orders = [
+        _pack_order(
+            "PO-P",
+            [("Cup A", 1000)],
+            timeline=[
+                _pack_note(200, "#0=200", 4, u, name="User A"),
+                _pack_note(500, "#0=500", 5, u, name="User A"),
+            ],
+            packed_lines=[{"line_idx": 0, "packed_qty": 500}],
+        ),
+    ]
+    out = compute_packing_report(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert out["users"][0]["total_qty"] == 500
+    assert out["users"][0]["total_qty"] != 700
+
+
+def test_revision_january_range_excludes_february():
+    a = "a@x.com"
+    name = "A"
+    def at_jan(day):
+        return datetime(2026, 1, day, 10, 0, tzinfo=timezone(timedelta(hours=7))).isoformat()
+    orders = [
+        {
+            "id": "PO-JAN", "po_number": "PO-JAN", "customer": "C",
+            "line_items": [{"name": "Cup X", "quantity": 100}],
+            "operator_splits": [_split(a, name, 100, 100, day=15, split_id="j")],
+            "timeline": [{"at": at_jan(15), "note": f"Qty {name}: 100/100", "by_email": a}],
+            "cancelled": False,
+        },
+        {
+            "id": "PO-FEB", "po_number": "PO-FEB", "customer": "C",
+            "line_items": [{"name": "Cup Y", "quantity": 200}],
+            "operator_splits": [{
+                "id": "f", "operator_email": a, "operator_name": name,
+                "quantity": 200, "qty_completed": 200,
+                "work_date": "2026-02-02", "updated_at": datetime(2026, 2, 2, 10, tzinfo=timezone(timedelta(hours=7))).isoformat(),
+            }],
+            "timeline": [{
+                "at": datetime(2026, 2, 2, 10, tzinfo=timezone(timedelta(hours=7))).isoformat(),
+                "note": f"Qty {name}: 200/200", "by_email": a,
+            }],
+            "cancelled": False,
+        },
+    ]
+    out = compute_operator_kpis(orders, date_from=date(2026, 1, 1), date_to=date(2026, 1, 31))
+    assert out["kpis"]["total_completed"] == 100
+    rows = iter_operator_export_rows(orders, date_from=date(2026, 1, 1), date_to=date(2026, 1, 31))
+    assert all(r["tanggal"].startswith("2026-01") for r in rows)
+    assert all(r["no_po"] != "PO-FEB" for r in rows)
+
+
+def test_revision_export_operator_filter_excludes_b():
+    a, b = "a@x.com", "b@x.com"
+    orders = [
+        _order("PO-A", item="Cup X", splits=[{**_split(a, "A", 100, 100, day=5, split_id="a"), "line_idx": 0}],
+               timeline=[_qty_note("A", 100, 100, 5, a)]),
+        _order("PO-B", item="Cup Y", splits=[{**_split(b, "B", 200, 200, day=5, split_id="b"), "line_idx": 0}],
+               timeline=[_qty_note("B", 200, 200, 5, b)]),
+    ]
+    only_a = iter_operator_export_rows(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO, operator_id=a)
+    assert only_a and all(r["operator_id"] == a for r in only_a)
+    assert all(r["operator_id"] != b for r in only_a)
+    only_x = iter_operator_export_rows(orders, date_from=PERIOD_FROM, date_to=PERIOD_TO, item="Cup X")
+    assert only_x and all("Cup X" in r["cup_item"] or r["cup_item"] == "Cup X" for r in only_x)
+    assert all("Cup Y" not in str(r["cup_item"]) for r in only_x)
+
+
+def test_revision_period_presets():
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    start, end, preset = resolve_period("daily", now=now)
+    assert preset == "daily"
+    assert (end - start).days == 6
+    start, end, preset = resolve_period("months_3", now=now)
+    assert preset == "months_3"
+    assert start == date(2026, 6, 1)
+    start, end, preset = resolve_period("year", now=now)
+    assert start == date(2026, 1, 1)
+    assert end == wib_today(now)
+
+
+def test_revision_normalize_targets_by_id_not_name():
+    doc = {"targets": [
+        {"operator_id": "u-1", "email": "op.a@x.com", "qty_per_day": 15000},
+    ]}
+    m = normalize_daily_targets(doc)
+    assert m["op.a@x.com"] == 15000
+    assert m["u-1"] == 15000
+    assert "Operator A" not in m
+
+
+def test_revision_cups_use_line_item_name():
+    op = "a@x.com"
+    order = _order(
+        "PO-CUP",
+        splits=[{**_split(op, "A", 12500, 12500, day=5, split_id="c12"), "line_idx": 0}],
+        timeline=[_qty_note("A", 12500, 12500, 5, op)],
+    )
+    order["line_items"] = [{"name": "Cup 12 oz", "item_code": "C12", "quantity": 12500, "production_process": "print"}]
+    row = _run([order])["operators"][0]
+    assert row["cups"][0]["item"] == "Cup 12 oz"
+    assert row["cups"][0]["qty"] == 12500
+

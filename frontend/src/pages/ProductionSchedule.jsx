@@ -213,7 +213,7 @@ export default function ProductionSchedule() {
           onClick={() => setPageTab("analitik")}
           data-testid="prod-tab-analitik"
         >
-          Analitik Operator
+          Analitik Output
         </button>
       </div>
 

@@ -6,7 +6,7 @@ import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import BrandMark from "./BrandMark";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "schedule.edit"];
 
 export default function AppShell() {
   const { user, hasPerm, logout } = useAuth();
