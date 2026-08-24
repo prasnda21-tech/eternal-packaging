@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import time
 import uuid
@@ -25,6 +26,8 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 # In-memory cache for the recent-SO list (survives Accurate rate-limits gracefully)
@@ -406,10 +409,11 @@ class AccurateClient:
     ) -> Dict[str, Any]:
         """One page of Accurate items via `item/list.do` (READ-ONLY).
 
-        Pagination params match Import PO (`sp.pageSize`, `sp.page`). Custom
-        `fields` is requested because Accurate's official item/list example
-        uses it; if the tenant rejects it (same failure mode as
-        sales-order/list.do), we retry with minimal params.
+        Pagination params match Import PO (`sp.pageSize`, `sp.page`).
+        Do NOT send `fields`: this tenant rejects custom fields on list.do
+        (sales-order/list.do returned {s:false}; item/list.do with extra
+        fields such as itemType/unit1Name/suspended raises HTTP 4xx and
+        skipped the s:false retry — production POST /master-items/sync 502).
         """
         limit = max(1, min(int(limit or 100), 100))
         page = max(1, int(page or 1))
@@ -432,18 +436,10 @@ class AccurateClient:
             "sp.pageSize": limit,
             "sp.page": page,
         }
-        # Official Accurate item/list.do documents fields=id,name,no.
-        # Extra fields below are documented Accurate item properties
-        # (itemType / unit1Name on save+detail; suspended on item records).
-        params_with_fields = {
-            **list_params,
-            "fields": "id,no,name,itemType,unit1Name,suspended",
-        }
-        body = await self._get_item_list_body(host, headers, params_with_fields)
+        body = await self._get_item_list_body(host, headers, list_params)
         if body is None:
-            body = await self._get_item_list_body(host, headers, list_params)
-        if body is None:
-            raise RuntimeError("Accurate item list rejected")
+            err = _last_list_error.get("message") or "unknown tenant error"
+            raise RuntimeError(f"Accurate item list rejected: {err}")
 
         rows_raw = body.get("d") or []
         if not isinstance(rows_raw, list):
@@ -471,23 +467,46 @@ class AccurateClient:
     async def _get_item_list_body(
         self, host: str, headers: Dict[str, str], params: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-            r = await client.get(
-                f"{host}/accurate/api/item/list.do",
-                headers=headers,
-                params=params,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+                r = await client.get(
+                    f"{host}/accurate/api/item/list.do",
+                    headers=headers,
+                    params=params,
+                )
+        except httpx.TimeoutException as e:
+            _record_list_error(operation="item/list.do", message="timeout", exception=e)
+            raise RuntimeError("Accurate item list timeout") from e
+        except httpx.HTTPError as e:
+            _record_list_error(operation="item/list.do", message="request failed", exception=e)
+            raise RuntimeError("Accurate item list request failed") from e
         if r.is_error:
+            _record_list_error(
+                operation="item/list.do",
+                status=r.status_code,
+                message=f"HTTP {r.status_code}",
+            )
             raise RuntimeError(f"Accurate item list HTTP {r.status_code}")
-        body = r.json()
+        try:
+            body = r.json()
+        except Exception as e:
+            _record_list_error(
+                operation="item/list.do",
+                status=r.status_code,
+                message="invalid response",
+                exception=e,
+            )
+            raise RuntimeError(f"Accurate item list invalid response ({r.status_code})") from e
         if body.get("s") is False:
             err_msg = ""
             d = body.get("d")
             if isinstance(d, list) and d:
                 err_msg = str(d[0])[:180]
-            _last_list_error["message"] = err_msg
-            _last_list_error["at"] = time.time()
-            _last_list_error["operation"] = "item/list.do"
+            _record_list_error(
+                operation="item/list.do",
+                status=r.status_code,
+                message=err_msg,
+            )
             return None
         return body if isinstance(body, dict) else None
 
@@ -516,12 +535,53 @@ def sanitize_accurate_error(client: AccurateClient, msg: str) -> str:
     return out[:200]
 
 
-# Last known list.do error from tenant (safe — no credential/token/signature)
-_last_list_error: Dict[str, Any] = {"message": "", "at": 0, "operation": ""}
+# Last known list.do error from tenant (safe — no credential/token/signature/headers)
+_last_list_error: Dict[str, Any] = {
+    "message": "",
+    "at": 0,
+    "operation": "",
+    "status": None,
+    "exception": "",
+}
 
 
 def get_last_list_error() -> Dict[str, Any]:
     return dict(_last_list_error)
+
+
+def _record_list_error(
+    *,
+    operation: str,
+    status: Optional[int] = None,
+    message: str = "",
+    exception: Optional[BaseException] = None,
+) -> None:
+    _last_list_error["operation"] = operation
+    _last_list_error["status"] = status
+    _last_list_error["message"] = str(message or "")[:180]
+    _last_list_error["exception"] = type(exception).__name__ if exception else ""
+    _last_list_error["at"] = time.time()
+
+
+def log_master_items_sync_failure(
+    client: AccurateClient,
+    exc: BaseException,
+    *,
+    endpoint: str = "item/list.do",
+) -> None:
+    """Safe server-side diagnostic. Never logs credentials, headers, or cookies."""
+    last = get_last_list_error()
+    msg = sanitize_accurate_error(client, str(exc))
+    tenant = sanitize_accurate_error(client, last.get("message") or "")
+    status = last.get("status")
+    op = last.get("operation") or endpoint
+    logger.warning(
+        "Accurate master item sync failed operation=master_items_sync endpoint=%s status=%s exception=%s message=%s",
+        op,
+        "-" if status in (None, "") else status,
+        type(exc).__name__,
+        msg or tenant or "-",
+    )
 
 
 def _extract_accurate_item_id(li: Dict[str, Any], item: Any) -> Optional[str]:

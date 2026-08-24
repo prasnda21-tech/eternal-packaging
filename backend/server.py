@@ -10,7 +10,7 @@ from typing import List, Optional, Any, Dict, Tuple
 from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
-from services.accurate import AccurateClient, sync_sales_orders, get_last_list_error, sanitize_accurate_error
+from services.accurate import AccurateClient, sync_sales_orders, get_last_list_error, sanitize_accurate_error, log_master_items_sync_failure
 from services.import_parser import parse_import_file, ImportParseError
 from services.pdf_parser import parse_pdf_po, PDFParseError
 from services import storage as obj_storage
@@ -4796,22 +4796,27 @@ async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
     except SyncInProgressError as e:
         raise HTTPException(409, str(e))
     except Exception as e:
-        msg = sanitize_accurate_error(_accurate_client, str(e))
+        log_master_items_sync_failure(_accurate_client, e)
         last_err = get_last_list_error()
+        msg = sanitize_accurate_error(_accurate_client, str(e))
         try:
             await db.accurate_errors.insert_one({
                 "at": now_iso(),
-                "operation": "item/list.do",
+                "operation": "master_items_sync",
+                "endpoint": (last_err.get("operation") or "item/list.do")[:80],
+                "exception": type(e).__name__,
+                "status": last_err.get("status"),
                 "detail": msg[:200],
-                "tenant_message": (last_err.get("message") or "")[:200],
+                "tenant_message": sanitize_accurate_error(
+                    _accurate_client, last_err.get("message") or "",
+                )[:200],
             })
         except Exception:
             pass
-        raise HTTPException(502, {
-            "message": "Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.",
-            "detail": msg[:200],
-            "tenant_message": (last_err.get("message") or "")[:200],
-        })
+        raise HTTPException(
+            502,
+            "Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.",
+        )
     return result
 
 
