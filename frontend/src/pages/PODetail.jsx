@@ -371,6 +371,16 @@ export default function PODetail() {
 
       <StageBar stage={order.current_stage} order={order} onStageClick={(idx) => setStageDrawer(idx)} />
 
+      <section className="po-kpi-strip" data-testid="po-kpi-strip">
+        <MetricRow columns={5}>
+          <MetricCell label="Total PO" value={order.total_quantity} testid="kpi-total-po" />
+          <MetricCell label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
+          <MetricCell label="Selesai Cetak" value={order.print_completed_qty} testid="kpi-print-done" />
+          <MetricCell label="Sisa Cetak" value={order.print_qty_remaining} testid="kpi-print-remain" />
+          <MetricCell label="Packing" value={order.packing_info?.qty_packed || 0} testid="kpi-packed" />
+        </MetricRow>
+      </section>
+
       {/* HOLD banner (Req 2) */}
       {order.hold && (
         <div className="hold-banner" data-testid="hold-banner">

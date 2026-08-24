@@ -192,6 +192,7 @@ export default function ProductionSchedule() {
 
       <section className="prod-filters" data-testid="prod-filters">
         <div className="prod-filter-row">
+          <span className="prod-filter-kicker">Cari &amp; status</span>
           <div className="search-inline">
             <Search size={13}/>
             <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
@@ -212,6 +213,7 @@ export default function ProductionSchedule() {
           </select>
         </div>
         <div className="prod-filter-row">
+          <span className="prod-filter-kicker">Tahap</span>
           <select value={screenerFilter} onChange={(e) => setScreenerFilter(e.target.value)} data-testid="prod-filter-screener">
             <option value="all">Semua Screener</option>
             <option value="yes">Ada Qty Screen</option>
@@ -241,6 +243,7 @@ export default function ProductionSchedule() {
           <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Termasuk Cancelled</label>
         </div>
         <div className="prod-filter-row prod-filter-dates">
+          <span className="prod-filter-kicker">Tanggal &amp; aksi</span>
           <label className="prod-inline-date">Tanggal dari <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="prod-date-from"/></label>
           <label className="prod-inline-date">Tanggal sampai <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="prod-date-to"/></label>
           <select value={workDateFilter} onChange={(e) => setWorkDateFilter(e.target.value)} data-testid="prod-workdate-filter">

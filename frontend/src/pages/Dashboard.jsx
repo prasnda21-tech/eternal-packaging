@@ -150,8 +150,16 @@ export default function Dashboard() {
         </button>
       </div>
 
+      <section className="dash-kpi-row" data-testid="dash-kpi-row">
+        <div className="dash-kpi"><span>Aktif</span><strong>{counts.aktif ?? 0}</strong></div>
+        <div className="dash-kpi"><span>Selesai</span><strong>{counts.selesai ?? 0}</strong></div>
+        <div className="dash-kpi"><span>Cancelled</span><strong>{counts.cancelled ?? 0}</strong></div>
+        <div className="dash-kpi is-urgent"><span>Urgent hari ini</span><strong>{urgentCount}</strong></div>
+        <div className="dash-kpi"><span>Ditampilkan</span><strong>{list.length}</strong></div>
+      </section>
+
       {stageIsValid && (
-        <div className="stage-filter-chip" data-testid="stage-filter-chip" style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",margin:"6px 0 12px",background:"#f5efe0",borderRadius:10,fontSize:13}}>
+        <div className="stage-filter-chip" data-testid="stage-filter-chip">
           <Filter size={14} />
           <span data-testid="stage-filter-label">Menampilkan PO — <strong>{STAGES[stageIndex] || stageSlug}</strong></span>
           <span className="pill sm" data-testid="stage-filter-count">{list.length}</span>

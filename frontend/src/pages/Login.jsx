@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { useAuth } from "../lib/auth";
+import BrandMark from "../components/BrandMark";
 
 export default function Login() {
   const { login } = useAuth();
@@ -24,15 +25,13 @@ export default function Login() {
 
   return (
     <main className="login-page">
-      <div className="login-mark">
-        <span>EP</span>
-        <p>ETERNAL PACKAGING</p>
-      </div>
-      <section className="login-panel">
-        <p className="eyebrow">SISTEM PRODUKSI / 01</p>
+      <section className="login-card login-panel">
+        <div className="login-mark">
+          <BrandMark stacked />
+        </div>
+        <p className="eyebrow">SISTEM PRODUKSI</p>
         <h1>
-          Jaga setiap<br />
-          <em>cetakan</em> tetap jalan.
+          Jaga setiap <em>cetakan</em> tetap jalan.
         </h1>
         <p className="login-copy">Satu alur jelas dari Order Masuk sampai Terkirim.</p>
         <form onSubmit={submit} data-testid="login-form">
