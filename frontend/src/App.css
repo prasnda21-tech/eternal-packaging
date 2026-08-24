@@ -117,6 +117,8 @@
 .workflow-stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
 .workflow-stage-actions input[type="text"]{border:1px solid var(--line);background:var(--paper);padding:10px 12px;font-size:14px;flex:1;min-width:180px}
 .po-workflow{display:flex;flex-direction:column}
+.workflow-group{display:flex;flex-direction:column;margin:4px 0 10px;padding:4px 0 2px;border-left:3px solid var(--line)}
+.workflow-group-label{font:11px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--soft);margin:8px 0 0 12px}
 .muted.small{color:var(--soft);font-size:12px;margin:0}
 
 /* Panels */

@@ -558,6 +558,9 @@ def build_router(deps):
             # Advance stage seperti internal approve — dari 1/2 ke 3.
             if (order.get("current_stage") or 0) < 3:
                 order["current_stage"] = 3
+            sync_fn = deps.get("sync_workflow_stage")
+            if sync_fn:
+                sync_fn(order)
             add_timeline(order, order["current_stage"], {"email": None, "name": f"Customer: {signer_name}", "role": "customer"},
                          note="Design di-approve oleh customer")
         else:

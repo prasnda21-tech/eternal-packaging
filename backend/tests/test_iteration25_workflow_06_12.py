@@ -132,7 +132,7 @@ def _set_stage(mongo, order_id, stage, **extra):
 # -------------------------- Tests --------------------------
 
 class TestBugAAssignOperators:
-    def test_assign_operators_no_auto_jump(self, admin_sess, po_id, operator_info, mongo):
+    def test_assign_operators_auto_opens_screener_helper(self, admin_sess, po_id, operator_info, mongo):
         r = admin_sess.post(f"{API}/orders/{po_id}/assign-operators", json={
             "splits": [{
                 "operator_email": operator_info["email"],
@@ -142,8 +142,12 @@ class TestBugAAssignOperators:
         })
         assert r.status_code == 200, r.text
         data = r.json()["order"]
-        assert data["current_stage"] == 5, f"Auto-jump detected — stage={data['current_stage']}"
+        assert data["current_stage"] == 6, f"Penjadwalan save should auto-open Screener/Helper — stage={data['current_stage']}"
         assert len(data["operator_splits"]) == 1
+        ready = data.get("workflow_ready") or {}
+        assert ready.get("screener") is True
+        assert ready.get("helper") is True
+        assert ready.get("operator") is False
         assert any("Assign 1 operator" in (t.get("note") or "") for t in data.get("timeline", [])), \
             "Timeline entry 'Assign 1 operator' missing"
 
@@ -176,83 +180,44 @@ class TestAdvanceGates:
         })
 
     def test_5_to_6_ok_when_assigned(self, admin_sess, po_id, operator_info):
-        self._assign(admin_sess, po_id, operator_info)
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
+        r = self._assign(admin_sess, po_id, operator_info)
         assert r.status_code == 200, r.text
         assert r.json()["order"]["current_stage"] == 6
 
-    def test_6_to_7_blocked_without_screener(self, admin_sess, po_id, operator_info):
+    def test_helper_ok_without_screener(self, admin_sess, po_id, operator_info):
         self._assign(admin_sess, po_id, operator_info)
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})  # 5->6
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})  # 6->7 blocked
-        assert r.status_code == 400
-        detail = r.json().get("detail", {})
-        assert "Qty Screen belum diinput." in detail.get("prereq_reasons", [])
-
-    def test_6_to_7_ok_after_screener(self, admin_sess, po_id, operator_info):
-        self._assign(admin_sess, po_id, operator_info)
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        r = admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        assert r.status_code == 200, r.text
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 200, r.text
-        assert r.json()["order"]["current_stage"] == 7
-
-    def test_7_to_8_blocked_without_helper(self, admin_sess, po_id, operator_info):
-        self._assign(admin_sess, po_id, operator_info)
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 400
-        assert "Qty persiapan (qty_prepared) belum diinput." in r.json()["detail"]["prereq_reasons"]
-
-    def test_7_to_8_ok_after_helper(self, admin_sess, po_id, operator_info):
-        self._assign(admin_sess, po_id, operator_info)
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         r = admin_sess.post(f"{API}/orders/{po_id}/helper-prep",
                             json={"qty_required": 100, "qty_prepared": 100})
         assert r.status_code == 200, r.text
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 200, r.text
-        assert r.json()["order"]["current_stage"] == 8
+        order = r.json()["order"]
+        assert (order.get("helper_prep") or {}).get("qty_prepared") == 100
+        assert order.get("workflow_ready", {}).get("operator") is False
 
-    def test_8_to_9_blocked_without_sample(self, admin_sess, po_id, operator_info):
+    def test_operator_blocked_without_screener(self, admin_sess, po_id, operator_info):
+        r = self._assign(admin_sess, po_id, operator_info)
+        split_id = r.json()["order"]["operator_splits"][0]["id"]
+        r = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
+                            json={"operator_id": split_id, "qty_completed": 10})
+        assert r.status_code == 400, r.text
+        assert "Screener" in (r.json().get("detail") or "")
+
+    def test_sample_blocked_without_screener(self, admin_sess, po_id, operator_info):
         self._assign(admin_sess, po_id, operator_info)
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        admin_sess.post(f"{API}/orders/{po_id}/helper-prep",
-                        json={"qty_required": 100, "qty_prepared": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 400
-        assert "Operator harus upload sampel cetak terlebih dahulu." in r.json()["detail"]["prereq_reasons"]
-
-    def _upload_sample(self, sess, po_id):
-        return sess.post(f"{API}/orders/{po_id}/attachment", json={
+        r = admin_sess.post(f"{API}/orders/{po_id}/attachment", json={
             "name": "sample.png",
             "data_url": "data:image/png;base64," + base64.b64encode(b"x").decode(),
             "kind": "sample",
         })
+        assert r.status_code == 400, r.text
+        assert "Screener" in (r.json().get("detail") or "")
 
-    def test_8_to_9_ok_after_sample_upload(self, admin_sess, po_id, operator_info):
+    def test_screener_unlocks_operator(self, admin_sess, po_id, operator_info):
         self._assign(admin_sess, po_id, operator_info)
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        admin_sess.post(f"{API}/orders/{po_id}/helper-prep",
-                        json={"qty_required": 100, "qty_prepared": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        r = self._upload_sample(admin_sess, po_id)
+        r = admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
         assert r.status_code == 200, r.text
         order = r.json()["order"]
-        assert order.get("sample_approved") in (False, None)
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 200, r.text
-        assert r.json()["order"]["current_stage"] == 9
+        assert order["current_stage"] == 8
+        assert order.get("workflow_ready", {}).get("operator") is True
 
 
 class TestBugCSampleApproval:
@@ -260,24 +225,21 @@ class TestBugCSampleApproval:
         admin_sess.post(f"{API}/orders/{po_id}/assign-operators", json={
             "splits": [{"operator_email": operator_info["email"], "operator_name": operator_info["name"], "quantity": 100}]
         })
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/helper-prep",
                         json={"qty_required": 100, "qty_prepared": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/attachment", json={
             "name": "sample.png",
             "data_url": "data:image/png;base64," + base64.b64encode(b"x").decode(),
             "kind": "sample",
         })
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})  # -> 9
 
     def test_9_to_10_blocked_without_approval(self, admin_sess, po_id, operator_info):
         self._prep_to_stage9(admin_sess, po_id, operator_info)
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 400
-        assert "Sampel cetak belum disetujui." in r.json()["detail"]["prereq_reasons"]
+        r = admin_sess.get(f"{API}/orders/{po_id}")
+        order = r.json()["order"]
+        assert order.get("sample_approved") in (False, None)
+        assert order.get("workflow_ready", {}).get("packing") is False
 
     def test_operator_cannot_approve_sample(self, admin_sess, operator_sess, po_id, operator_info):
         self._prep_to_stage9(admin_sess, po_id, operator_info)
@@ -288,10 +250,10 @@ class TestBugCSampleApproval:
         self._prep_to_stage9(admin_sess, po_id, operator_info)
         r = admin_sess.post(f"{API}/orders/{po_id}/approve-sample", json={"approved": True})
         assert r.status_code == 200, r.text
-        assert r.json()["order"]["sample_approved"] is True
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 200, r.text
-        assert r.json()["order"]["current_stage"] == 10
+        order = r.json()["order"]
+        assert order["sample_approved"] is True
+        assert order["current_stage"] == 11
+        assert order.get("workflow_ready", {}).get("packing") is True
 
     def test_reupload_resets_approval_and_appends_history(self, admin_sess, po_id, operator_info):
         self._prep_to_stage9(admin_sess, po_id, operator_info)
@@ -315,35 +277,28 @@ class TestPrintQtyAndPackedGate:
         admin_sess.post(f"{API}/orders/{po_id}/assign-operators", json={
             "splits": [{"operator_email": operator_info["email"], "operator_name": operator_info["name"], "quantity": 100}]
         })
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/helper-prep",
                         json={"qty_required": 100, "qty_prepared": 100})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/attachment", json={
             "name": "s.png", "data_url": "data:image/png;base64,eA==", "kind": "sample"
         })
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         admin_sess.post(f"{API}/orders/{po_id}/approve-sample", json={"approved": True})
-        admin_sess.post(f"{API}/orders/{po_id}/advance", json={})  # -> 10
         r = admin_sess.get(f"{API}/orders/{po_id}")
         body = r.json()
         return body.get("order", body)
 
     def test_10_to_11_blocked_without_qty_cetak(self, admin_sess, po_id, operator_info):
-        self._prep_to_stage10(admin_sess, po_id, operator_info)
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
-        assert r.status_code == 400
-        assert "Qty Cetak belum diinput." in r.json()["detail"]["prereq_reasons"]
+        order = self._prep_to_stage10(admin_sess, po_id, operator_info)
+        assert order["current_stage"] == 11
+        reasons = order.get("packing_prereq_reasons") or []
+        assert "Qty Cetak belum diinput." in reasons
 
     def test_10_to_11_ok_after_qty(self, admin_sess, po_id, operator_info):
         order = self._prep_to_stage10(admin_sess, po_id, operator_info)
         split_id = order["operator_splits"][0]["id"]
         r = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
                             json={"operator_id": split_id, "qty_completed": 100})
-        assert r.status_code == 200, r.text
-        r = admin_sess.post(f"{API}/orders/{po_id}/advance", json={})
         assert r.status_code == 200, r.text
         assert r.json()["order"]["current_stage"] == 11
 
@@ -379,13 +334,14 @@ class TestPrintQtyAndPackedGate:
         split_id = order["operator_splits"][0]["id"]
         admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
                         json={"operator_id": split_id, "qty_completed": 100})
+        admin_sess.post(f"{API}/orders/{po_id}/packing-info",
+                        json={"qty_packed": 100})
         r = admin_sess.post(f"{API}/orders/{po_id}/packed")
         assert r.status_code == 200, r.text
         d = r.json()["order"]
-        assert d["current_stage"] == 11
+        assert d["current_stage"] == 12
         assert d["packing_status"] == "Sudah"
         assert d["packing_ready"] is True
-        assert any("Sudah dipacking" in (t.get("note") or "") for t in d.get("timeline", []))
 
 
 class TestPermissionsCatalog:

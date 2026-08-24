@@ -4,6 +4,7 @@ import { AlertCircle, AlertTriangle, ArrowLeft, Check, ChevronRight, FileCheck2,
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline } from "../lib/constants";
+import { getWorkflowReady } from "../lib/stageState";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
 import PackingPanel from "../components/PackingPanel";
@@ -78,6 +79,8 @@ export default function PODetail() {
   const role = user?.role;
   const isCrm = role === "crm";
   const canAdvanceNow = !isCrm && canAdvance(role, order.current_stage);
+  const ready = getWorkflowReady(order);
+  const screenerLocked = !ready.screener;
 
   const run = async (fn, msg) => {
     setBusy(true);
@@ -196,7 +199,7 @@ export default function PODetail() {
 
   const canApproveDesign = hasPerm("design.approve");
   const canApprovePayment = hasPerm("payment.approve");
-  const canApproveSample = hasPerm("operator.sample_approve");
+  const canApproveSample = hasPerm("operator.sample_approve") || hasPerm("schedule.edit");
   const canUploadPayment = hasPerm("payment.upload");
   const canUploadDesign = hasPerm("design.upload");
   const canUploadSample = hasPerm("operator.sample_upload");
@@ -579,9 +582,10 @@ export default function PODetail() {
         </div>
       </section>
       <ProductionRoutePanel order={order} canEdit={canEditRoute} onUpdated={setOrder} />
-      {renderAdvance(0)}
       </div>
 
+      <div className="workflow-group" data-testid="workflow-group-2">
+        <p className="workflow-group-label">2 · Design &amp; Payment (paralel)</p>
       {/* 02 Design */}
       <div data-testid="workflow-slot-1" data-workflow-stage="1">
       <AttachmentsPanel
@@ -592,7 +596,6 @@ export default function PODetail() {
         designSlot={(
           <div className="design-actions" data-testid="design-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
             <DesignStatusBadge order={order} />
-            {renderAdvance(1)}
           </div>
         )}
       />
@@ -611,7 +614,7 @@ export default function PODetail() {
               <FileCheck2 size={16} /> Approve Design
             </button>
           )}
-          {canApproveDesign && order.design_status === "Approved" && order.current_stage < 4 && (
+          {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
             <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
               Batalkan approve design
             </button>
@@ -625,7 +628,6 @@ export default function PODetail() {
             <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
           )}
         </div>
-        {renderAdvance(2)}
       </section>
       <CustomerApprovalPanel
         order={order}
@@ -669,7 +671,6 @@ export default function PODetail() {
               <p className="muted small" data-testid="payment-readonly-note">Anda hanya dapat melihat bukti pembayaran (read-only).</p>
             )}
           </div>
-          {renderAdvance(3)}
         </div>
       </section>
       </div>
@@ -687,7 +688,7 @@ export default function PODetail() {
               <FileCheck2 size={16} /> Approve Payment
             </button>
           )}
-          {canApprovePayment && order.payment_status === "Approved" && order.current_stage < 6 && (
+          {canApprovePayment && order.payment_status === "Approved" && (order.current_stage || 0) < 12 && (
             <button className="ghost" onClick={rejectPayment} disabled={busy} data-testid="revoke-payment-button">
               Batalkan approve payment
             </button>
@@ -713,8 +714,8 @@ export default function PODetail() {
             </ul>
           </details>
         )}
-        {renderAdvance(4)}
       </section>
+      </div>
       </div>
 
       {/* 06 Penjadwalan */}
@@ -724,12 +725,16 @@ export default function PODetail() {
           <h3>Penjadwalan</h3>
           <span className="pill sm">Head of Production</span>
         </header>
-        <p className="muted small">Jadwalkan produksi lalu lanjut ke Screener. Deadline pengiriman di bawah ini.</p>
-        {renderAdvance(5)}
+        <p className="muted small">
+          Simpan pembagian operator. Screener dan Persiapan Helper terbuka otomatis setelah save berhasil.
+        </p>
       </section>
+      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
       <DeliveryDeadlinePanel order={order} canEdit={canEditDeliveryDeadline} onUpdated={setOrder} />
       </div>
 
+      <div className="workflow-group" data-testid="workflow-group-4">
+        <p className="workflow-group-label">4 · Screener &amp; Persiapan Helper (paralel)</p>
       {/* 07 Screener */}
       <div data-testid="workflow-slot-6" data-workflow-stage="6">
       <section className="panel" data-testid="screener-panel">
@@ -738,71 +743,40 @@ export default function PODetail() {
         </header>
         <div className="prep-grid">
           <label>Jumlah Screen Dibuat
-            <input type="number" min="0" defaultValue={order.screener_info?.screen_qty || 0} data-testid="screener-qty" disabled={!canScreenerUpdate}/>
+            <input type="number" min="0" defaultValue={order.screener_info?.screen_qty || 0} data-testid="screener-qty" disabled={!canScreenerUpdate || screenerLocked}/>
           </label>
           <label className="span-2">Catatan Screener
-            <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate}/>
+            <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate || screenerLocked}/>
           </label>
         </div>
+        {screenerLocked && (
+          <p className="muted small" data-testid="screener-locked-note">Screener tersedia otomatis setelah Penjadwalan disimpan.</p>
+        )}
         {canScreenerUpdate && (
           <div className="prep-actions">
-            <button className="primary sm" onClick={saveScreener} disabled={busy} data-testid="screener-save-button"><Check size={13}/> Simpan Info Screener</button>
+            <button className="primary sm" onClick={saveScreener} disabled={busy || screenerLocked} data-testid="screener-save-button"><Check size={13}/> Simpan Info Screener</button>
             {order.screener_info?.updated_at && <span className="muted small" data-testid="screener-updated">Update terakhir: {order.screener_info.updated_by_name || order.screener_info.updated_by} · {formatDate(order.screener_info.updated_at)}</span>}
           </div>
         )}
-        {renderAdvance(6)}
       </section>
       </div>
 
       {/* 08 Persiapan Helper */}
       <div data-testid="workflow-slot-7" data-workflow-stage="7">
-      <HelperPrepPanel order={order} canEdit={canHelperPrep} onUpdated={setOrder} footerActions={renderAdvance(7)} />
+      <HelperPrepPanel order={order} canEdit={canHelperPrep} onUpdated={setOrder} />
+      </div>
       </div>
 
+      <div className="workflow-group" data-testid="workflow-group-5">
+        <p className="workflow-group-label">5 · Operator &amp; Cetak Sample</p>
       {/* 09 Operator */}
       <div data-testid="workflow-slot-8" data-workflow-stage="8">
-      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} footerActions={renderAdvance(8)} />
-      </div>
-
-      {/* 10 Konfirmasi Sample */}
-      <div data-testid="workflow-slot-9" data-workflow-stage="9">
+      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="progress" />
       <AttachmentsPanel
         order={order}
         user={user}
         onUpdated={setOrder}
         section="sample"
-        sampleSlot={(
-          <div className="sample-actions" data-testid="sample-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
-            {order.sample_approved ? (
-              <span className="pill sm" style={{background:"#e5f5e5",color:"#2b7a2b"}} data-testid="sample-status-badge">
-                Sampel disetujui
-                {order.sample_approved_by_name ? ` — ${order.sample_approved_by_name}` : ""}
-              </span>
-            ) : (order.sample_files?.length || 0) > 0 ? (
-              <span className="pill sm" style={{background:"#fef4d6",color:"#a16d1f"}} data-testid="sample-status-badge">
-                Menunggu approval sampel
-              </span>
-            ) : (
-              <span className="pill sm" style={{background:"#f2eee7",color:"#7a6a4a"}} data-testid="sample-status-badge">
-                Menunggu upload sampel
-              </span>
-            )}
-            {canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
-              <button className="primary" onClick={approveSample} disabled={busy} data-testid="approve-sample-button">
-                <FileCheck2 size={16} /> Approve Sampel Cetak
-              </button>
-            )}
-            {canApproveSample && order.sample_approved && order.current_stage < 10 && (
-              <button className="ghost" onClick={rejectSample} disabled={busy} data-testid="revoke-sample-button">
-                Batalkan approval sampel
-              </button>
-            )}
-            {!canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
-              <p className="muted small" data-testid="sample-readonly-note">Butuh permission <code>operator.sample_approve</code> untuk approve sampel cetak.</p>
-            )}
-            {renderAdvance(9)}
-          </div>
-        )}
       />
       </div>
 
@@ -822,7 +796,45 @@ export default function PODetail() {
             {" "}· Target Cetak: <b>{Number(order.print_qty_total || 0).toLocaleString("id-ID")}</b>
           </p>
         )}
-        {renderAdvance(10)}
+      </section>
+      </div>
+      </div>
+
+      {/* 10 Approval Cetak Sample */}
+      <div data-testid="workflow-slot-9" data-workflow-stage="9">
+      <section className="panel" data-testid="approval-sample-panel">
+        <header className="panel-head">
+          <h3>Approval Cetak Sample</h3>
+          {order.sample_approved ? (
+            <span className="pill sm" style={{background:"#e5f5e5",color:"#2b7a2b"}} data-testid="sample-status-badge">
+              Sampel disetujui
+              {order.sample_approved_by_name ? ` — ${order.sample_approved_by_name}` : ""}
+            </span>
+          ) : (order.sample_files?.length || 0) > 0 ? (
+            <span className="pill sm" style={{background:"#fef4d6",color:"#a16d1f"}} data-testid="sample-status-badge">
+              Menunggu approval sampel
+            </span>
+          ) : (
+            <span className="pill sm" style={{background:"#f2eee7",color:"#7a6a4a"}} data-testid="sample-status-badge">
+              Menunggu upload sampel
+            </span>
+          )}
+        </header>
+        <div className="sample-actions" data-testid="sample-actions" style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
+          {canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
+            <button className="primary" onClick={approveSample} disabled={busy} data-testid="approve-sample-button">
+              <FileCheck2 size={16} /> Approve Sampel Cetak
+            </button>
+          )}
+          {canApproveSample && order.sample_approved && (order.current_stage || 0) < 12 && (
+            <button className="ghost" onClick={rejectSample} disabled={busy} data-testid="revoke-sample-button">
+              Batalkan approval sampel
+            </button>
+          )}
+          {!canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
+            <p className="muted small" data-testid="sample-readonly-note">Butuh permission Penjadwalan / approval sampel untuk approve sampel cetak.</p>
+          )}
+        </div>
       </section>
       </div>
 
@@ -1011,6 +1023,9 @@ function StageAdvanceRow({ stageIdx, order, canAdvance, busy, note, setNote, onA
   if (!canAdvance) return null;
   if (order.current_stage !== stageIdx) return null;
   if (order.current_stage >= STAGES.length - 1) return null;
+  // Generic Lanjut hanya untuk Surat Jalan → Loading → Terkirim.
+  // Tahap produksi (0–11) maju otomatis setelah action nyata.
+  if (stageIdx < 12) return null;
   return (
     <div className="workflow-stage-actions" data-testid={`stage-advance-row-${stageIdx}`}>
       <input

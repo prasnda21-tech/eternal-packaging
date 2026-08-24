@@ -20,13 +20,47 @@ const STAGE_TERKIRIM = 14;
 
 const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== "";
 
+export function group2Complete(order) {
+  const designOk = !!(order?.design_bypassed) || order?.design_status === "Approved";
+  const paymentOk = !!(order?.payment_bypassed) || order?.payment_status === "Approved";
+  return designOk && paymentOk;
+}
+
+export function getWorkflowReady(order) {
+  if (order?.workflow_ready && typeof order.workflow_ready === "object") {
+    return order.workflow_ready;
+  }
+  const g2 = group2Complete(order);
+  const scheduled = penjadwalanDone(order);
+  const screen = screenerDone(order);
+  const reqPrint = order?.requires_printing !== false;
+  const op = reqPrint ? scheduled && screen : scheduled;
+  const uploaded = sampleUploaded(order);
+  return {
+    design: true,
+    approval_design: (order?.design_files || []).length > 0 || !!order?.design_bypassed,
+    payment: true,
+    approval_payment: (order?.payment_files || []).length > 0 || !!order?.payment_bypassed,
+    penjadwalan: g2,
+    screener: g2 && scheduled,
+    helper: g2 && scheduled,
+    operator: op,
+    sample_upload: reqPrint && op,
+    sample_approval: reqPrint && uploaded && op,
+    packing: reqPrint ? sampleApproved(order) : g2 && scheduled,
+  };
+}
+
 function penjadwalanDone(order) {
+  if (order?.requires_printing === false) return true;
   return (order?.operator_splits || []).length > 0;
 }
 function screenerDone(order) {
+  if (order?.requires_printing === false) return true;
   return hasValue(order?.screener_info?.screen_qty);
 }
 function helperDone(order) {
+  if (order?.requires_printing === false) return true;
   return hasValue(order?.helper_prep?.qty_prepared);
 }
 function sampleUploaded(order) {
@@ -58,87 +92,86 @@ function terkirimConfirmed(order) {
 }
 
 export function resolveStageState(idx, order, currentStage) {
+  const ready = getWorkflowReady(order);
+
   // Design + Approval Design: same evidence helpers as Timeline (never idx < currentStage).
   if (idx === STAGE_DESIGN) return resolveDesignChip(order, currentStage);
   if (idx === STAGE_APPROVAL_DESIGN) return resolveApprovalDesignChip(order, currentStage);
   if (idx === STAGE_PAYMENT) {
     if (order?.payment_bypassed) return { state: "bypass", label: "BYPASS" };
     if ((order?.payment_files || []).length > 0) return { state: "done", label: "Selesai" };
-    if (currentStage >= idx) return { state: "current", label: "Belum dikerjakan" };
-    return { state: "pending", label: "Menunggu" };
+    return { state: "current", label: "Belum dikerjakan" };
   }
   if (idx === STAGE_APPROVAL_PAYMENT) {
     if (order?.payment_status === "Approved") return { state: "done", label: "Selesai" };
     if (order?.payment_bypassed) return { state: "bypass", label: "BYPASS" };
-    if (currentStage === idx) return { state: "current", label: "Berjalan" };
-    if (currentStage > idx) return { state: "current", label: "Menunggu approval" };
+    if ((order?.payment_files || []).length > 0) return { state: "current", label: "Menunggu approval" };
     return { state: "pending", label: "Menunggu" };
   }
 
   const _reqPrint = order?.requires_printing !== false;
   const _nonPrintPenjDone = !_reqPrint && (
-    hasValue(order?.work_date) || (currentStage || 0) > STAGE_PENJADWALAN
+    hasValue(order?.work_date) || penjadwalanDone(order) || (currentStage || 0) > STAGE_PENJADWALAN
   );
   if (idx === STAGE_PENJADWALAN) {
     if (!_reqPrint) {
-      if (_nonPrintPenjDone) return { state: "done", label: "Selesai" };
-      if (currentStage >= idx) return { state: "current", label: "Menunggu jadwal" };
+      if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
+      if (ready.penjadwalan) return { state: "current", label: "Menunggu jadwal" };
       return { state: "pending", label: "Menunggu" };
     }
     if (penjadwalanDone(order)) return { state: "done", label: "Selesai" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu jadwal" };
+    if (ready.penjadwalan) return { state: "current", label: "Menunggu jadwal" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_SCREENER) {
     if (!_reqPrint) {
-      if (_nonPrintPenjDone) return { state: "done", label: "Selesai" };
+      if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
     if (screenerDone(order)) return { state: "done", label: "Selesai" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu input" };
+    if (ready.screener) return { state: "current", label: "Menunggu input" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_HELPER) {
     if (!_reqPrint) {
-      if (_nonPrintPenjDone) return { state: "done", label: "Selesai" };
+      if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
     if (helperDone(order)) return { state: "done", label: "Selesai" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu input" };
+    if (ready.helper) return { state: "current", label: "Menunggu input" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_OPERATOR) {
     if (!_reqPrint) {
-      if (_nonPrintPenjDone) return { state: "done", label: "Selesai" };
+      if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
     if (sampleUploaded(order)) return { state: "done", label: "Selesai" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu upload sampel" };
+    if (ready.operator) return { state: "current", label: "Menunggu upload sampel" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_KONFIRMASI_SAMPLE) {
     if (!_reqPrint) {
-      if (_nonPrintPenjDone) return { state: "done", label: "Selesai" };
+      if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
     if (sampleApproved(order)) return { state: "done", label: "Selesai" };
     if (sampleUploaded(order)) return { state: "current", label: "Menunggu approval sampel" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu upload sampel" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_CETAK) {
     if (!_reqPrint) {
-      if (_nonPrintPenjDone) return { state: "done", label: "Selesai" };
+      if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
     if (printQtyInput(order)) return { state: "done", label: "Selesai" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu input qty cetak" };
+    if (ready.operator) return { state: "current", label: "Menunggu input qty cetak" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_PACKING) {
     if (packingDone(order)) return { state: "done", label: "Selesai" };
     if (packingQtyInput(order) && currentStage === idx) return { state: "current", label: "Berjalan" };
-    if (currentStage >= idx) return { state: "current", label: "Menunggu input qty packing" };
+    if (ready.packing || currentStage >= idx) return { state: "current", label: "Menunggu input qty packing" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_SURAT_JALAN) {

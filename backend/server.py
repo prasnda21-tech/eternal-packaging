@@ -42,6 +42,22 @@ from quantity_rules import (
     validate_packing_qty as _qr_validate_packing_qty,
     validate_print_completed_total as _qr_validate_print_completed_total,
 )
+from workflow_gates import (
+    SCREENER_GATE_OPERATOR_MSG,
+    SCREENER_GATE_SAMPLE_MSG,
+    design_ok as _wg_design_ok,
+    helper_done as _wg_helper_done,
+    packing_qty_input as _wg_packing_qty_input,
+    payment_ok as _wg_payment_ok,
+    penjadwalan_done as _wg_penjadwalan_done,
+    print_qty_input as _wg_print_qty_input,
+    sample_ok as _wg_sample_ok,
+    sample_uploaded as _wg_sample_uploaded,
+    screener_done as _wg_screener_done,
+    screener_gate_reason as _wg_screener_gate_reason,
+    sync_workflow_stage as _wg_sync_workflow_stage,
+    workflow_ready as _wg_workflow_ready,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -630,6 +646,7 @@ async def get_order(order_id: str, user=Depends(current_user)):
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
     _attach_quantity_snapshot(order)
+    _attach_workflow_snapshot(order)
     # Batch 1: delivery deadline effective/source/status
     _dd_settings = await _get_delivery_deadline_settings()
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
@@ -744,6 +761,7 @@ _DERIVED_ORDER_KEYS = (
     "non_print_qty_total", "print_completed_qty", "available_for_packing",
     "operator_assigned_qty", "helper_prepared_print_qty",
     "operator_assignment_cap", "print_available_for_packing",
+    "workflow_ready", "operator_unlocked", "screener_gate_reason",
 )
 
 
@@ -759,6 +777,26 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["operator_assignment_cap"] = _operator_assignment_cap(order)
     order["print_available_for_packing"] = _print_available_for_packing(order)
     order["available_for_packing"] = _available_for_packing(order)
+    _attach_workflow_snapshot(order)
+
+
+def _attach_workflow_snapshot(order: dict) -> None:
+    """Derived workflow flags (non-persisted). Backend is source of truth."""
+    ready = _wg_workflow_ready(order)
+    order["workflow_ready"] = ready
+    order["operator_unlocked"] = bool(ready.get("operator"))
+    order["screener_gate_reason"] = _wg_screener_gate_reason(order, for_sample=True)
+
+
+def _sync_workflow_stage(order: dict, *, force: bool = False) -> bool:
+    """Idempotent evidence-based current_stage bump. No timeline side effects."""
+    return _wg_sync_workflow_stage(order, force=force)
+
+
+def _ensure_screener_for_operator_work(order: dict, *, for_sample: bool = False):
+    reason = _wg_screener_gate_reason(order, for_sample=for_sample)
+    if reason:
+        raise HTTPException(400, reason)
 
 
 _QUANTITY_LOCK_RETRIES = 5
@@ -838,6 +876,7 @@ async def _persist_order(order, *, require_lock: bool = False):
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
     _attach_quantity_snapshot(order)
+    _attach_workflow_snapshot(order)
     # Batch 1: attach deadline snapshot (best-effort — safe kalau settings belum ada).
     try:
         # NOTE: sync call di persist path — read settings sekali per persist.
@@ -869,11 +908,11 @@ def _ensure_not_cancelled(order: dict):
 
 # ---- Approval / Bypass / HOLD helpers (Phase A) --------------------------
 def _design_ok(order: dict) -> bool:
-    return bool(order.get("design_bypassed")) or (order.get("design_status") == "Approved")
+    return _wg_design_ok(order)
 
 
 def _payment_ok(order: dict) -> bool:
-    return bool(order.get("payment_bypassed")) or (order.get("payment_status") == "Approved")
+    return _wg_payment_ok(order)
 
 
 def _hold_reasons(order: dict) -> list:
@@ -964,18 +1003,33 @@ def _compute_pending_queues(order: dict) -> List[str]:
     if payment_files and not order.get("payment_bypassed") and order.get("payment_status") != "Approved":
         queues.append("approval_payment")
 
-    # 06 Penjadwalan — HOLD gate terpenuhi (design & payment done) TAPI belum dijadwalkan.
+    # 06 Penjadwalan — HOLD gate terpenuhi TAPI belum dijadwalkan.
     hold_gate_ok = bool(design_approved and payment_approved)
-    scheduled = bool(order.get("work_date")) or any(bool(s.get("work_date")) for s in (order.get("operator_splits") or []))
-    if hold_gate_ok and not scheduled and cs < 6:
+    if hold_gate_ok and not _stage_penjadwalan_done(order) and cs < 12:
         queues.append("scheduling")
 
-    # 07-14 Stage-based queues (semantic ≈ current_stage). Driver stage dihapus.
-    stage_map = {6: "screener", 7: "helper", 8: "operator", 9: "sample", 10: "printing",
-                 11: "packing", 12: "delivery_note", 13: "loading"}
-    slug = stage_map.get(cs)
-    if slug:
-        queues.append(slug)
+    # 07-11 Semantic / parallel queues — NOT current_stage linear.
+    # Screener dan Helper boleh outstanding bersamaan. Operator butuh Screener.
+    req_print = _requires_printing(order)
+    if hold_gate_ok and _stage_penjadwalan_done(order) and req_print and cs < 12:
+        if not _stage_screener_done(order):
+            queues.append("screener")
+        if not _stage_helper_done(order):
+            queues.append("helper")
+        if _stage_screener_done(order):
+            if not _sample_uploaded(order):
+                queues.append("operator")
+            elif not _sample_ok(order):
+                queues.append("sample")
+            elif not _print_qty_input(order):
+                queues.append("printing")
+
+    if cs == 11:
+        queues.append("packing")
+    elif cs == 12:
+        queues.append("delivery_note")
+    elif cs == 13:
+        queues.append("loading")
 
     return queues
 
@@ -1007,11 +1061,7 @@ def _stage_screener_done(order: dict) -> bool:
     """Screener selesai jika screen_qty telah diinput (int/float, bukan None/'').
     Revisi routing: Screener adalah persiapan alat cetak. Full non-print PO
     (requires_printing==False) TIDAK DIPERLUKAN Screener."""
-    if not _requires_printing(order):
-        return True
-    si = order.get("screener_info") or {}
-    v = si.get("screen_qty")
-    return v is not None and str(v).strip() != ""
+    return _wg_screener_done(order)
 
 
 def _stage_helper_done(order: dict) -> bool:
@@ -1020,11 +1070,7 @@ def _stage_helper_done(order: dict) -> bool:
     Revisi routing: kalau PO full non-print (requires_printing == False), tahap
     Persiapan Helper TIDAK DIPERLUKAN → langsung dianggap done. Jangan memaksa
     user mengisi Qty Helper untuk PO tanpa barang cetak."""
-    if not _requires_printing(order):
-        return True
-    hp = order.get("helper_prep") or {}
-    v = hp.get("qty_prepared")
-    return v is not None and str(v).strip() != ""
+    return _wg_helper_done(order)
 
 
 def _stage_penjadwalan_done(order: dict) -> bool:
@@ -1032,18 +1078,16 @@ def _stage_penjadwalan_done(order: dict) -> bool:
     Revisi routing: Penjadwalan = pembagian Operator (khusus barang Cetak).
     Full non-print PO tidak memerlukan pembagian Operator, jadi Penjadwalan
     langsung dianggap done (TIDAK DIPERLUKAN)."""
-    if not _requires_printing(order):
-        return True
-    return bool(order.get("operator_splits"))
+    return _wg_penjadwalan_done(order)
 
 
 def _sample_uploaded(order: dict) -> bool:
-    return bool(order.get("sample_files"))
+    return _wg_sample_uploaded(order)
 
 
 def _sample_ok(order: dict) -> bool:
     """Sample cetak sudah diapprove pihak berwenang."""
-    return bool(order.get("sample_approved"))
+    return _wg_sample_ok(order)
 
 
 def _stage_operator_done(order: dict) -> bool:
@@ -1060,23 +1104,12 @@ def _print_qty_input(order: dict) -> bool:
     """Cetak done jika minimal 1 operator split punya qty_completed > 0.
     Field qty_completed sudah existing di operator_splits — tidak menciptakan
     field duplikat."""
-    for s in (order.get("operator_splits") or []):
-        v = s.get("qty_completed")
-        if v is not None and str(v).strip() != "" and int(v) > 0:
-            return True
-    return False
+    return _wg_print_qty_input(order)
 
 
 def _packing_qty_input(order: dict) -> bool:
     """Packing done jika packing_info.qty_packed sudah diinput valid (>0)."""
-    pi = order.get("packing_info") or {}
-    v = pi.get("qty_packed")
-    if v is None or str(v).strip() == "":
-        return False
-    try:
-        return int(v) > 0
-    except (ValueError, TypeError):
-        return False
+    return _wg_packing_qty_input(order)
 
 
 def _prereq_reasons_for_surat_jalan(order: dict) -> list:
@@ -1192,21 +1225,22 @@ def _prereq_reasons_for_advance(order: dict, from_stage: int) -> list:
     to `from_stage+1`. Empty list = OK to advance."""
     reasons = []
     req_print = _requires_printing(order)
-    # 5 Penjadwalan -> 6 Screener
+    # 5 Penjadwalan -> 6 Screener (Helper paralel, bukan gate)
     if from_stage == 5:
         if not _stage_penjadwalan_done(order):
             reasons.append("Belum ada operator yang di-assign pada Penjadwalan.")
-    # 6 Screener -> 7 Persiapan Helper
+    # 6 Screener -> 7 Persiapan Helper: PARALLEL — jangan blok Helper dengan Screener
     elif from_stage == 6:
-        if not _stage_screener_done(order):
-            reasons.append("Qty Screen belum diinput.")
-    # 7 Persiapan Helper -> 8 Operator
+        pass
+    # 7 Persiapan Helper -> 8 Operator: gate adalah SCREENER, bukan Helper
     elif from_stage == 7:
-        if not _stage_helper_done(order):
-            reasons.append("Qty persiapan (qty_prepared) belum diinput.")
+        if not _stage_screener_done(order):
+            reasons.append(SCREENER_GATE_OPERATOR_MSG)
     # 8 Operator -> 9 Konfirmasi Sample (SKIP kalau non-print)
     elif from_stage == 8:
-        if req_print and not _sample_uploaded(order):
+        if req_print and not _stage_screener_done(order):
+            reasons.append(SCREENER_GATE_SAMPLE_MSG)
+        elif req_print and not _sample_uploaded(order):
             reasons.append("Operator harus upload sampel cetak terlebih dahulu.")
     # 9 Konfirmasi Sample -> 10 Cetak (SKIP kalau non-print)
     elif from_stage == 9:
@@ -1215,10 +1249,10 @@ def _prereq_reasons_for_advance(order: dict, from_stage: int) -> list:
                 reasons.append("Operator harus upload sampel cetak terlebih dahulu.")
             elif not _sample_ok(order):
                 reasons.append("Sampel cetak belum disetujui.")
-    # 10 Cetak -> 11 Packing (SKIP kalau non-print)
+    # 10 Cetak -> 11 Packing: sample approval unlocks packing (qty = quantity safety)
     elif from_stage == 10:
-        if req_print and not _print_qty_input(order):
-            reasons.append("Qty Cetak belum diinput.")
+        if req_print and not _sample_ok(order):
+            reasons.append("Sampel cetak belum disetujui.")
     return reasons
 
 
@@ -1269,6 +1303,7 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
         # If operator, must match their own record
         if user.get("role") == "operator" and found["operator_email"] != user.get("email"):
             raise HTTPException(403, "Anda hanya dapat memperbarui progres Anda sendiri")
+        _ensure_screener_for_operator_work(order)
         # Advance operator stage from 8 (Operator) up to 11 (Packing) — after that, PO-level flow takes over
         new_stage = min(found["stage"] + 1, 11)
         found["stage"] = new_stage
@@ -1424,6 +1459,7 @@ async def approve_design(order_id: str, payload: ApprovalPayload, user=Depends(c
         })
         if order["current_stage"] < 3:
             order["current_stage"] = 3
+        _sync_workflow_stage(order)
         add_timeline(order, order["current_stage"], user, note=payload.note or "Design di-approve")
     else:
         order["design_status"] = "Waiting"
@@ -1468,6 +1504,7 @@ async def approve_payment(order_id: str, payload: ApprovalPayload, user=Depends(
         })
         if order["current_stage"] < 4:
             order["current_stage"] = 4
+        _sync_workflow_stage(order)
         add_timeline(order, order["current_stage"], user, note=payload.note or "Payment di-approve")
     else:
         order["payment_status"] = "Waiting"
@@ -1513,6 +1550,7 @@ async def bypass_design(order_id: str, payload: BypassPayload, user=Depends(curr
     })
     if order["current_stage"] < 3:
         order["current_stage"] = 3
+    _sync_workflow_stage(order)
     add_timeline(order, order["current_stage"], user, note=f"Bypass approval design: {reason}")
     await _persist_order(order)
     await _audit_po(order, "design.bypass", user, after={"design_bypassed": True}, note=reason)
@@ -1543,6 +1581,7 @@ async def bypass_payment(order_id: str, payload: BypassPayload, user=Depends(cur
     })
     if order["current_stage"] < 4:
         order["current_stage"] = 4
+    _sync_workflow_stage(order)
     add_timeline(order, order["current_stage"], user, note=f"Bypass approval payment: {reason}")
     await _persist_order(order)
     await _audit_po(order, "payment.bypass", user, after={"payment_bypassed": True}, note=reason)
@@ -1787,6 +1826,7 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
         "updated_at": now_iso(),
     }
     add_timeline(order, order["current_stage"], user, note=f"Persiapan Helper: {payload.qty_prepared}/{payload.qty_required} (kurang {shortage})")
+    _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "helper.prep.update", user, before=before, after=order["helper_prep"])
     return {"order": order}
@@ -1863,6 +1903,7 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
     }
     add_timeline(order, order["current_stage"], user,
                  note=f"Persiapan Helper (per-line): {total_prepared}/{total_required} (kurang {total_shortage})")
+    _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "helper.prep.items.update", user, before=before, after=order["helper_prep"])
     return {"order": order}
@@ -1913,17 +1954,16 @@ async def set_line_items_route(order_id: str, payload: LineItemRoutePayload, use
 # ---- Batch 3: Dashboard Action Center ----
 def _po_needs_screener(o: dict) -> bool:
     # Revisi routing: Screener adalah persiapan cetak. Full non-print PO tidak
-    # membutuhkan Screener.
-    if not _requires_printing(o):
+    # membutuhkan Screener. Tersedia setelah Penjadwalan disimpan.
+    if not _requires_printing(o) or not _stage_penjadwalan_done(o):
         return False
-    si = o.get("screener_info") or {}
-    return not bool(si.get("qty_screen"))
+    return not _stage_screener_done(o)
 
 
 def _po_needs_helper(o: dict) -> bool:
     # Revisi routing: Helper hanya menyiapkan barang Cetak. Full non-print PO
-    # tidak butuh Persiapan Helper.
-    if not _requires_printing(o):
+    # tidak butuh Persiapan Helper. Tersedia setelah Penjadwalan (paralel Screener).
+    if not _requires_printing(o) or not _stage_penjadwalan_done(o):
         return False
     hp = o.get("helper_prep") or {}
     total_req = hp.get("qty_required") or _print_qty_total(o) or 0
@@ -1948,11 +1988,13 @@ def _po_needs_payment_approve(o: dict) -> bool:
 
 
 def _po_needs_penjadwalan(o: dict) -> bool:
+    if not (_design_ok(o) and _payment_ok(o)):
+        return False
     return not _stage_penjadwalan_done(o)
 
 
 def _po_needs_sample_upload(o: dict) -> bool:
-    return _requires_printing(o) and not _sample_uploaded(o)
+    return _requires_printing(o) and _stage_screener_done(o) and _stage_penjadwalan_done(o) and not _sample_uploaded(o)
 
 
 def _po_needs_sample_approve(o: dict) -> bool:
@@ -2146,8 +2188,10 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         "updated_by_name": user.get("name"),
         "updated_at": now_iso(),
     }
-    # This is INFORMATION ONLY — no qty changes, no stage advance, no workflow effects
+    # Auto-progress: setelah Screener Save, Operator menjadi READY.
+    # Tidak menandai Helper selesai (paralel).
     add_timeline(order, order["current_stage"], user, note=f"Screen qty: {payload.screen_qty}")
+    _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "screener.info.update", user, before=before, after=order["screener_info"])
     return {"order": order}
@@ -2229,6 +2273,7 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
             })
         order["operator_splits"] = new_splits
         add_timeline(order, order["current_stage"], user, note=f"Assign {len(new_splits)} operator")
+        _sync_workflow_stage(order)
 
     order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
@@ -2320,6 +2365,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
             raise HTTPException(404, "Operator split tidak ditemukan")
         if role == "operator" and found["operator_email"] != user.get("email"):
             raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
+        _ensure_screener_for_operator_work(order)
         qty = max(0, min(int(payload.qty_completed), int(found["quantity"])))
         others = sum(
             int(s.get("qty_completed") or 0)
@@ -2390,6 +2436,7 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
         await _require_perm(user, "payment.upload")
     elif kind == "sample":
         await _require_perm(user, "operator.sample_upload")
+        _ensure_screener_for_operator_work(order, for_sample=True)
     else:
         raise HTTPException(400, "Jenis attachment tidak dikenal")
     if len(payload.data_url) > 8_000_000:
@@ -2481,9 +2528,13 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
                 "at": now_iso(),
                 "note": "Sampel baru diupload — status kembali Menunggu Approval",
             })
+            _sync_workflow_stage(order, force=True)
+        else:
+            _sync_workflow_stage(order)
         audit_action = "sample.upload"
     else:
         order.setdefault("sample_files", []).append(entry)
+        _sync_workflow_stage(order)
     # Attribute timeline to the workflow stage of the upload kind — never to
     # whatever current_stage happens to be (Payment-first flow must not bury
     # Design uploads under Approval Payment stage).
@@ -2566,7 +2617,10 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    await _require_perm(user, "operator.sample_approve")
+    if user.get("role") != "admin":
+        eff = await user_permissions(user)
+        if "operator.sample_approve" not in eff and "schedule.edit" not in eff:
+            raise HTTPException(403, "Anda tidak punya permission untuk approval sampel cetak")
     if not order.get("sample_files"):
         raise HTTPException(400, "Belum ada file sampel yang diupload — tidak dapat approve.")
     before = {"sample_approved": bool(order.get("sample_approved")), "sample_approved_by": order.get("sample_approved_by")}
@@ -2583,6 +2637,7 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
             "note": payload.note or "",
         })
         audit_action = "sample.approve"
+        _sync_workflow_stage(order)
     else:
         order["sample_approved"] = False
         order["sample_approved_by"] = None
@@ -2596,6 +2651,7 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
             "note": payload.note or "",
         })
         audit_action = "sample.approve.revoke"
+        _sync_workflow_stage(order, force=True)
     add_timeline(order, order["current_stage"], user, note=("Sampel disetujui" if payload.approved else "Approval sampel dibatalkan"))
     await _persist_order(order)
     await _audit_po(order, audit_action, user, before=before,
@@ -4928,6 +4984,7 @@ _ca_router = _ca_mod.build_router({
     "persist_order": _persist_order,
     "audit_po": _audit_po,
     "add_timeline": add_timeline,
+    "sync_workflow_stage": _sync_workflow_stage,
     "obj_storage": obj_storage,
     "logger": logging.getLogger("customer_approval"),
 })

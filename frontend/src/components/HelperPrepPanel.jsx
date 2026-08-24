@@ -3,6 +3,7 @@ import { Check, AlertTriangle, Info } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 import { formatDate } from "../lib/constants";
+import { getWorkflowReady } from "../lib/stageState";
 
 /**
  * HelperPrepPanel — Persiapan Helper PER LINE ITEM CETAK.
@@ -44,6 +45,8 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
   const totalRequired = printLines.reduce((s, { li }) => s + Number(li.quantity || 0), 0);
   const totalPrepared = Object.values(draft).reduce((s, v) => s + Number(v || 0), 0);
   const totalShortage = Math.max(totalRequired - totalPrepared, 0);
+  const ready = getWorkflowReady(order);
+  const helperLocked = !ready.helper;
 
   // Full non-print → Persiapan Helper TIDAK DIPERLUKAN.
   if (!requiresPrinting) {
@@ -64,6 +67,10 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
   }
 
   const save = async () => {
+    if (helperLocked) {
+      setErr("Persiapan Helper tersedia setelah Penjadwalan disimpan.");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -141,7 +148,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
                     max={req}
                     value={draft[idx] ?? 0}
                     onChange={(e) => setDraft({ ...draft, [idx]: e.target.value })}
-                    disabled={!canEdit || busy}
+                    disabled={!canEdit || busy || helperLocked}
                     data-testid={`helper-prepared-${idx}`}
                     style={{ width: 100, textAlign: "right" }}
                   />
@@ -171,18 +178,23 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
           type="text"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          disabled={!canEdit || busy}
+          disabled={!canEdit || busy || helperLocked}
           placeholder="Catatan opsional"
           data-testid="helper-notes-input"
           style={{ width: "100%", maxWidth: 480, display: "block", marginTop: 4 }}
         />
       </label>
 
+      {helperLocked && (
+        <p className="muted small" data-testid="helper-locked-note" style={{ marginTop: 6 }}>
+          Persiapan Helper berjalan paralel dengan Screener dan tersedia otomatis setelah Penjadwalan disimpan.
+        </p>
+      )}
       {err && <p style={{ color: "#8f1f1f", marginTop: 6 }} data-testid="helper-prep-error">{err}</p>}
 
       {canEdit && printLines.length > 0 && (
         <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="primary sm" onClick={save} disabled={busy} data-testid="helper-save-button">
+          <button className="primary sm" onClick={save} disabled={busy || helperLocked} data-testid="helper-save-button">
             <Check size={13}/> Simpan Persiapan
           </button>
           {order?.helper_prep?.updated_at && (
