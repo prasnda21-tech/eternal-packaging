@@ -898,6 +898,26 @@
 .op-an-card dt{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
 .op-an-card dd{margin:0;font:650 14px 'IBM Plex Mono';color:var(--ep-dark)}
 .op-an-mobile{display:none}
+.op-an-click{cursor:pointer}
+.op-an-click:hover{background:#F3F7F4}
+.op-an-weekbars{display:flex;gap:8px;align-items:flex-end;overflow-x:auto;padding:4px 0 8px;min-height:160px}
+.op-an-weekbar{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:52px;flex:1}
+.op-an-weekbar-col{width:100%;height:110px;background:#E6EFE9;border-radius:4px 4px 0 0;display:flex;align-items:flex-end;overflow:hidden}
+.op-an-weekbar-col i{display:block;width:100%;background:var(--ep-primary);min-height:0}
+.op-an-weekbar span{font:10px 'IBM Plex Mono';color:var(--soft);text-align:center;white-space:pre-line;line-height:1.2}
+.op-an-weekbar b{font:650 11px 'IBM Plex Mono';color:var(--ep-dark)}
+.op-an-weekbar em{font-style:normal;font-size:10px;color:var(--ep-primary)}
+.op-an-weekbar em.neg{color:#C45C4A}
+.op-an-rank-filter{margin:0 0 8px}
+.op-an-drill{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px;margin-top:8px;min-width:0;overflow-x:auto}
+.op-an-drill h3{margin:0 0 8px;font-size:13px}
+.op-an-po-block{margin-bottom:14px}
+.op-an-po-block h3{margin:0 0 4px;font-size:13px}
+.op-an-modal .op-an-detail{max-width:min(1080px,100%);width:100%}
+.op-an-detail-body{padding:14px 18px 22px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.op-an-detail-filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.op-an-pager{display:flex;gap:10px;align-items:center;justify-content:flex-end}
+[data-testid="op-an-rank-table"] .op-an-table{min-width:0}
 @media (max-width:1100px){
   .op-an-kpi-row{grid-template-columns:repeat(3,minmax(0,1fr))}
   .op-an-kpi-row-4{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -906,8 +926,8 @@
 @media (max-width:700px){
   .prod-section-tabs{width:100%}
   .prod-section-tabs button{flex:1;padding:8px 10px;font-size:11px}
-  .op-an-subnav{width:100%}
-  .op-an-subnav button{flex:1}
+  .op-an-subnav{width:100%;flex-wrap:wrap}
+  .op-an-subnav button{flex:1 1 auto;min-width:calc(33.33% - 1px)}
   .op-an-kpi-row,.op-an-kpi-row-4{grid-template-columns:1fr 1fr}
   .op-an-kpi strong{font-size:16px}
   .op-an-desktop{display:none}

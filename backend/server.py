@@ -19,8 +19,12 @@ from permissions import (
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
 )
 from operator_analytics import (
+    build_activity_analytics_pipeline,
     build_operator_analytics_pipeline,
+    compute_operator_detail,
     compute_operator_kpis,
+    compute_packing_report,
+    compute_preparation_report,
     resolve_period,
 )
 from quantity_rules import (
@@ -4977,6 +4981,122 @@ async def analytics_operator_kpis(
         "Read-only. Qty selesai = qty yang diselesaikan masing-masing operator "
         "(operator_splits.qty_completed), bukan qty PO."
     )
+    return result
+
+
+@api_router.get("/analytics/operators/{operator_id}")
+async def analytics_operator_detail(
+    operator_id: str,
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only drill-down for one operator. Job history is paginated."""
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_operator_analytics_pipeline(operator_id, customer, item)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_operator_detail(
+        blob.get("docs") or [],
+        operator_id=operator_id,
+        date_from=start,
+        date_to=end,
+        customer=customer,
+        item=item,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    result["period"]["preset"] = preset
+    result["generated_at"] = now_iso()
+    return result
+
+
+@api_router.get("/analytics/packing")
+async def analytics_packing(
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    user_id: Optional[str] = None,
+    role: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only packing qty report. Uses Save Packing timeline deltas, not PO openers."""
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_activity_analytics_pipeline(customer, item, po)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_packing_report(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        user_id=user_id,
+        role=role,
+        customer=customer,
+        item=item,
+        po=po,
+    )
+    result["period"]["preset"] = preset
+    extra_customers = [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")]
+    extra_items = [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")]
+    extra_pos = [x.get("_id") for x in (blob.get("pos") or []) if x.get("_id")]
+    result["filters"] = {
+        **(result.get("filters") or {}),
+        "customers": extra_customers,
+        "items": extra_items,
+        "pos": extra_pos,
+    }
+    result["generated_at"] = now_iso()
+    return result
+
+
+@api_router.get("/analytics/preparation")
+async def analytics_preparation(
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    user_id: Optional[str] = None,
+    role: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only persiapan Cup/barang cetak. Qty from Save persiapan timeline deltas."""
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_activity_analytics_pipeline(customer, item, po)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_preparation_report(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        user_id=user_id,
+        role=role,
+        customer=customer,
+        item=item,
+        po=po,
+    )
+    result["period"]["preset"] = preset
+    extra_customers = [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")]
+    extra_items = [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")]
+    extra_pos = [x.get("_id") for x in (blob.get("pos") or []) if x.get("_id")]
+    result["filters"] = {
+        **(result.get("filters") or {}),
+        "customers": extra_customers,
+        "items": extra_items,
+        "pos": extra_pos,
+    }
+    result["generated_at"] = now_iso()
     return result
 
 

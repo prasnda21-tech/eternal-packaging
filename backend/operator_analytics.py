@@ -1,4 +1,4 @@
-"""Read-only operator production analytics (Batch 1 + Batch 2).
+"""Read-only operator production analytics (Batch 1 + Batch 2 + Batch 3).
 
 Source of truth:
 - Assigned / target  = operator_splits.quantity  (allocation, NOT PO qty)
@@ -30,6 +30,13 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 WIB = timezone(timedelta(hours=7))
 QTY_NOTE_RE = re.compile(r"^Qty (.+): (\d+)/(\d+)\s*$")
+PACKING_NOTE_RE = re.compile(r"^Qty Packing:\s*(\d+)\s*pcs\s*\((.*)\)\s*$")
+PACKING_LINE_RE = re.compile(r"#(\d+)=(\d+)")
+PREP_NOTE_RE = re.compile(r"^Persiapan Helper(?: \(per-line\))?:\s*(\d+)/(\d+)")
+
+RANK_METRICS = ("output_qty", "achievement", "on_time_pct", "sample_approval_pct", "job_count")
+JOB_PAGE_DEFAULT = 50
+JOB_PAGE_MAX = 100
 
 ANALYTICS_PROJECTION = {
     "_id": 0,
@@ -41,6 +48,9 @@ ANALYTICS_PROJECTION = {
     "product_name": 1,
     "line_items.name": 1,
     "line_items.item_code": 1,
+    "line_items.quantity": 1,
+    "line_items.color": 1,
+    "line_items.production_process": 1,
     "operator_splits.id": 1,
     "operator_splits.operator_email": 1,
     "operator_splits.operator_name": 1,
@@ -52,6 +62,9 @@ ANALYTICS_PROJECTION = {
     "timeline.at": 1,
     "timeline.note": 1,
     "timeline.by_email": 1,
+    "timeline.by_role": 1,
+    "timeline.by_name": 1,
+    "current_stage": 1,
     "deadline": 1,
     "sample_approved": 1,
     "sample_approved_at": 1,
@@ -600,12 +613,21 @@ DATA_SOURCES = {
     "avg_completion_days": "timestamp Qty note pertama (atau work_date) → timestamp Qty note yang mencapai assigned (atau updated_at). Tanpa kedua ujung → N/A",
     "deadline": "order.deadline (Deadline PO) diatribusikan ke assignment operator. Tidak ada deadline per split. Bukan delivery_deadline_effective.",
     "sample": "sample_files.uploaded_by (role operator / email di operator_splits). Designer diabaikan. Status dari sample_approved + sample_approval_history, bukan current_stage.",
+    "weekly_trend": "delta Qty-note (kumulatif) di-bucket ISO week WIB. Bukan jumlah snapshot.",
+    "wow": "(minggu ini − minggu lalu) / minggu lalu * 100. previous=0 → N/A (bukan Infinity).",
+    "ranking": "metric dipilih user (output/achievement/on-time/sample/job). Tidak ada overall score.",
+    "packing": "timeline 'Qty Packing: total pcs (#idx=qty)' — packed_qty di packing_info.lines adalah kumulatif; activity = delta positif per line per Save. Actor = timeline.by_email (user yang Save Packing), bukan user yang hanya membuka PO.",
+    "packing_fallback": "Jika tidak ada note Qty Packing: snapshot packing_info diatribusikan ke packing_info.updated_by pada updated_at (last-saver only).",
+    "preparation": "timeline 'Persiapan Helper' / 'Persiapan Helper (per-line): prepared/required' — qty_prepared kumulatif; activity = delta positif total. Actor = timeline.by_email. Field cup_qty tidak ada; Cup = line item Cetak (production_process != non_print) di helper_prep.items.",
+    "preparation_per_line": "helper_prep.items[] adalah snapshot terkini per line. History per-line per-user tidak tersimpan di timeline (hanya total PO). Jangan mengatribusikan seluruh line ke user terakhir jika ada lebih dari satu actor.",
 }
 
 INDEX_RECOMMENDATIONS = [
     "orders: {cancelled: 1, 'operator_splits.0': 1} — scan analytics saat ini",
     "orders: {cancelled: 1, 'operator_splits.operator_email': 1} — filter operator",
     "orders: {cancelled: 1, 'sample_files.uploaded_at': 1} — jika sample analytics menjadi berat",
+    "orders: {cancelled: 1, 'packing_info.updated_at': 1} — laporan packing",
+    "orders: {cancelled: 1, 'helper_prep.updated_at': 1} — laporan persiapan",
 ]
 
 
@@ -644,6 +666,7 @@ def _empty_operator(email: str, name: str) -> dict:
         "first_pass_approved": 0,
         "first_pass_decided": 0,
         "first_pass_rate": None,
+        "sample_approval_pct": None,
     }
 
 
@@ -805,6 +828,7 @@ def compute_operator_kpis(
         rec["pcs_per_hour"] = None
         rec["on_time_pct"] = ratio_pct(rec["on_time"], rec["on_time_basis"])
         rec["first_pass_rate"] = ratio_pct(rec["first_pass_approved"], rec["first_pass_decided"])
+        rec["sample_approval_pct"] = ratio_pct(rec["samples_approved"], rec["sample_jobs"])
         rows.append(rec)
 
     rows.sort(key=lambda r: (-r["completed"], r["name"] or r["email"]))
@@ -859,10 +883,1088 @@ def compute_operator_kpis(
         "samples_rejected": sum(r["samples_rejected"] for r in rows),
         "samples_pending": sum(r["samples_pending"] for r in rows),
         "first_pass_rate": ratio_pct(total_fp_ok, total_fp_n),
+        "sample_approval_pct": ratio_pct(
+            sum(r["samples_approved"] for r in rows),
+            sum(r["sample_jobs"] for r in rows),
+        ),
     }
+    weekly = compute_weekly_trend(
+        order_list,
+        date_from=date_from,
+        date_to=date_to,
+        operator_id=operator_id,
+        customer=customer,
+        item=item,
+    )
     return {
         "kpis": kpis,
         "operators": rows,
+        "weekly_trend": weekly,
+        "ranking": rank_operators(rows, "output_qty"),
+        "period": {
+            "from": date_from.isoformat(),
+            "to": date_to.isoformat(),
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "read_only": True,
+        "sources": DATA_SOURCES,
+        "index_recommendations": INDEX_RECOMMENDATIONS,
+        "utilization": None,
+        "utilization_note": "Tidak dihitung — sistem tidak punya capacity maksimum / shift / jam kerja yang reliable.",
+        "load_band": None,
+    }
+
+
+# ---------- Batch 3: weekly trend, ranking, drill-down, packing, persiapan ----------
+
+def wow_pct(current: int, previous: Optional[int]) -> Optional[float]:
+    """(current - previous) / previous * 100. previous 0/None → None (N/A, never Inf)."""
+    if previous is None or previous == 0:
+        return None
+    return round((current - previous) / previous * 100.0, 2)
+
+
+def iso_week_monday(week_key: str) -> Optional[date]:
+    try:
+        year_s, week_s = week_key.split("-W")
+        return date.fromisocalendar(int(year_s), int(week_s), 1)
+    except (ValueError, TypeError):
+        return None
+
+
+def weeks_covering(start: date, end: date) -> List[dict]:
+    """Inclusive ISO weeks overlapping [start, end] (Monday–Sunday WIB)."""
+    d = monday_of(start)
+    last = monday_of(end)
+    out = []
+    while d <= last:
+        iso = d.isocalendar()
+        out.append({
+            "week": f"{iso.year}-W{iso.week:02d}",
+            "from": d.isoformat(),
+            "to": (d + timedelta(days=6)).isoformat(),
+            "label": f"W{iso.week} {iso.year}",
+        })
+        d += timedelta(days=7)
+    return out
+
+
+def line_item_label(order: dict, line_idx: Any) -> str:
+    lis = order.get("line_items") or []
+    try:
+        idx = int(line_idx)
+    except (TypeError, ValueError):
+        idx = -1
+    if 0 <= idx < len(lis):
+        name = (lis[idx].get("name") or "").strip()
+        code = (lis[idx].get("item_code") or "").strip()
+        if name and code and code not in name:
+            return f"{name} ({code})"
+        return name or code or f"Line #{idx + 1}"
+    product = (order.get("product_name") or "").strip()
+    return product or "Item"
+
+
+def _order_po_number(order: dict) -> str:
+    return (order.get("po_number") or order.get("id") or "").strip()
+
+
+def order_matches_po(order: dict, po: Optional[str]) -> bool:
+    if not po or po == "all":
+        return True
+    needle = po.strip().lower()
+    if not needle:
+        return True
+    num = _order_po_number(order).lower()
+    oid = str(order.get("id") or "").lower()
+    return needle == num or needle in num or needle == oid
+
+
+def completed_by_week_for_split(
+    split: dict,
+    events: Sequence[dict],
+    start: date,
+    end: date,
+) -> Dict[str, int]:
+    """Positive qty deltas bucketed by ISO week. Caps to live snapshot (no double count)."""
+    snapshot = max(0, safe_int(split.get("qty_completed")))
+    assigned = max(0, safe_int(split.get("quantity")))
+    cap = min(snapshot, assigned) if assigned > 0 else snapshot
+    matched = _match_events_for_split(split, events)
+    buckets: Dict[str, int] = defaultdict(int)
+
+    if matched:
+        prev = 0
+        running = 0
+        for ev in matched:
+            delta = ev["qty"] - prev
+            prev = ev["qty"]
+            if delta <= 0 or not ev["day"] or not in_period(ev["day"], start, end):
+                continue
+            take = min(delta, max(0, cap - running))
+            if take <= 0:
+                continue
+            buckets[iso_week_key(ev["day"])] += take
+            running += take
+        return dict(buckets)
+
+    day = _split_fallback_day(split)
+    qty = max(0, min(snapshot, assigned if assigned > 0 else snapshot))
+    if qty > 0 and in_period(day, start, end) and day:
+        return {iso_week_key(day): qty}
+    return {}
+
+
+def compute_weekly_trend(
+    orders: Iterable[dict],
+    *,
+    date_from: date,
+    date_to: date,
+    operator_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+) -> dict:
+    """Aggregate completed qty per ISO week. Respects the same filters as KPIs."""
+    week_meta = weeks_covering(date_from, date_to)
+    week_keys = [w["week"] for w in week_meta]
+    totals = {k: 0 for k in week_keys}
+    per_op: Dict[str, dict] = {}
+
+    op_filter = (operator_id or "").strip()
+    if op_filter in ("all", ""):
+        op_filter = ""
+    cust_filter = (customer or "").strip()
+    if cust_filter in ("all", ""):
+        cust_filter = ""
+
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        if cust_filter and (order.get("customer") or "") != cust_filter:
+            continue
+        if not order_matches_item(order, item):
+            continue
+        events = _timeline_qty_events(order)
+        for split in order.get("operator_splits") or []:
+            email = (split.get("operator_email") or "").strip()
+            if not email:
+                continue
+            if op_filter and email != op_filter:
+                continue
+            if not split_is_in_period(split, events, date_from, date_to):
+                continue
+            rec = per_op.setdefault(email, {
+                "operator_id": email,
+                "email": email,
+                "name": (split.get("operator_name") or email),
+                "weeks": {k: 0 for k in week_keys},
+            })
+            if split.get("operator_name"):
+                rec["name"] = split["operator_name"]
+            for wk, qty in completed_by_week_for_split(split, events, date_from, date_to).items():
+                if wk in rec["weeks"]:
+                    rec["weeks"][wk] += qty
+                    totals[wk] += qty
+
+    series = []
+    prev_qty = None
+    for meta in week_meta:
+        qty = totals.get(meta["week"], 0)
+        series.append({
+            **meta,
+            "qty": qty,
+            "wow_pct": wow_pct(qty, prev_qty),
+        })
+        prev_qty = qty
+
+    last = series[-1]["qty"] if series else 0
+    prev = series[-2]["qty"] if len(series) >= 2 else None
+    operators = sorted(per_op.values(), key=lambda r: r["name"] or r["email"])
+    return {
+        "weeks": series,
+        "operators": operators,
+        "wow_pct": wow_pct(last, prev) if len(series) >= 2 else None,
+        "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+    }
+
+
+def rank_operators(rows: Sequence[dict], metric: str = "output_qty") -> List[dict]:
+    """Selectable ranking. N/A stays N/A and sorts after numeric values. No overall score."""
+    key = (metric or "output_qty").strip().lower()
+    if key not in RANK_METRICS:
+        key = "output_qty"
+    field = {
+        "output_qty": "completed",
+        "achievement": "achievement",
+        "on_time_pct": "on_time_pct",
+        "sample_approval_pct": "sample_approval_pct",
+        "job_count": "job_count",
+    }[key]
+    na_is_missing = key in ("on_time_pct", "sample_approval_pct")
+
+    def sort_tuple(r):
+        v = r.get(field)
+        if na_is_missing and v is None:
+            return (1, 0.0, (r.get("name") or r.get("email") or ""))
+        return (0, -float(v or 0), (r.get("name") or r.get("email") or ""))
+
+    ranked = []
+    n = 0
+    for r in sorted(rows, key=sort_tuple):
+        v = r.get(field)
+        is_na = na_is_missing and v is None
+        if not is_na:
+            n += 1
+            rank_n = n
+        else:
+            rank_n = None
+        ranked.append({
+            "rank": rank_n,
+            "metric": key,
+            "value": v,
+            "value_na": is_na,
+            "operator_id": r.get("operator_id") or r.get("email"),
+            "email": r.get("email"),
+            "name": r.get("name"),
+            "completed": r.get("completed", 0),
+            "assigned": r.get("assigned", 0),
+            "achievement": r.get("achievement", 0),
+            "on_time_pct": r.get("on_time_pct"),
+            "sample_approval_pct": r.get("sample_approval_pct"),
+            "job_count": r.get("job_count", 0),
+            "active_jobs": r.get("active_jobs", 0),
+            "completed_jobs": r.get("completed_jobs", 0),
+            "remaining": r.get("remaining", 0),
+        })
+    return ranked
+
+
+def _job_status_label(on_time_class: Optional[str], is_complete: bool) -> str:
+    if is_complete:
+        return "completed"
+    if on_time_class == "overdue_active":
+        return "overdue"
+    return "active"
+
+
+def compute_operator_detail(
+    orders: Iterable[dict],
+    *,
+    operator_id: str,
+    date_from: date,
+    date_to: date,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = JOB_PAGE_DEFAULT,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Drill-down for one operator. Job history is paginated; never unbounded."""
+    email = (operator_id or "").strip()
+    bundle = compute_operator_kpis(
+        orders,
+        date_from=date_from,
+        date_to=date_to,
+        operator_id=email,
+        customer=customer,
+        item=item,
+        now=now,
+    )
+    rec = next((r for r in bundle["operators"] if r.get("email") == email), None)
+    if rec is None:
+        rec = _empty_operator(email, email)
+
+    jobs: List[dict] = []
+    today = wib_today(now)
+    status_f = (status or "all").strip().lower()
+    if status_f in ("", "all"):
+        status_f = "all"
+
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        cust = (order.get("customer") or "").strip()
+        if customer and customer not in ("all", "") and cust != customer:
+            continue
+        if not order_matches_item(order, item):
+            continue
+        po_id = order.get("id") or order.get("po_number")
+        events = _timeline_qty_events(order)
+        deadline = assignment_deadline(order)
+        sample = analyze_sample_job(order)
+        sample_status = None
+        if sample and sample.get("operator_email") == email:
+            sample_status = sample.get("status")
+        for split in order.get("operator_splits") or []:
+            if (split.get("operator_email") or "").strip() != email:
+                continue
+            if not split_is_in_period(split, events, date_from, date_to):
+                continue
+            assigned = max(0, safe_int(split.get("quantity")))
+            live = max(0, safe_int(split.get("qty_completed")))
+            completed, _days = completed_in_period_for_split(split, events, date_from, date_to)
+            completed = max(0, min(completed, assigned if assigned > 0 else completed))
+            is_complete = assigned > 0 and live >= assigned
+            completion_day = (
+                assignment_completion_day(split, events, assigned=assigned) if is_complete else None
+            )
+            ot_class = classify_on_time(
+                is_complete=is_complete,
+                completion_day=completion_day,
+                deadline=deadline,
+                today=today,
+            )
+            job_status = _job_status_label(ot_class, is_complete)
+            if status_f != "all" and job_status != status_f:
+                continue
+            line_idx = split.get("line_idx")
+            jobs.append({
+                "assignment_id": assignment_id(split, email, po_id),
+                "po_id": po_id,
+                "po_number": _order_po_number(order) or str(po_id),
+                "customer": cust,
+                "item": line_item_label(order, line_idx),
+                "line_idx": line_idx,
+                "assigned_qty": assigned,
+                "completed_qty": completed,
+                "remaining": remaining_qty(assigned, completed),
+                "work_date": split.get("work_date") or None,
+                "deadline": deadline.isoformat() if deadline else None,
+                "sample_status": sample_status,
+                "job_status": job_status,
+                "on_time_class": ot_class,
+            })
+
+    jobs.sort(key=lambda j: (j.get("work_date") or "", j.get("po_number") or ""), reverse=True)
+    try:
+        page_n = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page_n = 1
+    try:
+        size = int(page_size or JOB_PAGE_DEFAULT)
+    except (TypeError, ValueError):
+        size = JOB_PAGE_DEFAULT
+    size = max(1, min(JOB_PAGE_MAX, size))
+    total = len(jobs)
+    start_i = (page_n - 1) * size
+    page_jobs = jobs[start_i:start_i + size]
+
+    op_weeks = {}
+    for ow in bundle.get("weekly_trend", {}).get("operators") or []:
+        if ow.get("email") == email:
+            op_weeks = ow.get("weeks") or {}
+            break
+    weekly_series = []
+    prev = None
+    for w in bundle.get("weekly_trend", {}).get("weeks") or []:
+        qty = int(op_weeks.get(w["week"], 0) or 0)
+        weekly_series.append({
+            "week": w["week"], "from": w["from"], "to": w["to"], "label": w["label"],
+            "qty": qty, "wow_pct": wow_pct(qty, prev),
+        })
+        prev = qty
+
+    return {
+        "operator": rec,
+        "weekly_trend": {
+            "weeks": weekly_series,
+            "wow_pct": wow_pct(weekly_series[-1]["qty"], weekly_series[-2]["qty"]) if len(weekly_series) >= 2 else None,
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "jobs": page_jobs,
+        "jobs_page": {
+            "page": page_n,
+            "page_size": size,
+            "total": total,
+            "has_more": start_i + size < total,
+        },
+        "period": bundle["period"],
+        "read_only": True,
+        "sources": DATA_SOURCES,
+    }
+
+
+ACTIVITY_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "po_number": 1,
+    "customer": 1,
+    "cancelled": 1,
+    "product_name": 1,
+    "line_items.name": 1,
+    "line_items.item_code": 1,
+    "line_items.quantity": 1,
+    "line_items.color": 1,
+    "line_items.production_process": 1,
+    "packing_info": 1,
+    "helper_prep": 1,
+    "packing_status": 1,
+    "current_stage": 1,
+    "timeline.at": 1,
+    "timeline.note": 1,
+    "timeline.by_email": 1,
+    "timeline.by_role": 1,
+    "timeline.by_name": 1,
+}
+
+
+def build_activity_analytics_pipeline(
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> List[dict]:
+    """Single scan for packing + persiapan reports (not per-user queries)."""
+    base_match: Dict[str, Any] = {
+        "cancelled": {"$ne": True},
+        "$or": [
+            {"packing_info.qty_packed": {"$gt": 0}},
+            {"packing_info.lines.0": {"$exists": True}},
+            {"helper_prep.qty_prepared": {"$gte": 0}},
+            {"helper_prep.items.0": {"$exists": True}},
+        ],
+    }
+    doc_match: Dict[str, Any] = {}
+    if customer and customer not in ("all", ""):
+        doc_match["customer"] = customer
+    if po and po not in ("all", ""):
+        doc_match["po_number"] = po
+    if item and item not in ("all", ""):
+        doc_match["$or"] = [
+            {"line_items.name": item},
+            {"line_items.item_code": item},
+            {"product_name": item},
+        ]
+    docs_stage: List[dict] = []
+    if doc_match:
+        docs_stage.append({"$match": doc_match})
+    docs_stage.append({"$project": ACTIVITY_PROJECTION})
+    return [
+        {"$match": base_match},
+        {"$facet": {
+            "docs": docs_stage,
+            "customers": [
+                {"$group": {"_id": "$customer"}},
+                {"$match": {"_id": {"$nin": [None, ""]}}},
+                {"$sort": {"_id": 1}},
+            ],
+            "items": [
+                {"$unwind": {"path": "$line_items", "preserveNullAndEmptyArrays": True}},
+                {"$project": {"name": {"$ifNull": ["$line_items.name", "$product_name"]}}},
+                {"$match": {"name": {"$nin": [None, ""]}}},
+                {"$group": {"_id": "$name"}},
+                {"$sort": {"_id": 1}},
+            ],
+            "pos": [
+                {"$group": {"_id": "$po_number"}},
+                {"$match": {"_id": {"$nin": [None, ""]}}},
+                {"$sort": {"_id": 1}},
+            ],
+        }},
+    ]
+
+
+def parse_packing_note(note: str) -> Optional[Tuple[int, Dict[int, int]]]:
+    m = PACKING_NOTE_RE.match((note or "").strip())
+    if not m:
+        return None
+    total = int(m.group(1))
+    lines: Dict[int, int] = {}
+    for lm in PACKING_LINE_RE.finditer(m.group(2) or ""):
+        lines[int(lm.group(1))] = int(lm.group(2))
+    return total, lines
+
+
+def parse_prep_note(note: str) -> Optional[Tuple[int, int]]:
+    m = PREP_NOTE_RE.match((note or "").strip())
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def packing_activity_events(order: dict) -> List[dict]:
+    """Positive per-line deltas from cumulative Qty Packing timeline notes.
+
+    packing_info.lines[].packed_qty is a CUMULATIVE snapshot. Summing snapshots
+    double-counts. Activity = max(0, new_qty - previous_qty) per line per Save.
+    Actor is timeline.by_email (the user who saved packing), never a viewer.
+    """
+    events: List[dict] = []
+    prev_lines: Dict[int, int] = {}
+    prev_total = 0
+    found_notes = False
+    for t in order.get("timeline") or []:
+        parsed = parse_packing_note(t.get("note") or "")
+        if not parsed:
+            continue
+        found_notes = True
+        total, lines = parsed
+        email = (t.get("by_email") or "").strip()
+        if not email:
+            prev_total = total
+            if lines:
+                prev_lines.update(lines)
+            continue
+        day = parse_iso_datetime_date(t.get("at"))
+        name = (t.get("by_name") or "").strip() or email
+        role = (t.get("by_role") or "").strip()
+        if lines:
+            for idx, qty in lines.items():
+                delta = qty - prev_lines.get(idx, 0)
+                prev_lines[idx] = qty
+                if delta > 0:
+                    events.append({
+                        "email": email,
+                        "name": name,
+                        "role": role,
+                        "day": day,
+                        "line_idx": idx,
+                        "delta": delta,
+                        "attribution": "timeline_delta",
+                    })
+            prev_total = total
+        else:
+            delta = total - prev_total
+            prev_total = total
+            if delta > 0:
+                events.append({
+                    "email": email,
+                    "name": name,
+                    "role": role,
+                    "day": day,
+                    "line_idx": None,
+                    "delta": delta,
+                    "attribution": "timeline_delta",
+                })
+    if found_notes:
+        return events
+
+    pi = order.get("packing_info") or {}
+    email = (pi.get("updated_by") or "").strip()
+    if not email:
+        return []
+    day = parse_iso_datetime_date(pi.get("updated_at"))
+    name = (pi.get("updated_by_name") or "").strip() or email
+    lines = pi.get("lines") if isinstance(pi.get("lines"), list) else []
+    if lines:
+        for it in lines:
+            qty = max(0, safe_int(it.get("packed_qty")))
+            if qty <= 0:
+                continue
+            events.append({
+                "email": email,
+                "name": name,
+                "role": "",
+                "day": day,
+                "line_idx": it.get("line_idx"),
+                "delta": qty,
+                "attribution": "last_saver_snapshot",
+            })
+        return events
+    qty = max(0, safe_int(pi.get("qty_packed")))
+    if qty > 0:
+        events.append({
+            "email": email,
+            "name": name,
+            "role": "",
+            "day": day,
+            "line_idx": 0,
+            "delta": qty,
+            "attribution": "last_saver_snapshot",
+        })
+    return events
+
+
+def prep_activity_events(order: dict) -> List[dict]:
+    """Positive PO-total deltas from cumulative Persiapan Helper timeline notes.
+
+    helper_prep.qty_prepared / items[].qty_prepared are CUMULATIVE. Timeline
+    notes only store the PO total, not per-line history. Per-user line split
+    is therefore not invented when multiple actors save the same PO.
+    """
+    events: List[dict] = []
+    prev = 0
+    found_notes = False
+    for t in order.get("timeline") or []:
+        parsed = parse_prep_note(t.get("note") or "")
+        if not parsed:
+            continue
+        found_notes = True
+        prepared, _required = parsed
+        email = (t.get("by_email") or "").strip()
+        delta = prepared - prev
+        prev = prepared
+        if not email or delta <= 0:
+            continue
+        events.append({
+            "email": email,
+            "name": (t.get("by_name") or "").strip() or email,
+            "role": (t.get("by_role") or "").strip(),
+            "day": parse_iso_datetime_date(t.get("at")),
+            "delta": delta,
+            "attribution": "timeline_delta",
+        })
+    if found_notes:
+        return events
+
+    hp = order.get("helper_prep") or {}
+    email = (hp.get("updated_by") or "").strip()
+    qty = max(0, safe_int(hp.get("qty_prepared")))
+    if not email or qty <= 0:
+        return []
+    return [{
+        "email": email,
+        "name": (hp.get("updated_by_name") or "").strip() or email,
+        "role": "",
+        "day": parse_iso_datetime_date(hp.get("updated_at")),
+        "delta": qty,
+        "attribution": "last_saver_snapshot",
+    }]
+
+
+def _empty_activity_user(email: str, name: str, role: str) -> dict:
+    return {
+        "user_id": email,
+        "email": email,
+        "name": name or email,
+        "role": role or "",
+        "total_qty": 0,
+        "po_count": 0,
+        "line_count": 0,
+        "avg_daily_qty": 0.0,
+        "last_activity_at": None,
+        "partial_jobs": 0,
+        "completed_jobs": 0,
+        "active_days": 0,
+        "attribution": "timeline_delta",
+    }
+
+
+def _print_line_indices(order: dict) -> List[int]:
+    lis = order.get("line_items") or []
+    out = []
+    for i, li in enumerate(lis):
+        p = (li.get("production_process") or "print").strip().lower()
+        if p != "non_print":
+            out.append(i)
+    return out if lis else [0]
+
+
+def compute_packing_report(
+    orders: Iterable[dict],
+    *,
+    date_from: date,
+    date_to: date,
+    user_id: Optional[str] = None,
+    role: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> dict:
+    """Read-only packing activity. Deltas from cumulative snapshots — never sum snapshots."""
+    users: Dict[str, dict] = {}
+    pos: Dict[str, set] = defaultdict(set)
+    lines_seen: Dict[str, set] = defaultdict(set)
+    days: Dict[str, set] = defaultdict(set)
+    last_day: Dict[str, Optional[date]] = {}
+    week_meta = weeks_covering(date_from, date_to)
+    week_keys = [w["week"] for w in week_meta]
+    week_totals = {k: 0 for k in week_keys}
+    per_user_weeks: Dict[str, Dict[str, int]] = defaultdict(lambda: {k: 0 for k in week_keys})
+    line_rows: List[dict] = []
+    used_fallback = False
+    user_filter = (user_id or "").strip()
+    if user_filter in ("all", ""):
+        user_filter = ""
+    role_filter = (role or "").strip()
+    if role_filter in ("all", ""):
+        role_filter = ""
+    cust_filter = (customer or "").strip()
+    if cust_filter in ("all", ""):
+        cust_filter = ""
+
+    roles: set = set()
+    user_opts: Dict[str, str] = {}
+
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        if cust_filter and (order.get("customer") or "") != cust_filter:
+            continue
+        if not order_matches_item(order, item):
+            continue
+        if not order_matches_po(order, po):
+            continue
+        po_id = order.get("id") or order.get("po_number")
+        po_num = _order_po_number(order) or str(po_id)
+        cust = (order.get("customer") or "").strip()
+        events = packing_activity_events(order)
+        packed_map: Dict[int, int] = defaultdict(int)
+        required_map: Dict[int, int] = {}
+        lis = order.get("line_items") or []
+        for i, li in enumerate(lis):
+            required_map[i] = max(0, safe_int(li.get("quantity")))
+        if not lis:
+            required_map[0] = max(0, safe_int((order.get("packing_info") or {}).get("qty_packed")))
+
+        for ev in events:
+            if ev.get("attribution") == "last_saver_snapshot":
+                used_fallback = True
+            email = ev["email"]
+            user_opts[email] = ev.get("name") or email
+            if ev.get("role"):
+                roles.add(ev["role"])
+            if user_filter and email != user_filter:
+                continue
+            if role_filter and (ev.get("role") or "") != role_filter:
+                continue
+            if not in_period(ev.get("day"), date_from, date_to):
+                continue
+            rec = users.setdefault(email, _empty_activity_user(email, ev.get("name") or email, ev.get("role") or ""))
+            if ev.get("name"):
+                rec["name"] = ev["name"]
+            if ev.get("role"):
+                rec["role"] = ev["role"]
+            if ev.get("attribution") == "last_saver_snapshot":
+                rec["attribution"] = "last_saver_snapshot"
+            rec["total_qty"] += ev["delta"]
+            pos[email].add(po_id)
+            idx = ev.get("line_idx")
+            if idx is None:
+                idx = 0
+            lines_seen[email].add((po_id, idx))
+            packed_map[idx] += ev["delta"]
+            if ev.get("day"):
+                days[email].add(ev["day"])
+                prev = last_day.get(email)
+                if prev is None or ev["day"] > prev:
+                    last_day[email] = ev["day"]
+                wk = iso_week_key(ev["day"])
+                if wk in week_totals:
+                    week_totals[wk] += ev["delta"]
+                    per_user_weeks[email][wk] += ev["delta"]
+            line_rows.append({
+                "user_id": email,
+                "user_name": rec["name"],
+                "role": rec["role"],
+                "po_id": po_id,
+                "po_number": po_num,
+                "customer": cust,
+                "line_idx": idx,
+                "item": line_item_label(order, idx),
+                "packed_qty": ev["delta"],
+                "day": ev["day"].isoformat() if ev.get("day") else None,
+            })
+
+        if packed_map:
+            required_total = sum(required_map.values()) if required_map else 0
+            packed_total = sum(packed_map.values())
+            emails_on_po = {e["email"] for e in events if in_period(e.get("day"), date_from, date_to)}
+            if user_filter:
+                emails_on_po = {e for e in emails_on_po if e == user_filter}
+            complete = required_total > 0 and packed_total >= required_total
+            for em in emails_on_po:
+                if em in users:
+                    if complete:
+                        users[em]["completed_jobs"] += 1
+                    else:
+                        users[em]["partial_jobs"] += 1
+
+    collapsed: Dict[Tuple[str, Any, Any], dict] = {}
+    for row in line_rows:
+        key = (row["user_id"], row["po_id"], row["line_idx"])
+        if key not in collapsed:
+            collapsed[key] = dict(row)
+        else:
+            collapsed[key]["packed_qty"] += row["packed_qty"]
+            if row.get("day") and (not collapsed[key].get("day") or row["day"] > collapsed[key]["day"]):
+                collapsed[key]["day"] = row["day"]
+    line_rows = sorted(
+        collapsed.values(),
+        key=lambda r: (r.get("po_number") or "", int(r.get("line_idx") or 0), r.get("user_name") or ""),
+    )
+
+    rows = []
+    for email, rec in users.items():
+        rec["po_count"] = len(pos.get(email) or [])
+        rec["line_count"] = len(lines_seen.get(email) or [])
+        adays = days.get(email) or set()
+        rec["active_days"] = len(adays)
+        rec["avg_daily_qty"] = round(rec["total_qty"] / len(adays), 2) if adays else 0.0
+        rec["last_activity_at"] = last_day[email].isoformat() if last_day.get(email) else None
+        rec["weekly"] = per_user_weeks.get(email) or {k: 0 for k in week_keys}
+        rows.append(rec)
+    rows.sort(key=lambda r: (-r["total_qty"], r["name"] or r["email"]))
+
+    series = []
+    prev_qty = None
+    for meta in week_meta:
+        qty = week_totals.get(meta["week"], 0)
+        series.append({**meta, "qty": qty, "wow_pct": wow_pct(qty, prev_qty)})
+        prev_qty = qty
+
+    total_qty = sum(r["total_qty"] for r in rows)
+    return {
+        "kpis": {
+            "total_qty": total_qty,
+            "user_count": len(rows),
+            "po_count": len(set().union(*pos.values()) if pos else set()),
+            "line_count": sum(r["line_count"] for r in rows),
+        },
+        "users": rows,
+        "lines": line_rows,
+        "weekly_trend": {
+            "weeks": series,
+            "wow_pct": wow_pct(series[-1]["qty"], series[-2]["qty"]) if len(series) >= 2 else None,
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "filters": {
+            "users": [{"id": e, "name": n} for e, n in sorted(user_opts.items(), key=lambda x: x[1] or x[0])],
+            "roles": sorted(roles),
+        },
+        "attribution": {
+            "model": "timeline_delta" if not used_fallback else "mixed",
+            "cumulative_field": "packing_info.lines[].packed_qty / packing_info.qty_packed",
+            "actor": "timeline.by_email pada note 'Qty Packing' (user Save Packing)",
+            "timestamp": "timeline.at",
+            "per_line": True,
+            "note": DATA_SOURCES["packing"],
+            "fallback_used": used_fallback,
+        },
+        "period": {
+            "from": date_from.isoformat(),
+            "to": date_to.isoformat(),
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "read_only": True,
+        "sources": DATA_SOURCES,
+        "index_recommendations": INDEX_RECOMMENDATIONS,
+    }
+
+
+def _prep_line_snapshot(order: dict) -> List[dict]:
+    hp = order.get("helper_prep") or {}
+    items = hp.get("items") if isinstance(hp.get("items"), list) else []
+    out = []
+    print_idxs = set(_print_line_indices(order))
+    if items:
+        for it in items:
+            idx = it.get("line_idx")
+            target = max(0, safe_int(it.get("qty_required")))
+            prepared = max(0, safe_int(it.get("qty_prepared")))
+            out.append({
+                "line_idx": idx,
+                "item": (it.get("name") or line_item_label(order, idx)),
+                "target": target,
+                "prepared": prepared,
+                "remaining": remaining_qty(target, prepared),
+            })
+        return out
+    # Legacy: single total, only print lines (Cup/barang cetak) — no invented cup_qty.
+    total_prep = max(0, safe_int(hp.get("qty_prepared")))
+    total_req = max(0, safe_int(hp.get("qty_required")))
+    lis = order.get("line_items") or []
+    if not lis:
+        if total_prep or total_req:
+            out.append({
+                "line_idx": 0,
+                "item": (order.get("product_name") or "Item"),
+                "target": total_req,
+                "prepared": total_prep,
+                "remaining": remaining_qty(total_req, total_prep),
+            })
+        return out
+    if len(print_idxs) == 1:
+        idx = next(iter(print_idxs))
+        out.append({
+            "line_idx": idx,
+            "item": line_item_label(order, idx),
+            "target": total_req,
+            "prepared": total_prep,
+            "remaining": remaining_qty(total_req, total_prep),
+        })
+        return out
+    for idx in sorted(print_idxs):
+        li = lis[idx]
+        target = max(0, safe_int(li.get("quantity")))
+        out.append({
+            "line_idx": idx,
+            "item": line_item_label(order, idx),
+            "target": target,
+            "prepared": None,
+            "remaining": None,
+            "note": "Qty per-line tidak tersedia pada snapshot legacy (hanya total PO).",
+        })
+    return out
+
+
+def compute_preparation_report(
+    orders: Iterable[dict],
+    *,
+    date_from: date,
+    date_to: date,
+    user_id: Optional[str] = None,
+    role: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> dict:
+    """Read-only persiapan (Cup = line cetak). User qty from timeline deltas, not last saver."""
+    users: Dict[str, dict] = {}
+    pos: Dict[str, set] = defaultdict(set)
+    lines_seen: Dict[str, set] = defaultdict(set)
+    days: Dict[str, set] = defaultdict(set)
+    last_day: Dict[str, Optional[date]] = {}
+    week_meta = weeks_covering(date_from, date_to)
+    week_keys = [w["week"] for w in week_meta]
+    week_totals = {k: 0 for k in week_keys}
+    per_user_weeks: Dict[str, Dict[str, int]] = defaultdict(lambda: {k: 0 for k in week_keys})
+    po_rows: List[dict] = []
+    used_fallback = False
+    multi_user_pos = 0
+    user_filter = (user_id or "").strip()
+    if user_filter in ("all", ""):
+        user_filter = ""
+    role_filter = (role or "").strip()
+    if role_filter in ("all", ""):
+        role_filter = ""
+    cust_filter = (customer or "").strip()
+    if cust_filter in ("all", ""):
+        cust_filter = ""
+
+    roles: set = set()
+    user_opts: Dict[str, str] = {}
+
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        if cust_filter and (order.get("customer") or "") != cust_filter:
+            continue
+        if not order_matches_item(order, item):
+            continue
+        if not order_matches_po(order, po):
+            continue
+        po_id = order.get("id") or order.get("po_number")
+        po_num = _order_po_number(order) or str(po_id)
+        cust = (order.get("customer") or "").strip()
+        events = prep_activity_events(order)
+        in_win = []
+        for ev in events:
+            if ev.get("attribution") == "last_saver_snapshot":
+                used_fallback = True
+            email = ev["email"]
+            user_opts[email] = ev.get("name") or email
+            if ev.get("role"):
+                roles.add(ev["role"])
+            if user_filter and email != user_filter:
+                continue
+            if role_filter and (ev.get("role") or "") != role_filter:
+                continue
+            if not in_period(ev.get("day"), date_from, date_to):
+                continue
+            in_win.append(ev)
+            rec = users.setdefault(email, _empty_activity_user(email, ev.get("name") or email, ev.get("role") or ""))
+            if ev.get("name"):
+                rec["name"] = ev["name"]
+            if ev.get("role"):
+                rec["role"] = ev["role"]
+            if ev.get("attribution") == "last_saver_snapshot":
+                rec["attribution"] = "last_saver_snapshot"
+            rec["total_qty"] += ev["delta"]
+            pos[email].add(po_id)
+            if ev.get("day"):
+                days[email].add(ev["day"])
+                prev = last_day.get(email)
+                if prev is None or ev["day"] > prev:
+                    last_day[email] = ev["day"]
+                wk = iso_week_key(ev["day"])
+                if wk in week_totals:
+                    week_totals[wk] += ev["delta"]
+                    per_user_weeks[email][wk] += ev["delta"]
+
+        actors = {(e["email"], e.get("name"), e.get("role")) for e in in_win}
+        if len({a[0] for a in actors}) > 1:
+            multi_user_pos += 1
+        line_snap = _prep_line_snapshot(order)
+        for li in line_snap:
+            for em, _n, _r in actors:
+                lines_seen[em].add((po_id, li.get("line_idx")))
+        user_qtys = defaultdict(int)
+        for ev in in_win:
+            user_qtys[ev["email"]] += ev["delta"]
+        if in_win:
+            po_rows.append({
+                "po_id": po_id,
+                "po_number": po_num,
+                "customer": cust,
+                "users": [
+                    {
+                        "user_id": em,
+                        "name": users[em]["name"] if em in users else em,
+                        "role": users[em]["role"] if em in users else "",
+                        "qty_prepared": qty,
+                    }
+                    for em, qty in user_qtys.items()
+                ],
+                "lines": line_snap,
+                "per_line_user_history": False if len(user_qtys) > 1 else True,
+                "limitation": (
+                    "Timeline persiapan hanya menyimpan total PO. Qty per user di bawah "
+                    "adalah delta total, bukan split per line. Snapshot line = kondisi terkini."
+                    if len(user_qtys) > 1 else None
+                ),
+            })
+
+    rows = []
+    for email, rec in users.items():
+        rec["po_count"] = len(pos.get(email) or [])
+        rec["line_count"] = len(lines_seen.get(email) or [])
+        adays = days.get(email) or set()
+        rec["active_days"] = len(adays)
+        rec["avg_daily_qty"] = round(rec["total_qty"] / len(adays), 2) if adays else 0.0
+        rec["last_activity_at"] = last_day[email].isoformat() if last_day.get(email) else None
+        rec["weekly"] = per_user_weeks.get(email) or {k: 0 for k in week_keys}
+        rows.append(rec)
+    rows.sort(key=lambda r: (-r["total_qty"], r["name"] or r["email"]))
+
+    series = []
+    prev_qty = None
+    for meta in week_meta:
+        qty = week_totals.get(meta["week"], 0)
+        series.append({**meta, "qty": qty, "wow_pct": wow_pct(qty, prev_qty)})
+        prev_qty = qty
+
+    return {
+        "kpis": {
+            "total_qty": sum(r["total_qty"] for r in rows),
+            "user_count": len(rows),
+            "po_count": len(set().union(*pos.values()) if pos else set()),
+            "line_count": sum(r["line_count"] for r in rows),
+        },
+        "users": rows,
+        "pos": po_rows,
+        "weekly_trend": {
+            "weeks": series,
+            "wow_pct": wow_pct(series[-1]["qty"], series[-2]["qty"]) if len(series) >= 2 else None,
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "filters": {
+            "users": [{"id": e, "name": n} for e, n in sorted(user_opts.items(), key=lambda x: x[1] or x[0])],
+            "roles": sorted(roles),
+        },
+        "attribution": {
+            "model": "timeline_delta" if not used_fallback else "mixed",
+            "cumulative_field": "helper_prep.qty_prepared / helper_prep.items[].qty_prepared",
+            "actor": "timeline.by_email pada note 'Persiapan Helper' (user Save persiapan)",
+            "timestamp": "timeline.at",
+            "per_line_snapshot": "helper_prep.items (kondisi terkini, bukan history per user)",
+            "per_line_user_history": False,
+            "cup_field": None,
+            "cup_note": "Tidak ada field cup_qty. Cup/barang = line item Cetak (production_process != non_print).",
+            "multi_user_pos": multi_user_pos,
+            "fallback_used": used_fallback,
+            "note": DATA_SOURCES["preparation"],
+        },
         "period": {
             "from": date_from.isoformat(),
             "to": date_to.isoformat(),
