@@ -46,6 +46,7 @@ ANALYTICS_PROJECTION = {
     "id": 1,
     "po_number": 1,
     "customer": 1,
+    "outlet": 1,
     "cancelled": 1,
     "created_at": 1,
     "product_name": 1,
@@ -365,6 +366,26 @@ def order_matches_item(order: dict, item: Optional[str]) -> bool:
     return any(needle == n.lower() or needle in n.lower() for n in order_item_names(order))
 
 
+def line_matches_item(order: dict, line_idx: Any, item: Optional[str]) -> bool:
+    if not item or item == "all":
+        return True
+    needle = item.strip().lower()
+    if not needle:
+        return True
+    try:
+        idx = int(line_idx)
+        if idx < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        lis = order.get("line_items") or []
+        idx = 0 if len(lis) == 1 else None
+    if idx is None:
+        return order_matches_item(order, item)
+    name = line_item_name(order, idx).lower()
+    label = line_item_label(order, idx).lower()
+    return needle == name or needle in name or needle == label or needle in label
+
+
 def line_item_label(order: dict, line_idx: Any) -> str:
     lis = order.get("line_items") or []
     try:
@@ -395,6 +416,50 @@ def line_item_name(order: dict, line_idx: Any) -> str:
 
 def _order_po_number(order: dict) -> str:
     return (order.get("po_number") or order.get("id") or "").strip()
+
+
+def outlet_customer_label(order: dict) -> str:
+    """Display Outlet / Customer from existing order fields. Never invent a name."""
+    outlet = (order.get("outlet") or "").strip()
+    customer = (order.get("customer") or "").strip()
+    return outlet or customer
+
+
+def order_matches_customer(order: dict, customer: Optional[str]) -> bool:
+    """Match filter against order.customer or order.outlet (same dropdown)."""
+    if not customer or customer == "all":
+        return True
+    needle = customer.strip()
+    if not needle:
+        return True
+    return (order.get("customer") or "") == needle or (order.get("outlet") or "") == needle
+
+
+def _doc_match_filters(
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    operator_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Mongo match for analytics doc facet. Combines customer/outlet + item $or safely."""
+    clauses: List[dict] = []
+    if operator_id and operator_id not in ("all", ""):
+        clauses.append({"operator_splits.operator_email": operator_id})
+    if customer and customer not in ("all", ""):
+        clauses.append({"$or": [{"customer": customer}, {"outlet": customer}]})
+    if po and po not in ("all", ""):
+        clauses.append({"po_number": po})
+    if item and item not in ("all", ""):
+        clauses.append({"$or": [
+            {"line_items.name": item},
+            {"line_items.item_code": item},
+            {"product_name": item},
+        ]})
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
 
 
 def order_matches_po(order: dict, po: Optional[str]) -> bool:
@@ -703,19 +768,7 @@ def build_operator_analytics_pipeline(
         "cancelled": {"$ne": True},
         "operator_splits.0": {"$exists": True},
     }
-    doc_match: Dict[str, Any] = {}
-    if operator_id and operator_id not in ("all", ""):
-        doc_match["operator_splits.operator_email"] = operator_id
-    if customer and customer not in ("all", ""):
-        doc_match["customer"] = customer
-    if po and po not in ("all", ""):
-        doc_match["po_number"] = po
-    if item and item not in ("all", ""):
-        doc_match["$or"] = [
-            {"line_items.name": item},
-            {"line_items.item_code": item},
-            {"product_name": item},
-        ]
+    doc_match = _doc_match_filters(customer, item, po, operator_id)
 
     docs_stage: List[dict] = []
     if doc_match:
@@ -736,8 +789,20 @@ def build_operator_analytics_pipeline(
                 {"$sort": {"name": 1, "_id": 1}},
             ],
             "customers": [
-                {"$group": {"_id": "$customer"}},
-                {"$match": {"_id": {"$nin": [None, ""]}}},
+                {"$project": {
+                    "names": {
+                        "$filter": {
+                            "input": ["$customer", "$outlet"],
+                            "as": "n",
+                            "cond": {"$and": [
+                                {"$ne": ["$$n", None]},
+                                {"$ne": ["$$n", ""]},
+                            ]},
+                        }
+                    }
+                }},
+                {"$unwind": "$names"},
+                {"$group": {"_id": "$names"}},
                 {"$sort": {"_id": 1}},
             ],
             "items": [
@@ -772,7 +837,8 @@ DATA_SOURCES = {
     "preparation_per_line": "helper_prep.items[] adalah snapshot terkini per line. History per-line per-user tidak tersimpan di timeline (hanya total PO). Jangan mengatribusikan seluruh line ke user terakhir jika ada lebih dari satu actor.",
     "screener": "timeline 'Screen qty: N' — screener_info.screen_qty adalah snapshot kumulatif PO-level (bukan per-line). Activity = delta positif per Save. Actor = timeline.by_email. Tanpa note: snapshot screener_info.updated_by pada updated_at.",
     "screener_line": "Tidak ada qty screener per line. Cup/Item = line_items cetak pada PO yang sama; qty per cup tidak dipecah jika PO multi-line (tidak dikarang).",
-    "design": "Tidak ada design_id per line. Unit = unique printable line (po_id + line_idx), dilabeli 'Design / Line Cetak'. Hanya line dengan qty_completed operator > 0 pada periode. Progress update berulang bukan design baru. design_files (upload) tidak dihitung.",
+    "design": "Tidak ada design_id per line. Unit = unique printable line (po_id + line_idx), dilabeli 'Design / Line Cetak'. Progress/upload berulang bukan design baru.",
+    "designer": "Aktor Designer = design_files.uploaded_by (user yang upload file design). Bukan last_modified_by / opener PO. First uploader pada PO adalah pemilik attribution; upload berikutnya pada PO yang sama = update, bukan design baru. Tidak ada design_id per line — Jumlah Design = distinct printable line pada PO tersebut. Tanpa uploaded_by → N/A, tidak dikarang.",
     "daily_target": "app_settings.key=operator_output_targets, keyed by operator_id (user id) + email. Achievement = actual avg/hari aktif vs target/hari. Tidak ada kalender kerja — tidak dikarang target mingguan 5/6/7 hari. Target yang dipakai = current target (tidak ada effective_from history pada settings).",
 }
 
@@ -883,15 +949,12 @@ def compute_operator_kpis(
     op_filter = (operator_id or "").strip()
     if op_filter in ("all", ""):
         op_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
 
     order_list = list(orders)
     for order in order_list:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -906,6 +969,8 @@ def compute_operator_kpis(
             if not email:
                 continue
             if op_filter and email != op_filter:
+                continue
+            if not line_matches_item(order, split.get("line_idx"), item):
                 continue
             if not split_is_in_period(split, events, date_from, date_to):
                 continue
@@ -1245,14 +1310,11 @@ def compute_weekly_trend(
     op_filter = (operator_id or "").strip()
     if op_filter in ("all", ""):
         op_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
 
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -1264,6 +1326,8 @@ def compute_weekly_trend(
             if not email:
                 continue
             if op_filter and email != op_filter:
+                continue
+            if not line_matches_item(order, split.get("line_idx"), item):
                 continue
             if not split_is_in_period(split, events, date_from, date_to):
                 continue
@@ -1402,8 +1466,7 @@ def compute_operator_detail(
     for order in orders:
         if order.get("cancelled"):
             continue
-        cust = (order.get("customer") or "").strip()
-        if customer and customer not in ("all", "") and cust != customer:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -1420,6 +1483,8 @@ def compute_operator_detail(
             if (split.get("operator_email") or "").strip() != email:
                 continue
             if not split_is_in_period(split, events, date_from, date_to):
+                continue
+            if not line_matches_item(order, split.get("line_idx"), item):
                 continue
             assigned = max(0, safe_int(split.get("quantity")))
             live = max(0, safe_int(split.get("qty_completed")))
@@ -1449,7 +1514,7 @@ def compute_operator_detail(
                 "assignment_id": assignment_id(split, email, po_id),
                 "po_id": po_id,
                 "po_number": _order_po_number(order) or str(po_id),
-                "customer": cust,
+                "customer": outlet_customer_label(order),
                 "item": line_item_label(order, line_idx),
                 "cup": line_item_name(order, line_idx),
                 "line_idx": line_idx,
@@ -1522,6 +1587,7 @@ ACTIVITY_PROJECTION = {
     "id": 1,
     "po_number": 1,
     "customer": 1,
+    "outlet": 1,
     "cancelled": 1,
     "product_name": 1,
     "line_items.name": 1,
@@ -1558,17 +1624,7 @@ def build_activity_analytics_pipeline(
             {"screener_info.screen_qty": {"$gte": 0}},
         ],
     }
-    doc_match: Dict[str, Any] = {}
-    if customer and customer not in ("all", ""):
-        doc_match["customer"] = customer
-    if po and po not in ("all", ""):
-        doc_match["po_number"] = po
-    if item and item not in ("all", ""):
-        doc_match["$or"] = [
-            {"line_items.name": item},
-            {"line_items.item_code": item},
-            {"product_name": item},
-        ]
+    doc_match = _doc_match_filters(customer, item, po)
     docs_stage: List[dict] = []
     if doc_match:
         docs_stage.append({"$match": doc_match})
@@ -1578,8 +1634,91 @@ def build_activity_analytics_pipeline(
         {"$facet": {
             "docs": docs_stage,
             "customers": [
-                {"$group": {"_id": "$customer"}},
+                {"$project": {
+                    "names": {
+                        "$filter": {
+                            "input": ["$customer", "$outlet"],
+                            "as": "n",
+                            "cond": {"$and": [
+                                {"$ne": ["$$n", None]},
+                                {"$ne": ["$$n", ""]},
+                            ]},
+                        }
+                    }
+                }},
+                {"$unwind": "$names"},
+                {"$group": {"_id": "$names"}},
+                {"$sort": {"_id": 1}},
+            ],
+            "items": [
+                {"$unwind": {"path": "$line_items", "preserveNullAndEmptyArrays": True}},
+                {"$project": {"name": {"$ifNull": ["$line_items.name", "$product_name"]}}},
+                {"$match": {"name": {"$nin": [None, ""]}}},
+                {"$group": {"_id": "$name"}},
+                {"$sort": {"_id": 1}},
+            ],
+            "pos": [
+                {"$group": {"_id": "$po_number"}},
                 {"$match": {"_id": {"$nin": [None, ""]}}},
+                {"$sort": {"_id": 1}},
+            ],
+        }},
+    ]
+
+
+DESIGN_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "po_number": 1,
+    "customer": 1,
+    "outlet": 1,
+    "cancelled": 1,
+    "product_name": 1,
+    "line_items.name": 1,
+    "line_items.item_code": 1,
+    "line_items.production_process": 1,
+    "design_files.id": 1,
+    "design_files.uploaded_by": 1,
+    "design_files.uploaded_by_role": 1,
+    "design_files.uploaded_by_name": 1,
+    "design_files.uploaded_at": 1,
+}
+
+
+def build_design_analytics_pipeline(
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> List[dict]:
+    """Single scan for designer report (design_files), independent of operator_splits."""
+    base_match: Dict[str, Any] = {
+        "cancelled": {"$ne": True},
+        "design_files.0": {"$exists": True},
+    }
+    doc_match = _doc_match_filters(customer, item, po)
+    docs_stage: List[dict] = []
+    if doc_match:
+        docs_stage.append({"$match": doc_match})
+    docs_stage.append({"$project": DESIGN_PROJECTION})
+    return [
+        {"$match": base_match},
+        {"$facet": {
+            "docs": docs_stage,
+            "customers": [
+                {"$project": {
+                    "names": {
+                        "$filter": {
+                            "input": ["$customer", "$outlet"],
+                            "as": "n",
+                            "cond": {"$and": [
+                                {"$ne": ["$$n", None]},
+                                {"$ne": ["$$n", ""]},
+                            ]},
+                        }
+                    }
+                }},
+                {"$unwind": "$names"},
+                {"$group": {"_id": "$names"}},
                 {"$sort": {"_id": 1}},
             ],
             "items": [
@@ -1808,9 +1947,6 @@ def compute_packing_report(
     role_filter = (role or "").strip()
     if role_filter in ("all", ""):
         role_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
 
     roles: set = set()
     user_opts: Dict[str, str] = {}
@@ -1818,7 +1954,7 @@ def compute_packing_report(
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -1826,7 +1962,7 @@ def compute_packing_report(
             continue
         po_id = order.get("id") or order.get("po_number")
         po_num = _order_po_number(order) or str(po_id)
-        cust = (order.get("customer") or "").strip()
+        cust = outlet_customer_label(order)
         events = packing_activity_events(order)
         packed_map: Dict[int, int] = defaultdict(int)
         required_map: Dict[int, int] = {}
@@ -2059,9 +2195,6 @@ def compute_preparation_report(
     role_filter = (role or "").strip()
     if role_filter in ("all", ""):
         role_filter = ""
-    cust_filter = (customer or "").strip()
-    if cust_filter in ("all", ""):
-        cust_filter = ""
 
     roles: set = set()
     user_opts: Dict[str, str] = {}
@@ -2069,7 +2202,7 @@ def compute_preparation_report(
     for order in orders:
         if order.get("cancelled"):
             continue
-        if cust_filter and (order.get("customer") or "") != cust_filter:
+        if not order_matches_customer(order, customer):
             continue
         if not order_matches_item(order, item):
             continue
@@ -2077,7 +2210,7 @@ def compute_preparation_report(
             continue
         po_id = order.get("id") or order.get("po_number")
         po_num = _order_po_number(order) or str(po_id)
-        cust = (order.get("customer") or "").strip()
+        cust = outlet_customer_label(order)
         events = prep_activity_events(order)
         in_win = []
         for ev in events:
