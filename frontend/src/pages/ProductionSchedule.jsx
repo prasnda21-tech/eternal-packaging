@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
+import { AlertCircle, Download, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
@@ -20,26 +20,26 @@ const STATUS_OPTS = [
 ];
 
 const TABLE_COLS = [
-  { key: "deadline", label: "Deadline", width: 128 },
-  { key: "deadline_ship", label: "Deadline Pengiriman", width: 168, testid: "prod-th-deadline-effective" },
-  { key: "work_date", label: "Pengerjaan", width: 140, testid: "prod-th-work-date" },
-  { key: "prio", label: "Prio", width: 80 },
-  { key: "buffer", label: "Buffer", width: 80, testid: "prod-th-buffer" },
-  { key: "po", label: "No PO", width: 110 },
-  { key: "customer", label: "Customer", width: 140 },
-  { key: "outlet", label: "Outlet", width: 120 },
-  { key: "qty", label: "Total Qty", width: 90, num: true },
-  { key: "operator", label: "Operator", width: 160 },
-  { key: "design", label: "Design", width: 110 },
-  { key: "payment", label: "Payment", width: 110 },
-  { key: "hold", label: "HOLD", width: 72 },
-  { key: "screen", label: "Qty Screen", width: 90, num: true },
-  { key: "helper", label: "Persiapan", width: 110 },
-  { key: "packing", label: "Packing", width: 90 },
-  { key: "sj", label: "Surat Jalan", width: 120 },
-  { key: "loading", label: "Loading", width: 80 },
-  { key: "driver", label: "Driver", width: 100 },
-  { key: "status", label: "Status Akhir", width: 120 },
+  { key: "deadline", label: "Deadline", width: 118 },
+  { key: "deadline_ship", label: "Deadline Pengiriman", width: 196, testid: "prod-th-deadline-effective" },
+  { key: "work_date", label: "Tgl Pengerjaan", width: 136, testid: "prod-th-work-date" },
+  { key: "prio", label: "Prio", width: 88 },
+  { key: "buffer", label: "Buffer", width: 88, testid: "prod-th-buffer" },
+  { key: "po", label: "No PO", width: 128 },
+  { key: "customer", label: "Customer", width: 220 },
+  { key: "outlet", label: "Outlet", width: 168 },
+  { key: "qty", label: "Total Qty", width: 96, num: true },
+  { key: "operator", label: "Operator", width: 248 },
+  { key: "design", label: "Design", width: 118 },
+  { key: "payment", label: "Payment", width: 118 },
+  { key: "hold", label: "HOLD", width: 80 },
+  { key: "screen", label: "Qty Screen", width: 100, num: true },
+  { key: "helper", label: "Persiapan", width: 132 },
+  { key: "packing", label: "Packing", width: 100 },
+  { key: "sj", label: "Surat Jalan", width: 136 },
+  { key: "loading", label: "Loading", width: 88 },
+  { key: "driver", label: "Driver", width: 132 },
+  { key: "status", label: "Status Akhir", width: 136 },
 ];
 
 export default function ProductionSchedule() {
@@ -167,9 +167,9 @@ export default function ProductionSchedule() {
   };
 
   return (
-    <div data-testid="production-schedule-page">
-      <div className="page-heading">
-        <div>
+    <div className="prod-page" data-testid="production-schedule-page">
+      <div className="page-heading prod-heading">
+        <div className="prod-heading-copy">
           <p className="eyebrow">Produksi · Jadwal</p>
           <h1>Jadwal Produksi</h1>
           <p className="subhead">
@@ -191,12 +191,11 @@ export default function ProductionSchedule() {
       </div>
 
       <section className="prod-filters" data-testid="prod-filters">
-        <div className="search-inline">
-          <Search size={14}/>
-          <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
-        </div>
-        <div className="prod-filter-group">
-          <Filter size={13}/>
+        <div className="prod-filter-row">
+          <div className="search-inline">
+            <Search size={13}/>
+            <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
+          </div>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} data-testid="prod-filter-status">
             {STATUS_OPTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
@@ -206,8 +205,13 @@ export default function ProductionSchedule() {
           <select value={operatorFilter} onChange={(e) => setOperatorFilter(e.target.value)} data-testid="prod-filter-operator">
             {operators.map((o) => <option key={o} value={o}>{o === "all" ? "Semua operator" : o}</option>)}
           </select>
+          <select value={bufferFilter} onChange={(e) => setBufferFilter(e.target.value)} data-testid="prod-filter-buffer">
+            <option value="all">Semua Buffer Stock</option>
+            <option value="yes">Buffer Stock</option>
+            <option value="no">Non Buffer Stock</option>
+          </select>
         </div>
-        <div className="prod-filter-group">
+        <div className="prod-filter-row">
           <select value={screenerFilter} onChange={(e) => setScreenerFilter(e.target.value)} data-testid="prod-filter-screener">
             <option value="all">Semua Screener</option>
             <option value="yes">Ada Qty Screen</option>
@@ -231,46 +235,37 @@ export default function ProductionSchedule() {
             <option value="Sebagian Terkirim">Sebagian Terkirim</option>
             <option value="Belum Terkirim">Belum Terkirim</option>
           </select>
-          <select value={bufferFilter} onChange={(e) => setBufferFilter(e.target.value)} data-testid="prod-filter-buffer">
-            <option value="all">Semua Buffer Stock</option>
-            <option value="yes">Buffer Stock</option>
-            <option value="no">Non Buffer Stock</option>
-          </select>
-        </div>
-        <div className="prod-filter-group">
           <label className="prod-check"><input type="checkbox" checked={urgentOnly} onChange={(e) => setUrgentOnly(e.target.checked)} data-testid="prod-filter-urgent"/> Urgent</label>
           <label className="prod-check"><input type="checkbox" checked={holdOnly} onChange={(e) => setHoldOnly(e.target.checked)} data-testid="prod-filter-hold"/> HOLD</label>
           <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Termasuk Selesai</label>
           <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Termasuk Cancelled</label>
         </div>
-        <div className="prod-filter-group">
+        <div className="prod-filter-row prod-filter-dates">
           <label className="prod-inline-date">Tanggal dari <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="prod-date-from"/></label>
-          <label className="prod-inline-date">sampai <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="prod-date-to"/></label>
-        </div>
-        <div className="prod-filter-group">
+          <label className="prod-inline-date">Tanggal sampai <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="prod-date-to"/></label>
           <select value={workDateFilter} onChange={(e) => setWorkDateFilter(e.target.value)} data-testid="prod-workdate-filter">
             <option value="all">Semua Pengerjaan</option>
             <option value="scheduled">Sudah Dijadwalkan</option>
             <option value="unscheduled">Belum Dijadwalkan</option>
           </select>
-          <label className="prod-inline-date">Pengerjaan dari <input type="date" value={workDateFrom} onChange={(e) => setWorkDateFrom(e.target.value)} data-testid="prod-workdate-from"/></label>
-          <label className="prod-inline-date">sampai <input type="date" value={workDateTo} onChange={(e) => setWorkDateTo(e.target.value)} data-testid="prod-workdate-to"/></label>
+          <label className="prod-inline-date">Pekerjaan dari <input type="date" value={workDateFrom} onChange={(e) => setWorkDateFrom(e.target.value)} data-testid="prod-workdate-from"/></label>
+          <label className="prod-inline-date">Pekerjaan sampai <input type="date" value={workDateTo} onChange={(e) => setWorkDateTo(e.target.value)} data-testid="prod-workdate-to"/></label>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} data-testid="prod-sort-by">
             <option value="deadline">Urutkan: Deadline</option>
             <option value="work_date_asc">Urutkan: Pengerjaan (terlama)</option>
             <option value="work_date">Urutkan: Pengerjaan (terbaru)</option>
           </select>
-        </div>
-        <div className="prod-filter-group">
-          <button className="icon-button" onClick={load} title="Muat ulang" data-testid="prod-refresh"><RefreshCw size={15} className={busy ? "spin" : ""}/></button>
-          <button className="ghost sm" onClick={resetFilters} data-testid="prod-filter-reset">Reset Filter</button>
-          <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
-          {canExport && (
-            <>
-              <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={13}/> Export Terfilter</button>
-              <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={13}/> Export Semua</button>
-            </>
-          )}
+          <div className="prod-filter-actions">
+            <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
+            <button className="icon-button" onClick={load} title="Muat ulang" data-testid="prod-refresh"><RefreshCw size={13} className={busy ? "spin" : ""}/></button>
+            <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset">Reset Filter</button>
+            {canExport && (
+              <>
+                <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
+                <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
+              </>
+            )}
+          </div>
         </div>
       </section>
 
@@ -296,8 +291,8 @@ export default function ProductionSchedule() {
             <tbody>
               {sorted.map((r) => (
                 <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
-                  <td className="mono small nowrap">{formatDate(r.deadline)}</td>
-                  <td className="mono small nowrap" data-testid={`prod-deadline-effective-${r.po_number}`}>
+                  <td className="mono small">{formatDate(r.deadline)}</td>
+                  <td className="mono small prod-cell-stack" data-testid={`prod-deadline-effective-${r.po_number}`}>
                     {r.delivery_deadline_effective ? (
                       <>
                         {formatDate(r.delivery_deadline_effective)}
@@ -329,17 +324,13 @@ export default function ProductionSchedule() {
                       <span className="muted small">Menunggu approval</span>
                     )}
                   </td>
-                  <td className="mono small nowrap" data-testid={`prod-work-date-${r.po_number}`}>
+                  <td className="mono small prod-cell-stack" data-testid={`prod-work-date-${r.po_number}`}>
                     {(r.operator_work_dates || []).length > 0 ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        {(r.operator_work_dates || []).map((o, i) => (
-                          <span key={i} data-testid={`prod-op-work-date-${r.po_number}-${i}`}>
-                            <span className="muted small">{o.operator_name}</span>
-                            <br />
-                            <span className="mono">{o.work_date || "—"}</span>
-                          </span>
-                        ))}
-                      </div>
+                      (r.operator_work_dates || []).map((o, i) => (
+                        <div key={i} className="prod-date-line" data-testid={`prod-op-work-date-${r.po_number}-${i}`}>
+                          {o.work_date || "—"}
+                        </div>
+                      ))
                     ) : r.work_date ? (
                       <span data-testid={`prod-order-work-date-${r.po_number}`}>{r.work_date}</span>
                     ) : (
@@ -351,15 +342,15 @@ export default function ProductionSchedule() {
                     {r.buffer_stock ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span> : <span className="muted small">—</span>}
                   </td>
                   <td className="mono"><Link to={`/po/${r.id}`} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
-                  <td><strong>{r.customer || "-"}</strong></td>
-                  <td className="muted small">{r.outlet || "-"}</td>
+                  <td className="prod-cell-wrap"><strong>{r.customer || "-"}</strong></td>
+                  <td className="muted small prod-cell-wrap">{r.outlet || "-"}</td>
                   <td className="num">{(r.total_quantity || 0).toLocaleString("id-ID")}</td>
                   <td className="prod-ops">
                     {(r.operators || []).length === 0 ? <span className="muted small">-</span> :
                       (r.operators || []).map((op, i) => (
                         <div key={i} className="prod-op-line">
-                          <span>{op.operator_name}</span>
-                          <span className="muted small mono"> {op.qty_completed || 0}/{op.quantity}</span>
+                          <span className="prod-op-name">{op.operator_name}</span>
+                          <span className="muted small mono prod-op-qty">{op.qty_completed || 0}/{op.quantity}</span>
                         </div>
                       ))
                     }
