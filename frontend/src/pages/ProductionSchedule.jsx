@@ -5,6 +5,11 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import useAutoRefresh from "../lib/useAutoRefresh";
+import {
+  FILTER_DEFAULTS,
+  applyProductionFilters,
+  sortProductionRows,
+} from "../lib/productionScheduleFilters";
 
 const STATUS_OPTS = [
   { key: "all", label: "Semua status" },
@@ -14,45 +19,28 @@ const STATUS_OPTS = [
   { key: "cancelled", label: "Cancelled" },
 ];
 
-function statusOfRow(r) {
-  if (r.cancelled) return "cancelled";
-  if (r.current_stage >= 14) return "selesai";
-  if (r.hold) return "hold";
-  return "aktif";
-}
-
-function screenerFilled(r) {
-  const v = r.screen_qty;
-  return v !== null && v !== undefined && String(v).trim() !== "";
-}
-
-function normalizeDeliveryStatus(r) {
-  const raw = r.delivery_status;
-  if (!raw || raw === "Belum" || raw === "Belum Terkirim") return "Belum Terkirim";
-  if (raw === "Sebagian" || raw === "Sebagian Terkirim") return "Sebagian Terkirim";
-  if (raw === "Terkirim") return "Terkirim";
-  return raw;
-}
-
-const FILTER_DEFAULTS = {
-  q: "",
-  statusFilter: "all",
-  operatorFilter: "all",
-  customerFilter: "all",
-  urgentOnly: false,
-  holdOnly: false,
-  screenerFilter: "all",
-  helperFilter: "all",
-  packingFilter: "all",
-  deliveryFilter: "all",
-  bufferFilter: "all",
-  dateFrom: "",
-  dateTo: "",
-  workDateFilter: "all",
-  workDateFrom: "",
-  workDateTo: "",
-  sortBy: "deadline",
-};
+const TABLE_COLS = [
+  { key: "deadline", label: "Deadline", width: 128 },
+  { key: "deadline_ship", label: "Deadline Pengiriman", width: 168, testid: "prod-th-deadline-effective" },
+  { key: "work_date", label: "Pengerjaan", width: 140, testid: "prod-th-work-date" },
+  { key: "prio", label: "Prio", width: 80 },
+  { key: "buffer", label: "Buffer", width: 80, testid: "prod-th-buffer" },
+  { key: "po", label: "No PO", width: 110 },
+  { key: "customer", label: "Customer", width: 140 },
+  { key: "outlet", label: "Outlet", width: 120 },
+  { key: "qty", label: "Total Qty", width: 90, num: true },
+  { key: "operator", label: "Operator", width: 160 },
+  { key: "design", label: "Design", width: 110 },
+  { key: "payment", label: "Payment", width: 110 },
+  { key: "hold", label: "HOLD", width: 72 },
+  { key: "screen", label: "Qty Screen", width: 90, num: true },
+  { key: "helper", label: "Persiapan", width: 110 },
+  { key: "packing", label: "Packing", width: 90 },
+  { key: "sj", label: "Surat Jalan", width: 120 },
+  { key: "loading", label: "Loading", width: 80 },
+  { key: "driver", label: "Driver", width: 100 },
+  { key: "status", label: "Status Akhir", width: 120 },
+];
 
 export default function ProductionSchedule() {
   const { hasPerm } = useAuth();
@@ -79,8 +67,8 @@ export default function ProductionSchedule() {
   const [workDateFrom, setWorkDateFrom] = useState(FILTER_DEFAULTS.workDateFrom);
   const [workDateTo, setWorkDateTo] = useState(FILTER_DEFAULTS.workDateTo);
   const [sortBy, setSortBy] = useState(FILTER_DEFAULTS.sortBy);
-  const [includeCancelled, setIncludeCancelled] = useState(false);
-  const [includeCompleted, setIncludeCompleted] = useState(true);
+  const [includeCancelled, setIncludeCancelled] = useState(FILTER_DEFAULTS.includeCancelled);
+  const [includeCompleted, setIncludeCompleted] = useState(FILTER_DEFAULTS.includeCompleted);
   const [exporting, setExporting] = useState(false);
 
   const load = async () => {
@@ -135,70 +123,27 @@ export default function ProductionSchedule() {
     setWorkDateFrom(FILTER_DEFAULTS.workDateFrom);
     setWorkDateTo(FILTER_DEFAULTS.workDateTo);
     setSortBy(FILTER_DEFAULTS.sortBy);
+    setIncludeCancelled(FILTER_DEFAULTS.includeCancelled);
+    setIncludeCompleted(FILTER_DEFAULTS.includeCompleted);
   };
 
-  const filtered = useMemo(() => {
-    return rows.filter((r) => {
-      // Semua filter bersifat AND
-      if (statusFilter !== "all" && statusOfRow(r) !== statusFilter) return false;
-      if (urgentOnly && !r.urgent) return false;
-      if (holdOnly && !r.hold) return false;
-      if (customerFilter !== "all" && r.customer !== customerFilter) return false;
-      if (operatorFilter !== "all") {
-        const ops = (r.operators || []).map((o) => o.operator_name);
-        if (!ops.includes(operatorFilter)) return false;
-      }
-      if (screenerFilter === "yes" && !screenerFilled(r)) return false;
-      if (screenerFilter === "no" && screenerFilled(r)) return false;
-      if (helperFilter === "ok" && r.helper_shortage_status !== "Cukup") return false;
-      if (helperFilter === "kurang" && r.helper_shortage_status !== "Barang Kurang") return false;
-      if (helperFilter === "none") {
-        const req = r.helper_required;
-        const none = req === null || req === undefined || req === "";
-        if (!none) return false;
-      }
-      const packingStatus = r.packing_status || "Belum";
-      if (packingFilter !== "all" && packingStatus !== packingFilter) return false;
-      const deliveryStatus = normalizeDeliveryStatus(r);
-      if (deliveryFilter !== "all" && deliveryStatus !== deliveryFilter) return false;
-      if (bufferFilter === "yes" && !r.buffer_stock) return false;
-      if (bufferFilter === "no" && r.buffer_stock) return false;
-      if (dateFrom) {
-        const d = deadlineDateKey(r.deadline);
-        if (!d || d < dateFrom) return false;
-      }
-      if (dateTo) {
-        const d = deadlineDateKey(r.deadline);
-        if (!d || d > dateTo) return false;
-      }
-      if (workDateFilter === "scheduled" && !r.work_date && !(r.operator_work_dates || []).length) return false;
-      if (workDateFilter === "unscheduled" && (r.work_date || (r.operator_work_dates || []).length)) return false;
-      if (workDateFrom && (!r.work_date || r.work_date < workDateFrom)) return false;
-      if (workDateTo && (!r.work_date || r.work_date > workDateTo)) return false;
-      if (q) {
-        const t = q.toLowerCase();
-        const hay = `${r.po_number} ${r.customer} ${r.outlet}`.toLowerCase();
-        if (!hay.includes(t)) return false;
-      }
-      return true;
-    });
-  }, [rows, statusFilter, urgentOnly, holdOnly, customerFilter, operatorFilter, screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter, dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, q]);
+  const filterState = {
+    q, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+    screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
+    dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, sortBy,
+    includeCancelled, includeCompleted,
+  };
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    const cmp = (a, b) => {
-      if (sortBy === "work_date" || sortBy === "work_date_asc") {
-        const aw = a.work_date || "9999-12-31";
-        const bw = b.work_date || "9999-12-31";
-        return sortBy === "work_date_asc" ? aw.localeCompare(bw) : bw.localeCompare(aw);
-      }
-      const ad = a.deadline || "9999-12-31";
-      const bd = b.deadline || "9999-12-31";
-      return ad.localeCompare(bd);
-    };
-    arr.sort(cmp);
-    return arr;
-  }, [filtered, sortBy]);
+  const filtered = useMemo(
+    () => applyProductionFilters(rows, filterState),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, q, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+      screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
+      dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo,
+      includeCancelled, includeCompleted]
+  );
+
+  const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
 
   const download = async (scope) => {
     setExporting(true);
@@ -334,15 +279,18 @@ export default function ProductionSchedule() {
       {mode === "tabel" ? (
         <div className="prod-table-wrap" data-testid="prod-table">
           <table className="prod-table">
+            <colgroup>
+              {TABLE_COLS.map((c) => (
+                <col key={c.key} style={{ width: c.width, minWidth: c.width }} />
+              ))}
+            </colgroup>
             <thead>
               <tr>
-                <th>Deadline</th><th data-testid="prod-th-deadline-effective">Deadline Pengiriman</th><th data-testid="prod-th-work-date">Pengerjaan</th><th>Prio</th><th data-testid="prod-th-buffer">Buffer</th><th>No PO</th><th>Customer</th><th>Outlet</th>
-                <th className="num">Total Qty</th><th>Operator</th>
-                <th>Design</th><th>Payment</th><th>HOLD</th>
-                <th className="num">Qty Screen</th>
-                <th>Persiapan</th>
-                <th>Packing</th><th>Surat Jalan</th><th>Loading</th><th>Driver</th>
-                <th>Status Akhir</th>
+                {TABLE_COLS.map((c) => (
+                  <th key={c.key} className={c.num ? "num" : undefined} data-testid={c.testid} scope="col">
+                    {c.label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -447,15 +395,15 @@ export default function ProductionSchedule() {
                   </td>
                 </tr>
               ))}
-              {!filtered.length && !busy && (
-                <tr><td colSpan={20} className="empty-state">Tidak ada PO cocok dengan filter.</td></tr>
+              {!sorted.length && !busy && (
+                <tr><td colSpan={TABLE_COLS.length} className="empty-state">Tidak ada PO cocok dengan filter.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       ) : (
         <section className="prod-cards" data-testid="prod-cards">
-          {filtered.map((r) => (
+          {sorted.map((r) => (
             <Link key={r.id} to={`/po/${r.id}`} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
               <header>
                 <strong>{r.po_number}</strong>
@@ -474,7 +422,7 @@ export default function ProductionSchedule() {
               </div>
             </Link>
           ))}
-          {!filtered.length && !busy && <div className="empty-state" data-testid="prod-empty">Tidak ada PO cocok dengan filter.</div>}
+          {!sorted.length && !busy && <div className="empty-state" data-testid="prod-empty">Tidak ada PO cocok dengan filter.</div>}
         </section>
       )}
 
