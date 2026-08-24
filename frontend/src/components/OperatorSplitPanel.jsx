@@ -6,7 +6,7 @@ import { useAuth } from "../lib/auth";
 
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
-export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
+export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null }) {
   const { user, hasPerm } = useAuth();
   const [operators, setOperators] = useState([]);
   const [splits, setSplits] = useState([]);
@@ -49,7 +49,12 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
   }, [canEdit]);
 
   const totalAssigned = splits.reduce((s, x) => s + Number(x.quantity || 0), 0);
-  const remaining = printQtyTotal - totalAssigned;
+  const helperPrepared = order?.helper_prepared_print_qty;
+  const helperCapSet = helperPrepared !== null && helperPrepared !== undefined;
+  const assignmentCap = typeof order?.operator_assignment_cap === "number"
+    ? order.operator_assignment_cap
+    : (helperCapSet ? Math.min(printQtyTotal, Number(helperPrepared)) : printQtyTotal);
+  const remaining = assignmentCap - totalAssigned;
 
   // Per-line assigned totals for UX guardrails.
   const perLineAssigned = useMemo(() => {
@@ -78,8 +83,12 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
 
   const save = async () => {
     setErr("");
-    if (totalAssigned > printQtyTotal) {
-      setErr(`Total pembagian ${totalAssigned} melebihi total qty Cetak PO (${printQtyTotal}).`);
+    if (totalAssigned > assignmentCap) {
+      setErr(
+        helperCapSet
+          ? `Total pembagian ${totalAssigned} melebihi qty Helper Persiapan (${assignmentCap}).`
+          : `Total pembagian ${totalAssigned} melebihi total qty Cetak PO (${printQtyTotal}).`
+      );
       return;
     }
     for (const s of splits) {
@@ -156,6 +165,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
         <p className="muted small" data-testid="operator-not-required-note">
           <Info size={12}/> PO ini tidak memiliki barang dengan proses Cetak. Pembagian Operator hanya untuk barang Cetak.
         </p>
+        {footerActions}
       </section>
     );
   }
@@ -172,6 +182,11 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
         <span className="pill" data-testid="operator-scope-badge">
           Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
         </span>
+        {helperCapSet && (
+          <span className="pill sm" data-testid="operator-helper-cap-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
+            Cap Helper: {Number(assignmentCap).toLocaleString("id-ID")} pcs
+          </span>
+        )}
       </header>
 
       {/* Info baris tersedia untuk assignment */}
@@ -278,7 +293,8 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
           <div className="split-edit-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
             <h4 style={{ margin: 0 }} data-testid="atur-pembagian-title">Atur Pembagian</h4>
             <span className={remaining < 0 ? "warn" : "muted"}>
-              Sisa scope Cetak: {remaining.toLocaleString("id-ID")} pcs
+              Sisa cap: {remaining.toLocaleString("id-ID")} pcs
+              {helperCapSet ? " (Helper Persiapan)" : " (scope Cetak)"}
             </span>
           </div>
           {splits.map((s, i) => {
@@ -346,6 +362,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated }) {
           </div>
         </div>
       )}
+      {footerActions}
     </section>
   );
 }

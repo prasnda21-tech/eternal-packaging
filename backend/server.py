@@ -20,12 +20,16 @@ from permissions import (
 )
 from quantity_rules import (
     available_for_packing as _qr_available_for_packing,
+    helper_prepared_for_line as _qr_helper_prepared_for_line,
+    helper_prepared_print_qty as _qr_helper_prepared_print_qty,
     is_fully_delivered as _qr_is_fully_delivered,
     is_print_line as _qr_is_print_line,
     non_print_qty_total as _qr_non_print_qty_total,
     operator_assigned_qty as _qr_operator_assigned_qty,
+    operator_assignment_cap as _qr_operator_assignment_cap,
     packing_required_total as _qr_packing_required_total,
     packing_status_semantic as _qr_packing_status_semantic,
+    print_available_for_packing as _qr_print_available_for_packing,
     print_completed_qty as _qr_print_completed_qty,
     print_line_indices as _qr_print_line_indices,
     print_qty_total as _qr_print_qty_total,
@@ -33,8 +37,10 @@ from quantity_rules import (
     qty_packed as _qr_qty_packed,
     requires_printing as _qr_requires_printing,
     validate_delivery_qty as _qr_validate_delivery_qty,
+    validate_helper_prepared_qty as _qr_validate_helper_prepared_qty,
     validate_operator_assignment_total as _qr_validate_operator_assignment_total,
     validate_packing_qty as _qr_validate_packing_qty,
+    validate_print_completed_total as _qr_validate_print_completed_total,
 )
 
 
@@ -736,7 +742,8 @@ _DERIVED_ORDER_KEYS = (
     "delivery_deadline_lead_time_days", "delivery_deadline_status",
     "requires_printing", "print_qty_total", "packing_required_total",
     "non_print_qty_total", "print_completed_qty", "available_for_packing",
-    "operator_assigned_qty",
+    "operator_assigned_qty", "helper_prepared_print_qty",
+    "operator_assignment_cap", "print_available_for_packing",
 )
 
 
@@ -748,6 +755,9 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["packing_required_total"] = _packing_required_total(order)
     order["print_completed_qty"] = _print_completed_qty(order)
     order["operator_assigned_qty"] = _operator_assigned_qty(order)
+    order["helper_prepared_print_qty"] = _helper_prepared_print_qty(order)
+    order["operator_assignment_cap"] = _operator_assignment_cap(order)
+    order["print_available_for_packing"] = _print_available_for_packing(order)
     order["available_for_packing"] = _available_for_packing(order)
 
 
@@ -1159,6 +1169,18 @@ def _operator_assigned_qty(order: dict) -> int:
 
 def _available_for_packing(order: dict) -> int:
     return _qr_available_for_packing(order)
+
+
+def _helper_prepared_print_qty(order: dict):
+    return _qr_helper_prepared_print_qty(order)
+
+
+def _operator_assignment_cap(order: dict) -> int:
+    return _qr_operator_assignment_cap(order)
+
+
+def _print_available_for_packing(order: dict) -> int:
+    return _qr_print_available_for_packing(order)
 
 
 def _packing_required_total(order: dict) -> int:
@@ -1748,6 +1770,9 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
         )
     if payload.qty_prepared > payload.qty_required:
         raise HTTPException(400, "Qty disiapkan tidak boleh melebihi qty dibutuhkan.")
+    err = _qr_validate_helper_prepared_qty(payload.qty_prepared, order)
+    if err:
+        raise HTTPException(400, err)
     order["_expected_updated_at"] = order.get("updated_at")
     shortage = max(payload.qty_required - payload.qty_prepared, 0)
     before = order.get("helper_prep") or {}
@@ -1818,6 +1843,9 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
                 f"Line item '{li.get('name')}' bukan proses Cetak — tidak masuk Persiapan Helper."
             )
         # Non-print line dihilangkan dari items_out & totals (out of scope).
+    err = _qr_validate_helper_prepared_qty(total_prepared, order)
+    if err:
+        raise HTTPException(400, err)
     total_shortage = max(total_required - total_prepared, 0)
     before = order.get("helper_prep") or {}
     order["_expected_updated_at"] = order.get("updated_at")
@@ -2135,7 +2163,9 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
         print_qty_total = _print_qty_total(order)
 
         total_split = sum(max(0, int(s.quantity)) for s in payload.splits)
-        err = _qr_validate_operator_assignment_total(total_split, print_qty_total)
+        err = _qr_validate_operator_assignment_total(
+            total_split, print_qty_total, _helper_prepared_print_qty(order)
+        )
         if err:
             raise HTTPException(400, err)
         if any(int(s.quantity) < 0 for s in payload.splits):
@@ -2156,7 +2186,17 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
             per_line_totals[s.line_idx] = per_line_totals.get(s.line_idx, 0) + int(s.quantity)
         for idx, qty in per_line_totals.items():
             line_qty = int(line_items[idx].get("quantity") or 0)
-            if qty > line_qty:
+            line_cap = line_qty
+            prep_line = _qr_helper_prepared_for_line(order, idx)
+            if prep_line is not None:
+                line_cap = min(line_qty, prep_line)
+            if qty > line_cap:
+                if prep_line is not None and prep_line < line_qty:
+                    raise HTTPException(
+                        400,
+                        f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) "
+                        f"melebihi qty Helper Persiapan line tersebut ({prep_line})."
+                    )
                 raise HTTPException(
                     400,
                     f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) melebihi qty line ({line_qty})."
@@ -2281,16 +2321,13 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         if role == "operator" and found["operator_email"] != user.get("email"):
             raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
         qty = max(0, min(int(payload.qty_completed), int(found["quantity"])))
-        print_cap = _print_qty_total(order)
         others = sum(
             int(s.get("qty_completed") or 0)
             for s in splits if s.get("id") != found.get("id")
         )
-        if others + qty > print_cap:
-            raise HTTPException(
-                400,
-                f"Total qty cetak selesai ({others + qty}) melebihi qty Cetak PO ({print_cap})."
-            )
+        err = _qr_validate_print_completed_total(others + qty, order)
+        if err:
+            raise HTTPException(400, err)
         found["qty_completed"] = qty
         found["updated_at"] = now_iso()
         add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: {qty}/{found['quantity']}")

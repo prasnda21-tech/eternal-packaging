@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, Check, ChevronRight, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ShieldOff, Trash2, Truck, UserRound, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, Check, ChevronRight, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { STAGES, canAdvance, formatDate, formatDeadline, ROLES } from "../lib/constants";
+import { STAGES, canAdvance, formatDate, formatDeadline } from "../lib/constants";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
 import PackingPanel from "../components/PackingPanel";
-import { shouldShowPackingCard } from "../lib/packingCard";
 import SuratJalanPanel from "../components/SuratJalanPanel";
 import AttachmentsPanel from "../components/AttachmentsPanel";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
@@ -15,6 +14,7 @@ import CustomerApprovalPanel from "../components/CustomerApprovalPanel";
 import DeliveryDeadlinePanel from "../components/DeliveryDeadlinePanel";
 import HelperPrepPanel from "../components/HelperPrepPanel";
 import ProductionRoutePanel from "../components/ProductionRoutePanel";
+import LoadingPanel from "../components/LoadingPanel";
 import StageBar from "../components/StageBar";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import StageDetailDrawer from "../components/StageDetailDrawer";
@@ -217,13 +217,15 @@ export default function PODetail() {
   const canManageCustomerApproval = hasPerm("customer_approval.manage");
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
+  const canLoadingUpdate = hasPerm("loading.update");
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
     canApproveDesign || canApprovePayment || canUploadPayment || canUploadDesign ||
     canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
-    canHelperPrep || canScreenerUpdate || canAdvanceNow
+    canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
+    canLoadingUpdate || canManageSuratJalan
   );
 
   const doBypassDesign = async () => {
@@ -244,13 +246,6 @@ export default function PODetail() {
     const reason = window.prompt("Alasan rollback (wajib):");
     if (!reason || !reason.trim()) return;
     await run(() => api.rollbackStage(order.id, toStage, reason.trim()), `Workflow dikembalikan ke ${STAGES[toStage]}`);
-  };
-  const saveHelperPrep = async () => {
-    const req = parseInt(document.querySelector('[data-testid="helper-qty-required"]').value || "0", 10);
-    const prep = parseInt(document.querySelector('[data-testid="helper-qty-prepared"]').value || "0", 10);
-    const notes = document.querySelector('[data-testid="helper-notes"]').value || "";
-    if (!(req >= 0) || !(prep >= 0)) { alert("Qty tidak boleh negatif"); return; }
-    await run(() => api.updateHelperPrep(order.id, { qty_required: req, qty_prepared: prep, notes }), "Persiapan Helper disimpan");
   };
   const saveScreener = async () => {
     const q = parseInt(document.querySelector('[data-testid="screener-qty"]').value || "0", 10);
@@ -306,6 +301,18 @@ export default function PODetail() {
       setDeleting(false);
     }
   };
+
+  const renderAdvance = (stageIdx) => (
+    <StageAdvanceRow
+      stageIdx={stageIdx}
+      order={order}
+      canAdvance={canAdvanceNow}
+      busy={busy}
+      note={note}
+      setNote={setNote}
+      onAdvance={advance}
+    />
+  );
 
   return (
     <div className="po-detail" data-testid="po-detail-page">
@@ -375,82 +382,8 @@ export default function PODetail() {
         </div>
       )}
 
-      {/* Advance controls */}
-      <section className="advance-bar" data-testid="advance-bar">
-        <input
-          type="text"
-          placeholder="Catatan (opsional)"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          data-testid="advance-note-input"
-          disabled={isCrm}
-        />
-        <div className="advance-actions">
-          {canApproveDesign && order.design_status !== "Approved" && (
-            <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
-              <FileCheck2 size={16} /> Approve Design
-            </button>
-          )}
-          {canApproveDesign && order.design_status === "Approved" && order.current_stage < 4 && (
-            <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
-              Batalkan approve design
-            </button>
-          )}
-          {canApprovePayment && order.payment_status !== "Approved" && (
-            <button className="primary" onClick={approvePayment} disabled={busy} data-testid="approve-payment-button">
-              <FileCheck2 size={16} /> Approve Payment
-            </button>
-          )}
-          {canApprovePayment && order.payment_status === "Approved" && order.current_stage < 6 && (
-            <button className="ghost" onClick={rejectPayment} disabled={busy} data-testid="revoke-payment-button">
-              Batalkan approve payment
-            </button>
-          )}
-          {canBypassDesign && !order.design_bypassed && order.design_status !== "Approved" && (
-            <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
-              <ShieldOff size={14}/> Bypass Design
-            </button>
-          )}
-          {canBypassPayment && !order.payment_bypassed && order.payment_status !== "Approved" && (
-            <button className="ghost" onClick={doBypassPayment} disabled={busy} data-testid="bypass-payment-button" title="Butuh permission payment.bypass_approval">
-              <ShieldOff size={14}/> Bypass Payment
-            </button>
-          )}
-          {canRollback && order.current_stage > 0 && (
-            <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
-              <RotateCcw size={14}/> Rollback
-            </button>
-          )}
-          {canAdvanceNow && order.current_stage < STAGES.length - 1 && (
-            <button className="primary" onClick={advance} disabled={busy} data-testid="advance-button">
-              Lanjut → {STAGES[order.current_stage + 1]} <ChevronRight size={16} />
-            </button>
-          )}
-          {canMarkPacked && order.current_stage === 11 && (
-            <button
-              className="ghost"
-              onClick={packed}
-              disabled={busy || !order.packing_ready || !(order?.packing_info?.qty_packed > 0)}
-              data-testid="mark-packed-button"
-              data-packing-ready={order.packing_ready && (order?.packing_info?.qty_packed > 0) ? "true" : "false"}
-              title={
-                (order?.packing_info?.qty_packed > 0)
-                  ? "Selesaikan Packing dan lanjut ke Surat Jalan"
-                  : "Isi Qty Packing terlebih dahulu"
-              }
-            >
-              <Package size={16} /> Selesai Packing
-            </button>
-          )}
-          {canMarkDelivered && order.delivery_status !== "Terkirim" && order.current_stage >= 12 && (
-            <button className="ghost" onClick={delivered} disabled={busy} data-testid="mark-delivered-button">
-              <Truck size={16} /> Tandai Terkirim
-            </button>
-          )}
-        </div>
-        {err && <div className="error" data-testid="advance-error" style={{whiteSpace:"pre-line"}}>{err}</div>}
-        {isCrm && !hasAnyActionPerm && <p className="muted small" data-testid="crm-readonly-note">Mode CRM read-only — Anda hanya dapat melihat progres.</p>}
-      </section>
+      {err && <div className="error" data-testid="advance-error" style={{whiteSpace:"pre-line", margin: "16px 0"}}>{err}</div>}
+      {isCrm && !hasAnyActionPerm && <p className="muted small" data-testid="crm-readonly-note">Mode CRM read-only — Anda hanya dapat melihat progres.</p>}
 
       {/* Cancelled banner */}
       {order.cancelled && (
@@ -464,14 +397,19 @@ export default function PODetail() {
         </div>
       )}
 
-      {/* Aksi PO — Cancel / Delete (Req 5) */}
-      {(canCancel || canDelete) && (
+      {/* Aksi PO — Cancel / Delete / Rollback (admin, bukan stage production) */}
+      {(canCancel || canDelete || canRollback) && (
         <section className="panel po-actions-panel" data-testid="po-actions-panel">
           <header className="panel-head">
             <h3>Aksi PO</h3>
             <span className="muted small">Tindakan administratif untuk PO ini</span>
           </header>
           <div className="po-actions-row">
+            {canRollback && order.current_stage > 0 && (
+              <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
+                <RotateCcw size={14}/> Rollback
+              </button>
+            )}
             {canCancel && !order.cancelled && (
               <button className="ghost" onClick={doCancelPO} disabled={busy} data-testid="cancel-po-button" title="Butuh permission po.cancel">
                 <XCircle size={16}/> Batalkan PO
@@ -490,6 +428,9 @@ export default function PODetail() {
         </section>
       )}
 
+      <div className="po-workflow" data-testid="po-workflow">
+      {/* 01 Order Masuk */}
+      <div data-testid="workflow-slot-0" data-workflow-stage="0">
       {/* Order Info */}
       <section className="panel info-grid" data-testid="detail-info">
         <div>
@@ -600,98 +541,6 @@ export default function PODetail() {
         )}
       </section>
 
-      {/* Payment Panel — bukti + status + upload/approve/bypass (Wiring) */}
-      <section className="panel payment-panel" data-testid="payment-panel">
-        <header className="panel-head">
-          <h3>Bukti Pembayaran</h3>
-          <PaymentStatusBadge order={order} />
-        </header>
-        <div className="payment-body">
-          <PaymentFilesList files={order.payment_files || []} order={order} />
-          {payUploadErr && (
-            <div className="error" data-testid="payment-upload-error">{payUploadErr}</div>
-          )}
-          <div className="payment-actions">
-            {canUploadPayment && !order.cancelled && (
-              <label className={"primary btn-file" + (payUploading ? " disabled" : "")} data-testid="upload-payment-label">
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/jpg,application/pdf"
-                  disabled={payUploading}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    e.target.value = ""; // allow re-selecting same file
-                    if (f) uploadPaymentProof(f);
-                  }}
-                  data-testid="upload-payment-input"
-                  style={{display:"none"}}
-                />
-                <FileText size={16} /> {payUploading ? "Mengupload..." : (order.payment_files?.length ? "Ganti Bukti Pembayaran" : "Upload Bukti Pembayaran")}
-              </label>
-            )}
-            {canApprovePayment && order.payment_files?.length > 0 && order.payment_status !== "Approved" && !order.payment_bypassed && (
-              <button className="primary" onClick={approvePayment} disabled={busy} data-testid="approve-payment-inline-button">
-                <FileCheck2 size={16} /> Approve Payment
-              </button>
-            )}
-            {canApprovePayment && order.payment_status === "Approved" && order.current_stage < 6 && (
-              <button className="ghost" onClick={rejectPayment} disabled={busy} data-testid="revoke-payment-inline-button">
-                Batalkan approve payment
-              </button>
-            )}
-            {!canUploadPayment && !canApprovePayment && !order.payment_bypassed && (
-              <p className="muted small" data-testid="payment-readonly-note">Anda hanya dapat melihat bukti pembayaran (read-only).</p>
-            )}
-          </div>
-          {(order.payment_approval_history || []).length > 0 && (
-            <details className="payment-history" data-testid="payment-history">
-              <summary>Histori Approval Payment ({(order.payment_approval_history || []).length})</summary>
-              <ul>
-                {(order.payment_approval_history || []).slice().reverse().map((h, i) => (
-                  <li key={i}>
-                    <span className="mono small">{formatDate(h.at)}</span>
-                    <span> · {h.action}</span>
-                    {h.by_name && <span className="muted small"> · oleh {h.by_name}</span>}
-                    {h.note && <span className="muted small"> · {h.note}</span>}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </div>
-      </section>
-
-      {/* Persiapan Helper (Batch 1 — per line item) */}
-      <HelperPrepPanel order={order} canEdit={canHelperPrep} onUpdated={setOrder} />
-
-      {/* Batch 3 — Production routing (Cetak/Non-Cetak) per line item */}
-      <ProductionRoutePanel order={order} canEdit={canEditRoute} onUpdated={setOrder} />
-
-      {/* Delivery deadline (Batch 1) */}
-      <DeliveryDeadlinePanel order={order} canEdit={canEditDeliveryDeadline} onUpdated={setOrder} />
-
-      {/* Info Screener (Req 10) */}
-      <section className="panel" data-testid="screener-panel">
-        <header className="panel-head"><h3>Info Screener</h3>
-          <span className="muted small">Info operasional — tidak mengubah Qty PO</span>
-        </header>
-        <div className="prep-grid">
-          <label>Jumlah Screen Dibuat
-            <input type="number" min="0" defaultValue={order.screener_info?.screen_qty || 0} data-testid="screener-qty" disabled={!canScreenerUpdate}/>
-          </label>
-          <label className="span-2">Catatan Screener
-            <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate}/>
-          </label>
-        </div>
-        {canScreenerUpdate && (
-          <div className="prep-actions">
-            <button className="primary sm" onClick={saveScreener} disabled={busy} data-testid="screener-save-button"><Check size={13}/> Simpan Info Screener</button>
-            {order.screener_info?.updated_at && <span className="muted small" data-testid="screener-updated">Update terakhir: {order.screener_info.updated_by_name || order.screener_info.updated_by} · {formatDate(order.screener_info.updated_at)}</span>}
-          </div>
-        )}
-      </section>
-
-      {/* Line items */}
       <section className="panel" data-testid="line-items-panel">
         <header className="panel-head">
           <h3>Line Item ({order.item_count ?? 0})</h3>
@@ -729,61 +578,199 @@ export default function PODetail() {
           })}
         </div>
       </section>
+      <ProductionRoutePanel order={order} canEdit={canEditRoute} onUpdated={setOrder} />
+      {renderAdvance(0)}
+      </div>
 
-      {/* Operator splits */}
-      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} />
-
-      {/* Packing card: visible by packing.update RBAC, not by current_stage. */}
-      {shouldShowPackingCard(canMarkPacked) && (
-        <PackingPanel
-          order={order}
-          canManage={canMarkPacked}
-          busy={busy}
-          onSaveQty={async (qty, notes) => {
-            await run(() => api.savePackingInfo(order.id, qty, notes), "Qty Packing disimpan");
-          }}
-          onComplete={packed}
-        />
-      )}
-
-      {/* Task 13: Surat Jalan panel — source of truth SJ completion */}
-      <SuratJalanPanel
-        order={order}
-        canManage={canManageSuratJalan}
-        busy={busy}
-        onCreate={async (number, notes) => {
-          await run(() => api.createSuratJalan(order.id, number, notes), "Surat Jalan disimpan");
-        }}
-      />
-
-      {/* Attachments */}
+      {/* 02 Design */}
+      <div data-testid="workflow-slot-1" data-workflow-stage="1">
       <AttachmentsPanel
         order={order}
         user={user}
         onUpdated={setOrder}
+        section="design"
         designSlot={(
-          <div className="design-actions" data-testid="design-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10}}>
+          <div className="design-actions" data-testid="design-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
             <DesignStatusBadge order={order} />
-            {canApproveDesign && (order.design_files?.length || 0) > 0 && order.design_status !== "Approved" && !order.design_bypassed && (
-              <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-inline-button">
-                <FileCheck2 size={16} /> Approve Design
-              </button>
-            )}
-            {canApproveDesign && order.design_status === "Approved" && order.current_stage < 4 && (
-              <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-inline-button">
-                Batalkan approve design
-              </button>
-            )}
-            {canBypassDesign && !order.design_bypassed && order.design_status !== "Approved" && (
-              <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-inline-button" title="Butuh permission design.bypass_approval">
-                <ShieldOff size={14}/> Bypass Design
-              </button>
-            )}
-            {!canApproveDesign && !canBypassDesign && order.design_status !== "Approved" && !order.design_bypassed && (
-              <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat file design (read-only).</p>
-            )}
+            {renderAdvance(1)}
           </div>
         )}
+      />
+      </div>
+
+      {/* 03 Approval Design */}
+      <div data-testid="workflow-slot-2" data-workflow-stage="2">
+      <section className="panel" data-testid="approval-design-panel">
+        <header className="panel-head">
+          <h3>Approval Design</h3>
+          <DesignStatusBadge order={order} />
+        </header>
+        <div className="workflow-stage-actions" data-testid="approval-design-actions">
+          {canApproveDesign && (order.design_files?.length || 0) > 0 && order.design_status !== "Approved" && !order.design_bypassed && (
+            <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
+              <FileCheck2 size={16} /> Approve Design
+            </button>
+          )}
+          {canApproveDesign && order.design_status === "Approved" && order.current_stage < 4 && (
+            <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
+              Batalkan approve design
+            </button>
+          )}
+          {canBypassDesign && !order.design_bypassed && order.design_status !== "Approved" && (
+            <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
+              <ShieldOff size={14}/> Bypass Design
+            </button>
+          )}
+          {!canApproveDesign && !canBypassDesign && order.design_status !== "Approved" && !order.design_bypassed && (
+            <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
+          )}
+        </div>
+        {renderAdvance(2)}
+      </section>
+      <CustomerApprovalPanel
+        order={order}
+        canView={canViewCustomerApproval}
+        canManage={canManageCustomerApproval}
+        onOrderUpdated={setOrder}
+      />
+      </div>
+
+      {/* 04 Payment */}
+      <div data-testid="workflow-slot-3" data-workflow-stage="3">
+      <section className="panel payment-panel" data-testid="payment-panel">
+        <header className="panel-head">
+          <h3>Payment</h3>
+          <PaymentStatusBadge order={order} />
+        </header>
+        <div className="payment-body">
+          <PaymentFilesList files={order.payment_files || []} order={order} />
+          {payUploadErr && (
+            <div className="error" data-testid="payment-upload-error">{payUploadErr}</div>
+          )}
+          <div className="payment-actions">
+            {canUploadPayment && !order.cancelled && (
+              <label className={"primary btn-file" + (payUploading ? " disabled" : "")} data-testid="upload-payment-label">
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/jpg,application/pdf"
+                  disabled={payUploading}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = "";
+                    if (f) uploadPaymentProof(f);
+                  }}
+                  data-testid="upload-payment-input"
+                  style={{display:"none"}}
+                />
+                <FileText size={16} /> {payUploading ? "Mengupload..." : (order.payment_files?.length ? "Ganti Bukti Pembayaran" : "Upload Bukti Pembayaran")}
+              </label>
+            )}
+            {!canUploadPayment && (
+              <p className="muted small" data-testid="payment-readonly-note">Anda hanya dapat melihat bukti pembayaran (read-only).</p>
+            )}
+          </div>
+          {renderAdvance(3)}
+        </div>
+      </section>
+      </div>
+
+      {/* 05 Approval Payment */}
+      <div data-testid="workflow-slot-4" data-workflow-stage="4">
+      <section className="panel" data-testid="approval-payment-panel">
+        <header className="panel-head">
+          <h3>Approval Payment</h3>
+          <PaymentStatusBadge order={order} />
+        </header>
+        <div className="workflow-stage-actions" data-testid="approval-payment-actions">
+          {canApprovePayment && order.payment_files?.length > 0 && order.payment_status !== "Approved" && !order.payment_bypassed && (
+            <button className="primary" onClick={approvePayment} disabled={busy} data-testid="approve-payment-button">
+              <FileCheck2 size={16} /> Approve Payment
+            </button>
+          )}
+          {canApprovePayment && order.payment_status === "Approved" && order.current_stage < 6 && (
+            <button className="ghost" onClick={rejectPayment} disabled={busy} data-testid="revoke-payment-button">
+              Batalkan approve payment
+            </button>
+          )}
+          {canBypassPayment && !order.payment_bypassed && order.payment_status !== "Approved" && (
+            <button className="ghost" onClick={doBypassPayment} disabled={busy} data-testid="bypass-payment-button" title="Butuh permission payment.bypass_approval">
+              <ShieldOff size={14}/> Bypass Payment
+            </button>
+          )}
+        </div>
+        {(order.payment_approval_history || []).length > 0 && (
+          <details className="payment-history" data-testid="payment-history">
+            <summary>Histori Approval Payment ({(order.payment_approval_history || []).length})</summary>
+            <ul>
+              {(order.payment_approval_history || []).slice().reverse().map((h, i) => (
+                <li key={i}>
+                  <span className="mono small">{formatDate(h.at)}</span>
+                  <span> · {h.action}</span>
+                  {h.by_name && <span className="muted small"> · oleh {h.by_name}</span>}
+                  {h.note && <span className="muted small"> · {h.note}</span>}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+        {renderAdvance(4)}
+      </section>
+      </div>
+
+      {/* 06 Penjadwalan */}
+      <div data-testid="workflow-slot-5" data-workflow-stage="5">
+      <section className="panel" data-testid="penjadwalan-panel">
+        <header className="panel-head">
+          <h3>Penjadwalan</h3>
+          <span className="pill sm">Head of Production</span>
+        </header>
+        <p className="muted small">Jadwalkan produksi lalu lanjut ke Screener. Deadline pengiriman di bawah ini.</p>
+        {renderAdvance(5)}
+      </section>
+      <DeliveryDeadlinePanel order={order} canEdit={canEditDeliveryDeadline} onUpdated={setOrder} />
+      </div>
+
+      {/* 07 Screener */}
+      <div data-testid="workflow-slot-6" data-workflow-stage="6">
+      <section className="panel" data-testid="screener-panel">
+        <header className="panel-head"><h3>Screener</h3>
+          <span className="muted small">Info operasional — tidak mengubah Qty PO</span>
+        </header>
+        <div className="prep-grid">
+          <label>Jumlah Screen Dibuat
+            <input type="number" min="0" defaultValue={order.screener_info?.screen_qty || 0} data-testid="screener-qty" disabled={!canScreenerUpdate}/>
+          </label>
+          <label className="span-2">Catatan Screener
+            <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate}/>
+          </label>
+        </div>
+        {canScreenerUpdate && (
+          <div className="prep-actions">
+            <button className="primary sm" onClick={saveScreener} disabled={busy} data-testid="screener-save-button"><Check size={13}/> Simpan Info Screener</button>
+            {order.screener_info?.updated_at && <span className="muted small" data-testid="screener-updated">Update terakhir: {order.screener_info.updated_by_name || order.screener_info.updated_by} · {formatDate(order.screener_info.updated_at)}</span>}
+          </div>
+        )}
+        {renderAdvance(6)}
+      </section>
+      </div>
+
+      {/* 08 Persiapan Helper */}
+      <div data-testid="workflow-slot-7" data-workflow-stage="7">
+      <HelperPrepPanel order={order} canEdit={canHelperPrep} onUpdated={setOrder} footerActions={renderAdvance(7)} />
+      </div>
+
+      {/* 09 Operator */}
+      <div data-testid="workflow-slot-8" data-workflow-stage="8">
+      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} footerActions={renderAdvance(8)} />
+      </div>
+
+      {/* 10 Konfirmasi Sample */}
+      <div data-testid="workflow-slot-9" data-workflow-stage="9">
+      <AttachmentsPanel
+        order={order}
+        user={user}
+        onUpdated={setOrder}
+        section="sample"
         sampleSlot={(
           <div className="sample-actions" data-testid="sample-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
             {order.sample_approved ? (
@@ -813,16 +800,103 @@ export default function PODetail() {
             {!canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
               <p className="muted small" data-testid="sample-readonly-note">Butuh permission <code>operator.sample_approve</code> untuk approve sampel cetak.</p>
             )}
+            {renderAdvance(9)}
           </div>
         )}
       />
+      </div>
 
-      <CustomerApprovalPanel
+      {/* 11 Cetak */}
+      <div data-testid="workflow-slot-10" data-workflow-stage="10">
+      <section className="panel" data-testid="cetak-panel">
+        <header className="panel-head">
+          <h3>Cetak</h3>
+          <span className="pill sm">Operator</span>
+        </header>
+        {order.requires_printing === false ? (
+          <p className="muted small" data-testid="cetak-not-required-note">PO ini tidak memerlukan proses Cetak.</p>
+        ) : (
+          <p className="muted small" data-testid="cetak-progress-note">
+            Selesai operator: <b>{Number(order.print_completed_qty || 0).toLocaleString("id-ID")}</b>
+            {" "}· Cap Helper: <b>{order.helper_prepared_print_qty == null ? "belum diisi" : Number(order.helper_prepared_print_qty).toLocaleString("id-ID")}</b>
+            {" "}· Target Cetak: <b>{Number(order.print_qty_total || 0).toLocaleString("id-ID")}</b>
+          </p>
+        )}
+        {renderAdvance(10)}
+      </section>
+      </div>
+
+      {/* 12 Packing */}
+      <div data-testid="workflow-slot-11" data-workflow-stage="11">
+      <PackingPanel
         order={order}
-        canView={canViewCustomerApproval}
-        canManage={canManageCustomerApproval}
-        onOrderUpdated={setOrder}
+        canManage={canMarkPacked}
+        busy={busy}
+        onSaveQty={async (qty, notes) => {
+          await run(() => api.savePackingInfo(order.id, qty, notes), "Qty Packing disimpan");
+        }}
+        onComplete={packed}
       />
+      </div>
+
+      {/* 13 Surat Jalan */}
+      <div data-testid="workflow-slot-12" data-workflow-stage="12">
+      <SuratJalanPanel
+        order={order}
+        canManage={canManageSuratJalan}
+        busy={busy}
+        onCreate={async (number, notes) => {
+          await run(() => api.createSuratJalan(order.id, number, notes), "Surat Jalan disimpan");
+        }}
+        footerActions={(
+          <>
+            <div style={{ marginTop: 10 }}>
+              <Link to={`/po/${order.id}/surat-jalan`} className="ghost sm" data-testid="open-surat-jalan-button">
+                <FileText size={14} /> Buka Surat Jalan
+              </Link>
+            </div>
+            {renderAdvance(12)}
+          </>
+        )}
+      />
+      </div>
+
+      {/* 14 Loading */}
+      <div data-testid="workflow-slot-13" data-workflow-stage="13">
+      <LoadingPanel
+        order={order}
+        canManage={canLoadingUpdate}
+        busy={busy}
+        onUpdated={setOrder}
+        footerActions={renderAdvance(13)}
+      />
+      </div>
+
+      {/* 15 Terkirim */}
+      <div data-testid="workflow-slot-14" data-workflow-stage="14">
+      <section className="panel" data-testid="terkirim-panel">
+        <header className="panel-head">
+          <h3>Terkirim</h3>
+          <span className={`pill sm ${order.delivery_status === "Terkirim" ? "pill-ok" : ""}`} data-testid="delivery-status">
+            {order.delivery_status || "Belum Terkirim"}
+          </span>
+        </header>
+        <p className="muted small">
+          Qty packing: <b>{Number(order?.packing_info?.qty_packed || 0).toLocaleString("id-ID")}</b>
+          {" "}· Qty dikirim: <b>{Number(order?.qty_delivered || 0).toLocaleString("id-ID")}</b>
+          {" "}· Total PO: <b>{Number(order?.packing_required_total || order?.total_quantity || 0).toLocaleString("id-ID")}</b>
+        </p>
+        {canMarkDelivered && order.delivery_status !== "Terkirim" && (
+          <div className="workflow-stage-actions">
+            <button className="primary" onClick={delivered} disabled={busy} data-testid="mark-delivered-button">
+              <Truck size={16} /> Tandai Terkirim
+            </button>
+          </div>
+        )}
+      </section>
+      <DeliveryProofPanel order={order} onUpdated={setOrder} />
+      </div>
+      </div>
 
       {/* Notes */}
       <section className="panel" data-testid="notes-panel">
@@ -843,34 +917,6 @@ export default function PODetail() {
           </div>
         )}
       </section>
-
-      {/* Delivery note & loading */}
-      {order.current_stage >= 11 && (
-        <section className="panel" data-testid="delivery-panel">
-          <header className="panel-head">
-            <h3>Surat Jalan &amp; Loading</h3>
-            <Link to={`/po/${order.id}/surat-jalan`} className="ghost sm" data-testid="open-surat-jalan-button">
-              <FileText size={14} /> Buka Surat Jalan
-            </Link>
-          </header>
-          <div className="delivery-block">
-            <div><span className="lbl"><FileText size={12} /> No. Surat Jalan</span><strong>{order.delivery_note_number || "-"}</strong></div>
-            <div><span className="lbl">Status Packing</span><strong>{order.packing_status === "Sudah" ? "Sudah Dipacking" : "Belum Dipacking"}</strong></div>
-            <div><span className="lbl">Status Kirim</span><strong data-testid="delivery-status">{order.delivery_status}</strong></div>
-            {order.loading_checklist && (
-              <div className="span-2">
-                <span className="lbl">Checklist Loading</span>
-                <p>Kendaraan: {order.loading_checklist.vehicle_plate || "-"} · Barang: {order.loading_checklist.items_loaded ? "OK" : "Belum"} · Seal: {order.loading_checklist.seal_ok ? "OK" : "Belum"}</p>
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* Delivery proof (from stage Surat Jalan onward) */}
-      {order.current_stage >= 12 && (
-        <DeliveryProofPanel order={order} onUpdated={setOrder} />
-      )}
 
       <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} />
 
@@ -956,6 +1002,27 @@ export default function PODetail() {
       {stageDrawer != null && (
         <StageDetailDrawer order={order} stageIdx={stageDrawer} onClose={() => setStageDrawer(null)} />
       )}
+    </div>
+  );
+}
+
+function StageAdvanceRow({ stageIdx, order, canAdvance, busy, note, setNote, onAdvance }) {
+  if (order?.cancelled) return null;
+  if (!canAdvance) return null;
+  if (order.current_stage !== stageIdx) return null;
+  if (order.current_stage >= STAGES.length - 1) return null;
+  return (
+    <div className="workflow-stage-actions" data-testid={`stage-advance-row-${stageIdx}`}>
+      <input
+        type="text"
+        placeholder="Catatan (opsional)"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        data-testid="advance-note-input"
+      />
+      <button className="primary" onClick={onAdvance} disabled={busy} data-testid="advance-button">
+        Lanjut → {STAGES[stageIdx + 1]} <ChevronRight size={16} />
+      </button>
     </div>
   );
 }

@@ -6,14 +6,27 @@ import { formatDate } from "../lib/constants";
 // - Muncul saat current_stage >= 12 (Packing sudah selesai).
 // - User dengan `delivery_note.manage` bisa create/update SJ.
 // - Create SJ mengisi delivery_note_created_by/at → gate Loading terpenuhi.
-export default function SuratJalanPanel({ order, canManage, busy, onCreate }) {
+export default function SuratJalanPanel({ order, canManage, busy, onCreate, footerActions = null }) {
   const [number, setNumber] = useState(order.delivery_note_number || "");
   const [notes, setNotes] = useState(order.delivery_note_notes || "");
   const created = !!order.surat_jalan_created;
   const stageIsSJ = order.current_stage === 12;
   const stagePastSJ = order.current_stage >= 13;
 
-  if ((order.current_stage || 0) < 12) return null;
+  if ((order.current_stage || 0) < 12) {
+    return (
+      <section className="panel" data-testid="surat-jalan-panel">
+        <header className="panel-head">
+          <h3><FileText size={14} /> Surat Jalan</h3>
+          <span className="pill sm" data-testid="surat-jalan-semantic-badge">Menunggu Packing</span>
+        </header>
+        <p className="muted small" data-testid="surat-jalan-wait-note">
+          Surat Jalan dapat dibuat setelah Packing selesai.
+        </p>
+        {footerActions}
+      </section>
+    );
+  }
 
   const handleCreate = async () => {
     await onCreate(number || null, notes || "");
@@ -82,6 +95,7 @@ export default function SuratJalanPanel({ order, canManage, busy, onCreate }) {
           </div>
         </div>
       )}
+      {footerActions}
     </section>
   );
 }

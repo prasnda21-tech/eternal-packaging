@@ -10,17 +10,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from permissions import ROLE_DEFAULT_PERMISSIONS, effective_permissions
 from quantity_rules import (
     available_for_packing,
+    helper_prepared_print_qty,
     is_fully_delivered,
     non_print_qty_total,
     operator_assigned_qty,
+    operator_assignment_cap,
     packing_required_total,
     packing_status_semantic,
+    print_available_for_packing,
     print_completed_qty,
     print_qty_total,
     qty_delivered,
     validate_delivery_qty,
+    validate_helper_prepared_qty,
     validate_operator_assignment_total,
     validate_packing_qty,
+    validate_print_completed_total,
 )
 
 
@@ -277,6 +282,99 @@ def test_no_negative_or_over_allocation():
     o = _mixed_po(completed=[1000], packed=500, delivered=400)
     assert validate_packing_qty(300, o) is not None
     assert validate_delivery_qty(350, o) is not None
+
+
+# --- Helper prepared qty is hard cap for CETAK ---
+
+def _helper_po(prepared=2000, completed=None, packed=0, delivered=None, print_qty=3000, non_print_qty=3000):
+    o = _mixed_po(print_qty=print_qty, non_print_qty=non_print_qty, completed=completed, packed=packed, delivered=delivered)
+    o["helper_prep"] = {
+        "qty_required": print_qty,
+        "qty_prepared": prepared,
+        "items": [
+            {"line_idx": 0, "qty_required": print_qty, "qty_prepared": prepared},
+        ],
+    }
+    return o
+
+
+def test_a_helper_prepared_caps_operator_assignment():
+    """TEST A: Helper 2000, Cetak 3000 → assignment max 2000; 2001 ditolak."""
+    o = _helper_po(prepared=2000)
+    assert print_qty_total(o) == 3000
+    assert helper_prepared_print_qty(o) == 2000
+    assert operator_assignment_cap(o) == 2000
+    assert validate_operator_assignment_total(2000, 3000, 2000) is None
+    assert validate_operator_assignment_total(2001, 3000, 2000) is not None
+
+
+def test_b_packing_print_capped_by_completed_and_helper():
+    """TEST B: Helper 2000, Operator completed 1000 → print available packing = 1000."""
+    o = _helper_po(prepared=2000, completed=[1000])
+    assert print_completed_qty(o) == 1000
+    assert print_available_for_packing(o) == 1000
+    # Non-cetak 3000 tetap langsung tersedia
+    assert non_print_qty_total(o) == 3000
+    assert available_for_packing(o) == 4000
+    assert validate_packing_qty(4000, o) is None
+    assert validate_packing_qty(4001, o) is not None
+
+
+def test_b_packing_print_never_exceeds_helper_even_if_completed_higher():
+    o = _helper_po(prepared=2000)
+    o["operator_splits"] = [{"quantity": 3000, "qty_completed": 2500}]
+    assert print_completed_qty(o) == 2500
+    assert print_available_for_packing(o) == 2000
+    assert available_for_packing(o) == 5000  # 3000 non-print + 2000 print
+
+
+def test_c_helper_increase_unlocks_more_operator_qty():
+    """TEST C: Helper 2000 → 2500 membuka tambahan assignment 500."""
+    o = _helper_po(prepared=2000)
+    assert operator_assignment_cap(o) == 2000
+    assert validate_operator_assignment_total(2000, 3000, 2000) is None
+    assert validate_operator_assignment_total(2500, 3000, 2000) is not None
+    o["helper_prep"]["qty_prepared"] = 2500
+    o["helper_prep"]["items"][0]["qty_prepared"] = 2500
+    assert operator_assignment_cap(o) == 2500
+    assert validate_operator_assignment_total(2500, 3000, 2500) is None
+    assert validate_operator_assignment_total(2501, 3000, 2500) is not None
+
+
+def test_d_delivered_capped_by_packed():
+    """TEST D: Packed 1000 → delivered max 1000."""
+    o = _helper_po(prepared=2000, completed=[1000], packed=1000)
+    assert validate_delivery_qty(1000, o) is None
+    assert validate_delivery_qty(1001, o) is not None
+
+
+def test_e_non_print_skips_operator_and_helper_cap():
+    """TEST E: Qty Tidak Cetak tidak masuk Operator dan tetap packing-ready."""
+    o = _mixed_po(print_qty=0, non_print_qty=3000, completed=None)
+    o["line_items"] = [
+        {"name": "Non", "quantity": 3000, "production_process": "non_print"},
+    ]
+    o["total_quantity"] = 3000
+    o["operator_splits"] = []
+    o["helper_prep"] = {"qty_required": 0, "qty_prepared": 0}
+    assert print_qty_total(o) == 0
+    assert non_print_qty_total(o) == 3000
+    assert operator_assignment_cap(o) == 0
+    assert available_for_packing(o) == 3000
+    assert validate_operator_assignment_total(1, 0, 0) is not None
+    assert validate_packing_qty(3000, o) is None
+
+
+def test_helper_cannot_drop_below_completed_print():
+    o = _helper_po(prepared=2000, completed=[1000])
+    assert validate_helper_prepared_qty(1000, o) is None
+    assert validate_helper_prepared_qty(999, o) is not None
+
+
+def test_print_completed_rejected_over_helper():
+    o = _helper_po(prepared=2000)
+    assert validate_print_completed_total(2000, o) is None
+    assert validate_print_completed_total(2001, o) is not None
 
 
 def run_all():

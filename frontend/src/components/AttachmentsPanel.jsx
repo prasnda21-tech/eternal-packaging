@@ -9,7 +9,7 @@ import { formatDate, ROLES } from "../lib/constants";
  * - Cetak Sample → actor Operator
  * Tidak digabung dalam satu panel.
  */
-export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null }) {
+export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null, section = "all" }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
@@ -132,8 +132,12 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
     </div>
   );
 
+  const showDesign = section === "all" || section === "design";
+  const showSample = section === "all" || section === "sample";
+
   return (
     <>
+      {showDesign && (
       <section className="panel" data-testid="design-files-panel">
         <header className="panel-head">
           <h3>File Design</h3>
@@ -157,12 +161,14 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           )}
         </header>
         <p className="muted small" style={{ marginTop: 0 }}>
-          File dan approval design. Hanya aksi Designer yang relevan di sini.
+          File design. Upload di sini; approval berada di card Approval Design.
         </p>
         {renderList(order.design_files, "design")}
         {designSlot}
       </section>
+      )}
 
+      {showSample && (
       <section className="panel" data-testid="sample-files-panel">
         <header className="panel-head">
           <h3>Cetak Sample</h3>
@@ -191,6 +197,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
         {renderList(order.sample_files, "sample")}
         {sampleSlot}
       </section>
+      )}
 
       {err && <div className="error" data-testid="attachment-error">{err}</div>}
 
