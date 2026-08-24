@@ -21,6 +21,39 @@ function statusOfRow(r) {
   return "aktif";
 }
 
+function screenerFilled(r) {
+  const v = r.screen_qty;
+  return v !== null && v !== undefined && String(v).trim() !== "";
+}
+
+function normalizeDeliveryStatus(r) {
+  const raw = r.delivery_status;
+  if (!raw || raw === "Belum" || raw === "Belum Terkirim") return "Belum Terkirim";
+  if (raw === "Sebagian" || raw === "Sebagian Terkirim") return "Sebagian Terkirim";
+  if (raw === "Terkirim") return "Terkirim";
+  return raw;
+}
+
+const FILTER_DEFAULTS = {
+  q: "",
+  statusFilter: "all",
+  operatorFilter: "all",
+  customerFilter: "all",
+  urgentOnly: false,
+  holdOnly: false,
+  screenerFilter: "all",
+  helperFilter: "all",
+  packingFilter: "all",
+  deliveryFilter: "all",
+  bufferFilter: "all",
+  dateFrom: "",
+  dateTo: "",
+  workDateFilter: "all",
+  workDateFrom: "",
+  workDateTo: "",
+  sortBy: "deadline",
+};
+
 export default function ProductionSchedule() {
   const { hasPerm } = useAuth();
   const canExport = hasPerm("dashboard.production.export");
@@ -29,23 +62,23 @@ export default function ProductionSchedule() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [total, setTotal] = useState(0);
-  const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [operatorFilter, setOperatorFilter] = useState("all");
-  const [customerFilter, setCustomerFilter] = useState("all");
-  const [urgentOnly, setUrgentOnly] = useState(false);
-  const [holdOnly, setHoldOnly] = useState(false);
-  const [screenerFilter, setScreenerFilter] = useState("all"); // 'all' | 'yes' | 'no'
-  const [helperFilter, setHelperFilter] = useState("all"); // 'all' | 'ok' | 'kurang' | 'none'
-  const [packingFilter, setPackingFilter] = useState("all");
-  const [deliveryFilter, setDeliveryFilter] = useState("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  // Req 13: Filter & sort by Tanggal Pengerjaan
-  const [workDateFilter, setWorkDateFilter] = useState("all"); // 'all' | 'scheduled' | 'unscheduled'
-  const [workDateFrom, setWorkDateFrom] = useState("");
-  const [workDateTo, setWorkDateTo] = useState("");
-  const [sortBy, setSortBy] = useState("deadline"); // 'deadline' | 'work_date' | 'work_date_asc'
+  const [q, setQ] = useState(FILTER_DEFAULTS.q);
+  const [statusFilter, setStatusFilter] = useState(FILTER_DEFAULTS.statusFilter);
+  const [operatorFilter, setOperatorFilter] = useState(FILTER_DEFAULTS.operatorFilter);
+  const [customerFilter, setCustomerFilter] = useState(FILTER_DEFAULTS.customerFilter);
+  const [urgentOnly, setUrgentOnly] = useState(FILTER_DEFAULTS.urgentOnly);
+  const [holdOnly, setHoldOnly] = useState(FILTER_DEFAULTS.holdOnly);
+  const [screenerFilter, setScreenerFilter] = useState(FILTER_DEFAULTS.screenerFilter);
+  const [helperFilter, setHelperFilter] = useState(FILTER_DEFAULTS.helperFilter);
+  const [packingFilter, setPackingFilter] = useState(FILTER_DEFAULTS.packingFilter);
+  const [deliveryFilter, setDeliveryFilter] = useState(FILTER_DEFAULTS.deliveryFilter);
+  const [bufferFilter, setBufferFilter] = useState(FILTER_DEFAULTS.bufferFilter);
+  const [dateFrom, setDateFrom] = useState(FILTER_DEFAULTS.dateFrom);
+  const [dateTo, setDateTo] = useState(FILTER_DEFAULTS.dateTo);
+  const [workDateFilter, setWorkDateFilter] = useState(FILTER_DEFAULTS.workDateFilter);
+  const [workDateFrom, setWorkDateFrom] = useState(FILTER_DEFAULTS.workDateFrom);
+  const [workDateTo, setWorkDateTo] = useState(FILTER_DEFAULTS.workDateTo);
+  const [sortBy, setSortBy] = useState(FILTER_DEFAULTS.sortBy);
   const [includeCancelled, setIncludeCancelled] = useState(false);
   const [includeCompleted, setIncludeCompleted] = useState(true);
   const [exporting, setExporting] = useState(false);
@@ -61,12 +94,17 @@ export default function ProductionSchedule() {
     finally { setBusy(false); }
   };
 
-  // Batch 2: auto-refresh 30s untuk Jadwal Produksi (read-only).
   const { lastUpdated: schedLastUpdated, isPolling: schedIsPolling, refreshNow: refreshSched } = useAutoRefresh(
     () => api.productionDashboard({ include_cancelled: includeCancelled, include_completed: includeCompleted }),
     { intervalMs: 30_000, enabled: true, onData: (d) => { setRows(d.rows || []); setTotal(d.total || 0); } }
   );
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted]);
+
+  // Status "Selesai" membutuhkan dataset completed dari server
+  useEffect(() => {
+    if (statusFilter === "selesai" && !includeCompleted) setIncludeCompleted(true);
+    if (statusFilter === "cancelled" && !includeCancelled) setIncludeCancelled(true);
+  }, [statusFilter, includeCompleted, includeCancelled]);
 
   const operators = useMemo(() => {
     const s = new Set();
@@ -79,8 +117,29 @@ export default function ProductionSchedule() {
     return ["all", ...Array.from(s).sort()];
   }, [rows]);
 
+  const resetFilters = () => {
+    setQ(FILTER_DEFAULTS.q);
+    setStatusFilter(FILTER_DEFAULTS.statusFilter);
+    setOperatorFilter(FILTER_DEFAULTS.operatorFilter);
+    setCustomerFilter(FILTER_DEFAULTS.customerFilter);
+    setUrgentOnly(FILTER_DEFAULTS.urgentOnly);
+    setHoldOnly(FILTER_DEFAULTS.holdOnly);
+    setScreenerFilter(FILTER_DEFAULTS.screenerFilter);
+    setHelperFilter(FILTER_DEFAULTS.helperFilter);
+    setPackingFilter(FILTER_DEFAULTS.packingFilter);
+    setDeliveryFilter(FILTER_DEFAULTS.deliveryFilter);
+    setBufferFilter(FILTER_DEFAULTS.bufferFilter);
+    setDateFrom(FILTER_DEFAULTS.dateFrom);
+    setDateTo(FILTER_DEFAULTS.dateTo);
+    setWorkDateFilter(FILTER_DEFAULTS.workDateFilter);
+    setWorkDateFrom(FILTER_DEFAULTS.workDateFrom);
+    setWorkDateTo(FILTER_DEFAULTS.workDateTo);
+    setSortBy(FILTER_DEFAULTS.sortBy);
+  };
+
   const filtered = useMemo(() => {
     return rows.filter((r) => {
+      // Semua filter bersifat AND
       if (statusFilter !== "all" && statusOfRow(r) !== statusFilter) return false;
       if (urgentOnly && !r.urgent) return false;
       if (holdOnly && !r.hold) return false;
@@ -89,22 +148,31 @@ export default function ProductionSchedule() {
         const ops = (r.operators || []).map((o) => o.operator_name);
         if (!ops.includes(operatorFilter)) return false;
       }
-      if (screenerFilter === "yes" && !(r.screen_qty && r.screen_qty > 0)) return false;
-      if (screenerFilter === "no" && r.screen_qty && r.screen_qty > 0) return false;
+      if (screenerFilter === "yes" && !screenerFilled(r)) return false;
+      if (screenerFilter === "no" && screenerFilled(r)) return false;
       if (helperFilter === "ok" && r.helper_shortage_status !== "Cukup") return false;
       if (helperFilter === "kurang" && r.helper_shortage_status !== "Barang Kurang") return false;
-      if (helperFilter === "none" && r.helper_required) return false;
-      if (packingFilter !== "all" && (r.packing_status || "Belum") !== packingFilter) return false;
-      if (deliveryFilter !== "all" && (r.delivery_status || "Belum Terkirim") !== deliveryFilter) return false;
+      if (helperFilter === "none") {
+        const req = r.helper_required;
+        const none = req === null || req === undefined || req === "";
+        if (!none) return false;
+      }
+      const packingStatus = r.packing_status || "Belum";
+      if (packingFilter !== "all" && packingStatus !== packingFilter) return false;
+      const deliveryStatus = normalizeDeliveryStatus(r);
+      if (deliveryFilter !== "all" && deliveryStatus !== deliveryFilter) return false;
+      if (bufferFilter === "yes" && !r.buffer_stock) return false;
+      if (bufferFilter === "no" && r.buffer_stock) return false;
       if (dateFrom) {
-        if (!r.deadline || r.deadline < dateFrom) return false;
+        const d = deadlineDateKey(r.deadline);
+        if (!d || d < dateFrom) return false;
       }
       if (dateTo) {
-        if (!r.deadline || r.deadline > dateTo + "T23:59:59") return false;
+        const d = deadlineDateKey(r.deadline);
+        if (!d || d > dateTo) return false;
       }
-      // Req 13: Tanggal Pengerjaan filter
-      if (workDateFilter === "scheduled" && !r.work_date) return false;
-      if (workDateFilter === "unscheduled" && r.work_date) return false;
+      if (workDateFilter === "scheduled" && !r.work_date && !(r.operator_work_dates || []).length) return false;
+      if (workDateFilter === "unscheduled" && (r.work_date || (r.operator_work_dates || []).length)) return false;
       if (workDateFrom && (!r.work_date || r.work_date < workDateFrom)) return false;
       if (workDateTo && (!r.work_date || r.work_date > workDateTo)) return false;
       if (q) {
@@ -114,9 +182,8 @@ export default function ProductionSchedule() {
       }
       return true;
     });
-  }, [rows, statusFilter, urgentOnly, holdOnly, customerFilter, operatorFilter, screenerFilter, helperFilter, packingFilter, deliveryFilter, dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, q]);
+  }, [rows, statusFilter, urgentOnly, holdOnly, customerFilter, operatorFilter, screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter, dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, q]);
 
-  // Req 13: sort by chosen key
   const sorted = useMemo(() => {
     const arr = [...filtered];
     const cmp = (a, b) => {
@@ -210,12 +277,19 @@ export default function ProductionSchedule() {
           <select value={packingFilter} onChange={(e) => setPackingFilter(e.target.value)} data-testid="prod-filter-packing">
             <option value="all">Semua Packing</option>
             <option value="Sudah">Sudah Packing</option>
+            <option value="Berjalan">Packing Berjalan</option>
             <option value="Belum">Belum Packing</option>
           </select>
           <select value={deliveryFilter} onChange={(e) => setDeliveryFilter(e.target.value)} data-testid="prod-filter-delivery">
             <option value="all">Semua Pengiriman</option>
             <option value="Terkirim">Terkirim</option>
+            <option value="Sebagian Terkirim">Sebagian Terkirim</option>
             <option value="Belum Terkirim">Belum Terkirim</option>
+          </select>
+          <select value={bufferFilter} onChange={(e) => setBufferFilter(e.target.value)} data-testid="prod-filter-buffer">
+            <option value="all">Semua Buffer Stock</option>
+            <option value="yes">Buffer Stock</option>
+            <option value="no">Non Buffer Stock</option>
           </select>
         </div>
         <div className="prod-filter-group">
@@ -244,6 +318,7 @@ export default function ProductionSchedule() {
         </div>
         <div className="prod-filter-group">
           <button className="icon-button" onClick={load} title="Muat ulang" data-testid="prod-refresh"><RefreshCw size={15} className={busy ? "spin" : ""}/></button>
+          <button className="ghost sm" onClick={resetFilters} data-testid="prod-filter-reset">Reset Filter</button>
           <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
           {canExport && (
             <>
@@ -261,7 +336,7 @@ export default function ProductionSchedule() {
           <table className="prod-table">
             <thead>
               <tr>
-                <th>Deadline</th><th data-testid="prod-th-deadline-effective">Deadline Pengiriman</th><th data-testid="prod-th-work-date">Pengerjaan</th><th>Prio</th><th>No PO</th><th>Customer</th><th>Outlet</th>
+                <th>Deadline</th><th data-testid="prod-th-deadline-effective">Deadline Pengiriman</th><th data-testid="prod-th-work-date">Pengerjaan</th><th>Prio</th><th data-testid="prod-th-buffer">Buffer</th><th>No PO</th><th>Customer</th><th>Outlet</th>
                 <th className="num">Total Qty</th><th>Operator</th>
                 <th>Design</th><th>Payment</th><th>HOLD</th>
                 <th className="num">Qty Screen</th>
@@ -308,7 +383,6 @@ export default function ProductionSchedule() {
                   </td>
                   <td className="mono small nowrap" data-testid={`prod-work-date-${r.po_number}`}>
                     {(r.operator_work_dates || []).length > 0 ? (
-                      // Print/Mixed: tanggal per operator (stacked lines).
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                         {(r.operator_work_dates || []).map((o, i) => (
                           <span key={i} data-testid={`prod-op-work-date-${r.po_number}-${i}`}>
@@ -319,13 +393,15 @@ export default function ProductionSchedule() {
                         ))}
                       </div>
                     ) : r.work_date ? (
-                      // Full Non-Cetak / legacy: gunakan orders.work_date.
                       <span data-testid={`prod-order-work-date-${r.po_number}`}>{r.work_date}</span>
                     ) : (
                       <span className="muted small">Belum Dijadwalkan</span>
                     )}
                   </td>
                   <td>{r.urgent ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>}</td>
+                  <td data-testid={`prod-buffer-${r.po_number}`}>
+                    {r.buffer_stock ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span> : <span className="muted small">—</span>}
+                  </td>
                   <td className="mono"><Link to={`/po/${r.id}`} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
                   <td><strong>{r.customer || "-"}</strong></td>
                   <td className="muted small">{r.outlet || "-"}</td>
@@ -372,7 +448,7 @@ export default function ProductionSchedule() {
                 </tr>
               ))}
               {!filtered.length && !busy && (
-                <tr><td colSpan={17} className="empty-state">Tidak ada PO cocok dengan filter.</td></tr>
+                <tr><td colSpan={20} className="empty-state">Tidak ada PO cocok dengan filter.</td></tr>
               )}
             </tbody>
           </table>
@@ -384,6 +460,7 @@ export default function ProductionSchedule() {
               <header>
                 <strong>{r.po_number}</strong>
                 {r.urgent && <span className="urgent-badge">URGENT</span>}
+                {r.buffer_stock && <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span>}
                 {r.hold && <span className="pill sm pill-hold">HOLD</span>}
                 {r.cancelled && <span className="pill sm pill-cancel">Cancelled</span>}
               </header>
@@ -393,6 +470,7 @@ export default function ProductionSchedule() {
                 <span className={"pill sm " + ((r.design_status === "Approved") ? "pill-ok" : "pill-warn")}>Design {r.design_status || "-"}</span>
                 <span className={"pill sm " + ((r.payment_status === "Approved") ? "pill-ok" : "pill-warn")}>Payment {r.payment_status || "-"}</span>
                 {r.packing_status === "Sudah" && <span className="pill sm pill-ok">Packed</span>}
+                {r.packing_status === "Berjalan" && <span className="pill sm">Packing</span>}
               </div>
             </Link>
           ))}

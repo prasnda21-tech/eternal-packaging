@@ -73,7 +73,6 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   const [err, setErr] = useState("");
   const [permQuery, setPermQuery] = useState("");
   const [effective, setEffective] = useState(null); // {default_from_role, effective}
-  const [resetBusy, setResetBusy] = useState(false);
 
   // Req 15: fetch effective breakdown (default_from_role + effective) so UI
   // shows Default / Override / Effective triad instead of asking Admin to guess.
@@ -310,9 +309,11 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
   const [statusFilter, setStatusFilter] = useState("active");
   const [roleFilter, setRoleFilter] = useState("all");
   const [q, setQ] = useState("");
-  const [modal, setModal] = useState(null); // {type: 'create'|'edit'|'perms'|'transfer-sa', user?}
+  const [modal, setModal] = useState(null); // {type: 'create'|'edit'|'perms'|'transfer-sa'|'reset-password', user?}
   const [transferTo, setTransferTo] = useState("");
   const [transferReason, setTransferReason] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -349,7 +350,14 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
 
   const superAdminCount = useMemo(() => users.filter((u) => u.is_super_admin && u.status === "active").length, [users]);
 
-  const close = () => { setModal(null); setTransferTo(""); setTransferReason(""); setErr(""); };
+  const close = () => {
+    setModal(null);
+    setTransferTo("");
+    setTransferReason("");
+    setResetPassword("");
+    setResetPasswordConfirm("");
+    setErr("");
+  };
   const doCreate = async (payload) => { await api.adminCreateUser(payload); close(); notify("Karyawan berhasil ditambahkan"); await load(); };
   const doEdit = async (payload) => { await api.adminUpdateUser(modal.user.id, payload); close(); notify("Data karyawan disimpan"); await load(); };
   const doPerms = async (payload) => { await api.adminUpdateUser(modal.user.id, payload); close(); notify("Hak akses berhasil disimpan"); await load(); };
@@ -366,13 +374,34 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
     notify(`${u.name} diaktifkan kembali`);
     await load();
   };
-  const doResetPassword = async (u) => {
-    const pwd = window.prompt(`Password baru untuk ${u.name} (min 6):`);
-    if (!pwd) return;
+  const openResetPassword = (u) => {
+    setErr("");
+    setResetPassword("");
+    setResetPasswordConfirm("");
+    setModal({ type: "reset-password", user: u });
+  };
+  const doResetPassword = async () => {
+    const pwd = (resetPassword || "").trim();
+    const confirm = (resetPasswordConfirm || "").trim();
+    if (pwd.length < 6) {
+      setErr("Password minimal 6 karakter");
+      return;
+    }
+    if (pwd !== confirm) {
+      setErr("Konfirmasi password tidak sama");
+      return;
+    }
+    setBusy(true);
+    setErr("");
     try {
-      await api.adminResetPassword(u.id, pwd);
-      notify("Password berhasil di-reset");
-    } catch (e) { alert(e.response?.data?.detail || "Gagal reset"); }
+      await api.adminResetPassword(modal.user.id, pwd);
+      close();
+      notify("Password berhasil direset");
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Gagal reset password");
+    } finally {
+      setBusy(false);
+    }
   };
   const doGrantSA = async (u) => {
     if (!window.confirm(`Jadikan ${u.name} sebagai Super Admin? Super Admin memiliki seluruh hak akses.`)) return;
@@ -528,10 +557,53 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
               canManageRoles={canManageRoles}
               canManagePerms={canManagePerms}
               roles={roles}
-              onResetPassword={modal.type === "edit" ? () => doResetPassword(modal.user) : null}
+              onResetPassword={modal.type === "edit" ? () => openResetPassword(modal.user) : null}
               onCancel={close}
               onSubmit={modal.type === "create" ? doCreate : modal.type === "edit" ? doEdit : doPerms}
             />
+          </div>
+        </div>
+      )}
+
+      {modal && modal.type === "reset-password" && canManage && (
+        <div className="modal" data-testid="reset-password-modal" onClick={(e) => e.target === e.currentTarget && close()}>
+          <div className="modal-inner" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3>Reset password · {modal.user.name}</h3>
+              <button type="button" onClick={close} className="icon-button" aria-label="Tutup"><X size={16}/></button>
+            </header>
+            <div className="emp-form">
+              <p className="muted small">Password baru untuk <b>{modal.user.email}</b>. Minimal 6 karakter. Hash disimpan di server — plain-text tidak pernah disimpan.</p>
+              <div className="emp-grid">
+                <label>Password baru
+                  <input
+                    type="password"
+                    value={resetPassword}
+                    onChange={(e) => setResetPassword(e.target.value)}
+                    autoComplete="new-password"
+                    disabled={busy}
+                    data-testid="reset-password-input"
+                  />
+                </label>
+                <label>Konfirmasi password baru
+                  <input
+                    type="password"
+                    value={resetPasswordConfirm}
+                    onChange={(e) => setResetPasswordConfirm(e.target.value)}
+                    autoComplete="new-password"
+                    disabled={busy}
+                    data-testid="reset-password-confirm"
+                  />
+                </label>
+              </div>
+              {err && <div className="error" data-testid="reset-password-error">{typeof err === "object" ? err.message : err}</div>}
+              <div className="emp-actions">
+                <button type="button" className="ghost" onClick={close} disabled={busy}>Batal</button>
+                <button type="button" className="primary" onClick={doResetPassword} disabled={busy} data-testid="reset-password-submit">
+                  <KeyRound size={14}/> Reset password
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

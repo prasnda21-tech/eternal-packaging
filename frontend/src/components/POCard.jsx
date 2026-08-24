@@ -40,7 +40,7 @@ export default function POCard({ order }) {
           {operators}
         </span>
       </div>
-      <StageBar stage={order.current_stage} />
+      <StageBar stage={order.current_stage} order={order} />
       <div className="job-bottom">
         <span className="status" data-testid={`order-status-${order.po_number}`}>
           {STAGES[order.current_stage]}

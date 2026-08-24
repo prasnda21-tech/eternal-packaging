@@ -3,6 +3,12 @@ import { Upload, Image as ImageIcon } from "lucide-react";
 import api from "../lib/api";
 import { formatDate, ROLES } from "../lib/constants";
 
+/**
+ * Dua card terpisah:
+ * - File Design → actor Designer
+ * - Cetak Sample → actor Operator
+ * Tidak digabung dalam satu panel.
+ */
 export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -10,7 +16,6 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
   const designInput = useRef(null);
   const sampleInput = useRef(null);
 
-  // Permission-based gating (Effective Permission = Role Default + User Override).
   const perms = user?.permissions || [];
   const canUploadDesign = perms.includes("design.upload");
   const canUploadSample = perms.includes("operator.sample_upload");
@@ -128,14 +133,13 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
   );
 
   return (
-    <section className="panel" data-testid="attachments-panel">
-      <header className="panel-head">
-        <h3>File Desain & Sample</h3>
-      </header>
-
-      <div className="attachments-block">
-        <div className="attachments-block-head">
-          <h4>Desain</h4>
+    <>
+      <section className="panel" data-testid="design-files-panel">
+        <header className="panel-head">
+          <h3>File Design</h3>
+          <span className="pill sm" data-testid="design-owner-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
+            Designer
+          </span>
           {canUploadDesign && (
             <>
               <input
@@ -151,14 +155,20 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
               </button>
             </>
           )}
-        </div>
+        </header>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          File dan approval design. Hanya aksi Designer yang relevan di sini.
+        </p>
         {renderList(order.design_files, "design")}
         {designSlot}
-      </div>
+      </section>
 
-      <div className="attachments-block">
-        <div className="attachments-block-head">
-          <h4>Sample cetak</h4>
+      <section className="panel" data-testid="sample-files-panel">
+        <header className="panel-head">
+          <h3>Cetak Sample</h3>
+          <span className="pill sm" data-testid="sample-owner-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
+            Operator
+          </span>
           {canUploadSample && (
             <>
               <input
@@ -174,10 +184,13 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
               </button>
             </>
           )}
-        </div>
+        </header>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          Foto/file sample cetak Operator — terpisah dari File Design.
+        </p>
         {renderList(order.sample_files, "sample")}
         {sampleSlot}
-      </div>
+      </section>
 
       {err && <div className="error" data-testid="attachment-error">{err}</div>}
 
@@ -186,6 +199,6 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           <img src={preview.data_url || preview.url} alt={preview.name} />
         </div>
       )}
-    </section>
+    </>
   );
 }
