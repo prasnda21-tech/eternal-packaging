@@ -65,9 +65,76 @@ PERMISSION_CATALOG = [
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
     ("Customer Approval", "customer_approval.settings", "Atur Customer Approval"),
+    # Sidebar / menu visibility (additional layer; does not replace API RBAC)
+    ("Akses Menu", "nav.dashboard", "Menu Dashboard"),
+    ("Akses Menu", "nav.sales", "Menu Penjualan"),
+    ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
+    ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
+    ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
+    ("Akses Menu", "nav.inventory", "Menu Persediaan"),
+    ("Akses Menu", "nav.reports", "Menu Laporan"),
+    ("Akses Menu", "nav.reports.analytics_output", "Menu Analitik Output"),
+    ("Akses Menu", "nav.settings", "Menu Pengaturan"),
+    ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
 ALL_PERMISSIONS = tuple(p for _mod, p, _lbl in PERMISSION_CATALOG)
+
+# Sidebar visibility keys (excludes the internal "already configured" sentinel).
+NAV_PERMISSION_KEYS = tuple(
+    p for _mod, p, _lbl in PERMISSION_CATALOG
+    if p.startswith("nav.") and p != "nav.configured"
+)
+NAV_CONFIGURED = "nav.configured"
+
+# Menus that were previously always visible in the sidebar. Used only to derive
+# defaults for roles that have not stored any nav.* keys yet.
+NAV_ALWAYS_VISIBLE = (
+    "nav.sales",
+    "nav.sales.import_po",
+    "nav.purchasing",
+    "nav.inventory",
+    "nav.reports",
+    "nav.reports.analytics_output",
+    "nav.settings",
+)
+
+NAV_MENU_ITEMS = (
+    ("nav.dashboard", "Dashboard", None),
+    ("nav.sales", "Penjualan", None),
+    ("nav.sales.import_po", "Import PO", "nav.sales"),
+    ("nav.production_schedule", "Jadwal Produksi", None),
+    ("nav.purchasing", "Pembelian", None),
+    ("nav.inventory", "Persediaan", None),
+    ("nav.reports", "Laporan", None),
+    ("nav.reports.analytics_output", "Analitik Output", "nav.reports"),
+    ("nav.settings", "Pengaturan", None),
+)
+
+
+def derived_nav_permissions(existing: set) -> set:
+    """Default sidebar visibility from existing page-access permissions.
+
+    Matches pre-nav sidebar behavior so old roles do not lose menus on deploy.
+    """
+    nav = set(NAV_ALWAYS_VISIBLE)
+    if "dashboard.production.view" in existing:
+        nav.add("nav.dashboard")
+    if "schedule.view" in existing:
+        nav.add("nav.production_schedule")
+    return nav
+
+
+def nav_is_configured(perms: set) -> bool:
+    return NAV_CONFIGURED in perms or any(k in perms for k in NAV_PERMISSION_KEYS)
+
+
+def with_nav_defaults(perms: set) -> set:
+    """If a role has never stored nav.* keys, fill them from existing access."""
+    base = set(perms or [])
+    if nav_is_configured(base):
+        return base
+    return base | derived_nav_permissions(base)
 
 # Default permission set per role. Admin gets everything.
 ROLE_DEFAULT_PERMISSIONS = {
@@ -132,6 +199,12 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
 }
 
+# Builtin roles get derived nav.* defaults so first-load matches current sidebar.
+for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
+    if _role == "admin":
+        continue
+    ROLE_DEFAULT_PERMISSIONS[_role] = sorted(set(_keys) | derived_nav_permissions(set(_keys)))
+
 ROLE_LABELS = {
     "admin": "Admin",
     "head_production": "Kepala Produksi",
@@ -162,11 +235,14 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
 
     role_defaults_override lets admin change the role-defaults at runtime via
     the Roles UI; if None, uses the built-in `ROLE_DEFAULT_PERMISSIONS`.
+    Navigation keys that have never been stored for a role are derived from
+    existing page-access permissions so old roles keep their current menus.
     """
     if role_defaults_override and role in role_defaults_override:
         base = set(role_defaults_override[role] or [])
     else:
         base = set(ROLE_DEFAULT_PERMISSIONS.get(role, []))
+    base = with_nav_defaults(base)
     for perm, allowed in (override or {}).items():
         if allowed:
             base.add(perm)

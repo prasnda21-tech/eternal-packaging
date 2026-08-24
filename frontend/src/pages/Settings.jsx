@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon,
+  Target as TargetIcon, PanelLeft,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
+import { NAV_MENU_FALLBACK } from "../lib/navAccess";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -71,6 +72,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
     password: "",
   }));
   const [busy, setBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [err, setErr] = useState("");
   const [permQuery, setPermQuery] = useState("");
   const [effective, setEffective] = useState(null); // {default_from_role, effective}
@@ -612,8 +614,171 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
   );
 }
 
+/* ---------------- Sidebar access matrix ---------------- */
+function navKeysOf(permissions) {
+  return new Set((permissions || []).filter((p) => p.startsWith("nav.") && p !== "nav.configured"));
+}
+
+function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onSaved, currentUserRole, onRefreshMe }) {
+  const menus = (permissionCatalog?.nav_menu?.length ? permissionCatalog.nav_menu : NAV_MENU_FALLBACK);
+  const visibleRoles = (roles || []).filter((r) => r.status !== "inactive");
+  const [draft, setDraft] = useState({});
+  const [initial, setInitial] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    const next = {};
+    (roles || []).forEach((r) => { next[r.role] = navKeysOf(r.permissions); });
+    setDraft(next);
+    setInitial(next);
+  }, [roles]);
+
+  const parentOf = useMemo(() => {
+    const map = {};
+    menus.forEach((m) => { if (m.parent) map[m.key] = m.parent; });
+    return map;
+  }, [menus]);
+  const childrenOf = useMemo(() => {
+    const map = {};
+    menus.forEach((m) => {
+      if (!m.parent) return;
+      if (!map[m.parent]) map[m.parent] = [];
+      map[m.parent].push(m.key);
+    });
+    return map;
+  }, [menus]);
+
+  const dirty = useMemo(() => {
+    return visibleRoles.some((r) => {
+      if (r.role === "admin") return false;
+      const a = draft[r.role] || new Set();
+      const b = initial[r.role] || new Set();
+      if (a.size !== b.size) return true;
+      for (const k of a) if (!b.has(k)) return true;
+      return false;
+    });
+  }, [visibleRoles, draft, initial]);
+
+  const hasNav = (slug, key) => (draft[slug] || new Set()).has(key);
+
+  const toggle = (roleDoc, key) => {
+    if (!canManagePerms || roleDoc.role === "admin") return;
+    const current = new Set(draft[roleDoc.role] || []);
+    const turningOff = current.has(key);
+    if (turningOff && key === "nav.settings") {
+      const roleHasPermManage = (roleDoc.permissions || []).includes("permissions.manage") || roleDoc.role === currentUserRole;
+      const isSelf = roleDoc.role === currentUserRole;
+      if (roleHasPermManage || isSelf) {
+        const ok = window.confirm(
+          isSelf
+            ? "Anda akan menyembunyikan menu Pengaturan untuk role Anda sendiri. Lanjutkan?"
+            : `Role "${roleDoc.label}" dapat mengelola hak akses. Menyembunyikan Pengaturan akan mempersulit pengelolaan permission. Lanjutkan?`
+        );
+        if (!ok) return;
+      }
+    }
+    if (turningOff) {
+      current.delete(key);
+      (childrenOf[key] || []).forEach((child) => current.delete(child));
+    } else {
+      current.add(key);
+      if (parentOf[key]) current.add(parentOf[key]);
+    }
+    setDraft((prev) => ({ ...prev, [roleDoc.role]: current }));
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const changed = visibleRoles.filter((r) => {
+        if (r.role === "admin") return false;
+        const a = draft[r.role] || new Set();
+        const b = initial[r.role] || new Set();
+        if (a.size !== b.size) return true;
+        for (const k of a) if (!b.has(k)) return true;
+        return false;
+      });
+      for (const r of changed) {
+        const nonNav = (r.permissions || []).filter((p) => !String(p).startsWith("nav."));
+        const nav = [...(draft[r.role] || [])];
+        await api.adminUpdateRolePermissions(r.role, [...nonNav, ...nav, "nav.configured"]);
+      }
+      setInitial(draft);
+      notify("Akses menu disimpan");
+      if (changed.some((r) => r.role === currentUserRole)) await onRefreshMe?.();
+      await onSaved?.();
+    } catch (e) {
+      setErr(e.response?.data?.detail?.message || e.response?.data?.detail || "Gagal menyimpan akses menu");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!visibleRoles.length) return null;
+
+  return (
+    <div className="nav-access" data-testid="nav-access-matrix">
+      <div className="nav-access-head">
+        <div>
+          <h3><PanelLeft size={16} /> Akses Menu / Sidebar</h3>
+          <p className="hint">Centang role mana yang boleh melihat masing-masing menu. Parent tanpa child yang tampil tidak akan muncul di sidebar.</p>
+        </div>
+        {canManagePerms && (
+          <button className="primary sm" onClick={save} disabled={busy || !dirty} data-testid="nav-access-save">
+            <Save size={13} /> Simpan akses menu
+          </button>
+        )}
+      </div>
+      {err && <div className="error" data-testid="nav-access-error">{typeof err === "object" ? err.message : err}</div>}
+      <div className="nav-access-wrap">
+        <table className="nav-access-table">
+          <thead>
+            <tr>
+              <th scope="col">Menu</th>
+              {visibleRoles.map((r) => (
+                <th key={r.role} scope="col" data-testid={`nav-access-role-${r.role}`}>
+                  {r.label || r.role}
+                  {r.role === "admin" && <Lock size={10} />}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {menus.map((m) => (
+              <tr key={m.key} data-testid={`nav-access-row-${m.key}`}>
+                <th scope="row" className={m.parent ? "nav-access-child" : ""}>{m.label}</th>
+                {visibleRoles.map((r) => {
+                  const locked = r.role === "admin" || !canManagePerms;
+                  const checked = r.role === "admin" ? true : hasNav(r.role, m.key);
+                  return (
+                    <td key={r.role}>
+                      <label className={"nav-access-cell" + (checked ? " on" : "") + (locked ? " locked" : "")}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={locked}
+                          onChange={() => toggle(r, m.key)}
+                          data-testid={`nav-access-${r.role}-${m.key}`}
+                        />
+                        <span>{checked ? "✓" : "–"}</span>
+                      </label>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Roles tab ---------------- */
 function RolesTab({ permissionCatalog, canManagePerms, notify }) {
+  const { user, refresh } = useAuth();
   const [roles, setRoles] = useState([]);
   const [selected, setSelected] = useState(null);
   const [permsDraft, setPermsDraft] = useState(new Set());
@@ -681,11 +846,14 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
         await api.adminUpdateRole(selected, { label: labelDraft, description: descDraft });
       }
       if (selected !== "admin") {
-        await api.adminUpdateRolePermissions(selected, [...permsDraft]);
+        const payload = [...permsDraft].filter((k) => k !== "nav.configured");
+        if (payload.some((k) => String(k).startsWith("nav."))) payload.push("nav.configured");
+        await api.adminUpdateRolePermissions(selected, payload);
       }
       setInitial(new Set(permsDraft));
       setMetaInitial({ label: labelDraft, description: descDraft });
       notify("Perubahan role disimpan");
+      if (selected === user?.role) await refresh();
       await load(true);
     } catch (e) { setErr(e.response?.data?.detail?.message || e.response?.data?.detail || "Gagal menyimpan"); }
     finally { setBusy(false); }
@@ -742,7 +910,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const filteredModules = useMemo(() => {
     if (!permissionCatalog) return [];
     const q = permQuery.trim().toLowerCase();
-    const entries = Object.entries(permissionCatalog.modules || {});
+    const entries = Object.entries(permissionCatalog.modules || {}).filter(([m]) => m !== "Akses Menu");
     if (!q) return entries;
     return entries
       .map(([m, ps]) => [m, ps.filter((p) => p.label.toLowerCase().includes(q) || p.key.toLowerCase().includes(q))])
@@ -751,6 +919,15 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
 
   return (
     <div className="settings-body" data-testid="roles-tab">
+      <NavAccessMatrix
+        roles={roles}
+        permissionCatalog={permissionCatalog}
+        canManagePerms={canManagePerms}
+        notify={notify}
+        onSaved={() => load(true)}
+        currentUserRole={user?.role}
+        onRefreshMe={refresh}
+      />
       <div className="roles-layout">
         <aside className="role-sidebar" data-testid="role-sidebar">
           <div className="role-sidebar-title" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>

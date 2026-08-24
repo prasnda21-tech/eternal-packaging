@@ -696,6 +696,43 @@
 .role-save-status{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--soft)}
 .role-save-actions{display:flex;gap:10px}
 
+/* Akses Menu / Sidebar matrix */
+.nav-access{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:14px 16px 10px;margin:0 0 18px;box-shadow:var(--shadow)}
+.nav-access-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.nav-access-head h3{margin:0;font-size:15px;display:flex;align-items:center;gap:8px}
+.nav-access-head .hint{margin:4px 0 0;font-size:12.5px;color:var(--soft);max-width:640px}
+.nav-access-wrap{overflow:auto;max-width:100%}
+.nav-access-table{border-collapse:separate;border-spacing:0;min-width:max-content;font-size:12.5px}
+.nav-access-table th,.nav-access-table td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:center;white-space:nowrap}
+.nav-access-table thead th{font:10.5px 'IBM Plex Mono';letter-spacing:.06em;text-transform:uppercase;color:var(--soft);background:#fafaf7;position:sticky;top:0;z-index:1}
+.nav-access-table tbody th{text-align:left;font-weight:600;padding-left:10px;position:sticky;left:0;background:var(--surface);z-index:1}
+.nav-access-table tbody th.nav-access-child{font-weight:500;padding-left:22px;color:var(--soft)}
+.nav-access-cell{display:inline-flex;align-items:center;justify-content:center;gap:0;min-width:28px;min-height:28px;cursor:pointer;border-radius:4px}
+.nav-access-cell input{position:absolute;opacity:0;width:1px;height:1px}
+.nav-access-cell span{font-weight:700;color:#b9b2a4}
+.nav-access-cell.on span{color:var(--ep-primary)}
+.nav-access-cell.locked{cursor:default;opacity:.7}
+.nav-access-cell:hover:not(.locked){background:var(--muted)}
+
+/* Compact production toolbar + header filters */
+.prod-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 0 8px}
+.prod-toolbar .search-inline{flex:0 1 240px;min-width:160px;max-width:280px;min-height:28px;height:28px;padding:0 8px;border-radius:2px;border:1px solid var(--line);background:#fff;display:flex;align-items:center;gap:6px}
+.prod-toolbar .search-inline input{border:0;outline:none;background:transparent;width:100%;font-size:12.5px;padding:4px 0}
+.prod-toolbar .prod-check{min-height:28px}
+.prod-th-inner{display:flex;align-items:center;gap:4px;min-width:0}
+.prod-th-label{background:none;border:0;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;padding:0;cursor:default;white-space:nowrap}
+.prod-th-label.is-sort{cursor:pointer}
+.prod-th-label.is-sort:hover{color:#f3d48b}
+.prod-th-filter{position:relative;width:18px;height:18px;border:0;background:transparent;color:#c5d9cf;padding:0;display:grid;place-items:center;cursor:pointer;flex-shrink:0;border-radius:3px}
+.prod-th-filter:hover{color:#fff;background:rgba(255,255,255,.12)}
+.prod-th-filter.is-active{color:#f3d48b}
+.prod-th-dot{position:absolute;top:0;right:0;width:6px;height:6px;border-radius:50%;background:#f3d48b;box-shadow:0 0 0 1px #0b2d22}
+.prod-th-popover{z-index:80;width:220px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.prod-th-pop-label{font:10.5px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
+.prod-th-popover select,.prod-th-popover input[type=date],.prod-th-popover input:not([type=checkbox]){width:100%;border:1px solid var(--line);background:var(--surface);padding:4px 8px;font-size:12px;color:var(--ink);font-family:inherit;min-height:28px;border-radius:2px}
+.prod-th-popover label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--soft)}
+.prod-th-clear{align-self:flex-start}
+
 /* Audit table */
 .audit-table{overflow-x:auto}
 .audit-thead,.audit-trow{display:grid;grid-template-columns:190px 1.2fr 1.3fr 180px 1.4fr;gap:14px;padding:12px 18px;align-items:center;border-bottom:1px solid var(--line)}
@@ -972,8 +1009,9 @@
 }
 @media (max-width:700px){
   .content:has(.prod-page){padding:14px 10px 88px}
-  .prod-filters{padding:8px}
-  .prod-filters .search-inline{flex:1 1 100%;max-width:none}
+  .prod-toolbar .search-inline{flex:1 1 100%;max-width:none}
+  .prod-th-inner{gap:2px}
+  .nav-access{padding:12px 10px 8px}
   .prod-filters select,.prod-inline-date{flex:1 1 calc(50% - 6px);max-width:none}
   .prod-inline-date{flex-wrap:wrap}
   .prod-inline-date input[type=date]{flex:1 1 100%;max-width:none}

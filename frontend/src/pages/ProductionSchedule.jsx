@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Download, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
+import { AlertCircle, Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import useAutoRefresh from "../lib/useAutoRefresh";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
+  productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
 
@@ -20,27 +22,82 @@ const STATUS_OPTS = [
 ];
 
 const TABLE_COLS = [
-  { key: "deadline", label: "Deadline", fit: true },
+  { key: "deadline", label: "Deadline", fit: true, filter: "deadline", sort: "deadline" },
   { key: "deadline_ship", label: "Deadline Pengiriman", testid: "prod-th-deadline-effective" },
-  { key: "work_date", label: "Tgl Pengerjaan", testid: "prod-th-work-date" },
-  { key: "prio", label: "Prio", fit: true },
-  { key: "buffer", label: "Buffer", fit: true, testid: "prod-th-buffer" },
-  { key: "po", label: "No PO", fit: true },
-  { key: "customer", label: "Customer" },
+  { key: "work_date", label: "Tgl Pengerjaan", testid: "prod-th-work-date", filter: "work_date", sort: "work_date" },
+  { key: "prio", label: "Prio", fit: true, filter: "prio" },
+  { key: "buffer", label: "Buffer", fit: true, testid: "prod-th-buffer", filter: "buffer" },
+  { key: "po", label: "No PO", fit: true, filter: "po" },
+  { key: "customer", label: "Customer", filter: "customer" },
   { key: "outlet", label: "Outlet" },
   { key: "qty", label: "Total Qty", num: true },
-  { key: "operator", label: "Operator" },
+  { key: "operator", label: "Operator", filter: "operator" },
   { key: "design", label: "Design", fit: true },
   { key: "payment", label: "Payment", fit: true },
-  { key: "hold", label: "HOLD", fit: true },
-  { key: "screen", label: "Qty Screen", num: true },
-  { key: "helper", label: "Persiapan", fit: true },
-  { key: "packing", label: "Packing", fit: true },
+  { key: "hold", label: "HOLD", fit: true, filter: "hold" },
+  { key: "screen", label: "Qty Screen", num: true, filter: "screener" },
+  { key: "helper", label: "Persiapan", fit: true, filter: "helper" },
+  { key: "packing", label: "Packing", fit: true, filter: "packing" },
   { key: "sj", label: "Surat Jalan", fit: true },
   { key: "loading", label: "Loading", fit: true },
   { key: "driver", label: "Driver" },
-  { key: "status", label: "Status Akhir", fit: true },
+  { key: "status", label: "Status Akhir", fit: true, filter: "status" },
 ];
+
+function columnFilterActive(filter, s) {
+  switch (filter) {
+    case "deadline": return !!(s.dateFrom || s.dateTo);
+    case "work_date": return s.workDateFilter !== "all" || !!s.workDateFrom || !!s.workDateTo;
+    case "prio": return !!s.urgentOnly;
+    case "buffer": return s.bufferFilter !== "all";
+    case "po": return !!String(s.poFilter || "").trim();
+    case "customer": return s.customerFilter !== "all";
+    case "operator": return s.operatorFilter !== "all";
+    case "hold": return !!s.holdOnly;
+    case "screener": return s.screenerFilter !== "all";
+    case "helper": return s.helperFilter !== "all";
+    case "packing": return s.packingFilter !== "all";
+    case "status": return s.statusFilter !== "all";
+    default: return false;
+  }
+}
+
+function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onClear, children }) {
+  return (
+    <div className="prod-th-inner">
+      {sortable ? (
+        <button type="button" className="prod-th-label is-sort" onClick={onSort} title={sortHint || "Urutkan"}>
+          {label}
+        </button>
+      ) : (
+        <span className="prod-th-label">{label}</span>
+      )}
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={"prod-th-filter" + (active ? " is-active" : "")}
+            aria-label={`Filter ${label}`}
+            data-testid={testid}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Filter size={11} />
+            {active && <span className="prod-th-dot" />}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="prod-th-popover" onClick={(e) => e.stopPropagation()}>
+          <div className="prod-th-pop-label">{label}</div>
+          {children}
+          {active && (
+            <button type="button" className="ghost sm prod-th-clear" onClick={onClear} data-testid={`${testid}-clear`}>
+              Hapus filter
+            </button>
+          )}
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
 
 export default function ProductionSchedule() {
   const { hasPerm } = useAuth();
@@ -51,6 +108,7 @@ export default function ProductionSchedule() {
   const [err, setErr] = useState("");
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState(FILTER_DEFAULTS.q);
+  const [poFilter, setPoFilter] = useState(FILTER_DEFAULTS.poFilter);
   const [statusFilter, setStatusFilter] = useState(FILTER_DEFAULTS.statusFilter);
   const [operatorFilter, setOperatorFilter] = useState(FILTER_DEFAULTS.operatorFilter);
   const [customerFilter, setCustomerFilter] = useState(FILTER_DEFAULTS.customerFilter);
@@ -88,7 +146,6 @@ export default function ProductionSchedule() {
   );
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted]);
 
-  // Status "Selesai" membutuhkan dataset completed dari server
   useEffect(() => {
     if (statusFilter === "selesai" && !includeCompleted) setIncludeCompleted(true);
     if (statusFilter === "cancelled" && !includeCancelled) setIncludeCancelled(true);
@@ -107,6 +164,7 @@ export default function ProductionSchedule() {
 
   const resetFilters = () => {
     setQ(FILTER_DEFAULTS.q);
+    setPoFilter(FILTER_DEFAULTS.poFilter);
     setStatusFilter(FILTER_DEFAULTS.statusFilter);
     setOperatorFilter(FILTER_DEFAULTS.operatorFilter);
     setCustomerFilter(FILTER_DEFAULTS.customerFilter);
@@ -128,7 +186,7 @@ export default function ProductionSchedule() {
   };
 
   const filterState = {
-    q, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+    q, poFilter, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
     screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
     dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, sortBy,
     includeCancelled, includeCompleted,
@@ -137,13 +195,19 @@ export default function ProductionSchedule() {
   const filtered = useMemo(
     () => applyProductionFilters(rows, filterState),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, q, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+    [rows, q, poFilter, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
       screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
       dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo,
       includeCancelled, includeCompleted]
   );
 
   const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
+  const filtersActive = productionFiltersAreActive(filterState);
+
+  const cycleSort = (col) => {
+    if (col === "deadline") setSortBy("deadline");
+    else if (col === "work_date") setSortBy((prev) => (prev === "work_date_asc" ? "work_date" : "work_date_asc"));
+  };
 
   const download = async (scope) => {
     setExporting(true);
@@ -164,6 +228,127 @@ export default function ProductionSchedule() {
     } catch (e) {
       alert(e.response?.data?.detail || "Gagal export Excel");
     } finally { setExporting(false); }
+  };
+
+  const renderColumnFilter = (c) => {
+    switch (c.filter) {
+      case "po":
+        return (
+          <input
+            placeholder="Cari No PO"
+            value={poFilter}
+            onChange={(e) => setPoFilter(e.target.value)}
+            data-testid="prod-filter-po"
+          />
+        );
+      case "customer":
+        return (
+          <select value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)} data-testid="prod-filter-customer">
+            {customers.map((cust) => <option key={cust} value={cust}>{cust === "all" ? "Semua customer" : cust}</option>)}
+          </select>
+        );
+      case "operator":
+        return (
+          <select value={operatorFilter} onChange={(e) => setOperatorFilter(e.target.value)} data-testid="prod-filter-operator">
+            {operators.map((o) => <option key={o} value={o}>{o === "all" ? "Semua operator" : o}</option>)}
+          </select>
+        );
+      case "status":
+        return (
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} data-testid="prod-filter-status">
+            {STATUS_OPTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        );
+      case "deadline":
+        return (
+          <>
+            <label>Dari <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="prod-date-from"/></label>
+            <label>Sampai <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="prod-date-to"/></label>
+          </>
+        );
+      case "work_date":
+        return (
+          <>
+            <select value={workDateFilter} onChange={(e) => setWorkDateFilter(e.target.value)} data-testid="prod-workdate-filter">
+              <option value="all">Semua Pengerjaan</option>
+              <option value="scheduled">Sudah Dijadwalkan</option>
+              <option value="unscheduled">Belum Dijadwalkan</option>
+            </select>
+            <label>Dari <input type="date" value={workDateFrom} onChange={(e) => setWorkDateFrom(e.target.value)} data-testid="prod-workdate-from"/></label>
+            <label>Sampai <input type="date" value={workDateTo} onChange={(e) => setWorkDateTo(e.target.value)} data-testid="prod-workdate-to"/></label>
+          </>
+        );
+      case "prio":
+        return (
+          <label className="prod-check">
+            <input type="checkbox" checked={urgentOnly} onChange={(e) => setUrgentOnly(e.target.checked)} data-testid="prod-filter-urgent"/> Urgent saja
+          </label>
+        );
+      case "hold":
+        return (
+          <label className="prod-check">
+            <input type="checkbox" checked={holdOnly} onChange={(e) => setHoldOnly(e.target.checked)} data-testid="prod-filter-hold"/> HOLD saja
+          </label>
+        );
+      case "buffer":
+        return (
+          <select value={bufferFilter} onChange={(e) => setBufferFilter(e.target.value)} data-testid="prod-filter-buffer">
+            <option value="all">Semua Buffer Stock</option>
+            <option value="yes">Buffer Stock</option>
+            <option value="no">Non Buffer Stock</option>
+          </select>
+        );
+      case "screener":
+        return (
+          <select value={screenerFilter} onChange={(e) => setScreenerFilter(e.target.value)} data-testid="prod-filter-screener">
+            <option value="all">Semua Screener</option>
+            <option value="yes">Ada Qty Screen</option>
+            <option value="no">Belum Screener</option>
+          </select>
+        );
+      case "helper":
+        return (
+          <select value={helperFilter} onChange={(e) => setHelperFilter(e.target.value)} data-testid="prod-filter-helper">
+            <option value="all">Semua Helper</option>
+            <option value="ok">Barang Cukup</option>
+            <option value="kurang">Barang Kurang</option>
+            <option value="none">Belum diinput</option>
+          </select>
+        );
+      case "packing":
+        return (
+          <select value={packingFilter} onChange={(e) => setPackingFilter(e.target.value)} data-testid="prod-filter-packing">
+            <option value="all">Semua Packing</option>
+            <option value="Sudah">Sudah Packing</option>
+            <option value="Berjalan">Packing Berjalan</option>
+            <option value="Belum">Belum Packing</option>
+          </select>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const clearColumn = (filter) => {
+    switch (filter) {
+      case "po": setPoFilter(FILTER_DEFAULTS.poFilter); break;
+      case "customer": setCustomerFilter(FILTER_DEFAULTS.customerFilter); break;
+      case "operator": setOperatorFilter(FILTER_DEFAULTS.operatorFilter); break;
+      case "status": setStatusFilter(FILTER_DEFAULTS.statusFilter); break;
+      case "deadline": setDateFrom(FILTER_DEFAULTS.dateFrom); setDateTo(FILTER_DEFAULTS.dateTo); break;
+      case "work_date":
+        setWorkDateFilter(FILTER_DEFAULTS.workDateFilter);
+        setWorkDateFrom(FILTER_DEFAULTS.workDateFrom);
+        setWorkDateTo(FILTER_DEFAULTS.workDateTo);
+        break;
+      case "prio": setUrgentOnly(FILTER_DEFAULTS.urgentOnly); break;
+      case "hold": setHoldOnly(FILTER_DEFAULTS.holdOnly); break;
+      case "buffer": setBufferFilter(FILTER_DEFAULTS.bufferFilter); break;
+      case "screener": setScreenerFilter(FILTER_DEFAULTS.screenerFilter); break;
+      case "helper": setHelperFilter(FILTER_DEFAULTS.helperFilter); break;
+      case "packing": setPackingFilter(FILTER_DEFAULTS.packingFilter); break;
+      default: break;
+    }
   };
 
   return (
@@ -190,87 +375,24 @@ export default function ProductionSchedule() {
         </div>
       </div>
 
-      <section className="prod-filters" data-testid="prod-filters">
-        <div className="prod-filter-row">
-          <span className="prod-filter-kicker">Cari &amp; status</span>
-          <div className="search-inline">
-            <Search size={13}/>
-            <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
-          </div>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} data-testid="prod-filter-status">
-            {STATUS_OPTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </select>
-          <select value={customerFilter} onChange={(e) => setCustomerFilter(e.target.value)} data-testid="prod-filter-customer">
-            {customers.map((c) => <option key={c} value={c}>{c === "all" ? "Semua customer" : c}</option>)}
-          </select>
-          <select value={operatorFilter} onChange={(e) => setOperatorFilter(e.target.value)} data-testid="prod-filter-operator">
-            {operators.map((o) => <option key={o} value={o}>{o === "all" ? "Semua operator" : o}</option>)}
-          </select>
-          <select value={bufferFilter} onChange={(e) => setBufferFilter(e.target.value)} data-testid="prod-filter-buffer">
-            <option value="all">Semua Buffer Stock</option>
-            <option value="yes">Buffer Stock</option>
-            <option value="no">Non Buffer Stock</option>
-          </select>
+      <div className="prod-toolbar" data-testid="prod-filters">
+        <div className="search-inline">
+          <Search size={13}/>
+          <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
         </div>
-        <div className="prod-filter-row">
-          <span className="prod-filter-kicker">Tahap</span>
-          <select value={screenerFilter} onChange={(e) => setScreenerFilter(e.target.value)} data-testid="prod-filter-screener">
-            <option value="all">Semua Screener</option>
-            <option value="yes">Ada Qty Screen</option>
-            <option value="no">Belum Screener</option>
-          </select>
-          <select value={helperFilter} onChange={(e) => setHelperFilter(e.target.value)} data-testid="prod-filter-helper">
-            <option value="all">Semua Helper</option>
-            <option value="ok">Barang Cukup</option>
-            <option value="kurang">Barang Kurang</option>
-            <option value="none">Belum diinput</option>
-          </select>
-          <select value={packingFilter} onChange={(e) => setPackingFilter(e.target.value)} data-testid="prod-filter-packing">
-            <option value="all">Semua Packing</option>
-            <option value="Sudah">Sudah Packing</option>
-            <option value="Berjalan">Packing Berjalan</option>
-            <option value="Belum">Belum Packing</option>
-          </select>
-          <select value={deliveryFilter} onChange={(e) => setDeliveryFilter(e.target.value)} data-testid="prod-filter-delivery">
-            <option value="all">Semua Pengiriman</option>
-            <option value="Terkirim">Terkirim</option>
-            <option value="Sebagian Terkirim">Sebagian Terkirim</option>
-            <option value="Belum Terkirim">Belum Terkirim</option>
-          </select>
-          <label className="prod-check"><input type="checkbox" checked={urgentOnly} onChange={(e) => setUrgentOnly(e.target.checked)} data-testid="prod-filter-urgent"/> Urgent</label>
-          <label className="prod-check"><input type="checkbox" checked={holdOnly} onChange={(e) => setHoldOnly(e.target.checked)} data-testid="prod-filter-hold"/> HOLD</label>
-          <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Termasuk Selesai</label>
-          <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Termasuk Cancelled</label>
-        </div>
-        <div className="prod-filter-row prod-filter-dates">
-          <span className="prod-filter-kicker">Tanggal &amp; aksi</span>
-          <label className="prod-inline-date">Tanggal dari <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="prod-date-from"/></label>
-          <label className="prod-inline-date">Tanggal sampai <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="prod-date-to"/></label>
-          <select value={workDateFilter} onChange={(e) => setWorkDateFilter(e.target.value)} data-testid="prod-workdate-filter">
-            <option value="all">Semua Pengerjaan</option>
-            <option value="scheduled">Sudah Dijadwalkan</option>
-            <option value="unscheduled">Belum Dijadwalkan</option>
-          </select>
-          <label className="prod-inline-date">Pekerjaan dari <input type="date" value={workDateFrom} onChange={(e) => setWorkDateFrom(e.target.value)} data-testid="prod-workdate-from"/></label>
-          <label className="prod-inline-date">Pekerjaan sampai <input type="date" value={workDateTo} onChange={(e) => setWorkDateTo(e.target.value)} data-testid="prod-workdate-to"/></label>
-          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} data-testid="prod-sort-by">
-            <option value="deadline">Urutkan: Deadline</option>
-            <option value="work_date_asc">Urutkan: Pengerjaan (terlama)</option>
-            <option value="work_date">Urutkan: Pengerjaan (terbaru)</option>
-          </select>
-          <div className="prod-filter-actions">
-            <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
-            <button className="icon-button" onClick={load} title="Muat ulang" data-testid="prod-refresh"><RefreshCw size={13} className={busy ? "spin" : ""}/></button>
-            <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset">Reset Filter</button>
-            {canExport && (
-              <>
-                <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
-                <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
-              </>
-            )}
-          </div>
-        </div>
-      </section>
+        <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
+        <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
+        <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
+        <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === FILTER_DEFAULTS.sortBy}>
+          Reset Filter
+        </button>
+        {canExport && (
+          <>
+            <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
+            <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
+          </>
+        )}
+      </div>
 
       {err && <div className="error" data-testid="prod-error">{err}</div>}
 
@@ -279,11 +401,28 @@ export default function ProductionSchedule() {
           <table className="prod-table">
             <thead>
               <tr>
-                {TABLE_COLS.map((c) => (
-                  <th key={c.key} className={[c.num ? "num" : "", (c.num || c.fit) ? "col-fit" : "col-text"].filter(Boolean).join(" ")} data-testid={c.testid} scope="col">
-                    {c.label}
-                  </th>
-                ))}
+                {TABLE_COLS.map((c) => {
+                  const active = columnFilterActive(c.filter, filterState);
+                  return (
+                    <th key={c.key} className={[c.num ? "num" : "", (c.num || c.fit) ? "col-fit" : "col-text"].filter(Boolean).join(" ")} data-testid={c.testid} scope="col">
+                      {c.filter ? (
+                        <HeaderFilter
+                          label={c.label}
+                          testid={`prod-th-filter-${c.key}`}
+                          active={active}
+                          sortable={!!c.sort}
+                          sortHint={c.sort === "work_date" ? "Urutkan tanggal pengerjaan" : "Urutkan deadline"}
+                          onSort={() => cycleSort(c.sort)}
+                          onClear={() => clearColumn(c.filter)}
+                        >
+                          {renderColumnFilter(c)}
+                        </HeaderFilter>
+                      ) : (
+                        <span className="prod-th-label">{c.label}</span>
+                      )}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>

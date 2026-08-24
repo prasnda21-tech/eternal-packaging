@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
+import { NAV_KEYS, reportsNavVisible, salesNavVisible } from "../lib/navAccess";
 import BrandMark from "./BrandMark";
 
 const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
@@ -66,6 +67,14 @@ export default function AppShell() {
     year: "numeric",
   });
 
+  const salesNav = salesNavVisible(hasPerm);
+  const reportsNav = reportsNavVisible(hasPerm);
+  const showDashboard = hasPerm(NAV_KEYS.dashboard);
+  const showSchedule = hasPerm(NAV_KEYS.schedule);
+  const showPurchasing = hasPerm(NAV_KEYS.purchasing);
+  const showInventory = hasPerm(NAV_KEYS.inventory);
+  const showSettings = hasPerm(NAV_KEYS.settings);
+
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -73,63 +82,73 @@ export default function AppShell() {
           <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav">
-          {hasPerm("dashboard.production.view") && (
+          {showDashboard && (
             <NavLink to="/dashboard" end className={navClass} data-testid="top-nav-dashboard">
               <LayoutDashboard size={16} /> Dashboard
             </NavLink>
           )}
-          <div className="nav-group">
-            <button
-              type="button"
-              className={"top-nav-link nav-group-toggle" + (importActive ? " parent-open" : "")}
-              aria-expanded={salesOpen}
-              onClick={() => setSalesOpen((open) => !open)}
-              data-testid="top-nav-sales"
-            >
-              <ShoppingCart size={16} /> Penjualan
-              <ChevronDown size={14} className="nav-chevron" />
-            </button>
-            {salesOpen && (
-              <div className="nav-sub">
-                <NavLink to="/admin/import" className={navClass} data-testid="top-nav-import">
-                  <Download size={16} /> Import PO
-                </NavLink>
-              </div>
-            )}
-          </div>
-          {hasPerm("schedule.view") && (
+          {salesNav.parent && (
+            <div className="nav-group">
+              <button
+                type="button"
+                className={"top-nav-link nav-group-toggle" + (importActive ? " parent-open" : "")}
+                aria-expanded={salesOpen}
+                onClick={() => setSalesOpen((open) => !open)}
+                data-testid="top-nav-sales"
+              >
+                <ShoppingCart size={16} /> Penjualan
+                <ChevronDown size={14} className="nav-chevron" />
+              </button>
+              {salesOpen && salesNav.importPo && (
+                <div className="nav-sub">
+                  <NavLink to="/admin/import" className={navClass} data-testid="top-nav-import">
+                    <Download size={16} /> Import PO
+                  </NavLink>
+                </div>
+              )}
+            </div>
+          )}
+          {showSchedule && (
             <NavLink to="/produksi" end className={navClass} data-testid="top-nav-produksi">
               <Table size={16} /> Jadwal Produksi
             </NavLink>
           )}
-          <NavLink to="/pembelian" className={navClass} data-testid="top-nav-pembelian">
-            <ShoppingBag size={16} /> Pembelian
-          </NavLink>
-          <NavLink to="/persediaan" className={navClass} data-testid="top-nav-persediaan">
-            <Warehouse size={16} /> Persediaan
-          </NavLink>
-          <div className="nav-group">
-            <button
-              type="button"
-              className={"top-nav-link nav-group-toggle" + (reportsActive ? " parent-open" : "")}
-              aria-expanded={reportsOpen}
-              onClick={() => setReportsOpen((open) => !open)}
-              data-testid="top-nav-laporan"
-            >
-              <BarChart3 size={16} /> Laporan
-              <ChevronDown size={14} className="nav-chevron" />
-            </button>
-            {reportsOpen && (
-              <div className="nav-sub">
-                <NavLink to="/laporan/analitik-output" className={navClass} data-testid="top-nav-analitik-output">
-                  <FileBarChart size={16} /> Analitik Output
-                </NavLink>
-              </div>
-            )}
-          </div>
-          <NavLink to="/settings" className={navClass} data-testid="top-nav-settings">
-            <SettingsIcon size={16} /> Pengaturan
-          </NavLink>
+          {showPurchasing && (
+            <NavLink to="/pembelian" className={navClass} data-testid="top-nav-pembelian">
+              <ShoppingBag size={16} /> Pembelian
+            </NavLink>
+          )}
+          {showInventory && (
+            <NavLink to="/persediaan" className={navClass} data-testid="top-nav-persediaan">
+              <Warehouse size={16} /> Persediaan
+            </NavLink>
+          )}
+          {reportsNav.parent && (
+            <div className="nav-group">
+              <button
+                type="button"
+                className={"top-nav-link nav-group-toggle" + (reportsActive ? " parent-open" : "")}
+                aria-expanded={reportsOpen}
+                onClick={() => setReportsOpen((open) => !open)}
+                data-testid="top-nav-laporan"
+              >
+                <BarChart3 size={16} /> Laporan
+                <ChevronDown size={14} className="nav-chevron" />
+              </button>
+              {reportsOpen && reportsNav.analytics && (
+                <div className="nav-sub">
+                  <NavLink to="/laporan/analitik-output" className={navClass} data-testid="top-nav-analitik-output">
+                    <FileBarChart size={16} /> Analitik Output
+                  </NavLink>
+                </div>
+              )}
+            </div>
+          )}
+          {showSettings && (
+            <NavLink to="/settings" className={navClass} data-testid="top-nav-settings">
+              <SettingsIcon size={16} /> Pengaturan
+            </NavLink>
+          )}
         </nav>
       </aside>
       <div className="app-main">

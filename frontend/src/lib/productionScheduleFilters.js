@@ -2,6 +2,7 @@
 
 export const FILTER_DEFAULTS = {
   q: "",
+  poFilter: "",
   statusFilter: "all",
   operatorFilter: "all",
   customerFilter: "all",
@@ -83,6 +84,10 @@ export function applyProductionFilters(rows, filters = {}) {
     if (f.urgentOnly && !r.urgent) return false;
     if (f.holdOnly && !r.hold) return false;
     if (f.customerFilter !== "all" && r.customer !== f.customerFilter) return false;
+    if (f.poFilter) {
+      const needle = String(f.poFilter).trim().toLowerCase();
+      if (needle && !(r.po_number || "").toLowerCase().includes(needle)) return false;
+    }
     if (f.operatorFilter !== "all") {
       const ops = (r.operators || []).map((o) => o.operator_name);
       if (!ops.includes(f.operatorFilter)) return false;
@@ -145,4 +150,29 @@ export function sortProductionRows(rows, sortBy = "deadline") {
     return ad.localeCompare(bd);
   });
   return arr;
+}
+
+export function productionFiltersAreActive(filters = {}) {
+  const f = { ...FILTER_DEFAULTS, ...filters };
+  return Boolean(
+    String(f.q || "").trim()
+    || String(f.poFilter || "").trim()
+    || f.statusFilter !== FILTER_DEFAULTS.statusFilter
+    || f.operatorFilter !== FILTER_DEFAULTS.operatorFilter
+    || f.customerFilter !== FILTER_DEFAULTS.customerFilter
+    || f.urgentOnly
+    || f.holdOnly
+    || f.screenerFilter !== FILTER_DEFAULTS.screenerFilter
+    || f.helperFilter !== FILTER_DEFAULTS.helperFilter
+    || f.packingFilter !== FILTER_DEFAULTS.packingFilter
+    || f.deliveryFilter !== FILTER_DEFAULTS.deliveryFilter
+    || f.bufferFilter !== FILTER_DEFAULTS.bufferFilter
+    || f.dateFrom
+    || f.dateTo
+    || f.workDateFilter !== FILTER_DEFAULTS.workDateFilter
+    || f.workDateFrom
+    || f.workDateTo
+    || f.includeCancelled !== FILTER_DEFAULTS.includeCancelled
+    || f.includeCompleted !== FILTER_DEFAULTS.includeCompleted
+  );
 }

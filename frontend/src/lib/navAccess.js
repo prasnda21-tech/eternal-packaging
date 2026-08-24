@@ -1,0 +1,42 @@
+/** Sidebar / page visibility helpers over existing `hasPerm` + nav.* keys. */
+
+export const NAV_KEYS = {
+  dashboard: "nav.dashboard",
+  sales: "nav.sales",
+  importPo: "nav.sales.import_po",
+  schedule: "nav.production_schedule",
+  purchasing: "nav.purchasing",
+  inventory: "nav.inventory",
+  reports: "nav.reports",
+  analytics: "nav.reports.analytics_output",
+  settings: "nav.settings",
+};
+
+export const NAV_MENU_FALLBACK = [
+  { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
+  { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
+  { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: null },
+  { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
+  { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
+  { key: NAV_KEYS.reports, label: "Laporan", parent: null },
+  { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
+];
+
+export function canSeeNav(hasPerm, key) {
+  return typeof hasPerm === "function" ? !!hasPerm(key) : false;
+}
+
+/** Parent that is not a page itself is hidden when no child is visible. */
+export function salesNavVisible(hasPerm) {
+  const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
+  const importPo = parent && canSeeNav(hasPerm, NAV_KEYS.importPo);
+  return { parent: importPo, importPo };
+}
+
+export function reportsNavVisible(hasPerm) {
+  const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
+  const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
+  return { parent: analytics, analytics };
+}
