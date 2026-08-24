@@ -161,11 +161,32 @@ export default function PODetail() {
       setErr("Belum bisa Packing:\n• Qty Packing harus diisi terlebih dahulu.");
       return;
     }
-    if (!window.confirm("Konfirmasi Packing selesai dan PO siap masuk Surat Jalan?")) return;
-    await run(() => api.markPacked(order.id), "Packing selesai — masuk Surat Jalan");
+    const shortage = Math.max((order.packing_required_total || 0) - Number(qtyPacked || 0), 0);
+    const msg = shortage > 0
+      ? `Lanjut packing sebagian (${qtyPacked} pcs, kurang ${shortage}) ke Surat Jalan? Packing penuh belum tercapai.`
+      : "Konfirmasi Packing selesai dan PO siap masuk Surat Jalan?";
+    if (!window.confirm(msg)) return;
+    await run(() => api.markPacked(order.id), shortage > 0 ? "Packing sebagian — masuk Surat Jalan" : "Packing selesai — masuk Surat Jalan");
   };
-  const delivered = () => run(() => api.markDelivered(order.id), "Ditandai sudah terkirim");
+  const delivered = () => {
+    const packed = Number(order?.packing_info?.qty_packed || 0);
+    const total = Number(order?.packing_required_total || order?.total_quantity || 0);
+    const already = Number(order?.qty_delivered || 0);
+    if (packed < total) {
+      if (!window.confirm(`Tandai terkirim sebagian ${packed} pcs (dari total ${total})? PO belum selesai penuh.`)) return;
+      return run(() => api.markDelivered(order.id, packed), `Terkirim sebagian ${packed} pcs`);
+    }
+    if (already > 0 && already < total) {
+      if (!window.confirm(`Lengkapi pengiriman hingga ${packed} pcs?`)) return;
+      return run(() => api.markDelivered(order.id, packed), "Pengiriman dilengkapi");
+    }
+    return run(() => api.markDelivered(order.id), "Ditandai sudah terkirim");
+  };
   const toggleUrgent = () => run(() => api.setUrgent(order.id, order.priority !== "urgent"), "Prioritas diperbarui");
+  const toggleBufferStock = () => run(
+    () => api.setBufferStock(order.id, !order.buffer_stock),
+    order.buffer_stock ? "Buffer Stock dibatalkan" : "Ditandai Buffer Stock"
+  );
   const saveNote = async () => {
     if (!note.trim()) return;
     await run(() => api.addNote(order.id, note.trim()), "Catatan disimpan");
@@ -179,6 +200,7 @@ export default function PODetail() {
   const canUploadDesign = hasPerm("design.upload");
   const canUploadSample = hasPerm("operator.sample_upload");
   const canManageUrgent = hasPerm("urgent.manage");
+  const canManageBufferStock = hasPerm("buffer_stock.manage");
   const canEditSchedule = hasPerm("schedule.edit");
   const canMarkPacked = hasPerm("packing.update");
   const canMarkDelivered = hasPerm("delivery.update");
@@ -198,7 +220,7 @@ export default function PODetail() {
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
     canApproveDesign || canApprovePayment || canUploadPayment || canUploadDesign ||
-    canManageUrgent || canEditSchedule || canMarkPacked || canMarkDelivered ||
+    canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
     canHelperPrep || canScreenerUpdate || canAdvanceNow
   );
@@ -301,6 +323,16 @@ export default function PODetail() {
                 <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
               </button>
             )}
+            {order.buffer_stock && (
+              <span className="pill sm" data-testid="buffer-stock-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
+                BUFFER STOCK
+              </span>
+            )}
+            {canManageBufferStock && (
+              <button className="ghost sm" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
+                {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
+              </button>
+            )}
           </div>
           <h2 data-testid="detail-outlet">{order.outlet}</h2>
           <p className="subhead">
@@ -320,7 +352,7 @@ export default function PODetail() {
         </div>
       </div>
 
-      <StageBar stage={order.current_stage} onStageClick={(idx) => setStageDrawer(idx)} />
+      <StageBar stage={order.current_stage} order={order} onStageClick={(idx) => setStageDrawer(idx)} />
 
       {/* HOLD banner (Req 2) */}
       {order.hold && (

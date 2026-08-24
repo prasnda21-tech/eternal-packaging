@@ -1,6 +1,6 @@
 /* -------- Shell & Topbar -------- */
 .app-shell{min-height:100vh;background:var(--paper);background-image:linear-gradient(rgba(23,33,38,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(23,33,38,.025) 1px,transparent 1px);background-size:32px 32px}
-.topbar{height:72px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 5vw;gap:32px}
+.topbar{height:72px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 5vw;gap:32px;position:sticky;top:0;z-index:30}
 .brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit}
 .brand span,.login-mark span{background:var(--ink);color:#f6f3eb;font-family:'IBM Plex Mono';font-weight:600;padding:9px 7px;font-size:14px}
 .brand strong{font-size:14px;letter-spacing:.08em;text-transform:uppercase}
@@ -494,6 +494,7 @@
 }
 @media(max-width:700px){
   .topbar{height:62px;padding:0 16px;gap:12px}
+  .prod-table thead th{top:62px}
   .brand strong{font-size:11px}
   .sync{display:none}
   .profile{margin-left:auto;border:0;padding-left:0}
@@ -807,7 +808,7 @@
 }
 .prod-table-wrap{overflow-x:auto;border:1px solid var(--line);background:var(--surface);margin-top:12px}
 .prod-table{width:100%;min-width:1600px;border-collapse:collapse;font-size:12.5px}
-.prod-table thead th{position:sticky;top:0;background:#17313E;color:#fff;padding:10px 12px;text-align:left;font:11px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid #12262f;white-space:nowrap;z-index:2}
+.prod-table thead th{position:sticky;top:72px;background:#17313E;color:#fff;padding:10px 12px;text-align:left;font:11px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid #12262f;white-space:nowrap;z-index:2}
 .prod-table thead th.num{text-align:right}
 .prod-table tbody td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top;background:var(--surface)}
 .prod-table tbody td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',monospace}

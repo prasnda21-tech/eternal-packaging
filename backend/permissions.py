@@ -50,6 +50,7 @@ PERMISSION_CATALOG = [
     ("Pengiriman", "delivery.deadline.settings", "Atur Perhitungan Deadline Pengiriman"),
     ("Produksi", "production.route.edit", "Atur Proses Cetak / Non-Cetak per Line Item"),
     ("Prioritas", "urgent.manage", "Set/hapus urgent"),
+    ("PO", "buffer_stock.manage", "Set/hapus Buffer Stock"),
     ("User & Karyawan", "users.view", "Lihat data karyawan"),
     ("User & Karyawan", "users.manage", "Kelola karyawan"),
     ("Role & Permission", "roles.manage", "Ubah role user"),
@@ -83,6 +84,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "packing.update",
         "delivery_note.view", "delivery_note.manage",
         "loading.update", "delivery.update", "urgent.manage",
+        "buffer_stock.manage",
         "users.view", "audit.view",
         "dashboard.production.view", "dashboard.production.input", "dashboard.production.edit",
         "dashboard.production.export",
@@ -96,6 +98,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "schedule.work_date.view", "schedule.work_date.edit",
         "delivery_note.view", "delivery_note.manage",
         "loading.update", "delivery.update", "urgent.manage",
+        "buffer_stock.manage",
         "users.view", "audit.view",
         "dashboard.production.view", "dashboard.production.input", "dashboard.production.edit",
         "dashboard.production.export",
@@ -125,6 +128,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "po.view", "design.view", "payment.view",
         "schedule.view", "schedule.work_date.view", "delivery_note.view",
         "customer_approval.view",
+        "buffer_stock.manage",
     ],
 }
 

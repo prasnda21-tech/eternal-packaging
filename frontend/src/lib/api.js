@@ -33,6 +33,7 @@ export const api = {
   updateScreenerInfo: (id, payload) => client.post(`/orders/${id}/screener-info`, payload).then((r) => r.data),
   assignOperators: (id, splits) => client.post(`/orders/${id}/assign-operators`, { splits }).then((r) => r.data),
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
+  setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
   updateLoading: (id, payload) => client.post(`/orders/${id}/loading`, payload).then((r) => r.data),
@@ -41,7 +42,10 @@ export const api = {
   updateOrderWorkDate: (id, work_date) => client.patch(`/orders/${id}/work-date`, { work_date }).then((r) => r.data),
   updateOperatorWorkDate: (id, split_id, work_date) => client.patch(`/orders/${id}/operator-splits/${split_id}/work-date`, { work_date }).then((r) => r.data),
   createSuratJalan: (id, delivery_note_number = null, notes = "") => client.post(`/orders/${id}/surat-jalan`, { delivery_note_number, notes }).then((r) => r.data),
-  markDelivered: (id) => client.post(`/orders/${id}/delivered`).then((r) => r.data),
+  markDelivered: (id, qty_delivered = null) =>
+    client.post(`/orders/${id}/delivered`, null, {
+      params: qty_delivered == null ? {} : { qty_delivered },
+    }).then((r) => r.data),
   syncAccurate: () => client.post(`/accurate/sync`).then((r) => r.data),
   accurateStatus: () => client.get(`/accurate/status`).then((r) => r.data),
   accurateList: (limit = 20, refresh = false, page = 1, keyword = "") =>

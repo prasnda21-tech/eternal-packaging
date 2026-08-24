@@ -18,6 +18,24 @@ from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
 )
+from quantity_rules import (
+    available_for_packing as _qr_available_for_packing,
+    is_fully_delivered as _qr_is_fully_delivered,
+    is_print_line as _qr_is_print_line,
+    non_print_qty_total as _qr_non_print_qty_total,
+    operator_assigned_qty as _qr_operator_assigned_qty,
+    packing_required_total as _qr_packing_required_total,
+    packing_status_semantic as _qr_packing_status_semantic,
+    print_completed_qty as _qr_print_completed_qty,
+    print_line_indices as _qr_print_line_indices,
+    print_qty_total as _qr_print_qty_total,
+    qty_delivered as _qr_qty_delivered,
+    qty_packed as _qr_qty_packed,
+    requires_printing as _qr_requires_printing,
+    validate_delivery_qty as _qr_validate_delivery_qty,
+    validate_operator_assignment_total as _qr_validate_operator_assignment_total,
+    validate_packing_qty as _qr_validate_packing_qty,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -605,11 +623,7 @@ async def get_order(order_id: str, user=Depends(current_user)):
     order["terkirim_prereq_reasons"] = _prereq_reasons_for_terkirim(order)
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
-    # Batch 3: production routing (Cetak/Non-Cetak)
-    order["requires_printing"] = _requires_printing(order)
-    # Revisi routing: expose derived totals scope Cetak vs Packing untuk UI.
-    order["print_qty_total"] = _print_qty_total(order)
-    order["packing_required_total"] = _packing_required_total(order)
+    _attach_quantity_snapshot(order)
     # Batch 1: delivery deadline effective/source/status
     _dd_settings = await _get_delivery_deadline_settings()
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
@@ -713,7 +727,68 @@ def _attach_deadline_snapshot(order: dict, lead_time_days: int):
     order["delivery_deadline_status"] = _deadline_status_for(effective, order)
 
 
-async def _persist_order(order):
+_DERIVED_ORDER_KEYS = (
+    "packing_prereq_reasons", "packing_ready", "packing_status_semantic",
+    "surat_jalan_created", "loading_prereq_reasons", "loading_ready",
+    "loading_completed", "terkirim_prereq_reasons", "terkirim_ready",
+    "terkirim_confirmed", "delivery_deadline_calculated",
+    "delivery_deadline_effective", "delivery_deadline_source",
+    "delivery_deadline_lead_time_days", "delivery_deadline_status",
+    "requires_printing", "print_qty_total", "packing_required_total",
+    "non_print_qty_total", "print_completed_qty", "available_for_packing",
+    "operator_assigned_qty",
+)
+
+
+def _attach_quantity_snapshot(order: dict) -> None:
+    """Derived qty fields (non-persisted) untuk UI + invariant checks."""
+    order["requires_printing"] = _requires_printing(order)
+    order["print_qty_total"] = _print_qty_total(order)
+    order["non_print_qty_total"] = _non_print_qty_total(order)
+    order["packing_required_total"] = _packing_required_total(order)
+    order["print_completed_qty"] = _print_completed_qty(order)
+    order["operator_assigned_qty"] = _operator_assigned_qty(order)
+    order["available_for_packing"] = _available_for_packing(order)
+
+
+_QUANTITY_LOCK_RETRIES = 5
+_CONFLICT_MSG = "PO baru saja diubah oleh user lain. Muat ulang halaman lalu coba lagi."
+
+
+async def _load_order_for_mutation(order_id: str) -> dict:
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    return order
+
+
+async def _with_quantity_lock(order_id: str, mutate):
+    """Atomic optimistic lock + retry untuk mutasi qty kritis.
+
+    `mutate(order)` memvalidasi & memodifikasi order in-place.
+    Setiap attempt: baca fresh → validasi → update dengan filter updated_at.
+    """
+    last_token = None
+    for attempt in range(_QUANTITY_LOCK_RETRIES):
+        order = await _load_order_for_mutation(order_id)
+        lock_token = order.get("updated_at")
+        last_token = lock_token
+        mutate(order)
+        order["_expected_updated_at"] = lock_token
+        try:
+            return await _persist_order(order, require_lock=True)
+        except HTTPException as exc:
+            if exc.status_code == 409 and attempt < _QUANTITY_LOCK_RETRIES - 1:
+                continue
+            raise
+    raise HTTPException(409, _CONFLICT_MSG)
+
+
+async def _persist_order(order, *, require_lock: bool = False):
+    expected_updated = order.pop("_expected_updated_at", None)
+    if require_lock and not expected_updated:
+        raise HTTPException(409, _CONFLICT_MSG)
     order["updated_at"] = now_iso()
     if order.get("cancelled"):
         order["status_label"] = "Cancelled"
@@ -721,8 +796,21 @@ async def _persist_order(order):
         order["status_label"] = STAGES[min(order["current_stage"], len(STAGES) - 1)]
     _apply_hold_snapshot(order)
     # DB write pakai field yang persistable (skip yang derived).
-    to_write = {k: v for k, v in order.items() if k not in ("packing_prereq_reasons", "packing_ready", "packing_status_semantic", "surat_jalan_created", "loading_prereq_reasons", "loading_ready", "loading_completed", "terkirim_prereq_reasons", "terkirim_ready", "terkirim_confirmed", "delivery_deadline_calculated", "delivery_deadline_effective", "delivery_deadline_source", "delivery_deadline_lead_time_days", "delivery_deadline_status", "requires_printing", "print_qty_total", "packing_required_total")}
-    await db.orders.update_one({"id": order["id"]}, {"$set": to_write}, upsert=True)
+    to_write = {k: v for k, v in order.items() if k not in _DERIVED_ORDER_KEYS}
+    query = {"id": order["id"]}
+    if expected_updated:
+        query["updated_at"] = expected_updated
+    elif require_lock:
+        raise HTTPException(409, _CONFLICT_MSG)
+    result = await db.orders.update_one(
+        query,
+        {"$set": to_write},
+        upsert=not bool(expected_updated or require_lock),
+    )
+    if expected_updated and result.matched_count == 0:
+        raise HTTPException(409, _CONFLICT_MSG)
+    if require_lock and result.modified_count == 0 and result.matched_count == 0:
+        raise HTTPException(409, _CONFLICT_MSG)
     # Attach derived fields untuk response (workflow 06-12 bugfix).
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
     order["packing_ready"] = len(order["packing_prereq_reasons"]) == 0
@@ -739,11 +827,7 @@ async def _persist_order(order):
     order["terkirim_prereq_reasons"] = _prereq_reasons_for_terkirim(order)
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
-    # Batch 3: production routing (Cetak/Non-Cetak)
-    order["requires_printing"] = _requires_printing(order)
-    # Revisi routing: expose derived totals scope Cetak vs Packing untuk UI.
-    order["print_qty_total"] = _print_qty_total(order)
-    order["packing_required_total"] = _packing_required_total(order)
+    _attach_quantity_snapshot(order)
     # Batch 1: attach deadline snapshot (best-effort — safe kalau settings belum ada).
     try:
         # NOTE: sync call di persist path — read settings sekali per persist.
@@ -758,17 +842,8 @@ async def _persist_order(order):
 
 
 def _packing_status_semantic(order: dict) -> str:
-    """Return 'Belum' / 'Berjalan' / 'Sudah' berdasarkan data nyata.
-    - current_stage < 11 → Belum (walau persisted packing_status stale 'Sudah')
-    - current_stage == 11 → Berjalan (belum keluar dari Packing)
-    - current_stage >= 12 → Sudah (Packing sudah selesai; pindah ke Surat Jalan+)
-    """
-    cs = order.get("current_stage", 0) or 0
-    if cs < 11:
-        return "Belum"
-    if cs == 11:
-        return "Berjalan"
-    return "Sudah"
+    """Belum / Berjalan / Sudah — quantity-aware (partial packing → Berjalan)."""
+    return _qr_packing_status_semantic(order)
 
 
 def _ensure_not_cancelled(order: dict):
@@ -1021,10 +1096,8 @@ def _loading_completed(order: dict) -> bool:
 
 
 def _terkirim_confirmed(order: dict) -> bool:
-    """Task 14: Terkirim dianggap SELESAI hanya jika delivery action nyata
-    sudah dilakukan (delivered_at + delivered_by terisi via mark_delivered).
-    Field existing."""
-    return bool(order.get("delivered_at") and order.get("delivered_by"))
+    """Terkirim penuh hanya jika delivered qty == total PO (atau legacy full mark)."""
+    return _qr_is_fully_delivered(order)
 
 
 def _prereq_reasons_for_loading(order: dict) -> list:
@@ -1057,63 +1130,39 @@ def _stage_cetak_done(order: dict) -> bool:
 
 # Reason messages Bahasa Indonesia.
 def _requires_printing(order: dict) -> bool:
-    """Batch 3: apakah PO ini memerlukan proses Cetak.
-    Rule: kalau ADA minimal satu line item dengan `production_process=="print"`,
-    PO wajib melalui print-specific stages. Legacy PO / line item tanpa
-    classification → default DIANGGAP print (backward compatible, PO lama tidak
-    tiba-tiba melewati tahap).
-    """
-    lis = order.get("line_items") or []
-    if not lis:
-        return True
-    # ANY print line item → require printing
-    any_print = False
-    any_classified = False
-    for li in lis:
-        p = (li.get("production_process") or "").strip().lower()
-        if p in ("print", "non_print"):
-            any_classified = True
-            if p == "print":
-                any_print = True
-    if not any_classified:
-        return True  # legacy behavior — anggap print
-    return any_print
+    return _qr_requires_printing(order)
 
 
 def _is_print_line(li: dict) -> bool:
-    """Rule: legacy line tanpa production_process dianggap print (backward compat)."""
-    p = (li.get("production_process") or "").strip().lower()
-    return p != "non_print"
+    return _qr_is_print_line(li)
 
 
 def _print_line_indices(order: dict) -> list:
-    """Index list line items yang termasuk scope Cetak (legacy = print)."""
-    return [i for i, li in enumerate(order.get("line_items") or []) if _is_print_line(li)]
+    return _qr_print_line_indices(order)
 
 
 def _print_qty_total(order: dict) -> int:
-    """Total qty barang yang masuk scope Cetak (Operator + Helper preparation).
-    Legacy line item tanpa production_process dianggap print (backward compat)."""
-    total = 0
-    for li in (order.get("line_items") or []):
-        if _is_print_line(li):
-            try:
-                total += int(li.get("quantity") or 0)
-            except (ValueError, TypeError):
-                pass
-    return total
+    return _qr_print_qty_total(order)
+
+
+def _non_print_qty_total(order: dict) -> int:
+    return _qr_non_print_qty_total(order)
+
+
+def _print_completed_qty(order: dict) -> int:
+    return _qr_print_completed_qty(order)
+
+
+def _operator_assigned_qty(order: dict) -> int:
+    return _qr_operator_assigned_qty(order)
+
+
+def _available_for_packing(order: dict) -> int:
+    return _qr_available_for_packing(order)
 
 
 def _packing_required_total(order: dict) -> int:
-    """Total qty target Packing = seluruh line item (print + non_print).
-    Packing adalah titik penggabungan kembali semua barang."""
-    total = 0
-    for li in (order.get("line_items") or []):
-        try:
-            total += int(li.get("quantity") or 0)
-        except (ValueError, TypeError):
-            pass
-    return total
+    return _qr_packing_required_total(order)
 
 
 def _prereq_reasons_for_advance(order: dict, from_stage: int) -> list:
@@ -1152,10 +1201,9 @@ def _prereq_reasons_for_advance(order: dict, from_stage: int) -> list:
 
 
 def _prereq_reasons_for_packing(order: dict) -> list:
-    """Return blocker reasons preventing marking Packing (stage 11).
-    Digunakan oleh /packed endpoint DAN validasi frontend button state.
-    Cek semua prereq dari Penjadwalan hingga Cetak. Batch 3: skip print-specific
-    kalau PO seluruhnya non-print."""
+    """Blocker reasons untuk Packing. Qty Tidak Cetak tidak menunggu Operator;
+    Qty Cetak membutuhkan sample + qty_completed. Screener/Helper/Penjadwalan
+    tetap untuk PO yang requires_printing (auto-skip untuk full non-print)."""
     reasons = []
     req_print = _requires_printing(order)
     if not _stage_penjadwalan_done(order):
@@ -1165,12 +1213,18 @@ def _prereq_reasons_for_packing(order: dict) -> list:
     if not _stage_helper_done(order):
         reasons.append("Qty persiapan (qty_prepared) belum diinput.")
     if req_print:
-        if not _sample_uploaded(order):
-            reasons.append("Operator harus upload sampel cetak terlebih dahulu.")
-        if not _sample_ok(order):
-            reasons.append("Sampel cetak belum disetujui.")
-        if not _print_qty_input(order):
-            reasons.append("Qty Cetak belum diinput.")
+        non_print = _non_print_qty_total(order)
+        print_done = _print_completed_qty(order)
+        # Print-only: wajib sample + cetak selesai (minimal partial).
+        # Mixed dengan hanya non-print tersedia: jangan blokir packing.
+        # Mixed dengan print_completed > 0: sample harus OK.
+        if non_print <= 0 or print_done > 0:
+            if not _sample_uploaded(order):
+                reasons.append("Operator harus upload sampel cetak terlebih dahulu.")
+            if not _sample_ok(order):
+                reasons.append("Sampel cetak belum disetujui.")
+            if non_print <= 0 and not _print_qty_input(order):
+                reasons.append("Qty Cetak belum diinput.")
     return reasons
 
 
@@ -1294,9 +1348,28 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
     # memasuki tahap 11. Completion Packing hanya dari action /packed atau
     # advance 11→12 yang valid (keduanya butuh Qty Packing).
     if new_stage == 12 and cur == 11:
-        order["packing_status"] = "Sudah"
+        required_total = _packing_required_total(order)
+        packed_qty = _qr_qty_packed(order)
+        order["packing_status"] = "Sudah" if (required_total and packed_qty >= required_total) else "Berjalan"
     if new_stage == 14:
+        required_total = _packing_required_total(order)
+        packed_qty = _qr_qty_packed(order)
+        if required_total and packed_qty < required_total:
+            raise HTTPException(400, {
+                "message": "PO belum terkirim penuh — qty packing belum lengkap.",
+                "prereq_reasons": [
+                    f"Qty packing ({packed_qty}) belum mencapai total PO ({required_total})."
+                ],
+                "from_stage": cur,
+                "to_stage": new_stage,
+            })
         order["delivery_status"] = "Terkirim"
+        order["qty_delivered"] = required_total or packed_qty
+        if not order.get("delivered_at"):
+            order["delivered_at"] = now_iso()
+        if not order.get("delivered_by"):
+            order["delivered_by"] = user.get("email")
+            order["delivered_by_name"] = user.get("name")
     # Task 13 bugfix: JANGAN auto-generate delivery_note_number saat masuk
     # stage 12. Surat Jalan hanya dibuat via POST /orders/{id}/surat-jalan
     # oleh user dengan permission `delivery_note.manage`.
@@ -1661,6 +1734,21 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
     await _require_perm(user, "helper.prepare")
     if payload.qty_required < 0 or payload.qty_prepared < 0:
         raise HTTPException(400, "Qty tidak boleh negatif")
+    print_cap = _print_qty_total(order)
+    if payload.qty_required > print_cap:
+        raise HTTPException(
+            400,
+            f"Qty dibutuhkan Helper ({payload.qty_required}) melebihi total qty Cetak ({print_cap}). "
+            "Persiapan Helper hanya untuk barang Cetak."
+        )
+    if payload.qty_prepared > print_cap:
+        raise HTTPException(
+            400,
+            f"Qty disiapkan Helper ({payload.qty_prepared}) melebihi total qty Cetak ({print_cap})."
+        )
+    if payload.qty_prepared > payload.qty_required:
+        raise HTTPException(400, "Qty disiapkan tidak boleh melebihi qty dibutuhkan.")
+    order["_expected_updated_at"] = order.get("updated_at")
     shortage = max(payload.qty_required - payload.qty_prepared, 0)
     before = order.get("helper_prep") or {}
     order["helper_prep"] = {
@@ -1707,7 +1795,12 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
             prep_input = 0
         if idx in print_idx_set:
             req = req_full
-            prep = prep_input
+            prep = min(prep_input, req)  # cap: tidak boleh over-prep per line
+            if prep_input > req:
+                raise HTTPException(
+                    400,
+                    f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req})."
+                )
             shortage = max(req - prep, 0)
             total_required += req
             total_prepared += prep
@@ -1719,9 +1812,15 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
                 "qty_prepared": prep,
                 "qty_shortage": shortage,
             })
+        elif prep_input > 0:
+            raise HTTPException(
+                400,
+                f"Line item '{li.get('name')}' bukan proses Cetak — tidak masuk Persiapan Helper."
+            )
         # Non-print line dihilangkan dari items_out & totals (out of scope).
     total_shortage = max(total_required - total_prepared, 0)
     before = order.get("helper_prep") or {}
+    order["_expected_updated_at"] = order.get("updated_at")
     order["helper_prep"] = {
         # Keep total fields for backward compatibility (Timeline & schedule pakai ini)
         "qty_required": total_required,
@@ -2027,88 +2126,71 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
 
 
 @api_router.post("/orders/{order_id}/assign-operators")
-async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=Depends(require("admin", "head_production"))):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=Depends(current_user)):
+    await _require_perm(user, "schedule.edit")
 
-    # Revisi routing: total assignment dibatasi print_qty_total (bukan total_quantity)
-    # dan setiap line_idx yang di-specify wajib line Cetak, dengan sum-per-line
-    # tidak boleh melebihi qty line tersebut.
-    line_items = order.get("line_items") or []
-    print_indices = set(_print_line_indices(order))
-    print_qty_total = _print_qty_total(order)
+    def mutate(order: dict):
+        line_items = order.get("line_items") or []
+        print_indices = set(_print_line_indices(order))
+        print_qty_total = _print_qty_total(order)
 
-    total_split = sum(int(s.quantity) for s in payload.splits)
-    if total_split > print_qty_total:
-        raise HTTPException(
-            400,
-            f"Total pembagian Operator ({total_split}) melebihi total qty Cetak PO ({print_qty_total}). "
-            "Operator hanya untuk barang dengan proses Cetak."
-        )
+        total_split = sum(max(0, int(s.quantity)) for s in payload.splits)
+        err = _qr_validate_operator_assignment_total(total_split, print_qty_total)
+        if err:
+            raise HTTPException(400, err)
+        if any(int(s.quantity) < 0 for s in payload.splits):
+            raise HTTPException(400, "Qty assignment tidak boleh negatif.")
 
-    # Enforce per line item (kalau line_idx disebutkan).
-    per_line_totals = {}
-    for s in payload.splits:
-        if s.line_idx is None:
-            continue
-        if s.line_idx < 0 or s.line_idx >= len(line_items):
-            raise HTTPException(400, f"line_idx {s.line_idx} tidak valid")
-        if s.line_idx not in print_indices:
-            li = line_items[s.line_idx]
-            raise HTTPException(
-                400,
-                f"Line item '{li.get('name')}' bukan proses Cetak — tidak boleh di-assign Operator."
+        per_line_totals = {}
+        for s in payload.splits:
+            if s.line_idx is None:
+                continue
+            if s.line_idx < 0 or s.line_idx >= len(line_items):
+                raise HTTPException(400, f"line_idx {s.line_idx} tidak valid")
+            if s.line_idx not in print_indices:
+                li = line_items[s.line_idx]
+                raise HTTPException(
+                    400,
+                    f"Line item '{li.get('name')}' bukan proses Cetak — tidak boleh di-assign Operator."
+                )
+            per_line_totals[s.line_idx] = per_line_totals.get(s.line_idx, 0) + int(s.quantity)
+        for idx, qty in per_line_totals.items():
+            line_qty = int(line_items[idx].get("quantity") or 0)
+            if qty > line_qty:
+                raise HTTPException(
+                    400,
+                    f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) melebihi qty line ({line_qty})."
+                )
+
+        new_splits = []
+        for s in payload.splits:
+            existing = next(
+                (
+                    x for x in order.get("operator_splits", [])
+                    if x["operator_email"] == s.operator_email
+                    and (x.get("line_idx") == s.line_idx)
+                ),
+                None,
             )
-        per_line_totals[s.line_idx] = per_line_totals.get(s.line_idx, 0) + int(s.quantity)
-    for idx, qty in per_line_totals.items():
-        line_qty = int(line_items[idx].get("quantity") or 0)
-        if qty > line_qty:
-            raise HTTPException(
-                400,
-                f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) melebihi qty line ({line_qty})."
-            )
+            if s.work_date is not None:
+                wd = _parse_work_date(s.work_date)
+            else:
+                wd = existing.get("work_date") if existing else None
+            new_splits.append({
+                "id": (existing["id"] if existing else str(uuid.uuid4())),
+                "operator_email": s.operator_email,
+                "operator_name": s.operator_name,
+                "quantity": int(s.quantity),
+                "qty_completed": (existing.get("qty_completed", 0) if existing else 0),
+                "stage": (existing["stage"] if existing else 8),
+                "updated_at": now_iso(),
+                "line_idx": s.line_idx,
+                "work_date": wd,
+            })
+        order["operator_splits"] = new_splits
+        add_timeline(order, order["current_stage"], user, note=f"Assign {len(new_splits)} operator")
 
-    new_splits = []
-    for s in payload.splits:
-        # Preserve existing stage & qty_completed if same operator + same line_idx
-        existing = next(
-            (
-                x for x in order.get("operator_splits", [])
-                if x["operator_email"] == s.operator_email
-                and (x.get("line_idx") == s.line_idx)
-            ),
-            None,
-        )
-        # Tanggal Pengerjaan per assignment. UI baru selalu mengirim work_date
-        # (string tanggal atau None untuk clear). Kalau caller lama tidak kirim
-        # sama sekali (`s.work_date is None`), fallback ke existing untuk
-        # backward compatibility supaya data tidak tercuci.
-        if s.work_date is not None:
-            wd = _parse_work_date(s.work_date)
-        else:
-            wd = existing.get("work_date") if existing else None
-        new_splits.append({
-            "id": (existing["id"] if existing else str(uuid.uuid4())),
-            "operator_email": s.operator_email,
-            "operator_name": s.operator_name,
-            "quantity": int(s.quantity),
-            "qty_completed": (existing.get("qty_completed", 0) if existing else 0),
-            "stage": (existing["stage"] if existing else 8),
-            "updated_at": now_iso(),
-            # Additive: line reference. None = legacy print-scope.
-            "line_idx": s.line_idx,
-            # Fix Tanggal Pengerjaan sebagai bagian dari assignment.
-            "work_date": wd,
-        })
-    order["operator_splits"] = new_splits
-    add_timeline(order, order["current_stage"], user, note=f"Assign {len(new_splits)} operator")
-    # Workflow 06-12 targeted bugfix: assignment adalah PLANNING data, bukan
-    # bukti Screener/Helper selesai. JANGAN mengubah current_stage ke Operator
-    # (index 8) hanya karena splits diisi. Kepala Produksi tetap harus melewati
-    # Screener (6) dan Persiapan Helper (7) via /advance dengan data valid.
-    await _persist_order(order)
+    order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
 
 
@@ -2187,24 +2269,33 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
 
 @api_router.post("/orders/{order_id}/operator-progress")
 async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, user=Depends(current_user)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
     role = user.get("role")
     if role not in ("operator", "head_production", "admin"):
         raise HTTPException(403, "Role Anda tidak diizinkan memperbarui qty operator")
-    splits = order.get("operator_splits", [])
-    found = next((s for s in splits if s["id"] == payload.operator_id), None)
-    if not found:
-        raise HTTPException(404, "Operator split tidak ditemukan")
-    if role == "operator" and found["operator_email"] != user.get("email"):
-        raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
-    qty = max(0, min(int(payload.qty_completed), int(found["quantity"])))
-    found["qty_completed"] = qty
-    found["updated_at"] = now_iso()
-    add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: {qty}/{found['quantity']}")
-    await _persist_order(order)
+
+    def mutate(order: dict):
+        splits = order.get("operator_splits", [])
+        found = next((s for s in splits if s["id"] == payload.operator_id), None)
+        if not found:
+            raise HTTPException(404, "Operator split tidak ditemukan")
+        if role == "operator" and found["operator_email"] != user.get("email"):
+            raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
+        qty = max(0, min(int(payload.qty_completed), int(found["quantity"])))
+        print_cap = _print_qty_total(order)
+        others = sum(
+            int(s.get("qty_completed") or 0)
+            for s in splits if s.get("id") != found.get("id")
+        )
+        if others + qty > print_cap:
+            raise HTTPException(
+                400,
+                f"Total qty cetak selesai ({others + qty}) melebihi qty Cetak PO ({print_cap})."
+            )
+        found["qty_completed"] = qty
+        found["updated_at"] = now_iso()
+        add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: {qty}/{found['quantity']}")
+
+    order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
 
 
@@ -2218,6 +2309,34 @@ async def set_urgent(order_id: str, payload: UrgentPayload, user=Depends(require
     order["urgency_approved_by"] = user.get("email") if payload.urgent else None
     add_timeline(order, order["current_stage"], user, note=f"Prioritas diubah ke {order['priority']}")
     await _persist_order(order)
+    return {"order": order}
+
+
+class BufferStockPayload(BaseModel):
+    buffer_stock: bool
+
+
+@api_router.post("/orders/{order_id}/buffer-stock")
+async def set_buffer_stock(order_id: str, payload: BufferStockPayload, user=Depends(current_user)):
+    """CRM / user berwenang menandai PO sebagai Buffer Stock (persisted, filterable)."""
+    await _require_perm(user, "buffer_stock.manage")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    before = bool(order.get("buffer_stock"))
+    order["buffer_stock"] = bool(payload.buffer_stock)
+    order["buffer_stock_updated_by"] = user.get("email")
+    order["buffer_stock_updated_by_name"] = user.get("name")
+    order["buffer_stock_updated_at"] = now_iso()
+    label = "Buffer Stock" if order["buffer_stock"] else "Non Buffer Stock"
+    add_timeline(order, order["current_stage"], user, note=f"Ditandai {label}")
+    await _persist_order(order)
+    await _audit_po(
+        order, "buffer_stock.update", user,
+        before={"buffer_stock": before},
+        after={"buffer_stock": order["buffer_stock"]},
+    )
     return {"order": order}
 
 
@@ -2450,34 +2569,26 @@ class PackingInfoPayload(BaseModel):
 
 @api_router.post("/orders/{order_id}/packing-info")
 async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Depends(current_user)):
-    """Task 12 bugfix: Helper input Qty Packing. Butuh permission
-    `packing.update`. Save-only — TIDAK auto-advance workflow."""
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    """Save Qty Packing (cumulative). Cap: available_for_packing dan total PO."""
     await _require_perm(user, "packing.update")
-    if payload.qty_packed is None or int(payload.qty_packed) <= 0:
-        raise HTTPException(400, "Qty Packing tidak valid.")
-    # Cap: tidak boleh melebihi total qty PO (print + non_print). Packing
-    # adalah titik penggabungan semua barang.
-    required_total = _packing_required_total(order)
-    if required_total and int(payload.qty_packed) > required_total:
-        raise HTTPException(
-            400,
-            f"Qty Packing ({payload.qty_packed}) melebihi total qty PO ({required_total})."
-        )
-    before = {"qty_packed": (order.get("packing_info") or {}).get("qty_packed")}
-    order.setdefault("packing_info", {})
-    order["packing_info"]["qty_packed"] = int(payload.qty_packed)
-    order["packing_info"]["notes"] = payload.notes or ""
-    order["packing_info"]["updated_by"] = user.get("email")
-    order["packing_info"]["updated_by_name"] = user.get("name")
-    order["packing_info"]["updated_at"] = now_iso()
-    add_timeline(order, 11, user, note=f"Qty Packing: {int(payload.qty_packed)} pcs")
-    await _persist_order(order)
+    before_holder = {}
+
+    def mutate(order: dict):
+        err = _qr_validate_packing_qty(int(payload.qty_packed), order)
+        if err:
+            raise HTTPException(400, err)
+        before_holder["qty_packed"] = (order.get("packing_info") or {}).get("qty_packed")
+        order.setdefault("packing_info", {})
+        order["packing_info"]["qty_packed"] = int(payload.qty_packed)
+        order["packing_info"]["notes"] = payload.notes or ""
+        order["packing_info"]["updated_by"] = user.get("email")
+        order["packing_info"]["updated_by_name"] = user.get("name")
+        order["packing_info"]["updated_at"] = now_iso()
+        add_timeline(order, 11, user, note=f"Qty Packing: {int(payload.qty_packed)} pcs")
+
+    order = await _with_quantity_lock(order_id, mutate)
     await _audit_po(order, "packing.update", user,
-                    before=before,
+                    before={"qty_packed": before_holder.get("qty_packed")},
                     after={"qty_packed": int(payload.qty_packed)},
                     note=payload.notes or "")
     return {"order": order}
@@ -2525,82 +2636,96 @@ async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Dep
 
 @api_router.post("/orders/{order_id}/packed")
 async def mark_packed(order_id: str, user=Depends(current_user)):
-    """Task 12 bugfix: Selesai Packing = butuh Qty Packing valid + permission
-    `packing.update`. Sets packing_status='Sudah' AND advances current_stage
-    ke Surat Jalan (12). Actor Packing yang benar (helper/admin/etc)."""
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+    """Partial packing boleh lanjut ke Surat Jalan."""
     await _require_perm(user, "packing.update")
-    # Gate wajib SAMA dengan advance path — semua jalur masuk Packing/completion
-    # pakai validator yang sama.
-    reasons = _prereq_reasons_for_packing(order)
-    if reasons:
-        raise HTTPException(400, {
-            "message": "Belum bisa Packing — prerequisite belum lengkap.",
-            "prereq_reasons": reasons,
-        })
-    # Task 12 bugfix: Selesai Packing wajib Qty Packing.
-    if not _packing_qty_input(order):
-        raise HTTPException(400, {
-            "message": "Qty Packing harus diisi terlebih dahulu.",
-            "prereq_reasons": ["Qty Packing harus diisi terlebih dahulu."],
-        })
-    # Revisi routing: Packing dianggap complete hanya jika seluruh qty PO
-    # (print + non_print) sudah di-packing. Belum ada partial shipment.
-    required_total = _packing_required_total(order)
-    packed_qty = int((order.get("packing_info") or {}).get("qty_packed") or 0)
-    if required_total and packed_qty < required_total:
-        shortage = required_total - packed_qty
-        raise HTTPException(400, {
-            "message": f"Packing belum lengkap: {packed_qty}/{required_total} pcs (kurang {shortage}).",
-            "prereq_reasons": [
-                f"Qty Packing ({packed_qty}) belum mencapai total qty PO ({required_total}). Kurang {shortage} pcs."
-            ],
-        })
-    order["packing_status"] = "Sudah"
-    # Actor Packing benar-benar tercatat (bukan Operator).
-    add_timeline(order, 11, user, note=f"Packing: {(order.get('packing_info') or {}).get('qty_packed')} pcs")
-    # Advance ke Surat Jalan (stage 12) — Packing dianggap SELESAI di sini.
-    # Task 13 bugfix: JANGAN auto-generate delivery_note_number. SJ dibuat
-    # eksplisit oleh user berwenang via POST /orders/{id}/surat-jalan.
-    if order["current_stage"] < 12:
-        order["current_stage"] = 12
-    await _persist_order(order)
+
+    def mutate(order: dict):
+        reasons = _prereq_reasons_for_packing(order)
+        if reasons:
+            raise HTTPException(400, {
+                "message": "Belum bisa Packing — prerequisite belum lengkap.",
+                "prereq_reasons": reasons,
+            })
+        if not _packing_qty_input(order):
+            raise HTTPException(400, {
+                "message": "Qty Packing harus diisi terlebih dahulu.",
+                "prereq_reasons": ["Qty Packing harus diisi terlebih dahulu."],
+            })
+        required_total = _packing_required_total(order)
+        packed_qty = _qr_qty_packed(order)
+        avail = _available_for_packing(order)
+        if packed_qty > avail:
+            raise HTTPException(400, {
+                "message": f"Qty Packing ({packed_qty}) melebihi qty tersedia ({avail}).",
+                "prereq_reasons": [
+                    f"Qty Packing ({packed_qty}) melebihi qty tersedia untuk packing ({avail})."
+                ],
+            })
+        if required_total and packed_qty >= required_total:
+            order["packing_status"] = "Sudah"
+            note = f"Packing lengkap: {packed_qty} pcs"
+        else:
+            order["packing_status"] = "Berjalan"
+            shortage = max((required_total or 0) - packed_qty, 0)
+            note = f"Packing sebagian: {packed_qty}/{required_total} pcs (kurang {shortage})"
+        add_timeline(order, 11, user, note=note)
+        if order["current_stage"] < 12:
+            order["current_stage"] = 12
+
+    order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
 
 
+class DeliveredPayload(BaseModel):
+    """Optional qty for partial delivery. None = deliver all currently packed (legacy)."""
+    qty_delivered: Optional[int] = None
+
+
 @api_router.post("/orders/{order_id}/delivered")
-async def mark_delivered(order_id: str, user=Depends(current_user)):
-    """Task 14 bugfix: konfirmasi delivery (Terkirim). Perm-based
-    (`delivery.update`). Semua prereq (SJ valid + Loading complete) di-enforce
-    via `_prereq_reasons_for_terkirim` — validator SAMA dengan advance path."""
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
+async def mark_delivered(
+    order_id: str,
+    user=Depends(current_user),
+    qty_delivered: Optional[int] = Query(None),
+):
+    """Konfirmasi pengiriman (cumulative qty_delivered)."""
     await _require_perm(user, "delivery.update")
-    # Gate wajib SAMA dengan advance path.
-    reasons = _prereq_reasons_for_terkirim(order)
-    if reasons:
-        raise HTTPException(400, {
-            "message": "Belum bisa Terkirim — prerequisite belum lengkap.",
-            "prereq_reasons": reasons,
-        })
-    # Business rule existing (dipertahankan): user role driver wajib upload
-    # min 1 delivery proof; admin/HoP boleh override. Existing behavior tidak
-    # diubah — hanya predicate-nya sekarang jelas role-based karena BUSINESS
-    # rule (bukan RBAC gating).
-    if user.get("role") == "driver" and not order.get("delivery_proofs"):
-        raise HTTPException(400, "Wajib upload minimal 1 foto bukti kirim sebelum tandai Terkirim.")
-    order["delivery_status"] = "Terkirim"
-    order["delivered_at"] = now_iso()
-    order["delivered_by"] = user.get("email")
-    order["delivered_by_name"] = user.get("name")
-    order["current_stage"] = 14
-    add_timeline(order, 14, user, note="Terkirim ke customer")
-    await _persist_order(order)
+
+    def mutate(order: dict):
+        reasons = _prereq_reasons_for_terkirim(order)
+        if reasons:
+            raise HTTPException(400, {
+                "message": "Belum bisa Terkirim — prerequisite belum lengkap.",
+                "prereq_reasons": reasons,
+            })
+        if user.get("role") == "driver" and not order.get("delivery_proofs"):
+            raise HTTPException(400, "Wajib upload minimal 1 foto bukti kirim sebelum tandai Terkirim.")
+        packed = _qr_qty_packed(order)
+        required = _packing_required_total(order)
+        new_delivered = packed if qty_delivered is None else int(qty_delivered)
+        err = _qr_validate_delivery_qty(new_delivered, order)
+        if err:
+            raise HTTPException(400, err)
+        order["qty_delivered"] = new_delivered
+        if required and new_delivered >= required:
+            order["delivery_status"] = "Terkirim"
+            order["delivered_at"] = now_iso()
+            order["delivered_by"] = user.get("email")
+            order["delivered_by_name"] = user.get("name")
+            order["current_stage"] = 14
+            add_timeline(order, 14, user, note=f"Terkirim penuh: {new_delivered}/{required} pcs")
+        else:
+            order["delivery_status"] = "Sebagian Terkirim"
+            order["delivered_at"] = now_iso()
+            order["delivered_by"] = user.get("email")
+            order["delivered_by_name"] = user.get("name")
+            add_timeline(
+                order,
+                order.get("current_stage") or 13,
+                user,
+                note=f"Terkirim sebagian: {new_delivered}/{required} pcs",
+            )
+
+    order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
 
 
@@ -2900,7 +3025,13 @@ def _production_row(o: dict) -> dict:
         "order_date": o.get("order_date"),
         "priority": o.get("priority", "normal"),
         "urgent": o.get("priority") == "urgent",
+        "buffer_stock": bool(o.get("buffer_stock")),
         "total_quantity": o.get("total_quantity", 0),
+        "print_qty_total": _print_qty_total(o),
+        "non_print_qty_total": _non_print_qty_total(o),
+        "print_completed_qty": _print_completed_qty(o),
+        "available_for_packing": _available_for_packing(o),
+        "qty_delivered": _qr_qty_delivered(o),
         "operators": [{
             "operator_name": s.get("operator_name"),
             "operator_email": s.get("operator_email"),
@@ -4929,6 +5060,8 @@ async def seed():
             "delivery.deadline.edit", "delivery.deadline.settings",
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
+            # Buffer Stock (CRM workflow)
+            "buffer_stock.manage",
         ],
         "head_operations": [
             "dashboard.production.view", "dashboard.production.export", "po.cancel",
@@ -4938,6 +5071,7 @@ async def seed():
             "delivery.deadline.edit", "delivery.deadline.settings",
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
+            "buffer_stock.manage",
         ],
         # Import PO permissions: admin gets all (idempotent top-up if a custom
         # admin override was persisted before these keys existed).
@@ -4955,12 +5089,14 @@ async def seed():
             "delivery.deadline.edit", "delivery.deadline.settings",
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
+            "buffer_stock.manage",
         ],
         "designer": [
             "customer_approval.view", "customer_approval.manage",
         ],
         "crm": [
             "customer_approval.view",
+            "buffer_stock.manage",
         ],
     }
     for role_slug, need in PHASE_B_ROLE_TOP_UPS.items():

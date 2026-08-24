@@ -2,25 +2,31 @@ import { useState } from "react";
 import { Package, CheckCircle2 } from "lucide-react";
 import { formatDate } from "../lib/constants";
 
-// Revisi routing: Packing = titik penggabungan kembali semua line item
-// (print + non_print). Target = packing_required_total (dari backend).
-// Selesai Packing hanya boleh diklik saat Qty Packing >= target.
+// Packing = print (setelah selesai operator) + non_print (langsung tersedia).
+// Target akhir = packing_required_total. Partial packing boleh lanjut ke SJ.
 export default function PackingPanel({ order, canManage, busy, onSaveQty, onComplete }) {
   const pi = order.packing_info || {};
   const [qty, setQty] = useState(pi.qty_packed ?? "");
   const [notes, setNotes] = useState(pi.notes ?? "");
   const hasQty = pi.qty_packed !== null && pi.qty_packed !== undefined && String(pi.qty_packed).trim() !== "" && Number(pi.qty_packed) > 0;
   const semantic = order.packing_status_semantic || "Belum";
-  const stageIsPacking = order.current_stage === 11;
-  const stagePastPacking = order.current_stage >= 12;
+  const stageIsPacking = (order.current_stage || 0) >= 11;
+  const fullyPacked = semantic === "Sudah";
   const lineItems = order.line_items || [];
   const requiredTotal = typeof order.packing_required_total === "number"
     ? order.packing_required_total
     : lineItems.reduce((s, li) => s + Number(li.quantity || 0), 0);
+  const available = typeof order.available_for_packing === "number"
+    ? order.available_for_packing
+    : requiredTotal;
+  const printCompleted = Number(order.print_completed_qty || 0);
+  const nonPrintTotal = Number(order.non_print_qty_total || 0);
   const packedSaved = Number(pi.qty_packed || 0);
   const packedDraft = Number(qty || 0);
+  const maxAllowed = Math.min(requiredTotal || Infinity, available || 0);
   const shortagePreview = Math.max(requiredTotal - packedDraft, 0);
   const shortageSaved = Math.max(requiredTotal - packedSaved, 0);
+  const canProceedPartial = hasQty && packedSaved > 0;
   const isComplete = hasQty && packedSaved >= requiredTotal;
 
   const handleSave = async () => {
@@ -39,9 +45,17 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
         <span className="pill sm" data-testid="packing-target-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
           Target: {requiredTotal.toLocaleString("id-ID")} pcs (semua line)
         </span>
+        <span className="pill sm" data-testid="packing-available-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
+          Tersedia: {available.toLocaleString("id-ID")} pcs
+        </span>
       </header>
 
-      {/* Table breakdown semua line item */}
+      <p className="muted small" data-testid="packing-availability-note" style={{ marginTop: 0 }}>
+        Non-cetak: <b>{nonPrintTotal.toLocaleString("id-ID")}</b> (langsung) · Cetak selesai operator:{" "}
+        <b>{printCompleted.toLocaleString("id-ID")}</b> · Total tersedia packing:{" "}
+        <b>{available.toLocaleString("id-ID")}</b> / {requiredTotal.toLocaleString("id-ID")}
+      </p>
+
       {lineItems.length > 0 && (
         <table className="prep-table" data-testid="packing-lines-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 10 }}>
           <thead>
@@ -80,7 +94,6 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
         </table>
       )}
 
-      {/* Status ringkas Qty tersimpan vs target */}
       {hasQty && (
         <p className="muted small" data-testid="packing-progress-line" style={{ marginTop: 0 }}>
           Qty Packing tersimpan: <b data-testid="packing-saved-qty">{packedSaved.toLocaleString("id-ID")}</b>
@@ -96,11 +109,11 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
         </p>
       )}
 
-      {stagePastPacking ? (
+      {fullyPacked ? (
         <p className="muted small" data-testid="packing-done-note">
-          Packing sudah selesai — {hasQty ? `${packedSaved.toLocaleString("id-ID")} pcs` : ""}{pi.updated_by_name ? ` · oleh ${pi.updated_by_name}` : ""}{pi.updated_at ? ` · ${formatDate(pi.updated_at)}` : ""}.
+          Packing sudah lengkap — {hasQty ? `${packedSaved.toLocaleString("id-ID")} pcs` : ""}{pi.updated_by_name ? ` · oleh ${pi.updated_by_name}` : ""}{pi.updated_at ? ` · ${formatDate(pi.updated_at)}` : ""}.
         </p>
-      ) : !stageIsPacking ? (
+      ) : !stageIsPacking && !hasQty ? (
         <p className="muted small" data-testid="packing-waiting-note">
           Packing belum aktif — tahap saat ini belum masuk Packing.
         </p>
@@ -116,7 +129,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
               <input
                 type="number"
                 min="1"
-                max={requiredTotal || undefined}
+                max={maxAllowed || undefined}
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
                 disabled={busy}
@@ -124,10 +137,10 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                 placeholder="Jumlah unit yang di-packing"
               />
               <span className="muted small" data-testid="packing-qty-hint">
-                Target total (semua line): {requiredTotal.toLocaleString("id-ID")} pcs.
+                Maks tersedia sekarang: {available.toLocaleString("id-ID")} pcs (cap total {requiredTotal.toLocaleString("id-ID")}).
                 {packedDraft > 0 && (
                   shortagePreview > 0
-                    ? <> Kurang {shortagePreview.toLocaleString("id-ID")}.</>
+                    ? <> Kurang {shortagePreview.toLocaleString("id-ID")} dari target.</>
                     : <> Lengkap.</>
                 )}
               </span>
@@ -164,17 +177,17 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
               type="button"
               className="ghost"
               onClick={onComplete}
-              disabled={busy || !isComplete}
+              disabled={busy || !canProceedPartial}
               title={
                 !hasQty
                   ? "Qty Packing harus diisi terlebih dahulu"
-                  : shortageSaved > 0
-                    ? `Belum lengkap — kurang ${shortageSaved.toLocaleString("id-ID")} pcs`
-                    : "Selesaikan Packing dan lanjut ke Surat Jalan"
+                  : isComplete
+                    ? "Selesaikan Packing lengkap dan lanjut ke Surat Jalan"
+                    : "Lanjut ke Surat Jalan dengan qty packing sebagian"
               }
               data-testid="complete-packing-button"
             >
-              <CheckCircle2 size={16} /> Selesai Packing
+              <CheckCircle2 size={16} /> {isComplete ? "Selesai Packing" : "Lanjut Packing Sebagian"}
             </button>
           </div>
         </div>
