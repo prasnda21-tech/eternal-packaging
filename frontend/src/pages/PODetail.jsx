@@ -7,6 +7,7 @@ import { STAGES, canAdvance, formatDate, formatDeadline, ROLES } from "../lib/co
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
 import PackingPanel from "../components/PackingPanel";
+import { shouldShowPackingCard } from "../lib/packingCard";
 import SuratJalanPanel from "../components/SuratJalanPanel";
 import AttachmentsPanel from "../components/AttachmentsPanel";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
@@ -732,8 +733,8 @@ export default function PODetail() {
       {/* Operator splits */}
       <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} />
 
-      {/* Task 12: Packing panel — Qty Packing input & Selesai Packing action */}
-      {order.current_stage >= 8 && (
+      {/* Packing card: visible by packing.update RBAC, not by current_stage. */}
+      {shouldShowPackingCard(canMarkPacked) && (
         <PackingPanel
           order={order}
           canManage={canMarkPacked}
