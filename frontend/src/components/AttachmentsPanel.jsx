@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Upload, Image as ImageIcon } from "lucide-react";
 import api from "../lib/api";
 import { formatDate, ROLES } from "../lib/constants";
+import { getWorkflowReady } from "../lib/stageState";
 
 /**
  * Dua card terpisah:
@@ -22,6 +23,13 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
 
   const handleFile = async (file, kind) => {
     if (!file) return;
+    if (kind === "sample") {
+      const ready = getWorkflowReady(order);
+      if (!ready.sample_upload) {
+        setErr(order?.screener_gate_reason || "Qty Screener harus diisi sebelum Cetak Sample.");
+        return;
+      }
+    }
     if (file.size > 4 * 1024 * 1024) {
       setErr("Ukuran file maksimal 4MB");
       return;
@@ -39,7 +47,8 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           });
           onUpdated(res.order);
         } catch (e) {
-          setErr(e.response?.data?.detail || "Gagal upload file");
+          const d = e.response?.data?.detail;
+          setErr(typeof d === "string" ? d : (d?.message || "Gagal upload file"));
         } finally {
           setBusy(false);
         }
@@ -134,6 +143,8 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
 
   const showDesign = section === "all" || section === "design";
   const showSample = section === "all" || section === "sample";
+  const sampleReady = getWorkflowReady(order).sample_upload;
+  const sampleLockReason = order?.screener_gate_reason || "Qty Screener harus diisi sebelum Cetak Sample.";
 
   return (
     <>
@@ -175,7 +186,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           <span className="pill sm" data-testid="sample-owner-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
             Operator
           </span>
-          {canUploadSample && (
+          {canUploadSample && sampleReady && (
             <>
               <input
                 type="file"
@@ -194,6 +205,9 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
         <p className="muted small" style={{ marginTop: 0 }}>
           Foto/file sample cetak Operator — terpisah dari File Design.
         </p>
+        {canUploadSample && !sampleReady && (
+          <p className="muted small" data-testid="sample-screener-gate-note">{sampleLockReason}</p>
+        )}
         {renderList(order.sample_files, "sample")}
         {sampleSlot}
       </section>

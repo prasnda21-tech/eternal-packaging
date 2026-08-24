@@ -19,24 +19,21 @@ export function hasRealDesignUpload(order) {
   });
 }
 
-/** Chip for Timeline/StageBar stage index 1 (Design). */
-export function resolveDesignChip(order, currentStage) {
+/** Chip for Timeline/StageBar stage index 1 (Design). Parallel with Payment. */
+export function resolveDesignChip(order, _currentStage) {
   if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
   if (hasRealDesignUpload(order)) return { state: "done", label: "Selesai" };
-  if ((Number(currentStage) || 0) >= 1) return { state: "current", label: "Belum dikerjakan" };
-  return { state: "pending", label: "Menunggu" };
+  return { state: "current", label: "Belum dikerjakan" };
 }
 
 /**
  * Chip for stage index 2 (Approval Design).
  * "Menunggu approval" requires real design upload — approval object / Waiting status alone is not enough.
+ * Never infers done from current_stage (Payment-first must not mark Design approved).
  */
-export function resolveApprovalDesignChip(order, currentStage) {
+export function resolveApprovalDesignChip(order, _currentStage) {
   if (order?.design_status === "Approved") return { state: "done", label: "Selesai" };
   if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
   if (!hasRealDesignUpload(order)) return { state: "pending", label: "Menunggu" };
-  const cs = Number(currentStage) || 0;
-  if (cs === 2) return { state: "current", label: "Berjalan" };
-  if (cs > 2) return { state: "current", label: "Menunggu approval" };
-  return { state: "pending", label: "Menunggu" };
+  return { state: "current", label: "Menunggu approval" };
 }

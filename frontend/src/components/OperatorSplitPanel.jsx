@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, UserCheck, Info } from "lucide-react";
+import { Plus, Trash2, Info } from "lucide-react";
 import api from "../lib/api";
 import { STAGES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
+import { getWorkflowReady } from "../lib/stageState";
 
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
-export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null }) {
+export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null, mode = "all" }) {
   const { user, hasPerm } = useAuth();
   const [operators, setOperators] = useState([]);
   const [splits, setSplits] = useState([]);
@@ -55,6 +56,12 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     ? order.operator_assignment_cap
     : (helperCapSet ? Math.min(printQtyTotal, Number(helperPrepared)) : printQtyTotal);
   const remaining = assignmentCap - totalAssigned;
+  const ready = getWorkflowReady(order);
+  const scheduleLocked = mode !== "progress" && !ready.penjadwalan;
+  const progressLocked = mode !== "schedule" && !ready.operator;
+  const screenerGateMsg = order?.screener_gate_reason || "Qty Screener harus diisi sebelum pekerjaan Operator.";
+  const showSchedule = mode === "all" || mode === "schedule";
+  const showProgress = mode === "all" || mode === "progress";
 
   // Per-line assigned totals for UX guardrails.
   const perLineAssigned = useMemo(() => {
@@ -83,6 +90,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
 
   const save = async () => {
     setErr("");
+    if (scheduleLocked) {
+      setErr("Penjadwalan belum siap — selesaikan Design dan Payment terlebih dahulu.");
+      return;
+    }
     if (totalAssigned > assignmentCap) {
       setErr(
         helperCapSet
@@ -124,19 +135,11 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     }
   };
 
-  const advanceOp = async (op) => {
-    setBusy(true);
-    try {
-      const res = await api.advance(order.id, { operator_id: op.id, note: "Progress operator" });
-      onUpdated(res.order);
-    } catch (e) {
-      setErr(e.response?.data?.detail || "Gagal memperbarui progres operator");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const updateQty = async (op) => {
+    if (progressLocked) {
+      setErr(screenerGateMsg);
+      return;
+    }
     const raw = qtyDrafts[op.id];
     const qty = Math.max(0, Math.min(Number(raw ?? op.qty_completed ?? 0), op.quantity));
     setErr("");
@@ -146,7 +149,8 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       onUpdated(res.order);
       setQtyDrafts((prev) => ({ ...prev, [op.id]: qty }));
     } catch (e) {
-      setErr(e.response?.data?.detail || "Gagal memperbarui qty");
+      const d = e.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Gagal memperbarui qty"));
     } finally {
       setBusy(false);
     }
@@ -155,9 +159,9 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   // Full non-print → Pembagian Operator TIDAK DIPERLUKAN.
   if (!requiresPrinting) {
     return (
-      <section className="panel" data-testid="operator-split-panel">
+      <section className="panel" data-testid={mode === "progress" ? "operator-progress-panel" : "operator-split-panel"}>
         <header className="panel-head">
-          <h3>Pembagian Operator</h3>
+          <h3>{mode === "progress" ? "Operator" : "Pembagian Operator"}</h3>
           <span className="pill sm" data-testid="operator-not-required-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
             Tidak Diperlukan
           </span>
@@ -176,9 +180,9 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   };
 
   return (
-    <section className="panel" data-testid="operator-split-panel">
+    <section className="panel" data-testid={mode === "progress" ? "operator-progress-panel" : "operator-split-panel"}>
       <header className="panel-head">
-        <h3>Pembagian Operator</h3>
+        <h3>{mode === "progress" ? "Operator" : "Pembagian Operator"}</h3>
         <span className="pill" data-testid="operator-scope-badge">
           Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
         </span>
@@ -201,7 +205,17 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         </div>
       )}
 
+      {scheduleLocked && showSchedule && (
+        <p className="muted small" data-testid="penjadwalan-locked-note">
+          Penjadwalan otomatis tersedia setelah Design dan Payment (termasuk approval/bypass) selesai.
+        </p>
+      )}
+      {progressLocked && showProgress && (
+        <p className="muted small" data-testid="operator-screener-gate-note">{screenerGateMsg}</p>
+      )}
+
       {/* Current splits with per-operator progress */}
+      {showProgress && (
       <div className="split-list">
         {(order.operator_splits || []).length === 0 && (
           <p className="empty">Belum ada operator ditugaskan.</p>
@@ -241,10 +255,9 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                 </div>
               </div>
 
-              {/* Row 4: input qty + Simpan + Lanjut */}
-              {(canEditQty || (canEdit && op.stage < 11)) && (
+              {/* Row 4: input qty + Simpan */}
+              {canEditQty && (
                 <div className="split-actions-inline">
-                  {canEditQty && (
                     <div className="qty-inline">
                       <input
                         type="number"
@@ -253,36 +266,26 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                         value={draft}
                         onChange={(e) => setQtyDrafts({ ...qtyDrafts, [op.id]: e.target.value })}
                         data-testid={`qty-input-${op.operator_email}`}
+                        disabled={progressLocked || busy}
                       />
                       <button
                         className="ghost sm"
                         onClick={() => updateQty(op)}
-                        disabled={busy}
+                        disabled={busy || progressLocked}
                         data-testid={`qty-save-${op.operator_email}`}
                         title="Simpan qty selesai"
                       >Simpan qty</button>
                     </div>
-                  )}
-                  {canEdit && op.stage < 11 && (
-                    <button
-                      className="ghost sm"
-                      onClick={() => advanceOp(op)}
-                      disabled={busy}
-                      data-testid={`operator-advance-${op.operator_email}`}
-                      title="Lanjutkan progres operator ke tahap berikutnya (Packing setelah Cetak)"
-                    >
-                      <UserCheck size={14} /> {op.stage === 10 ? "Lanjut Packing" : "Lanjut"}
-                    </button>
-                  )}
                 </div>
               )}
             </div>
           );
         })}
       </div>
+      )}
 
       {/* Card 2 — Atur Pembagian (planning). Terpisah visual dari card progress di atas. */}
-      {canEdit && (
+      {canEdit && showSchedule && (
         <div className="atur-pembagian-card" data-testid="atur-pembagian-card" style={{
           marginTop: 14,
           padding: 14,
@@ -353,10 +356,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
           })}
           {err && <div className="error" data-testid="split-error">{err}</div>}
           <div className="split-actions">
-            <button className="ghost" onClick={addRow} disabled={printLines.length === 0} data-testid="split-add-row">
+            <button className="ghost" onClick={addRow} disabled={printLines.length === 0 || scheduleLocked} data-testid="split-add-row">
               <Plus size={14} /> Tambah operator
             </button>
-            <button className="primary" onClick={save} disabled={busy || printLines.length === 0} data-testid="split-save">
+            <button className="primary" onClick={save} disabled={busy || printLines.length === 0 || scheduleLocked} data-testid="split-save">
               Simpan pembagian
             </button>
           </div>
