@@ -69,11 +69,7 @@ export default function MasterBarangJasa() {
       setPage(1);
       await load();
     } catch (ex) {
-      const det = ex.response?.data?.detail;
-      setErr(
-        (typeof det === "object" ? (det.message || det.detail) : det)
-        || "Gagal sinkronisasi dari Accurate. Data existing tidak diubah."
-      );
+      setErr("Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.");
     } finally {
       setSyncing(false);
     }

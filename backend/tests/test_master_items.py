@@ -15,7 +15,10 @@ from services.accurate import (
     _MOCK_SALES_ORDERS,
     _extract_accurate_item_id,
     _normalize_accurate_so,
+    get_last_list_error,
+    log_master_items_sync_failure,
     normalize_accurate_item,
+    sanitize_accurate_error,
 )
 from services.master_items import (
     COLLECTION,
@@ -474,6 +477,172 @@ def test_mock_so_lines_have_accurate_item_ids():
     for so in _MOCK_SALES_ORDERS:
         for li in so["line_items"]:
             assert li.get("accurate_item_id"), so["po_number"]
+
+
+# ---------- RBAC ----------
+# ---------- live item/list.do (fake upstream, no real Accurate) ----------
+class _FakeHTTPResponse:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.is_error = status_code >= 400
+
+    def json(self):
+        return self._payload
+
+
+class _CapturingAsyncClient:
+    """httpx.AsyncClient stand-in. Rejects custom `fields` the way production did."""
+
+    captured = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def get(self, url, headers=None, params=None):
+        rec = {
+            "url": url,
+            "params": dict(params or {}),
+            "header_names": sorted((headers or {}).keys()),
+        }
+        _CapturingAsyncClient.captured.append(rec)
+        # Production tenant: extra fields on list.do → HTTP 4xx (retry-on-s:false never runs).
+        if rec["params"].get("fields"):
+            return _FakeHTTPResponse(400, {"s": False, "d": ["Upsss..."]})
+        page = int(rec["params"].get("sp.page") or 1)
+        return _FakeHTTPResponse(200, {
+            "s": True,
+            "d": [{"id": 101, "no": "PC-12", "name": "Paper cup 12oz"}],
+            "sp": {"page": page, "pageSize": 100, "pageCount": 1, "rowCount": 1},
+        })
+
+
+def _live_client(monkeypatch, client_cls=_CapturingAsyncClient):
+    import services.accurate as acc
+    client_cls.captured = []
+    monkeypatch.setattr(acc.httpx, "AsyncClient", client_cls)
+    c = AccurateClient()
+    c.api_token = "unit-test-token"
+    c.api_signature_secret = "unit-test-secret"
+    c.db_id = "1"
+    c.client_secret = ""
+    c.access_token = ""
+    c.refresh_token = ""
+
+    async def _tok():
+        return "unit-test-token"
+
+    async def _open(token):
+        return "https://example.accurate.id", ""
+
+    c._obtain_token = _tok
+    c._open_db = _open
+    assert c.is_live
+    return c
+
+
+def test_live_item_list_does_not_send_fields(monkeypatch):
+    """Reproduce production 502: item/list.do with custom fields → HTTP 400.
+
+    Import PO was already fixed by omitting `fields` on sales-order/list.do.
+    Master Item must use the same minimal query.
+    """
+    c = _live_client(monkeypatch)
+
+    async def _run():
+        return await c.list_items(limit=100, page=1)
+
+    listed = _await(_run())
+    assert listed["mode"] == "live"
+    assert listed["rows"][0]["accurate_item_id"] == "101"
+    assert _CapturingAsyncClient.captured, "item/list.do was not called"
+    first = _CapturingAsyncClient.captured[0]
+    assert first["url"] == "https://example.accurate.id/accurate/api/item/list.do"
+    assert first["url"].count("/accurate/api") == 1
+    assert "fields" not in first["params"]
+    assert first["params"]["sp.page"] == 1
+    assert first["params"]["sp.pageSize"] == 100
+
+
+def test_item_and_sales_order_list_urls_share_host_prefix(monkeypatch):
+    c = _live_client(monkeypatch)
+    host = "https://example.accurate.id"
+    item_url = f"{host}/accurate/api/item/list.do"
+    so_url = f"{host}/accurate/api/sales-order/list.do"
+    assert item_url.replace("item/list.do", "sales-order/list.do") == so_url
+    listed = _await(c.list_items(limit=20, page=1))
+    assert listed["rows"]
+    rec = _CapturingAsyncClient.captured[0]
+    assert rec["url"] == item_url
+    assert "sp.page" in rec["params"]
+    assert "sp.pageSize" in rec["params"]
+
+
+def test_live_item_list_http_error_records_status(monkeypatch):
+    class _ErrClient(_CapturingAsyncClient):
+        async def get(self, url, headers=None, params=None):
+            _CapturingAsyncClient.captured.append({"url": url, "params": dict(params or {})})
+            return _FakeHTTPResponse(404, {"s": False, "d": ["not found"]})
+
+    c = _live_client(monkeypatch, client_cls=_ErrClient)
+    try:
+        _await(c.list_items(limit=100, page=1))
+        assert False, "expected HTTP 404 to raise"
+    except RuntimeError as e:
+        assert "404" in str(e)
+    err = get_last_list_error()
+    assert err.get("operation") == "item/list.do"
+    assert err.get("status") == 404
+    assert "unit-test-token" not in str(err)
+    assert "unit-test-secret" not in str(err)
+
+
+def test_master_items_sync_failure_log_has_no_secrets(caplog, monkeypatch):
+    import logging
+    c = AccurateClient()
+    c.api_token = "unit-test-token"
+    c.api_signature_secret = "unit-test-secret"
+    caplog.set_level(logging.WARNING)
+    log_master_items_sync_failure(
+        c,
+        RuntimeError("Accurate item list HTTP 400"),
+    )
+    text = caplog.text
+    assert "operation=master_items_sync" in text
+    assert "endpoint=item/list.do" in text or "endpoint=" in text
+    assert "exception=RuntimeError" in text
+    assert "unit-test-token" not in text
+    assert "unit-test-secret" not in text
+    assert "Authorization" not in text
+    leaked = sanitize_accurate_error(c, "boom unit-test-token unit-test-secret")
+    assert leaked == "Accurate error"
+
+
+def test_sales_order_and_item_list_both_omit_fields():
+    """Import PO regression: sales-order/list.do must keep omitting `fields`."""
+    src = Path(__file__).resolve().parents[1].joinpath("services", "accurate.py").read_text()
+    so_fn = src[src.index("async def list_recent_sales_orders"): src.index("async def fetch_item_detail")]
+    item_fn = src[src.index("async def list_items"): src.index("async def _get_item_list_body")]
+    so_params = so_fn.split("list_params")[1].split("async with")[0]
+    item_params = item_fn.split("list_params")[1].split("body =")[0]
+    assert "fields" not in so_params
+    assert "fields" not in item_params
+
+
+def test_default_list_row_parses_without_optional_fields():
+    n = normalize_accurate_item({"id": 1250, "no": "100027", "name": "Test Item"})
+    assert n["accurate_item_id"] == "1250"
+    assert n["item_code"] == "100027"
+    assert n["item_name"] == "Test Item"
+    assert n["item_type"] is None
+    assert n["unit"] is None
+    assert n["is_active"] is None
 
 
 # ---------- RBAC ----------
