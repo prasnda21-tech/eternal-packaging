@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
+import { nextMasterSyncBanner } from "./masterItemsSyncBanner";
 
 const TYPE_LABEL = {
   INVENTORY: "Barang",
@@ -21,7 +22,8 @@ export default function MasterBarangJasa() {
   const canSync = hasPerm("master_items.sync");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [syncError, setSyncError] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [qInput, setQInput] = useState("");
@@ -33,13 +35,13 @@ export default function MasterBarangJasa() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    setErr("");
+    setLoadError("");
     try {
       const d = await api.masterItems({ q, item_type: itemType, status, page, page_size: pageSize });
       setData(d);
     } catch (ex) {
       const det = ex.response?.data?.detail;
-      setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Master Barang/Jasa"));
+      setLoadError(typeof det === "object" ? det.message : (det || "Gagal memuat Master Barang/Jasa"));
     } finally {
       setLoading(false);
     }
@@ -61,19 +63,26 @@ export default function MasterBarangJasa() {
   const doSync = async () => {
     if (!canSync || syncing) return;
     setSyncing(true);
-    setErr("");
-    setSyncResult(null);
+    const started = nextMasterSyncBanner("start");
+    setSyncError(started.error);
+    setSyncResult(started.result);
     try {
       const r = await api.masterItemsSync();
-      setSyncResult(r);
+      const ok = nextMasterSyncBanner("success", r);
+      setSyncError(ok.error);
+      setSyncResult(ok.result);
       setPage(1);
       await load();
     } catch (ex) {
-      setErr("Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.");
+      const fail = nextMasterSyncBanner("fail");
+      setSyncError(fail.error);
+      setSyncResult(fail.result);
     } finally {
       setSyncing(false);
     }
   };
+
+  const bannerError = syncError || loadError;
 
   const summary = data?.summary || {};
   const items = data?.items || [];
@@ -101,13 +110,13 @@ export default function MasterBarangJasa() {
         )}
       </div>
 
-      {err && (
+      {bannerError && (
         <div className="signal-strip" data-testid="master-items-error" role="alert">
-          <div><AlertCircle size={16} /><span>{err}</span></div>
+          <div><AlertCircle size={16} /><span>{bannerError}</span></div>
         </div>
       )}
 
-      {syncResult && (
+      {syncResult && !syncError && (
         <section className="master-sync-result" data-testid="master-items-sync-result">
           <CheckCircle2 size={16} />
           <div>
@@ -196,9 +205,9 @@ export default function MasterBarangJasa() {
             <tr>
               <th className="col-fit">Kode</th>
               <th className="col-text">Nama Item</th>
-              {types.length > 0 && <th className="col-fit">Jenis</th>}
+              <th className="col-fit">Jenis</th>
               <th className="col-fit">Satuan</th>
-              {summary.has_active_status && <th className="col-fit">Status</th>}
+              <th className="col-fit">Status</th>
               <th className="col-fit">Accurate ID</th>
               <th className="col-fit">Terakhir Sync</th>
             </tr>
@@ -218,13 +227,11 @@ export default function MasterBarangJasa() {
               <tr key={it.id} data-testid={`master-item-${it.accurate_item_id}`}>
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
-                {types.length > 0 && <td className="col-fit">{typeLabel(it.item_type)}</td>}
+                <td className="col-fit">{typeLabel(it.item_type)}</td>
                 <td className="col-fit">{it.unit || "—"}</td>
-                {summary.has_active_status && (
-                  <td className="col-fit">
-                    {it.is_active === true ? "Aktif" : it.is_active === false ? "Nonaktif" : "—"}
-                  </td>
-                )}
+                <td className="col-fit">
+                  {it.is_active === true ? "Aktif" : it.is_active === false ? "Nonaktif" : "—"}
+                </td>
                 <td className="col-fit mono">{it.accurate_item_id}</td>
                 <td className="col-fit small nowrap">{it.last_synced_at ? formatDate(it.last_synced_at) : "—"}</td>
               </tr>

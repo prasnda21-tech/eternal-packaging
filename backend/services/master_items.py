@@ -69,7 +69,7 @@ def _owned_payload(incoming: Dict[str, Any]) -> Dict[str, Any]:
             continue
         val = incoming.get(key)
         # Do not wipe a stored value just because this list row omitted the field.
-        if val is None:
+        if val is None or val == "":
             continue
         out[key] = val
     return out
