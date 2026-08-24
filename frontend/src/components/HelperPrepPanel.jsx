@@ -13,7 +13,7 @@ import { formatDate } from "../lib/constants";
  */
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
-export default function HelperPrepPanel({ order, canEdit, onUpdated }) {
+export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActions = null }) {
   const allLineItems = order?.line_items || [];
   // Filter hanya line Cetak — Helper hanya menyiapkan barang untuk Cetak.
   const printLines = allLineItems
@@ -58,6 +58,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated }) {
         <p className="muted small" data-testid="helper-not-required-note">
           <Info size={12}/> PO ini tidak memiliki barang dengan proses Cetak. Persiapan Helper hanya menyiapkan barang yang akan melalui proses Cetak.
         </p>
+        {footerActions}
       </section>
     );
   }
@@ -194,6 +195,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated }) {
       {!canEdit && (
         <p className="muted small" style={{ marginTop: 6 }}>Butuh permission <code>helper.prepare</code>.</p>
       )}
+      {footerActions}
     </section>
   );
 }

@@ -85,6 +85,51 @@ def operator_assigned_qty(order: dict) -> int:
     return total
 
 
+def helper_prepared_print_qty(order: dict) -> Optional[int]:
+    """Qty Helper Persiapan untuk CETAK.
+
+    None = belum diinput → tidak menambah cap di atas print_qty_total
+    (kompatibel PO lama / Penjadwalan sebelum Helper mengisi).
+    Nilai 0 yang eksplisit adalah hard cap 0.
+    """
+    hp = order.get("helper_prep") or {}
+    v = hp.get("qty_prepared")
+    if v is None or str(v).strip() == "":
+        return None
+    print_total = print_qty_total(order)
+    return max(0, min(_safe_int(v), print_total))
+
+
+def helper_prepared_for_line(order: dict, line_idx: int) -> Optional[int]:
+    """Per-line helper prepared. None jika items per-line belum ada."""
+    hp = order.get("helper_prep") or {}
+    items = hp.get("items") or []
+    for it in items:
+        if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
+            req = max(0, _safe_int(it.get("qty_required")))
+            prep = max(0, _safe_int(it.get("qty_prepared")))
+            return min(prep, req) if req else prep
+    return None
+
+
+def operator_assignment_cap(order: dict) -> int:
+    """Hard cap assignment Operator = min(print_qty, helper_prepared jika sudah diisi)."""
+    print_total = print_qty_total(order)
+    prepared = helper_prepared_print_qty(order)
+    if prepared is None:
+        return print_total
+    return min(print_total, prepared)
+
+
+def print_available_for_packing(order: dict) -> int:
+    """Qty CETAK yang benar-benar bisa di-packing: min(completed, helper prepared)."""
+    completed = print_completed_qty(order)
+    prepared = helper_prepared_print_qty(order)
+    if prepared is None:
+        return completed
+    return max(0, min(completed, prepared))
+
+
 def qty_packed(order: dict) -> int:
     return max(0, _safe_int((order.get("packing_info") or {}).get("qty_packed")))
 
@@ -105,15 +150,17 @@ def qty_delivered(order: dict) -> int:
 
 
 def available_for_packing(order: dict) -> int:
-    """Non-print selalu tersedia + qty cetak yang sudah selesai operator.
+    """Barang fisik yang boleh di-packing.
 
     available_for_packing =
-      unpacked_non_print_qty conceptually as non_print_total
-      + completed_print_qty
-    Cap di packing_required_total. Tidak double-count.
+      ready_non_print_qty
+      + ready_completed_print_qty
+
+    ready_completed_print_qty = min(print_completed_qty, helper_prepared_print_qty)
+    Qty Tidak Cetak tidak melewati Operator. Tidak double-count.
     """
     required = packing_required_total(order)
-    avail = non_print_qty_total(order) + print_completed_qty(order)
+    avail = non_print_qty_total(order) + print_available_for_packing(order)
     return max(0, min(required, avail))
 
 
@@ -135,13 +182,67 @@ def packing_status_semantic(order: dict) -> str:
     return "Belum"
 
 
-def validate_operator_assignment_total(total_split: int, print_total: int) -> Optional[str]:
+def validate_operator_assignment_total(
+    total_split: int,
+    print_total: int,
+    prepared_print_qty: Optional[int] = None,
+) -> Optional[str]:
     if total_split < 0:
         return "Qty assignment tidak boleh negatif."
-    if total_split > print_total:
+    cap = print_total
+    if prepared_print_qty is not None:
+        cap = min(print_total, max(0, _safe_int(prepared_print_qty)))
+    if total_split > cap:
+        if prepared_print_qty is not None and cap < print_total:
+            return (
+                f"Total pembagian Operator ({total_split}) melebihi qty Helper Persiapan ({cap}). "
+                f"Operator hanya boleh mengerjakan qty Cetak yang sudah disiapkan Helper "
+                f"(maks {cap} dari {print_total} qty Cetak)."
+            )
         return (
             f"Total pembagian Operator ({total_split}) melebihi total qty Cetak PO ({print_total}). "
             "Operator hanya untuk barang dengan proses Cetak."
+        )
+    return None
+
+
+def validate_print_completed_total(completed_total: int, order: dict) -> Optional[str]:
+    if completed_total < 0:
+        return "Qty cetak selesai tidak boleh negatif."
+    print_total = print_qty_total(order)
+    if completed_total > print_total:
+        return (
+            f"Total qty cetak selesai ({completed_total}) melebihi qty Cetak PO ({print_total})."
+        )
+    prepared = helper_prepared_print_qty(order)
+    if prepared is not None and completed_total > prepared:
+        return (
+            f"Total qty cetak selesai ({completed_total}) melebihi qty Helper Persiapan ({prepared}). "
+            "Operator tidak boleh menyelesaikan qty Cetak yang belum disiapkan Helper."
+        )
+    return None
+
+
+def validate_helper_prepared_qty(prepared: int, order: dict) -> Optional[str]:
+    if prepared < 0:
+        return "Qty persiapan tidak boleh negatif."
+    print_total = print_qty_total(order)
+    if prepared > print_total:
+        return (
+            f"Qty disiapkan Helper ({prepared}) melebihi total qty Cetak ({print_total})."
+        )
+    completed = print_completed_qty(order)
+    if prepared < completed:
+        return (
+            f"Qty persiapan Helper ({prepared}) tidak boleh lebih kecil dari "
+            f"qty cetak selesai Operator ({completed})."
+        )
+    packed = qty_packed(order)
+    packed_print = max(0, packed - non_print_qty_total(order))
+    if prepared < packed_print:
+        return (
+            f"Qty persiapan Helper ({prepared}) tidak boleh lebih kecil dari "
+            f"qty cetak yang sudah di-packing ({packed_print})."
         )
     return None
 
@@ -157,7 +258,8 @@ def validate_packing_qty(packed: int, order: dict) -> Optional[str]:
     if packed > avail:
         return (
             f"Qty Packing ({packed}) melebihi qty tersedia untuk packing ({avail}). "
-            "Qty Cetak baru tersedia setelah Operator menyelesaikan; "
+            "Qty Cetak baru tersedia setelah Operator menyelesaikan "
+            "(tidak melebihi qty Helper Persiapan); "
             "Qty Tidak Cetak tersedia tanpa menunggu Operator."
         )
     if packed < delivered:

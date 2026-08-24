@@ -5,7 +5,7 @@ import { packingSubmitEnabled } from "../lib/packingCard";
 
 // Packing = print (setelah selesai operator) + non_print (langsung tersedia).
 // Target akhir = packing_required_total. Partial packing boleh lanjut ke SJ.
-export default function PackingPanel({ order, canManage, busy, onSaveQty, onComplete }) {
+export default function PackingPanel({ order, canManage, busy, onSaveQty, onComplete, footerActions = null }) {
   const pi = order.packing_info || {};
   const [qty, setQty] = useState(pi.qty_packed ?? "");
   const [notes, setNotes] = useState(pi.notes ?? "");
@@ -20,6 +20,10 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
     ? order.available_for_packing
     : requiredTotal;
   const printCompleted = Number(order.print_completed_qty || 0);
+  const printAvailable = typeof order.print_available_for_packing === "number"
+    ? order.print_available_for_packing
+    : printCompleted;
+  const helperPrepared = order.helper_prepared_print_qty;
   const nonPrintTotal = Number(order.non_print_qty_total || 0);
   const packedSaved = Number(pi.qty_packed || 0);
   const packedDraft = Number(qty || 0);
@@ -53,8 +57,13 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
       </header>
 
       <p className="muted small" data-testid="packing-availability-note" style={{ marginTop: 0 }}>
-        Non-cetak: <b>{nonPrintTotal.toLocaleString("id-ID")}</b> (langsung) · Cetak selesai operator:{" "}
-        <b>{printCompleted.toLocaleString("id-ID")}</b> · Total tersedia packing:{" "}
+        Non-cetak: <b>{nonPrintTotal.toLocaleString("id-ID")}</b> (langsung) · Cetak siap packing:{" "}
+        <b data-testid="packing-print-available">{Number(printAvailable).toLocaleString("id-ID")}</b>
+        {" "}(selesai operator {printCompleted.toLocaleString("id-ID")}
+        {helperPrepared !== null && helperPrepared !== undefined
+          ? `, cap helper ${Number(helperPrepared).toLocaleString("id-ID")}`
+          : ""}
+        ) · Total tersedia packing:{" "}
         <b>{available.toLocaleString("id-ID")}</b> / {requiredTotal.toLocaleString("id-ID")}
         {" "}· Sudah packing: <b data-testid="packing-cumulative-packed">{packedSaved.toLocaleString("id-ID")}</b>
         {" "}· Sisa tersedia: <b data-testid="packing-remaining-available">{remainingAvailable.toLocaleString("id-ID")}</b>
@@ -192,12 +201,14 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                     : "Lanjut ke Surat Jalan dengan qty packing sebagian"
               }
               data-testid="complete-packing-button"
+              data-mark-packed="true"
             >
               <CheckCircle2 size={16} /> {isComplete ? "Selesai Packing" : "Lanjut Packing Sebagian"}
             </button>
           </div>
         </div>
       )}
+      {footerActions}
     </section>
   );
 }
