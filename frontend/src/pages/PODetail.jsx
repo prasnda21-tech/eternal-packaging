@@ -580,7 +580,9 @@ export default function PODetail() {
         <div>
           <span className="lbl">Status Design</span>
           <strong className={order.design_status === "Approved" ? "status-ok" : "status-wait"} data-testid="design-status">
-            {order.design_status === "Approved" ? "Approved" : "Menunggu approval"}
+            {order.design_status === "Approved"
+              ? "Approved"
+              : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
           </strong>
         </div>
         <div>

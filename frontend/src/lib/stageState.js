@@ -1,6 +1,8 @@
 // Semantic stage completion — shared by Timeline + StageBar.
 // Design/Payment/Approval stages must NOT inherit "done" from current_stage alone.
 
+import { resolveDesignChip, resolveApprovalDesignChip } from "./designEvidence.js";
+
 const STAGE_DESIGN = 1;
 const STAGE_APPROVAL_DESIGN = 2;
 const STAGE_PAYMENT = 3;
@@ -17,14 +19,6 @@ const STAGE_LOADING = 13;
 const STAGE_TERKIRIM = 14;
 
 const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== "";
-
-/** Design work is done only when a designer upload exists — never from current_stage alone. */
-function designWorkDone(order) {
-  if (order?.design_bypassed) return true;
-  return (order?.design_files || []).some(
-    (f) => hasValue(f?.name) || hasValue(f?.data_url) || hasValue(f?.url)
-  );
-}
 
 function penjadwalanDone(order) {
   return (order?.operator_splits || []).length > 0;
@@ -64,21 +58,9 @@ function terkirimConfirmed(order) {
 }
 
 export function resolveStageState(idx, order, currentStage) {
-  if (idx === STAGE_DESIGN) {
-    if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
-    if (designWorkDone(order)) return { state: "done", label: "Selesai" };
-    // Never mark done via idx < currentStage — payment/approval must not imply design finished.
-    if (currentStage >= idx) return { state: "current", label: "Belum dikerjakan" };
-    return { state: "pending", label: "Menunggu" };
-  }
-  if (idx === STAGE_APPROVAL_DESIGN) {
-    if (order?.design_status === "Approved") return { state: "done", label: "Selesai" };
-    if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
-    if (!designWorkDone(order)) return { state: "pending", label: "Menunggu" };
-    if (currentStage === idx) return { state: "current", label: "Berjalan" };
-    if (currentStage > idx) return { state: "current", label: "Menunggu approval" };
-    return { state: "pending", label: "Menunggu" };
-  }
+  // Design + Approval Design: same evidence helpers as Timeline (never idx < currentStage).
+  if (idx === STAGE_DESIGN) return resolveDesignChip(order, currentStage);
+  if (idx === STAGE_APPROVAL_DESIGN) return resolveApprovalDesignChip(order, currentStage);
   if (idx === STAGE_PAYMENT) {
     if (order?.payment_bypassed) return { state: "bypass", label: "BYPASS" };
     if ((order?.payment_files || []).length > 0) return { state: "done", label: "Selesai" };

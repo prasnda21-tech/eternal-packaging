@@ -2447,7 +2447,12 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
         audit_action = "sample.upload"
     else:
         order.setdefault("sample_files", []).append(entry)
-    add_timeline(order, order["current_stage"], user, note=f"Upload {kind}: {payload.name}")
+    # Attribute timeline to the workflow stage of the upload kind — never to
+    # whatever current_stage happens to be (Payment-first flow must not bury
+    # Design uploads under Approval Payment stage).
+    _KIND_TIMELINE_STAGE = {"design": 1, "payment": 3, "sample": 8}
+    tl_stage = _KIND_TIMELINE_STAGE.get(kind, order.get("current_stage") or 0)
+    add_timeline(order, tl_stage, user, note=f"Upload {kind}: {payload.name}")
     await _persist_order(order)
     if audit_action:
         await _audit_po(order, audit_action, user, note=f"{payload.name}")

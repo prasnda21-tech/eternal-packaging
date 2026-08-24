@@ -1,6 +1,8 @@
 import { STAGES, formatDate } from "../lib/constants";
 import { ROLES } from "../lib/constants";
-import { resolveStageState } from "../lib/stageState";
+import { resolveTimelineChip } from "../lib/timelineChip.js";
+
+export { resolveTimelineChip };
 
 export default function Timeline({ timeline = [], currentStage = 0, order = null }) {
   const byStage = STAGES.map((label, idx) => {
@@ -12,7 +14,7 @@ export default function Timeline({ timeline = [], currentStage = 0, order = null
   return (
     <ol className="timeline" data-testid="order-timeline">
       {byStage.map(({ idx, label, last }) => {
-        const { state, label: stateLabel } = resolveStageState(idx, order, currentStage);
+        const { state, label: stateLabel } = resolveTimelineChip(idx, order, currentStage);
         return (
           <li key={idx} className={`timeline-item timeline-${state}`} data-testid={`timeline-stage-${idx}`}>
             <span className="dot" />
