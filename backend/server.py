@@ -17,6 +17,7 @@ from services import storage as obj_storage
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
+    NAV_MENU_ITEMS, NAV_CONFIGURED, with_nav_defaults,
 )
 from operator_analytics import (
     build_activity_analytics_pipeline,
@@ -3643,8 +3644,14 @@ async def perm_catalog(user=Depends(require_perm("users.view"))):
     """List all permission keys grouped by module — for the Hak Akses matrix."""
     modules = {}
     for module, key, label in PERMISSION_CATALOG:
+        if key == NAV_CONFIGURED:
+            continue
         modules.setdefault(module, []).append({"key": key, "label": label})
-    return {"modules": modules, "all_keys": list(ALL_PERMISSIONS)}
+    return {
+        "modules": modules,
+        "all_keys": [k for k in ALL_PERMISSIONS if k != NAV_CONFIGURED],
+        "nav_menu": [{"key": k, "label": lbl, "parent": parent} for k, lbl, parent in NAV_MENU_ITEMS],
+    }
 
 
 BUILTIN_ROLES = {"admin", "head_production", "head_operations", "designer", "screener", "helper", "operator", "driver", "crm"}
@@ -3696,26 +3703,28 @@ async def list_roles(user=Depends(require_perm("users.view"))):
     for d in docs:
         slug = d["role"]
         slugs_seen.add(slug)
-        base = list(overrides.get(slug, ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
+        raw = list(overrides.get(slug, ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
+        base = sorted(with_nav_defaults(set(raw)))
         out.append({
             "role": slug,
             "label": d.get("label") or ROLE_LABELS.get(slug, slug),
             "description": d.get("description", ""),
             "is_builtin": bool(d.get("is_builtin")),
             "status": d.get("status", "active"),
-            "permissions": sorted(base),
+            "permissions": base,
             "is_customized": slug in overrides,
-            "builtin_permissions": sorted(ROLE_DEFAULT_PERMISSIONS.get(slug, [])),
+            "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
         })
     # Include any built-in that isn't in the collection yet (safety)
     for slug in BUILTIN_ROLES - slugs_seen:
-        base = list(overrides.get(slug, ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
+        raw = list(overrides.get(slug, ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
+        base = sorted(with_nav_defaults(set(raw)))
         out.append({
             "role": slug, "label": ROLE_LABELS.get(slug, slug), "description": "",
             "is_builtin": True, "status": "active",
-            "permissions": sorted(base), "is_customized": slug in overrides,
-            "builtin_permissions": sorted(ROLE_DEFAULT_PERMISSIONS.get(slug, [])),
+            "permissions": base, "is_customized": slug in overrides,
+            "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
         })
     return {"roles": out}
@@ -4042,20 +4051,14 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     if role in inactive:
         default_from_role = []
     elif role_override and role in role_override:
-        default_from_role = list(role_override[role] or [])
+        default_from_role = list(with_nav_defaults(set(role_override[role] or [])))
     else:
-        default_from_role = list(ROLE_DEFAULT_PERMISSIONS.get(role, []))
+        default_from_role = list(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(role, []))))
     override = dict(existing.get("permissions_override") or {})
     if existing.get("is_super_admin"):
         effective = list(ALL_PERMISSIONS)
     else:
-        base = set(default_from_role)
-        for perm, allowed in override.items():
-            if allowed:
-                base.add(perm)
-            else:
-                base.discard(perm)
-        effective = sorted(base)
+        effective = sorted(effective_permissions(role, override, role_override))
     return {
         "user_id": user_id,
         "email": existing.get("email"),

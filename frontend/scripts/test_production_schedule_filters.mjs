@@ -138,4 +138,14 @@ function ids(rows) {
   assert(sorted[0].po_number === "PO-C", "sort deadline ascending first");
 }
 
+{
+  const rows = run({ poFilter: "PO-A" });
+  assert(rows.length === 1 && rows[0].po_number === "PO-A", `PO filter: got ${ids(rows)}`);
+}
+
+{
+  const rows = run({ operatorFilter: "Op A", customerFilter: "Kopi Rumah" });
+  assert(rows.length === 1 && rows[0].po_number === "PO-A", `operator+customer: got ${ids(rows)}`);
+}
+
 console.log("production schedule filters OK — A–I passed");

@@ -13,6 +13,7 @@ import Settings from "./pages/Settings";
 import ComingSoon from "./pages/ComingSoon";
 import AnalitikOutput from "./pages/AnalitikOutput";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
+import { NAV_KEYS } from "./lib/navAccess";
 import "@/App.css";
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit"];
@@ -31,10 +32,11 @@ function PublicOnly({ children }) {
   return children;
 }
 
-function PermGate({ anyOf, children }) {
+function PermGate({ anyOf, alsoAnyOf, children }) {
   const { hasPerm } = useAuth();
   const ok = (anyOf || []).some((p) => hasPerm(p));
-  if (!ok) return <Navigate to="/" replace />;
+  const also = !alsoAnyOf?.length || alsoAnyOf.some((p) => hasPerm(p));
+  if (!ok || !also) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -48,15 +50,15 @@ export default function App() {
           <Route path="/customer/design-approval/:token" element={<PublicCustomerApproval />} />
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/dashboard" element={<PermGate anyOf={["dashboard.production.view"]}><HoPDashboard /></PermGate>} />
-            <Route path="/produksi" element={<PermGate anyOf={["schedule.view"]}><ProductionSchedule /></PermGate>} />
+            <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
+            <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
-            <Route path="/admin/import" element={<PermGate anyOf={["po.import.view"]}><ImportPO /></PermGate>} />
-            <Route path="/pembelian" element={<ComingSoon title="Pembelian" eyebrow="Pembelian" testid="pembelian-page" />} />
-            <Route path="/persediaan" element={<ComingSoon title="Persediaan" eyebrow="Persediaan" testid="persediaan-page" />} />
-            <Route path="/laporan/analitik-output" element={<PermGate anyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
+            <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
+            <Route path="/pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasing]}><ComingSoon title="Pembelian" eyebrow="Pembelian" testid="pembelian-page" /></PermGate>} />
+            <Route path="/persediaan" element={<PermGate anyOf={[NAV_KEYS.inventory]}><ComingSoon title="Persediaan" eyebrow="Persediaan" testid="persediaan-page" /></PermGate>} />
+            <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan" element={<Navigate to="/laporan/analitik-output" replace />} />
-            <Route path="/settings" element={<PermGate anyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
+            <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id" element={<PODetail />} />
             <Route path="/po/:id/surat-jalan" element={<SuratJalan />} />
           </Route>
