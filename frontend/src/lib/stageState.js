@@ -18,6 +18,14 @@ const STAGE_TERKIRIM = 14;
 
 const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== "";
 
+/** Design work is done only when a designer upload exists — never from current_stage alone. */
+function designWorkDone(order) {
+  if (order?.design_bypassed) return true;
+  return (order?.design_files || []).some(
+    (f) => hasValue(f?.name) || hasValue(f?.data_url) || hasValue(f?.url)
+  );
+}
+
 function penjadwalanDone(order) {
   return (order?.operator_splits || []).length > 0;
 }
@@ -58,13 +66,15 @@ function terkirimConfirmed(order) {
 export function resolveStageState(idx, order, currentStage) {
   if (idx === STAGE_DESIGN) {
     if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
-    if ((order?.design_files || []).length > 0) return { state: "done", label: "Selesai" };
+    if (designWorkDone(order)) return { state: "done", label: "Selesai" };
+    // Never mark done via idx < currentStage — payment/approval must not imply design finished.
     if (currentStage >= idx) return { state: "current", label: "Belum dikerjakan" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_APPROVAL_DESIGN) {
     if (order?.design_status === "Approved") return { state: "done", label: "Selesai" };
     if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
+    if (!designWorkDone(order)) return { state: "pending", label: "Menunggu" };
     if (currentStage === idx) return { state: "current", label: "Berjalan" };
     if (currentStage > idx) return { state: "current", label: "Menunggu approval" };
     return { state: "pending", label: "Menunggu" };
