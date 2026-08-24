@@ -949,3 +949,15 @@
 .ca-panel .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .ca-panel .link-box{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#fff;border:1px dashed var(--line);padding:8px 10px;border-radius:8px;font-size:12px;word-break:break-all;user-select:all}
 
+/* Packing per-line table */
+.packing-lines-wrap{overflow:auto;margin:0 0 10px}
+.packing-lines-table{width:100%;min-width:960px;border-collapse:collapse;font-size:13px}
+.packing-lines-table th,.packing-lines-table td{padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+.packing-lines-table td.num,.packing-lines-table th.num{text-align:right;white-space:nowrap}
+.packing-lines-total td{background:#faf6ee;font-weight:600}
+.packing-qty-input{min-height:36px;padding:6px 8px;border:1px solid var(--line);background:var(--paper);width:120px;text-align:right}
+.packing-line-input-cell{min-width:140px}
+.packing-line-qty-input{margin-left:auto;display:block}
+.packing-notes-input{width:100%;min-height:36px;padding:8px 10px;border:1px solid var(--line);background:var(--paper)}
+.packing-form{display:grid;gap:12px;margin-top:8px}
+

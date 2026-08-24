@@ -27,6 +27,7 @@ from quantity_rules import (
     non_print_qty_total as _qr_non_print_qty_total,
     operator_assigned_qty as _qr_operator_assigned_qty,
     operator_assignment_cap as _qr_operator_assignment_cap,
+    packing_line_breakdown as _qr_packing_line_breakdown,
     packing_required_total as _qr_packing_required_total,
     packing_status_semantic as _qr_packing_status_semantic,
     print_available_for_packing as _qr_print_available_for_packing,
@@ -39,8 +40,10 @@ from quantity_rules import (
     validate_delivery_qty as _qr_validate_delivery_qty,
     validate_helper_prepared_qty as _qr_validate_helper_prepared_qty,
     validate_operator_assignment_total as _qr_validate_operator_assignment_total,
+    validate_packing_lines as _qr_validate_packing_lines,
     validate_packing_qty as _qr_validate_packing_qty,
     validate_print_completed_total as _qr_validate_print_completed_total,
+    merge_packing_line_updates as _qr_merge_packing_line_updates,
 )
 from workflow_gates import (
     SCREENER_GATE_OPERATOR_MSG,
@@ -762,6 +765,7 @@ _DERIVED_ORDER_KEYS = (
     "operator_assigned_qty", "helper_prepared_print_qty",
     "operator_assignment_cap", "print_available_for_packing",
     "workflow_ready", "operator_unlocked", "screener_gate_reason",
+    "packing_lines",
 )
 
 
@@ -777,6 +781,7 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["operator_assignment_cap"] = _operator_assignment_cap(order)
     order["print_available_for_packing"] = _print_available_for_packing(order)
     order["available_for_packing"] = _available_for_packing(order)
+    order["packing_lines"] = _qr_packing_line_breakdown(order)
     _attach_workflow_snapshot(order)
 
 
@@ -2660,34 +2665,66 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
     return {"order": order}
 
 
+class PackingLineInput(BaseModel):
+    line_idx: int
+    packed_qty: int
+
+
 class PackingInfoPayload(BaseModel):
-    qty_packed: int
+    qty_packed: Optional[int] = None
+    lines: Optional[List[PackingLineInput]] = None
     notes: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/packing-info")
 async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Depends(current_user)):
-    """Save Qty Packing (cumulative). Cap: available_for_packing dan total PO."""
+    """Save Qty Packing per line. qty_packed total = SUM(lines) untuk downstream."""
     await _require_perm(user, "packing.update")
     before_holder = {}
 
     def mutate(order: dict):
-        err = _qr_validate_packing_qty(int(payload.qty_packed), order)
-        if err:
-            raise HTTPException(400, err)
-        before_holder["qty_packed"] = (order.get("packing_info") or {}).get("qty_packed")
+        pi = order.get("packing_info") or {}
+        before_holder["qty_packed"] = pi.get("qty_packed")
+        before_holder["lines"] = list(pi.get("lines") or [])
+        updates = None
+        if payload.lines:
+            updates = [{"line_idx": int(x.line_idx), "packed_qty": int(x.packed_qty)} for x in payload.lines]
+            err = _qr_validate_packing_lines(updates, order)
+            if err:
+                raise HTTPException(400, err)
+        elif payload.qty_packed is not None:
+            lis = order.get("line_items") or []
+            if len(lis) > 1:
+                raise HTTPException(
+                    400,
+                    "Qty Packing harus diisi per line item, bukan total PO.",
+                )
+            err = _qr_validate_packing_qty(int(payload.qty_packed), order)
+            if err:
+                raise HTTPException(400, err)
+            updates = [{"line_idx": 0, "packed_qty": int(payload.qty_packed)}]
+            err = _qr_validate_packing_lines(updates, order)
+            if err:
+                raise HTTPException(400, err)
+        else:
+            raise HTTPException(400, "Qty Packing per line wajib diisi.")
+        merged = _qr_merge_packing_line_updates(order, updates)
+        total = sum(max(0, int(x.get("packed_qty") or 0)) for x in merged)
         order.setdefault("packing_info", {})
-        order["packing_info"]["qty_packed"] = int(payload.qty_packed)
+        order["packing_info"]["lines"] = merged
+        order["packing_info"]["qty_packed"] = total
         order["packing_info"]["notes"] = payload.notes or ""
         order["packing_info"]["updated_by"] = user.get("email")
         order["packing_info"]["updated_by_name"] = user.get("name")
         order["packing_info"]["updated_at"] = now_iso()
-        add_timeline(order, 11, user, note=f"Qty Packing: {int(payload.qty_packed)} pcs")
+        detail = ", ".join(f"#{x['line_idx']}={x['packed_qty']}" for x in merged if int(x.get("packed_qty") or 0) > 0)
+        add_timeline(order, 11, user, note=f"Qty Packing: {total} pcs ({detail or 'per line'})")
 
     order = await _with_quantity_lock(order_id, mutate)
     await _audit_po(order, "packing.update", user,
-                    before={"qty_packed": before_holder.get("qty_packed")},
-                    after={"qty_packed": int(payload.qty_packed)},
+                    before={"qty_packed": before_holder.get("qty_packed"), "lines": before_holder.get("lines")},
+                    after={"qty_packed": (order.get("packing_info") or {}).get("qty_packed"),
+                           "lines": (order.get("packing_info") or {}).get("lines")},
                     note=payload.notes or "")
     return {"order": order}
 

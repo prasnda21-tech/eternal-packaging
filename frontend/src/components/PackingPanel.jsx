@@ -1,44 +1,75 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Package, CheckCircle2 } from "lucide-react";
 import { formatDate } from "../lib/constants";
-import { packingSubmitEnabled } from "../lib/packingCard";
+import { packingLinesForOrder, packingSubmitEnabled } from "../lib/packingCard";
+
+function fmt(n) {
+  return Number(n || 0).toLocaleString("id-ID");
+}
+
+function initialDraft(packingLines) {
+  const map = {};
+  for (const row of packingLines) {
+    map[row.line_idx] = Number(row.packed || 0);
+  }
+  return map;
+}
 
 // Packing = print (setelah selesai operator) + non_print (langsung tersedia).
-// Target akhir = packing_required_total. Partial packing boleh lanjut ke SJ.
+// Input & persist PER LINE. Total PO hanya ringkasan (SUM).
 export default function PackingPanel({ order, canManage, busy, onSaveQty, onComplete, footerActions = null }) {
   const pi = order.packing_info || {};
-  const [qty, setQty] = useState(pi.qty_packed ?? "");
+  const packingLines = packingLinesForOrder(order);
+  const [draft, setDraft] = useState(() => initialDraft(packingLines));
   const [notes, setNotes] = useState(pi.notes ?? "");
-  const hasQty = pi.qty_packed !== null && pi.qty_packed !== undefined && String(pi.qty_packed).trim() !== "" && Number(pi.qty_packed) > 0;
+
+  useEffect(() => {
+    setDraft(initialDraft(packingLinesForOrder(order)));
+    setNotes((order.packing_info || {}).notes ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id, pi.updated_at, packingLines.length]);
+
+  const hasLinesStored = Array.isArray(pi.lines) && pi.lines.length > 0;
+  const packedFromLines = packingLines.reduce((s, r) => s + Number(r.packed || 0), 0);
+  const packedSaved = hasLinesStored
+    ? packedFromLines
+    : Number(pi.qty_packed || 0);
+  const hasQty = packedSaved > 0;
   const semantic = order.packing_status_semantic || "Belum";
   const fullyPacked = semantic === "Sudah";
-  const lineItems = order.line_items || [];
   const requiredTotal = typeof order.packing_required_total === "number"
     ? order.packing_required_total
-    : lineItems.reduce((s, li) => s + Number(li.quantity || 0), 0);
+    : packingLines.reduce((s, r) => s + Number(r.qty_po || 0), 0);
   const available = typeof order.available_for_packing === "number"
     ? order.available_for_packing
-    : requiredTotal;
+    : packingLines.reduce((s, r) => s + Number(r.available || 0), 0);
   const printCompleted = Number(order.print_completed_qty || 0);
   const printAvailable = typeof order.print_available_for_packing === "number"
     ? order.print_available_for_packing
     : printCompleted;
   const helperPrepared = order.helper_prepared_print_qty;
   const nonPrintTotal = Number(order.non_print_qty_total || 0);
-  const packedSaved = Number(pi.qty_packed || 0);
-  const packedDraft = Number(qty || 0);
-  const maxAllowed = Math.min(requiredTotal || Infinity, available || 0);
-  const shortagePreview = Math.max(requiredTotal - packedDraft, 0);
   const shortageSaved = Math.max(requiredTotal - packedSaved, 0);
   const canProceedPartial = hasQty && packedSaved > 0;
   const isComplete = hasQty && packedSaved >= requiredTotal;
-  const canSubmitQty = packingSubmitEnabled(canManage, available);
   const remainingAvailable = Math.max(available - packedSaved, 0);
+  const canSubmitQty = packingSubmitEnabled(canManage, available);
+  const draftTotal = packingLines.reduce((s, r) => s + Number(draft[r.line_idx] || 0), 0);
+  const dirty = packingLines.some((r) => Number(draft[r.line_idx] ?? r.packed) !== Number(r.packed || 0));
+  const canSave = canSubmitQty && !busy && draftTotal > 0 && (dirty || !hasLinesStored);
+  const legacyTotalOnly = !hasLinesStored && Number(pi.qty_packed || 0) > 0 && (order.line_items || []).length > 1;
+
+  const setLineQty = (lineIdx, value) => {
+    setDraft((prev) => ({ ...prev, [lineIdx]: value }));
+  };
 
   const handleSave = async () => {
-    const parsed = parseInt(qty, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
-    await onSaveQty(parsed, notes || "");
+    const lines = packingLines.map((row) => ({
+      line_idx: row.line_idx,
+      packed_qty: Math.max(0, parseInt(draft[row.line_idx], 10) || 0),
+    }));
+    if (!lines.some((l) => l.packed_qty > 0)) return;
+    await onSaveQty(lines, notes || "");
   };
 
   return (
@@ -49,71 +80,130 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
           {semantic === "Sudah" ? "Packing Selesai" : semantic === "Berjalan" ? "Packing Berjalan" : "Menunggu"}
         </span>
         <span className="pill sm" data-testid="packing-target-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
-          Target: {requiredTotal.toLocaleString("id-ID")} pcs (semua line)
+          Target: {fmt(requiredTotal)} pcs
         </span>
         <span className="pill sm" data-testid="packing-available-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
-          Tersedia: {available.toLocaleString("id-ID")} pcs
+          Tersedia: {fmt(available)} pcs
         </span>
       </header>
 
       <p className="muted small" data-testid="packing-availability-note" style={{ marginTop: 0 }}>
-        Non-cetak: <b>{nonPrintTotal.toLocaleString("id-ID")}</b> (langsung) · Cetak siap packing:{" "}
-        <b data-testid="packing-print-available">{Number(printAvailable).toLocaleString("id-ID")}</b>
-        {" "}(selesai operator {printCompleted.toLocaleString("id-ID")}
+        Qty Packing diisi per barang. Total hanya penjumlahan. Non-cetak: <b>{fmt(nonPrintTotal)}</b> (langsung) · Cetak siap packing:{" "}
+        <b data-testid="packing-print-available">{fmt(printAvailable)}</b>
+        {" "}(selesai operator {fmt(printCompleted)}
         {helperPrepared !== null && helperPrepared !== undefined
-          ? `, cap helper ${Number(helperPrepared).toLocaleString("id-ID")}`
+          ? `, cap helper ${fmt(helperPrepared)}`
           : ""}
-        ) · Total tersedia packing:{" "}
-        <b>{available.toLocaleString("id-ID")}</b> / {requiredTotal.toLocaleString("id-ID")}
-        {" "}· Sudah packing: <b data-testid="packing-cumulative-packed">{packedSaved.toLocaleString("id-ID")}</b>
-        {" "}· Sisa tersedia: <b data-testid="packing-remaining-available">{remainingAvailable.toLocaleString("id-ID")}</b>
+        ) · Sudah packing: <b data-testid="packing-cumulative-packed">{fmt(packedSaved)}</b>
+        {" "}· Sisa tersedia: <b data-testid="packing-remaining-available">{fmt(remainingAvailable)}</b>
       </p>
 
-      {lineItems.length > 0 && (
-        <table className="prep-table" data-testid="packing-lines-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 10 }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--line)" }}>
-              <th style={{ padding: "6px 8px" }}>Barang</th>
-              <th style={{ padding: "6px 8px" }}>Proses</th>
-              <th className="num" style={{ padding: "6px 8px", textAlign: "right" }}>Qty PO</th>
-            </tr>
-          </thead>
-          <tbody>
-            {lineItems.map((li, idx) => {
-              const isPrint = (li.production_process || "print").toLowerCase() !== "non_print";
-              return (
-                <tr key={idx} data-testid={`packing-line-row-${idx}`} style={{ borderBottom: "1px solid var(--line)" }}>
-                  <td style={{ padding: "8px" }}>
-                    <div><strong>{li.name}</strong></div>
-                    {li.color && <div className="muted small">{li.color}</div>}
-                  </td>
-                  <td style={{ padding: "8px" }}>
-                    <span className="pill sm" style={{ background: isPrint ? "#e6ecf3" : "#efe6d3", color: isPrint ? "#3a4b60" : "#7a6f52" }} data-testid={`packing-line-process-${idx}`}>
-                      {isPrint ? "Cetak" : "Non-Cetak"}
-                    </span>
-                  </td>
-                  <td className="num mono" style={{ padding: "8px", textAlign: "right" }} data-testid={`packing-line-qty-${idx}`}>
-                    {Number(li.quantity || 0).toLocaleString("id-ID")}
-                  </td>
-                </tr>
-              );
-            })}
-            <tr style={{ background: "#faf6ee", fontWeight: 600 }}>
-              <td style={{ padding: "8px" }}>Total (target Packing)</td>
-              <td></td>
-              <td className="num mono" style={{ padding: "8px", textAlign: "right" }} data-testid="packing-target-total">{requiredTotal.toLocaleString("id-ID")}</td>
-            </tr>
-          </tbody>
-        </table>
+      {legacyTotalOnly && (
+        <p className="muted small" data-testid="packing-legacy-total-note" style={{ color: "#8a5a12" }}>
+          PO ini masih memakai Qty Packing total lama ({fmt(pi.qty_packed)} pcs). Tracking per barang dimulai dari 0 sampai disimpan per line.
+        </p>
+      )}
+
+      {packingLines.length > 0 && (
+        <div className="packing-lines-wrap">
+          <table className="packing-lines-table" data-testid="packing-lines-table">
+            <thead>
+              <tr>
+                <th>Barang</th>
+                <th>Proses</th>
+                <th className="num">Qty PO</th>
+                <th className="num">Disiapkan</th>
+                <th className="num">Sudah dicetak</th>
+                <th className="num">Belum dicetak</th>
+                <th className="num">Tersedia packing</th>
+                <th className="num">Sudah packing</th>
+                <th className="num">Sisa packing</th>
+                <th className="num">Qty packing</th>
+              </tr>
+            </thead>
+            <tbody>
+              {packingLines.map((row, idx) => {
+                const isPrint = !!row.is_print;
+                const inputVal = draft[row.line_idx] ?? row.packed ?? 0;
+                return (
+                  <tr key={row.line_idx ?? idx} data-testid={`packing-line-row-${idx}`}>
+                    <td>
+                      <div><strong>{row.name}</strong></div>
+                      {row.color && <div className="muted small">{row.color}</div>}
+                    </td>
+                    <td>
+                      <span
+                        className="pill sm"
+                        style={{ background: isPrint ? "#e6ecf3" : "#efe6d3", color: isPrint ? "#3a4b60" : "#7a6f52" }}
+                        data-testid={`packing-line-process-${idx}`}
+                      >
+                        {isPrint ? "Cetak" : "Non-Cetak"}
+                      </span>
+                    </td>
+                    <td className="num mono" data-testid={`packing-line-qty-${idx}`}>{fmt(row.qty_po)}</td>
+                    <td className="num mono" data-testid={`packing-line-prepared-${idx}`}>
+                      {isPrint
+                        ? (row.helper_prepared == null ? "—" : fmt(row.helper_prepared))
+                        : "—"}
+                    </td>
+                    <td className="num mono" data-testid={`packing-line-printed-${idx}`}>
+                      {isPrint ? fmt(row.print_completed) : "—"}
+                    </td>
+                    <td className="num mono" data-testid={`packing-line-unprinted-${idx}`}>
+                      {isPrint ? fmt(row.print_remaining) : "—"}
+                    </td>
+                    <td className="num mono" data-testid={`packing-line-available-${idx}`}>{fmt(row.available)}</td>
+                    <td className="num mono" data-testid={`packing-line-packed-${idx}`}>{fmt(row.packed)}</td>
+                    <td className="num mono" data-testid={`packing-line-remaining-${idx}`}>{fmt(row.remaining)}</td>
+                    <td className="num packing-line-input-cell">
+                      {fullyPacked || !canManage ? (
+                        <span className="mono">{fmt(row.packed)}</span>
+                      ) : (
+                        <input
+                          className="packing-qty-input packing-line-qty-input"
+                          name="packing_qty_input"
+                          type="number"
+                          min="0"
+                          max={row.available || 0}
+                          value={inputVal}
+                          onChange={(e) => setLineQty(row.line_idx, e.target.value)}
+                          disabled={busy || !canSubmitQty}
+                          data-testid={`packing-qty-input-${row.line_idx}`}
+                          id={row.line_idx === 0 ? "packing-qty-input" : undefined}
+                          aria-label={`Qty Packing ${row.name}`}
+                        />
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              <tr className="packing-lines-total">
+                <td colSpan={2}>Total</td>
+                <td className="num mono" data-testid="packing-target-total">{fmt(requiredTotal)}</td>
+                <td className="num mono">
+                  {helperPrepared == null ? "—" : fmt(helperPrepared)}
+                </td>
+                <td className="num mono">{fmt(printCompleted)}</td>
+                <td className="num mono">
+                  {fmt(packingLines.reduce((s, r) => s + Number(r.print_remaining || 0), 0))}
+                </td>
+                <td className="num mono">{fmt(available)}</td>
+                <td className="num mono">{fmt(packedSaved)}</td>
+                <td className="num mono">{fmt(remainingAvailable)}</td>
+                <td className="num mono" data-testid="packing-draft-total">{fmt(draftTotal)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       )}
 
       {hasQty && (
-        <p className="muted small" data-testid="packing-progress-line" style={{ marginTop: 0 }}>
-          Qty Packing tersimpan: <b data-testid="packing-saved-qty">{packedSaved.toLocaleString("id-ID")}</b>
-          {" "}/ {requiredTotal.toLocaleString("id-ID")}
+        <p className="muted small" data-testid="packing-progress-line" style={{ marginTop: 8 }}>
+          Qty Packing tersimpan: <b data-testid="packing-saved-qty">{fmt(packedSaved)}</b>
+          {" "}/ {fmt(requiredTotal)}
           {shortageSaved > 0 && (
             <span style={{ color: "#8f1f1f", marginLeft: 6 }} data-testid="packing-saved-shortage">
-              — kurang {shortageSaved.toLocaleString("id-ID")}
+              — kurang {fmt(shortageSaved)}
             </span>
           )}
           {shortageSaved === 0 && (
@@ -130,60 +220,38 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
 
       {fullyPacked ? (
         <p className="muted small" data-testid="packing-done-note">
-          Packing sudah lengkap — {hasQty ? `${packedSaved.toLocaleString("id-ID")} pcs` : ""}{pi.updated_by_name ? ` · oleh ${pi.updated_by_name}` : ""}{pi.updated_at ? ` · ${formatDate(pi.updated_at)}` : ""}.
+          Packing sudah lengkap — {hasQty ? `${fmt(packedSaved)} pcs` : ""}{pi.updated_by_name ? ` · oleh ${pi.updated_by_name}` : ""}{pi.updated_at ? ` · ${formatDate(pi.updated_at)}` : ""}.
         </p>
       ) : !canManage ? (
         <p className="muted small" data-testid="packing-readonly-note">
           Anda tidak memiliki permission <code>packing.update</code> untuk mengisi Qty Packing.
         </p>
       ) : (
-        <div className="packing-form" data-testid="packing-form" style={{display:"grid",gap:12}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <label>
-              <span className="lbl">Qty Packing</span>
-              <input
-                type="number"
-                min="1"
-                max={maxAllowed || undefined}
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                disabled={busy || !canSubmitQty}
-                data-testid="packing-qty-input"
-                placeholder="Jumlah unit yang di-packing"
-              />
-              <span className="muted small" data-testid="packing-qty-hint">
-                Maks tersedia sekarang: {available.toLocaleString("id-ID")} pcs (cap total {requiredTotal.toLocaleString("id-ID")}).
-                {packedDraft > 0 && (
-                  shortagePreview > 0
-                    ? <> Kurang {shortagePreview.toLocaleString("id-ID")} dari target.</>
-                    : <> Lengkap.</>
-                )}
-              </span>
-            </label>
-            <label>
-              <span className="lbl">Catatan (opsional)</span>
-              <input
-                type="text"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                disabled={busy || !canSubmitQty}
-                data-testid="packing-notes-input"
-              />
-            </label>
-          </div>
+        <div className="packing-form" data-testid="packing-form">
+          <label>
+            <span className="lbl">Catatan (opsional)</span>
+            <input
+              className="packing-notes-input"
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={busy || !canSubmitQty}
+              data-testid="packing-notes-input"
+            />
+          </label>
           {pi.updated_at && (
             <p className="muted small" data-testid="packing-last-update">
               Terakhir diupdate {formatDate(pi.updated_at)}
               {pi.updated_by_name ? ` oleh ${pi.updated_by_name}` : ""}
-              {hasQty ? ` — Qty tersimpan: ${packedSaved.toLocaleString("id-ID")} pcs` : ""}
+              {hasQty ? ` — Qty tersimpan: ${fmt(packedSaved)} pcs` : ""}
             </p>
           )}
-          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <button
               type="button"
               className="primary"
               onClick={handleSave}
-              disabled={busy || !canSubmitQty || !qty || Number(qty) <= 0}
+              disabled={!canSave}
               data-testid="save-packing-qty-button"
             >
               Simpan Qty Packing

@@ -844,8 +844,8 @@ export default function PODetail() {
         order={order}
         canManage={canMarkPacked}
         busy={busy}
-        onSaveQty={async (qty, notes) => {
-          await run(() => api.savePackingInfo(order.id, qty, notes), "Qty Packing disimpan");
+        onSaveQty={async (lines, notes) => {
+          await run(() => api.savePackingInfo(order.id, lines, notes), "Qty Packing disimpan");
         }}
         onComplete={packed}
       />

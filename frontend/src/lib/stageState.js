@@ -75,6 +75,10 @@ function printQtyInput(order) {
   );
 }
 function packingQtyInput(order) {
+  const lines = order?.packing_info?.lines;
+  if (Array.isArray(lines) && lines.length) {
+    return lines.some((it) => Number(it?.packed_qty || 0) > 0);
+  }
   const v = order?.packing_info?.qty_packed;
   return hasValue(v) && Number(v) > 0;
 }

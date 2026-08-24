@@ -15,17 +15,23 @@ from quantity_rules import (
     non_print_qty_total,
     operator_assigned_qty,
     operator_assignment_cap,
+    packing_line_breakdown,
+    packing_lines_stored,
     packing_required_total,
     packing_status_semantic,
     print_available_for_packing,
     print_completed_qty,
     print_qty_total,
     qty_delivered,
+    qty_packed,
     validate_delivery_qty,
     validate_helper_prepared_qty,
     validate_operator_assignment_total,
+    validate_packing_lines,
     validate_packing_qty,
     validate_print_completed_total,
+    available_for_packing_line,
+    qty_packed_for_line,
 )
 
 
@@ -375,6 +381,146 @@ def test_print_completed_rejected_over_helper():
     o = _helper_po(prepared=2000)
     assert validate_print_completed_total(2000, o) is None
     assert validate_print_completed_total(2001, o) is not None
+
+
+def test_packing_line_breakdown_reads_stored_lines_not_total():
+    o = _mixed_po(completed=[1000], packed=0)
+    o["operator_splits"][0]["line_idx"] = 0
+    o["packing_info"] = {"lines": [{"line_idx": 1, "packed_qty": 1500}]}
+    lines = packing_line_breakdown(o)
+    assert len(lines) == 2
+    print_row, non_row = lines[0], lines[1]
+    assert print_row["is_print"] is True
+    assert non_row["is_print"] is False
+    assert non_row["available"] == 3000
+    assert print_row["print_completed"] == 1000
+    assert print_row["print_remaining"] == 2000
+    assert print_row["available"] == 1000
+    assert non_row["packed"] == 1500
+    assert print_row["packed"] == 0
+    assert print_row["remaining"] == 1000
+    assert qty_packed(o) == 1500
+
+
+def test_packing_line_breakdown_legacy_total_does_not_fill_lines():
+    o = _mixed_po(completed=[1000], packed=4000)
+    o["operator_splits"][0]["line_idx"] = 0
+    lines = packing_line_breakdown(o)
+    assert packing_lines_stored(o) is None
+    assert qty_packed(o) == 4000
+    assert lines[0]["packed"] == 0
+    assert lines[1]["packed"] == 0
+
+
+def test_packing_line_breakdown_helper_caps_print_available():
+    o = _mixed_po(completed=[1000], packed=0)
+    o["operator_splits"][0]["line_idx"] = 0
+    o["helper_prep"] = {"qty_prepared": 500, "items": [{"line_idx": 0, "qty_required": 3000, "qty_prepared": 500}]}
+    lines = packing_line_breakdown(o)
+    assert lines[0]["helper_prepared"] == 500
+    assert lines[0]["available"] == 500
+    assert lines[1]["available"] == 3000
+    assert sum(r["available"] for r in lines) == available_for_packing(o) == 3500
+
+
+def _four_line_po():
+    return {
+        "line_items": [
+            {"name": "A", "quantity": 1000, "production_process": "print"},
+            {"name": "B", "quantity": 1000, "production_process": "non_print"},
+            {"name": "C", "quantity": 250, "production_process": "print"},
+            {"name": "D", "quantity": 250, "production_process": "non_print"},
+        ],
+        "total_quantity": 2500,
+        "operator_splits": [
+            {"line_idx": 0, "quantity": 400, "qty_completed": 400},
+        ],
+        "helper_prep": {
+            "qty_prepared": 600,
+            "items": [
+                {"line_idx": 0, "qty_required": 1000, "qty_prepared": 600},
+                {"line_idx": 2, "qty_required": 250, "qty_prepared": 0},
+            ],
+        },
+        "packing_info": {},
+        "current_stage": 11,
+    }
+
+
+def test_a_line_a_pack_300_of_available_400():
+    o = _four_line_po()
+    assert available_for_packing_line(o, 0) == 400
+    assert validate_packing_lines([{"line_idx": 0, "packed_qty": 300}], o) is None
+    o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 300}]}
+    assert qty_packed_for_line(o, 0) == 300
+    assert packing_line_breakdown(o)[0]["remaining"] == 100
+
+
+def test_b_line_a_additional_150_rejected():
+    o = _four_line_po()
+    o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 300}]}
+    # 300 + 150 = 450 cumulative
+    err = validate_packing_lines([{"line_idx": 0, "packed_qty": 450}], o)
+    assert err is not None
+    assert qty_packed_for_line(o, 0) == 300
+
+
+def test_c_non_print_b_independent_of_a():
+    o = _four_line_po()
+    o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 300}]}
+    assert validate_packing_lines([{"line_idx": 1, "packed_qty": 500}], o) is None
+    o["packing_info"]["lines"] = [
+        {"line_idx": 0, "packed_qty": 300},
+        {"line_idx": 1, "packed_qty": 500},
+    ]
+    assert qty_packed_for_line(o, 0) == 300
+    assert qty_packed_for_line(o, 1) == 500
+
+
+def test_d_total_packed_is_sum_of_lines():
+    o = _four_line_po()
+    o["packing_info"] = {
+        "lines": [
+            {"line_idx": 0, "packed_qty": 300},
+            {"line_idx": 1, "packed_qty": 500},
+        ]
+    }
+    assert qty_packed(o) == 800
+    assert qty_packed_for_line(o, 0) == 300
+    assert qty_packed_for_line(o, 1) == 500
+
+
+def test_e_one_line_complete_po_not_fully_packed():
+    o = _four_line_po()
+    o["packing_info"] = {"lines": [{"line_idx": 1, "packed_qty": 1000}]}
+    assert packing_status_semantic(o) != "Sudah"
+    assert qty_packed(o) == 1000
+    assert packing_required_total(o) == 2500
+
+
+def test_f_all_lines_packed_to_po_qty_marks_complete():
+    o = _four_line_po()
+    o["operator_splits"] = [
+        {"line_idx": 0, "quantity": 1000, "qty_completed": 1000},
+        {"line_idx": 2, "quantity": 250, "qty_completed": 250},
+    ]
+    o["helper_prep"] = {
+        "qty_prepared": 1250,
+        "items": [
+            {"line_idx": 0, "qty_required": 1000, "qty_prepared": 1000},
+            {"line_idx": 2, "qty_required": 250, "qty_prepared": 250},
+        ],
+    }
+    lines_payload = [
+        {"line_idx": 0, "packed_qty": 1000},
+        {"line_idx": 1, "packed_qty": 1000},
+        {"line_idx": 2, "packed_qty": 250},
+        {"line_idx": 3, "packed_qty": 250},
+    ]
+    assert validate_packing_lines(lines_payload, o) is None
+    o["packing_info"] = {"lines": lines_payload}
+    assert qty_packed(o) == 2500
+    assert packing_status_semantic(o) == "Sudah"
 
 
 def run_all():

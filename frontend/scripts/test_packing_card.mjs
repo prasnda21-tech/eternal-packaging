@@ -1,5 +1,5 @@
 /** Runtime packing-card visibility — same helpers PODetail + PackingPanel use. */
-import { shouldShowPackingCard, packingSubmitEnabled } from "../src/lib/packingCard.js";
+import { shouldShowPackingCard, packingSubmitEnabled, computePackingLines } from "../src/lib/packingCard.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -79,4 +79,40 @@ const BASE = {
   }
 }
 
-console.log("packing card OK — A–E passed");
+// F: per-line packed comes from packing_info.lines, not allocated PO total
+{
+  const order = {
+    line_items: [
+      { name: "Kaos", quantity: 3000, production_process: "print" },
+      { name: "Sticker", quantity: 3000, production_process: "non_print" },
+    ],
+    operator_splits: [{ line_idx: 0, qty_completed: 1000, quantity: 1000 }],
+    packing_info: { lines: [{ line_idx: 1, packed_qty: 1500 }], qty_packed: 1500 },
+    helper_prep: { items: [{ line_idx: 0, qty_required: 3000, qty_prepared: 1000 }] },
+  };
+  const lines = computePackingLines(order);
+  assert(lines.length === 2, "F: two lines");
+  assert(lines[1].available === 3000, `F: non-print available ${lines[1].available}`);
+  assert(lines[0].print_completed === 1000, "F: print completed");
+  assert(lines[0].print_remaining === 2000, "F: belum dicetak");
+  assert(lines[0].available === 1000, `F: print available ${lines[0].available}`);
+  assert(lines[1].packed === 1500, `F: non-print packed ${lines[1].packed}`);
+  assert(lines[0].packed === 0, "F: print not packed yet");
+}
+
+// G: legacy qty_packed total does not invent per-line packed
+{
+  const order = {
+    line_items: [
+      { name: "Kaos", quantity: 3000, production_process: "print" },
+      { name: "Sticker", quantity: 3000, production_process: "non_print" },
+    ],
+    operator_splits: [{ line_idx: 0, qty_completed: 1000, quantity: 1000 }],
+    packing_info: { qty_packed: 1500 },
+  };
+  const lines = computePackingLines(order);
+  assert(lines[0].packed === 0, "G: legacy print packed stays 0");
+  assert(lines[1].packed === 0, "G: legacy non-print packed stays 0");
+}
+
+console.log("packing card OK — A–G passed");
