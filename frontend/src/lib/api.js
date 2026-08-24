@@ -69,6 +69,7 @@ export const api = {
   },
   deleteDeliveryProof: (id, proofId) => client.delete(`/orders/${id}/delivery-proof/${proofId}`).then((r) => r.data),
   analyticsOperators: () => client.get(`/analytics/operators`).then((r) => r.data),
+  analyticsOperatorKpis: (params = {}) => client.get(`/analytics/operators/kpis`, { params }).then((r) => r.data),
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),
   dashboardSummary: () => client.get(`/dashboard/summary`).then((r) => r.data),
   updateOperatorProgress: (id, operatorId, qtyCompleted) =>

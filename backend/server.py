@@ -18,6 +18,11 @@ from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
 )
+from operator_analytics import (
+    build_operator_analytics_pipeline,
+    compute_operator_kpis,
+    resolve_period,
+)
 from quantity_rules import (
     available_for_packing as _qr_available_for_packing,
     helper_prepared_for_line as _qr_helper_prepared_for_line,
@@ -4927,6 +4932,50 @@ async def analytics_operators(user=Depends(require("admin", "head_production")))
         "note": "Data mentah (qty terjadwal / selesai / sisa, jumlah PO, waktu mulai & selesai per PO, riwayat pembagian). KPI rating akan disiapkan setelah rule ditentukan.",
         "generated_at": now_iso(),
     }
+
+
+@api_router.get("/analytics/operators/kpis")
+async def analytics_operator_kpis(
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    operator_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only operator KPIs for Jadwal Produksi → Analitik Operator.
+
+    Does not write orders/progress. Qty selesai = operator_splits.qty_completed
+    (bukan qty PO / assigned / target).
+    """
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_operator_analytics_pipeline(operator_id, customer, item)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_operator_kpis(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        operator_id=operator_id,
+        customer=customer,
+        item=item,
+    )
+    result["period"]["preset"] = preset
+    result["filters"] = {
+        "operators": [
+            {"id": x.get("_id"), "name": x.get("name") or x.get("_id")}
+            for x in (blob.get("operators") or []) if x.get("_id")
+        ],
+        "customers": [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")],
+        "items": [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")],
+    }
+    result["generated_at"] = now_iso()
+    result["note"] = (
+        "Read-only. Qty selesai = qty yang diselesaikan masing-masing operator "
+        "(operator_splits.qty_completed), bukan qty PO."
+    )
+    return result
 
 
 # ---------- Reminders (deadline monitoring) ----------
