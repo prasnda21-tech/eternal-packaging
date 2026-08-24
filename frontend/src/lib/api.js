@@ -92,6 +92,8 @@ export const api = {
     client.post(`/accurate/import/confirm-bulk`, { so_numbers: soNumbers }).then((r) => r.data),
   accurateImportLogs: () => client.get(`/accurate/import/logs`).then((r) => r.data),
   accurateImportAvailable: () => client.get(`/accurate/import/available`).then((r) => r.data),
+  masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
+  masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   importFilePreview: (file, onProgress) => {
     const form = new FormData();
     form.append("file", file);

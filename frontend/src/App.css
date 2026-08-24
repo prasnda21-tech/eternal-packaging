@@ -1371,3 +1371,38 @@
   .po-kpi-strip .ind-metrics.cols-5{grid-template-columns:1fr 1fr}
 }
 
+/* Master Barang/Jasa */
+.master-items-page .prod-heading{margin-bottom:10px}
+.master-items-page .master-kpi-row{
+  grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  margin:0 0 10px;
+}
+.master-items-page .master-kpi-time{font-size:13px;font-weight:600;letter-spacing:-.01em}
+.master-sync-result{
+  display:flex;gap:10px;align-items:flex-start;
+  background:#edf7ef;border:1px solid #b7d3b7;border-radius:var(--radius);
+  padding:10px 14px;margin:0 0 10px;color:#2d5a32;
+}
+.master-sync-result strong{display:block;font-size:13px}
+.master-sync-result p{margin:2px 0 0;font-size:12.5px}
+.master-table-wrap{max-height:calc(100vh - 280px);margin-top:0}
+.master-items-page .prod-table.master-items-table{
+  width:100%;min-width:640px;max-width:none;table-layout:auto;
+}
+.master-items-page .prod-table.master-items-table thead th.col-fit,
+.master-items-page .prod-table.master-items-table tbody td.col-fit{
+  width:1%;white-space:nowrap;
+}
+.master-items-page .prod-table.master-items-table thead th.col-text,
+.master-items-page .prod-table.master-items-table tbody td.col-text{
+  width:auto;min-width:12rem;max-width:28rem;white-space:normal;
+}
+.master-pager{
+  display:flex;align-items:center;gap:12px;justify-content:flex-end;
+  margin-top:10px;flex-wrap:wrap;
+}
+@media (max-width:640px){
+  .master-items-page .page-heading{flex-direction:column;align-items:stretch}
+  .master-items-page .primary{width:100%;justify-content:center}
+}
+

@@ -27,6 +27,7 @@ def test_catalog_includes_nav_keys():
         "nav.reports.analytics_output",
         "nav.settings",
         NAV_CONFIGURED,
+        "nav.inventory.master_items",
     ):
         assert key in ALL_PERMISSIONS, key
 
@@ -43,7 +44,11 @@ def test_helper_keeps_schedule_and_always_visible_menus():
     assert "nav.production_schedule" in helper
     assert "nav.sales" in helper
     assert "nav.settings" in helper
+    assert "nav.inventory" in helper
+    assert "nav.inventory.master_items" in helper
     assert "nav.dashboard" not in helper  # helper has no dashboard.production.view
+    assert "master_items.view" not in helper
+    assert "master_items.sync" not in helper
 
 
 def test_head_production_gets_dashboard_nav():

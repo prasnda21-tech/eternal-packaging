@@ -158,14 +158,20 @@ class AccurateClient:
             raise RuntimeError("Accurate returned no database host/session")
         return host.rstrip("/"), session
 
-    async def _live_fetch_so(self, so_number: str) -> Optional[Dict[str, Any]]:
+    def _request_headers(self, token: str, session: str = "") -> Dict[str, str]:
+        """Same Authorization / signature / session headers used by Import PO."""
+        if self.auth_mode == "api_token":
+            return self._signed_headers(token)
+        return {"Authorization": f"Bearer {token}", "X-Session-ID": session}
+
+    async def _live_session(self) -> Tuple[str, Dict[str, str]]:
+        """Return (host, headers) for Accurate API calls. Reused by SO + item."""
         token = await self._obtain_token()
         host, session = await self._open_db(token)
-        # Signed headers for api_token mode; simple Bearer + X-Session-ID for oauth
-        if self.auth_mode == "api_token":
-            headers = self._signed_headers(token)
-        else:
-            headers = {"Authorization": f"Bearer {token}", "X-Session-ID": session}
+        return host, self._request_headers(token, session)
+
+    async def _live_fetch_so(self, so_number: str) -> Optional[Dict[str, Any]]:
+        host, headers = await self._live_session()
         params = {"id": so_number} if so_number.isdigit() else {"number": so_number}
         async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
             r = await client.get(
@@ -355,6 +361,160 @@ class AccurateClient:
         _SO_LIST_CACHE[cache_key] = {"data": payload, "at": _t.time()}
         return {**payload, "cached": False, "fetched_at": _t.time()}
 
+    # --- Item / Barang-Jasa (same client, auth, headers, timeouts as SO) -----
+    async def fetch_item_detail(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch ONE item via Accurate `item/detail.do` (READ-ONLY).
+
+        Same auth/headers/timeout as sales-order/detail.do. Returns None if
+        the item is not found. Never logs credentials.
+        """
+        item_id = str(item_id or "").strip()
+        if not item_id:
+            return None
+        if not self.is_live:
+            for raw in _MOCK_ITEMS:
+                if str(raw.get("id")) == item_id:
+                    return normalize_accurate_item(raw)
+            return None
+        host, headers = await self._live_session()
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+            r = await client.get(
+                f"{host}/accurate/api/item/detail.do",
+                headers=headers,
+                params={"id": item_id},
+            )
+        if r.status_code == 404:
+            return None
+        if r.is_error:
+            raise RuntimeError(f"Accurate item fetch failed ({r.status_code})")
+        payload = r.json()
+        if payload.get("s") is False:
+            raise RuntimeError("Accurate item fetch returned failure")
+        d = payload.get("d") if isinstance(payload.get("d"), dict) else None
+        if d is None:
+            d = payload.get("data") if isinstance(payload.get("data"), dict) else None
+        if d is None:
+            d = payload.get("r") if isinstance(payload.get("r"), dict) else None
+        if d is None:
+            return None
+        return normalize_accurate_item(d)
+
+    async def list_items(
+        self,
+        limit: int = 100,
+        page: int = 1,
+    ) -> Dict[str, Any]:
+        """One page of Accurate items via `item/list.do` (READ-ONLY).
+
+        Pagination params match Import PO (`sp.pageSize`, `sp.page`). Custom
+        `fields` is requested because Accurate's official item/list example
+        uses it; if the tenant rejects it (same failure mode as
+        sales-order/list.do), we retry with minimal params.
+        """
+        limit = max(1, min(int(limit or 100), 100))
+        page = max(1, int(page or 1))
+        if not self.is_live:
+            start = (page - 1) * limit
+            page_rows = _MOCK_ITEMS[start:start + limit]
+            total = len(_MOCK_ITEMS)
+            return {
+                "rows": [normalize_accurate_item(r) for r in page_rows],
+                "total": total,
+                "page": page,
+                "pageSize": limit,
+                "pageCount": max(1, (total + limit - 1) // limit),
+                "host": self.host,
+                "mode": "mock",
+            }
+
+        host, headers = await self._live_session()
+        list_params: Dict[str, Any] = {
+            "sp.pageSize": limit,
+            "sp.page": page,
+        }
+        # Official Accurate item/list.do documents fields=id,name,no.
+        # Extra fields below are documented Accurate item properties
+        # (itemType / unit1Name on save+detail; suspended on item records).
+        params_with_fields = {
+            **list_params,
+            "fields": "id,no,name,itemType,unit1Name,suspended",
+        }
+        body = await self._get_item_list_body(host, headers, params_with_fields)
+        if body is None:
+            body = await self._get_item_list_body(host, headers, list_params)
+        if body is None:
+            raise RuntimeError("Accurate item list rejected")
+
+        rows_raw = body.get("d") or []
+        if not isinstance(rows_raw, list):
+            rows_raw = []
+        sp = body.get("sp") or {}
+        total = sp.get("rowCount") if sp.get("rowCount") is not None else len(rows_raw)
+        page_count = sp.get("pageCount") or max(1, (int(total) + limit - 1) // limit)
+        rows = []
+        for raw in rows_raw:
+            if not isinstance(raw, dict):
+                continue
+            norm = normalize_accurate_item(raw)
+            if norm:
+                rows.append(norm)
+        return {
+            "rows": rows,
+            "total": int(total),
+            "page": page,
+            "pageSize": limit,
+            "pageCount": int(page_count),
+            "host": host,
+            "mode": "live",
+        }
+
+    async def _get_item_list_body(
+        self, host: str, headers: Dict[str, str], params: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+            r = await client.get(
+                f"{host}/accurate/api/item/list.do",
+                headers=headers,
+                params=params,
+            )
+        if r.is_error:
+            raise RuntimeError(f"Accurate item list HTTP {r.status_code}")
+        body = r.json()
+        if body.get("s") is False:
+            err_msg = ""
+            d = body.get("d")
+            if isinstance(d, list) and d:
+                err_msg = str(d[0])[:180]
+            _last_list_error["message"] = err_msg
+            _last_list_error["at"] = time.time()
+            _last_list_error["operation"] = "item/list.do"
+            return None
+        return body if isinstance(body, dict) else None
+
+    async def fetch_all_items(self) -> List[Dict[str, Any]]:
+        """Paginate `item/list.do` until the Accurate dataset is exhausted."""
+        page = 1
+        page_size = 100
+        all_rows: List[Dict[str, Any]] = []
+        while page <= 200:
+            payload = await self.list_items(limit=page_size, page=page)
+            rows = payload.get("rows") or []
+            all_rows.extend(rows)
+            page_count = int(payload.get("pageCount") or 1)
+            if page >= page_count or not rows:
+                break
+            page += 1
+        return all_rows
+
+
+def sanitize_accurate_error(client: AccurateClient, msg: str) -> str:
+    """Strip credential values from Accurate error strings before they leave the backend."""
+    out = str(msg or "")
+    for secret in (client.api_token, client.api_signature_secret, client.client_secret, client.access_token, client.refresh_token):
+        if secret and secret in out:
+            return "Accurate error"
+    return out[:200]
+
 
 # Last known list.do error from tenant (safe — no credential/token/signature)
 _last_list_error: Dict[str, Any] = {"message": "", "at": 0, "operation": ""}
@@ -362,6 +522,53 @@ _last_list_error: Dict[str, Any] = {"message": "", "at": 0, "operation": ""}
 
 def get_last_list_error() -> Dict[str, Any]:
     return dict(_last_list_error)
+
+
+def _extract_accurate_item_id(li: Dict[str, Any], item: Any) -> Optional[str]:
+    """Stable Accurate item identity from a Sales Order line. Never uses name."""
+    raw = None
+    if isinstance(item, dict):
+        raw = item.get("id")
+    if raw is None:
+        raw = li.get("itemId") or li.get("itemID")
+    if raw is None or str(raw).strip() == "":
+        return None
+    return str(raw)
+
+
+def normalize_accurate_item(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Coerce an Accurate item/list or item/detail row into Master Item shape.
+
+    Only maps fields Accurate actually returns. Missing optional fields stay None
+    — we do not invent harga, stok, barcode, kategori, or satuan.
+    Identity is always `accurate_item_id` (Accurate `id`).
+    """
+    if not isinstance(raw, dict):
+        return None
+    item_id = raw.get("id")
+    if item_id is None or str(item_id).strip() == "":
+        return None
+    item_type = raw.get("itemType") or raw.get("item_type")
+    unit = raw.get("unit1Name") or raw.get("itemUnitName") or raw.get("unitName")
+    suspended = raw.get("suspended")
+    inactive = raw.get("inactive")
+    is_active: Optional[bool] = None
+    if isinstance(suspended, bool):
+        is_active = not suspended
+    elif isinstance(inactive, bool):
+        is_active = not inactive
+    accurate_updated = raw.get("lastUpdate") or raw.get("lastUpdated") or None
+    name = raw.get("name") or raw.get("itemName") or ""
+    code = raw.get("no") or raw.get("itemNo") or None
+    return {
+        "accurate_item_id": str(item_id),
+        "item_code": str(code).strip() if code not in (None, "") else None,
+        "item_name": str(name).strip() if name is not None else "",
+        "item_type": str(item_type).strip() if item_type not in (None, "") else None,
+        "unit": str(unit).strip() if unit not in (None, "") else None,
+        "is_active": is_active,
+        "accurate_updated_at": str(accurate_updated) if accurate_updated else None,
+    }
 
 
 def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -377,6 +584,8 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
     multi_line = len(lines_raw) > 1
     for li in lines_raw:
         item = li.get("item") or {}
+        if not isinstance(item, dict):
+            item = {}
         # Fields to scan for color, in priority order
         explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
         desc = li.get("description") or li.get("detailNotes") or li.get("itemDesc") or ""
@@ -414,6 +623,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
 
         line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
         line: Dict[str, Any] = {
+            "accurate_item_id": _extract_accurate_item_id(li, item),
             "item_code": item.get("no") or li.get("itemNo") or None,
             "name": item.get("name") or li.get("itemName") or li.get("description") or "-",
             "quantity": int(li.get("quantity") or li.get("qty") or 0),
@@ -505,6 +715,19 @@ def _extract_so_notes_text(d: Dict[str, Any]) -> str:
 
 
 # ---- Mock data ----
+# Stable Accurate item ids (never names) for mock Master Barang/Jasa + PO lines.
+_MOCK_ITEMS: List[Dict[str, Any]] = [
+    {"id": 101, "no": "PC-12", "name": "Paper cup 12oz", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 104, "no": "PC-16", "name": "Paper cup 16oz", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 105, "no": "PC-8", "name": "Paper cup 8oz", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 106, "no": "PB-M", "name": "Paper bag medium", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 202, "no": "LB-M", "name": "Lunchbox medium", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 203, "no": "JP-1L", "name": "Jumbo plastic 1L", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 301, "no": "SVC-CETAK", "name": "Jasa cetak sablon", "itemType": "SERVICE", "unit1Name": "pcs", "suspended": False},
+    {"id": 302, "no": "PC-12-OLD", "name": "Paper cup 12oz (nonaktif)", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": True},
+]
+
+
 _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
     {
         "accurate_id": "ACC-SO-1049",
@@ -521,7 +744,7 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         "seller": "Vira",
         "order_date_offset_days": 0,
         "line_items": [
-            {"item_code": "PC-12", "name": "Paper cup 12oz", "quantity": 900, "unit": "pcs", "color": "Navy / putih", "notes": ""},
+            {"accurate_item_id": "101", "item_code": "PC-12", "name": "Paper cup 12oz", "quantity": 900, "unit": "pcs", "color": "Navy / putih", "notes": ""},
         ],
     },
     {
@@ -538,8 +761,8 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         "seller": "Alfi",
         "order_date_offset_days": 0,
         "line_items": [
-            {"item_code": "LB-M", "name": "Lunchbox medium", "quantity": 600, "unit": "pcs", "color": "Merah / krem", "notes": "Logo tengah, ukuran 60mm"},
-            {"item_code": "JP-1L", "name": "Jumbo plastic 1L", "quantity": 400, "unit": "pcs", "color": "Krem", "notes": ""},
+            {"accurate_item_id": "202", "item_code": "LB-M", "name": "Lunchbox medium", "quantity": 600, "unit": "pcs", "color": "Merah / krem", "notes": "Logo tengah, ukuran 60mm"},
+            {"accurate_item_id": "203", "item_code": "JP-1L", "name": "Jumbo plastic 1L", "quantity": 400, "unit": "pcs", "color": "Krem", "notes": ""},
         ],
     },
     {
@@ -557,8 +780,8 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         "seller": "Alfi",
         "order_date_offset_days": 0,
         "line_items": [
-            {"item_code": "PC-16", "name": "Paper cup 16oz", "quantity": 2500, "unit": "pcs", "color": "Merah / kuning", "notes": "Logo pak Gino, tinta food-grade"},
-            {"item_code": "PC-8", "name": "Paper cup 8oz", "quantity": 1500, "unit": "pcs", "color": "Merah / kuning", "notes": ""},
+            {"accurate_item_id": "104", "item_code": "PC-16", "name": "Paper cup 16oz", "quantity": 2500, "unit": "pcs", "color": "Merah / kuning", "notes": "Logo pak Gino, tinta food-grade"},
+            {"accurate_item_id": "105", "item_code": "PC-8", "name": "Paper cup 8oz", "quantity": 1500, "unit": "pcs", "color": "Merah / kuning", "notes": ""},
         ],
     },
     {
@@ -576,7 +799,7 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         "seller": "Vira",
         "order_date_offset_days": -1,
         "line_items": [
-            {"item_code": "PB-M", "name": "Paper bag medium", "quantity": 3000, "unit": "pcs", "color": "Cokelat kraft", "notes": "Logo emboss di depan"},
+            {"accurate_item_id": "106", "item_code": "PB-M", "name": "Paper bag medium", "quantity": 3000, "unit": "pcs", "color": "Cokelat kraft", "notes": "Logo emboss di depan"},
         ],
     },
 ]
@@ -615,6 +838,14 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
         deadline = (now + timedelta(days=offset + 3)).isoformat()
 
         total_qty = sum(int(li.get("quantity", 0)) for li in so.get("line_items", []))
+        try:
+            from services.master_items import resolve_po_line_items, MasterItemUnresolvedError
+            so["line_items"] = await resolve_po_line_items(
+                db, client, so.get("line_items") or [], require_master=True,
+            )
+        except MasterItemUnresolvedError:
+            skipped += 1
+            continue
         sales_payload = {
             "customer": so["customer"],
             "outlet": so["outlet"],
