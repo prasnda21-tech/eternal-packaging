@@ -21,6 +21,7 @@ from quantity_rules import requires_printing, qty_packed
 SCREENER_GATE_SAMPLE_MSG = "Qty Screener harus diisi sebelum Cetak Sample."
 SCREENER_GATE_OPERATOR_MSG = "Qty Screener harus diisi sebelum pekerjaan Operator."
 SCREENER_GATE_SCREEN_MSG = "Qty Screen belum diinput."
+SAMPLE_GATE_PRINT_QTY_MSG = "Cetak Sample harus disetujui sebelum Qty Selesai Cetak dapat diisi."
 
 
 def _has_value(v) -> bool:
@@ -84,10 +85,29 @@ def operator_unlocked(order: dict) -> bool:
     """Workflow gate: Operator / Cetak Sample need Penjadwalan + Screener.
 
     Helper prepared qty is a quantity cap, not this unlock.
+    Qty Selesai Cetak uses print_qty_unlocked (sample approved).
     """
     if not requires_printing(order):
         return penjadwalan_done(order)
     return penjadwalan_done(order) and screener_done(order)
+
+
+def print_qty_unlocked(order: dict) -> bool:
+    """Qty Selesai Cetak hanya setelah Screener valid DAN sample APPROVED."""
+    if not requires_printing(order):
+        return False
+    return operator_unlocked(order) and sample_ok(order)
+
+
+def print_qty_gate_reason(order: dict) -> str | None:
+    if not requires_printing(order):
+        return None
+    screener_reason = screener_gate_reason(order, for_sample=False)
+    if screener_reason:
+        return screener_reason
+    if not sample_ok(order):
+        return SAMPLE_GATE_PRINT_QTY_MSG
+    return None
 
 
 def packing_unlocked(order: dict) -> bool:
@@ -167,5 +187,6 @@ def workflow_ready(order: dict) -> dict:
         "operator": op,
         "sample_upload": op if req_print else False,
         "sample_approval": uploaded and op if req_print else False,
+        "print_qty": print_qty_unlocked(order),
         "packing": packing_unlocked(order),
     }

@@ -85,6 +85,39 @@ def operator_assigned_qty(order: dict) -> int:
     return total
 
 
+PRINT_STATUS_NOT_STARTED = "BELUM MULAI CETAK"
+PRINT_STATUS_IN_PROGRESS = "BELUM SELESAI CETAK"
+PRINT_STATUS_DONE = "SELESAI CETAK"
+
+
+def print_qty_target(order: dict) -> int:
+    """Target produksi Cetak = Qty Cetak Penjadwalan (assigned), bukan total PO.
+
+    Fallback ke print_qty_total hanya jika belum ada assignment.
+    """
+    assigned = operator_assigned_qty(order)
+    if assigned > 0:
+        return assigned
+    return print_qty_total(order)
+
+
+def print_qty_remaining(order: dict) -> int:
+    return max(0, print_qty_target(order) - print_completed_qty(order))
+
+
+def print_status(order: dict) -> str:
+    """Status Cetak dari qty selesai vs target Penjadwalan — bukan current_stage."""
+    if not requires_printing(order):
+        return ""
+    completed = print_completed_qty(order)
+    target = print_qty_target(order)
+    if completed <= 0:
+        return PRINT_STATUS_NOT_STARTED
+    if target > 0 and completed >= target:
+        return PRINT_STATUS_DONE
+    return PRINT_STATUS_IN_PROGRESS
+
+
 def helper_prepared_print_qty(order: dict) -> Optional[int]:
     """Qty Helper Persiapan untuk CETAK.
 
@@ -366,6 +399,11 @@ def validate_operator_assignment_total(
 def validate_print_completed_total(completed_total: int, order: dict) -> Optional[str]:
     if completed_total < 0:
         return "Qty cetak selesai tidak boleh negatif."
+    target = print_qty_target(order)
+    if target > 0 and completed_total > target:
+        return (
+            f"Total qty cetak selesai ({completed_total}) melebihi Qty Cetak Penjadwalan ({target})."
+        )
     print_total = print_qty_total(order)
     if completed_total > print_total:
         return (

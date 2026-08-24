@@ -45,7 +45,7 @@ function assert(cond, msg) {
 // TEST C: design + approval design selesai
 {
   const order = {
-    design_files: [{ name: "d.png" }],
+    design_files: [{ name: "d.png", uploaded_at: "2026-01-10T08:00:00+00:00" }],
     design_status: "Approved",
     payment_files: [{ name: "p.png" }],
     payment_status: "Approved",
@@ -81,3 +81,43 @@ function assert(cond, msg) {
 }
 
 console.log("stageState OK — A/B/C/D passed");
+
+// Cetak status is qty-based, not current_stage / sample-approved alone
+{
+  const base = {
+    design_files: [{ name: "d.png" }],
+    design_status: "Approved",
+    payment_files: [{ name: "p.png" }],
+    payment_status: "Approved",
+    requires_printing: true,
+    operator_splits: [
+      { id: "a", quantity: 1000, qty_completed: 0 },
+      { id: "b", quantity: 1000, qty_completed: 0 },
+      { id: "c", quantity: 1000, qty_completed: 0 },
+    ],
+    operator_assigned_qty: 3000,
+    print_qty_target: 3000,
+    print_qty_total: 6000,
+    screener_info: { screen_qty: 2 },
+    sample_files: [{ name: "s.png" }],
+    sample_approved: true,
+    workflow_ready: { operator: true, print_qty: true, packing: true },
+    current_stage: 11,
+  };
+  const pending = { ...base, sample_approved: false, workflow_ready: { operator: true, print_qty: false, packing: false }, print_completed_qty: 0, print_status: "BELUM MULAI CETAK" };
+  const cetakPending = resolveStageState(10, pending, 11);
+  assert(cetakPending.state !== "done", "Cetak must not be done before qty complete");
+  assert(cetakPending.label === "Menunggu", `expected Menunggu before print qty unlock, got ${cetakPending.label}`);
+
+  const partial = { ...base, print_completed_qty: 1000, print_status: "BELUM SELESAI CETAK" };
+  const cetakPartial = resolveStageState(10, partial, 11);
+  assert(cetakPartial.state !== "done", "partial print must not be Selesai Cetak");
+  assert(cetakPartial.label === "BELUM SELESAI CETAK", `got ${cetakPartial.label}`);
+
+  const done = { ...base, print_completed_qty: 3000, print_status: "SELESAI CETAK" };
+  const cetakDone = resolveStageState(10, done, 11);
+  assert(cetakDone.state === "done", "full qty should mark Cetak done");
+  assert(cetakDone.label === "SELESAI CETAK", `got ${cetakDone.label}`);
+}
+
+console.log("stageState OK — cetak qty status passed");

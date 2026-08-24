@@ -5,12 +5,19 @@ export function fmtQty(n) {
 export function statusClassFor(label) {
   switch (label) {
     case "DONE":
+    case "SELESAI CETAK":
+    case "APPROVED":
       return "qty-status-done";
     case "IN PROGRESS":
+    case "BELUM SELESAI CETAK":
       return "qty-status-run";
     case "SAVED":
       return "qty-status-saved";
     case "READY":
+      return "qty-status-ready";
+    case "REJECTED":
+      return "qty-status-reject";
+    case "BELUM MULAI CETAK":
       return "qty-status-ready";
     default:
       return "";
@@ -26,13 +33,14 @@ export function MetricRow({ children, testid, columns }) {
   );
 }
 
-export function MetricCell({ label, value, unit = "pcs", testid, className = "" }) {
+export function MetricCell({ label, value, unit = "pcs", testid, className = "", format = "qty" }) {
+  const display = format === "text" ? (value || "—") : fmtQty(value);
   return (
     <div className={`ind-metric ${className}`.trim()} data-testid={testid}>
       <span className="ind-metric-label">{label}</span>
       <strong>
-        {fmtQty(value)}
-        {unit ? <span className="ind-metric-unit">{unit}</span> : null}
+        {display}
+        {format !== "text" && unit ? <span className="ind-metric-unit">{unit}</span> : null}
       </strong>
     </div>
   );

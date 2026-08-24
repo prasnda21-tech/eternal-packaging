@@ -21,7 +21,9 @@ from quantity_rules import (
     packing_status_semantic,
     print_available_for_packing,
     print_completed_qty,
+    print_qty_target,
     print_qty_total,
+    print_status,
     qty_delivered,
     qty_packed,
     validate_delivery_qty,
@@ -521,6 +523,56 @@ def test_f_all_lines_packed_to_po_qty_marks_complete():
     o["packing_info"] = {"lines": lines_payload}
     assert qty_packed(o) == 2500
     assert packing_status_semantic(o) == "Sudah"
+
+
+def test_print_target_follows_penjadwalan_not_po_total():
+    """PO 6000, Penjadwalan 3000 → target cetak 3000."""
+    o = _mixed_po(print_qty=6000, non_print_qty=0)
+    o["line_items"] = [{"name": "Cetak", "quantity": 6000, "production_process": "print"}]
+    o["total_quantity"] = 6000
+    o["operator_splits"] = [
+        {"id": "a", "quantity": 1000, "qty_completed": 0},
+        {"id": "b", "quantity": 1000, "qty_completed": 0},
+        {"id": "c", "quantity": 1000, "qty_completed": 0},
+    ]
+    assert print_qty_total(o) == 6000
+    assert print_qty_target(o) == 3000
+    assert validate_print_completed_total(3000, o) is None
+    assert validate_print_completed_total(3001, o) is not None
+
+
+def test_print_status_partial_and_complete():
+    from quantity_rules import PRINT_STATUS_DONE, PRINT_STATUS_IN_PROGRESS, PRINT_STATUS_NOT_STARTED
+    o = _mixed_po(print_qty=3000, non_print_qty=3000)
+    o["operator_splits"] = [
+        {"id": "a", "quantity": 1000, "qty_completed": 0},
+        {"id": "b", "quantity": 1000, "qty_completed": 0},
+        {"id": "c", "quantity": 1000, "qty_completed": 0},
+    ]
+    assert print_status(o) == PRINT_STATUS_NOT_STARTED
+    o["operator_splits"][0]["qty_completed"] = 1000
+    assert print_completed_qty(o) == 1000
+    assert print_status(o) == PRINT_STATUS_IN_PROGRESS
+    o["operator_splits"][1]["qty_completed"] = 1000
+    o["operator_splits"][2]["qty_completed"] = 1000
+    assert print_completed_qty(o) == 3000
+    assert print_status(o) == PRINT_STATUS_DONE
+
+
+def test_partial_print_available_for_packing_while_not_complete():
+    o = _mixed_po(print_qty=3000, non_print_qty=3000)
+    o["helper_prep"] = {"qty_prepared": 3000}
+    o["operator_splits"] = [
+        {"id": "a", "quantity": 1000, "qty_completed": 1000},
+        {"id": "b", "quantity": 1000, "qty_completed": 0},
+        {"id": "c", "quantity": 1000, "qty_completed": 0},
+    ]
+    from quantity_rules import PRINT_STATUS_IN_PROGRESS
+    assert print_status(o) == PRINT_STATUS_IN_PROGRESS
+    assert print_available_for_packing(o) == 1000
+    assert available_for_packing(o) == 4000
+    assert validate_packing_qty(4000, o) is None
+    assert validate_packing_qty(4001, o) is not None
 
 
 def run_all():

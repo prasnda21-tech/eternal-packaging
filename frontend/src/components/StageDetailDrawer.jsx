@@ -189,6 +189,14 @@ function StageContent({ order, stageIdx }) {
             </tbody>
           </table>
         ) : <p className="muted small">Belum ada penugasan operator.</p>}
+        {stageIdx === 10 && (
+          <dl className="kv-grid" style={{ marginTop: 12 }}>
+            <KV label="Status Cetak" value={order.print_status || "-"} testid="stage-print-status"/>
+            <KV label="Target Cetak" value={order.print_qty_target}/>
+            <KV label="Selesai" value={order.print_completed_qty}/>
+            <KV label="Sisa" value={order.print_qty_remaining}/>
+          </dl>
+        )}
         <p className="drawer-sub">Sample</p>
         <ul className="drawer-files">
           {(order.sample_files || []).map((f, i) => (

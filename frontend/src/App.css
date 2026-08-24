@@ -1007,6 +1007,8 @@
 .qty-status-saved{color:var(--blue);border-color:#8aa0b4}
 .qty-status-run{color:var(--amber);border-color:#c4a574}
 .qty-status-done{color:var(--green);border-color:#8aaa96}
+.qty-status-reject{color:var(--red);border-color:#c98989}
+.ind-metric.is-status strong{font-size:12px;letter-spacing:.06em;text-transform:uppercase}
 
 .ind-metrics,.packing-panel .pack-summary{
   display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
