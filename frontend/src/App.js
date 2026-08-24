@@ -11,6 +11,7 @@ import AnalyticsOperators from "./pages/AnalyticsOperators";
 import ImportPO from "./pages/ImportPO";
 import Settings from "./pages/Settings";
 import ComingSoon from "./pages/ComingSoon";
+import MasterBarangJasa from "./pages/MasterBarangJasa";
 import AnalitikOutput from "./pages/AnalitikOutput";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import { NAV_KEYS } from "./lib/navAccess";
@@ -55,7 +56,8 @@ export default function App() {
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
             <Route path="/pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasing]}><ComingSoon title="Pembelian" eyebrow="Pembelian" testid="pembelian-page" /></PermGate>} />
-            <Route path="/persediaan" element={<PermGate anyOf={[NAV_KEYS.inventory]}><ComingSoon title="Persediaan" eyebrow="Persediaan" testid="persediaan-page" /></PermGate>} />
+            <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
+            <Route path="/persediaan" element={<Navigate to="/persediaan/master-barang-jasa" replace />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan" element={<Navigate to="/laporan/analitik-output" replace />} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />

@@ -1,10 +1,10 @@
-import { BarChart3, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table, Warehouse } from "lucide-react";
+import { BarChart3, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, reportsNavVisible, salesNavVisible } from "../lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, reportsNavVisible, salesNavVisible } from "../lib/navAccess";
 import BrandMark from "./BrandMark";
 
 const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
@@ -15,8 +15,10 @@ export default function AppShell() {
   const location = useLocation();
   const importActive = location.pathname.startsWith("/admin/import");
   const reportsActive = location.pathname.startsWith("/laporan");
+  const inventoryActive = location.pathname.startsWith("/persediaan");
   const [salesOpen, setSalesOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
+  const [inventoryOpen, setInventoryOpen] = useState(true);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -44,6 +46,10 @@ export default function AppShell() {
     if (reportsActive) setReportsOpen(true);
   }, [reportsActive]);
 
+  useEffect(() => {
+    if (inventoryActive) setInventoryOpen(true);
+  }, [inventoryActive]);
+
   const doLogout = async () => {
     await logout();
     navigate("/login");
@@ -69,10 +75,10 @@ export default function AppShell() {
 
   const salesNav = salesNavVisible(hasPerm);
   const reportsNav = reportsNavVisible(hasPerm);
+  const inventoryNav = inventoryNavVisible(hasPerm);
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showSchedule = hasPerm(NAV_KEYS.schedule);
   const showPurchasing = hasPerm(NAV_KEYS.purchasing);
-  const showInventory = hasPerm(NAV_KEYS.inventory);
   const showSettings = hasPerm(NAV_KEYS.settings);
 
   return (
@@ -118,10 +124,26 @@ export default function AppShell() {
               <ShoppingBag size={16} /> Pembelian
             </NavLink>
           )}
-          {showInventory && (
-            <NavLink to="/persediaan" className={navClass} data-testid="top-nav-persediaan">
-              <Warehouse size={16} /> Persediaan
-            </NavLink>
+          {inventoryNav.parent && (
+            <div className="nav-group">
+              <button
+                type="button"
+                className={"top-nav-link nav-group-toggle" + (inventoryActive ? " parent-open" : "")}
+                aria-expanded={inventoryOpen}
+                onClick={() => setInventoryOpen((open) => !open)}
+                data-testid="top-nav-persediaan"
+              >
+                <Warehouse size={16} /> Persediaan
+                <ChevronDown size={14} className="nav-chevron" />
+              </button>
+              {inventoryOpen && inventoryNav.masterItems && (
+                <div className="nav-sub">
+                  <NavLink to="/persediaan/master-barang-jasa" className={navClass} data-testid="top-nav-master-barang-jasa">
+                    <Package size={16} /> Master Barang/Jasa
+                  </NavLink>
+                </div>
+              )}
+            </div>
           )}
           {reportsNav.parent && (
             <div className="nav-group">

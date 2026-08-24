@@ -10,10 +10,18 @@ from typing import List, Optional, Any, Dict, Tuple
 from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
-from services.accurate import AccurateClient, sync_sales_orders, get_last_list_error
+from services.accurate import AccurateClient, sync_sales_orders, get_last_list_error, sanitize_accurate_error
 from services.import_parser import parse_import_file, ImportParseError
 from services.pdf_parser import parse_pdf_po, PDFParseError
 from services import storage as obj_storage
+from services.master_items import (
+    COLLECTION as MASTER_ITEMS_COLLECTION,
+    MasterItemUnresolvedError,
+    SyncInProgressError,
+    list_master_items,
+    resolve_po_line_items,
+    sync_master_items,
+)
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -4360,7 +4368,15 @@ async def accurate_import_confirm(payload: ImportPreviewRequest, user=Depends(re
     preview = _build_preview(so)
     source = "accurate_live" if _accurate_client.is_live else "accurate_mock"
     try:
+        preview["line_items"] = await resolve_po_line_items(
+            db, _accurate_client, preview.get("line_items") or [], require_master=True,
+        )
         new = await _persist_imported_po(preview, source=source, user=user)
+    except MasterItemUnresolvedError as e:
+        await db.import_logs.insert_one({**log_base, "status": "failed", "message": str(e)})
+        raise HTTPException(400, str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         await db.import_logs.insert_one({**log_base, "status": "failed", "message": f"Insert gagal: {e}"})
         raise HTTPException(500, "Gagal menyimpan PO baru")
@@ -4486,7 +4502,16 @@ async def accurate_import_confirm_bulk(payload: BulkImportRequest, user=Depends(
         preview = _build_preview(so)
         source = "accurate_live" if _accurate_client.is_live else "accurate_mock"
         try:
+            preview["line_items"] = await resolve_po_line_items(
+                db, _accurate_client, preview.get("line_items") or [], require_master=True,
+            )
             new = await _persist_imported_po(preview, source=source, user=user)
+        except MasterItemUnresolvedError as e:
+            await db.import_logs.insert_one({**log_base, "status": "failed", "message": str(e)})
+            results.append({"so_number": sn, "status": "failed", "message": str(e)})
+            continue
+        except HTTPException:
+            raise
         except Exception as e:
             await db.import_logs.insert_one({**log_base, "status": "failed", "message": f"Insert gagal: {e}"})
             results.append({"so_number": sn, "status": "failed", "message": "Gagal menyimpan PO baru"})
@@ -4747,6 +4772,47 @@ async def accurate_list(
 
     return payload
 
+
+@api_router.get("/master-items")
+async def master_items_get(
+    q: str = "",
+    item_type: str = "",
+    status: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("master_items.view")),
+):
+    """List Master Barang/Jasa with server-side search, filter, and pagination."""
+    return await list_master_items(
+        db, q=q, item_type=item_type, status=status, page=page, page_size=page_size,
+    )
+
+
+@api_router.post("/master-items/sync")
+async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
+    """Manual Accurate item sync. Same client/auth as Import PO. Never truncates."""
+    try:
+        result = await sync_master_items(db, _accurate_client)
+    except SyncInProgressError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        msg = sanitize_accurate_error(_accurate_client, str(e))
+        last_err = get_last_list_error()
+        try:
+            await db.accurate_errors.insert_one({
+                "at": now_iso(),
+                "operation": "item/list.do",
+                "detail": msg[:200],
+                "tenant_message": (last_err.get("message") or "")[:200],
+            })
+        except Exception:
+            pass
+        raise HTTPException(502, {
+            "message": "Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.",
+            "detail": msg[:200],
+            "tenant_message": (last_err.get("message") or "")[:200],
+        })
+    return result
 
 
 @api_router.post("/accurate/sync")
@@ -5615,6 +5681,8 @@ async def seed():
     await db.orders.create_index("id", unique=True)
     await db.orders.create_index("po_number", unique=True)
     await db.orders.create_index("accurate_id", sparse=True)
+    await db.master_items.create_index("id", unique=True)
+    await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
     await db.files.create_index("id", unique=True)
     await db.files.create_index("storage_path")
     await db.import_logs.create_index("imported_at")
@@ -5777,6 +5845,8 @@ async def seed():
         "admin": [
             "po.import.view", "accurate.import", "accurate.import.bulk",
             "po.import.pdf", "po.import.spreadsheet",
+            "master_items.view", "master_items.sync",
+            "nav.inventory.master_items",
             # Req 13/14/16 top-ups (idempotent) — admin should always have every new perm.
             "schedule.work_date.view", "schedule.work_date.edit",
             "dashboard.production.input", "dashboard.production.edit",
