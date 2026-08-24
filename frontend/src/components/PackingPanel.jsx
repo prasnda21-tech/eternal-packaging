@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Package, CheckCircle2 } from "lucide-react";
 import { formatDate } from "../lib/constants";
+import { packingSubmitEnabled } from "../lib/packingCard";
 
 // Packing = print (setelah selesai operator) + non_print (langsung tersedia).
 // Target akhir = packing_required_total. Partial packing boleh lanjut ke SJ.
@@ -10,7 +11,6 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
   const [notes, setNotes] = useState(pi.notes ?? "");
   const hasQty = pi.qty_packed !== null && pi.qty_packed !== undefined && String(pi.qty_packed).trim() !== "" && Number(pi.qty_packed) > 0;
   const semantic = order.packing_status_semantic || "Belum";
-  const stageIsPacking = (order.current_stage || 0) >= 11;
   const fullyPacked = semantic === "Sudah";
   const lineItems = order.line_items || [];
   const requiredTotal = typeof order.packing_required_total === "number"
@@ -28,6 +28,8 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
   const shortageSaved = Math.max(requiredTotal - packedSaved, 0);
   const canProceedPartial = hasQty && packedSaved > 0;
   const isComplete = hasQty && packedSaved >= requiredTotal;
+  const canSubmitQty = packingSubmitEnabled(canManage, available);
+  const remainingAvailable = Math.max(available - packedSaved, 0);
 
   const handleSave = async () => {
     const parsed = parseInt(qty, 10);
@@ -54,6 +56,8 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
         Non-cetak: <b>{nonPrintTotal.toLocaleString("id-ID")}</b> (langsung) · Cetak selesai operator:{" "}
         <b>{printCompleted.toLocaleString("id-ID")}</b> · Total tersedia packing:{" "}
         <b>{available.toLocaleString("id-ID")}</b> / {requiredTotal.toLocaleString("id-ID")}
+        {" "}· Sudah packing: <b data-testid="packing-cumulative-packed">{packedSaved.toLocaleString("id-ID")}</b>
+        {" "}· Sisa tersedia: <b data-testid="packing-remaining-available">{remainingAvailable.toLocaleString("id-ID")}</b>
       </p>
 
       {lineItems.length > 0 && (
@@ -109,13 +113,15 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
         </p>
       )}
 
+      {available <= 0 && !fullyPacked && (
+        <p className="muted small" data-testid="packing-no-available-note">
+          Belum ada qty yang tersedia untuk Packing. Qty Tidak Cetak dan qty Cetak yang sudah selesai operator akan muncul di sini.
+        </p>
+      )}
+
       {fullyPacked ? (
         <p className="muted small" data-testid="packing-done-note">
           Packing sudah lengkap — {hasQty ? `${packedSaved.toLocaleString("id-ID")} pcs` : ""}{pi.updated_by_name ? ` · oleh ${pi.updated_by_name}` : ""}{pi.updated_at ? ` · ${formatDate(pi.updated_at)}` : ""}.
-        </p>
-      ) : !stageIsPacking && !hasQty ? (
-        <p className="muted small" data-testid="packing-waiting-note">
-          Packing belum aktif — tahap saat ini belum masuk Packing.
         </p>
       ) : !canManage ? (
         <p className="muted small" data-testid="packing-readonly-note">
@@ -132,7 +138,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                 max={maxAllowed || undefined}
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
-                disabled={busy}
+                disabled={busy || !canSubmitQty}
                 data-testid="packing-qty-input"
                 placeholder="Jumlah unit yang di-packing"
               />
@@ -151,7 +157,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                disabled={busy}
+                disabled={busy || !canSubmitQty}
                 data-testid="packing-notes-input"
               />
             </label>
@@ -168,7 +174,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
               type="button"
               className="primary"
               onClick={handleSave}
-              disabled={busy || !qty || Number(qty) <= 0}
+              disabled={busy || !canSubmitQty || !qty || Number(qty) <= 0}
               data-testid="save-packing-qty-button"
             >
               Simpan Qty Packing
