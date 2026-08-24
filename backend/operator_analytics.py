@@ -33,6 +33,9 @@ QTY_NOTE_RE = re.compile(r"^Qty (.+): (\d+)/(\d+)\s*$")
 PACKING_NOTE_RE = re.compile(r"^Qty Packing:\s*(\d+)\s*pcs\s*\((.*)\)\s*$")
 PACKING_LINE_RE = re.compile(r"#(\d+)=(\d+)")
 PREP_NOTE_RE = re.compile(r"^Persiapan Helper(?: \(per-line\))?:\s*(\d+)/(\d+)")
+SCREEN_NOTE_RE = re.compile(r"^Screen qty:\s*(\d+)\s*$")
+UNATTRIBUTED_ID = "__unattributed__"
+UNATTRIBUTED_NAME = "N/A / Unattributed"
 
 RANK_METRICS = ("output_qty", "achievement", "on_time_pct", "sample_approval_pct", "job_count")
 JOB_PAGE_DEFAULT = 50
@@ -214,6 +217,51 @@ def monday_of(d: date) -> date:
     return d - timedelta(days=d.weekday())  # Monday=0
 
 
+def _add_months(d: date, months: int) -> date:
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    return date(y, m, 1)
+
+
+def _month_span(today: date, n_months: int) -> Tuple[date, date]:
+    """Inclusive calendar span of `n_months` months ending today (current month counts as 1)."""
+    n = max(1, int(n_months))
+    start = _add_months(today.replace(day=1), -(n - 1))
+    return start, today
+
+
+def series_grouping(preset: str, start: date, end: date) -> str:
+    """Chart/table bucket: day | week | month. Never 365 daily points for a year."""
+    p = (preset or "month").strip().lower()
+    if p in ("today", "daily"):
+        return "day"
+    if p in ("week",):
+        return "week"
+    if p in ("month",):
+        return "week"
+    if p in ("months_3", "months_6", "months_12", "year"):
+        return "month"
+    span = (end - start).days
+    if span <= 14:
+        return "day"
+    if span <= 90:
+        return "week"
+    return "month"
+
+
+def month_key(d: date) -> str:
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def bucket_key(d: date, grouping: str) -> str:
+    g = (grouping or "week").strip().lower()
+    if g == "day":
+        return d.isoformat()
+    if g == "month":
+        return month_key(d)
+    return iso_week_key(d)
+
+
 def resolve_period(
     period: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -226,12 +274,28 @@ def resolve_period(
     aliases = {
         "hari_ini": "today",
         "today": "today",
+        "harian": "daily",
+        "daily": "daily",
         "minggu_ini": "week",
+        "mingguan": "week",
         "week": "week",
         "this_week": "week",
         "bulan_ini": "month",
+        "bulanan": "month",
         "month": "month",
         "this_month": "month",
+        "3_bulan": "months_3",
+        "3bulan": "months_3",
+        "months_3": "months_3",
+        "6_bulan": "months_6",
+        "6bulan": "months_6",
+        "months_6": "months_6",
+        "12_bulan": "months_12",
+        "12bulan": "months_12",
+        "months_12": "months_12",
+        "tahunan": "year",
+        "year": "year",
+        "yearly": "year",
         "custom": "custom",
     }
     preset = aliases.get(preset, preset)
@@ -241,9 +305,22 @@ def resolve_period(
 
     if preset == "today":
         return today, today, "today"
+    if preset == "daily":
+        return today - timedelta(days=6), today, "daily"
     if preset == "week":
         start = monday_of(today)
         return start, start + timedelta(days=6), "week"
+    if preset == "months_3":
+        start, end = _month_span(today, 3)
+        return start, end, "months_3"
+    if preset == "months_6":
+        start, end = _month_span(today, 6)
+        return start, end, "months_6"
+    if preset == "months_12":
+        start, end = _month_span(today, 12)
+        return start, end, "months_12"
+    if preset == "year":
+        return date(today.year, 1, 1), today, "year"
     if preset == "custom":
         start = parsed_from or today
         end = parsed_to or start
@@ -286,6 +363,76 @@ def order_matches_item(order: dict, item: Optional[str]) -> bool:
     if not needle:
         return True
     return any(needle == n.lower() or needle in n.lower() for n in order_item_names(order))
+
+
+def line_item_label(order: dict, line_idx: Any) -> str:
+    lis = order.get("line_items") or []
+    try:
+        idx = int(line_idx)
+    except (TypeError, ValueError):
+        idx = -1
+    if 0 <= idx < len(lis):
+        name = (lis[idx].get("name") or "").strip()
+        code = (lis[idx].get("item_code") or "").strip()
+        if name and code and code not in name:
+            return f"{name} ({code})"
+        return name or code or f"Line #{idx + 1}"
+    product = (order.get("product_name") or "").strip()
+    return product or "Item"
+
+
+def line_item_name(order: dict, line_idx: Any) -> str:
+    """Cup / item name from the actual line_items field — never inferred from free text."""
+    lis = order.get("line_items") or []
+    try:
+        idx = int(line_idx)
+    except (TypeError, ValueError):
+        idx = -1
+    if 0 <= idx < len(lis):
+        return (lis[idx].get("name") or lis[idx].get("item_code") or "").strip() or line_item_label(order, idx)
+    return (order.get("product_name") or "Item").strip() or "Item"
+
+
+def _order_po_number(order: dict) -> str:
+    return (order.get("po_number") or order.get("id") or "").strip()
+
+
+def order_matches_po(order: dict, po: Optional[str]) -> bool:
+    if not po or po == "all":
+        return True
+    needle = po.strip().lower()
+    if not needle:
+        return True
+    num = _order_po_number(order).lower()
+    oid = str(order.get("id") or "").lower()
+    return needle == num or needle in num or needle == oid
+
+
+def is_print_line_item(li: dict) -> bool:
+    p = (li.get("production_process") or "print").strip().lower()
+    return p != "non_print"
+
+
+def design_line_identity(order: dict, line_idx: Any, split: Optional[dict] = None) -> Tuple[str, str]:
+    """Distinct printable line identity.
+
+    Schema has no per-line design_id / design attachment. design_files is PO-level.
+    Fallback unit = unique printable line (po + line_idx), labeled 'Design / Line Cetak'.
+    """
+    po_id = str(order.get("id") or order.get("po_number") or "")
+    try:
+        idx = int(line_idx)
+        has_idx = True
+    except (TypeError, ValueError):
+        idx = -1
+        has_idx = False
+    if has_idx and idx >= 0:
+        key = f"{po_id}:{idx}"
+    else:
+        sid = ((split or {}).get("id") or "").strip()
+        key = f"{po_id}:split:{sid}" if sid else f"{po_id}:unknown"
+    label = line_item_label(order, line_idx if has_idx else None)
+    return key, f"{label} · Line #{(idx + 1) if has_idx and idx >= 0 else '?'}"
 
 
 def parse_qty_note(note: str) -> Optional[Tuple[str, int, int]]:
@@ -545,6 +692,7 @@ def build_operator_analytics_pipeline(
     operator_id: Optional[str] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
+    po: Optional[str] = None,
 ) -> List[dict]:
     """Single Mongo aggregation: one scan, not per-operator queries.
 
@@ -560,6 +708,8 @@ def build_operator_analytics_pipeline(
         doc_match["operator_splits.operator_email"] = operator_id
     if customer and customer not in ("all", ""):
         doc_match["customer"] = customer
+    if po and po not in ("all", ""):
+        doc_match["po_number"] = po
     if item and item not in ("all", ""):
         doc_match["$or"] = [
             {"line_items.name": item},
@@ -616,10 +766,14 @@ DATA_SOURCES = {
     "weekly_trend": "delta Qty-note (kumulatif) di-bucket ISO week WIB. Bukan jumlah snapshot.",
     "wow": "(minggu ini − minggu lalu) / minggu lalu * 100. previous=0 → N/A (bukan Infinity).",
     "ranking": "metric dipilih user (output/achievement/on-time/sample/job). Tidak ada overall score.",
-    "packing": "timeline 'Qty Packing: total pcs (#idx=qty)' — packed_qty di packing_info.lines adalah kumulatif; activity = delta positif per line per Save. Actor = timeline.by_email (user yang Save Packing), bukan user yang hanya membuka PO.",
-    "packing_fallback": "Jika tidak ada note Qty Packing: snapshot packing_info diatribusikan ke packing_info.updated_by pada updated_at (last-saver only).",
+    "packing": "timeline 'Qty Packing: total pcs (#idx=qty)' — packed_qty di packing_info.lines adalah kumulatif; activity = delta positif per line per Save. Actor = timeline.by_email (user yang Save Packing), bukan user yang hanya membuka PO. Tanpa actor → N/A / Unattributed.",
+    "packing_fallback": "Jika tidak ada note Qty Packing: snapshot packing_info diatribusikan ke packing_info.updated_by pada updated_at (last-saver only). Tanpa updated_by → Unattributed.",
     "preparation": "timeline 'Persiapan Helper' / 'Persiapan Helper (per-line): prepared/required' — qty_prepared kumulatif; activity = delta positif total. Actor = timeline.by_email. Field cup_qty tidak ada; Cup = line item Cetak (production_process != non_print) di helper_prep.items.",
     "preparation_per_line": "helper_prep.items[] adalah snapshot terkini per line. History per-line per-user tidak tersimpan di timeline (hanya total PO). Jangan mengatribusikan seluruh line ke user terakhir jika ada lebih dari satu actor.",
+    "screener": "timeline 'Screen qty: N' — screener_info.screen_qty adalah snapshot kumulatif PO-level (bukan per-line). Activity = delta positif per Save. Actor = timeline.by_email. Tanpa note: snapshot screener_info.updated_by pada updated_at.",
+    "screener_line": "Tidak ada qty screener per line. Cup/Item = line_items cetak pada PO yang sama; qty per cup tidak dipecah jika PO multi-line (tidak dikarang).",
+    "design": "Tidak ada design_id per line. Unit = unique printable line (po_id + line_idx), dilabeli 'Design / Line Cetak'. Hanya line dengan qty_completed operator > 0 pada periode. Progress update berulang bukan design baru. design_files (upload) tidak dihitung.",
+    "daily_target": "app_settings.key=operator_output_targets, keyed by operator_id (user id) + email. Achievement = actual avg/hari aktif vs target/hari. Tidak ada kalender kerja — tidak dikarang target mingguan 5/6/7 hari. Target yang dipakai = current target (tidak ada effective_from history pada settings).",
 }
 
 INDEX_RECOMMENDATIONS = [
@@ -667,7 +821,34 @@ def _empty_operator(email: str, name: str) -> dict:
         "first_pass_decided": 0,
         "first_pass_rate": None,
         "sample_approval_pct": None,
+        "design_count": 0,
+        "last_activity_at": None,
+        "this_week_qty": 0,
+        "daily_target": None,
+        "target_gap": None,
+        "target_achievement_pct": None,
+        "cups": [],
     }
+
+
+def apply_daily_target(rec: dict, daily_targets: Optional[Dict[str, int]]) -> None:
+    """Compare actual avg/active-day vs current daily target. No invented weekly target."""
+    email = (rec.get("email") or rec.get("operator_id") or "").strip()
+    qty = None
+    if daily_targets:
+        qty = daily_targets.get(email)
+        if qty is None:
+            qty = daily_targets.get(rec.get("operator_id"))
+    if qty is None:
+        rec["daily_target"] = None
+        rec["target_gap"] = None
+        rec["target_achievement_pct"] = None
+        return
+    target = max(0, safe_int(qty))
+    rec["daily_target"] = target
+    avg = float(rec.get("avg_daily_qty") or 0)
+    rec["target_gap"] = round(avg - target, 2)
+    rec["target_achievement_pct"] = achievement_pct(int(round(avg)), target) if target > 0 else None
 
 
 def compute_operator_kpis(
@@ -678,6 +859,8 @@ def compute_operator_kpis(
     operator_id: Optional[str] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
+    po: Optional[str] = None,
+    daily_targets: Optional[Dict[str, int]] = None,
     now: Optional[datetime] = None,
 ) -> dict:
     """Pure KPI computation. Does not write. Does not use PO/target qty as completed."""
@@ -690,6 +873,8 @@ def compute_operator_kpis(
     seen_assignments: Dict[str, set] = defaultdict(set)
     duration_sum: Dict[str, float] = defaultdict(float)
     duration_n: Dict[str, int] = defaultdict(int)
+    design_keys: Dict[str, set] = defaultdict(set)
+    cup_acc: Dict[str, Dict[str, dict]] = defaultdict(dict)
     # remaining-per-PO for "fully complete" (all splits of this operator on that PO)
     po_assigned: Dict[Tuple[str, str], int] = defaultdict(int)
     po_completed: Dict[Tuple[str, str], int] = defaultdict(int)
@@ -709,6 +894,8 @@ def compute_operator_kpis(
         if cust_filter and (order.get("customer") or "") != cust_filter:
             continue
         if not order_matches_item(order, item):
+            continue
+        if not order_matches_po(order, po):
             continue
         po_id = order.get("id") or order.get("po_number")
         events = _timeline_qty_events(order)
@@ -740,6 +927,23 @@ def compute_operator_kpis(
             po_completed[(email, po_id)] += completed
             if completed > 0:
                 worked_pos[email].add(po_id)
+                dkey, _dlabel = design_line_identity(order, split.get("line_idx"), split)
+                design_keys[email].add(dkey)
+                item_name = line_item_name(order, split.get("line_idx"))
+                cup = cup_acc[email].setdefault(item_name, {
+                    "item": item_name,
+                    "qty": 0,
+                    "pos": set(),
+                    "lines": set(),
+                    "last_day": None,
+                })
+                cup["qty"] += completed
+                cup["pos"].add(po_id)
+                cup["lines"].add((po_id, split.get("line_idx")))
+                if days:
+                    last = max(days)
+                    if cup["last_day"] is None or last > cup["last_day"]:
+                        cup["last_day"] = last
             for d in days:
                 active_days[email].add(d)
 
@@ -829,6 +1033,20 @@ def compute_operator_kpis(
         rec["on_time_pct"] = ratio_pct(rec["on_time"], rec["on_time_basis"])
         rec["first_pass_rate"] = ratio_pct(rec["first_pass_approved"], rec["first_pass_decided"])
         rec["sample_approval_pct"] = ratio_pct(rec["samples_approved"], rec["sample_jobs"])
+        rec["design_count"] = len(design_keys.get(email) or [])
+        rec["last_activity_at"] = max(days).isoformat() if days else None
+        cups = []
+        for cup in (cup_acc.get(email) or {}).values():
+            cups.append({
+                "item": cup["item"],
+                "qty": cup["qty"],
+                "po_count": len(cup["pos"]),
+                "line_count": len(cup["lines"]),
+                "last_activity_at": cup["last_day"].isoformat() if cup.get("last_day") else None,
+            })
+        cups.sort(key=lambda c: (-c["qty"], c["item"] or ""))
+        rec["cups"] = cups
+        apply_daily_target(rec, daily_targets)
         rows.append(rec)
 
     rows.sort(key=lambda r: (-r["completed"], r["name"] or r["email"]))
@@ -887,6 +1105,10 @@ def compute_operator_kpis(
             sum(r["samples_approved"] for r in rows),
             sum(r["sample_jobs"] for r in rows),
         ),
+        "total_designs": len(set().union(*design_keys.values()) if design_keys else set()),
+        "this_week_qty": 0,
+        "daily_target": None,
+        "target_achievement_pct": None,
     }
     weekly = compute_weekly_trend(
         order_list,
@@ -895,16 +1117,36 @@ def compute_operator_kpis(
         operator_id=operator_id,
         customer=customer,
         item=item,
+        po=po,
     )
+    this_week = iso_week_key(today)
+    this_week_total = 0
+    for ow in weekly.get("operators") or []:
+        wqty = int((ow.get("weeks") or {}).get(this_week, 0) or 0)
+        rec = next((r for r in rows if r.get("email") == ow.get("email")), None)
+        if rec is not None:
+            rec["this_week_qty"] = wqty
+        this_week_total += wqty
+    kpis["this_week_qty"] = this_week_total
+    if len(rows) == 1:
+        kpis["daily_target"] = rows[0].get("daily_target")
+        kpis["target_achievement_pct"] = rows[0].get("target_achievement_pct")
+        kpis["target_gap"] = rows[0].get("target_gap")
+    grouping = series_grouping("custom", date_from, date_to)
+    output_series = output_series_from_weekly(weekly, grouping) if grouping == "week" else None
     return {
         "kpis": kpis,
         "operators": rows,
         "weekly_trend": weekly,
+        "output_series": output_series,
         "ranking": rank_operators(rows, "output_qty"),
         "period": {
             "from": date_from.isoformat(),
             "to": date_to.isoformat(),
             "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+            "grouping": grouping,
+            "design_identity": "Design / Line Cetak (po + line_idx; no per-line design_id in schema)",
+            "daily_target_limitation": DATA_SOURCES["daily_target"],
         },
         "read_only": True,
         "sources": DATA_SOURCES,
@@ -947,37 +1189,6 @@ def weeks_covering(start: date, end: date) -> List[dict]:
         })
         d += timedelta(days=7)
     return out
-
-
-def line_item_label(order: dict, line_idx: Any) -> str:
-    lis = order.get("line_items") or []
-    try:
-        idx = int(line_idx)
-    except (TypeError, ValueError):
-        idx = -1
-    if 0 <= idx < len(lis):
-        name = (lis[idx].get("name") or "").strip()
-        code = (lis[idx].get("item_code") or "").strip()
-        if name and code and code not in name:
-            return f"{name} ({code})"
-        return name or code or f"Line #{idx + 1}"
-    product = (order.get("product_name") or "").strip()
-    return product or "Item"
-
-
-def _order_po_number(order: dict) -> str:
-    return (order.get("po_number") or order.get("id") or "").strip()
-
-
-def order_matches_po(order: dict, po: Optional[str]) -> bool:
-    if not po or po == "all":
-        return True
-    needle = po.strip().lower()
-    if not needle:
-        return True
-    num = _order_po_number(order).lower()
-    oid = str(order.get("id") or "").lower()
-    return needle == num or needle in num or needle == oid
 
 
 def completed_by_week_for_split(
@@ -1023,6 +1234,7 @@ def compute_weekly_trend(
     operator_id: Optional[str] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
+    po: Optional[str] = None,
 ) -> dict:
     """Aggregate completed qty per ISO week. Respects the same filters as KPIs."""
     week_meta = weeks_covering(date_from, date_to)
@@ -1043,6 +1255,8 @@ def compute_weekly_trend(
         if cust_filter and (order.get("customer") or "") != cust_filter:
             continue
         if not order_matches_item(order, item):
+            continue
+        if not order_matches_po(order, po):
             continue
         events = _timeline_qty_events(order)
         for split in order.get("operator_splits") or []:
@@ -1155,6 +1369,8 @@ def compute_operator_detail(
     date_to: date,
     customer: Optional[str] = None,
     item: Optional[str] = None,
+    po: Optional[str] = None,
+    daily_targets: Optional[Dict[str, int]] = None,
     status: Optional[str] = None,
     page: int = 1,
     page_size: int = JOB_PAGE_DEFAULT,
@@ -1169,6 +1385,8 @@ def compute_operator_detail(
         operator_id=email,
         customer=customer,
         item=item,
+        po=po,
+        daily_targets=daily_targets,
         now=now,
     )
     rec = next((r for r in bundle["operators"] if r.get("email") == email), None)
@@ -1189,6 +1407,8 @@ def compute_operator_detail(
             continue
         if not order_matches_item(order, item):
             continue
+        if not order_matches_po(order, po):
+            continue
         po_id = order.get("id") or order.get("po_number")
         events = _timeline_qty_events(order)
         deadline = assignment_deadline(order)
@@ -1203,7 +1423,7 @@ def compute_operator_detail(
                 continue
             assigned = max(0, safe_int(split.get("quantity")))
             live = max(0, safe_int(split.get("qty_completed")))
-            completed, _days = completed_in_period_for_split(split, events, date_from, date_to)
+            completed, days = completed_in_period_for_split(split, events, date_from, date_to)
             completed = max(0, min(completed, assigned if assigned > 0 else completed))
             is_complete = assigned > 0 and live >= assigned
             completion_day = (
@@ -1219,17 +1439,28 @@ def compute_operator_detail(
             if status_f != "all" and job_status != status_f:
                 continue
             line_idx = split.get("line_idx")
+            dkey, dlabel = design_line_identity(order, line_idx, split)
+            last_day = max(days) if days else None
+            try:
+                line_no = int(line_idx) + 1
+            except (TypeError, ValueError):
+                line_no = None
             jobs.append({
                 "assignment_id": assignment_id(split, email, po_id),
                 "po_id": po_id,
                 "po_number": _order_po_number(order) or str(po_id),
                 "customer": cust,
                 "item": line_item_label(order, line_idx),
+                "cup": line_item_name(order, line_idx),
                 "line_idx": line_idx,
+                "line": line_no,
+                "design_id": dkey,
+                "design_label": dlabel,
                 "assigned_qty": assigned,
                 "completed_qty": completed,
                 "remaining": remaining_qty(assigned, completed),
                 "work_date": split.get("work_date") or None,
+                "last_activity_at": last_day.isoformat() if last_day else None,
                 "deadline": deadline.isoformat() if deadline else None,
                 "sample_status": sample_status,
                 "job_status": job_status,
@@ -1273,6 +1504,7 @@ def compute_operator_detail(
             "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
         },
         "jobs": page_jobs,
+        "cups": rec.get("cups") or [],
         "jobs_page": {
             "page": page_n,
             "page_size": size,
@@ -1299,6 +1531,7 @@ ACTIVITY_PROJECTION = {
     "line_items.production_process": 1,
     "packing_info": 1,
     "helper_prep": 1,
+    "screener_info": 1,
     "packing_status": 1,
     "current_stage": 1,
     "timeline.at": 1,
@@ -1322,6 +1555,7 @@ def build_activity_analytics_pipeline(
             {"packing_info.lines.0": {"$exists": True}},
             {"helper_prep.qty_prepared": {"$gte": 0}},
             {"helper_prep.items.0": {"$exists": True}},
+            {"screener_info.screen_qty": {"$gte": 0}},
         ],
     }
     doc_match: Dict[str, Any] = {}
@@ -1399,15 +1633,11 @@ def packing_activity_events(order: dict) -> List[dict]:
             continue
         found_notes = True
         total, lines = parsed
-        email = (t.get("by_email") or "").strip()
-        if not email:
-            prev_total = total
-            if lines:
-                prev_lines.update(lines)
-            continue
+        email = (t.get("by_email") or "").strip() or UNATTRIBUTED_ID
         day = parse_iso_datetime_date(t.get("at"))
-        name = (t.get("by_name") or "").strip() or email
+        name = (t.get("by_name") or "").strip() or (UNATTRIBUTED_NAME if email == UNATTRIBUTED_ID else email)
         role = (t.get("by_role") or "").strip()
+        attr = "unattributed" if email == UNATTRIBUTED_ID else "timeline_delta"
         if lines:
             for idx, qty in lines.items():
                 delta = qty - prev_lines.get(idx, 0)
@@ -1420,7 +1650,7 @@ def packing_activity_events(order: dict) -> List[dict]:
                         "day": day,
                         "line_idx": idx,
                         "delta": delta,
-                        "attribution": "timeline_delta",
+                        "attribution": attr,
                     })
             prev_total = total
         else:
@@ -1434,17 +1664,16 @@ def packing_activity_events(order: dict) -> List[dict]:
                     "day": day,
                     "line_idx": None,
                     "delta": delta,
-                    "attribution": "timeline_delta",
+                    "attribution": attr,
                 })
     if found_notes:
         return events
 
     pi = order.get("packing_info") or {}
-    email = (pi.get("updated_by") or "").strip()
-    if not email:
-        return []
+    email = (pi.get("updated_by") or "").strip() or UNATTRIBUTED_ID
     day = parse_iso_datetime_date(pi.get("updated_at"))
-    name = (pi.get("updated_by_name") or "").strip() or email
+    name = (pi.get("updated_by_name") or "").strip() or (UNATTRIBUTED_NAME if email == UNATTRIBUTED_ID else email)
+    attr = "unattributed" if email == UNATTRIBUTED_ID else "last_saver_snapshot"
     lines = pi.get("lines") if isinstance(pi.get("lines"), list) else []
     if lines:
         for it in lines:
@@ -1458,7 +1687,7 @@ def packing_activity_events(order: dict) -> List[dict]:
                 "day": day,
                 "line_idx": it.get("line_idx"),
                 "delta": qty,
-                "attribution": "last_saver_snapshot",
+                "attribution": attr,
             })
         return events
     qty = max(0, safe_int(pi.get("qty_packed")))
@@ -1470,7 +1699,7 @@ def packing_activity_events(order: dict) -> List[dict]:
             "day": day,
             "line_idx": 0,
             "delta": qty,
-            "attribution": "last_saver_snapshot",
+            "attribution": attr,
         })
     return events
 
@@ -1822,6 +2051,8 @@ def compute_preparation_report(
     po_rows: List[dict] = []
     used_fallback = False
     multi_user_pos = 0
+    cup_acc: Dict[str, Dict[str, dict]] = defaultdict(dict)
+    cup_lines: List[dict] = []
     user_filter = (user_id or "").strip()
     if user_filter in ("all", ""):
         user_filter = ""
@@ -1914,6 +2145,37 @@ def compute_preparation_report(
                     if len(user_qtys) > 1 else None
                 ),
             })
+            if len(user_qtys) == 1:
+                em = next(iter(user_qtys))
+                last_ev_day = None
+                for ev in in_win:
+                    if ev.get("day") and (last_ev_day is None or ev["day"] > last_ev_day):
+                        last_ev_day = ev["day"]
+                for li in line_snap:
+                    item_name = li.get("item") or line_item_name(order, li.get("line_idx"))
+                    qty = li.get("prepared")
+                    if qty is None:
+                        continue
+                    cup = cup_acc[em].setdefault(item_name, {
+                        "item": item_name, "qty": 0, "pos": set(), "lines": set(), "last_day": None,
+                    })
+                    cup["qty"] += max(0, safe_int(qty))
+                    cup["pos"].add(po_id)
+                    cup["lines"].add((po_id, li.get("line_idx")))
+                    if last_ev_day and (cup["last_day"] is None or last_ev_day > cup["last_day"]):
+                        cup["last_day"] = last_ev_day
+                    cup_lines.append({
+                        "user_id": em,
+                        "user_name": users[em]["name"] if em in users else em,
+                        "po_id": po_id,
+                        "po_number": po_num,
+                        "customer": cust,
+                        "line_idx": li.get("line_idx"),
+                        "item": item_name,
+                        "qty_prepared": max(0, safe_int(qty)),
+                        "day": last_ev_day.isoformat() if last_ev_day else None,
+                        "attribution": "single_actor_snapshot",
+                    })
 
     rows = []
     for email, rec in users.items():
@@ -1924,6 +2186,22 @@ def compute_preparation_report(
         rec["avg_daily_qty"] = round(rec["total_qty"] / len(adays), 2) if adays else 0.0
         rec["last_activity_at"] = last_day[email].isoformat() if last_day.get(email) else None
         rec["weekly"] = per_user_weeks.get(email) or {k: 0 for k in week_keys}
+        this_wk = iso_week_key(date_to)
+        today = wib_today()
+        if date_from <= today <= date_to:
+            this_wk = iso_week_key(today)
+        rec["this_week_qty"] = int((rec["weekly"] or {}).get(this_wk, 0) or 0)
+        cups = []
+        for cup in (cup_acc.get(email) or {}).values():
+            cups.append({
+                "item": cup["item"],
+                "qty": cup["qty"],
+                "po_count": len(cup["pos"]),
+                "line_count": len(cup["lines"]),
+                "last_activity_at": cup["last_day"].isoformat() if cup.get("last_day") else None,
+            })
+        cups.sort(key=lambda c: (-c["qty"], c["item"] or ""))
+        rec["cups"] = cups
         rows.append(rec)
     rows.sort(key=lambda r: (-r["total_qty"], r["name"] or r["email"]))
 
@@ -1940,9 +2218,15 @@ def compute_preparation_report(
             "user_count": len(rows),
             "po_count": len(set().union(*pos.values()) if pos else set()),
             "line_count": sum(r["line_count"] for r in rows),
+            "this_week_qty": sum(r.get("this_week_qty") or 0 for r in rows),
+            "avg_daily_qty": round(
+                sum(r["total_qty"] for r in rows) / max(1, len(set().union(*days.values()) if days else set())),
+                2,
+            ) if days else 0.0,
         },
         "users": rows,
         "pos": po_rows,
+        "cup_lines": cup_lines,
         "weekly_trend": {
             "weeks": series,
             "wow_pct": wow_pct(series[-1]["qty"], series[-2]["qty"]) if len(series) >= 2 else None,
@@ -1974,3 +2258,8 @@ def compute_preparation_report(
         "sources": DATA_SOURCES,
         "index_recommendations": INDEX_RECOMMENDATIONS,
     }
+
+
+def output_series_from_weekly(weekly: dict, grouping: str = "week") -> List[dict]:
+    """Reuse weekly_trend weeks as the compact chart series when grouping is week."""
+    return list(weekly.get("weeks") or [])

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
+  Target as TargetIcon,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -1184,6 +1185,85 @@ function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
   );
 }
 
+function OperatorTargetSettingsTab({ notify, canEdit }) {
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+
+  const load = () => {
+    setBusy(true);
+    api.analyticsOperatorTargets().then((d) => {
+      setRows((d.targets || []).map((t) => ({ ...t, qty_per_day: t.qty_per_day || 0 })));
+      setNote(d.limitation || "");
+    }).catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat target")).finally(() => setBusy(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    try {
+      await api.updateOperatorTargets({
+        targets: rows.map((r) => ({
+          operator_id: r.operator_id,
+          email: r.email,
+          qty_per_day: Number(r.qty_per_day) || 0,
+        })),
+      });
+      notify?.("Target output operator disimpan");
+      load();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan target");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div data-testid="op-target-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 720 }}>
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
+        <h3 style={{ marginTop: 0 }}>Target Output Operator</h3>
+        <p className="muted small">Target qty cetak per hari aktif, keyed by operator ID (bukan nama). Achievement analytics membandingkan avg/hari aktif vs target ini. Tidak ada kalender kerja — target mingguan tidak dikarang.</p>
+        {note && <p className="muted small">{note}</p>}
+        {busy && <p className="muted">Memuat…</p>}
+        <div className="prod-table-wrap" style={{ marginTop: 8 }}>
+          <table className="prod-table">
+            <thead><tr><th>Operator</th><th>ID</th><th className="num">Target qty / hari</th></tr></thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.operator_id || r.email}>
+                  <td><strong>{r.name}</strong><div className="muted small">{r.email}</div></td>
+                  <td className="mono muted small">{r.operator_id}</td>
+                  <td className="num">
+                    <input
+                      type="number"
+                      min="0"
+                      value={r.qty_per_day}
+                      disabled={!canEdit}
+                      onChange={(e) => {
+                        const next = [...rows];
+                        next[i] = { ...next[i], qty_per_day: e.target.value };
+                        setRows(next);
+                      }}
+                      data-testid={`op-target-${r.email}`}
+                      style={{ width: 120, textAlign: "right" }}
+                    />
+                  </td>
+                </tr>
+              ))}
+              {!rows.length && !busy && <tr><td colSpan={3} className="empty-state">Tidak ada operator aktif.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <button className="primary sm" onClick={save} disabled={!canEdit || saving} data-testid="op-target-save">Simpan Target</button>
+        </div>
+        {err && <p style={{ color: "#8f1f1f", marginTop: 8 }}>{err}</p>}
+        {!canEdit && <p className="muted small" style={{ marginTop: 8 }}>Butuh permission <code>schedule.edit</code>.</p>}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Root ---------------- */
 export default function Settings() {
   const { user, hasPerm } = useAuth();
@@ -1196,6 +1276,8 @@ export default function Settings() {
   const canEditCaSettings = hasPerm("customer_approval.settings");
   const canViewDdSettings = hasPerm("delivery.deadline.settings") || hasPerm("delivery.deadline.edit") || hasPerm("dashboard.production.view");
   const canEditDdSettings = hasPerm("delivery.deadline.settings");
+  const canViewOpTarget = hasPerm("schedule.edit") || hasPerm("users.manage");
+  const canEditOpTarget = hasPerm("schedule.edit");
 
   const initialTab = canViewUsers ? "employees" : canManagePerms ? "roles" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees";
   const [tab, setTab] = useState(initialTab);
@@ -1238,6 +1320,9 @@ export default function Settings() {
         {canViewDdSettings && (
           <button role="tab" className={tab === "delivery-deadline" ? "active" : ""} onClick={() => setTab("delivery-deadline")} data-testid="settings-tab-delivery-deadline"><Truck size={14}/> Deadline Pengiriman</button>
         )}
+        {canViewOpTarget && (
+          <button role="tab" className={tab === "operator-target" ? "active" : ""} onClick={() => setTab("operator-target")} data-testid="settings-tab-operator-target"><TargetIcon size={14}/> Target Output Operator</button>
+        )}
         {canViewAudit && (
           <button role="tab" className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")} data-testid="settings-tab-audit"><ScrollText size={14}/> Audit Log</button>
         )}
@@ -1262,6 +1347,7 @@ export default function Settings() {
       {tab === "roles" && canManagePerms && <RolesTab permissionCatalog={catalog} canManagePerms={canManagePerms} notify={notify}/>}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
+      {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}
 
       <Toast msg={toast}/>

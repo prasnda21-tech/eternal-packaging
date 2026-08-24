@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os, logging, uuid, base64, re, secrets, hashlib
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
@@ -26,6 +26,18 @@ from operator_analytics import (
     compute_packing_report,
     compute_preparation_report,
     resolve_period,
+    series_grouping,
+)
+from output_reports import (
+    EXPORT_COLUMNS,
+    compute_design_report,
+    compute_output_series,
+    compute_screener_report,
+    iter_design_export_rows,
+    iter_helper_export_rows,
+    iter_operator_export_rows,
+    iter_screener_export_rows,
+    normalize_daily_targets,
 )
 from quantity_rules import (
     available_for_packing as _qr_available_for_packing,
@@ -4946,19 +4958,19 @@ async def analytics_operator_kpis(
     operator_id: Optional[str] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
+    po: Optional[str] = None,
     user=Depends(require_perm("schedule.view")),
 ):
-    """Read-only operator KPIs for Jadwal Produksi → Analitik Operator.
+    """Read-only operator KPIs for Jadwal Produksi → Analitik Output.
 
     Does not write orders/progress. Qty selesai = operator_splits.qty_completed
-    (bukan qty PO / assigned / target). Batch 2 menambah workload assignment,
-    kecepatan (qty/hari aktif), on-time terhadap order.deadline, dan analitik
-    Cetak Sample dari sample_files + sample_approval_history.
+    (bukan qty PO / assigned / target).
     """
     start, end, preset = resolve_period(period, date_from, date_to)
-    pipeline = build_operator_analytics_pipeline(operator_id, customer, item)
+    pipeline = build_operator_analytics_pipeline(operator_id, customer, item, po)
     facet_rows = await db.orders.aggregate(pipeline).to_list(1)
     blob = facet_rows[0] if facet_rows else {}
+    targets = normalize_daily_targets(await db.app_settings.find_one({"key": "operator_output_targets"}, {"_id": 0}))
     result = compute_operator_kpis(
         blob.get("docs") or [],
         date_from=start,
@@ -4966,8 +4978,22 @@ async def analytics_operator_kpis(
         operator_id=operator_id,
         customer=customer,
         item=item,
+        po=po,
+        daily_targets=targets,
     )
+    grouping = series_grouping(preset, start, end)
     result["period"]["preset"] = preset
+    result["period"]["grouping"] = grouping
+    result["output_series"] = compute_output_series(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        grouping=grouping,
+        operator_id=operator_id,
+        customer=customer,
+        item=item,
+        po=po,
+    )
     result["filters"] = {
         "operators": [
             {"id": x.get("_id"), "name": x.get("name") or x.get("_id")}
@@ -4975,6 +5001,11 @@ async def analytics_operator_kpis(
         ],
         "customers": [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")],
         "items": [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")],
+        "pos": sorted({
+            (o.get("po_number") or o.get("id"))
+            for o in (blob.get("docs") or [])
+            if (o.get("po_number") or o.get("id"))
+        }),
     }
     result["generated_at"] = now_iso()
     result["note"] = (
@@ -4992,6 +5023,7 @@ async def analytics_operator_detail(
     date_to: Optional[str] = Query(None, alias="to"),
     customer: Optional[str] = None,
     item: Optional[str] = None,
+    po: Optional[str] = None,
     status: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
@@ -4999,9 +5031,10 @@ async def analytics_operator_detail(
 ):
     """Read-only drill-down for one operator. Job history is paginated."""
     start, end, preset = resolve_period(period, date_from, date_to)
-    pipeline = build_operator_analytics_pipeline(operator_id, customer, item)
+    pipeline = build_operator_analytics_pipeline(operator_id, customer, item, po)
     facet_rows = await db.orders.aggregate(pipeline).to_list(1)
     blob = facet_rows[0] if facet_rows else {}
+    targets = normalize_daily_targets(await db.app_settings.find_one({"key": "operator_output_targets"}, {"_id": 0}))
     result = compute_operator_detail(
         blob.get("docs") or [],
         operator_id=operator_id,
@@ -5009,6 +5042,8 @@ async def analytics_operator_detail(
         date_to=end,
         customer=customer,
         item=item,
+        po=po,
+        daily_targets=targets,
         status=status,
         page=page,
         page_size=page_size,
@@ -5098,6 +5133,261 @@ async def analytics_preparation(
     }
     result["generated_at"] = now_iso()
     return result
+
+
+class OperatorDailyTargetItem(BaseModel):
+    operator_id: str
+    email: Optional[str] = None
+    qty_per_day: int = 0
+
+
+class OperatorDailyTargetsPayload(BaseModel):
+    targets: List[OperatorDailyTargetItem]
+
+
+@api_router.get("/analytics/screener")
+async def analytics_screener(
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    user_id: Optional[str] = None,
+    role: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only screener qty. Uses Screen qty timeline deltas, not PO qty."""
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_activity_analytics_pipeline(customer, item, po)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_screener_report(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        user_id=user_id,
+        role=role,
+        customer=customer,
+        item=item,
+        po=po,
+    )
+    result["period"]["preset"] = preset
+    extra_customers = [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")]
+    extra_items = [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")]
+    extra_pos = [x.get("_id") for x in (blob.get("pos") or []) if x.get("_id")]
+    result["filters"] = {
+        **(result.get("filters") or {}),
+        "customers": extra_customers,
+        "items": extra_items,
+        "pos": extra_pos,
+    }
+    result["generated_at"] = now_iso()
+    return result
+
+
+@api_router.get("/analytics/designs")
+async def analytics_designs(
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    operator_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Distinct Design / Line Cetak with actual operator completed print qty."""
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_operator_analytics_pipeline(operator_id, customer, item, po)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_design_report(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        operator_id=operator_id,
+        customer=customer,
+        item=item,
+        po=po,
+    )
+    result["period"]["preset"] = preset
+    result["generated_at"] = now_iso()
+    return result
+
+
+def _analytics_export_bytes(tab: str, rows: List[dict], fmt: str) -> Tuple[bytes, str, str]:
+    cols = EXPORT_COLUMNS.get(tab) or EXPORT_COLUMNS["operator"]
+    keys = [c[0] for c in cols]
+    headers = [c[1] for c in cols]
+    fmt = (fmt or "csv").strip().lower()
+    if fmt == "xlsx":
+        from io import BytesIO
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = tab[:31] or "export"
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(k, "") for k in keys])
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"analitik-output-{tab}.xlsx"
+    import csv
+    from io import StringIO
+    buf = StringIO()
+    buf.write("\ufeff")
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow([row.get(k, "") for k in keys])
+    return buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8", f"analitik-output-{tab}.csv"
+
+
+@api_router.get("/analytics/output/export")
+async def analytics_output_export(
+    tab: str = Query("operator"),
+    fmt: str = Query("csv"),
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    operator_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    role: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """CSV UTF-8 (Excel-safe) or XLSX export of Analitik Output, matching active filters."""
+    start, end, _preset = resolve_period(period, date_from, date_to)
+    key = (tab or "operator").strip().lower()
+    if key not in EXPORT_COLUMNS:
+        raise HTTPException(400, "tab harus operator, helper, screener, atau design")
+    who = user_id or operator_id
+    if key == "operator":
+        pipeline = build_operator_analytics_pipeline(who, customer, item, po)
+        blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+        targets = normalize_daily_targets(await db.app_settings.find_one({"key": "operator_output_targets"}, {"_id": 0}))
+        rows = iter_operator_export_rows(
+            blob.get("docs") or [], date_from=start, date_to=end,
+            operator_id=who, customer=customer, item=item, po=po, daily_targets=targets,
+        )
+    elif key == "helper":
+        pipeline = build_activity_analytics_pipeline(customer, item, po)
+        blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+        rows = iter_helper_export_rows(
+            blob.get("docs") or [], date_from=start, date_to=end,
+            user_id=who, role=role, customer=customer, item=item, po=po,
+        )
+    elif key == "screener":
+        pipeline = build_activity_analytics_pipeline(customer, item, po)
+        blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+        rows = iter_screener_export_rows(
+            blob.get("docs") or [], date_from=start, date_to=end,
+            user_id=who, role=role, customer=customer, item=item, po=po,
+        )
+    else:
+        pipeline = build_operator_analytics_pipeline(who, customer, item, po)
+        blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+        rows = iter_design_export_rows(
+            blob.get("docs") or [], date_from=start, date_to=end,
+            operator_id=who, customer=customer, item=item, po=po,
+        )
+    payload, media, filename = _analytics_export_bytes(key, rows, fmt)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return FastAPIResponse(content=payload, media_type=media, headers=headers)
+
+
+@api_router.get("/analytics/operator-targets")
+async def get_operator_output_targets(user=Depends(require_perm("schedule.view"))):
+    """Current daily output targets per operator. Analytics uses this current value for all periods."""
+    doc = await db.app_settings.find_one({"key": "operator_output_targets"}, {"_id": 0}) or {}
+    targets = doc.get("targets") or []
+    if isinstance(targets, dict):
+        targets = [
+            {"operator_id": k, "email": (v.get("email") if isinstance(v, dict) else k),
+             "qty_per_day": (v.get("qty_per_day") if isinstance(v, dict) else v)}
+            for k, v in targets.items()
+        ]
+    ops = await db.users.find(
+        {"role": "operator", "status": {"$ne": "inactive"}},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(200)
+    by_email = {t.get("email"): t for t in targets if t.get("email")}
+    by_id = {str(t.get("operator_id")): t for t in targets if t.get("operator_id")}
+    merged = []
+    for op in ops:
+        t = by_id.get(str(op.get("id"))) or by_email.get(op.get("email")) or {}
+        merged.append({
+            "operator_id": op.get("id") or op.get("email"),
+            "email": op.get("email"),
+            "name": op.get("name") or op.get("email"),
+            "qty_per_day": int(t.get("qty_per_day") or 0),
+        })
+    extra_emails = set(by_email) - {o.get("email") for o in ops}
+    for em in sorted(extra_emails):
+        t = by_email[em]
+        merged.append({
+            "operator_id": t.get("operator_id") or em,
+            "email": em,
+            "name": t.get("name") or em,
+            "qty_per_day": int(t.get("qty_per_day") or 0),
+        })
+    eff = await user_permissions(user)
+    can_edit = user.get("role") == "admin" or "schedule.edit" in eff
+    return {
+        "targets": merged,
+        "updated_at": doc.get("updated_at"),
+        "updated_by": doc.get("updated_by"),
+        "limitation": (
+            "Current target only. Settings tidak punya effective_from — perubahan target "
+            "berlaku ke semua periode analytics (historical tidak di-restate)."
+        ),
+        "can_edit": can_edit,
+    }
+
+
+@api_router.put("/analytics/operator-targets")
+async def put_operator_output_targets(payload: OperatorDailyTargetsPayload, user=Depends(current_user)):
+    await _require_perm(user, "schedule.edit")
+    cleaned = []
+    seen = set()
+    for t in payload.targets or []:
+        email = (t.email or t.operator_id or "").strip()
+        oid = (t.operator_id or email).strip()
+        if not oid:
+            continue
+        if oid in seen:
+            continue
+        seen.add(oid)
+        qty = int(t.qty_per_day or 0)
+        if qty < 0:
+            raise HTTPException(400, "Target per hari tidak boleh negatif")
+        cleaned.append({"operator_id": oid, "email": email or oid, "qty_per_day": qty})
+    doc = {
+        "key": "operator_output_targets",
+        "targets": cleaned,
+        "updated_by": user.get("email"),
+        "updated_by_name": user.get("name"),
+        "updated_at": now_iso(),
+    }
+    await db.app_settings.update_one({"key": "operator_output_targets"}, {"$set": doc}, upsert=True)
+    await _write_audit(
+        action="operator.output_target.settings.update",
+        actor=user,
+        target_email="-",
+        after={"targets": cleaned},
+    )
+    return {
+        "targets": cleaned,
+        "updated_at": doc["updated_at"],
+        "updated_by": doc["updated_by"],
+        "limitation": (
+            "Current target only. Settings tidak punya effective_from — perubahan target "
+            "berlaku ke semua periode analytics (historical tidak di-restate)."
+        ),
+    }
 
 
 # ---------- Reminders (deadline monitoring) ----------
