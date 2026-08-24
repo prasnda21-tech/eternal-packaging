@@ -33,7 +33,10 @@ from quantity_rules import (
     print_available_for_packing as _qr_print_available_for_packing,
     print_completed_qty as _qr_print_completed_qty,
     print_line_indices as _qr_print_line_indices,
+    print_qty_remaining as _qr_print_qty_remaining,
+    print_qty_target as _qr_print_qty_target,
     print_qty_total as _qr_print_qty_total,
+    print_status as _qr_print_status,
     qty_delivered as _qr_qty_delivered,
     qty_packed as _qr_qty_packed,
     requires_printing as _qr_requires_printing,
@@ -53,6 +56,7 @@ from workflow_gates import (
     packing_qty_input as _wg_packing_qty_input,
     payment_ok as _wg_payment_ok,
     penjadwalan_done as _wg_penjadwalan_done,
+    print_qty_gate_reason as _wg_print_qty_gate_reason,
     print_qty_input as _wg_print_qty_input,
     sample_ok as _wg_sample_ok,
     sample_uploaded as _wg_sample_uploaded,
@@ -764,7 +768,9 @@ _DERIVED_ORDER_KEYS = (
     "non_print_qty_total", "print_completed_qty", "available_for_packing",
     "operator_assigned_qty", "helper_prepared_print_qty",
     "operator_assignment_cap", "print_available_for_packing",
+    "print_qty_target", "print_qty_remaining", "print_status",
     "workflow_ready", "operator_unlocked", "screener_gate_reason",
+    "print_qty_gate_reason",
     "packing_lines",
 )
 
@@ -781,6 +787,9 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["operator_assignment_cap"] = _operator_assignment_cap(order)
     order["print_available_for_packing"] = _print_available_for_packing(order)
     order["available_for_packing"] = _available_for_packing(order)
+    order["print_qty_target"] = _qr_print_qty_target(order)
+    order["print_qty_remaining"] = _qr_print_qty_remaining(order)
+    order["print_status"] = _qr_print_status(order)
     order["packing_lines"] = _qr_packing_line_breakdown(order)
     _attach_workflow_snapshot(order)
 
@@ -791,6 +800,7 @@ def _attach_workflow_snapshot(order: dict) -> None:
     order["workflow_ready"] = ready
     order["operator_unlocked"] = bool(ready.get("operator"))
     order["screener_gate_reason"] = _wg_screener_gate_reason(order, for_sample=True)
+    order["print_qty_gate_reason"] = _wg_print_qty_gate_reason(order)
 
 
 def _sync_workflow_stage(order: dict, *, force: bool = False) -> bool:
@@ -800,6 +810,12 @@ def _sync_workflow_stage(order: dict, *, force: bool = False) -> bool:
 
 def _ensure_screener_for_operator_work(order: dict, *, for_sample: bool = False):
     reason = _wg_screener_gate_reason(order, for_sample=for_sample)
+    if reason:
+        raise HTTPException(400, reason)
+
+
+def _ensure_print_qty_allowed(order: dict):
+    reason = _wg_print_qty_gate_reason(order)
     if reason:
         raise HTTPException(400, reason)
 
@@ -2042,6 +2058,8 @@ def _op_task_predicate(o: dict, user_email: str, is_supervisor: bool):
     yang di-assign ke user (kecuali supervisor scope)."""
     if not _requires_printing(o):
         return []
+    if not _sample_ok(o):
+        return []
     splits = o.get("operator_splits") or []
     pending = []
     for s in splits:
@@ -2370,18 +2388,26 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
             raise HTTPException(404, "Operator split tidak ditemukan")
         if role == "operator" and found["operator_email"] != user.get("email"):
             raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
-        _ensure_screener_for_operator_work(order)
-        qty = max(0, min(int(payload.qty_completed), int(found["quantity"])))
+        _ensure_print_qty_allowed(order)
+        requested = int(payload.qty_completed)
+        cap = int(found["quantity"])
+        if requested < 0:
+            raise HTTPException(400, "Qty cetak selesai tidak boleh negatif.")
+        if requested > cap:
+            raise HTTPException(
+                400,
+                f"Qty selesai ({requested}) melebihi alokasi operator ({cap}).",
+            )
         others = sum(
             int(s.get("qty_completed") or 0)
             for s in splits if s.get("id") != found.get("id")
         )
-        err = _qr_validate_print_completed_total(others + qty, order)
+        err = _qr_validate_print_completed_total(others + requested, order)
         if err:
             raise HTTPException(400, err)
-        found["qty_completed"] = qty
+        found["qty_completed"] = requested
         found["updated_at"] = now_iso()
-        add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: {qty}/{found['quantity']}")
+        add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: {requested}/{found['quantity']}")
 
     order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
@@ -2629,6 +2655,7 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
     if not order.get("sample_files"):
         raise HTTPException(400, "Belum ada file sampel yang diupload — tidak dapat approve.")
     before = {"sample_approved": bool(order.get("sample_approved")), "sample_approved_by": order.get("sample_approved_by")}
+    was_approved = bool(order.get("sample_approved"))
     if payload.approved:
         order["sample_approved"] = True
         order["sample_approved_by"] = user.get("email")
@@ -2648,16 +2675,25 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
         order["sample_approved_by"] = None
         order["sample_approved_by_name"] = None
         order["sample_approved_at"] = None
+        reject_action = "revoke" if was_approved else "reject"
         order.setdefault("sample_approval_history", []).append({
-            "action": "revoke",
+            "action": reject_action,
             "by_email": user.get("email"),
             "by_name": user.get("name"),
             "at": now_iso(),
             "note": payload.note or "",
         })
-        audit_action = "sample.approve.revoke"
+        audit_action = "sample.approve.revoke" if was_approved else "sample.reject"
         _sync_workflow_stage(order, force=True)
-    add_timeline(order, order["current_stage"], user, note=("Sampel disetujui" if payload.approved else "Approval sampel dibatalkan"))
+    add_timeline(
+        order,
+        order["current_stage"],
+        user,
+        note=(
+            "Sampel disetujui" if payload.approved
+            else ("Approval sampel dibatalkan" if was_approved else "Sampel ditolak")
+        ),
+    )
     await _persist_order(order)
     await _audit_po(order, audit_action, user, before=before,
                     after={"sample_approved": bool(order.get("sample_approved")), "sample_approved_by": order.get("sample_approved_by")},

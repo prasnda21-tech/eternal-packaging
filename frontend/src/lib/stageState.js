@@ -28,7 +28,15 @@ export function group2Complete(order) {
 
 export function getWorkflowReady(order) {
   if (order?.workflow_ready && typeof order.workflow_ready === "object") {
-    return order.workflow_ready;
+    const ready = order.workflow_ready;
+    if (ready.print_qty === undefined) {
+      const reqPrint = order?.requires_printing !== false;
+      return {
+        ...ready,
+        print_qty: !!(reqPrint && ready.operator && order?.sample_approved),
+      };
+    }
+    return ready;
   }
   const g2 = group2Complete(order);
   const scheduled = penjadwalanDone(order);
@@ -47,6 +55,7 @@ export function getWorkflowReady(order) {
     operator: op,
     sample_upload: reqPrint && op,
     sample_approval: reqPrint && uploaded && op,
+    print_qty: reqPrint && op && sampleApproved(order),
     packing: reqPrint ? sampleApproved(order) : g2 && scheduled,
   };
 }
@@ -69,10 +78,25 @@ function sampleUploaded(order) {
 function sampleApproved(order) {
   return !!order?.sample_approved;
 }
-function printQtyInput(order) {
-  return (order?.operator_splits || []).some(
-    (s) => hasValue(s?.qty_completed) && Number(s.qty_completed) > 0
-  );
+function printCompletedQty(order) {
+  if (typeof order?.print_completed_qty === "number") return Number(order.print_completed_qty);
+  return (order?.operator_splits || []).reduce((s, x) => s + Number(x?.qty_completed || 0), 0);
+}
+function printQtyTarget(order) {
+  if (typeof order?.print_qty_target === "number" && Number(order.print_qty_target) > 0) {
+    return Number(order.print_qty_target);
+  }
+  const assigned = Number(order?.operator_assigned_qty || 0);
+  if (assigned > 0) return assigned;
+  return Number(order?.print_qty_total || 0);
+}
+function printStatusOf(order) {
+  if (order?.print_status) return order.print_status;
+  const completed = printCompletedQty(order);
+  const target = printQtyTarget(order);
+  if (completed <= 0) return "BELUM MULAI CETAK";
+  if (target > 0 && completed >= target) return "SELESAI CETAK";
+  return "BELUM SELESAI CETAK";
 }
 function packingQtyInput(order) {
   const lines = order?.packing_info?.lines;
@@ -168,9 +192,11 @@ export function resolveStageState(idx, order, currentStage) {
       if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
-    if (printQtyInput(order)) return { state: "done", label: "Selesai" };
-    if (ready.operator) return { state: "current", label: "Menunggu input qty cetak" };
-    return { state: "pending", label: "Menunggu" };
+    const status = printStatusOf(order);
+    if (status === "SELESAI CETAK") return { state: "done", label: "SELESAI CETAK" };
+    if (!ready.print_qty) return { state: "pending", label: "Menunggu" };
+    if (status === "BELUM SELESAI CETAK") return { state: "current", label: "BELUM SELESAI CETAK" };
+    return { state: "current", label: "BELUM MULAI CETAK" };
   }
   if (idx === STAGE_PACKING) {
     if (packingDone(order)) return { state: "done", label: "Selesai" };

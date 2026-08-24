@@ -58,18 +58,31 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const remaining = assignmentCap - totalAssigned;
   const ready = getWorkflowReady(order);
   const scheduleLocked = mode !== "progress" && !ready.penjadwalan;
-  const progressLocked = mode !== "schedule" && !ready.operator;
+  const printQtyReady = ready.print_qty === true;
+  const progressLocked = mode !== "schedule" && !printQtyReady;
   const screenerGateMsg = order?.screener_gate_reason || "Qty Screener harus diisi sebelum pekerjaan Operator.";
+  const printQtyGateMsg = order?.print_qty_gate_reason
+    || (!order?.sample_approved
+      ? "Cetak Sample harus disetujui sebelum Qty Selesai Cetak dapat diisi."
+      : screenerGateMsg);
   const showSchedule = mode === "all" || mode === "schedule";
   const showProgress = mode === "all" || mode === "progress";
   const persistedSplits = order.operator_splits || [];
-  const anyProgress = persistedSplits.some((s) => Number(s.qty_completed || 0) > 0);
-  const allProgressDone = persistedSplits.length > 0 && persistedSplits.every(
-    (s) => Number(s.qty_completed || 0) >= Number(s.quantity || 0) && Number(s.quantity || 0) > 0
-  );
+  const completedQty = typeof order?.print_completed_qty === "number"
+    ? Number(order.print_completed_qty)
+    : persistedSplits.reduce((s, x) => s + Number(x.qty_completed || 0), 0);
+  const printTarget = (typeof order?.print_qty_target === "number" && Number(order.print_qty_target) > 0)
+    ? Number(order.print_qty_target)
+    : (typeof order?.operator_assigned_qty === "number" && Number(order.operator_assigned_qty) > 0
+      ? Number(order.operator_assigned_qty)
+      : totalAssigned || printQtyTotal);
+  const printRemaining = Math.max(0, printTarget - completedQty);
+  const printStatus = order?.print_status
+    || (completedQty <= 0
+      ? "BELUM MULAI CETAK"
+      : (printTarget > 0 && completedQty >= printTarget ? "SELESAI CETAK" : "BELUM SELESAI CETAK"));
   const scheduleStatus = totalAssigned > 0 ? "SAVED" : (scheduleLocked ? "IDLE" : "READY");
-  const progressStatus = allProgressDone ? "DONE" : anyProgress ? "IN PROGRESS" : (progressLocked ? "IDLE" : "READY");
-  const statusLabel = showProgress && !showSchedule ? progressStatus : scheduleStatus;
+  const statusLabel = showProgress && !showSchedule ? printStatus : scheduleStatus;
 
   // Per-line assigned totals for UX guardrails.
   const perLineAssigned = useMemo(() => {
@@ -145,7 +158,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
 
   const updateQty = async (op) => {
     if (progressLocked) {
-      setErr(screenerGateMsg);
+      setErr(printQtyGateMsg);
       return;
     }
     const raw = qtyDrafts[op.id];
@@ -165,7 +178,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   };
 
   const panelTestId = mode === "progress" ? "operator-progress-panel" : "operator-split-panel";
-  const title = mode === "progress" ? "Operator" : "Pembagian Jadwal";
+  const title = mode === "progress" ? "Qty Selesai Cetak" : "Pembagian Jadwal";
   const HeadIcon = mode === "progress" ? Users : CalendarClock;
 
   // Full non-print → Pembagian Operator TIDAK DIPERLUKAN.
@@ -191,16 +204,33 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   return (
     <section className="panel qty-ops-panel" data-testid={panelTestId}>
       <QtyOpsHead icon={HeadIcon} title={title}>
-        <span className={`qty-status ${statusClassFor(statusLabel)}`}>{statusLabel}</span>
-        <span className="muted small" data-testid="operator-scope-badge">
-          Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
-        </span>
+        <span className={`qty-status ${statusClassFor(statusLabel)}`} data-testid={showProgress && !showSchedule ? "print-status-badge" : undefined}>{statusLabel}</span>
+        {showSchedule && (
+          <span className="muted small" data-testid="operator-scope-badge">
+            Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
+          </span>
+        )}
         {helperCapSet && (
           <span className="muted small" data-testid="operator-helper-cap-badge">
             Cap Helper: {Number(assignmentCap).toLocaleString("id-ID")} pcs
           </span>
         )}
       </QtyOpsHead>
+
+      {showProgress && (
+        <MetricRow columns={4} testid="print-qty-metrics">
+          <MetricCell label="Target Cetak" value={printTarget} testid="print-qty-target" />
+          <MetricCell label="Selesai" value={completedQty} testid="print-qty-completed" />
+          <MetricCell label="Sisa" value={printRemaining} testid="print-qty-remaining" />
+          <MetricCell
+            label="Status"
+            value={printStatus}
+            format="text"
+            className="is-status"
+            testid="print-status"
+          />
+        </MetricRow>
+      )}
 
       {showSchedule && (
         <MetricRow columns={3}>
@@ -229,7 +259,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         </p>
       )}
       {progressLocked && showProgress && (
-        <p className="muted small" data-testid="operator-screener-gate-note">{screenerGateMsg}</p>
+        <p className="muted small" data-testid="operator-sample-gate-note">{printQtyGateMsg}</p>
       )}
 
       {showProgress && (

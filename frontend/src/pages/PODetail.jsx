@@ -788,10 +788,9 @@ export default function PODetail() {
       </div>
 
       <div className="workflow-group" data-testid="workflow-group-5">
-        <p className="workflow-group-label">5 · Operator &amp; Cetak Sample</p>
-      {/* 09 Operator */}
+        <p className="workflow-group-label">5 · Cetak Sample &amp; Qty Selesai</p>
+      {/* A Cetak Sample */}
       <div data-testid="workflow-slot-8" data-workflow-stage="8">
-      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="progress" />
       <AttachmentsPanel
         order={order}
         user={user}
@@ -800,51 +799,45 @@ export default function PODetail() {
       />
       </div>
 
-      {/* 11 Cetak */}
-      <div data-testid="workflow-slot-10" data-workflow-stage="10">
-      <section className="panel" data-testid="cetak-panel">
-        <header className="panel-head">
-          <h3>Cetak</h3>
-          <span className="pill sm">Operator</span>
-        </header>
-        {order.requires_printing === false ? (
-          <p className="muted small" data-testid="cetak-not-required-note">PO ini tidak memerlukan proses Cetak.</p>
-        ) : (
-          <p className="muted small" data-testid="cetak-progress-note">
-            Selesai operator: <b>{Number(order.print_completed_qty || 0).toLocaleString("id-ID")}</b>
-            {" "}· Cap Helper: <b>{order.helper_prepared_print_qty == null ? "belum diisi" : Number(order.helper_prepared_print_qty).toLocaleString("id-ID")}</b>
-            {" "}· Target Cetak: <b>{Number(order.print_qty_total || 0).toLocaleString("id-ID")}</b>
-          </p>
-        )}
-      </section>
-      </div>
-      </div>
-
-      {/* 10 Approval Cetak Sample */}
+      {/* B Approval Cetak Sample */}
       <div data-testid="workflow-slot-9" data-workflow-stage="9">
-      <section className="panel" data-testid="approval-sample-panel">
-        <header className="panel-head">
-          <h3>Approval Cetak Sample</h3>
-          {order.sample_approved ? (
-            <span className="pill sm" style={{background:"#e5f5e5",color:"#2b7a2b"}} data-testid="sample-status-badge">
-              Sampel disetujui
-              {order.sample_approved_by_name ? ` — ${order.sample_approved_by_name}` : ""}
-            </span>
-          ) : (order.sample_files?.length || 0) > 0 ? (
-            <span className="pill sm" style={{background:"#fef4d6",color:"#a16d1f"}} data-testid="sample-status-badge">
-              Menunggu approval sampel
-            </span>
-          ) : (
-            <span className="pill sm" style={{background:"#f2eee7",color:"#7a6a4a"}} data-testid="sample-status-badge">
-              Menunggu upload sampel
-            </span>
-          )}
+      <section className="panel qty-ops-panel" data-testid="approval-sample-panel">
+        <header className="panel-head qty-ops-head">
+          <div className="qty-ops-title">
+            <h3>Approval Cetak Sample</h3>
+          </div>
+          <div className="qty-ops-head-meta">
+            {order.sample_approved ? (
+              <span className={`qty-status ${statusClassFor("APPROVED")}`} data-testid="sample-status-badge">
+                APPROVED
+                {order.sample_approved_by_name ? ` — ${order.sample_approved_by_name}` : ""}
+              </span>
+            ) : (order.sample_approval_history || []).slice(-1)[0]?.action === "reject" ? (
+              <span className={`qty-status ${statusClassFor("REJECTED")}`} data-testid="sample-status-badge">
+                REJECTED
+              </span>
+            ) : (order.sample_files?.length || 0) > 0 ? (
+              <span className={`qty-status ${statusClassFor("READY")}`} data-testid="sample-status-badge">
+                READY
+              </span>
+            ) : (
+              <span className="qty-status" data-testid="sample-status-badge">
+                IDLE
+              </span>
+            )}
+          </div>
         </header>
+        <div className="qty-ops-body">
         <div className="sample-actions" data-testid="sample-actions" style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
           {canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
-            <button className="primary" onClick={approveSample} disabled={busy} data-testid="approve-sample-button">
-              <FileCheck2 size={16} /> Approve Sampel Cetak
-            </button>
+            <>
+              <button className="primary" onClick={approveSample} disabled={busy} data-testid="approve-sample-button">
+                <FileCheck2 size={16} /> Approve
+              </button>
+              <button className="ghost" onClick={() => run(() => api.approveSample(order.id, false, note), "Sampel ditolak")} disabled={busy} data-testid="reject-sample-button">
+                <XCircle size={16} /> Reject
+              </button>
+            </>
           )}
           {canApproveSample && order.sample_approved && (order.current_stage || 0) < 12 && (
             <button className="ghost" onClick={rejectSample} disabled={busy} data-testid="revoke-sample-button">
@@ -852,10 +845,19 @@ export default function PODetail() {
             </button>
           )}
           {!canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
-            <p className="muted small" data-testid="sample-readonly-note">Butuh permission Penjadwalan / approval sampel untuk approve sampel cetak.</p>
+            <p className="muted small" data-testid="sample-readonly-note">Butuh permission Penjadwalan untuk approval sampel cetak.</p>
           )}
         </div>
+        </div>
       </section>
+      </div>
+
+      {/* C Operator / Qty Selesai Cetak */}
+      <div data-testid="workflow-slot-10" data-workflow-stage="10">
+      <div data-testid="cetak-panel">
+      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="progress" />
+      </div>
+      </div>
       </div>
 
       {/* 12 Packing */}

@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from workflow_gates import (
+    SAMPLE_GATE_PRINT_QTY_MSG,
     SCREENER_GATE_OPERATOR_MSG,
     SCREENER_GATE_SAMPLE_MSG,
     compute_compatible_stage,
@@ -25,6 +26,8 @@ from workflow_gates import (
     packing_unlocked,
     payment_ok,
     penjadwalan_done,
+    print_qty_gate_reason,
+    print_qty_unlocked,
     sample_ok,
     sample_uploaded,
     screener_done,
@@ -174,6 +177,7 @@ class TestScreenerGateAndHelperParallel:
         assert o["current_stage"] == 8
         assert workflow_ready(o)["operator"] is True
         assert workflow_ready(o)["sample_upload"] is True
+        assert workflow_ready(o)["print_qty"] is False
         assert not helper_done(o)
 
     def test_helper_save_does_not_unlock_operator(self):
@@ -205,6 +209,7 @@ class TestSampleApprovalFlow:
         sync_workflow_stage(o)
         assert o["current_stage"] == 9
         assert workflow_ready(o)["sample_approval"] is True
+        assert workflow_ready(o)["print_qty"] is False
         assert not packing_unlocked(o)
 
     def test_g_sample_approved_unlocks_packing(self):
@@ -217,6 +222,7 @@ class TestSampleApprovalFlow:
         assert packing_unlocked(o)
         assert o["current_stage"] == 11
         assert workflow_ready(o)["packing"] is True
+        assert workflow_ready(o)["print_qty"] is True
 
     def test_h_reject_locks_packing_keeps_sample_files(self):
         o = self._operator_ready(
@@ -229,6 +235,8 @@ class TestSampleApprovalFlow:
         assert o["current_stage"] == 9
         assert sample_uploaded(o)
         assert workflow_ready(o)["sample_upload"] is True
+        assert workflow_ready(o)["print_qty"] is False
+        assert print_qty_gate_reason(o) == SAMPLE_GATE_PRINT_QTY_MSG
 
     def test_sync_does_not_advance_past_packing(self):
         o = self._operator_ready(
@@ -255,3 +263,118 @@ class TestPenjadwalanDoesNotNeedScreener:
         assert ready["screener"] is True
         assert ready["helper"] is True
         assert ready["operator"] is False
+        assert ready["print_qty"] is False
+
+
+# ---------- TEST A–H: sample approval gates Qty Selesai Cetak ----------
+
+class TestPrintQtySampleGate:
+    def _screener_ready(self, **extra):
+        extra.setdefault("current_stage", 8)
+        extra.setdefault(
+            "operator_splits",
+            [
+                {"id": "a", "quantity": 1000, "qty_completed": 0},
+                {"id": "b", "quantity": 1000, "qty_completed": 0},
+                {"id": "c", "quantity": 1000, "qty_completed": 0},
+            ],
+        )
+        extra.setdefault("line_items", [
+            {"name": "Kaos", "quantity": 6000, "production_process": "print"},
+        ])
+        extra.setdefault("total_quantity", 6000)
+        return _po(
+            design_files=[{"id": "d"}],
+            payment_files=[{"id": "p"}],
+            design_status="Approved",
+            payment_status="Approved",
+            screener_info={"screen_qty": 2},
+            **extra,
+        )
+
+    def test_a_screener_valid_sample_not_uploaded_qty_locked(self):
+        o = self._screener_ready(sample_files=[])
+        assert screener_done(o)
+        assert operator_unlocked(o)
+        assert not sample_uploaded(o)
+        assert not print_qty_unlocked(o)
+        assert workflow_ready(o)["print_qty"] is False
+        assert print_qty_gate_reason(o) == SAMPLE_GATE_PRINT_QTY_MSG
+
+    def test_b_sample_uploaded_not_approved_qty_locked(self):
+        o = self._screener_ready(sample_files=[{"id": "sm"}])
+        assert sample_uploaded(o)
+        assert not sample_ok(o)
+        assert workflow_ready(o)["sample_approval"] is True
+        assert workflow_ready(o)["print_qty"] is False
+        assert print_qty_gate_reason(o) == SAMPLE_GATE_PRINT_QTY_MSG
+
+    def test_c_sample_rejected_qty_locked_upload_still_open(self):
+        o = self._screener_ready(
+            sample_files=[{"id": "sm"}],
+            sample_approved=False,
+            sample_approval_history=[{"action": "reject"}],
+        )
+        assert not print_qty_unlocked(o)
+        assert workflow_ready(o)["sample_upload"] is True
+        assert workflow_ready(o)["print_qty"] is False
+        assert print_qty_gate_reason(o) == SAMPLE_GATE_PRINT_QTY_MSG
+
+    def test_d_sample_approved_qty_unlocked(self):
+        o = self._screener_ready(sample_files=[{"id": "sm"}], sample_approved=True)
+        assert print_qty_unlocked(o)
+        assert workflow_ready(o)["print_qty"] is True
+        assert print_qty_gate_reason(o) is None
+
+    def test_e_partial_1000_of_3000_not_done(self):
+        from quantity_rules import print_qty_target, print_status, PRINT_STATUS_IN_PROGRESS
+        o = self._screener_ready(
+            sample_files=[{"id": "sm"}],
+            sample_approved=True,
+            operator_splits=[
+                {"id": "a", "quantity": 1000, "qty_completed": 1000},
+                {"id": "b", "quantity": 1000, "qty_completed": 0},
+                {"id": "c", "quantity": 1000, "qty_completed": 0},
+            ],
+        )
+        assert print_qty_target(o) == 3000
+        assert print_status(o) == PRINT_STATUS_IN_PROGRESS
+
+    def test_f_cumulative_3000_done(self):
+        from quantity_rules import print_status, PRINT_STATUS_DONE
+        o = self._screener_ready(
+            sample_files=[{"id": "sm"}],
+            sample_approved=True,
+            operator_splits=[
+                {"id": "a", "quantity": 1000, "qty_completed": 1000},
+                {"id": "b", "quantity": 1000, "qty_completed": 1000},
+                {"id": "c", "quantity": 1000, "qty_completed": 1000},
+            ],
+        )
+        assert print_status(o) == PRINT_STATUS_DONE
+
+    def test_g_over_target_rejected(self):
+        from quantity_rules import validate_print_completed_total
+        o = self._screener_ready(
+            sample_files=[{"id": "sm"}],
+            sample_approved=True,
+        )
+        assert validate_print_completed_total(3000, o) is None
+        assert validate_print_completed_total(3001, o) is not None
+
+    def test_h_partial_print_still_available_for_packing(self):
+        from quantity_rules import available_for_packing, print_status, PRINT_STATUS_IN_PROGRESS
+        o = self._screener_ready(
+            sample_files=[{"id": "sm"}],
+            sample_approved=True,
+            helper_prep={"qty_prepared": 3000},
+            operator_splits=[
+                {"id": "a", "quantity": 1000, "qty_completed": 1000},
+                {"id": "b", "quantity": 1000, "qty_completed": 0},
+                {"id": "c", "quantity": 1000, "qty_completed": 0},
+            ],
+        )
+        assert print_status(o) == PRINT_STATUS_IN_PROGRESS
+        assert packing_unlocked(o)
+        assert available_for_packing(o) == 1000
+

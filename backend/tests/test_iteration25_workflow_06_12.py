@@ -218,6 +218,17 @@ class TestAdvanceGates:
         order = r.json()["order"]
         assert order["current_stage"] == 8
         assert order.get("workflow_ready", {}).get("operator") is True
+        assert order.get("workflow_ready", {}).get("print_qty") is False
+
+    def test_operator_progress_blocked_without_sample_approval(self, admin_sess, po_id, operator_info):
+        r = self._assign(admin_sess, po_id, operator_info)
+        split_id = r.json()["order"]["operator_splits"][0]["id"]
+        admin_sess.post(f"{API}/orders/{po_id}/screener-info", json={"screen_qty": 100})
+        r = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
+                            json={"operator_id": split_id, "qty_completed": 10})
+        assert r.status_code == 400, r.text
+        detail = r.json().get("detail") or ""
+        assert "Cetak Sample harus disetujui" in detail
 
 
 class TestBugCSampleApproval:
@@ -270,6 +281,29 @@ class TestBugCSampleApproval:
         assert len(order["sample_files"]) >= 2, "History file lama harus tetap ada"
         history = order.get("sample_approval_history") or []
         assert any(h.get("action") == "reset-on-new-upload" for h in history)
+
+    def test_progress_blocked_until_sample_approved_then_enabled(self, admin_sess, po_id, operator_info):
+        self._prep_to_stage9(admin_sess, po_id, operator_info)
+        r = admin_sess.get(f"{API}/orders/{po_id}")
+        order = r.json()["order"]
+        split_id = order["operator_splits"][0]["id"]
+        blocked = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
+                                  json={"operator_id": split_id, "qty_completed": 10})
+        assert blocked.status_code == 400, blocked.text
+        admin_sess.post(f"{API}/orders/{po_id}/approve-sample", json={"approved": False})
+        still = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
+                                json={"operator_id": split_id, "qty_completed": 10})
+        assert still.status_code == 400, still.text
+        admin_sess.post(f"{API}/orders/{po_id}/approve-sample", json={"approved": True})
+        ok = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
+                             json={"operator_id": split_id, "qty_completed": 10})
+        assert ok.status_code == 200, ok.text
+        got = ok.json()["order"]
+        assert got["print_completed_qty"] == 10
+        assert got["print_status"] == "BELUM SELESAI CETAK"
+        over = admin_sess.post(f"{API}/orders/{po_id}/operator-progress",
+                               json={"operator_id": split_id, "qty_completed": 101})
+        assert over.status_code == 400, over.text
 
 
 class TestPrintQtyAndPackedGate:
