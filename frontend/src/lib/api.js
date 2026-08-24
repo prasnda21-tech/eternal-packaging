@@ -38,7 +38,12 @@ export const api = {
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
   updateLoading: (id, payload) => client.post(`/orders/${id}/loading`, payload).then((r) => r.data),
   markPacked: (id) => client.post(`/orders/${id}/packed`).then((r) => r.data),
-  savePackingInfo: (id, qty_packed, notes = "") => client.post(`/orders/${id}/packing-info`, { qty_packed, notes }).then((r) => r.data),
+  savePackingInfo: (id, linesOrQty, notes = "") => {
+    const body = Array.isArray(linesOrQty)
+      ? { lines: linesOrQty, notes }
+      : { qty_packed: linesOrQty, notes };
+    return client.post(`/orders/${id}/packing-info`, body).then((r) => r.data);
+  },
   updateOrderWorkDate: (id, work_date) => client.patch(`/orders/${id}/work-date`, { work_date }).then((r) => r.data),
   updateOperatorWorkDate: (id, split_id, work_date) => client.patch(`/orders/${id}/operator-splits/${split_id}/work-date`, { work_date }).then((r) => r.data),
   createSuratJalan: (id, delivery_note_number = null, notes = "") => client.post(`/orders/${id}/surat-jalan`, { delivery_note_number, notes }).then((r) => r.data),

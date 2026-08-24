@@ -130,8 +130,48 @@ def print_available_for_packing(order: dict) -> int:
     return max(0, min(completed, prepared))
 
 
+def packing_lines_stored(order: dict) -> Optional[list]:
+    """Persisted per-line packed rows. None = PO masih pakai qty_packed total lama."""
+    raw = (order.get("packing_info") or {}).get("lines")
+    if not isinstance(raw, list) or not raw:
+        return None
+    return raw
+
+
+def qty_packed_for_line(order: dict, line_idx: int) -> int:
+    """Packed qty satu line. Legacy tanpa packing_info.lines → 0 (jangan asumsi)."""
+    lines = packing_lines_stored(order)
+    if lines is None:
+        return 0
+    for it in lines:
+        if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
+            return max(0, _safe_int(it.get("packed_qty")))
+    return 0
+
+
 def qty_packed(order: dict) -> int:
+    """Total packed = SUM(line packed) bila ada packing_info.lines, else qty_packed lama."""
+    lines = packing_lines_stored(order)
+    if lines is not None:
+        return sum(max(0, _safe_int(it.get("packed_qty"))) for it in lines)
     return max(0, _safe_int((order.get("packing_info") or {}).get("qty_packed")))
+
+
+def qty_packed_print(order: dict) -> int:
+    """Qty packing pada line Cetak. Legacy tanpa lines: packed − non_print."""
+    lines = packing_lines_stored(order)
+    lis = order.get("line_items") or []
+    if lines is None:
+        return max(0, qty_packed(order) - non_print_qty_total(order))
+    total = 0
+    for it in lines:
+        idx = _safe_int(it.get("line_idx"), default=-1)
+        if not lis:
+            total += max(0, _safe_int(it.get("packed_qty")))
+            continue
+        if 0 <= idx < len(lis) and is_print_line(lis[idx]):
+            total += max(0, _safe_int(it.get("packed_qty")))
+    return total
 
 
 def qty_delivered(order: dict) -> int:
@@ -162,6 +202,123 @@ def available_for_packing(order: dict) -> int:
     required = packing_required_total(order)
     avail = non_print_qty_total(order) + print_available_for_packing(order)
     return max(0, min(required, avail))
+
+
+def print_completed_for_line(order: dict, line_idx: int) -> int:
+    """Qty cetak selesai Operator untuk satu line. Split tanpa line_idx diabaikan."""
+    total = 0
+    for s in (order.get("operator_splits") or []):
+        if s.get("line_idx") is None:
+            continue
+        if _safe_int(s.get("line_idx"), default=-1) == int(line_idx):
+            total += max(0, _safe_int(s.get("qty_completed")))
+    return total
+
+
+def _unassigned_print_completed(order: dict) -> int:
+    total = 0
+    for s in (order.get("operator_splits") or []):
+        if s.get("line_idx") is None:
+            total += max(0, _safe_int(s.get("qty_completed")))
+    return total
+
+
+def available_for_packing_line(order: dict, line_idx: int) -> int:
+    """Availability satu line. Tidak memakai sisa availability line lain.
+
+    Cetak: MIN(print_completed, helper_prepared, qty_po)
+    Non-cetak: qty_po (langsung, tanpa Operator).
+    """
+    lis = order.get("line_items") or []
+    if not lis:
+        return available_for_packing(order) if int(line_idx) == 0 else 0
+    idx = int(line_idx)
+    if idx < 0 or idx >= len(lis):
+        return 0
+    li = lis[idx]
+    qty = max(0, _safe_int(li.get("quantity")))
+    if not is_print_line(li):
+        return qty
+    completed = print_completed_for_line(order, idx)
+    print_idxs = print_line_indices(order)
+    if len(print_idxs) == 1 and print_idxs[0] == idx:
+        completed += _unassigned_print_completed(order)
+    completed = min(completed, qty)
+    prepared = helper_prepared_for_line(order, idx)
+    if prepared is None and helper_prepared_print_qty(order) is not None and len(print_idxs) == 1:
+        prepared = helper_prepared_print_qty(order)
+    if prepared is None:
+        return min(qty, completed)
+    return min(qty, completed, prepared)
+
+
+def packing_line_breakdown(order: dict) -> list:
+    """Derived per-line packing tracker (tidak persist).
+
+    packed per line dari packing_info.lines. Legacy total-only tidak
+    dianggap packed pada line (jangan asumsi).
+    """
+    lis = list(order.get("line_items") or [])
+    if not lis:
+        total = max(0, _safe_int(order.get("total_quantity")))
+        if total <= 0:
+            return []
+        avail = available_for_packing(order)
+        packed = qty_packed_for_line(order, 0)
+        if packing_lines_stored(order) is None:
+            packed = min(qty_packed(order), avail)
+        return [{
+            "line_idx": 0,
+            "name": "Total PO",
+            "color": None,
+            "production_process": "print",
+            "is_print": True,
+            "qty_po": total,
+            "helper_prepared": helper_prepared_print_qty(order),
+            "print_completed": print_completed_qty(order),
+            "print_remaining": max(0, total - print_completed_qty(order)),
+            "available": avail,
+            "packed": packed,
+            "remaining": max(0, avail - packed),
+        }]
+
+    print_idxs = print_line_indices(order)
+    helper_agg = helper_prepared_print_qty(order)
+    rows = []
+    for idx, li in enumerate(lis):
+        qty = max(0, _safe_int(li.get("quantity")))
+        print_line = is_print_line(li)
+        process = "print" if print_line else "non_print"
+        if print_line:
+            completed = print_completed_for_line(order, idx)
+            if len(print_idxs) == 1 and print_idxs[0] == idx:
+                completed += _unassigned_print_completed(order)
+            completed = min(completed, qty)
+            prepared = helper_prepared_for_line(order, idx)
+            if prepared is None and helper_agg is not None and len(print_idxs) == 1:
+                prepared = helper_agg
+            print_remaining = max(0, qty - completed)
+        else:
+            completed = 0
+            prepared = None
+            print_remaining = 0
+        avail = available_for_packing_line(order, idx)
+        packed = qty_packed_for_line(order, idx)
+        rows.append({
+            "line_idx": idx,
+            "name": li.get("name") or f"Line #{idx + 1}",
+            "color": li.get("color"),
+            "production_process": process,
+            "is_print": print_line,
+            "qty_po": qty,
+            "helper_prepared": prepared,
+            "print_completed": completed,
+            "print_remaining": print_remaining,
+            "available": avail,
+            "packed": packed,
+            "remaining": max(0, avail - packed),
+        })
+    return rows
 
 
 def packing_status_semantic(order: dict) -> str:
@@ -237,8 +394,7 @@ def validate_helper_prepared_qty(prepared: int, order: dict) -> Optional[str]:
             f"Qty persiapan Helper ({prepared}) tidak boleh lebih kecil dari "
             f"qty cetak selesai Operator ({completed})."
         )
-    packed = qty_packed(order)
-    packed_print = max(0, packed - non_print_qty_total(order))
+    packed_print = qty_packed_print(order)
     if prepared < packed_print:
         return (
             f"Qty persiapan Helper ({prepared}) tidak boleh lebih kecil dari "
@@ -267,6 +423,88 @@ def validate_packing_qty(packed: int, order: dict) -> Optional[str]:
             f"Qty Packing ({packed}) tidak boleh lebih kecil dari qty sudah dikirim ({delivered})."
         )
     return None
+
+
+def validate_packing_lines(updates: list, order: dict) -> Optional[str]:
+    """Validasi packed_qty kumulatif per line. updates: [{line_idx, packed_qty}]."""
+    lis = list(order.get("line_items") or [])
+    merged = {}
+    existing = packing_lines_stored(order) or []
+    for it in existing:
+        idx = _safe_int(it.get("line_idx"), default=-1)
+        merged[idx] = max(0, _safe_int(it.get("packed_qty")))
+    if not updates:
+        return "Qty Packing per line wajib diisi."
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        qty = _safe_int(u.get("packed_qty"))
+        if not lis:
+            if idx not in (0, -1) and idx != 0:
+                return f"line_idx {idx} tidak valid."
+            idx = 0
+            avail = available_for_packing(order)
+            po = packing_required_total(order)
+            if qty > po:
+                return f"Qty Packing ({qty}) melebihi total qty PO ({po})."
+            if qty > avail:
+                return (
+                    f"Qty Packing ({qty}) melebihi qty tersedia untuk packing ({avail})."
+                )
+            merged[0] = qty
+            continue
+        if idx < 0 or idx >= len(lis):
+            return f"line_idx {idx} tidak valid."
+        if qty < 0:
+            return "Qty Packing tidak boleh negatif."
+        name = lis[idx].get("name") or f"Line #{idx + 1}"
+        po = max(0, _safe_int(lis[idx].get("quantity")))
+        avail = available_for_packing_line(order, idx)
+        if qty > po:
+            return f"Qty Packing '{name}' ({qty}) melebihi qty PO ({po})."
+        if qty > avail:
+            return (
+                f"Qty Packing '{name}' ({qty}) melebihi qty tersedia untuk packing "
+                f"line tersebut ({avail})."
+            )
+        merged[idx] = qty
+    total = sum(max(0, v) for v in merged.values())
+    if total <= 0:
+        return "Qty Packing tidak valid."
+    delivered = qty_delivered(order)
+    if total < delivered:
+        return (
+            f"Qty Packing ({total}) tidak boleh lebih kecil dari qty sudah dikirim ({delivered})."
+        )
+    required = packing_required_total(order)
+    if required and total > required:
+        return f"Qty Packing ({total}) melebihi total qty PO ({required})."
+    packed_print = 0
+    if lis:
+        for idx, q in merged.items():
+            if 0 <= idx < len(lis) and is_print_line(lis[idx]):
+                packed_print += max(0, q)
+    else:
+        packed_print = total
+    print_cap = print_available_for_packing(order)
+    if packed_print > print_cap:
+        return (
+            f"Total qty packing Cetak ({packed_print}) melebihi qty Cetak tersedia "
+            f"untuk packing ({print_cap})."
+        )
+    return None
+
+
+def merge_packing_line_updates(order: dict, updates: list) -> list:
+    """Gabungkan packed per line; hasil dipakai persist packing_info.lines."""
+    lis = list(order.get("line_items") or [])
+    n = len(lis) if lis else 1
+    merged = {i: qty_packed_for_line(order, i) for i in range(n)}
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        if not lis:
+            idx = 0
+        merged[idx] = max(0, _safe_int(u.get("packed_qty")))
+    return [{"line_idx": i, "packed_qty": merged.get(i, 0)} for i in range(n)]
 
 
 def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:

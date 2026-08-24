@@ -16,7 +16,7 @@ Stage index compatibility (unchanged STAGES list):
 """
 from __future__ import annotations
 
-from quantity_rules import requires_printing
+from quantity_rules import requires_printing, qty_packed
 
 SCREENER_GATE_SAMPLE_MSG = "Qty Screener harus diisi sebelum Cetak Sample."
 SCREENER_GATE_OPERATOR_MSG = "Qty Screener harus diisi sebelum pekerjaan Operator."
@@ -77,14 +77,7 @@ def print_qty_input(order: dict) -> bool:
 
 
 def packing_qty_input(order: dict) -> bool:
-    pi = order.get("packing_info") or {}
-    v = pi.get("qty_packed")
-    if not _has_value(v):
-        return False
-    try:
-        return int(v) > 0
-    except (ValueError, TypeError):
-        return False
+    return qty_packed(order) > 0
 
 
 def operator_unlocked(order: dict) -> bool:
