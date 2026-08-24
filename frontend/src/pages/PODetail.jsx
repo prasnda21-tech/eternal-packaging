@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, Check, ChevronRight, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronRight, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline } from "../lib/constants";
@@ -17,6 +17,7 @@ import HelperPrepPanel from "../components/HelperPrepPanel";
 import ProductionRoutePanel from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
 import StageBar from "../components/StageBar";
+import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import StageDetailDrawer from "../components/StageDetailDrawer";
 
@@ -81,6 +82,11 @@ export default function PODetail() {
   const canAdvanceNow = !isCrm && canAdvance(role, order.current_stage);
   const ready = getWorkflowReady(order);
   const screenerLocked = !ready.screener;
+  const printNeed = Number(order.print_qty_total ?? 0);
+  const screenSaved = order.screener_info?.screen_qty;
+  const screenerFilled = screenSaved !== null && screenSaved !== undefined && String(screenSaved).trim() !== "";
+  const screenQtySaved = Number(screenSaved || 0);
+  const screenRemaining = Math.max(0, printNeed - screenQtySaved);
 
   const run = async (fn, msg) => {
     setBusy(true);
@@ -720,14 +726,15 @@ export default function PODetail() {
 
       {/* 06 Penjadwalan */}
       <div data-testid="workflow-slot-5" data-workflow-stage="5">
-      <section className="panel" data-testid="penjadwalan-panel">
-        <header className="panel-head">
-          <h3>Penjadwalan</h3>
-          <span className="pill sm">Head of Production</span>
-        </header>
-        <p className="muted small">
-          Simpan pembagian operator. Screener dan Persiapan Helper terbuka otomatis setelah save berhasil.
-        </p>
+      <section className="panel qty-ops-panel" data-testid="penjadwalan-panel">
+        <QtyOpsHead icon={CalendarClock} title="Penjadwalan">
+          <span className="muted small">Head of Production</span>
+        </QtyOpsHead>
+        <div className="qty-ops-body">
+          <p className="qty-ops-note">
+            Simpan pembagian operator. Screener dan Persiapan Helper terbuka otomatis setelah save berhasil.
+          </p>
+        </div>
       </section>
       <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
       <DeliveryDeadlinePanel order={order} canEdit={canEditDeliveryDeadline} onUpdated={setOrder} />
@@ -737,27 +744,40 @@ export default function PODetail() {
         <p className="workflow-group-label">4 · Screener &amp; Persiapan Helper (paralel)</p>
       {/* 07 Screener */}
       <div data-testid="workflow-slot-6" data-workflow-stage="6">
-      <section className="panel" data-testid="screener-panel">
-        <header className="panel-head"><h3>Screener</h3>
-          <span className="muted small">Info operasional — tidak mengubah Qty PO</span>
-        </header>
-        <div className="prep-grid">
-          <label>Jumlah Screen Dibuat
-            <input type="number" min="0" defaultValue={order.screener_info?.screen_qty || 0} data-testid="screener-qty" disabled={!canScreenerUpdate || screenerLocked}/>
-          </label>
-          <label className="span-2">Catatan Screener
-            <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate || screenerLocked}/>
-          </label>
-        </div>
+      <section className="panel qty-ops-panel" data-testid="screener-panel">
+        <QtyOpsHead icon={ScanLine} title="Screener">
+          <span className={`qty-status ${statusClassFor(screenerLocked ? "IDLE" : (screenerFilled ? "SAVED" : "READY"))}`}>
+            {screenerLocked ? "IDLE" : (screenerFilled ? "SAVED" : "READY")}
+          </span>
+          <span className="muted small">Tidak mengubah Qty PO</span>
+        </QtyOpsHead>
+        <MetricRow columns={3}>
+          <MetricCell label="Required" value={printNeed} />
+          <MetricCell label="Prepared" value={screenQtySaved} />
+          <MetricCell label="Remain" value={screenRemaining} />
+        </MetricRow>
+        <div className="qty-ops-body">
+        <QuantityInput
+          label="Qty Screen"
+          min="0"
+          defaultValue={order.screener_info?.screen_qty || 0}
+          testid="screener-qty"
+          disabled={!canScreenerUpdate || screenerLocked}
+        />
+        <label className="qty-notes">
+          <span className="qty-notes-label">Catatan Screener</span>
+          <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate || screenerLocked}/>
+        </label>
         {screenerLocked && (
-          <p className="muted small" data-testid="screener-locked-note">Screener tersedia otomatis setelah Penjadwalan disimpan.</p>
+          <p className="muted small" data-testid="screener-locked-note" style={{ marginTop: 10 }}>Screener tersedia otomatis setelah Penjadwalan disimpan.</p>
         )}
         {canScreenerUpdate && (
-          <div className="prep-actions">
-            <button className="primary sm" onClick={saveScreener} disabled={busy || screenerLocked} data-testid="screener-save-button"><Check size={13}/> Simpan Info Screener</button>
+          <div className="qty-ops-foot">
+            <button className="primary" onClick={saveScreener} disabled={busy || screenerLocked} data-testid="screener-save-button">Simpan Qty</button>
             {order.screener_info?.updated_at && <span className="muted small" data-testid="screener-updated">Update terakhir: {order.screener_info.updated_by_name || order.screener_info.updated_by} · {formatDate(order.screener_info.updated_at)}</span>}
           </div>
         )}
+        </div>
       </section>
       </div>
 
