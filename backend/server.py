@@ -4947,7 +4947,9 @@ async def analytics_operator_kpis(
     """Read-only operator KPIs for Jadwal Produksi → Analitik Operator.
 
     Does not write orders/progress. Qty selesai = operator_splits.qty_completed
-    (bukan qty PO / assigned / target).
+    (bukan qty PO / assigned / target). Batch 2 menambah workload assignment,
+    kecepatan (qty/hari aktif), on-time terhadap order.deadline, dan analitik
+    Cetak Sample dari sample_files + sample_approval_history.
     """
     start, end, preset = resolve_period(period, date_from, date_to)
     pipeline = build_operator_analytics_pipeline(operator_id, customer, item)
