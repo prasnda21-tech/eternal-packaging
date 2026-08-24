@@ -15,6 +15,7 @@ Credentials are read from environment variables only. Nothing about the
 credentials is logged, returned to the frontend, or stored in MongoDB.
 """
 from __future__ import annotations
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 # In-memory cache for the recent-SO list (survives Accurate rate-limits gracefully)
 _SO_LIST_CACHE: Dict[str, Any] = {}
 _LIST_CACHE_TTL = 60  # seconds
+_ITEM_HTTP_TIMEOUT = 25
+_ITEM_LIST_MAX_ATTEMPTS = 2
+_ITEM_LIST_RETRY_WAIT_S = 0.4
+_ITEM_LIST_MAX_PAGES = 200
+_ITEM_LIST_RETRYABLE = (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError)
 
 
 def now_iso() -> str:
@@ -431,16 +437,14 @@ class AccurateClient:
                 "mode": "mock",
             }
 
-        host, headers = await self._live_session()
-        list_params: Dict[str, Any] = {
-            "sp.pageSize": limit,
-            "sp.page": page,
-        }
-        body = await self._get_item_list_body(host, headers, list_params)
-        if body is None:
-            err = _last_list_error.get("message") or "unknown tenant error"
-            raise RuntimeError(f"Accurate item list rejected: {err}")
+        token = await self._obtain_token()
+        host, session = await self._open_db(token)
+        async with httpx.AsyncClient(timeout=_ITEM_HTTP_TIMEOUT, follow_redirects=True) as http:
+            return await self._list_items_live_page(
+                http, token=token, host=host, session=session, limit=limit, page=page,
+            )
 
+    def _item_list_payload(self, body: Dict[str, Any], *, limit: int, page: int, host: str) -> Dict[str, Any]:
         rows_raw = body.get("d") or []
         if not isinstance(rows_raw, list):
             rows_raw = []
@@ -464,65 +468,157 @@ class AccurateClient:
             "mode": "live",
         }
 
+    async def _list_items_live_page(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        token: str,
+        host: str,
+        session: str,
+        limit: int,
+        page: int,
+    ) -> Dict[str, Any]:
+        list_params: Dict[str, Any] = {
+            "sp.pageSize": limit,
+            "sp.page": page,
+        }
+        body = await self._get_item_list_body(
+            http, host, token, session, list_params, page=page,
+        )
+        if body is None:
+            err = _last_list_error.get("message") or "unknown tenant error"
+            raise RuntimeError(f"Accurate item list rejected: {err}")
+        return self._item_list_payload(body, limit=limit, page=page, host=host)
+
     async def _get_item_list_body(
-        self, host: str, headers: Dict[str, str], params: Dict[str, Any]
+        self,
+        http: httpx.AsyncClient,
+        host: str,
+        token: str,
+        session: str,
+        params: Dict[str, Any],
+        *,
+        page: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        try:
-            async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-                r = await client.get(
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, _ITEM_LIST_MAX_ATTEMPTS + 1):
+            # Fresh HMAC timestamp/signature per HTTP attempt (same as Import PO).
+            headers = self._request_headers(token, session)
+            try:
+                r = await http.get(
                     f"{host}/accurate/api/item/list.do",
                     headers=headers,
                     params=params,
                 )
-        except httpx.TimeoutException as e:
-            _record_list_error(operation="item/list.do", message="timeout", exception=e)
-            raise RuntimeError("Accurate item list timeout") from e
-        except httpx.HTTPError as e:
-            _record_list_error(operation="item/list.do", message="request failed", exception=e)
-            raise RuntimeError("Accurate item list request failed") from e
-        if r.is_error:
-            _record_list_error(
-                operation="item/list.do",
-                status=r.status_code,
-                message=f"HTTP {r.status_code}",
-            )
-            raise RuntimeError(f"Accurate item list HTTP {r.status_code}")
-        try:
-            body = r.json()
-        except Exception as e:
-            _record_list_error(
-                operation="item/list.do",
-                status=r.status_code,
-                message="invalid response",
-                exception=e,
-            )
-            raise RuntimeError(f"Accurate item list invalid response ({r.status_code})") from e
-        if body.get("s") is False:
-            err_msg = ""
-            d = body.get("d")
-            if isinstance(d, list) and d:
-                err_msg = str(d[0])[:180]
-            _record_list_error(
-                operation="item/list.do",
-                status=r.status_code,
-                message=err_msg,
-            )
-            return None
-        return body if isinstance(body, dict) else None
+            except _ITEM_LIST_RETRYABLE as e:
+                last_exc = e
+                _record_list_error(
+                    operation="item/list.do",
+                    message="timeout" if isinstance(e, httpx.TimeoutException) else "request failed",
+                    exception=e,
+                    page=page,
+                    attempt=attempt,
+                )
+                logger.warning(
+                    "Accurate master item sync failed operation=master_items_sync "
+                    "endpoint=item/list.do page=%s attempt=%s exception=%s",
+                    page if page is not None else "-",
+                    attempt,
+                    type(e).__name__,
+                )
+                if attempt < _ITEM_LIST_MAX_ATTEMPTS:
+                    await asyncio.sleep(_ITEM_LIST_RETRY_WAIT_S)
+                    continue
+                raise RuntimeError("Accurate item list timeout") from e
+            except httpx.HTTPError as e:
+                _record_list_error(
+                    operation="item/list.do",
+                    message="request failed",
+                    exception=e,
+                    page=page,
+                    attempt=attempt,
+                )
+                raise RuntimeError("Accurate item list request failed") from e
+
+            if attempt > 1:
+                logger.info(
+                    "Accurate master item sync operation=master_items_sync "
+                    "endpoint=item/list.do page=%s attempt=%s result=success",
+                    page if page is not None else "-",
+                    attempt,
+                )
+            if r.is_error:
+                _record_list_error(
+                    operation="item/list.do",
+                    status=r.status_code,
+                    message=f"HTTP {r.status_code}",
+                    page=page,
+                    attempt=attempt,
+                )
+                raise RuntimeError(f"Accurate item list HTTP {r.status_code}")
+            try:
+                body = r.json()
+            except Exception as e:
+                _record_list_error(
+                    operation="item/list.do",
+                    status=r.status_code,
+                    message="invalid response",
+                    exception=e,
+                    page=page,
+                    attempt=attempt,
+                )
+                raise RuntimeError(f"Accurate item list invalid response ({r.status_code})") from e
+            if body.get("s") is False:
+                err_msg = ""
+                d = body.get("d")
+                if isinstance(d, list) and d:
+                    err_msg = str(d[0])[:180]
+                _record_list_error(
+                    operation="item/list.do",
+                    status=r.status_code,
+                    message=err_msg,
+                    page=page,
+                    attempt=attempt,
+                )
+                return None
+            return body if isinstance(body, dict) else None
+        raise RuntimeError("Accurate item list timeout") from last_exc
 
     async def fetch_all_items(self) -> List[Dict[str, Any]]:
-        """Paginate `item/list.do` until the Accurate dataset is exhausted."""
-        page = 1
+        """Paginate `item/list.do` until the Accurate dataset is exhausted.
+
+        Live mode opens api-token.do / database host ONCE per sync, reuses one
+        httpx client, and regenerates signed headers per GET (Import PO pattern).
+        """
         page_size = 100
+        if not self.is_live:
+            all_rows: List[Dict[str, Any]] = []
+            page = 1
+            while page <= _ITEM_LIST_MAX_PAGES:
+                payload = await self.list_items(limit=page_size, page=page)
+                rows = payload.get("rows") or []
+                all_rows.extend(rows)
+                page_count = int(payload.get("pageCount") or 1)
+                if page >= page_count or not rows:
+                    break
+                page += 1
+            return all_rows
+
+        token = await self._obtain_token()
+        host, session = await self._open_db(token)
         all_rows: List[Dict[str, Any]] = []
-        while page <= 200:
-            payload = await self.list_items(limit=page_size, page=page)
-            rows = payload.get("rows") or []
-            all_rows.extend(rows)
-            page_count = int(payload.get("pageCount") or 1)
-            if page >= page_count or not rows:
-                break
-            page += 1
+        async with httpx.AsyncClient(timeout=_ITEM_HTTP_TIMEOUT, follow_redirects=True) as http:
+            page = 1
+            while page <= _ITEM_LIST_MAX_PAGES:
+                payload = await self._list_items_live_page(
+                    http, token=token, host=host, session=session, limit=page_size, page=page,
+                )
+                rows = payload.get("rows") or []
+                all_rows.extend(rows)
+                page_count = int(payload.get("pageCount") or 1)
+                if page >= page_count or not rows:
+                    break
+                page += 1
         return all_rows
 
 
@@ -542,6 +638,8 @@ _last_list_error: Dict[str, Any] = {
     "operation": "",
     "status": None,
     "exception": "",
+    "page": None,
+    "attempt": None,
 }
 
 
@@ -555,11 +653,15 @@ def _record_list_error(
     status: Optional[int] = None,
     message: str = "",
     exception: Optional[BaseException] = None,
+    page: Optional[int] = None,
+    attempt: Optional[int] = None,
 ) -> None:
     _last_list_error["operation"] = operation
     _last_list_error["status"] = status
     _last_list_error["message"] = str(message or "")[:180]
     _last_list_error["exception"] = type(exception).__name__ if exception else ""
+    _last_list_error["page"] = page
+    _last_list_error["attempt"] = attempt
     _last_list_error["at"] = time.time()
 
 
@@ -576,8 +678,10 @@ def log_master_items_sync_failure(
     status = last.get("status")
     op = last.get("operation") or endpoint
     logger.warning(
-        "Accurate master item sync failed operation=master_items_sync endpoint=%s status=%s exception=%s message=%s",
+        "Accurate master item sync failed operation=master_items_sync endpoint=%s page=%s attempt=%s status=%s exception=%s message=%s",
         op,
+        "-" if last.get("page") in (None, "") else last.get("page"),
+        "-" if last.get("attempt") in (None, "") else last.get("attempt"),
         "-" if status in (None, "") else status,
         type(exc).__name__,
         msg or tenant or "-",
