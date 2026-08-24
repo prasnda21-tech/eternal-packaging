@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Check, AlertTriangle, Info } from "lucide-react";
+import { AlertTriangle, Info, PackageCheck } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 import { formatDate } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
+import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
 
 /**
  * HelperPrepPanel — Persiapan Helper PER LINE ITEM CETAK.
@@ -47,18 +48,23 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
   const totalShortage = Math.max(totalRequired - totalPrepared, 0);
   const ready = getWorkflowReady(order);
   const helperLocked = !ready.helper;
+  const saved = !!(order?.helper_prep?.updated_at);
+  const statusLabel = helperLocked
+    ? "IDLE"
+    : (totalShortage === 0 && totalRequired > 0
+      ? "DONE"
+      : saved
+        ? (totalShortage > 0 ? "IN PROGRESS" : "SAVED")
+        : "READY");
 
   // Full non-print → Persiapan Helper TIDAK DIPERLUKAN.
   if (!requiresPrinting) {
     return (
-      <section className="panel" data-testid="helper-prep-panel">
-        <header className="panel-head">
-          <h3>Persiapan Helper</h3>
-          <span className="pill sm" data-testid="helper-not-required-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
-            Tidak Diperlukan
-          </span>
-        </header>
-        <p className="muted small" data-testid="helper-not-required-note">
+      <section className="panel qty-ops-panel" data-testid="helper-prep-panel">
+        <QtyOpsHead icon={PackageCheck} title="Persiapan Helper">
+          <span className="qty-status" data-testid="helper-not-required-badge">Tidak Diperlukan</span>
+        </QtyOpsHead>
+        <p className="qty-ops-note" data-testid="helper-not-required-note">
           <Info size={12}/> PO ini tidak memiliki barang dengan proses Cetak. Persiapan Helper hanya menyiapkan barang yang akan melalui proses Cetak.
         </p>
         {footerActions}
@@ -91,89 +97,92 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
   };
 
   return (
-    <section className="panel" data-testid="helper-prep-panel">
-      <header className="panel-head">
-        <h3>Persiapan Helper</h3>
-        <span className="pill sm" data-testid="helper-scope-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
-          Scope Cetak: {totalRequired.toLocaleString("id-ID")} pcs
-        </span>
-        {totalShortage > 0 && (
-          <span className="urgent-badge" data-testid="helper-total-shortage-badge">
-            <AlertTriangle size={12}/> KURANG {totalShortage.toLocaleString("id-ID")} PCS
+    <section className="panel qty-ops-panel" data-testid="helper-prep-panel">
+        <QtyOpsHead icon={PackageCheck} title="Persiapan Helper">
+          <span className={`qty-status ${statusClassFor(statusLabel)}`}>{statusLabel}</span>
+          <span className="muted small" data-testid="helper-scope-badge">
+            Scope Cetak: {totalRequired.toLocaleString("id-ID")} pcs
           </span>
-        )}
-        {totalShortage === 0 && totalPrepared >= totalRequired && totalRequired > 0 && (
-          <span className="pill sm" style={{ background:"#e5f5e5", color:"#2b7a2b" }} data-testid="helper-total-ok-badge">Cukup</span>
-        )}
-      </header>
+          {totalShortage > 0 && (
+            <span className="urgent-badge" data-testid="helper-total-shortage-badge">
+              <AlertTriangle size={12}/> KURANG {totalShortage.toLocaleString("id-ID")} PCS
+            </span>
+          )}
+          {totalShortage === 0 && totalPrepared >= totalRequired && totalRequired > 0 && (
+            <span className="qty-status qty-status-done" data-testid="helper-total-ok-badge">DONE</span>
+          )}
+        </QtyOpsHead>
 
-      <p className="muted small" style={{ marginTop: 0 }}>
+      <MetricRow columns={3}>
+        <MetricCell label="Required" value={totalRequired} testid="helper-total-required" />
+        <MetricCell label="Prepared" value={totalPrepared} testid="helper-total-prepared" />
+        <div className="ind-metric" data-testid="helper-total-shortage">
+          <span className="ind-metric-label">Remain</span>
+          <strong>
+            {totalShortage > 0 ? `-${totalShortage.toLocaleString("id-ID")}` : "0"}
+            <span className="ind-metric-unit">pcs</span>
+          </strong>
+        </div>
+      </MetricRow>
+
+      <div className="qty-ops-body">
+      <p className="qty-ops-note">
         Menampilkan hanya barang dengan proses <b>Cetak</b>. Barang Non-Cetak tidak melewati Persiapan Helper.
       </p>
 
-      <table className="prep-table" data-testid="helper-prep-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <table className="ind-table" data-testid="helper-prep-table">
         <thead>
-          <tr style={{ textAlign: "left", borderBottom: "1px solid var(--line)" }}>
-            <th style={{ padding: "6px 8px" }}>Barang</th>
-            <th className="num" style={{ padding: "6px 8px", textAlign: "right" }}>Qty Dibutuhkan</th>
-            <th className="num" style={{ padding: "6px 8px", textAlign: "right" }}>Qty Disiapkan</th>
-            <th className="num" style={{ padding: "6px 8px", textAlign: "right" }}>Qty Kurang</th>
+          <tr>
+            <th>Item</th>
+            <th className="num">Target</th>
+            <th className="num">Prepared</th>
+            <th className="num">Remain</th>
+            <th>Qty Persiapan</th>
           </tr>
         </thead>
         <tbody>
-          {printLines.length === 0 && (
-            <tr>
-              <td colSpan={4} className="muted small" style={{ padding: "10px 8px" }}>
-                Tidak ada line item Cetak. (Semua line item sudah diset Non-Cetak.)
+        {printLines.length === 0 && (
+          <tr>
+            <td colSpan={5} className="muted small">
+              Tidak ada line item Cetak. (Semua line item sudah diset Non-Cetak.)
+            </td>
+          </tr>
+        )}
+        {printLines.map(({ li, idx }) => {
+          const req = Number(li.quantity || 0);
+          const prep = Number(draft[idx] ?? 0);
+          const shortage = Math.max(req - prep, 0);
+          return (
+            <tr key={idx} data-testid={`helper-prep-row-${idx}`}>
+              <td className="ind-item">
+                <strong>{li.name}</strong>
+                {li.color && <div className="muted small">{li.color}</div>}
+              </td>
+              <td className="num" data-testid={`helper-required-${idx}`}>{req.toLocaleString("id-ID")}</td>
+              <td className="num">{prep.toLocaleString("id-ID")}</td>
+              <td className="num" data-testid={`helper-shortage-${idx}`}>
+                {shortage > 0 ? `-${shortage.toLocaleString("id-ID")}` : "0"}
+              </td>
+              <td>
+              <QuantityInput
+                label="Qty persiapan"
+                min="0"
+                max={req}
+                value={draft[idx] ?? 0}
+                onChange={(e) => setDraft({ ...draft, [idx]: e.target.value })}
+                disabled={!canEdit || busy || helperLocked}
+                testid={`helper-prepared-${idx}`}
+                className="is-compact"
+              />
               </td>
             </tr>
-          )}
-          {printLines.map(({ li, idx }) => {
-            const req = Number(li.quantity || 0);
-            const prep = Number(draft[idx] ?? 0);
-            const shortage = Math.max(req - prep, 0);
-            return (
-              <tr key={idx} data-testid={`helper-prep-row-${idx}`} style={{ borderBottom: "1px solid var(--line)" }}>
-                <td style={{ padding: "8px" }}>
-                  <div><strong>{li.name}</strong></div>
-                  {li.color && <div className="muted small">{li.color}</div>}
-                </td>
-                <td className="num mono" style={{ padding: "8px", textAlign: "right" }} data-testid={`helper-required-${idx}`}>
-                  {req.toLocaleString("id-ID")}
-                </td>
-                <td className="num" style={{ padding: "8px", textAlign: "right" }}>
-                  <input
-                    type="number"
-                    min="0"
-                    max={req}
-                    value={draft[idx] ?? 0}
-                    onChange={(e) => setDraft({ ...draft, [idx]: e.target.value })}
-                    disabled={!canEdit || busy || helperLocked}
-                    data-testid={`helper-prepared-${idx}`}
-                    style={{ width: 100, textAlign: "right" }}
-                  />
-                </td>
-                <td className="num mono" style={{ padding: "8px", textAlign: "right", color: shortage > 0 ? "#8f1f1f" : "#2b7a2b" }} data-testid={`helper-shortage-${idx}`}>
-                  {shortage > 0 ? `-${shortage.toLocaleString("id-ID")}` : "0"}
-                </td>
-              </tr>
-            );
-          })}
-          {printLines.length > 0 && (
-            <tr style={{ background: "#faf6ee", fontWeight: 600 }}>
-              <td style={{ padding: "8px" }}>Total Cetak</td>
-              <td className="num mono" style={{ padding: "8px", textAlign: "right" }} data-testid="helper-total-required">{totalRequired.toLocaleString("id-ID")}</td>
-              <td className="num mono" style={{ padding: "8px", textAlign: "right" }} data-testid="helper-total-prepared">{totalPrepared.toLocaleString("id-ID")}</td>
-              <td className="num mono" style={{ padding: "8px", textAlign: "right", color: totalShortage > 0 ? "#8f1f1f" : "#2b7a2b" }} data-testid="helper-total-shortage">
-                {totalShortage > 0 ? `-${totalShortage.toLocaleString("id-ID")}` : "0"}
-              </td>
-            </tr>
-          )}
+          );
+        })}
         </tbody>
       </table>
 
-      <label style={{ display: "block", marginTop: 10 }}>
-        <span className="muted small">Catatan</span>
+      <label className="qty-notes">
+        <span className="qty-notes-label">Catatan</span>
         <input
           type="text"
           value={notes}
@@ -181,21 +190,20 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
           disabled={!canEdit || busy || helperLocked}
           placeholder="Catatan opsional"
           data-testid="helper-notes-input"
-          style={{ width: "100%", maxWidth: 480, display: "block", marginTop: 4 }}
         />
       </label>
 
       {helperLocked && (
-        <p className="muted small" data-testid="helper-locked-note" style={{ marginTop: 6 }}>
+        <p className="muted small" data-testid="helper-locked-note" style={{ marginTop: 10 }}>
           Persiapan Helper berjalan paralel dengan Screener dan tersedia otomatis setelah Penjadwalan disimpan.
         </p>
       )}
-      {err && <p style={{ color: "#8f1f1f", marginTop: 6 }} data-testid="helper-prep-error">{err}</p>}
+      {err && <p style={{ color: "#8f1f1f", marginTop: 8 }} data-testid="helper-prep-error">{err}</p>}
 
       {canEdit && printLines.length > 0 && (
-        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="primary sm" onClick={save} disabled={busy || helperLocked} data-testid="helper-save-button">
-            <Check size={13}/> Simpan Persiapan
+        <div className="qty-ops-foot">
+          <button className="primary" onClick={save} disabled={busy || helperLocked} data-testid="helper-save-button">
+            Simpan Qty
           </button>
           {order?.helper_prep?.updated_at && (
             <span className="muted small" data-testid="helper-updated">
@@ -205,9 +213,10 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
         </div>
       )}
       {!canEdit && (
-        <p className="muted small" style={{ marginTop: 6 }}>Butuh permission <code>helper.prepare</code>.</p>
+        <p className="muted small" style={{ marginTop: 10 }}>Butuh permission <code>helper.prepare</code>.</p>
       )}
       {footerActions}
+      </div>
     </section>
   );
 }

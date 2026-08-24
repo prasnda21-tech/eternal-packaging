@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Info } from "lucide-react";
+import { CalendarClock, Info, Plus, Trash2, Users } from "lucide-react";
 import api from "../lib/api";
-import { STAGES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { getWorkflowReady } from "../lib/stageState";
+import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
 
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
@@ -62,6 +62,14 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const screenerGateMsg = order?.screener_gate_reason || "Qty Screener harus diisi sebelum pekerjaan Operator.";
   const showSchedule = mode === "all" || mode === "schedule";
   const showProgress = mode === "all" || mode === "progress";
+  const persistedSplits = order.operator_splits || [];
+  const anyProgress = persistedSplits.some((s) => Number(s.qty_completed || 0) > 0);
+  const allProgressDone = persistedSplits.length > 0 && persistedSplits.every(
+    (s) => Number(s.qty_completed || 0) >= Number(s.quantity || 0) && Number(s.quantity || 0) > 0
+  );
+  const scheduleStatus = totalAssigned > 0 ? "SAVED" : (scheduleLocked ? "IDLE" : "READY");
+  const progressStatus = allProgressDone ? "DONE" : anyProgress ? "IN PROGRESS" : (progressLocked ? "IDLE" : "READY");
+  const statusLabel = showProgress && !showSchedule ? progressStatus : scheduleStatus;
 
   // Per-line assigned totals for UX guardrails.
   const perLineAssigned = useMemo(() => {
@@ -156,17 +164,18 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     }
   };
 
+  const panelTestId = mode === "progress" ? "operator-progress-panel" : "operator-split-panel";
+  const title = mode === "progress" ? "Operator" : "Pembagian Jadwal";
+  const HeadIcon = mode === "progress" ? Users : CalendarClock;
+
   // Full non-print → Pembagian Operator TIDAK DIPERLUKAN.
   if (!requiresPrinting) {
     return (
-      <section className="panel" data-testid={mode === "progress" ? "operator-progress-panel" : "operator-split-panel"}>
-        <header className="panel-head">
-          <h3>{mode === "progress" ? "Operator" : "Pembagian Operator"}</h3>
-          <span className="pill sm" data-testid="operator-not-required-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
-            Tidak Diperlukan
-          </span>
-        </header>
-        <p className="muted small" data-testid="operator-not-required-note">
+      <section className="panel qty-ops-panel" data-testid={panelTestId}>
+        <QtyOpsHead icon={HeadIcon} title={title}>
+          <span className="qty-status" data-testid="operator-not-required-badge">Tidak Diperlukan</span>
+        </QtyOpsHead>
+        <p className="qty-ops-note" data-testid="operator-not-required-note">
           <Info size={12}/> PO ini tidak memiliki barang dengan proses Cetak. Pembagian Operator hanya untuk barang Cetak.
         </p>
         {footerActions}
@@ -180,26 +189,35 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   };
 
   return (
-    <section className="panel" data-testid={mode === "progress" ? "operator-progress-panel" : "operator-split-panel"}>
-      <header className="panel-head">
-        <h3>{mode === "progress" ? "Operator" : "Pembagian Operator"}</h3>
-        <span className="pill" data-testid="operator-scope-badge">
+    <section className="panel qty-ops-panel" data-testid={panelTestId}>
+      <QtyOpsHead icon={HeadIcon} title={title}>
+        <span className={`qty-status ${statusClassFor(statusLabel)}`}>{statusLabel}</span>
+        <span className="muted small" data-testid="operator-scope-badge">
           Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
         </span>
         {helperCapSet && (
-          <span className="pill sm" data-testid="operator-helper-cap-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
+          <span className="muted small" data-testid="operator-helper-cap-badge">
             Cap Helper: {Number(assignmentCap).toLocaleString("id-ID")} pcs
           </span>
         )}
-      </header>
+      </QtyOpsHead>
 
-      {/* Info baris tersedia untuk assignment */}
+      {showSchedule && (
+        <MetricRow columns={3}>
+          <MetricCell label="Target" value={printQtyTotal} />
+          <MetricCell label="Allocated" value={totalAssigned} />
+          <MetricCell label="Remain" value={remaining} />
+        </MetricRow>
+      )}
+
+      <div className="qty-ops-body">
       {printLines.length > 0 && (
-        <div className="muted small" data-testid="operator-print-lines-info" style={{ marginBottom: 8 }}>
+        <div className="qty-print-chips muted small" data-testid="operator-print-lines-info">
           Barang Cetak: {printLines.map(({ li, idx }) => (
-            <span key={idx} className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60", marginRight: 6 }}>
-              {li.name} · {Number(li.quantity || 0).toLocaleString("id-ID")}
-              {perLineAssigned[idx] ? ` · assigned ${perLineAssigned[idx].toLocaleString("id-ID")}` : ""}
+            <span key={idx}>
+              {li.name} {Number(li.quantity || 0).toLocaleString("id-ID")}
+              {perLineAssigned[idx] ? ` / assigned ${perLineAssigned[idx].toLocaleString("id-ID")}` : ""}
+              {idx < printLines.length - 1 ? " · " : ""}
             </span>
           ))}
         </div>
@@ -214,86 +232,72 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         <p className="muted small" data-testid="operator-screener-gate-note">{screenerGateMsg}</p>
       )}
 
-      {/* Current splits with per-operator progress */}
       {showProgress && (
       <div className="split-list">
-        {(order.operator_splits || []).length === 0 && (
+        {persistedSplits.length === 0 && (
           <p className="empty">Belum ada operator ditugaskan.</p>
         )}
-        {(order.operator_splits || []).map((op) => {
+        {persistedSplits.length > 0 && (
+          <div className="ind-op-head">
+            <span>Operator</span>
+            <span className="num">Allocated</span>
+            <span className="num">Completed</span>
+            <span className="num">Remain</span>
+            <span>Qty selesai</span>
+            <span></span>
+          </div>
+        )}
+        {persistedSplits.map((op) => {
           const isSelf = user?.email === op.operator_email;
           const canEditQty = hasPerm("operator.update") && (isSelf || hasPerm("schedule.edit"));
           const draft = qtyDrafts[op.id] ?? op.qty_completed ?? 0;
-          const remaining = Math.max(0, op.quantity - (op.qty_completed || 0));
+          const opRemaining = Math.max(0, op.quantity - (op.qty_completed || 0));
           const pct = op.quantity ? Math.round(((op.qty_completed || 0) / op.quantity) * 100) : 0;
           const opLineLabel = (op.line_idx === null || op.line_idx === undefined)
-            ? "Barang: (legacy)"
-            : `Barang: ${lineName(op.line_idx)}`;
+            ? "(legacy)"
+            : lineName(op.line_idx);
           return (
-            <div key={op.id} className="split-row" data-testid={`operator-progress-${op.operator_email}`}>
-              {/* Row 1: identitas operator + stage chip di sisi kanan */}
-              <div className="op-row-head">
-                <div className="op-ident">
-                  <strong>{op.operator_name}</strong>
-                  <span className="mono">{op.operator_email}</span>
-                </div>
-                <div className="stage-chip">{STAGES[op.stage]}</div>
-              </div>
-
-              {/* Row 2: barang yang dikerjakan */}
-              <div className="op-row-item" data-testid={`operator-line-${op.operator_email}`}>
-                {opLineLabel}
-              </div>
-
-              {/* Row 3: target / selesai / sisa + progress bar */}
-              <div className="qty">
-                <span>Target {op.quantity.toLocaleString("id-ID")}</span>
-                <span className="mono status-ok">Selesai {(op.qty_completed || 0).toLocaleString("id-ID")}</span>
-                <span className="mono status-wait">Sisa {remaining.toLocaleString("id-ID")}</span>
-                <div className="pct-track sm" style={{ flex: 1, minWidth: 120 }}>
-                  <div className="pct-fill" style={{ width: `${pct}%` }} />
+            <div key={op.id} className="split-row ind-op-row" data-testid={`operator-progress-${op.operator_email}`}>
+              <div className="qty-line-name">
+                <strong>{op.operator_name}</strong>
+                <span className="mono" data-testid={`operator-line-${op.operator_email}`}>{opLineLabel}</span>
+                <div className="qty-progress-track pct-track sm" aria-hidden="true">
+                  <div className="qty-progress-fill pct-fill" style={{ width: `${pct}%` }} />
                 </div>
               </div>
-
-              {/* Row 4: input qty + Simpan */}
-              {canEditQty && (
-                <div className="split-actions-inline">
-                    <div className="qty-inline">
-                      <input
-                        type="number"
-                        min="0"
-                        max={op.quantity}
-                        value={draft}
-                        onChange={(e) => setQtyDrafts({ ...qtyDrafts, [op.id]: e.target.value })}
-                        data-testid={`qty-input-${op.operator_email}`}
-                        disabled={progressLocked || busy}
-                      />
-                      <button
-                        className="ghost sm"
-                        onClick={() => updateQty(op)}
-                        disabled={busy || progressLocked}
-                        data-testid={`qty-save-${op.operator_email}`}
-                        title="Simpan qty selesai"
-                      >Simpan qty</button>
-                    </div>
-                </div>
-              )}
+              <div className="ind-op-qty">{op.quantity.toLocaleString("id-ID")}</div>
+              <div className="ind-op-qty">{Number(op.qty_completed || 0).toLocaleString("id-ID")}</div>
+              <div className="ind-op-qty">{opRemaining.toLocaleString("id-ID")}</div>
+              {canEditQty ? (
+                <QuantityInput
+                  label=""
+                  min="0"
+                  max={op.quantity}
+                  value={draft}
+                  onChange={(e) => setQtyDrafts({ ...qtyDrafts, [op.id]: e.target.value })}
+                  testid={`qty-input-${op.operator_email}`}
+                  disabled={progressLocked || busy}
+                  className="is-compact"
+                />
+              ) : <span />}
+              {canEditQty ? (
+                <button
+                  className="primary"
+                  onClick={() => updateQty(op)}
+                  disabled={busy || progressLocked}
+                  data-testid={`qty-save-${op.operator_email}`}
+                  title="Simpan qty selesai"
+                >Simpan Qty</button>
+              ) : <span />}
             </div>
           );
         })}
       </div>
       )}
 
-      {/* Card 2 — Atur Pembagian (planning). Terpisah visual dari card progress di atas. */}
       {canEdit && showSchedule && (
-        <div className="atur-pembagian-card" data-testid="atur-pembagian-card" style={{
-          marginTop: 14,
-          padding: 14,
-          background: "var(--paper)",
-          border: "1px solid var(--line)",
-          borderRadius: 6,
-        }}>
-          <div className="split-edit-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <div className="atur-pembagian-card" data-testid="atur-pembagian-card">
+          <div className="split-edit-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
             <h4 style={{ margin: 0 }} data-testid="atur-pembagian-title">Atur Pembagian</h4>
             <span className={remaining < 0 ? "warn" : "muted"}>
               Sisa cap: {remaining.toLocaleString("id-ID")} pcs
@@ -305,57 +309,66 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
             const lineAssigned = perLineAssigned[Number(s.line_idx)] || 0;
             const overLine = s.line_idx !== "" && lineAssigned > lineQty;
             return (
-              <div key={i} className="split-edit-row" style={{ gridTemplateColumns: "1.4fr 1.4fr 90px 150px 40px" }}>
-                <select
-                  value={s.line_idx}
-                  onChange={(e) => updateRow(i, { line_idx: e.target.value === "" ? "" : Number(e.target.value) })}
-                  data-testid={`split-line-select-${i}`}
-                >
-                  <option value="">-- Pilih barang (Cetak) --</option>
-                  {printLines.map(({ li, idx }) => (
-                    <option key={idx} value={idx}>
-                      {li.name}{li.color ? ` · ${li.color}` : ""} ({Number(li.quantity || 0).toLocaleString("id-ID")})
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={s.operator_email}
-                  onChange={(e) => {
-                    const op = operators.find((o) => o.email === e.target.value);
-                    updateRow(i, { operator_email: e.target.value, operator_name: op?.name || e.target.value });
-                  }}
-                  data-testid={`split-operator-select-${i}`}
-                >
-                  <option value="">-- Pilih operator --</option>
-                  {operators.map((o) => (
-                    <option key={o.email} value={o.email}>{o.name}</option>
-                  ))}
-                </select>
-                <input
-                  type="number"
+              <div key={i} className="split-edit-row qty-assign-card ind-assign-row">
+                <label className="qty-field">
+                  <span className="qty-field-label">Barang</span>
+                  <select
+                    value={s.line_idx}
+                    onChange={(e) => updateRow(i, { line_idx: e.target.value === "" ? "" : Number(e.target.value) })}
+                    data-testid={`split-line-select-${i}`}
+                  >
+                    <option value="">-- Pilih barang (Cetak) --</option>
+                    {printLines.map(({ li, idx }) => (
+                      <option key={idx} value={idx}>
+                        {li.name}{li.color ? ` · ${li.color}` : ""} ({Number(li.quantity || 0).toLocaleString("id-ID")})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="qty-field">
+                  <span className="qty-field-label">Operator</span>
+                  <select
+                    value={s.operator_email}
+                    onChange={(e) => {
+                      const op = operators.find((o) => o.email === e.target.value);
+                      updateRow(i, { operator_email: e.target.value, operator_name: op?.name || e.target.value });
+                    }}
+                    data-testid={`split-operator-select-${i}`}
+                  >
+                    <option value="">-- Pilih operator --</option>
+                    {operators.map((o) => (
+                      <option key={o.email} value={o.email}>{o.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <QuantityInput
+                  label="Qty dialokasikan"
                   min="1"
                   value={s.quantity}
                   onChange={(e) => updateRow(i, { quantity: e.target.value })}
                   placeholder="Qty"
-                  data-testid={`split-quantity-input-${i}`}
-                  style={overLine ? { borderColor: "#8f1f1f" } : undefined}
+                  testid={`split-quantity-input-${i}`}
+                  className={overLine ? "is-invalid" : ""}
                   title={overLine ? `Total ${lineAssigned} melebihi qty line ${lineQty}` : undefined}
                 />
-                <input
-                  type="date"
-                  value={s.work_date || ""}
-                  onChange={(e) => updateRow(i, { work_date: e.target.value })}
-                  data-testid={`split-work-date-input-${i}`}
-                  title="Tanggal Pengerjaan"
-                />
-                <button className="ghost sm" onClick={() => removeRow(i)} aria-label="Hapus baris" data-testid={`split-remove-${i}`}>
+                <label className="qty-field">
+                  <span className="qty-field-label">Tanggal</span>
+                  <input
+                    type="date"
+                    value={s.work_date || ""}
+                    onChange={(e) => updateRow(i, { work_date: e.target.value })}
+                    data-testid={`split-work-date-input-${i}`}
+                    title="Tanggal Pengerjaan"
+                  />
+                </label>
+                <button className="ghost qty-assign-remove" onClick={() => removeRow(i)} aria-label="Hapus baris" data-testid={`split-remove-${i}`}>
                   <Trash2 size={14} />
                 </button>
               </div>
             );
           })}
           {err && <div className="error" data-testid="split-error">{err}</div>}
-          <div className="split-actions">
+          <div className="split-actions qty-ops-foot" style={{ borderTop: splits.length ? undefined : "none", marginTop: splits.length ? undefined : 0, paddingTop: splits.length ? undefined : 0 }}>
             <button className="ghost" onClick={addRow} disabled={printLines.length === 0 || scheduleLocked} data-testid="split-add-row">
               <Plus size={14} /> Tambah operator
             </button>
@@ -365,7 +378,9 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
           </div>
         </div>
       )}
+      {showProgress && err && !showSchedule && <div className="error" data-testid="split-error">{err}</div>}
       {footerActions}
+      </div>
     </section>
   );
 }

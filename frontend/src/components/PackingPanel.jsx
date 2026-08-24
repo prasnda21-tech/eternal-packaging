@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Package, CheckCircle2 } from "lucide-react";
 import { formatDate } from "../lib/constants";
 import { packingLinesForOrder, packingSubmitEnabled } from "../lib/packingCard";
+import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("id-ID");
@@ -72,30 +73,32 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
     await onSaveQty(lines, notes || "");
   };
 
-  return (
-    <section className="panel" data-testid="packing-panel">
-      <header className="panel-head">
-        <h3><Package size={14} /> Packing</h3>
-        <span className={`pill sm ${semantic === "Sudah" ? "pill-ok" : ""}`} data-testid="packing-semantic-badge">
-          {semantic === "Sudah" ? "Packing Selesai" : semantic === "Berjalan" ? "Packing Berjalan" : "Menunggu"}
-        </span>
-        <span className="pill sm" data-testid="packing-target-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
-          Target: {fmt(requiredTotal)} pcs
-        </span>
-        <span className="pill sm" data-testid="packing-available-badge" style={{ background: "#efe6d3", color: "#7a6f52" }}>
-          Tersedia: {fmt(available)} pcs
-        </span>
-      </header>
+  const packingStatus = fullyPacked ? "DONE" : hasQty ? "IN PROGRESS" : "READY";
 
+  return (
+    <section className="panel packing-panel" data-testid="packing-panel">
+      <QtyOpsHead icon={Package} title="Packing">
+        <span className={`qty-status ${statusClassFor(packingStatus)}`} data-testid="packing-semantic-badge">
+          {packingStatus}
+        </span>
+      </QtyOpsHead>
+
+      <MetricRow testid="packing-summary">
+        <MetricCell label="Target" value={requiredTotal} testid="packing-target-badge" />
+        <MetricCell label="Tersedia" value={available} testid="packing-available-badge" />
+        <MetricCell label="Selesai" value={packedSaved} testid="packing-cumulative-packed" />
+        <MetricCell label="Sisa" value={remainingAvailable} testid="packing-remaining-available" />
+      </MetricRow>
+
+      <div className="qty-ops-body">
       <p className="muted small" data-testid="packing-availability-note" style={{ marginTop: 0 }}>
-        Qty Packing diisi per barang. Total hanya penjumlahan. Non-cetak: <b>{fmt(nonPrintTotal)}</b> (langsung) · Cetak siap packing:{" "}
+        Qty Packing diisi per barang. Total di atas hanya penjumlahan. Non-cetak: <b>{fmt(nonPrintTotal)}</b> (langsung) · Cetak siap packing:{" "}
         <b data-testid="packing-print-available">{fmt(printAvailable)}</b>
         {" "}(selesai operator {fmt(printCompleted)}
         {helperPrepared !== null && helperPrepared !== undefined
           ? `, cap helper ${fmt(helperPrepared)}`
           : ""}
-        ) · Sudah packing: <b data-testid="packing-cumulative-packed">{fmt(packedSaved)}</b>
-        {" "}· Sisa tersedia: <b data-testid="packing-remaining-available">{fmt(remainingAvailable)}</b>
+        ).
       </p>
 
       {legacyTotalOnly && (
@@ -103,22 +106,23 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
           PO ini masih memakai Qty Packing total lama ({fmt(pi.qty_packed)} pcs). Tracking per barang dimulai dari 0 sampai disimpan per line.
         </p>
       )}
+      </div>
 
       {packingLines.length > 0 && (
         <div className="packing-lines-wrap">
           <table className="packing-lines-table" data-testid="packing-lines-table">
             <thead>
               <tr>
-                <th>Barang</th>
-                <th>Proses</th>
-                <th className="num">Qty PO</th>
-                <th className="num">Disiapkan</th>
-                <th className="num">Sudah dicetak</th>
-                <th className="num">Belum dicetak</th>
-                <th className="num">Tersedia packing</th>
-                <th className="num">Sudah packing</th>
-                <th className="num">Sisa packing</th>
-                <th className="num">Qty packing</th>
+                <th>Item</th>
+                <th>Process</th>
+                <th className="num">Target</th>
+                <th className="num">Prepared</th>
+                <th className="num">Printed</th>
+                <th className="num">Unprinted</th>
+                <th className="num">Available</th>
+                <th className="num">Packed</th>
+                <th className="num">Remain</th>
+                <th className="num">Input</th>
               </tr>
             </thead>
             <tbody>
@@ -133,8 +137,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                     </td>
                     <td>
                       <span
-                        className="pill sm"
-                        style={{ background: isPrint ? "#e6ecf3" : "#efe6d3", color: isPrint ? "#3a4b60" : "#7a6f52" }}
+                        className={`pack-badge ${isPrint ? "pack-badge-print" : "pack-badge-nonprint"}`}
                         data-testid={`packing-line-process-${idx}`}
                       >
                         {isPrint ? "Cetak" : "Non-Cetak"}
@@ -152,23 +155,23 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                     <td className="num mono" data-testid={`packing-line-unprinted-${idx}`}>
                       {isPrint ? fmt(row.print_remaining) : "—"}
                     </td>
-                    <td className="num mono" data-testid={`packing-line-available-${idx}`}>{fmt(row.available)}</td>
-                    <td className="num mono" data-testid={`packing-line-packed-${idx}`}>{fmt(row.packed)}</td>
-                    <td className="num mono" data-testid={`packing-line-remaining-${idx}`}>{fmt(row.remaining)}</td>
+                    <td className="num mono pack-cell-ready" data-testid={`packing-line-available-${idx}`}>{fmt(row.available)}</td>
+                    <td className="num mono pack-cell-done" data-testid={`packing-line-packed-${idx}`}>{fmt(row.packed)}</td>
+                    <td className="num mono pack-cell-rest" data-testid={`packing-line-remaining-${idx}`}>{fmt(row.remaining)}</td>
                     <td className="num packing-line-input-cell">
                       {fullyPacked || !canManage ? (
                         <span className="mono">{fmt(row.packed)}</span>
                       ) : (
-                        <input
-                          className="packing-qty-input packing-line-qty-input"
+                        <QuantityInput
+                          label=""
+                          className="is-compact"
                           name="packing_qty_input"
-                          type="number"
                           min="0"
                           max={row.available || 0}
                           value={inputVal}
                           onChange={(e) => setLineQty(row.line_idx, e.target.value)}
                           disabled={busy || !canSubmitQty}
-                          data-testid={`packing-qty-input-${row.line_idx}`}
+                          testid={`packing-qty-input-${row.line_idx}`}
                           id={row.line_idx === 0 ? "packing-qty-input" : undefined}
                           aria-label={`Qty Packing ${row.name}`}
                         />
@@ -254,7 +257,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
               disabled={!canSave}
               data-testid="save-packing-qty-button"
             >
-              Simpan Qty Packing
+              Simpan Qty
             </button>
             <button
               type="button"
