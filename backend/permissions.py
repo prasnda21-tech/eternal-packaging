@@ -85,6 +85,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.inventory.current_stock", "Menu Stock Saat Ini"),
     ("Akses Menu", "nav.reports", "Menu Laporan"),
     ("Akses Menu", "nav.reports.analytics_output", "Menu Analitik Output"),
+    ("Akses Menu", "nav.reports.shipment_status", "Menu Status Pengiriman"),
     ("Akses Menu", "nav.settings", "Menu Pengaturan"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
@@ -123,6 +124,7 @@ NAV_MENU_ITEMS = (
     ("nav.inventory.current_stock", "Stock Saat Ini", "nav.inventory"),
     ("nav.reports", "Laporan", None),
     ("nav.reports.analytics_output", "Analitik Output", "nav.reports"),
+    ("nav.reports.shipment_status", "Status Pengiriman", "nav.reports"),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -137,6 +139,8 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.dashboard")
     if "schedule.view" in existing:
         nav.add("nav.production_schedule")
+        nav.add("nav.reports")
+        nav.add("nav.reports.shipment_status")
     if "current_stock.view" in existing:
         nav.add("nav.inventory")
         nav.add("nav.inventory.current_stock")

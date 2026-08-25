@@ -25,6 +25,7 @@ def test_catalog_includes_nav_keys():
         "nav.inventory",
         "nav.reports",
         "nav.reports.analytics_output",
+        "nav.reports.shipment_status",
         "nav.settings",
         NAV_CONFIGURED,
         "nav.inventory.master_items",

@@ -160,6 +160,7 @@ export const api = {
   adminAuditLogs: (params = {}) => client.get(`/admin/audit-logs`, { params }).then((r) => r.data),
   // ---- Production dashboard (Req 6) ----
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
+  shipmentStatus: (params = {}) => client.get(`/dashboard/shipment-status`, { params }).then((r) => r.data),
   productionExport: (payload = { scope: "filtered" }) => client.post(`/dashboard/production/export`, payload, { responseType: "blob" }).then((r) => r.data),
   // ---- Batch 3: Production routing + Action Center ----
   setLineItemRoute: (id, items) => client.post(`/orders/${id}/line-items/route`, { items }).then((r) => r.data),

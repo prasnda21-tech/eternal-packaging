@@ -32,6 +32,10 @@ from services.master_items import (
     resolve_po_line_items,
     sync_master_items,
 )
+from services.shipment_status import (
+    SHIPMENT_STATUS_PROJECTION,
+    shipment_status_row,
+)
 from services.dashboard_today import (
     SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
@@ -3668,6 +3672,24 @@ async def production_dashboard(
     if not include_completed:
         orders = [o for o in orders if o.get("current_stage", 0) < 14]
     rows = [_production_row(o) for o in orders]
+    return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+
+
+@api_router.get("/dashboard/shipment-status")
+async def shipment_status_dashboard(
+    include_cancelled: bool = False,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only Status Pengiriman Barang. One query; percents from existing qty rules."""
+    q: dict = {}
+    if not include_cancelled:
+        q["cancelled"] = {"$ne": True}
+    orders = await db.orders.find(q, SHIPMENT_STATUS_PROJECTION).sort("deadline", 1).to_list(1000)
+    _dd_settings = await _get_delivery_deadline_settings()
+    rows = []
+    for o in orders:
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        rows.append(shipment_status_row(o))
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
 
 
