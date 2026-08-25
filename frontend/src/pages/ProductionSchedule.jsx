@@ -352,7 +352,7 @@ export default function ProductionSchedule() {
   };
 
   return (
-    <div className="prod-page" data-testid="production-schedule-page">
+    <div className="prod-page prod-schedule-page" data-testid="production-schedule-page">
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Produksi · Jadwal</p>

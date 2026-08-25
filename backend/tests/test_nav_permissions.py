@@ -28,6 +28,7 @@ def test_catalog_includes_nav_keys():
         "nav.settings",
         NAV_CONFIGURED,
         "nav.inventory.master_items",
+        "nav.inventory.current_stock",
     ):
         assert key in ALL_PERMISSIONS, key
 
@@ -46,15 +47,19 @@ def test_helper_keeps_schedule_and_always_visible_menus():
     assert "nav.settings" in helper
     assert "nav.inventory" in helper
     assert "nav.inventory.master_items" in helper
+    assert "nav.inventory.current_stock" not in helper
     assert "nav.dashboard" not in helper  # helper has no dashboard.production.view
     assert "master_items.view" not in helper
     assert "master_items.sync" not in helper
+    assert "current_stock.view" not in helper
 
 
 def test_head_production_gets_dashboard_nav():
     hp = set(ROLE_DEFAULT_PERMISSIONS["head_production"])
     assert "nav.dashboard" in hp
     assert "nav.production_schedule" in hp
+    assert "current_stock.view" in hp
+    assert "nav.inventory.current_stock" in hp
 
 
 def test_legacy_stored_role_without_nav_keys_derives_defaults():

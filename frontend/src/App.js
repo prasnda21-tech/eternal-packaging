@@ -12,9 +12,10 @@ import ImportPO from "./pages/ImportPO";
 import Settings from "./pages/Settings";
 import ComingSoon from "./pages/ComingSoon";
 import MasterBarangJasa from "./pages/MasterBarangJasa";
+import StockSaatIni from "./pages/StockSaatIni";
 import AnalitikOutput from "./pages/AnalitikOutput";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
-import { NAV_KEYS } from "./lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible } from "./lib/navAccess";
 import "@/App.css";
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit"];
@@ -41,6 +42,14 @@ function PermGate({ anyOf, alsoAnyOf, children }) {
   return children;
 }
 
+function PersediaanIndex() {
+  const { hasPerm } = useAuth();
+  const inv = inventoryNavVisible(hasPerm);
+  if (inv.masterItems) return <Navigate to="/persediaan/master-barang-jasa" replace />;
+  if (inv.currentStock) return <Navigate to="/persediaan/stock-saat-ini" replace />;
+  return <Navigate to="/" replace />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -57,7 +66,8 @@ export default function App() {
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
             <Route path="/pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasing]}><ComingSoon title="Pembelian" eyebrow="Pembelian" testid="pembelian-page" /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
-            <Route path="/persediaan" element={<Navigate to="/persediaan/master-barang-jasa" replace />} />
+            <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
+            <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan" element={<Navigate to="/laporan/analitik-output" replace />} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />

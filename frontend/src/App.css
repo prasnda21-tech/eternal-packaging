@@ -1406,3 +1406,50 @@
   .master-items-page .primary{width:100%;justify-content:center}
 }
 
+/* -------- Dashboard today cards (compact) -------- */
+.today-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 14px}
+.today-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);min-width:0;overflow:hidden}
+.today-card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:8px 10px 6px;border-bottom:1px solid var(--line)}
+.today-card-head h3{margin:0;font-size:13px;font-weight:650;letter-spacing:-.01em}
+.today-empty{margin:0;padding:10px;font-size:12.5px;color:var(--soft)}
+.today-table-wrap{overflow:auto;max-height:220px}
+.today-table{width:100%;border-collapse:collapse;font-size:12px}
+.today-table th{text-align:left;font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft);padding:4px 8px;border-bottom:1px solid var(--line);white-space:nowrap;background:#fafaf7}
+.today-table td{padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.25}
+.today-table th.num,.today-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.today-table tbody tr:last-child td{border-bottom:0}
+.today-card-foot{padding:6px 10px;border-top:1px solid var(--line)}
+@media (max-width:900px){
+  .today-cards{grid-template-columns:1fr}
+}
+
+/* -------- Jadwal Produksi compact-to-top -------- */
+.content:has(.prod-schedule-page){padding:4px 12px 12px}
+.prod-schedule-page .prod-heading{margin-bottom:2px;gap:8px;align-items:center}
+.prod-schedule-page .prod-heading .eyebrow{margin:0 0 0;font-size:9px;letter-spacing:.12em;line-height:1}
+.prod-schedule-page .prod-heading h1{font-size:15px;line-height:1.15;margin:0}
+.prod-schedule-page .prod-heading .subhead{margin:1px 0 0;font-size:11px;line-height:1.25}
+.prod-schedule-page .prod-toolbar{margin:0 0 4px;gap:4px 6px}
+.prod-schedule-page .prod-toolbar .search-inline{min-height:24px;height:24px}
+.prod-schedule-page .prod-check{min-height:24px;font-size:12px}
+.prod-schedule-page .prod-table-wrap{max-height:calc(100vh - 96px);border-radius:4px}
+.prod-schedule-page .prod-table{font-size:12px}
+.prod-schedule-page .prod-table thead th{padding:4px 6px}
+.prod-schedule-page .prod-table tbody td{padding:3px 6px;line-height:1.2}
+.prod-schedule-page .prod-op-line{margin-bottom:2px;gap:0;line-height:1.2}
+.prod-schedule-page .prod-date-line{padding:0}
+.prod-schedule-page > .muted.small{margin-top:6px;font-size:11px}
+@media (max-width:700px){
+  .content:has(.prod-schedule-page){padding:8px 8px 72px}
+  .prod-schedule-page .prod-table-wrap{max-height:none}
+}
+
+/* -------- Stock Saat Ini -------- */
+.stock-qty-edit{display:inline-flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:4.5rem}
+.stock-qty-edit input{width:5.5rem;border:1px solid var(--line);background:#fff;padding:2px 6px;font:12px 'IBM Plex Mono';text-align:right;border-radius:2px}
+.stock-qty-err{font-size:10px;color:var(--red);max-width:7rem;text-align:right}
+.stock-neg td{background:#fdf3f1}
+.stock-neg-val{color:var(--red);font-weight:700}
+.prod-table thead th .prod-th-label{color:inherit}
+
+

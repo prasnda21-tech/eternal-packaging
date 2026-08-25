@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { ROLES, STAGES, isToday, formatDate } from "../lib/constants";
 import POCard from "../components/POCard";
 import ReminderList from "../components/ReminderList";
+import TodayActivityCards from "../components/TodayActivityCards";
 
 const NAV = [
   { key: "today", label: "Hari ini", icon: Package },
@@ -29,6 +30,7 @@ export default function Dashboard() {
   const [counts, setCounts] = useState({ aktif: 0, selesai: 0, cancelled: 0 });
   const [stageCounts, setStageCounts] = useState({});
   const [reminders, setReminders] = useState(null);
+  const [todayActivity, setTodayActivity] = useState(null);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState("today");
   const [statusTab, setStatusTab] = useState("aktif");
@@ -66,14 +68,16 @@ export default function Dashboard() {
   const load = async (status = statusTab) => {
     setBusy(true);
     try {
-      const [d, r] = await Promise.all([
+      const [d, r, today] = await Promise.all([
         api.listOrders(status),
         api.reminders().catch(() => null),
+        api.dashboardToday().catch(() => null),
       ]);
       setOrders(d.orders || []);
       setCounts(d.counts || {});
       setStageCounts(d.stage_counts || {});
       setReminders(r);
+      setTodayActivity(today);
       setSelected(new Set());
     } finally {
       setBusy(false);
@@ -157,6 +161,10 @@ export default function Dashboard() {
         <div className="dash-kpi is-urgent"><span>Urgent hari ini</span><strong>{urgentCount}</strong></div>
         <div className="dash-kpi"><span>Ditampilkan</span><strong>{list.length}</strong></div>
       </section>
+
+      {view === "today" && !stageIsValid && (
+        <TodayActivityCards data={todayActivity} />
+      )}
 
       {stageIsValid && (
         <div className="stage-filter-chip" data-testid="stage-filter-chip">

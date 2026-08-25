@@ -9,6 +9,7 @@ import { useAuth } from "../lib/auth";
 import { STAGES, formatDeadline, formatDate } from "../lib/constants";
 import ReminderList from "../components/ReminderList";
 import ActionCenter from "../components/ActionCenter";
+import TodayActivityCards from "../components/TodayActivityCards";
 import useAutoRefresh from "../lib/useAutoRefresh";
 
 // Semantic filter config: label + backend-response list key.
@@ -192,6 +193,8 @@ export default function HoPDashboard() {
         <KpiCard icon={PauseCircle}  label="HOLD"                        value={kpi.hold}                       tone="warn"   testid="kpi-hold"            active={selectedFilter === "hold"}      onClick={() => toggleFilter("hold")} />
         <KpiCard icon={CheckCircle2} label="Selesai (Terkirim)"          value={kpi.completed}                  tone="success" testid="kpi-completed"      active={selectedFilter === "completed"} onClick={() => toggleFilter("completed")} />
       </section>
+
+      <TodayActivityCards data={data} />
 
       {/* Dynamic filtered list — muncul tepat di bawah card ketika salah satu card diklik */}
       {filterCfg && (

@@ -25,6 +25,9 @@ PERMISSION_CATALOG = [
     ("Import PO", "po.import.spreadsheet", "Import PO dari file XLSX / CSV"),
     ("Persediaan", "master_items.view", "Lihat Master Barang/Jasa"),
     ("Persediaan", "master_items.sync", "Sinkronkan Master Barang/Jasa dari Accurate"),
+    ("Persediaan", "current_stock.view", "Lihat Stock Saat Ini"),
+    ("Persediaan", "current_stock.update", "Ubah Qty Saat Ini / Pembelian Barang"),
+    ("Persediaan", "current_stock.export", "Export Stock Saat Ini"),
     ("Design", "design.view", "Lihat desain"),
     ("Design", "design.upload", "Upload desain"),
     ("Design", "design.approve", "Approve desain"),
@@ -75,6 +78,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Master Barang/Jasa"),
+    ("Akses Menu", "nav.inventory.current_stock", "Menu Stock Saat Ini"),
     ("Akses Menu", "nav.reports", "Menu Laporan"),
     ("Akses Menu", "nav.reports.analytics_output", "Menu Analitik Output"),
     ("Akses Menu", "nav.settings", "Menu Pengaturan"),
@@ -111,6 +115,7 @@ NAV_MENU_ITEMS = (
     ("nav.purchasing", "Pembelian", None),
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Master Barang/Jasa", "nav.inventory"),
+    ("nav.inventory.current_stock", "Stock Saat Ini", "nav.inventory"),
     ("nav.reports", "Laporan", None),
     ("nav.reports.analytics_output", "Analitik Output", "nav.reports"),
     ("nav.settings", "Pengaturan", None),
@@ -127,6 +132,9 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.dashboard")
     if "schedule.view" in existing:
         nav.add("nav.production_schedule")
+    if "current_stock.view" in existing:
+        nav.add("nav.inventory")
+        nav.add("nav.inventory.current_stock")
     return nav
 
 
@@ -163,6 +171,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "customer_approval.view", "customer_approval.manage", "customer_approval.settings",
         "delivery.deadline.edit", "delivery.deadline.settings",
         "production.route.edit",
+        "current_stock.view", "current_stock.update", "current_stock.export",
     ],
     "head_operations": [
         "po.view", "po.edit", "po.cancel",
@@ -175,6 +184,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "dashboard.production.view", "dashboard.production.input", "dashboard.production.edit",
         "dashboard.production.export",
         "delivery.deadline.edit", "delivery.deadline.settings",
+        "current_stock.view", "current_stock.update", "current_stock.export",
     ],
     "designer": [
         "po.view",
