@@ -1,8 +1,8 @@
 /**
- * Runtime Total Qty progress tests — same helper ProductionSchedule.jsx uses.
+ * Runtime Total Qty + Qty Cetak tests — same helpers ProductionSchedule.jsx uses.
  * Run from frontend/: node scripts/test_production_schedule_qty.mjs
  */
-import { printQtyProgress } from "../src/lib/productionScheduleQty.js";
+import { printQtyProgress, scheduledPrintQtyProgress } from "../src/lib/productionScheduleQty.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -32,4 +32,33 @@ const over = printQtyProgress({ total_quantity: 15000, print_qty_total: 10000, p
 assert(over.text === "12.000 / 10.000", `over-target got ${over.text}`);
 assert(over.over === true, "over-target must warn");
 
-console.log("production schedule qty progress OK — tests 1–5 passed");
+const mixed = {
+  total_quantity: 15000,
+  print_qty_total: 10000,
+  print_completed_qty: 2000,
+  operators: [{ quantity: 5000, qty_completed: 2000 }],
+};
+assert(printQtyProgress(mixed).text === "2.000 / 10.000", `Total Qty must stay actual, got ${printQtyProgress(mixed).text}`);
+assert(scheduledPrintQtyProgress(mixed).text === "5.000 / 10.000", `Qty Cetak got ${scheduledPrintQtyProgress(mixed).text}`);
+assert(!scheduledPrintQtyProgress(mixed).text.includes("15.000"), "Qty Cetak must not use PO total");
+
+const multi = {
+  total_quantity: 15000,
+  print_qty_total: 10000,
+  print_completed_qty: 0,
+  operators: [
+    { quantity: 4000, qty_completed: 0, line_idx: 0 },
+    { quantity: 1000, qty_completed: 0, line_idx: 1 },
+  ],
+};
+assert(scheduledPrintQtyProgress(multi).text === "5.000 / 10.000", `multi-line Qty Cetak got ${scheduledPrintQtyProgress(multi).text}`);
+
+const edited = {
+  total_quantity: 15000,
+  print_qty_total: 10000,
+  operators: [{ quantity: 6000 }],
+};
+assert(scheduledPrintQtyProgress(edited).text === "6.000 / 10.000", "edit must replace not sum history");
+assert(scheduledPrintQtyProgress(edited).text === scheduledPrintQtyProgress(edited).text, "Qty Cetak no double count on refresh");
+
+console.log("production schedule qty progress OK — Total Qty + Qty Cetak passed");

@@ -12,7 +12,7 @@ import {
   productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
-import { printQtyProgress } from "../lib/productionScheduleQty";
+import { printQtyProgress, scheduledPrintQtyProgress } from "../lib/productionScheduleQty";
 
 const STATUS_OPTS = [
   { key: "all", label: "Semua status" },
@@ -32,6 +32,7 @@ const TABLE_COLS = [
   { key: "customer", label: "Customer", filter: "customer" },
   { key: "outlet", label: "Outlet" },
   { key: "qty", label: "Total Qty", num: true },
+  { key: "qty_cetak", label: "Qty Cetak", num: true },
   { key: "operator", label: "Operator", filter: "operator" },
   { key: "design", label: "Design", fit: true },
   { key: "payment", label: "Payment", fit: true },
@@ -431,6 +432,7 @@ export default function ProductionSchedule() {
             <tbody>
               {sorted.map((r) => {
                 const qtyProg = printQtyProgress(r);
+                const cetakProg = scheduledPrintQtyProgress(r);
                 return (
                 <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
                   <td className="mono small col-fit">{formatDate(r.deadline)}</td>
@@ -493,12 +495,18 @@ export default function ProductionSchedule() {
                   >
                     {qtyProg.text}
                   </td>
+                  <td
+                    className={"num col-fit" + (cetakProg.over ? " prod-qty-over" : "")}
+                    data-testid={`prod-qty-cetak-${r.po_number}`}
+                    title={cetakProg.title}
+                  >
+                    {cetakProg.text}
+                  </td>
                   <td className="prod-ops col-text">
                     {(r.operators || []).length === 0 ? <span className="muted small">-</span> :
                       (r.operators || []).map((op, i) => (
                         <div key={i} className="prod-op-line">
-                          <span className="prod-op-name">{op.operator_name}</span>
-                          <span className="muted small mono prod-op-qty">{op.qty_completed || 0}/{op.quantity}</span>
+                          <span className="prod-op-name">{op.operator_name || "-"}</span>
                         </div>
                       ))
                     }

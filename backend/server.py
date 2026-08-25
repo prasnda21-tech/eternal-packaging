@@ -3593,6 +3593,7 @@ def _production_row(o: dict) -> dict:
         "print_qty_total": _print_qty_total(o),
         "non_print_qty_total": _non_print_qty_total(o),
         "print_completed_qty": _print_completed_qty(o),
+        "operator_assigned_qty": _operator_assigned_qty(o),
         "available_for_packing": _available_for_packing(o),
         "qty_delivered": _qr_qty_delivered(o),
         "operators": [{
