@@ -1448,6 +1448,14 @@
 .stock-qty-edit{display:inline-flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:4.5rem}
 .stock-qty-edit input{width:5.5rem;border:1px solid var(--line);background:#fff;padding:2px 6px;font:12px 'IBM Plex Mono';text-align:right;border-radius:2px}
 .stock-qty-err{font-size:10px;color:var(--red);max-width:7rem;text-align:right}
+.stock-src{display:block;font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;line-height:1.2}
+.stock-purchase-cell{display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px}
+.stock-heading-actions{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+.stock-last-sync,.stock-sync-summary{margin:4px 0 0}
+.penerimaan-no{display:inline-flex;align-items:center;gap:4px;font:inherit;background:none;border:0;padding:0;cursor:pointer;color:inherit}
+.penerimaan-detail-row td{background:#f7f8f6;padding:8px 10px}
+.penerimaan-lines{width:100%;margin:0}
+.penerimaan-lines th,.penerimaan-lines td{font-size:12px}
 .stock-neg td{background:#fdf3f1}
 .stock-neg-val{color:var(--red);font-weight:700}
 .prod-table thead th .prod-th-label{color:inherit}

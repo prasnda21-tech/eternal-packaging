@@ -1,4 +1,4 @@
-import { inventoryNavVisible, NAV_KEYS } from "./navAccess";
+import { inventoryNavVisible, purchasingNavVisible, NAV_KEYS } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -22,5 +22,19 @@ describe("inventoryNavVisible", () => {
     expect(v.parent).toBe(true);
     expect(v.masterItems).toBe(false);
     expect(v.currentStock).toBe(true);
+  });
+});
+
+describe("purchasingNavVisible", () => {
+  test("hides parent without receipts child", () => {
+    const v = purchasingNavVisible(has(NAV_KEYS.purchasing));
+    expect(v.parent).toBe(false);
+    expect(v.receipts).toBe(false);
+  });
+
+  test("shows parent when receipts granted", () => {
+    const v = purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts));
+    expect(v.parent).toBe(true);
+    expect(v.receipts).toBe(true);
   });
 });

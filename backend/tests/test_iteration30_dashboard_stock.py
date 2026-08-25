@@ -71,6 +71,7 @@ def cleanup(db):
         db.item_stock_manual.delete_many({"master_item_id": {"$in": mids}})
     db.master_items.delete_many({"accurate_item_id": {"$regex": "^T30-"}})
     db.item_stock_manual.delete_many({"accurate_item_id": {"$regex": "^T30-"}})
+    db.accurate_purchase_receipts.delete_many({"accurate_receipt_id": {"$regex": "^TEST-R-"}})
 
 
 def test_dashboard_today_work_only(db, admin, cleanup):
@@ -154,29 +155,78 @@ def test_current_stock_formula_and_save(db, admin, cleanup):
         json={"manual_current_qty": 2000, "manual_purchase_qty": 1000},
         timeout=15,
     )
-    assert r.status_code == 200, r.text
-    item = r.json()["item"]
-    assert item["qty_po"] == 10000
-    assert item["manual_current_qty"] == 2000
-    assert item["purchase_qty"] == 1000
-    assert item["operator_print_qty"] == 3000
-    assert item["stock_current"] == 4000
-    assert item["updated_by"] == ADMIN_EMAIL
-    assert item["updated_at"]
+    listed0 = admin.get(f"{BASE_URL}/api/current-stock", params={"q": "T30-CUP"}, timeout=15)
+    source = (listed0.json() or {}).get("purchase_source") if listed0.status_code == 200 else "MANUAL_FALLBACK"
+
+    if r.status_code == 409 or source == "ACCURATE":
+        db.accurate_purchase_receipts.update_one(
+            {"accurate_receipt_id": f"TEST-R-{aid}"},
+            {"$set": {
+                "accurate_receipt_id": f"TEST-R-{aid}",
+                "receipt_number": "TEST-R",
+                "receipt_date": "25/08/2026",
+                "valid": True,
+                "lines": [{"accurate_line_id": "1", "accurate_item_id": aid, "received_qty": 1000}],
+            }},
+            upsert=True,
+        )
+        r = admin.patch(
+            f"{BASE_URL}/api/current-stock/{mid}",
+            json={"manual_current_qty": 2000},
+            timeout=15,
+        )
+        assert r.status_code == 200, r.text
+        item = r.json()["item"]
+        assert item["purchase_qty"] == 1000
+        assert item["purchase_source"] == "ACCURATE"
+        assert item["stock_current"] == -10000
+        denied = admin.patch(
+            f"{BASE_URL}/api/current-stock/{mid}",
+            json={"manual_purchase_qty": 8000},
+            timeout=15,
+        )
+        assert denied.status_code == 409
+        db.accurate_purchase_receipts.update_one(
+            {"accurate_receipt_id": f"TEST-R-{aid}"},
+            {"$set": {"lines": [{"accurate_line_id": "1", "accurate_item_id": aid, "received_qty": 8000}]}},
+        )
+        r3_item = admin.get(f"{BASE_URL}/api/current-stock", params={"q": "T30-CUP"}, timeout=15).json()
+        found3 = next(x for x in r3_item["items"] if x["accurate_item_id"] == aid)
+        assert found3["purchase_qty"] == 8000
+        assert found3["stock_current"] == -3000
+    else:
+        assert r.status_code == 200, r.text
+        item = r.json()["item"]
+        assert item["qty_po"] == 10000
+        assert item["manual_current_qty"] == 2000
+        assert item["purchase_qty"] == 1000
+        assert item["operator_print_qty"] == 3000
+        # (2000 + 1000) - 10000 - 3000 = -10000
+        assert item["stock_current"] == -10000
+        assert item["updated_by"] == ADMIN_EMAIL
+        assert item["updated_at"]
+
+        listed = admin.get(f"{BASE_URL}/api/current-stock", params={"q": "T30-CUP"}, timeout=15)
+        assert listed.status_code == 200
+        found = next(x for x in listed.json()["items"] if x["accurate_item_id"] == aid)
+        assert found["stock_current"] == -10000
+
+        # (2000 + 8000) - 10000 - 3000 = -3000, never clamped
+        r3 = admin.patch(
+            f"{BASE_URL}/api/current-stock/{mid}",
+            json={"manual_purchase_qty": 8000},
+            timeout=15,
+        )
+        assert r3.status_code == 200, r3.text
+        assert r3.json()["item"]["stock_current"] == -3000
 
     listed = admin.get(f"{BASE_URL}/api/current-stock", params={"q": "T30-CUP"}, timeout=15)
     assert listed.status_code == 200
     found = next(x for x in listed.json()["items"] if x["accurate_item_id"] == aid)
-    assert found["stock_current"] == 4000
-
-    # 10000 - (2000 + 8000) - 3000 = -3000, never clamped
-    r3 = admin.patch(
-        f"{BASE_URL}/api/current-stock/{mid}",
-        json={"manual_purchase_qty": 8000},
-        timeout=15,
-    )
-    assert r3.status_code == 200, r3.text
-    assert r3.json()["item"]["stock_current"] == -3000
+    assert found["qty_po"] == 10000
+    assert found["operator_print_qty"] == 3000
+    assert found["purchase_qty"] == 8000
+    assert found["stock_current"] == -3000
 
     neg = admin.get(f"{BASE_URL}/api/current-stock", params={"stock_filter": "negative", "q": "T30-CUP"}, timeout=15)
     assert neg.status_code == 200
@@ -197,14 +247,20 @@ def test_current_stock_formula_and_save(db, admin, cleanup):
     headers = [c.value for c in ws[1]]
     assert "Nilai PO" not in headers
     assert headers == [
-        "Kode", "Nama Item", "Satuan", "Qty PO", "Qty Saat Ini",
-        "Pembelian Barang", "Qty Cetak Operator", "Stock Saat Ini", "Terakhir Update",
+        "Kode", "Nama Item", "Satuan", "Qty Saat Ini", "Pembelian Barang",
+        "Qty PO", "Qty Cetak Operator", "Stock Saat Ini", "Sumber Pembelian",
+        "Terakhir Update",
     ]
     assert ws.max_row >= 2
     stock_col = headers.index("Stock Saat Ini") + 1
     qty_po_col = headers.index("Qty PO") + 1
+    buy_col = headers.index("Pembelian Barang") + 1
+    src_col = headers.index("Sumber Pembelian") + 1
     assert isinstance(ws.cell(2, qty_po_col).value, (int, float))
-    assert ws.cell(2, stock_col).value < 0
+    assert isinstance(ws.cell(2, buy_col).value, (int, float))
+    assert ws.cell(2, stock_col).value == found["stock_current"]
+    assert ws.cell(2, buy_col).value == found["purchase_qty"]
+    assert ws.cell(2, src_col).value in ("Accurate", "Manual")
 
 
 def test_helper_forbidden_current_stock():
@@ -214,3 +270,7 @@ def test_helper_forbidden_current_stock():
         pytest.skip("helper login unavailable")
     g = s.get(f"{BASE_URL}/api/current-stock", timeout=15)
     assert g.status_code == 403
+    p = s.post(f"{BASE_URL}/api/purchase-receipts/sync", timeout=15)
+    assert p.status_code == 403
+    g2 = s.get(f"{BASE_URL}/api/purchase-receipts", timeout=15)
+    assert g2.status_code == 403

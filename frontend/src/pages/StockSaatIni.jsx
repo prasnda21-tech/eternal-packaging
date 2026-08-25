@@ -4,6 +4,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
+import { isAccuratePurchaseSource, purchaseSourceLabel } from "../lib/currentStock";
 
 function parseInputQty(raw) {
   const t = String(raw ?? "").trim();
@@ -160,7 +161,8 @@ export default function StockSaatIni() {
 
   const items = data?.items || [];
   const pageCount = data?.page_count || 1;
-  const purchaseManual = (data?.purchase_source || "MANUAL_FALLBACK") === "MANUAL_FALLBACK";
+  const purchaseAccurate = isAccuratePurchaseSource(data?.purchase_source);
+  const sourceLabel = purchaseSourceLabel(data?.purchase_source);
 
   return (
     <div className="prod-page master-items-page stock-page" data-testid="stock-saat-ini-page">
@@ -168,13 +170,15 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
-          <p className="subhead">Qty PO − (Qty Saat Ini + Pembelian Barang) − Qty Cetak Operator</p>
+          <p className="subhead">(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator</p>
         </div>
-        {canExport && (
-          <button className="primary" onClick={download} disabled={exporting} data-testid="stock-export-button">
-            <Download size={14} /> Export
-          </button>
-        )}
+        <div className="stock-heading-actions">
+          {canExport && (
+            <button className="primary" onClick={download} disabled={exporting} data-testid="stock-export-button">
+              <Download size={14} /> Export
+            </button>
+          )}
+        </div>
       </div>
 
       {err && (
@@ -231,13 +235,13 @@ export default function StockSaatIni() {
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama Item</button>
               </th>
               <th className="col-fit">Satuan</th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("qty_po")}>Qty PO</button>
-              </th>
               <th className="col-fit num">Qty Saat Ini</th>
               <th className="col-fit num">
                 Pembelian Barang
-                {purchaseManual && <span className="muted small" style={{ display: "block", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>manual</span>}
+                <span className="stock-src muted" data-testid="stock-purchase-source-header">{sourceLabel}</span>
+              </th>
+              <th className="col-fit num">
+                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("qty_po")}>Qty PO</button>
               </th>
               <th className="col-fit num">
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("operator_print_qty")}>Qty Cetak Operator</button>
@@ -264,7 +268,6 @@ export default function StockSaatIni() {
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.unit || "—"}</td>
-                <td className="col-fit num mono">{fmtQty(it.qty_po)}</td>
                 <td className="col-fit num">
                   <QtyCell
                     value={it.manual_current_qty}
@@ -274,13 +277,24 @@ export default function StockSaatIni() {
                   />
                 </td>
                 <td className="col-fit num">
-                  <QtyCell
-                    value={it.purchase_qty}
-                    disabled={!canUpdate}
-                    testid={`stock-purchase-${it.accurate_item_id}`}
-                    onSave={(v) => patchRow(it, { manual_purchase_qty: v })}
-                  />
+                  {purchaseAccurate ? (
+                    <span className="stock-purchase-cell">
+                      <span className="mono" data-testid={`stock-purchase-${it.accurate_item_id}`}>{fmtQty(it.purchase_qty)}</span>
+                      <span className="stock-src muted" title="Berdasarkan Penerimaan Barang">Accurate</span>
+                    </span>
+                  ) : (
+                    <span className="stock-purchase-cell">
+                      <QtyCell
+                        value={it.purchase_qty}
+                        disabled={!canUpdate}
+                        testid={`stock-purchase-${it.accurate_item_id}`}
+                        onSave={(v) => patchRow(it, { manual_purchase_qty: v })}
+                      />
+                      <span className="stock-src muted">Manual</span>
+                    </span>
+                  )}
                 </td>
+                <td className="col-fit num mono">{fmtQty(it.qty_po)}</td>
                 <td className="col-fit num mono">{fmtQty(it.operator_print_qty)}</td>
                 <td className={"col-fit num mono" + (Number(it.stock_current) < 0 ? " stock-neg-val" : "")} data-testid={`stock-current-${it.accurate_item_id}`}>
                   {fmtQty(it.stock_current)}

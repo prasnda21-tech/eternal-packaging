@@ -1,11 +1,12 @@
 """Stock Saat Ini — quantity-only, per Master Item.
 
-stock_current = po_qty - (manual_current_qty + purchase_qty) - operator_print_qty
+stock_current = (manual_current_qty + purchase_qty) - po_qty - operator_print_qty
 
 Identity is master_item_id and/or accurate_item_id. Never match by name.
 Cancelled POs are excluded. Operator qty is the snapshot
 `operator_splits.qty_completed` (re-save overwrites; no double count).
-Pembelian module has no transaction data → MANUAL FALLBACK field.
+Pembelian Barang is Accurate Penerimaan Barang received qty when synced;
+otherwise MANUAL FALLBACK. Never add manual + Accurate (double count).
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from quantity_rules import is_print_line
 
 COLLECTION = "item_stock_manual"
 PURCHASE_SOURCE = "MANUAL_FALLBACK"
+PURCHASE_SOURCE_ACCURATE = "ACCURATE"
+PURCHASE_SOURCE_MANUAL = "MANUAL_FALLBACK"
 ORDER_PROJECTION = {
     "_id": 0,
     "cancelled": 1,
@@ -77,8 +80,8 @@ def compute_stock_current(
 ) -> float:
     """Authoritative formula. Negative values are preserved (never clamped)."""
     stock = (
-        qty_num(po_qty)
-        - (qty_num(manual_current_qty) + qty_num(purchase_qty))
+        (qty_num(manual_current_qty) + qty_num(purchase_qty))
+        - qty_num(po_qty)
         - qty_num(operator_print_qty)
     )
     if isinstance(stock, float) and stock == int(stock):
@@ -231,6 +234,9 @@ def build_stock_rows(
     master_items: Iterable[dict],
     orders: Iterable[dict],
     manuals: Iterable[dict],
+    receipts: Optional[Iterable[dict]] = None,
+    *,
+    purchase_source: Optional[str] = None,
 ) -> List[dict]:
     order_list = list(orders)
     po_bucket, po_alias = aggregate_po_qty(order_list)
@@ -245,6 +251,19 @@ def build_stock_rows(
         for k in keys:
             man_alias[k] = canon
         man_by_key[canon] = m
+
+    from services.purchase_receipts import (
+        PURCHASE_SOURCE_ACCURATE as SRC_ACC,
+        PURCHASE_SOURCE_MANUAL as SRC_MAN,
+        aggregate_received_qty,
+        purchase_qty_for_item,
+    )
+    source = (purchase_source or PURCHASE_SOURCE).strip().upper()
+    if source in ("ACCURATE", SRC_ACC):
+        source = SRC_ACC
+    else:
+        source = SRC_MAN
+    recv_bucket, recv_alias = aggregate_received_qty(receipts or [])
 
     rows = []
     for it in master_items:
@@ -263,7 +282,11 @@ def build_stock_rows(
                 man = man_by_key[k]
                 break
         manual_current = qty_num((man or {}).get("manual_current_qty"))
-        purchase = qty_num((man or {}).get("manual_purchase_qty"))
+        manual_purchase = qty_num((man or {}).get("manual_purchase_qty"))
+        if source == SRC_ACC:
+            purchase = purchase_qty_for_item(it, recv_bucket, recv_alias)
+        else:
+            purchase = manual_purchase
         stock = compute_stock_current(po_qty, manual_current, purchase, op_qty)
         updated_at = (man or {}).get("updated_at")
         updated_by = (man or {}).get("updated_by")
@@ -277,7 +300,7 @@ def build_stock_rows(
             "qty_po": po_qty,
             "manual_current_qty": manual_current,
             "purchase_qty": purchase,
-            "purchase_source": PURCHASE_SOURCE,
+            "purchase_source": source,
             "operator_print_qty": op_qty,
             "stock_current": stock,
             "updated_at": updated_at,
@@ -296,6 +319,8 @@ def filter_sort_page(
     sort_dir: str = "asc",
     page: int = 1,
     page_size: int = 50,
+    purchase_source: Optional[str] = None,
+    last_receipt_sync_at: Optional[str] = None,
 ) -> dict:
     filtered = [
         r for r in rows
@@ -316,16 +341,24 @@ def filter_sort_page(
     page_size = max(1, min(int(page_size or 50), 100))
     start = (page - 1) * page_size
     page_rows = filtered[start:start + page_size]
+    src = purchase_source or ((page_rows[0].get("purchase_source") if page_rows else None) or (filtered[0].get("purchase_source") if filtered else None) or PURCHASE_SOURCE)
     return {
         "items": page_rows,
         "total": total,
         "page": page,
         "page_size": page_size,
         "page_count": max(1, (total + page_size - 1) // page_size) if total else 1,
-        "purchase_source": PURCHASE_SOURCE,
-        "formula": "qty_po - (manual_current_qty + purchase_qty) - operator_print_qty",
+        "purchase_source": src,
+        "formula": "(manual_current_qty + purchase_qty) - po_qty - operator_print_qty",
         "qty_po_source": "orders.line_items.quantity (cancelled excluded)",
         "operator_print_source": "operator_splits.qty_completed snapshot per line_idx",
+        "purchase_qty_source": (
+            "accurate receive-item received quantity"
+            if src == PURCHASE_SOURCE_ACCURATE
+            else "manual_purchase_qty fallback"
+        ),
+        "last_receipt_sync_at": last_receipt_sync_at,
+        "receipt_date_filter": "none — entire synced receive-item dataset",
     }
 
 
