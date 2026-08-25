@@ -1515,7 +1515,7 @@ async def fetch_delivery_notes(
     po_number: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return mock Pengiriman Pesanan. Live Accurate is never called here."""
-    if client.is_live():
+    if client.is_live:
         return {
             "ok": False,
             "blocked": True,

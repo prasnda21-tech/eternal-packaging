@@ -381,10 +381,45 @@ def test_live_accurate_delivery_fetch_blocked():
     import asyncio
 
     class _Live:
-        def is_live(self):
-            return True
+        is_live = True
 
     result = asyncio.run(fetch_delivery_notes(_Live(), po_number="PO-2001"))
     assert result["blocked"] is True
     assert result["notes"] == []
     assert "sales-order" in result["reason"]
+
+
+def test_fetch_delivery_notes_is_live_bool_not_callable_live():
+    """Regression: AccurateClient.is_live is a property, not a method."""
+    import asyncio
+
+    class _Client:
+        is_live = True
+
+    result = asyncio.run(fetch_delivery_notes(_Client(), po_number="PO-2001"))
+    assert result["blocked"] is True
+    assert result["mode"] == "live"
+    assert result["ok"] is False
+    assert result["notes"] == []
+
+
+def test_fetch_delivery_notes_is_live_bool_not_callable_mock():
+    import asyncio
+
+    class _Client:
+        is_live = False
+
+    result = asyncio.run(fetch_delivery_notes(_Client(), po_number="PO-2001"))
+    assert result["ok"] is True
+    assert result["blocked"] is False
+    assert result["mode"] == "mock"
+    assert result["notes"]
+
+
+def test_fetch_delivery_notes_source_does_not_call_is_live():
+    src = (Path(__file__).resolve().parents[1] / "services" / "accurate.py").read_text(encoding="utf-8")
+    start = src.index("async def fetch_delivery_notes")
+    end = src.index("# Fields that Accurate owns", start)
+    fn = src[start:end]
+    assert "is_live()" not in fn
+    assert "if client.is_live:" in fn
