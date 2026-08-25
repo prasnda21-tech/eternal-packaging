@@ -174,6 +174,8 @@ export const api = {
   // ---- Delivery Deadline (Batch 1) ----
   deliveryDeadlineSettings: () => client.get(`/delivery-deadline/settings`).then((r) => r.data),
   updateDeliveryDeadlineSettings: (payload) => client.put(`/delivery-deadline/settings`, payload).then((r) => r.data),
+  workPanelSettings: () => client.get(`/work-panel/settings`).then((r) => r.data),
+  updateWorkPanelSettings: (payload) => client.put(`/work-panel/settings`, payload).then((r) => r.data),
   setDeliveryDeadlineManual: (id, deadlineAt, reason = "") => client.post(`/orders/${id}/delivery-deadline`, { deadline_at: deadlineAt, reason }).then((r) => r.data),
   resetDeliveryDeadlineManual: (id) => client.post(`/orders/${id}/delivery-deadline/reset`).then((r) => r.data),
   // ---- Customer Design Approval ----

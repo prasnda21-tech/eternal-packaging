@@ -377,6 +377,8 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
       <ConfirmActionModal
         open={!!confirmUpload}
         stage="Terkirim"
+        poNumber={order.po_number}
+        action={confirmUpload ? `Upload ${confirmUpload.count} foto bukti pengiriman` : "Upload bukti pengiriman"}
         name={user?.name || user?.email}
         time={confirmUpload?.time}
         extra={confirmUpload ? <p className="muted small">Upload {confirmUpload.count} foto bukti pengiriman</p> : null}

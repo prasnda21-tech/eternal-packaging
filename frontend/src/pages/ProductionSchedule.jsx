@@ -13,6 +13,7 @@ import {
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
 import { printQtyProgress, scheduledPrintQtyProgress } from "../lib/productionScheduleQty";
+import { schedulePoHref } from "../lib/workPanel";
 
 const STATUS_OPTS = [
   { key: "all", label: "Semua status" },
@@ -485,7 +486,7 @@ export default function ProductionSchedule() {
                   <td className="col-fit" data-testid={`prod-buffer-${r.po_number}`}>
                     {r.buffer_stock ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span> : <span className="muted small">—</span>}
                   </td>
-                  <td className="mono col-fit"><Link to={`/po/${r.id}`} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
+                  <td className="mono col-fit"><Link to={schedulePoHref(r.id, hasPerm)} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
                   <td className="prod-cell-wrap col-text"><strong>{r.customer || "-"}</strong></td>
                   <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
                   <td
@@ -552,7 +553,7 @@ export default function ProductionSchedule() {
       ) : (
         <section className="prod-cards prod-schedule-cards" data-testid="prod-cards">
           {sorted.map((r) => (
-            <Link key={r.id} to={`/po/${r.id}`} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
+            <Link key={r.id} to={schedulePoHref(r.id, hasPerm)} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
               <header>
                 <strong>{r.po_number}</strong>
                 {r.urgent && <span className="urgent-badge">URGENT</span>}

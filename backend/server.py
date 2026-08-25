@@ -38,6 +38,8 @@ from services.shipment_status import (
 )
 from services.status_po import build_status_po
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
+from services.work_panel_settings import SETTINGS_KEY as WORK_PANEL_SETTINGS_KEY
+from services import work_panel_settings as work_panel_cfg
 from services.dashboard_today import (
     SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
@@ -2613,17 +2615,16 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
 
 @api_router.post("/orders/{order_id}/operator-progress")
 async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, user=Depends(current_user)):
-    role = user.get("role")
-    if role not in ("operator", "head_production", "admin"):
-        raise HTTPException(403, "Role Anda tidak diizinkan memperbarui qty operator")
+    await _require_perm(user, "operator.update")
+    eff = await user_permissions(user)
 
     def mutate(order: dict):
         splits = order.get("operator_splits", [])
         found = next((s for s in splits if s["id"] == payload.operator_id), None)
         if not found:
             raise HTTPException(404, "Operator split tidak ditemukan")
-        if role == "operator" and found["operator_email"] != user.get("email"):
-            raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
+        if "schedule.edit" not in eff and found.get("operator_email") != user.get("email"):
+            raise HTTPException(403, "Anda hanya dapat memperbarui qty assignment Anda sendiri")
         _ensure_print_qty_allowed(order)
         cap = int(found["quantity"])
         entries = list(found.get("progress_entries") or [])
@@ -3545,6 +3546,38 @@ async def put_delivery_deadline_settings(payload: DeliveryDeadlineSettingsPayloa
     await _write_audit(action="delivery.deadline.settings.update", actor=user,
                        target_email="-", after={"lead_time_days": doc["lead_time_days"]})
     return {"settings": await _get_delivery_deadline_settings()}
+
+
+class WorkPanelSettingsPayload(BaseModel):
+    divisions: Optional[List[Any]] = None
+
+
+@api_router.get("/work-panel/settings")
+async def get_work_panel_settings(user=Depends(current_user)):
+    await _require_perm(user, "po.view")
+    doc = await db.app_settings.find_one({"key": WORK_PANEL_SETTINGS_KEY}, {"_id": 0})
+    return {"settings": work_panel_cfg.merge_settings(doc)}
+
+
+@api_router.put("/work-panel/settings")
+async def put_work_panel_settings(payload: WorkPanelSettingsPayload, user=Depends(current_user)):
+    await _require_perm(user, "settings.work_panel.manage")
+    merged = work_panel_cfg.sanitize_put(payload.model_dump())
+    doc = {
+        "key": WORK_PANEL_SETTINGS_KEY,
+        "divisions": merged["divisions"],
+        "updated_by": user.get("email"),
+        "updated_by_name": user.get("name"),
+        "updated_at": now_iso(),
+    }
+    await db.app_settings.update_one({"key": WORK_PANEL_SETTINGS_KEY}, {"$set": doc}, upsert=True)
+    await _write_audit(
+        action="settings.work_panel.update",
+        actor=user,
+        target_email="-",
+        after={"divisions": [{"id": d["id"], "active": d["active"], "input_label": d["input_label"]} for d in merged["divisions"]]},
+    )
+    return {"settings": work_panel_cfg.merge_settings(doc)}
 
 
 @api_router.post("/orders/{order_id}/delivery-deadline")
