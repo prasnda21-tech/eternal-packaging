@@ -1,4 +1,4 @@
-import { BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import api from "../lib/api";
@@ -122,7 +122,7 @@ export default function AppShell() {
           )}
           {showSchedule && (
             <NavLink to="/produksi" end className={navClass} data-testid="top-nav-produksi">
-              <Table size={16} /> Jadwal Produksi
+              <TableIcon size={16} /> Jadwal Produksi
             </NavLink>
           )}
           {purchasingNav.parent && (
@@ -186,11 +186,18 @@ export default function AppShell() {
                 <BarChart3 size={16} /> Laporan
                 <ChevronDown size={14} className="nav-chevron" />
               </button>
-              {reportsOpen && reportsNav.analytics && (
+              {reportsOpen && (
                 <div className="nav-sub">
-                  <NavLink to="/laporan/analitik-output" className={navClass} data-testid="top-nav-analitik-output">
-                    <FileBarChart size={16} /> Analitik Output
-                  </NavLink>
+                  {reportsNav.analytics && (
+                    <NavLink to="/laporan/analitik-output" className={navClass} data-testid="top-nav-analitik-output">
+                      <FileBarChart size={16} /> Analitik Output
+                    </NavLink>
+                  )}
+                  {reportsNav.shipmentStatus && (
+                    <NavLink to="/laporan/status-pengiriman" className={navClass} data-testid="top-nav-status-pengiriman">
+                      <Truck size={16} /> Status Pengiriman
+                    </NavLink>
+                  )}
                 </div>
               )}
             </div>

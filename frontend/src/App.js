@@ -14,8 +14,9 @@ import MasterBarangJasa from "./pages/MasterBarangJasa";
 import StockSaatIni from "./pages/StockSaatIni";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
 import AnalitikOutput from "./pages/AnalitikOutput";
+import StatusPengiriman from "./pages/StatusPengiriman";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
-import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible } from "./lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import "@/App.css";
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit"];
@@ -57,6 +58,14 @@ function PembelianIndex() {
   return <Navigate to="/" replace />;
 }
 
+function LaporanIndex() {
+  const { hasPerm } = useAuth();
+  const r = reportsNavVisible(hasPerm);
+  if (r.analytics) return <Navigate to="/laporan/analitik-output" replace />;
+  if (r.shipmentStatus) return <Navigate to="/laporan/status-pengiriman" replace />;
+  return <Navigate to="/" replace />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -77,7 +86,8 @@ export default function App() {
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
-            <Route path="/laporan" element={<Navigate to="/laporan/analitik-output" replace />} />
+            <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
+            <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id" element={<PODetail />} />
             <Route path="/po/:id/surat-jalan" element={<SuratJalan />} />

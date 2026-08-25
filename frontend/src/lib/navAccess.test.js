@@ -1,4 +1,4 @@
-import { inventoryNavVisible, purchasingNavVisible, NAV_KEYS } from "./navAccess";
+import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, NAV_KEYS } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -36,5 +36,28 @@ describe("purchasingNavVisible", () => {
     const v = purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts));
     expect(v.parent).toBe(true);
     expect(v.receipts).toBe(true);
+  });
+});
+
+describe("reportsNavVisible", () => {
+  test("hides parent when no child is granted", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports));
+    expect(v.parent).toBe(false);
+    expect(v.analytics).toBe(false);
+    expect(v.shipmentStatus).toBe(false);
+  });
+
+  test("shows parent for shipment status only", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.shipmentStatus));
+    expect(v.parent).toBe(true);
+    expect(v.shipmentStatus).toBe(true);
+    expect(v.analytics).toBe(false);
+  });
+
+  test("shows parent for analytics only", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.analytics));
+    expect(v.parent).toBe(true);
+    expect(v.analytics).toBe(true);
+    expect(v.shipmentStatus).toBe(false);
   });
 });
