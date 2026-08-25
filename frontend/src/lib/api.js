@@ -93,6 +93,7 @@ export const api = {
     client.get(`/analytics/output/export`, { params, responseType: "blob" }).then((r) => r.data),
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),
   dashboardSummary: () => client.get(`/dashboard/summary`).then((r) => r.data),
+  dashboardToday: () => client.get(`/dashboard/today`).then((r) => r.data),
   updateOperatorProgress: (id, operatorId, qtyCompleted) =>
     client.post(`/orders/${id}/operator-progress`, { operator_id: operatorId, qty_completed: qtyCompleted }).then((r) => r.data),
   accurateImportPreview: (soNumber) => client.post(`/accurate/import/preview`, { so_number: soNumber }).then((r) => r.data),
@@ -105,6 +106,10 @@ export const api = {
   accurateImportAvailable: () => client.get(`/accurate/import/available`).then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
+  currentStock: (params = {}) => client.get(`/current-stock`, { params }).then((r) => r.data),
+  currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
+  currentStockExport: (params = {}) =>
+    client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
   importFilePreview: (file, onProgress) => {
     const form = new FormData();
     form.append("file", file);

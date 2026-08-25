@@ -1,4 +1,4 @@
-import { BarChart3, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import api from "../lib/api";
@@ -136,11 +136,18 @@ export default function AppShell() {
                 <Warehouse size={16} /> Persediaan
                 <ChevronDown size={14} className="nav-chevron" />
               </button>
-              {inventoryOpen && inventoryNav.masterItems && (
+              {inventoryOpen && (
                 <div className="nav-sub">
-                  <NavLink to="/persediaan/master-barang-jasa" className={navClass} data-testid="top-nav-master-barang-jasa">
-                    <Package size={16} /> Master Barang/Jasa
-                  </NavLink>
+                  {inventoryNav.masterItems && (
+                    <NavLink to="/persediaan/master-barang-jasa" className={navClass} data-testid="top-nav-master-barang-jasa">
+                      <Package size={16} /> Master Barang/Jasa
+                    </NavLink>
+                  )}
+                  {inventoryNav.currentStock && (
+                    <NavLink to="/persediaan/stock-saat-ini" className={navClass} data-testid="top-nav-stock-saat-ini">
+                      <Boxes size={16} /> Stock Saat Ini
+                    </NavLink>
+                  )}
                 </div>
               )}
             </div>

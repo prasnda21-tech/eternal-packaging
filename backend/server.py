@@ -32,6 +32,24 @@ from services.master_items import (
     resolve_po_line_items,
     sync_master_items,
 )
+from services.dashboard_today import (
+    SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
+    WORK_PROJECTION as TODAY_WORK_PROJECTION,
+    build_shipments_today,
+    build_work_today,
+    shipments_today_mongo_query,
+    wib_today,
+    work_today_mongo_query,
+)
+from services.current_stock import (
+    COLLECTION as STOCK_MANUAL_COLLECTION,
+    ORDER_PROJECTION as STOCK_ORDER_PROJECTION,
+    PURCHASE_SOURCE as STOCK_PURCHASE_SOURCE,
+    build_stock_rows,
+    filter_sort_page as filter_stock_page,
+    parse_manual_qty,
+    public_manual as public_stock_manual,
+)
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -3510,6 +3528,23 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
         "stage_breakdown": stage_breakdown,
         "operator_load": operator_load,
         "generated_at": now_iso(),
+        "work_today": build_work_today(orders),
+        "shipments_today": build_shipments_today(orders),
+    }
+
+
+@api_router.get("/dashboard/today")
+async def dashboard_today(user=Depends(require_perm("po.view"))):
+    """Compact Pengerjaan/Pengiriman Hari Ini. Targeted queries, not a full DB scan."""
+    today = wib_today()
+    work_docs = await db.orders.find(work_today_mongo_query(today), TODAY_WORK_PROJECTION).to_list(500)
+    ship_docs = await db.orders.find(shipments_today_mongo_query(today), TODAY_SHIP_PROJECTION).to_list(500)
+    return {
+        "date": today.isoformat(),
+        "timezone": "WIB",
+        "work_today": build_work_today(work_docs, today),
+        "shipments_today": build_shipments_today(ship_docs, today),
+        "generated_at": now_iso(),
     }
 
 
@@ -5132,6 +5167,197 @@ async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
     return result
 
 
+class CurrentStockPatch(BaseModel):
+    manual_current_qty: Optional[Any] = None
+    manual_purchase_qty: Optional[Any] = None
+
+
+async def _load_stock_rows():
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(5000)
+    orders = await db.orders.find(
+        {"cancelled": {"$ne": True}}, STOCK_ORDER_PROJECTION,
+    ).to_list(5000)
+    manuals = await db[STOCK_MANUAL_COLLECTION].find({}, {"_id": 0}).to_list(5000)
+    return build_stock_rows(masters, orders, manuals)
+
+
+def _stock_xlsx(rows: list) -> FastAPIResponse:
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Stock Saat Ini"
+    headers = [
+        "Kode", "Nama Item", "Satuan", "Qty PO", "Qty Saat Ini",
+        "Pembelian Barang", "Qty Cetak Operator", "Stock Saat Ini", "Terakhir Update",
+    ]
+    ws.append(headers)
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="17313E")
+    for col_idx, _ in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="left", vertical="center")
+    for r in rows:
+        updated = r.get("updated_at") or ""
+        if r.get("updated_by_name") or r.get("updated_by"):
+            who = r.get("updated_by_name") or r.get("updated_by")
+            updated = f"{updated} · {who}" if updated else who
+        ws.append([
+            r.get("item_code") or "",
+            r.get("item_name") or "",
+            r.get("unit") or "",
+            r.get("qty_po") if r.get("qty_po") is not None else 0,
+            r.get("manual_current_qty") if r.get("manual_current_qty") is not None else 0,
+            r.get("purchase_qty") if r.get("purchase_qty") is not None else 0,
+            r.get("operator_print_qty") if r.get("operator_print_qty") is not None else 0,
+            r.get("stock_current") if r.get("stock_current") is not None else 0,
+            updated,
+        ])
+    for col in range(4, 9):
+        for row_idx in range(2, ws.max_row + 1):
+            ws.cell(row=row_idx, column=col).number_format = "0"
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"stock-saat-ini-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return FastAPIResponse(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.get("/current-stock")
+async def current_stock_list(
+    q: str = "",
+    stock_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("current_stock.view")),
+):
+    rows = await _load_stock_rows()
+    payload = filter_stock_page(
+        rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+        page=page, page_size=page_size,
+    )
+    payload["purchase_source"] = STOCK_PURCHASE_SOURCE
+    return payload
+
+
+@api_router.get("/current-stock/export")
+async def current_stock_export(
+    q: str = "",
+    stock_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    user=Depends(require_perm("current_stock.export")),
+):
+    rows = await _load_stock_rows()
+    from services.current_stock import matches_search, stock_sign_filter, qty_num, SORT_KEYS
+    filtered = [
+        r for r in rows
+        if matches_search(r, q) and stock_sign_filter(qty_num(r.get("stock_current")), stock_filter)
+    ]
+    key = SORT_KEYS.get((sort_by or "name").strip().lower(), "item_name")
+    reverse = (sort_dir or "asc").strip().lower() == "desc"
+
+    def sort_val(r):
+        v = r.get(key)
+        if key == "item_name":
+            return str(v or "").lower()
+        return qty_num(v)
+
+    filtered.sort(key=sort_val, reverse=reverse)
+    await _write_audit(
+        "current_stock.export", user, target_email=None,
+        before=None, after={"count": len(filtered), "stock_filter": stock_filter, "q": q},
+        note="Export Stock Saat Ini",
+    )
+    return _stock_xlsx(filtered)
+
+
+@api_router.patch("/current-stock/{item_id}")
+async def current_stock_update(
+    item_id: str,
+    payload: CurrentStockPatch,
+    user=Depends(require_perm("current_stock.update")),
+):
+    """Save manual Qty Saat Ini and/or Pembelian Barang (fallback). Recompute stock."""
+    master = await db.master_items.find_one(
+        {"$or": [{"id": item_id}, {"accurate_item_id": str(item_id)}]},
+        {"_id": 0},
+    )
+    if not master:
+        raise HTTPException(404, "Master item tidak ditemukan")
+    fields = {}
+    if payload.manual_current_qty is not None:
+        try:
+            fields["manual_current_qty"] = parse_manual_qty(payload.manual_current_qty)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    if payload.manual_purchase_qty is not None:
+        try:
+            fields["manual_purchase_qty"] = parse_manual_qty(payload.manual_purchase_qty)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    if not fields:
+        raise HTTPException(400, "Tidak ada nilai yang diubah")
+    now = now_iso()
+    fields["updated_at"] = now
+    fields["updated_by"] = user.get("email")
+    fields["updated_by_name"] = user.get("name") or user.get("email")
+    existing = await db[STOCK_MANUAL_COLLECTION].find_one(
+        {"$or": [
+            {"master_item_id": master.get("id")},
+            {"accurate_item_id": master.get("accurate_item_id")},
+        ]},
+        {"_id": 0},
+    )
+    before = public_stock_manual(existing)
+    if existing:
+        await db[STOCK_MANUAL_COLLECTION].update_one(
+            {"id": existing["id"]},
+            {"$set": fields},
+        )
+        doc_id = existing["id"]
+    else:
+        doc_id = str(uuid.uuid4())
+        doc = {
+            "id": doc_id,
+            "master_item_id": master.get("id"),
+            "accurate_item_id": master.get("accurate_item_id"),
+            "manual_current_qty": 0,
+            "manual_purchase_qty": 0,
+            **fields,
+        }
+        await db[STOCK_MANUAL_COLLECTION].insert_one(doc)
+    fresh = await db[STOCK_MANUAL_COLLECTION].find_one({"id": doc_id}, {"_id": 0})
+    await _write_audit(
+        "current_stock.update", user,
+        target_email=f"item:{master.get('accurate_item_id') or master.get('id')}",
+        before=before, after=public_stock_manual(fresh),
+        note="Update qty stock manual",
+    )
+    rows = await _load_stock_rows()
+    row = next(
+        (
+            r for r in rows
+            if r.get("master_item_id") == master.get("id")
+            or str(r.get("accurate_item_id") or "") == str(master.get("accurate_item_id") or "")
+        ),
+        None,
+    )
+    return {"item": row, "purchase_source": STOCK_PURCHASE_SOURCE}
+
+
 @api_router.post("/accurate/sync")
 async def accurate_sync(user=Depends(require("admin", "head_production"))):
     """Legacy bulk sync — kept behind admin/HoP for backfill only. Bulk auto-sync
@@ -6034,6 +6260,9 @@ async def seed():
     await db.orders.create_index("accurate_id", sparse=True)
     await db.master_items.create_index("id", unique=True)
     await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
+    await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
+    await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
+    await db[STOCK_MANUAL_COLLECTION].create_index("master_item_id", unique=True, sparse=True)
     await db.files.create_index("id", unique=True)
     await db.files.create_index("storage_path")
     await db.import_logs.create_index("imported_at")
@@ -6180,6 +6409,8 @@ async def seed():
             "production.route.edit",
             # Buffer Stock (CRM workflow)
             "buffer_stock.manage",
+            "current_stock.view", "current_stock.update", "current_stock.export",
+            "nav.inventory.current_stock",
         ],
         "head_operations": [
             "dashboard.production.view", "dashboard.production.export", "po.cancel",
@@ -6190,6 +6421,8 @@ async def seed():
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
             "buffer_stock.manage",
+            "current_stock.view", "current_stock.update", "current_stock.export",
+            "nav.inventory.current_stock",
         ],
         # Import PO permissions: admin gets all (idempotent top-up if a custom
         # admin override was persisted before these keys existed).
@@ -6198,6 +6431,8 @@ async def seed():
             "po.import.pdf", "po.import.spreadsheet",
             "master_items.view", "master_items.sync",
             "nav.inventory.master_items",
+            "current_stock.view", "current_stock.update", "current_stock.export",
+            "nav.inventory.current_stock",
             # Req 13/14/16 top-ups (idempotent) — admin should always have every new perm.
             "schedule.work_date.view", "schedule.work_date.edit",
             "dashboard.production.input", "dashboard.production.edit",
