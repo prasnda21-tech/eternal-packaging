@@ -60,7 +60,7 @@ export function QuantityInput({
   ...inputProps
 }) {
   return (
-    <label className={`qty-control ${disabled ? "is-disabled" : ""} ${className}`.trim()}>
+    <label className={`qty-control ${disabled ? "is-disabled" : "is-manual"} ${className}`.trim()}>
       {label ? <span className="qty-control-label">{label}</span> : null}
       <span className="qty-control-field">
         <input type="number" disabled={disabled} data-testid={testid} {...inputProps} />

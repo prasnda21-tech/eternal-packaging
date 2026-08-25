@@ -1,8 +1,35 @@
-import { STAGES, formatDate } from "../lib/constants";
+import { STAGES, formatDisplayDateTime } from "../lib/constants";
 import { ROLES } from "../lib/constants";
 import { resolveTimelineChip } from "../lib/timelineChip.js";
 
 export { resolveTimelineChip };
+
+function stageActor(idx, last, order) {
+  if (last?.by_name || last?.by_email) return last.by_name || last.by_email;
+  if (idx === 6) return order?.screener_info?.updated_by_name || order?.screener_info?.updated_by || "";
+  if (idx === 7) return order?.helper_prep?.updated_by_name || order?.helper_prep?.updated_by || "";
+  if (idx === 8 || idx === 10) {
+    const split = (order?.operator_splits || []).find((s) => s.operator_name || s.operator_email);
+    return split?.operator_name || split?.operator_email || "";
+  }
+  if (idx === 11) return order?.packing_info?.updated_by_name || order?.packing_info?.updated_by || "";
+  if (idx === 12) return order?.delivery_note_created_by_name || order?.delivery_note_created_by || "";
+  if (idx === 13) return order?.loading_checklist?.updated_by_name || order?.loading_info?.updated_by_name || "";
+  if (idx === 14) return order?.delivered_by_name || order?.delivered_by || "";
+  return "";
+}
+
+function stageAssignAt(idx, last, order) {
+  if (last?.at) return last.at;
+  if (idx === 6) return order?.screener_info?.updated_at || "";
+  if (idx === 7) return order?.helper_prep?.updated_at || "";
+  if (idx === 8 || idx === 10) return (order?.operator_splits || [])[0]?.updated_at || "";
+  if (idx === 11) return order?.packing_info?.updated_at || "";
+  if (idx === 12) return order?.delivery_note_created_at || "";
+  if (idx === 13) return order?.loading_checklist?.updated_at || order?.loading_info?.updated_at || "";
+  if (idx === 14) return order?.delivered_at || "";
+  return "";
+}
 
 export default function Timeline({ timeline = [], currentStage = 0, order = null }) {
   const byStage = STAGES.map((label, idx) => {
@@ -12,33 +39,39 @@ export default function Timeline({ timeline = [], currentStage = 0, order = null
   });
 
   return (
-    <ol className="timeline" data-testid="order-timeline">
-      {byStage.map(({ idx, label, last }) => {
-        const { state, label: stateLabel } = resolveTimelineChip(idx, order, currentStage);
-        return (
-          <li key={idx} className={`timeline-item timeline-${state}`} data-testid={`timeline-stage-${idx}`}>
-            <span className="dot" />
-            <div className="body">
-              <div className="row-top">
-                <span className="idx">{String(idx + 1).padStart(2, "0")}</span>
-                <span className="lbl">{label}</span>
-                <span className={`chip chip-${state}`} data-testid={`timeline-stage-${idx}-chip`}>
-                  {stateLabel}
-                </span>
-              </div>
-              {last && (
-                <div className="meta">
-                  <span>{formatDate(last.at)}</span>
-                  <span>·</span>
-                  <span>{last.by_name || last.by_email}</span>
-                  <span className="role-tag">{ROLES[last.by_role] || last.by_role}</span>
-                  {last.note && <p className="note">{last.note}</p>}
-                </div>
-              )}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
+    <section className="panel" data-testid="order-timeline-panel">
+      <header className="panel-head"><h3>Alur Pekerjaan</h3></header>
+      <div className="workflow-table-wrap">
+        <table className="workflow-table" data-testid="order-timeline">
+          <thead>
+            <tr>
+              <th>Tahap</th>
+              <th>Status</th>
+              <th>Jam Assign</th>
+              <th>Nama</th>
+            </tr>
+          </thead>
+          <tbody>
+            {byStage.map(({ idx, label, last }) => {
+              const { state, label: stateLabel } = resolveTimelineChip(idx, order, currentStage);
+              const at = stageAssignAt(idx, last, order);
+              const name = stageActor(idx, last, order);
+              return (
+                <tr key={idx} className={`timeline-${state}`} data-testid={`timeline-stage-${idx}`}>
+                  <td>{label}</td>
+                  <td>
+                    <span className={`chip chip-${state}`} data-testid={`timeline-stage-${idx}-chip`}>
+                      {stateLabel}
+                    </span>
+                  </td>
+                  <td className="mono small">{at ? formatDisplayDateTime(at) : "-"}</td>
+                  <td>{name || "-"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

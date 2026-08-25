@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { STAGES, canAdvance, formatDate, formatDeadline } from "../lib/constants";
+import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDateTime } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
@@ -17,9 +17,12 @@ import HelperPrepPanel from "../components/HelperPrepPanel";
 import ProductionRoutePanel from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
 import StageBar from "../components/StageBar";
-import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "../components/qtyUi";
+import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import StageDetailDrawer from "../components/StageDetailDrawer";
+import AppendQtyEntries from "../components/AppendQtyEntries";
+import ConfirmActionModal from "../components/ConfirmActionModal";
+import { newActionId } from "../lib/workflowEntries";
 
 export default function PODetail() {
   const { id } = useParams();
@@ -47,6 +50,9 @@ export default function PODetail() {
   // Payment upload state (Req wiring)
   const [payUploading, setPayUploading] = useState(false);
   const [payUploadErr, setPayUploadErr] = useState("");
+  const [screenerDraft, setScreenerDraft] = useState("");
+  const [screenerNotes, setScreenerNotes] = useState("");
+  const [actionConfirm, setActionConfirm] = useState(null);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -63,6 +69,11 @@ export default function PODetail() {
       else setErr("Gagal memuat PO");
     }).finally(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => {
+    setScreenerDraft("");
+    setScreenerNotes(order?.screener_info?.notes || "");
+  }, [order?.id, order?.screener_info?.updated_at]);
 
   useEffect(() => {
     if (!id) return;
@@ -119,7 +130,13 @@ export default function PODetail() {
   const rejectDesign = () => run(() => api.approveDesign(order.id, false, note), "Approval design dibatalkan");
   const approvePayment = () => run(() => api.approvePayment(order.id, true, note), "Payment di-approve");
   const rejectPayment = () => run(() => api.approvePayment(order.id, false, note), "Approval payment dibatalkan");
-  const approveSample = () => run(() => api.approveSample(order.id, true, note), "Sampel di-approve");
+  const approveSample = () => {
+    setActionConfirm({
+      kind: "sample-approve",
+      stage: "Konfirmasi Sample",
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
+  };
   const rejectSample = () => run(() => api.approveSample(order.id, false, note), "Approval sampel dibatalkan");
 
   const uploadPaymentProof = async (file) => {
@@ -174,11 +191,15 @@ export default function PODetail() {
       return;
     }
     const shortage = Math.max((order.packing_required_total || 0) - Number(qtyPacked || 0), 0);
-    const msg = shortage > 0
-      ? `Lanjut packing sebagian (${qtyPacked} pcs, kurang ${shortage}) ke Surat Jalan? Packing penuh belum tercapai.`
-      : "Konfirmasi Packing selesai dan PO siap masuk Surat Jalan?";
-    if (!window.confirm(msg)) return;
-    await run(() => api.markPacked(order.id), shortage > 0 ? "Packing sebagian — masuk Surat Jalan" : "Packing selesai — masuk Surat Jalan");
+    setActionConfirm({
+      kind: "packing-complete",
+      stage: "Packing",
+      qty: Number(qtyPacked || 0),
+      extra: shortage > 0
+        ? `Lanjut packing sebagian (${qtyPacked} pcs, kurang ${shortage}) ke Surat Jalan.`
+        : "Konfirmasi Packing selesai dan PO siap masuk Surat Jalan.",
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
   };
   const toggleUrgent = () => run(() => api.setUrgent(order.id, order.priority !== "urgent"), "Prioritas diperbarui");
   const toggleBufferStock = () => run(
@@ -191,6 +212,37 @@ export default function PODetail() {
     setNote("");
   };
 
+  const executeActionConfirm = async () => {
+    if (!actionConfirm || busy) return;
+    setBusy(true);
+    try {
+      if (actionConfirm.kind === "screener") {
+        const res = await api.updateScreenerInfo(order.id, {
+          qty: actionConfirm.qty,
+          notes: actionConfirm.notes,
+          action_id: actionConfirm.actionId,
+        });
+        setOrder(res.order);
+        setScreenerDraft("");
+        showToast("Info Screener disimpan");
+      } else if (actionConfirm.kind === "sample-approve") {
+        const res = await api.approveSample(order.id, true, note);
+        setOrder(res.order);
+        showToast("Sampel di-approve");
+      } else if (actionConfirm.kind === "packing-complete") {
+        const res = await api.markPacked(order.id);
+        setOrder(res.order);
+        showToast("Packing dikonfirmasi — masuk Surat Jalan");
+      }
+      setActionConfirm(null);
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      const msg = typeof d === "string" ? d : (d?.message || "Aksi gagal");
+      setActionConfirm((prev) => prev ? { ...prev, error: msg } : prev);
+    } finally {
+      setBusy(false);
+    }
+  };
   const canApproveDesign = hasPerm("design.approve");
   const canApprovePayment = hasPerm("payment.approve");
   const canApproveSample = hasPerm("operator.sample_approve") || hasPerm("schedule.edit");
@@ -244,11 +296,17 @@ export default function PODetail() {
     if (!reason || !reason.trim()) return;
     await run(() => api.rollbackStage(order.id, toStage, reason.trim()), `Workflow dikembalikan ke ${STAGES[toStage]}`);
   };
-  const saveScreener = async () => {
-    const q = parseInt(document.querySelector('[data-testid="screener-qty"]').value || "0", 10);
-    const notes = document.querySelector('[data-testid="screener-notes"]').value || "";
-    if (!Number.isFinite(q) || q < 0) { alert("Qty tidak valid"); return; }
-    await run(() => api.updateScreenerInfo(order.id, { screen_qty: q, notes }), "Info Screener disimpan");
+  const saveScreener = () => {
+    const q = Math.max(0, parseInt(screenerDraft || "0", 10));
+    if (!Number.isFinite(q) || q <= 0) { alert("Qty tidak valid"); return; }
+    setActionConfirm({
+      kind: "screener",
+      stage: "Screener",
+      qty: q,
+      actionId: newActionId(),
+      notes: screenerNotes,
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
   };
   const doCancelPO = async () => {
     if (order.cancelled) { alert("PO sudah dibatalkan"); return; }
@@ -738,25 +796,36 @@ export default function PODetail() {
           <span className="muted small">Pencatatan aktivitas — bukan cap produksi</span>
         </QtyOpsHead>
         <div className="qty-ops-body">
-        <QuantityInput
-          label="Qty Screen"
-          min="0"
-          defaultValue={order.screener_info?.screen_qty || 0}
-          testid="screener-qty"
-          disabled={!canScreenerUpdate || screenerLocked}
+        <AppendQtyEntries
+          entries={order.screener_info?.entries}
+          snapshotQty={order.screener_info?.screen_qty}
+          snapshotAt={order.screener_info?.updated_at}
+          snapshotName={order.screener_info?.updated_by_name}
+          draft={screenerDraft}
+          onDraftChange={setScreenerDraft}
+          onConfirmClick={saveScreener}
+          canEdit={canScreenerUpdate && !screenerLocked}
+          busy={busy}
+          testid="screener-append"
+          inputTestid="screener-qty"
+          confirmTestid="screener-save-button"
         />
         <label className="qty-notes">
           <span className="qty-notes-label">Catatan Screener</span>
-          <input type="text" defaultValue={order.screener_info?.notes || ""} data-testid="screener-notes" disabled={!canScreenerUpdate || screenerLocked}/>
+          <input
+            type="text"
+            className="manual-input"
+            value={screenerNotes}
+            onChange={(e) => setScreenerNotes(e.target.value)}
+            data-testid="screener-notes"
+            disabled={!canScreenerUpdate || screenerLocked}
+          />
         </label>
         {screenerLocked && (
           <p className="muted small" data-testid="screener-locked-note" style={{ marginTop: 10 }}>Screener tersedia otomatis setelah Penjadwalan disimpan.</p>
         )}
-        {canScreenerUpdate && (
-          <div className="qty-ops-foot">
-            <button className="primary" onClick={saveScreener} disabled={busy || screenerLocked} data-testid="screener-save-button">Simpan Qty</button>
-            {order.screener_info?.updated_at && <span className="muted small" data-testid="screener-updated">Update terakhir: {order.screener_info.updated_by_name || order.screener_info.updated_by} · {formatDate(order.screener_info.updated_at)}</span>}
-          </div>
+        {order.screener_info?.updated_at && (
+          <span className="muted small" data-testid="screener-updated">Update terakhir: {order.screener_info.updated_by_name || order.screener_info.updated_by} · {formatDate(order.screener_info.updated_at)}</span>
         )}
         </div>
       </section>
@@ -848,7 +917,9 @@ export default function PODetail() {
         canManage={canMarkPacked}
         busy={busy}
         onSaveQty={async (lines, notes) => {
-          await run(() => api.savePackingInfo(order.id, lines, notes), "Qty Packing disimpan");
+          const res = await api.savePackingInfo(order.id, lines, notes);
+          setOrder(res.order);
+          showToast("Qty Packing disimpan");
         }}
         onComplete={packed}
       />
@@ -861,7 +932,10 @@ export default function PODetail() {
         canManage={canManageSuratJalan}
         busy={busy}
         onCreate={async (number, notes, lines) => {
-          await run(() => api.createSuratJalan(order.id, number, notes, lines), "Surat Jalan disimpan");
+          const res = await api.createSuratJalan(order.id, number, notes, lines);
+          setOrder(res.order);
+          showToast("Surat Jalan disimpan");
+          return res;
         }}
         onImport={async (payload) => {
           await run(() => api.importSuratJalan(order.id, payload), "Surat Jalan Accurate diimpor");
@@ -924,6 +998,7 @@ export default function PODetail() {
               placeholder="Tambahkan catatan..."
               rows={2}
               data-testid="note-input"
+              className="manual-input"
             />
             <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
               <MessageSquare size={14} /> Simpan catatan
@@ -933,6 +1008,19 @@ export default function PODetail() {
       </section>
 
       <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} />
+
+      <ConfirmActionModal
+        open={!!actionConfirm}
+        stage={actionConfirm?.stage}
+        qty={actionConfirm?.qty}
+        name={user?.name || user?.email}
+        time={actionConfirm?.time}
+        extra={actionConfirm?.extra ? <p className="muted small">{actionConfirm.extra}</p> : null}
+        busy={busy}
+        error={actionConfirm?.error}
+        onCancel={() => { if (!busy) setActionConfirm(null); }}
+        onConfirm={executeActionConfirm}
+      />
 
       {toast && (
         <div className="toast" data-testid="detail-toast">

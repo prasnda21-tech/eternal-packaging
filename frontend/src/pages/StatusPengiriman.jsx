@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import api from "../lib/api";
-import { clampPercent, formatShipDate, terkirimTone } from "../lib/shipmentStatus";
+import { clampPercent, formatShipDate, matchesShipFilters, terkirimTone } from "../lib/shipmentStatus";
 
 function ProgressCell({ pct, tone, testid, title }) {
   const p = clampPercent(pct);
@@ -14,10 +14,13 @@ function ProgressCell({ pct, tone, testid, title }) {
   );
 }
 
+const EMPTY_FILTERS = { customer: "", po: "", orderDate: "", deliveryDate: "" };
+
 export default function StatusPengiriman() {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -35,13 +38,58 @@ export default function StatusPengiriman() {
 
   useEffect(() => { load(); }, [load]);
 
+  const visible = useMemo(
+    () => (rows || []).filter((r) => matchesShipFilters(r, filters)),
+    [rows, filters],
+  );
+
+  const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
+
   return (
     <div className="ship-status-page" data-testid="shipment-status-page">
       <div className="ship-status-chrome">
         <header className="ship-status-heading">
           <h1>Status Pengiriman Barang</h1>
         </header>
-        <div className="ship-status-toolbar">
+        <div className="ship-status-toolbar" data-testid="ship-filter-bar">
+          <label className="ship-filter-field">
+            <span>Nama Customer</span>
+            <input
+              type="text"
+              value={filters.customer}
+              onChange={(e) => setFilter("customer", e.target.value)}
+              placeholder="Cari customer"
+              data-testid="ship-filter-customer"
+            />
+          </label>
+          <label className="ship-filter-field">
+            <span>No PO</span>
+            <input
+              type="text"
+              value={filters.po}
+              onChange={(e) => setFilter("po", e.target.value)}
+              placeholder="Cari No PO"
+              data-testid="ship-filter-po"
+            />
+          </label>
+          <label className="ship-filter-field">
+            <span>Tanggal Order</span>
+            <input
+              type="date"
+              value={filters.orderDate}
+              onChange={(e) => setFilter("orderDate", e.target.value)}
+              data-testid="ship-filter-order-date"
+            />
+          </label>
+          <label className="ship-filter-field">
+            <span>Tanggal Pengiriman</span>
+            <input
+              type="date"
+              value={filters.deliveryDate}
+              onChange={(e) => setFilter("deliveryDate", e.target.value)}
+              data-testid="ship-filter-delivery-date"
+            />
+          </label>
           <select disabled aria-label="Cabang" data-testid="ship-filter-cabang">
             <option>Semua Cabang</option>
           </select>
@@ -70,7 +118,7 @@ export default function StatusPengiriman() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {visible.map((r) => (
               <tr key={r.id} data-testid={`ship-row-${r.order_number}`}>
                 <td className="ship-cust">{r.customer_name || "-"}</td>
                 <td className="mono">
@@ -98,7 +146,7 @@ export default function StatusPengiriman() {
                 </td>
               </tr>
             ))}
-            {!rows.length && !busy && (
+            {!visible.length && !busy && (
               <tr><td colSpan={6} className="empty-state">Tidak ada data pengiriman.</td></tr>
             )}
           </tbody>

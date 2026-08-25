@@ -2,9 +2,13 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Info, PackageCheck } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
-import { formatDate } from "../lib/constants";
+import { formatDisplayDateTime } from "../lib/constants";
+import { useAuth } from "../lib/auth";
 import { getWorkflowReady } from "../lib/stageState";
-import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
+import { newActionId, entriesForLine } from "../lib/workflowEntries";
+import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "./qtyUi";
+import AppendQtyEntries from "./AppendQtyEntries";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 /**
  * HelperPrepPanel — Persiapan Helper PER LINE ITEM CETAK.
@@ -16,35 +20,38 @@ import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
 export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActions = null }) {
+  const { user } = useAuth();
   const allLineItems = order?.line_items || [];
-  // Filter hanya line Cetak — Helper hanya menyiapkan barang untuk Cetak.
   const printLines = allLineItems
     .map((li, idx) => ({ li, idx }))
     .filter(({ li }) => isPrintLine(li));
   const helperItems = order?.helper_prep?.items || [];
-  const requiresPrinting = order?.requires_printing !== false; // legacy → print
+  const helperEntries = order?.helper_prep?.entries || [];
+  const requiresPrinting = order?.requires_printing !== false;
 
-  const initialDraft = () => {
+  const emptyDraft = () => {
     const map = {};
-    for (const { idx } of printLines) {
-      const existing = helperItems.find((it) => it.line_idx === idx);
-      map[idx] = existing ? Number(existing.qty_prepared || 0) : 0;
-    }
+    for (const { idx } of printLines) map[idx] = "";
     return map;
   };
-  const [draft, setDraft] = useState(initialDraft);
+  const [draft, setDraft] = useState(emptyDraft);
   const [notes, setNotes] = useState(order?.helper_prep?.notes || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [confirm, setConfirm] = useState(null);
 
   useEffect(() => {
-    setDraft(initialDraft());
+    setDraft(emptyDraft());
     setNotes(order?.helper_prep?.notes || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id, order?.helper_prep?.updated_at, printLines.length]);
 
+  const preparedOf = (idx) => {
+    const existing = helperItems.find((it) => Number(it.line_idx) === Number(idx));
+    return Number(existing?.qty_prepared || 0);
+  };
   const totalRequired = printLines.reduce((s, { li }) => s + Number(li.quantity || 0), 0);
-  const totalPrepared = Object.values(draft).reduce((s, v) => s + Number(v || 0), 0);
+  const totalPrepared = printLines.reduce((s, { idx }) => s + preparedOf(idx), 0);
   const totalShortage = Math.max(totalRequired - totalPrepared, 0);
   const ready = getWorkflowReady(order);
   const helperLocked = !ready.helper;
@@ -57,7 +64,6 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
         ? (totalShortage > 0 ? "IN PROGRESS" : "SAVED")
         : "READY");
 
-  // Full non-print → Persiapan Helper TIDAK DIPERLUKAN.
   if (!requiresPrinting) {
     return (
       <section className="panel qty-ops-panel" data-testid="helper-prep-panel">
@@ -72,23 +78,39 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
     );
   }
 
-  const save = async () => {
+  const openConfirm = (idx, li) => {
     if (helperLocked) {
       setErr("Persiapan Helper tersedia setelah Penjadwalan disimpan.");
       return;
     }
+    const qty = Math.max(0, Number(draft[idx] || 0));
+    if (!qty) {
+      setErr("Qty tambahan wajib diisi.");
+      return;
+    }
+    setErr("");
+    setConfirm({
+      idx,
+      name: li.name,
+      qty,
+      actionId: newActionId(),
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
+  };
+
+  const execute = async () => {
+    if (!confirm || busy) return;
     setBusy(true);
     setErr("");
     try {
-      // Kirim hanya line CETAK. Backend endpoint helper-prep/items menerima
-      // list items apa saja dan meng-loop line_items yang ada, jadi non-print
-      // line yang tidak dikirim akan tetap ada tapi qty_prepared=0 (aman).
-      const items = Object.entries(draft).map(([idx, qty]) => ({
-        line_idx: Number(idx),
-        qty_prepared: Math.max(0, Number(qty || 0)),
-      }));
-      const r = await api.updateHelperPrepItems(order.id, items, notes);
+      const r = await api.updateHelperPrepItems(order.id, [{
+        line_idx: confirm.idx,
+        qty: confirm.qty,
+        action_id: confirm.actionId,
+      }], notes);
       onUpdated?.(r.order);
+      setDraft((prev) => ({ ...prev, [confirm.idx]: "" }));
+      setConfirm(null);
     } catch (e) {
       setErr(formatApiError(e, "Gagal menyimpan Persiapan Helper"));
     } finally {
@@ -150,7 +172,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
         )}
         {printLines.map(({ li, idx }) => {
           const req = Number(li.quantity || 0);
-          const prep = Number(draft[idx] ?? 0);
+          const prep = preparedOf(idx);
           const shortage = Math.max(req - prep, 0);
           return (
             <tr key={idx} data-testid={`helper-prep-row-${idx}`}>
@@ -164,16 +186,21 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
                 {shortage > 0 ? `-${shortage.toLocaleString("id-ID")}` : "0"}
               </td>
               <td>
-              <QuantityInput
-                label="Qty persiapan"
-                min="0"
-                max={req}
-                value={draft[idx] ?? 0}
-                onChange={(e) => setDraft({ ...draft, [idx]: e.target.value })}
-                disabled={!canEdit || busy || helperLocked}
-                testid={`helper-prepared-${idx}`}
-                className="is-compact"
-              />
+                <AppendQtyEntries
+                  entries={entriesForLine(helperEntries, idx)}
+                  snapshotQty={prep}
+                  snapshotAt={order?.helper_prep?.updated_at}
+                  snapshotName={order?.helper_prep?.updated_by_name}
+                  draft={draft[idx] ?? ""}
+                  onDraftChange={(v) => setDraft({ ...draft, [idx]: v })}
+                  onConfirmClick={() => openConfirm(idx, li)}
+                  canEdit={canEdit && !helperLocked}
+                  busy={busy}
+                  remaining={shortage}
+                  testid={`helper-append-${idx}`}
+                  inputTestid={`helper-prepared-${idx}`}
+                  confirmTestid={idx === 0 ? "helper-save-button" : `helper-confirm-${idx}`}
+                />
               </td>
             </tr>
           );
@@ -185,6 +212,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
         <span className="qty-notes-label">Catatan</span>
         <input
           type="text"
+          className="manual-input"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           disabled={!canEdit || busy || helperLocked}
@@ -200,23 +228,23 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
       )}
       {err && <p style={{ color: "#8f1f1f", marginTop: 8 }} data-testid="helper-prep-error">{err}</p>}
 
-      {canEdit && printLines.length > 0 && (
-        <div className="qty-ops-foot">
-          <button className="primary" onClick={save} disabled={busy || helperLocked} data-testid="helper-save-button">
-            Simpan Qty
-          </button>
-          {order?.helper_prep?.updated_at && (
-            <span className="muted small" data-testid="helper-updated">
-              Update terakhir: {order.helper_prep.updated_by_name || order.helper_prep.updated_by} · {formatDate(order.helper_prep.updated_at)}
-            </span>
-          )}
-        </div>
-      )}
       {!canEdit && (
         <p className="muted small" style={{ marginTop: 10 }}>Butuh permission <code>helper.prepare</code>.</p>
       )}
       {footerActions}
       </div>
+      <ConfirmActionModal
+        open={!!confirm}
+        stage="Persiapan Helper"
+        qty={confirm?.qty}
+        name={user?.name || user?.email}
+        time={confirm?.time}
+        extra={confirm?.name ? <p className="muted small">{confirm.name}</p> : null}
+        busy={busy}
+        error={err}
+        onCancel={() => { if (!busy) setConfirm(null); }}
+        onConfirm={execute}
+      />
     </section>
   );
 }

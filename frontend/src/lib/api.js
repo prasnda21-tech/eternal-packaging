@@ -94,8 +94,13 @@ export const api = {
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),
   dashboardSummary: () => client.get(`/dashboard/summary`).then((r) => r.data),
   dashboardToday: () => client.get(`/dashboard/today`).then((r) => r.data),
-  updateOperatorProgress: (id, operatorId, qtyCompleted) =>
-    client.post(`/orders/${id}/operator-progress`, { operator_id: operatorId, qty_completed: qtyCompleted }).then((r) => r.data),
+  updateOperatorProgress: (id, operatorId, qtyCompleted, extra = {}) =>
+    client.post(`/orders/${id}/operator-progress`, {
+      operator_id: operatorId,
+      qty: extra.qty != null ? extra.qty : undefined,
+      qty_completed: extra.qty == null ? qtyCompleted : undefined,
+      action_id: extra.action_id,
+    }).then((r) => r.data),
   accurateImportPreview: (soNumber) => client.post(`/accurate/import/preview`, { so_number: soNumber }).then((r) => r.data),
   accurateImportConfirm: (soNumber) => client.post(`/accurate/import/confirm`, { so_number: soNumber }).then((r) => r.data),
   accurateImportPreviewBulk: (soNumbers) =>
@@ -161,6 +166,7 @@ export const api = {
   // ---- Production dashboard (Req 6) ----
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
   shipmentStatus: (params = {}) => client.get(`/dashboard/shipment-status`, { params }).then((r) => r.data),
+  statusPo: (params = {}) => client.get(`/dashboard/status-po`, { params }).then((r) => r.data),
   productionExport: (payload = { scope: "filtered" }) => client.post(`/dashboard/production/export`, payload, { responseType: "blob" }).then((r) => r.data),
   // ---- Batch 3: Production routing + Action Center ----
   setLineItemRoute: (id, items) => client.post(`/orders/${id}/line-items/route`, { items }).then((r) => r.data),

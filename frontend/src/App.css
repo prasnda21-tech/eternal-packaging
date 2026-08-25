@@ -1221,6 +1221,11 @@
 .qty-control-field input:focus{outline:none}
 .qty-control-field input:disabled{color:#7a6f52}
 .qty-control-unit{display:flex;align-items:center;padding:0 10px;font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft);background:#EEF7F2;border-left:1px solid var(--line)}
+.qty-control.is-manual .qty-control-field{
+  background:#FBF4DE;border-color:#D9BE7A;
+}
+.qty-control.is-manual .qty-control-unit{background:#F3E8C4;border-left-color:#D9BE7A}
+.qty-control.is-manual .qty-control-field:focus-within{border-color:#C4A24A;box-shadow:0 0 0 1px #C4A24A}
 .qty-control.is-disabled .qty-control-field{background:#EEF7F2;border-color:var(--line)}
 .qty-control.is-invalid .qty-control-field{border-color:var(--red)}
 .qty-control.is-compact{min-width:132px;max-width:168px;margin-left:auto}
@@ -1232,7 +1237,7 @@
 .qty-notes{display:flex;flex-direction:column;gap:6px;margin:12px 0 0}
 .qty-notes-label,.qty-field-label{font:10px 'IBM Plex Mono';letter-spacing:.1em;text-transform:uppercase;color:var(--soft)}
 .qty-notes input,.qty-field input[type="date"],.qty-field select{
-  width:100%;min-height:36px;padding:8px 10px;border:1px solid #B7D2C6;background:#fff;color:var(--ink);font-size:13px;border-radius:4px
+  width:100%;min-height:36px;padding:8px 10px;border:1px solid #D9BE7A;background:#FBF4DE;color:var(--ink);font-size:13px;border-radius:4px
 }
 .qty-notes input:focus,.qty-field input[type="date"]:focus,.qty-field select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
 .qty-notes input:disabled,.qty-field select:disabled,.qty-field input:disabled{background:#EEF7F2;color:var(--soft)}
@@ -1287,7 +1292,8 @@
 .packing-qty-input:disabled{background:#EEF7F2;color:var(--soft)}
 .packing-line-save-cell{width:1%;white-space:nowrap;text-align:right}
 .packing-line-qty-input{width:132px;min-height:36px;margin-left:auto}
-.packing-notes-input{width:100%;min-height:36px;padding:8px 10px;border:1px solid #B7D2C6;background:#fff;color:var(--ink);font-size:13px;border-radius:4px}
+.packing-notes-input{width:100%;min-height:36px;padding:8px 10px;border:1px solid #D9BE7A;background:#FBF4DE;color:var(--ink);font-size:13px;border-radius:4px}
+.packing-notes-input:disabled{background:#EEF7F2;border-color:var(--line);color:var(--soft)}
 .packing-panel > p.muted{padding:8px 16px 0}
 .packing-panel .packing-form{padding-top:12px}
 
@@ -1549,6 +1555,11 @@ html:has(.prod-schedule-page) #root{
 /* -------- Stock Saat Ini -------- */
 .stock-qty-edit{display:inline-flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:4.5rem}
 .stock-qty-edit input{width:5.5rem;border:1px solid var(--line);background:#fff;padding:2px 6px;font:12px 'IBM Plex Mono';text-align:right;border-radius:2px}
+.manual-input,.stock-qty-edit input.manual-input{
+  background:#FBF4DE;border-color:#D9BE7A;color:var(--ink);
+}
+.manual-input:focus,.stock-qty-edit input.manual-input:focus{outline:none;border-color:#C4A24A;box-shadow:0 0 0 1px #C4A24A}
+.manual-input:disabled,.stock-qty-edit input.manual-input:disabled{background:#EEF7F2;border-color:var(--line);color:var(--soft)}
 .stock-qty-err{font-size:10px;color:var(--red);max-width:7rem;text-align:right}
 .stock-src{display:block;font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;line-height:1.2}
 .stock-purchase-cell{display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px}
@@ -1597,9 +1608,12 @@ html:has(.ship-status-page) #root{
   margin:0;font:700 16px/1.2 'IBM Plex Sans',sans-serif;color:#2c3e50;text-transform:none;letter-spacing:0;
 }
 .ship-status-toolbar{display:flex;align-items:center;gap:8px;margin:0 0 8px;flex-wrap:wrap}
-.ship-status-toolbar select{
+.ship-status-toolbar select,.ship-status-toolbar input{
   min-height:28px;padding:3px 8px;font-size:12.5px;border:1px solid #c5ced6;background:#f4f6f8;color:#4a5560;border-radius:3px;
 }
+.ship-status-toolbar input[type="text"]{min-width:140px}
+.ship-filter-field{display:flex;flex-direction:column;gap:2px}
+.ship-filter-field span{font:10px 'IBM Plex Mono';letter-spacing:.06em;text-transform:uppercase;color:#6a7680}
 .ship-icon-btn{
   width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
   border:1px solid #c5ced6;background:#fff;border-radius:3px;cursor:pointer;color:#3d4f5f;
@@ -1642,6 +1656,31 @@ html:has(.ship-status-page) #root{
 @media (max-width:900px){
   .app-shell:has(.ship-status-page){grid-template-columns:1fr}
   .content:has(.ship-status-page){padding:4px 6px 0}
+}
+
+.workflow-table-wrap{overflow:auto;border:1px solid var(--line)}
+.workflow-table{width:100%;min-width:560px;border-collapse:collapse;font-size:12.5px}
+.workflow-table th,.workflow-table td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+.workflow-table thead th{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft);background:#F3FAF6;font-weight:500;white-space:nowrap}
+.workflow-table tbody tr:nth-child(even) td{background:#F7FBF8}
+.workflow-table .chip{font-size:11px}
+
+.append-entries{display:flex;flex-direction:column;gap:8px;min-width:220px}
+.append-entries-table{width:100%;border-collapse:collapse;font-size:12px}
+.append-entries-table th,.append-entries-table td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left}
+.append-entries-table thead th{font:10px 'IBM Plex Mono';letter-spacing:.06em;text-transform:uppercase;color:var(--soft)}
+.append-entries-table tr.is-locked td{background:#F4F2EC;color:#5a5138}
+.append-entries-new{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.append-entries-total{margin-top:2px}
+
+.confirm-action-inner{max-width:420px}
+.confirm-action-dl{margin:0;display:grid;gap:10px}
+.confirm-action-dl > div{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:baseline}
+.confirm-action-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
+.confirm-action-dl dd{margin:0;font-weight:650}
+
+.prep-grid input:not(:disabled),.surat-jalan-form input:not(:disabled),.staged-info input:not(:disabled){
+  background:#FBF4DE;border-color:#D9BE7A;
 }
 
 

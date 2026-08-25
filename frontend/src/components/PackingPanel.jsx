@@ -1,32 +1,40 @@
 import { useEffect, useState } from "react";
 import { Package, CheckCircle2 } from "lucide-react";
-import { formatDate } from "../lib/constants";
+import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { packingLinesForOrder, packingSubmitEnabled } from "../lib/packingCard";
-import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
+import { entriesForLine, newActionId } from "../lib/workflowEntries";
+import { useAuth } from "../lib/auth";
+import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "./qtyUi";
+import AppendQtyEntries from "./AppendQtyEntries";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("id-ID");
 }
 
-function initialDraft(packingLines) {
+function emptyDraft(packingLines) {
   const map = {};
-  for (const row of packingLines) {
-    map[row.line_idx] = Number(row.packed || 0);
-  }
+  for (const row of packingLines) map[row.line_idx] = "";
   return map;
 }
 
 // Packing = print (setelah selesai operator) + non_print (langsung tersedia).
-// Input & persist PER LINE. Total PO hanya ringkasan (SUM).
+// Input & persist PER LINE. Total PO hanya ringkasan (SUM). Append-only increments.
 export default function PackingPanel({ order, canManage, busy, onSaveQty, onComplete, footerActions = null }) {
+  const { user } = useAuth();
   const pi = order.packing_info || {};
   const packingLines = packingLinesForOrder(order);
-  const [draft, setDraft] = useState(() => initialDraft(packingLines));
+  const events = pi.events || [];
+  const [draft, setDraft] = useState(() => emptyDraft(packingLines));
   const [notes, setNotes] = useState(pi.notes ?? "");
+  const [confirm, setConfirm] = useState(null);
+  const [localBusy, setLocalBusy] = useState(false);
+  const [err, setErr] = useState("");
 
   useEffect(() => {
-    setDraft(initialDraft(packingLinesForOrder(order)));
+    setDraft(emptyDraft(packingLinesForOrder(order)));
     setNotes((order.packing_info || {}).notes ?? "");
+    setErr("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id, pi.updated_at, packingLines.length]);
 
@@ -55,22 +63,39 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
   const isComplete = hasQty && packedSaved >= requiredTotal;
   const remainingAvailable = Math.max(available - packedSaved, 0);
   const canSubmitQty = packingSubmitEnabled(canManage, available);
-  const draftTotal = packingLines.reduce((s, r) => s + Number(draft[r.line_idx] || 0), 0);
-  const dirty = packingLines.some((r) => Number(draft[r.line_idx] ?? r.packed) !== Number(r.packed || 0));
-  const canSave = canSubmitQty && !busy && draftTotal > 0 && (dirty || !hasLinesStored);
+  const saving = busy || localBusy;
   const legacyTotalOnly = !hasLinesStored && Number(pi.qty_packed || 0) > 0 && (order.line_items || []).length > 1;
 
-  const setLineQty = (lineIdx, value) => {
-    setDraft((prev) => ({ ...prev, [lineIdx]: value }));
+  const openConfirm = (row) => {
+    const qty = Math.max(0, parseInt(draft[row.line_idx], 10) || 0);
+    if (!qty) return;
+    setErr("");
+    setConfirm({
+      row,
+      qty,
+      actionId: newActionId(),
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
   };
 
-  const handleSave = async () => {
-    const lines = packingLines.map((row) => ({
-      line_idx: row.line_idx,
-      packed_qty: Math.max(0, parseInt(draft[row.line_idx], 10) || 0),
-    }));
-    if (!lines.some((l) => l.packed_qty > 0)) return;
-    await onSaveQty(lines, notes || "");
+  const execute = async () => {
+    if (!confirm || saving) return;
+    setLocalBusy(true);
+    setErr("");
+    try {
+      await onSaveQty([{
+        line_idx: confirm.row.line_idx,
+        qty: confirm.qty,
+        action_id: confirm.actionId,
+      }], notes || "");
+      setDraft((prev) => ({ ...prev, [confirm.row.line_idx]: "" }));
+      setConfirm(null);
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Gagal menyimpan Qty Packing"));
+    } finally {
+      setLocalBusy(false);
+    }
   };
 
   const packingStatus = fullyPacked ? "DONE" : hasQty ? "IN PROGRESS" : "READY";
@@ -128,7 +153,6 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
             <tbody>
               {packingLines.map((row, idx) => {
                 const isPrint = !!row.is_print;
-                const inputVal = draft[row.line_idx] ?? row.packed ?? 0;
                 return (
                   <tr key={row.line_idx ?? idx} data-testid={`packing-line-row-${idx}`}>
                     <td>
@@ -162,18 +186,20 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                       {fullyPacked || !canManage ? (
                         <span className="mono">{fmt(row.packed)}</span>
                       ) : (
-                        <QuantityInput
-                          label=""
-                          className="is-compact"
-                          name="packing_qty_input"
-                          min="0"
-                          max={row.available || 0}
-                          value={inputVal}
-                          onChange={(e) => setLineQty(row.line_idx, e.target.value)}
-                          disabled={busy || !canSubmitQty}
-                          testid={`packing-qty-input-${row.line_idx}`}
-                          id={row.line_idx === 0 ? "packing-qty-input" : undefined}
-                          aria-label={`Qty Packing ${row.name}`}
+                        <AppendQtyEntries
+                          entries={entriesForLine(events, row.line_idx)}
+                          snapshotQty={row.packed}
+                          snapshotAt={pi.updated_at}
+                          snapshotName={pi.updated_by_name}
+                          draft={draft[row.line_idx] ?? ""}
+                          onDraftChange={(v) => setDraft((prev) => ({ ...prev, [row.line_idx]: v }))}
+                          onConfirmClick={() => openConfirm(row)}
+                          canEdit={canSubmitQty && Number(row.remaining || 0) > 0}
+                          busy={saving}
+                          remaining={row.remaining}
+                          testid={`packing-append-${row.line_idx}`}
+                          inputTestid={`packing-qty-input-${row.line_idx}`}
+                          confirmTestid={row.line_idx === 0 ? "save-packing-qty-button" : `packing-confirm-${row.line_idx}`}
                         />
                       )}
                     </td>
@@ -193,7 +219,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
                 <td className="num mono">{fmt(available)}</td>
                 <td className="num mono">{fmt(packedSaved)}</td>
                 <td className="num mono">{fmt(remainingAvailable)}</td>
-                <td className="num mono" data-testid="packing-draft-total">{fmt(draftTotal)}</td>
+                <td className="num mono" data-testid="packing-draft-total">{fmt(packingLines.reduce((s, r) => s + Number(draft[r.line_idx] || 0), 0))}</td>
               </tr>
             </tbody>
           </table>
@@ -238,7 +264,7 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              disabled={busy || !canSubmitQty}
+              disabled={saving || !canSubmitQty}
               data-testid="packing-notes-input"
             />
           </label>
@@ -249,21 +275,13 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
               {hasQty ? ` — Qty tersimpan: ${fmt(packedSaved)} pcs` : ""}
             </p>
           )}
+          {err && <p className="error" data-testid="packing-error">{err}</p>}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <button
-              type="button"
-              className="primary"
-              onClick={handleSave}
-              disabled={!canSave}
-              data-testid="save-packing-qty-button"
-            >
-              Simpan Qty
-            </button>
             <button
               type="button"
               className="ghost"
               onClick={onComplete}
-              disabled={busy || !canProceedPartial}
+              disabled={saving || !canProceedPartial}
               title={
                 !hasQty
                   ? "Qty Packing harus diisi terlebih dahulu"
@@ -280,6 +298,18 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
         </div>
       )}
       {footerActions}
+      <ConfirmActionModal
+        open={!!confirm}
+        stage="Packing"
+        qty={confirm?.qty}
+        name={user?.name || user?.email}
+        time={confirm?.time}
+        extra={confirm?.row?.name ? <p className="muted small">{confirm.row.name}</p> : null}
+        busy={saving}
+        error={err}
+        onCancel={() => { if (!saving) setConfirm(null); }}
+        onConfirm={execute}
+      />
     </section>
   );
 }

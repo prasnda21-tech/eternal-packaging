@@ -2,8 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarClock, Info, Plus, Trash2, Users } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { formatDisplayDateTime } from "../lib/constants";
+import { newActionId } from "../lib/workflowEntries";
 import { getWorkflowReady } from "../lib/stageState";
 import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
+import AppendQtyEntries from "./AppendQtyEntries";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
@@ -14,6 +18,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [qtyDrafts, setQtyDrafts] = useState({});
+  const [confirm, setConfirm] = useState(null);
 
   const requiresPrinting = order?.requires_printing !== false;
   const lineItems = order?.line_items || [];
@@ -162,13 +167,36 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       return;
     }
     const raw = qtyDrafts[op.id];
-    const qty = Math.max(0, Math.min(Number(raw ?? op.qty_completed ?? 0), op.quantity));
+    const qty = Math.max(0, Number(raw || 0));
+    if (!qty) {
+      setErr("Qty tambahan wajib diisi.");
+      return;
+    }
     setErr("");
+    setConfirm({
+      op,
+      qty,
+      actionId: newActionId(),
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
+  };
+
+  const executeQty = async () => {
+    if (!confirm || busy) return;
+    if (progressLocked) {
+      setErr(printQtyGateMsg);
+      return;
+    }
     setBusy(true);
+    setErr("");
     try {
-      const res = await api.updateOperatorProgress(order.id, op.id, qty);
+      const res = await api.updateOperatorProgress(order.id, confirm.op.id, confirm.qty, {
+        qty: confirm.qty,
+        action_id: confirm.actionId,
+      });
       onUpdated(res.order);
-      setQtyDrafts((prev) => ({ ...prev, [op.id]: qty }));
+      setQtyDrafts((prev) => ({ ...prev, [confirm.op.id]: "" }));
+      setConfirm(null);
     } catch (e) {
       const d = e.response?.data?.detail;
       setErr(typeof d === "string" ? d : (d?.message || "Gagal memperbarui qty"));
@@ -280,7 +308,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         {persistedSplits.map((op) => {
           const isSelf = user?.email === op.operator_email;
           const canEditQty = hasPerm("operator.update") && (isSelf || hasPerm("schedule.edit"));
-          const draft = qtyDrafts[op.id] ?? op.qty_completed ?? 0;
+          const draft = qtyDrafts[op.id] ?? "";
           const opRemaining = Math.max(0, op.quantity - (op.qty_completed || 0));
           const pct = op.quantity ? Math.round(((op.qty_completed || 0) / op.quantity) * 100) : 0;
           const opLineLabel = (op.line_idx === null || op.line_idx === undefined)
@@ -299,25 +327,19 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
               <div className="ind-op-qty">{Number(op.qty_completed || 0).toLocaleString("id-ID")}</div>
               <div className="ind-op-qty">{opRemaining.toLocaleString("id-ID")}</div>
               {canEditQty ? (
-                <QuantityInput
-                  label=""
-                  min="0"
-                  max={op.quantity}
-                  value={draft}
-                  onChange={(e) => setQtyDrafts({ ...qtyDrafts, [op.id]: e.target.value })}
-                  testid={`qty-input-${op.operator_email}`}
-                  disabled={progressLocked || busy}
-                  className="is-compact"
+                <AppendQtyEntries
+                  entries={op.progress_entries}
+                  snapshotQty={op.qty_completed}
+                  snapshotAt={op.updated_at}
+                  snapshotName={op.operator_name}
+                  draft={draft}
+                  onDraftChange={(v) => setQtyDrafts({ ...qtyDrafts, [op.id]: v })}
+                  onConfirmClick={() => updateQty(op)}
+                  canEdit={!progressLocked}
+                  busy={busy}
+                  remaining={opRemaining}
+                  testid={`qty-append-${op.operator_email}`}
                 />
-              ) : <span />}
-              {canEditQty ? (
-                <button
-                  className="primary"
-                  onClick={() => updateQty(op)}
-                  disabled={busy || progressLocked}
-                  data-testid={`qty-save-${op.operator_email}`}
-                  title="Simpan qty selesai"
-                >Simpan Qty</button>
               ) : <span />}
             </div>
           );
@@ -410,6 +432,17 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       )}
       {showProgress && err && !showSchedule && <div className="error" data-testid="split-error">{err}</div>}
       {footerActions}
+      <ConfirmActionModal
+        open={!!confirm}
+        stage="Operator"
+        qty={confirm?.qty}
+        name={user?.name || user?.email}
+        time={confirm?.time}
+        busy={busy}
+        error={err}
+        onCancel={() => { if (!busy) setConfirm(null); }}
+        onConfirm={executeQty}
+      />
       </div>
     </section>
   );

@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Camera, Trash2, Loader2, CheckCircle2, XCircle, ImagePlus } from "lucide-react";
 import api, { fileUrl } from "../lib/api";
 import { compressImage } from "../lib/imageCompress";
-import { formatDate, ROLES } from "../lib/constants";
+import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { confirmableProofCount, proofUploadUserError } from "../lib/deliveryProof";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 const MAX_PHOTOS = 5;
 
@@ -13,7 +14,7 @@ const MAX_PHOTOS = 5;
 // Files are compressed client-side, then streamed one-by-one to the backend
 // which stores each via the storage service (local filesystem in preview, S3/Emergent in production).
 export default function DeliveryProofPanel({ order, onUpdated }) {
-  const { hasPerm } = useAuth();
+  const { hasPerm, user } = useAuth();
   const fileInput = useRef(null);
   const cameraInput = useRef(null);
 
@@ -21,6 +22,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const [proofBlobs, setProofBlobs] = useState({});
+  const [confirmUpload, setConfirmUpload] = useState(null);
 
   const canUpload = hasPerm("delivery.update");
   const canDelete = hasPerm("delivery.update");
@@ -116,6 +118,19 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
     setStaged((prev) => prev.map((s) => s.id === clientId ? { ...s, note } : s));
   };
 
+  const requestUpload = () => {
+    const toUpload = staged.filter((s) => s.status === "ready" || (s.status === "error" && s.file));
+    if (toUpload.length === 0) {
+      setErr("Belum ada foto siap upload.");
+      return;
+    }
+    setErr("");
+    setConfirmUpload({
+      count: toUpload.length,
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
+  };
+
   const uploadAll = async () => {
     const toUpload = staged.filter((s) => s.status === "ready" || (s.status === "error" && s.file));
     if (toUpload.length === 0) {
@@ -125,6 +140,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
     setUploading(true);
     setErr("");
     let latestOrder = order;
+    let failed = false;
     for (const s of toUpload) {
       setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "uploading", progress: 0, error: "" } : x));
       try {
@@ -138,9 +154,11 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         const msg = proofUploadUserError(ex);
         setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "error", error: msg } : x));
         setErr(msg);
+        failed = true;
       }
     }
     setUploading(false);
+    if (!failed) setConfirmUpload(null);
     // Cleanup successfully uploaded staged items after a short delay
     setTimeout(() => {
       setStaged((prev) => {
@@ -280,7 +298,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
                   <button
                     type="button"
                     className="primary"
-                    onClick={uploadAll}
+                    onClick={requestUpload}
                     disabled={uploading || readyCount === 0}
                     data-testid="staged-upload-all"
                   >
@@ -356,6 +374,17 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
           </p>
         </div>
       )}
+      <ConfirmActionModal
+        open={!!confirmUpload}
+        stage="Terkirim"
+        name={user?.name || user?.email}
+        time={confirmUpload?.time}
+        extra={confirmUpload ? <p className="muted small">Upload {confirmUpload.count} foto bukti pengiriman</p> : null}
+        busy={uploading}
+        error={err}
+        onCancel={() => { if (!uploading) setConfirmUpload(null); }}
+        onConfirm={uploadAll}
+      />
     </section>
   );
 }

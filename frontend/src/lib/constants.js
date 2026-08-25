@@ -53,15 +53,54 @@ export const canAdvance = (role, stageIdx) => {
   return role === "admin" || allowed.includes(role);
 };
 
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_DATE_PREFIX_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+function _pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function _yy(year) {
+  return String(year).slice(-2);
+}
+
+/** Display-only calendar date: 2026-08-26 → 26/08/26. Does not change stored values. */
+export function formatDisplayDate(iso) {
+  if (!iso) return "-";
+  const text = String(iso).trim();
+  if (!text) return "-";
+  const prefix = text.match(ISO_DATE_PREFIX_RE);
+  if (prefix) {
+    return `${prefix[3]}/${prefix[2]}/${_yy(prefix[1])}`;
+  }
+  try {
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return "-";
+    return `${_pad2(d.getDate())}/${_pad2(d.getMonth() + 1)}/${_yy(d.getFullYear())}`;
+  } catch {
+    return "-";
+  }
+}
+
+/** Display-only timestamp: dd/mm/yy HH:mm. Date-only values stay dd/mm/yy. */
+export function formatDisplayDateTime(iso) {
+  if (!iso) return "-";
+  const text = String(iso).trim();
+  if (!text) return "-";
+  if (DATE_ONLY_RE.test(text)) return formatDisplayDate(text);
+  try {
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return "-";
+    return `${_pad2(d.getDate())}/${_pad2(d.getMonth() + 1)}/${_yy(d.getFullYear())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
+  } catch {
+    return "-";
+  }
+}
+
 export const formatDate = (iso, opts = {}) => {
   if (!iso) return "-";
-  try {
-    return new Date(iso).toLocaleString("id-ID", {
-      day: "2-digit", month: "short", year: "numeric",
-      hour: "2-digit", minute: "2-digit",
-      ...opts,
-    });
-  } catch { return iso; }
+  if (opts.dateOnly) return formatDisplayDate(iso);
+  return formatDisplayDateTime(iso);
 };
 
 export const formatDeadline = (iso) => {
