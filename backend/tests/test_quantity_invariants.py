@@ -575,6 +575,69 @@ def test_partial_print_available_for_packing_while_not_complete():
     assert validate_packing_qty(4001, o) is not None
 
 
+def test_jadwal_total_qty_progress_not_po_total():
+    """Jadwal Produksi Total Qty = print_completed / print_qty_total, bukan total PO."""
+    o = {
+        "total_quantity": 15000,
+        "line_items": [
+            {"name": "A", "quantity": 6000, "production_process": "print", "accurate_item_id": "A"},
+            {"name": "B", "quantity": 4000, "production_process": "print", "accurate_item_id": "B"},
+            {"name": "C", "quantity": 5000, "production_process": "non_print", "accurate_item_id": "C"},
+        ],
+        "operator_splits": [
+            {"id": "sA", "line_idx": 0, "qty_completed": 4000, "quantity": 6000},
+            {"id": "sB", "line_idx": 1, "qty_completed": 1000, "quantity": 4000},
+        ],
+    }
+    assert print_qty_total(o) == 10000
+    assert print_qty_total(o) != o["total_quantity"]
+    assert print_completed_qty(o) == 5000
+    assert packing_required_total(o) == 15000
+
+
+def test_jadwal_total_qty_zero_actual_keeps_denominator():
+    o = _mixed_po(print_qty=10000, non_print_qty=5000, completed=None)
+    o["total_quantity"] = 15000
+    o["line_items"][0]["quantity"] = 10000
+    o["line_items"][1]["quantity"] = 5000
+    assert print_qty_total(o) == 10000
+    assert print_completed_qty(o) == 0
+
+
+def test_jadwal_total_qty_complete_print():
+    o = _mixed_po(print_qty=10000, non_print_qty=5000, completed=[10000])
+    assert print_qty_total(o) == 10000
+    assert print_completed_qty(o) == 10000
+
+
+def test_jadwal_total_qty_no_double_count_on_resave():
+    """qty_completed is a snapshot; re-saving the same value must not double."""
+    o = _mixed_po(print_qty=10000, non_print_qty=5000)
+    o["operator_splits"] = [{"id": "s1", "line_idx": 0, "quantity": 10000, "qty_completed": 5000}]
+    assert print_completed_qty(o) == 5000
+    o["operator_splits"][0]["qty_completed"] = 5000
+    assert print_completed_qty(o) == 5000
+    o["operator_splits"][0]["qty_completed"] = 5000
+    assert print_completed_qty(o) == 5000
+
+
+def test_jadwal_total_qty_no_printable_items():
+    o = _mixed_po(print_qty=0, non_print_qty=15000, completed=None)
+    o["line_items"] = [{"name": "C", "quantity": 15000, "production_process": "non_print"}]
+    o["total_quantity"] = 15000
+    o["operator_splits"] = []
+    assert print_qty_total(o) == 0
+    assert print_completed_qty(o) == 0
+
+
+def test_jadwal_total_qty_over_target_not_clamped():
+    o = _mixed_po(print_qty=10000, non_print_qty=5000)
+    o["operator_splits"] = [{"id": "s1", "quantity": 12000, "qty_completed": 12000}]
+    assert print_completed_qty(o) == 12000
+    assert print_qty_total(o) == 10000
+    assert print_completed_qty(o) > print_qty_total(o)
+
+
 def run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:
