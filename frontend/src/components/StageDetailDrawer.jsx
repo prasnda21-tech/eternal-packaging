@@ -238,8 +238,9 @@ function StageContent({ order, stageIdx }) {
       <div className="drawer-block" data-testid="stage-detail-delivery">
         <h4>Loading & Pengiriman</h4>
         <dl className="kv-grid">
-          <KV label="Barang Loaded" value={loading.items_loaded ? "Ya" : "Belum"}/>
-          <KV label="Segel OK" value={loading.seal_ok ? "Ya" : "Belum"}/>
+          <KV label="Qty Loading" value={(order.shipment_lines || []).reduce((s, r) => s + Number(r.loaded || 0), 0) > 0
+            ? (order.shipment_lines || []).reduce((s, r) => s + Number(r.loaded || 0), 0).toLocaleString("id-ID")
+            : (loading.items_loaded ? "Ya" : "Belum Loading")}/>
           <KV label="Kendaraan" value={loading.vehicle_plate}/>
           <KV label="Driver" value={loading.driver_name}/>
           <KV label="Status Kirim" value={order.delivery_status || "-"} testid="stage-delivery-status"/>

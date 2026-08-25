@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronRight, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline } from "../lib/constants";
@@ -42,6 +42,7 @@ export default function PODetail() {
 
   // Stage detail drawer (B3 — Req 8): clickable stages open a read-only drawer
   const [stageDrawer, setStageDrawer] = useState(null); // stage index or null
+  const [sjPreview, setSjPreview] = useState(null);
 
   // Payment upload state (Req wiring)
   const [payUploading, setPayUploading] = useState(false);
@@ -63,6 +64,11 @@ export default function PODetail() {
     }).finally(() => setLoading(false));
   }, [id]);
 
+  useEffect(() => {
+    if (!id) return;
+    api.previewAccurateSuratJalan(id).then(setSjPreview).catch(() => setSjPreview(null));
+  }, [id, order?.accurate_id, order?.po_number]);
+
   // Batch 2: auto refresh 30s untuk PODetail — hanya update server-backed state
   // (order), tidak menyentuh state form lokal panel-panel (Helper draft,
   // Deadline draft, Notes, Screener draft, signature dsb). Panel-panel memakai
@@ -82,11 +88,8 @@ export default function PODetail() {
   const canAdvanceNow = !isCrm && canAdvance(role, order.current_stage);
   const ready = getWorkflowReady(order);
   const screenerLocked = !ready.screener;
-  const printNeed = Number(order.print_qty_total ?? 0);
   const screenSaved = order.screener_info?.screen_qty;
   const screenerFilled = screenSaved !== null && screenSaved !== undefined && String(screenSaved).trim() !== "";
-  const screenQtySaved = Number(screenSaved || 0);
-  const screenRemaining = Math.max(0, printNeed - screenQtySaved);
 
   const run = async (fn, msg) => {
     setBusy(true);
@@ -112,7 +115,6 @@ export default function PODetail() {
     }
   };
 
-  const advance = () => run(() => api.advance(order.id, { note }), "Alur kerja diperbarui");
   const approveDesign = () => run(() => api.approveDesign(order.id, true, note), "Design di-approve");
   const rejectDesign = () => run(() => api.approveDesign(order.id, false, note), "Approval design dibatalkan");
   const approvePayment = () => run(() => api.approvePayment(order.id, true, note), "Payment di-approve");
@@ -177,20 +179,6 @@ export default function PODetail() {
       : "Konfirmasi Packing selesai dan PO siap masuk Surat Jalan?";
     if (!window.confirm(msg)) return;
     await run(() => api.markPacked(order.id), shortage > 0 ? "Packing sebagian — masuk Surat Jalan" : "Packing selesai — masuk Surat Jalan");
-  };
-  const delivered = () => {
-    const packed = Number(order?.packing_info?.qty_packed || 0);
-    const total = Number(order?.packing_required_total || order?.total_quantity || 0);
-    const already = Number(order?.qty_delivered || 0);
-    if (packed < total) {
-      if (!window.confirm(`Tandai terkirim sebagian ${packed} pcs (dari total ${total})? PO belum selesai penuh.`)) return;
-      return run(() => api.markDelivered(order.id, packed), `Terkirim sebagian ${packed} pcs`);
-    }
-    if (already > 0 && already < total) {
-      if (!window.confirm(`Lengkapi pengiriman hingga ${packed} pcs?`)) return;
-      return run(() => api.markDelivered(order.id, packed), "Pengiriman dilengkapi");
-    }
-    return run(() => api.markDelivered(order.id), "Ditandai sudah terkirim");
   };
   const toggleUrgent = () => run(() => api.setUrgent(order.id, order.priority !== "urgent"), "Prioritas diperbarui");
   const toggleBufferStock = () => run(
@@ -259,7 +247,7 @@ export default function PODetail() {
   const saveScreener = async () => {
     const q = parseInt(document.querySelector('[data-testid="screener-qty"]').value || "0", 10);
     const notes = document.querySelector('[data-testid="screener-notes"]').value || "";
-    if (!(q >= 0)) { alert("Qty tidak boleh negatif"); return; }
+    if (!Number.isFinite(q) || q < 0) { alert("Qty tidak valid"); return; }
     await run(() => api.updateScreenerInfo(order.id, { screen_qty: q, notes }), "Info Screener disimpan");
   };
   const doCancelPO = async () => {
@@ -310,18 +298,6 @@ export default function PODetail() {
       setDeleting(false);
     }
   };
-
-  const renderAdvance = (stageIdx) => (
-    <StageAdvanceRow
-      stageIdx={stageIdx}
-      order={order}
-      canAdvance={canAdvanceNow}
-      busy={busy}
-      note={note}
-      setNote={setNote}
-      onAdvance={advance}
-    />
-  );
 
   return (
     <div className="po-detail" data-testid="po-detail-page">
@@ -759,13 +735,8 @@ export default function PODetail() {
           <span className={`qty-status ${statusClassFor(screenerLocked ? "IDLE" : (screenerFilled ? "SAVED" : "READY"))}`}>
             {screenerLocked ? "IDLE" : (screenerFilled ? "SAVED" : "READY")}
           </span>
-          <span className="muted small">Tidak mengubah Qty PO</span>
+          <span className="muted small">Pencatatan aktivitas — bukan cap produksi</span>
         </QtyOpsHead>
-        <MetricRow columns={3}>
-          <MetricCell label="Required" value={printNeed} />
-          <MetricCell label="Prepared" value={screenQtySaved} />
-          <MetricCell label="Remain" value={screenRemaining} />
-        </MetricRow>
         <div className="qty-ops-body">
         <QuantityInput
           label="Qty Screen"
@@ -889,9 +860,13 @@ export default function PODetail() {
         order={order}
         canManage={canManageSuratJalan}
         busy={busy}
-        onCreate={async (number, notes) => {
-          await run(() => api.createSuratJalan(order.id, number, notes), "Surat Jalan disimpan");
+        onCreate={async (number, notes, lines) => {
+          await run(() => api.createSuratJalan(order.id, number, notes, lines), "Surat Jalan disimpan");
         }}
+        onImport={async (payload) => {
+          await run(() => api.importSuratJalan(order.id, payload), "Surat Jalan Accurate diimpor");
+        }}
+        accuratePreview={sjPreview}
         footerActions={(
           <>
             <div style={{ marginTop: 10 }}>
@@ -899,7 +874,6 @@ export default function PODetail() {
                 <FileText size={14} /> Buka Surat Jalan
               </Link>
             </div>
-            {renderAdvance(12)}
           </>
         )}
       />
@@ -912,7 +886,6 @@ export default function PODetail() {
         canManage={canLoadingUpdate}
         busy={busy}
         onUpdated={setOrder}
-        footerActions={renderAdvance(13)}
       />
       </div>
 
@@ -927,16 +900,13 @@ export default function PODetail() {
         </header>
         <p className="muted small">
           Qty packing: <b>{Number(order?.packing_info?.qty_packed || 0).toLocaleString("id-ID")}</b>
+          {" "}· Qty loading: <b>{Number((order?.shipment_lines || []).reduce((s, r) => s + Number(r?.loaded || 0), 0) || 0).toLocaleString("id-ID")}</b>
           {" "}· Qty dikirim: <b>{Number(order?.qty_delivered || 0).toLocaleString("id-ID")}</b>
           {" "}· Total PO: <b>{Number(order?.packing_required_total || order?.total_quantity || 0).toLocaleString("id-ID")}</b>
         </p>
-        {canMarkDelivered && order.delivery_status !== "Terkirim" && (
-          <div className="workflow-stage-actions">
-            <button className="primary" onClick={delivered} disabled={busy} data-testid="mark-delivered-button">
-              <Truck size={16} /> Tandai Terkirim
-            </button>
-          </div>
-        )}
+        <p className="muted small">
+          Status Terkirim mengikuti bukti pengiriman yang berhasil di-upload — tidak ada tombol lanjut manual.
+        </p>
       </section>
       <DeliveryProofPanel order={order} onUpdated={setOrder} />
       </div>
@@ -1046,30 +1016,6 @@ export default function PODetail() {
       {stageDrawer != null && (
         <StageDetailDrawer order={order} stageIdx={stageDrawer} onClose={() => setStageDrawer(null)} />
       )}
-    </div>
-  );
-}
-
-function StageAdvanceRow({ stageIdx, order, canAdvance, busy, note, setNote, onAdvance }) {
-  if (order?.cancelled) return null;
-  if (!canAdvance) return null;
-  if (order.current_stage !== stageIdx) return null;
-  if (order.current_stage >= STAGES.length - 1) return null;
-  // Generic Lanjut hanya untuk Surat Jalan → Loading → Terkirim.
-  // Tahap produksi (0–11) maju otomatis setelah action nyata.
-  if (stageIdx < 12) return null;
-  return (
-    <div className="workflow-stage-actions" data-testid={`stage-advance-row-${stageIdx}`}>
-      <input
-        type="text"
-        placeholder="Catatan (opsional)"
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        data-testid="advance-note-input"
-      />
-      <button className="primary" onClick={onAdvance} disabled={busy} data-testid="advance-button">
-        Lanjut → {STAGES[stageIdx + 1]} <ChevronRight size={16} />
-      </button>
     </div>
   );
 }

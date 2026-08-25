@@ -180,6 +180,13 @@ class TestScreenerGateAndHelperParallel:
         assert workflow_ready(o)["print_qty"] is False
         assert not helper_done(o)
 
+    def test_screener_qty_with_helper_prepared_zero_still_gates(self):
+        o = self._scheduled(helper_prep={"qty_required": 100, "qty_prepared": 0})
+        o["screener_info"] = {"screen_qty": 10}
+        sync_workflow_stage(o)
+        assert screener_done(o)
+        assert operator_unlocked(o)
+
     def test_helper_save_does_not_unlock_operator(self):
         o = self._scheduled(helper_prep={"qty_prepared": 100})
         sync_workflow_stage(o)

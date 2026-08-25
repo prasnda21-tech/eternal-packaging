@@ -1,6 +1,8 @@
 import axios from "axios";
+import { resolveBackendOrigin } from "./backendOrigin";
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const pageHost = typeof window !== "undefined" ? window.location.hostname : "";
+const API = `${resolveBackendOrigin(process.env.REACT_APP_BACKEND_URL, pageHost)}/api`;
 
 const client = axios.create({
   baseURL: API,
@@ -46,7 +48,16 @@ export const api = {
   },
   updateOrderWorkDate: (id, work_date) => client.patch(`/orders/${id}/work-date`, { work_date }).then((r) => r.data),
   updateOperatorWorkDate: (id, split_id, work_date) => client.patch(`/orders/${id}/operator-splits/${split_id}/work-date`, { work_date }).then((r) => r.data),
-  createSuratJalan: (id, delivery_note_number = null, notes = "") => client.post(`/orders/${id}/surat-jalan`, { delivery_note_number, notes }).then((r) => r.data),
+  createSuratJalan: (id, delivery_note_number = null, notes = "", lines = null) =>
+    client.post(`/orders/${id}/surat-jalan`, {
+      delivery_note_number,
+      notes,
+      ...(Array.isArray(lines) ? { lines } : {}),
+    }).then((r) => r.data),
+  previewAccurateSuratJalan: (id) =>
+    client.get(`/orders/${id}/surat-jalan/accurate-preview`).then((r) => r.data),
+  importSuratJalan: (id, payload) =>
+    client.post(`/orders/${id}/surat-jalan/import`, payload).then((r) => r.data),
   markDelivered: (id, qty_delivered = null) =>
     client.post(`/orders/${id}/delivered`, null, {
       params: qty_delivered == null ? {} : { qty_delivered },
