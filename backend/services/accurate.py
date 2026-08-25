@@ -614,6 +614,188 @@ class AccurateClient:
             )
         return all_rows
 
+    async def fetch_all_receive_items(self) -> Dict[str, Any]:
+        """Penerimaan Barang: list pages then detail. Token/host/http once.
+
+        Official Accurate OpenAPI (account.accurate.id/open-api/json.do):
+        GET /api/receive-item/list.do and GET /api/receive-item/detail.do
+        (scope receive_item_view). Do not send `fields` — this tenant rejects
+        custom fields on list.do. Detail is required for line quantity + item id.
+        """
+        if not self.is_live:
+            rows = [normalize_receive_item(r) for r in _MOCK_RECEIVE_ITEMS]
+            return {
+                "receipts": [r for r in rows if r],
+                "failed": [],
+                "complete": True,
+                "mode": "mock",
+                "list_pages": 1,
+                "detail_required": True,
+            }
+        token = await self._obtain_token()
+        host, session = await self._open_db(token)
+        list_rows: List[Dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=_ITEM_HTTP_TIMEOUT, follow_redirects=True) as http:
+            page = 1
+            page_count = 1
+            while page <= _ITEM_LIST_MAX_PAGES:
+                payload = await self._list_receive_items_live_page(
+                    http, token=token, host=host, session=session, limit=100, page=page,
+                )
+                list_rows.extend(payload.get("rows") or [])
+                page_count = int(payload.get("pageCount") or 1)
+                if page >= page_count or not (payload.get("rows") or []):
+                    break
+                page += 1
+            details, failed = await self._fetch_receive_item_details(
+                http, token=token, host=host, session=session, list_rows=list_rows,
+            )
+        complete = not failed
+        return {
+            "receipts": details,
+            "failed": failed,
+            "complete": complete,
+            "mode": "live",
+            "list_pages": page,
+            "detail_required": True,
+        }
+
+    async def _list_receive_items_live_page(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        token: str,
+        host: str,
+        session: str,
+        limit: int,
+        page: int,
+    ) -> Dict[str, Any]:
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, _ITEM_LIST_MAX_ATTEMPTS + 1):
+            headers = self._request_headers(token, session)
+            try:
+                r = await http.get(
+                    f"{host}/accurate/api/receive-item/list.do",
+                    headers=headers,
+                    params={"sp.pageSize": limit, "sp.page": page},
+                )
+            except _ITEM_LIST_RETRYABLE as e:
+                last_exc = e
+                logger.warning(
+                    "Accurate receive-item list failed endpoint=receive-item/list.do "
+                    "page=%s attempt=%s exception=%s",
+                    page, attempt, type(e).__name__,
+                )
+                if attempt < _ITEM_LIST_MAX_ATTEMPTS:
+                    await asyncio.sleep(_ITEM_LIST_RETRY_WAIT_S)
+                    continue
+                raise RuntimeError("Accurate receive-item list timeout") from e
+            if r.is_error:
+                logger.warning(
+                    "Accurate receive-item list failed endpoint=receive-item/list.do "
+                    "page=%s attempt=%s status=%s",
+                    page, attempt, r.status_code,
+                )
+                if attempt < _ITEM_LIST_MAX_ATTEMPTS:
+                    await asyncio.sleep(_ITEM_LIST_RETRY_WAIT_S)
+                    continue
+                raise RuntimeError(f"Accurate receive-item list failed ({r.status_code})")
+            try:
+                body = r.json()
+            except Exception as e:
+                raise RuntimeError("Accurate receive-item list returned invalid JSON") from e
+            if body.get("s") is False:
+                raise RuntimeError("Accurate receive-item list rejected")
+            rows_raw = body.get("d") or []
+            if not isinstance(rows_raw, list):
+                rows_raw = []
+            sp = body.get("sp") or {}
+            total = sp.get("rowCount") if sp.get("rowCount") is not None else len(rows_raw)
+            page_count = sp.get("pageCount") or max(1, (int(total) + limit - 1) // limit)
+            return {
+                "rows": [r for r in rows_raw if isinstance(r, dict)],
+                "pageCount": int(page_count),
+                "total": int(total),
+            }
+        raise RuntimeError("Accurate receive-item list failed") from last_exc
+
+    async def _fetch_receive_item_details(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        token: str,
+        host: str,
+        session: str,
+        list_rows: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        sem = asyncio.Semaphore(_ITEM_DETAIL_CONCURRENCY)
+        failed: List[Dict[str, Any]] = []
+        out: List[Dict[str, Any]] = []
+
+        async def one(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            rid = row.get("id")
+            if rid is None or str(rid).strip() == "":
+                failed.append({"id": None, "reason": "missing id"})
+                return None
+            async with sem:
+                last_exc: Optional[BaseException] = None
+                for attempt in range(1, _ITEM_LIST_MAX_ATTEMPTS + 1):
+                    headers = self._request_headers(token, session)
+                    try:
+                        r = await http.get(
+                            f"{host}/accurate/api/receive-item/detail.do",
+                            headers=headers,
+                            params={"id": rid},
+                        )
+                    except _ITEM_LIST_RETRYABLE as e:
+                        last_exc = e
+                        logger.warning(
+                            "Accurate receive-item detail failed endpoint=receive-item/detail.do "
+                            "page=- attempt=%s exception=%s",
+                            attempt, type(e).__name__,
+                        )
+                        if attempt < _ITEM_LIST_MAX_ATTEMPTS:
+                            await asyncio.sleep(_ITEM_LIST_RETRY_WAIT_S)
+                            continue
+                        failed.append({"id": str(rid), "reason": type(e).__name__})
+                        return None
+                    if r.status_code == 404:
+                        failed.append({"id": str(rid), "reason": "not_found"})
+                        return None
+                    if r.is_error:
+                        logger.warning(
+                            "Accurate receive-item detail failed endpoint=receive-item/detail.do "
+                            "attempt=%s status=%s",
+                            attempt, r.status_code,
+                        )
+                        if attempt < _ITEM_LIST_MAX_ATTEMPTS:
+                            await asyncio.sleep(_ITEM_LIST_RETRY_WAIT_S)
+                            continue
+                        failed.append({"id": str(rid), "reason": f"http_{r.status_code}"})
+                        return None
+                    try:
+                        payload = r.json()
+                    except Exception:
+                        failed.append({"id": str(rid), "reason": "invalid_json"})
+                        return None
+                    d = _item_detail_body(payload) or (payload.get("d") if isinstance(payload.get("d"), dict) else None)
+                    if not isinstance(d, dict):
+                        failed.append({"id": str(rid), "reason": "empty_detail"})
+                        return None
+                    merged = dict(row)
+                    merged.update(d)
+                    return normalize_receive_item(merged)
+                failed.append({"id": str(rid), "reason": type(last_exc).__name__ if last_exc else "failed"})
+                return None
+
+        for i in range(0, len(list_rows), _ITEM_DETAIL_CONCURRENCY):
+            chunk = list_rows[i:i + _ITEM_DETAIL_CONCURRENCY]
+            results = await asyncio.gather(*[one(row) for row in chunk], return_exceptions=False)
+            for r in results:
+                if r:
+                    out.append(r)
+        return out, failed
+
     async def _fetch_item_detail_live(
         self,
         http: httpx.AsyncClient,
@@ -1141,6 +1323,103 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         ],
     },
 ]
+
+
+# Penerimaan Barang — official Accurate OpenAPI (account.accurate.id/open-api/json.do)
+ACCURATE_RECEIVE_ITEM_LIST_PATH = "/accurate/api/receive-item/list.do"
+ACCURATE_RECEIVE_ITEM_DETAIL_PATH = "/accurate/api/receive-item/detail.do"
+ACCURATE_RECEIVE_ITEM_ENDPOINT_AVAILABLE = True
+ACCURATE_RECEIVE_ITEM_ENDPOINT_EVIDENCE = (
+    "Official Accurate OpenAPI GET /api/receive-item/list.do and "
+    "GET /api/receive-item/detail.do (tags /api/receive-item, "
+    "summary Penerimaan Barang, scope receive_item_view). "
+    "Source: https://account.accurate.id/open-api/json.do"
+)
+# approvalStatus REJECTED is documented on list.do. Dedicated void/cancelled
+# field is not documented on receive-item — do not invent one.
+RECEIVE_ITEM_INVALID_APPROVAL = frozenset({"REJECTED"})
+
+_MOCK_RECEIVE_ITEMS: List[Dict[str, Any]] = [
+    {
+        "id": 91001,
+        "number": "R1",
+        "transDate": "25/08/2026",
+        "approvalStatus": "APPROVED",
+        "detailItem": [
+            {"id": 1, "quantity": 2000, "item": {"id": 101, "no": "PC-12"}, "itemUnitName": "pcs"},
+        ],
+    },
+    {
+        "id": 91002,
+        "number": "R2",
+        "transDate": "25/08/2026",
+        "approvalStatus": "APPROVED",
+        "detailItem": [
+            {"id": 2, "quantity": 1500, "item": {"id": 101, "no": "PC-12"}, "itemUnitName": "pcs"},
+        ],
+    },
+    {
+        "id": 91003,
+        "number": "R3",
+        "transDate": "25/08/2026",
+        "approvalStatus": "APPROVED",
+        "detailItem": [
+            {"id": 3, "quantity": 4000, "item": {"id": 202, "no": "LB-M"}, "itemUnitName": "pcs"},
+        ],
+    },
+]
+
+
+def receive_item_is_valid(raw: Dict[str, Any]) -> bool:
+    status = str(raw.get("approvalStatus") or "").strip().upper()
+    if status in RECEIVE_ITEM_INVALID_APPROVAL:
+        return False
+    return True
+
+
+def normalize_receive_item(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalize list/detail Penerimaan Barang. Quantity-only; never unitPrice."""
+    if not isinstance(raw, dict):
+        return None
+    rid = raw.get("id")
+    if rid is None or str(rid).strip() == "":
+        return None
+    lines_raw = raw.get("detailItem") or raw.get("detailItems") or []
+    if not isinstance(lines_raw, list):
+        lines_raw = []
+    lines = []
+    for idx, li in enumerate(lines_raw):
+        if not isinstance(li, dict):
+            continue
+        item = li.get("item") if isinstance(li.get("item"), dict) else {}
+        aid = _extract_accurate_item_id(li, item)
+        if not aid:
+            continue
+        line_id = li.get("id")
+        if line_id is None or str(line_id).strip() == "":
+            line_id = f"{rid}:{idx}"
+        qty = li.get("quantity")
+        try:
+            n = float(qty)
+        except (TypeError, ValueError):
+            n = 0
+        if n == int(n):
+            n = int(n)
+        unit = _blank_to_none(li.get("itemUnitName")) or _extract_item_unit(item) or ""
+        lines.append({
+            "accurate_line_id": str(line_id),
+            "accurate_item_id": aid,
+            "received_qty": n,
+            "unit": unit,
+        })
+    return {
+        "accurate_receipt_id": str(rid),
+        "receipt_number": str(raw.get("number") or "").strip(),
+        "receipt_date": str(raw.get("transDate") or "").strip(),
+        "approval_status": str(raw.get("approvalStatus") or "").strip(),
+        "valid": receive_item_is_valid(raw),
+        "lines": lines,
+    }
 
 
 # Pengiriman Pesanan / delivery shipment is NOT in the existing Accurate client.

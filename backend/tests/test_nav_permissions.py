@@ -29,6 +29,7 @@ def test_catalog_includes_nav_keys():
         NAV_CONFIGURED,
         "nav.inventory.master_items",
         "nav.inventory.current_stock",
+        "nav.purchasing.receipts",
     ):
         assert key in ALL_PERMISSIONS, key
 
@@ -52,6 +53,9 @@ def test_helper_keeps_schedule_and_always_visible_menus():
     assert "master_items.view" not in helper
     assert "master_items.sync" not in helper
     assert "current_stock.view" not in helper
+    assert "purchase_receipts.view" not in helper
+    assert "purchase_receipts.sync" not in helper
+    assert "nav.purchasing.receipts" not in helper
 
 
 def test_head_production_gets_dashboard_nav():
@@ -59,6 +63,9 @@ def test_head_production_gets_dashboard_nav():
     assert "nav.dashboard" in hp
     assert "nav.production_schedule" in hp
     assert "current_stock.view" in hp
+    assert "purchase_receipts.view" in hp
+    assert "purchase_receipts.sync" in hp
+    assert "nav.purchasing.receipts" in hp
     assert "nav.inventory.current_stock" in hp
 
 

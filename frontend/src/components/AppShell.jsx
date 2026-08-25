@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryNavVisible, reportsNavVisible, salesNavVisible } from "../lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible } from "../lib/navAccess";
 import BrandMark from "./BrandMark";
 
 const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
@@ -16,9 +16,11 @@ export default function AppShell() {
   const importActive = location.pathname.startsWith("/admin/import");
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
+  const purchasingActive = location.pathname.startsWith("/pembelian");
   const [salesOpen, setSalesOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
+  const [purchasingOpen, setPurchasingOpen] = useState(true);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -50,6 +52,10 @@ export default function AppShell() {
     if (inventoryActive) setInventoryOpen(true);
   }, [inventoryActive]);
 
+  useEffect(() => {
+    if (purchasingActive) setPurchasingOpen(true);
+  }, [purchasingActive]);
+
   const doLogout = async () => {
     await logout();
     navigate("/login");
@@ -76,9 +82,9 @@ export default function AppShell() {
   const salesNav = salesNavVisible(hasPerm);
   const reportsNav = reportsNavVisible(hasPerm);
   const inventoryNav = inventoryNavVisible(hasPerm);
+  const purchasingNav = purchasingNavVisible(hasPerm);
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showSchedule = hasPerm(NAV_KEYS.schedule);
-  const showPurchasing = hasPerm(NAV_KEYS.purchasing);
   const showSettings = hasPerm(NAV_KEYS.settings);
 
   return (
@@ -119,10 +125,26 @@ export default function AppShell() {
               <Table size={16} /> Jadwal Produksi
             </NavLink>
           )}
-          {showPurchasing && (
-            <NavLink to="/pembelian" className={navClass} data-testid="top-nav-pembelian">
-              <ShoppingBag size={16} /> Pembelian
-            </NavLink>
+          {purchasingNav.parent && (
+            <div className="nav-group">
+              <button
+                type="button"
+                className={"top-nav-link nav-group-toggle" + (purchasingActive ? " parent-open" : "")}
+                aria-expanded={purchasingOpen}
+                onClick={() => setPurchasingOpen((open) => !open)}
+                data-testid="top-nav-pembelian"
+              >
+                <ShoppingBag size={16} /> Pembelian
+                <ChevronDown size={14} className="nav-chevron" />
+              </button>
+              {purchasingOpen && purchasingNav.receipts && (
+                <div className="nav-sub">
+                  <NavLink to="/pembelian/penerimaan-barang" className={navClass} data-testid="top-nav-penerimaan-barang">
+                    <Package size={16} /> Penerimaan Barang
+                  </NavLink>
+                </div>
+              )}
+            </div>
           )}
           {inventoryNav.parent && (
             <div className="nav-group">

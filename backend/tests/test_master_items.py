@@ -1036,6 +1036,9 @@ def test_rbac_catalog_and_defaults():
     assert "current_stock.view" in ALL_PERMISSIONS
     assert "current_stock.update" in ALL_PERMISSIONS
     assert "current_stock.export" in ALL_PERMISSIONS
+    assert "purchase_receipts.view" in ALL_PERMISSIONS
+    assert "purchase_receipts.sync" in ALL_PERMISSIONS
+    assert "nav.purchasing.receipts" in ALL_PERMISSIONS
     assert "nav.inventory.current_stock" in ALL_PERMISSIONS
     admin = set(ROLE_DEFAULT_PERMISSIONS["admin"])
     assert "master_items.view" in admin
@@ -1043,6 +1046,9 @@ def test_rbac_catalog_and_defaults():
     helper = effective_permissions("helper", None)
     assert "master_items.view" not in helper
     assert "master_items.sync" not in helper
+    assert "purchase_receipts.sync" not in helper
+    hop = effective_permissions("head_production", None)
+    assert "purchase_receipts.sync" in hop
     view_only = effective_permissions("helper", {"master_items.view": True, "nav.inventory.master_items": True})
     assert "master_items.view" in view_only
     assert "master_items.sync" not in view_only

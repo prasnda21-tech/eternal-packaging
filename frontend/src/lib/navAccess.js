@@ -6,6 +6,7 @@ export const NAV_KEYS = {
   importPo: "nav.sales.import_po",
   schedule: "nav.production_schedule",
   purchasing: "nav.purchasing",
+  purchaseReceipts: "nav.purchasing.receipts",
   inventory: "nav.inventory",
   masterItems: "nav.inventory.master_items",
   currentStock: "nav.inventory.current_stock",
@@ -20,6 +21,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: null },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
+  { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
   { key: NAV_KEYS.masterItems, label: "Master Barang/Jasa", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
@@ -43,6 +45,12 @@ export function reportsNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
   const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
   return { parent: analytics, analytics };
+}
+
+export function purchasingNavVisible(hasPerm) {
+  const parent = canSeeNav(hasPerm, NAV_KEYS.purchasing);
+  const receipts = parent && canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
+  return { parent: !!receipts, receipts };
 }
 
 export function inventoryNavVisible(hasPerm) {

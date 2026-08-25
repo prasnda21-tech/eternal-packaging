@@ -50,6 +50,19 @@ from services.current_stock import (
     parse_manual_qty,
     public_manual as public_stock_manual,
 )
+from services.purchase_receipts import (
+    COLLECTION as RECEIPT_COLLECTION,
+    PURCHASE_SOURCE_ACCURATE as STOCK_PURCHASE_ACCURATE,
+    SYNC_META_COLLECTION as RECEIPT_SYNC_META_COLLECTION,
+    filter_public_receipts,
+    last_success_at as receipt_last_success_at,
+    load_receipts,
+    load_sync_meta,
+    page_public_receipts,
+    public_receipt,
+    purchase_source_from_meta,
+    sync_purchase_receipts,
+)
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -5172,13 +5185,23 @@ class CurrentStockPatch(BaseModel):
     manual_purchase_qty: Optional[Any] = None
 
 
-async def _load_stock_rows():
+async def _load_stock_context():
     masters = await db.master_items.find({}, {"_id": 0}).to_list(5000)
     orders = await db.orders.find(
         {"cancelled": {"$ne": True}}, STOCK_ORDER_PROJECTION,
     ).to_list(5000)
     manuals = await db[STOCK_MANUAL_COLLECTION].find({}, {"_id": 0}).to_list(5000)
-    return build_stock_rows(masters, orders, manuals)
+    receipts = await load_receipts(db)
+    meta = await load_sync_meta(db)
+    source = purchase_source_from_meta(meta)
+    rows = build_stock_rows(
+        masters, orders, manuals, receipts, purchase_source=source,
+    )
+    return rows, source, receipt_last_success_at(meta)
+
+
+def _purchase_source_label(source: str) -> str:
+    return "Accurate" if source == STOCK_PURCHASE_ACCURATE else "Manual"
 
 
 def _stock_xlsx(rows: list) -> FastAPIResponse:
@@ -5190,8 +5213,9 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
     ws = wb.active
     ws.title = "Stock Saat Ini"
     headers = [
-        "Kode", "Nama Item", "Satuan", "Qty PO", "Qty Saat Ini",
-        "Pembelian Barang", "Qty Cetak Operator", "Stock Saat Ini", "Terakhir Update",
+        "Kode", "Nama Item", "Satuan", "Qty Saat Ini", "Pembelian Barang",
+        "Qty PO", "Qty Cetak Operator", "Stock Saat Ini", "Sumber Pembelian",
+        "Terakhir Update",
     ]
     ws.append(headers)
     header_font = Font(bold=True, color="FFFFFF")
@@ -5206,15 +5230,17 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
         if r.get("updated_by_name") or r.get("updated_by"):
             who = r.get("updated_by_name") or r.get("updated_by")
             updated = f"{updated} · {who}" if updated else who
+        src = _purchase_source_label(r.get("purchase_source") or STOCK_PURCHASE_SOURCE)
         ws.append([
             r.get("item_code") or "",
             r.get("item_name") or "",
             r.get("unit") or "",
-            r.get("qty_po") if r.get("qty_po") is not None else 0,
             r.get("manual_current_qty") if r.get("manual_current_qty") is not None else 0,
             r.get("purchase_qty") if r.get("purchase_qty") is not None else 0,
+            r.get("qty_po") if r.get("qty_po") is not None else 0,
             r.get("operator_print_qty") if r.get("operator_print_qty") is not None else 0,
             r.get("stock_current") if r.get("stock_current") is not None else 0,
+            src,
             updated,
         ])
     for col in range(4, 9):
@@ -5243,12 +5269,14 @@ async def current_stock_list(
     page_size: int = 50,
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows = await _load_stock_rows()
+    rows, source, last_sync = await _load_stock_context()
     payload = filter_stock_page(
         rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
-        page=page, page_size=page_size,
+        page=page, page_size=page_size, purchase_source=source,
+        last_receipt_sync_at=last_sync,
     )
-    payload["purchase_source"] = STOCK_PURCHASE_SOURCE
+    payload["purchase_source"] = source
+    payload["last_receipt_sync_at"] = last_sync
     return payload
 
 
@@ -5260,7 +5288,7 @@ async def current_stock_export(
     sort_dir: str = "asc",
     user=Depends(require_perm("current_stock.export")),
 ):
-    rows = await _load_stock_rows()
+    rows, _source, _last_sync = await _load_stock_context()
     from services.current_stock import matches_search, stock_sign_filter, qty_num, SORT_KEYS
     filtered = [
         r for r in rows
@@ -5297,6 +5325,7 @@ async def current_stock_update(
     )
     if not master:
         raise HTTPException(404, "Master item tidak ditemukan")
+    source = purchase_source_from_meta(await load_sync_meta(db))
     fields = {}
     if payload.manual_current_qty is not None:
         try:
@@ -5304,6 +5333,11 @@ async def current_stock_update(
         except ValueError as e:
             raise HTTPException(400, str(e))
     if payload.manual_purchase_qty is not None:
+        if source == STOCK_PURCHASE_ACCURATE:
+            raise HTTPException(
+                409,
+                "Pembelian Barang memakai Penerimaan Barang Accurate. Sinkronkan di Pembelian → Penerimaan Barang.",
+            )
         try:
             fields["manual_purchase_qty"] = parse_manual_qty(payload.manual_purchase_qty)
         except ValueError as e:
@@ -5346,7 +5380,7 @@ async def current_stock_update(
         before=before, after=public_stock_manual(fresh),
         note="Update qty stock manual",
     )
-    rows = await _load_stock_rows()
+    rows, source, _last_sync = await _load_stock_context()
     row = next(
         (
             r for r in rows
@@ -5355,7 +5389,134 @@ async def current_stock_update(
         ),
         None,
     )
-    return {"item": row, "purchase_source": STOCK_PURCHASE_SOURCE}
+    return {"item": row, "purchase_source": source}
+
+
+async def _masters_by_accurate_id():
+    masters = await db.master_items.find(
+        {}, {"_id": 0, "id": 1, "accurate_item_id": 1, "item_code": 1, "item_name": 1, "unit": 1},
+    ).to_list(5000)
+    return {str(m.get("accurate_item_id")): m for m in masters if m.get("accurate_item_id")}
+
+
+async def _public_receipt_rows():
+    recs = await load_receipts(db)
+    by_aid = await _masters_by_accurate_id()
+    rows = [public_receipt(r, by_aid) for r in recs]
+    rows.sort(key=lambda r: (
+        str(r.get("receipt_date") or ""),
+        str(r.get("receipt_number") or ""),
+        str(r.get("accurate_receipt_id") or ""),
+    ), reverse=True)
+    return rows
+
+
+def _receipts_xlsx(rows: list) -> FastAPIResponse:
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Penerimaan Barang"
+    headers = [
+        "Tanggal", "No Penerimaan", "Kode", "Nama Item", "Satuan",
+        "Qty Diterima", "Status", "Accurate Receipt ID",
+    ]
+    ws.append(headers)
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="17313E")
+    for col_idx, _ in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="left", vertical="center")
+    for rec in rows:
+        lines = rec.get("lines") or []
+        if not lines:
+            ws.append([
+                rec.get("receipt_date") or "",
+                rec.get("receipt_number") or "",
+                "", "", "", 0,
+                rec.get("status") or "",
+                rec.get("accurate_receipt_id") or "",
+            ])
+            continue
+        for li in lines:
+            ws.append([
+                rec.get("receipt_date") or "",
+                rec.get("receipt_number") or "",
+                li.get("item_code") or "",
+                li.get("item_name") or "",
+                li.get("unit") or "",
+                li.get("received_qty") if li.get("received_qty") is not None else 0,
+                rec.get("status") or "",
+                rec.get("accurate_receipt_id") or "",
+            ])
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=6).number_format = "0"
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"penerimaan-barang-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return FastAPIResponse(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.get("/purchase-receipts")
+async def purchase_receipts_list(
+    q: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("purchase_receipts.view")),
+):
+    rows = filter_public_receipts(await _public_receipt_rows(), q)
+    meta = await load_sync_meta(db)
+    payload = page_public_receipts(rows, page=page, page_size=page_size)
+    payload["last_synced_at"] = receipt_last_success_at(meta)
+    payload["purchase_source"] = purchase_source_from_meta(meta)
+    payload["source"] = "accurate"
+    return payload
+
+
+@api_router.get("/purchase-receipts/export")
+async def purchase_receipts_export(
+    q: str = "",
+    user=Depends(require_perm("purchase_receipts.export")),
+):
+    rows = filter_public_receipts(await _public_receipt_rows(), q)
+    await _write_audit(
+        "purchase_receipts.export", user, target_email=None,
+        before=None, after={"count": len(rows), "q": q},
+        note="Export Penerimaan Barang",
+    )
+    return _receipts_xlsx(rows)
+
+
+@api_router.post("/purchase-receipts/sync")
+async def purchase_receipts_sync(user=Depends(require_perm("purchase_receipts.sync"))):
+    """Manual sync Penerimaan Barang Accurate into modul Pembelian."""
+    result = await sync_purchase_receipts(db, _accurate_client)
+    await _write_audit(
+        "purchase_receipts.sync", user, target_email=None,
+        before=None,
+        after={
+            "ok": result.get("ok"),
+            "receipts_found": result.get("receipts_found"),
+            "created": result.get("created"),
+            "updated": result.get("updated"),
+            "unchanged": result.get("unchanged"),
+            "failed": result.get("failed"),
+            "mode": result.get("mode"),
+        },
+        note="Sinkronkan Penerimaan Barang dari Accurate",
+    )
+    return result
 
 
 @api_router.post("/accurate/sync")
@@ -6263,6 +6424,8 @@ async def seed():
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("master_item_id", unique=True, sparse=True)
+    await db[RECEIPT_COLLECTION].create_index("accurate_receipt_id", unique=True)
+    await db[RECEIPT_SYNC_META_COLLECTION].create_index("id", unique=True)
     await db.files.create_index("id", unique=True)
     await db.files.create_index("storage_path")
     await db.import_logs.create_index("imported_at")
@@ -6410,7 +6573,9 @@ async def seed():
             # Buffer Stock (CRM workflow)
             "buffer_stock.manage",
             "current_stock.view", "current_stock.update", "current_stock.export",
+            "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
+            "nav.purchasing.receipts",
         ],
         "head_operations": [
             "dashboard.production.view", "dashboard.production.export", "po.cancel",
@@ -6422,7 +6587,9 @@ async def seed():
             "production.route.edit",
             "buffer_stock.manage",
             "current_stock.view", "current_stock.update", "current_stock.export",
+            "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
+            "nav.purchasing.receipts",
         ],
         # Import PO permissions: admin gets all (idempotent top-up if a custom
         # admin override was persisted before these keys existed).
@@ -6432,7 +6599,9 @@ async def seed():
             "master_items.view", "master_items.sync",
             "nav.inventory.master_items",
             "current_stock.view", "current_stock.update", "current_stock.export",
+            "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
+            "nav.purchasing.receipts",
             # Req 13/14/16 top-ups (idempotent) — admin should always have every new perm.
             "schedule.work_date.view", "schedule.work_date.edit",
             "dashboard.production.input", "dashboard.production.edit",

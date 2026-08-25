@@ -110,6 +110,10 @@ export const api = {
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
     client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
+  purchaseReceipts: (params = {}) => client.get(`/purchase-receipts`, { params }).then((r) => r.data),
+  purchaseReceiptsSync: () => client.post(`/purchase-receipts/sync`).then((r) => r.data),
+  purchaseReceiptsExport: (params = {}) =>
+    client.get(`/purchase-receipts/export`, { params, responseType: "blob" }).then((r) => r.data),
   importFilePreview: (file, onProgress) => {
     const form = new FormData();
     form.append("file", file);
