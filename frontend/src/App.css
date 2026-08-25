@@ -1159,6 +1159,31 @@
 .public-approval-card .foot{margin-top:18px}
 @media (min-width:520px){.public-approval-card .po-summary{grid-template-columns:1fr 1fr}}
 
+/* -------- Customer PO tracking (public) -------- */
+.tracking-page{min-height:100vh;background:#fff;padding:20px 16px 48px;display:flex;justify-content:center;align-items:flex-start}
+.tracking-card{width:100%;max-width:480px}
+.tracking-head{margin-bottom:18px}
+.tracking-head .eyebrow{margin:10px 0 0}
+.tracking-po{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;margin-bottom:18px}
+.tracking-po .lbl{font:11px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--soft)}
+.tracking-po strong{font-size:18px;letter-spacing:-.02em}
+.tracking-workflow h2{font:11px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--soft);margin:0 0 8px}
+.tracking-table{width:100%;border-collapse:collapse;background:#fff}
+.tracking-table th,.tracking-table td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);font-size:14px}
+.tracking-table th{font:11px 'IBM Plex Mono',monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--soft);font-weight:500}
+.tracking-table td:last-child{text-align:right;width:38%}
+.tracking-badge{display:inline-block;font:10.5px 'IBM Plex Mono',monospace;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:4px;border:1px solid var(--line)}
+.tracking-badge.is-done{color:var(--green);border-color:#8aaa96;background:#F3FAF6}
+.tracking-badge.is-run{color:#a16d1f;border-color:#efd9a1;background:#fef4d6}
+.tracking-badge.is-wait{color:var(--soft);background:#fafafa}
+.tracking-err{color:var(--soft);font-size:14px}
+.tracking-customer-panel .tracking-customer-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:0 0 12px}
+@media (max-width:480px){
+  .tracking-card{max-width:100%}
+  .tracking-po strong{font-size:16px;word-break:break-word}
+  .tracking-table th,.tracking-table td{padding:9px 4px;font-size:13px}
+}
+
 /* Internal Customer Approval panel (PODetail) */
 .ca-panel{padding:14px;border:1px solid var(--line);border-radius:12px;background:#fdfaf3;margin-top:14px}
 .ca-panel h3{margin:0 0 4px;font-size:15px}
