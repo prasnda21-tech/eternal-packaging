@@ -43,6 +43,7 @@ export default function SuratJalanPanel({
   const [notes, setNotes] = useState(order.delivery_note_notes || "");
   const [draft, setDraft] = useState(() => initialDraft(rows));
   const [confirm, setConfirm] = useState(null);
+  const [importConfirm, setImportConfirm] = useState(null);
   const [err, setErr] = useState("");
   const created = !!order.surat_jalan_created;
   const availableTotal = rows.reduce((s, r) => s + Number(r.available_sj || 0), 0);
@@ -260,15 +261,22 @@ export default function SuratJalanPanel({
                           className="ghost sm"
                           disabled={busy}
                           data-testid={`import-sj-mock-${n.accurate_shipment_id}`}
-                          onClick={() => onImport({
-                            accurate_shipment_id: n.accurate_shipment_id,
-                            number: n.number,
-                            notes: n.notes,
-                            lines: (n.lines || []).map((l) => ({
-                              accurate_item_id: l.accurate_item_id,
-                              qty: l.quantity,
-                            })),
-                          })}
+                          onClick={() => {
+                            setErr("");
+                            setImportConfirm({
+                              payload: {
+                                accurate_shipment_id: n.accurate_shipment_id,
+                                number: n.number,
+                                notes: n.notes,
+                                lines: (n.lines || []).map((l) => ({
+                                  accurate_item_id: l.accurate_item_id,
+                                  qty: l.quantity,
+                                })),
+                              },
+                              action: `Import ${n.number || n.accurate_shipment_id}`,
+                              time: formatDisplayDateTime(new Date().toISOString()),
+                            });
+                          }}
                         >
                           <Cloud size={13} /> Import {n.number || n.accurate_shipment_id}
                         </button>
@@ -285,6 +293,8 @@ export default function SuratJalanPanel({
       <ConfirmActionModal
         open={!!confirm}
         stage="Surat Jalan"
+        poNumber={order.po_number}
+        action={number ? `Buat Surat Jalan ${number}` : "Buat Surat Jalan"}
         qty={confirm?.qty}
         name={user?.name || user?.email}
         time={confirm?.time}
@@ -293,6 +303,28 @@ export default function SuratJalanPanel({
         error={err}
         onCancel={() => { if (!busy) setConfirm(null); }}
         onConfirm={executeCreate}
+      />
+      <ConfirmActionModal
+        open={!!importConfirm}
+        stage="Surat Jalan"
+        poNumber={order.po_number}
+        action={importConfirm?.action}
+        name={user?.name || user?.email}
+        time={importConfirm?.time}
+        busy={busy}
+        error={err}
+        onCancel={() => { if (!busy) setImportConfirm(null); }}
+        onConfirm={async () => {
+          if (!importConfirm || busy) return;
+          setErr("");
+          try {
+            await onImport(importConfirm.payload);
+            setImportConfirm(null);
+          } catch (e) {
+            const d = e?.response?.data?.detail;
+            setErr(typeof d === "string" ? d : (d?.message || "Gagal import Surat Jalan"));
+          }
+        }}
       />
     </section>
   );

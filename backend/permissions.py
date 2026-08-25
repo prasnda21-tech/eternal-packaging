@@ -49,6 +49,9 @@ PERMISSION_CATALOG = [
     ("Operator", "operator.update", "Update progres Operator"),
     ("Operator", "operator.sample_upload", "Upload sample cetak"),
     ("Operator", "operator.sample_approve", "Approve sample cetak"),
+    ("Produksi", "work_panel.view", "Lihat Form Pekerjaan Divisi"),
+    ("Pengaturan", "settings.work_panel.view", "Lihat pengaturan Form Pekerjaan Divisi"),
+    ("Pengaturan", "settings.work_panel.manage", "Ubah pengaturan Form Pekerjaan Divisi"),
     ("Packing", "packing.update", "Packing"),
     ("Surat Jalan", "delivery_note.view", "Lihat Surat Jalan"),
     ("Surat Jalan", "delivery_note.manage", "Kelola Surat Jalan"),
@@ -183,6 +186,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "users.view", "audit.view",
         "dashboard.production.view", "dashboard.production.input", "dashboard.production.edit",
         "dashboard.production.export",
+        "work_panel.view", "settings.work_panel.view", "settings.work_panel.manage",
         "customer_approval.view", "customer_approval.manage", "customer_approval.settings",
         "delivery.deadline.edit", "delivery.deadline.settings",
         "production.route.edit",
@@ -199,6 +203,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "users.view", "audit.view",
         "dashboard.production.view", "dashboard.production.input", "dashboard.production.edit",
         "dashboard.production.export",
+        "work_panel.view", "settings.work_panel.view", "settings.work_panel.manage",
         "delivery.deadline.edit", "delivery.deadline.settings",
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
@@ -210,18 +215,18 @@ ROLE_DEFAULT_PERMISSIONS = {
         "customer_approval.view", "customer_approval.manage",
     ],
     "screener": [
-        "po.view", "schedule.view", "schedule.work_date.view", "screen.update",
+        "po.view", "schedule.view", "schedule.work_date.view", "screen.update", "work_panel.view",
     ],
     "helper": [
-        "po.view", "schedule.view", "schedule.work_date.view", "helper.prepare", "packing.update",
+        "po.view", "schedule.view", "schedule.work_date.view", "helper.prepare", "packing.update", "work_panel.view",
     ],
     "operator": [
         "po.view", "schedule.view", "schedule.work_date.view",
-        "operator.update", "operator.sample_upload",
+        "operator.update", "operator.sample_upload", "work_panel.view",
     ],
     "driver": [
         "po.view", "schedule.view", "schedule.work_date.view",
-        "delivery_note.view", "loading.update", "delivery.update",
+        "delivery_note.view", "loading.update", "delivery.update", "work_panel.view",
     ],
     "crm": [
         "po.view", "design.view", "payment.view",

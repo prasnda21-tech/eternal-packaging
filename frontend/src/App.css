@@ -1679,6 +1679,26 @@ html:has(.ship-status-page) #root{
 .confirm-action-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
 .confirm-action-dl dd{margin:0;font-weight:650}
 
+.work-page-heading{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.work-divisi-switch{display:flex;flex-wrap:wrap;gap:4px;flex:1}
+.work-divisi-switch a{font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--ink);text-decoration:none}
+.work-divisi-switch a.active{background:#1F3D2B;color:#fff;border-color:#1F3D2B}
+.work-panel{padding:12px 14px}
+.work-panel-hero{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px}
+.work-panel-hero h1{margin:0;font-size:22px}
+.work-line{border-top:1px solid var(--line);padding:12px 0;display:flex;flex-direction:column;gap:8px}
+.work-line-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline}
+.work-history-table{width:100%;border-collapse:collapse;font-size:12px}
+.work-history-table th,.work-history-table td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
+.work-history-table thead th{font:10px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)}
+.work-history-table tr.is-locked td{background:#F4F2EC;color:#5a5138}
+.role-work-entry-title{font:11px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)}
+.role-work-entry-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.work-settings-table input,.work-settings-table select{max-width:180px}
+@media (max-width:720px){
+  .work-panel-hero{flex-direction:column}
+}
+
 .prep-grid input:not(:disabled),.surat-jalan-form input:not(:disabled),.staged-info input:not(:disabled){
   background:#FBF4DE;border-color:#D9BE7A;
 }

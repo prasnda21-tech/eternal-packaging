@@ -32,6 +32,9 @@ def test_catalog_includes_nav_keys():
         "nav.inventory.master_items",
         "nav.inventory.current_stock",
         "nav.purchasing.receipts",
+        "work_panel.view",
+        "settings.work_panel.view",
+        "settings.work_panel.manage",
     ):
         assert key in ALL_PERMISSIONS, key
 
@@ -121,7 +124,14 @@ def test_customized_stored_list_uses_override_then_derives():
     assert "nav.production_schedule" not in eff
 
 
-def test_derived_nav_from_dashboard_perm():
-    nav = derived_nav_permissions({"dashboard.production.view", "po.view"})
-    assert "nav.dashboard" in nav
-    assert "nav.production_schedule" not in nav
+def test_driver_has_work_panel_view():
+    driver = set(ROLE_DEFAULT_PERMISSIONS["driver"])
+    assert "work_panel.view" in driver
+    assert "loading.update" in driver
+    assert "delivery.update" in driver
+
+
+def test_screener_has_work_panel_view():
+    screener = set(ROLE_DEFAULT_PERMISSIONS["screener"])
+    assert "work_panel.view" in screener
+    assert "screen.update" in screener

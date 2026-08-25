@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft,
+  Target as TargetIcon, PanelLeft, ClipboardList,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -1441,6 +1441,148 @@ function OperatorTargetSettingsTab({ notify, canEdit }) {
   );
 }
 
+function WorkPanelSettingsTab({ notify, canEdit }) {
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try {
+      const d = await api.workPanelSettings();
+      setRows((d.settings || d).divisions || []);
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Gagal memuat");
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const patchRow = (id, field, value) => {
+    setRows((cur) => cur.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const d = await api.updateWorkPanelSettings({
+        divisions: rows.map((r) => ({
+          id: r.id,
+          active: r.active,
+          input_label: r.input_label,
+          submit_perm: r.submit_perm,
+          target_source: r.target_source,
+          helper_text: r.helper_text,
+          sort_order: r.sort_order,
+          unit: r.unit,
+        })),
+      });
+      setRows((d.settings || d).divisions || []);
+      notify?.("Form Pekerjaan Divisi disimpan");
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Gagal simpan");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-card" data-testid="work-panel-settings">
+      <h3 style={{ marginTop: 0 }}>Form Pekerjaan Divisi</h3>
+      <p className="muted small">
+        Mengatur tampilan Work Panel per divisi. Tidak dapat menonaktifkan konfirmasi, append-only, audit actor, RBAC, atau validasi server.
+      </p>
+      {err && <div className="error">{err}</div>}
+      <div className="table-wrap">
+        <table className="ship-table work-settings-table" data-testid="work-panel-settings-table">
+          <thead>
+            <tr>
+              <th>Divisi</th>
+              <th>Aktif</th>
+              <th>Permission</th>
+              <th>Label Input</th>
+              <th>Sumber Target</th>
+              <th>Unit</th>
+              <th>Konfirmasi</th>
+              <th>Mode Entry</th>
+              <th>Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} data-testid={`work-settings-row-${r.id}`}>
+                <td>
+                  <strong>{r.label}</strong>
+                  {!r.implemented && <div className="muted small">Belum diimplementasi</div>}
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={!!r.active}
+                    disabled={!canEdit}
+                    onChange={(e) => patchRow(r.id, "active", e.target.checked)}
+                    data-testid={`work-settings-active-${r.id}`}
+                  />
+                </td>
+                <td>
+                  <select
+                    value={r.submit_perm}
+                    disabled={!canEdit}
+                    onChange={(e) => patchRow(r.id, "submit_perm", e.target.value)}
+                    data-testid={`work-settings-perm-${r.id}`}
+                  >
+                    {(r.allowed_submit_perms || [r.submit_perm]).map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  {r.input_kind === "evidence" ? (
+                    <span className="muted small" data-testid={`work-settings-label-${r.id}`}>
+                      Aksi / dokumen existing
+                    </span>
+                  ) : (
+                    <input
+                      className={canEdit ? "manual-input" : ""}
+                      value={r.input_label || ""}
+                      disabled={!canEdit}
+                      onChange={(e) => patchRow(r.id, "input_label", e.target.value)}
+                      data-testid={`work-settings-label-${r.id}`}
+                    />
+                  )}
+                </td>
+                <td>
+                  <select
+                    value={r.target_source}
+                    disabled={!canEdit}
+                    onChange={(e) => patchRow(r.id, "target_source", e.target.value)}
+                    data-testid={`work-settings-target-${r.id}`}
+                  >
+                    {(r.allowed_target_sources || [r.target_source]).map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="muted small">{r.input_kind === "evidence" ? "Dokumen" : (r.unit === "item" ? "Satuan item" : r.unit)}</td>
+                <td className="muted small">Wajib ON</td>
+                <td className="muted small">Append-only</td>
+                <td className="muted small">{r.implemented ? "Aktif" : "Config saja"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {canEdit && (
+        <div style={{ marginTop: 12 }}>
+          <button type="button" className="primary" onClick={save} disabled={busy} data-testid="work-settings-save">
+            {busy ? "Menyimpan…" : "Simpan"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Root ---------------- */
 export default function Settings() {
   const { user, hasPerm } = useAuth();
@@ -1455,6 +1597,8 @@ export default function Settings() {
   const canEditDdSettings = hasPerm("delivery.deadline.settings");
   const canViewOpTarget = hasPerm("schedule.edit") || hasPerm("users.manage");
   const canEditOpTarget = hasPerm("schedule.edit");
+  const canViewWorkPanel = hasPerm("settings.work_panel.view") || hasPerm("settings.work_panel.manage") || hasPerm("permissions.manage");
+  const canEditWorkPanel = hasPerm("settings.work_panel.manage");
 
   const initialTab = canViewUsers ? "employees" : canManagePerms ? "roles" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees";
   const [tab, setTab] = useState(initialTab);
@@ -1500,6 +1644,9 @@ export default function Settings() {
         {canViewOpTarget && (
           <button role="tab" className={tab === "operator-target" ? "active" : ""} onClick={() => setTab("operator-target")} data-testid="settings-tab-operator-target"><TargetIcon size={14}/> Target Output Operator</button>
         )}
+        {canViewWorkPanel && (
+          <button role="tab" className={tab === "work-panel" ? "active" : ""} onClick={() => setTab("work-panel")} data-testid="settings-tab-work-panel"><ClipboardList size={14}/> Form Pekerjaan Divisi</button>
+        )}
         {canViewAudit && (
           <button role="tab" className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")} data-testid="settings-tab-audit"><ScrollText size={14}/> Audit Log</button>
         )}
@@ -1525,6 +1672,7 @@ export default function Settings() {
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
+      {tab === "work-panel" && canViewWorkPanel && <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}
 
       <Toast msg={toast}/>

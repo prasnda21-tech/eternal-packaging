@@ -1,19 +1,23 @@
 import { Link } from "react-router-dom";
 import { Package, UserRound, ChevronRight } from "lucide-react";
 import { STAGES, formatDeadline } from "../lib/constants";
+import { useAuth } from "../lib/auth";
+import { schedulePoHref } from "../lib/workPanel";
 import StageBar from "./StageBar";
 
 export default function POCard({ order }) {
+  const { hasPerm } = useAuth();
+  const href = schedulePoHref(order.id, hasPerm);
   const operators = order.operator_splits?.length
     ? order.operator_splits.map((s) => s.operator_name).join(" / ")
     : "Belum ditentukan";
 
   return (
     <Link
-      to={`/po/${order.id}`}
+      to={href}
       className="job-row"
       data-testid={`order-row-${order.po_number}`}
-      aria-label={`Buka detail ${order.po_number}`}
+      aria-label={`Buka pekerjaan ${order.po_number}`}
     >
       <div className="job-top">
         <div>
