@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api from "./api";
+import { loginThenLoadUser } from "./authSession";
 
 const AuthContext = createContext(null);
 
@@ -21,8 +22,19 @@ export function AuthProvider({ children }) {
   useEffect(() => { refresh(); }, [refresh]);
 
   const login = async (email, password) => {
-    await api.login(email, password);
-    await refresh();
+    try {
+      const me = await loginThenLoadUser(
+        () => api.login(email, password),
+        () => api.me(),
+      );
+      setUser(me);
+      return me;
+    } catch (err) {
+      setUser(null);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
   };
 
   const logout = async () => {

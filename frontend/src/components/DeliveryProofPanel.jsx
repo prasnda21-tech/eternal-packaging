@@ -4,32 +4,32 @@ import api, { fileUrl } from "../lib/api";
 import { compressImage } from "../lib/imageCompress";
 import { formatDate, ROLES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
+import { confirmableProofCount, proofUploadUserError } from "../lib/deliveryProof";
 
 const MAX_PHOTOS = 5;
 
 // Multi-foto Bukti Kirim: driver can select/capture multiple photos, review the
 // staged list (with per-photo note + remove/replace), then confirm upload.
 // Files are compressed client-side, then streamed one-by-one to the backend
-// which stores each in Emergent Object Storage.
+// which stores each via the storage service (local filesystem in preview, S3/Emergent in production).
 export default function DeliveryProofPanel({ order, onUpdated }) {
-  const { user, hasPerm } = useAuth();
+  const { hasPerm } = useAuth();
   const fileInput = useRef(null);
   const cameraInput = useRef(null);
 
-  // Staged (not yet uploaded) files: {id, file, previewUrl, note, status, progress, error, sizeKB, originalSizeKB, compressed}
   const [staged, setStaged] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
-  const [proofBlobs, setProofBlobs] = useState({}); // {proofId: blobUrl}
+  const [proofBlobs, setProofBlobs] = useState({});
 
-  const role = user?.role;
-  // Effective Permission based (delivery.update = update status kirim / bukti kirim).
   const canUpload = hasPerm("delivery.update");
   const canDelete = hasPerm("delivery.update");
   const proofs = order.delivery_proofs || [];
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
   const stagedNotYetUploaded = staged.filter((s) => s.status !== "done");
   const freeSlotsForNewSelection = Math.max(0, remainingSlots - stagedNotYetUploaded.length);
+  const readyCount = confirmableProofCount(staged);
+  const doneCount = staged.filter((s) => s.status === "done").length;
 
   // Load proof images as blob URLs (cookie auth on same origin)
   useEffect(() => {
@@ -117,7 +117,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   };
 
   const uploadAll = async () => {
-    const toUpload = staged.filter((s) => s.status === "ready");
+    const toUpload = staged.filter((s) => s.status === "ready" || (s.status === "error" && s.file));
     if (toUpload.length === 0) {
       setErr("Belum ada foto siap upload.");
       return;
@@ -126,8 +126,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
     setErr("");
     let latestOrder = order;
     for (const s of toUpload) {
-      // Mark uploading
-      setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "uploading", progress: 0 } : x));
+      setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "uploading", progress: 0, error: "" } : x));
       try {
         const res = await api.uploadDeliveryProof(latestOrder.id, s.file, s.note || "", (pct) => {
           setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, progress: pct } : x));
@@ -136,10 +135,9 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         onUpdated(res.order);
         setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "done", progress: 100 } : x));
       } catch (ex) {
-        const msg = ex.response?.data?.detail || ex.message || "Upload gagal";
+        const msg = proofUploadUserError(ex);
         setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "error", error: msg } : x));
         setErr(msg);
-        // Continue with remaining photos (per-file failure shouldn't block others)
       }
     }
     setUploading(false);
@@ -175,8 +173,6 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
     }
   };
 
-  const isDelivered = order.delivery_status === "Terkirim";
-  const readyCount = staged.filter((s) => s.status === "ready").length;
   const anyErrors = staged.some((s) => s.status === "error");
 
   return (
@@ -185,8 +181,8 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         <h3>Foto Bukti Kirim</h3>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span className="muted small">{proofs.length}/{MAX_PHOTOS} foto tersimpan</span>
-          <span className={isDelivered ? "status-ok" : "status-wait"}>
-            {isDelivered ? "Terkirim" : "Belum Terkirim"}
+          <span className={order.delivery_status === "Terkirim" ? "status-ok" : "status-wait"}>
+            {order.delivery_status || "Belum Terkirim"}
           </span>
         </div>
       </header>
@@ -288,7 +284,15 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
                     disabled={uploading || readyCount === 0}
                     data-testid="staged-upload-all"
                   >
-                    {uploading ? <><Loader2 size={14} className="spin" /> Mengupload...</> : <>Konfirmasi upload {readyCount} foto</>}
+                    {uploading ? (
+                      <><Loader2 size={14} className="spin" /> Mengupload...</>
+                    ) : readyCount > 0 ? (
+                      <>Konfirmasi upload {readyCount} foto</>
+                    ) : doneCount > 0 ? (
+                      <>Terunggah {doneCount} foto</>
+                    ) : (
+                      <>Konfirmasi upload 0 foto</>
+                    )}
                   </button>
                 </div>
               </div>

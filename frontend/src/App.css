@@ -1286,7 +1286,7 @@
 .packing-qty-input{width:100%;min-height:36px;padding:6px 10px;border:1px solid #B7D2C6;background:#fff;color:var(--ink);font:650 16px 'IBM Plex Mono',monospace;border-radius:4px;text-align:right}
 .packing-qty-input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
 .packing-qty-input:disabled{background:#EEF7F2;color:var(--soft)}
-.packing-line-input-cell{min-width:160px}
+.packing-line-save-cell{width:1%;white-space:nowrap;text-align:right}
 .packing-line-qty-input{width:132px;min-height:36px;margin-left:auto}
 .packing-notes-input{width:100%;min-height:36px;padding:8px 10px;border:1px solid #B7D2C6;background:#fff;color:var(--ink);font-size:13px;border-radius:4px}
 .packing-panel > p.muted{padding:8px 16px 0}

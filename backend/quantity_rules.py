@@ -63,6 +63,9 @@ def packing_required_total(order: dict) -> int:
         total += max(0, _safe_int(li.get("quantity")))
     if total <= 0:
         total = max(0, _safe_int(order.get("total_quantity")))
+    if total <= 0:
+        # Legacy synthetic/old docs used `quantity` instead of total_quantity.
+        total = max(0, _safe_int(order.get("quantity")))
     return total
 
 
@@ -187,7 +190,10 @@ def qty_packed(order: dict) -> int:
     lines = packing_lines_stored(order)
     if lines is not None:
         return sum(max(0, _safe_int(it.get("packed_qty"))) for it in lines)
-    return max(0, _safe_int((order.get("packing_info") or {}).get("qty_packed")))
+    pi = (order.get("packing_info") or {}).get("qty_packed")
+    if pi is not None and str(pi).strip() != "":
+        return max(0, _safe_int(pi))
+    return max(0, _safe_int(order.get("qty_packed")))
 
 
 def qty_packed_print(order: dict) -> int:
@@ -560,6 +566,34 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     return None
 
 
+def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
+    """Delivery fields from loaded qty after a successful bukti-kirim upload.
+
+    Returns None when there is no loading evidence yet (photo may still be stored).
+    Full PO Terkirim only if delivered >= packing_required_total.
+    """
+    loaded = effective_loaded_qty(order)
+    if loaded <= 0:
+        return None
+    packed = qty_packed(order)
+    current = qty_delivered(order)
+    new_delivered = max(current, loaded)
+    if packed:
+        new_delivered = min(new_delivered, packed)
+    required = packing_required_total(order)
+    err = validate_delivery_qty(new_delivered, order)
+    if err:
+        return None
+    full = bool(required) and new_delivered >= required
+    return {
+        "qty_delivered": new_delivered,
+        "delivery_status": "Terkirim" if full else "Sebagian Terkirim",
+        "full": full,
+        "required": required,
+        "loaded": loaded,
+    }
+
+
 def is_fully_delivered(order: dict) -> bool:
     required = packing_required_total(order)
     if required <= 0:
@@ -575,3 +609,551 @@ def is_fully_delivered(order: dict) -> bool:
     ):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Qty Screener — workflow gate only (NOT a production / packing / SJ cap)
+# ---------------------------------------------------------------------------
+
+def validate_screener_qty(screen_qty, order: Optional[dict] = None) -> Optional[str]:
+    """Basic safety for Qty Screener.
+
+    Intentionally ignores helper prepared / required prepared / remaining
+    prepared. Those fields cap Cetak, not Screener.
+    `order` is accepted so callers can pass the PO without coupling.
+    """
+    _ = order  # unused by design — prepared qty is not a screener constraint
+    if screen_qty is None or str(screen_qty).strip() == "":
+        return "Qty Screener tidak valid."
+    try:
+        if isinstance(screen_qty, bool):
+            return "Qty Screener tidak valid."
+        q = int(screen_qty)
+    except (TypeError, ValueError):
+        return "Qty Screener tidak valid."
+    if q < 0:
+        return "Screen qty tidak boleh negatif"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Partial Surat Jalan + Loading per line
+# ---------------------------------------------------------------------------
+
+SHIPMENT_SOURCE_MANUAL = "manual"
+SHIPMENT_SOURCE_ACCURATE = "accurate"
+
+SJ_STATUS_PENDING = "pending"
+SJ_STATUS_PARTIAL = "partial"
+SJ_STATUS_COMPLETED = "completed"
+
+
+def _line_count(order: dict) -> int:
+    lis = order.get("line_items") or []
+    return len(lis) if lis else 1
+
+
+def packed_qty_for_line(order: dict, line_idx: int) -> int:
+    """Packed qty one line, including legacy total-only on line 0."""
+    if packing_lines_stored(order) is not None:
+        return qty_packed_for_line(order, line_idx)
+    if int(line_idx) == 0:
+        return qty_packed(order)
+    return 0
+
+
+def shipments_stored(order: dict) -> list:
+    raw = order.get("shipments")
+    return list(raw) if isinstance(raw, list) else []
+
+
+def has_shipment_line_quantities(order: dict) -> bool:
+    for sh in shipments_stored(order):
+        lines = sh.get("lines") or []
+        if isinstance(lines, list) and any(_safe_int(it.get("qty") or it.get("quantity")) > 0 for it in lines):
+            return True
+    return False
+
+
+def qty_shipped_for_line(order: dict, line_idx: int, *, exclude_shipment_id: Optional[str] = None) -> int:
+    total = 0
+    skip = str(exclude_shipment_id or "").strip()
+    for sh in shipments_stored(order):
+        sid = str(sh.get("id") or "")
+        acc = str(sh.get("accurate_shipment_id") or "")
+        if skip and skip in (sid, acc):
+            continue
+        for it in sh.get("lines") or []:
+            if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
+                total += max(0, _safe_int(it.get("qty") if it.get("qty") is not None else it.get("quantity")))
+    return total
+
+
+def qty_shipped(order: dict) -> int:
+    return sum(qty_shipped_for_line(order, i) for i in range(_line_count(order)))
+
+
+def available_for_delivery_note_line(order: dict, line_idx: int, *, exclude_shipment_id: Optional[str] = None) -> int:
+    packed = packed_qty_for_line(order, line_idx)
+    shipped = qty_shipped_for_line(order, line_idx, exclude_shipment_id=exclude_shipment_id)
+    return max(0, packed - shipped)
+
+
+def loading_lines_stored(order: dict) -> Optional[list]:
+    raw = (order.get("loading_info") or {}).get("lines")
+    if not isinstance(raw, list) or not raw:
+        return None
+    return raw
+
+
+def loading_events_stored(order: dict) -> list:
+    raw = (order.get("loading_info") or {}).get("events")
+    if not isinstance(raw, list):
+        return []
+    return raw
+
+
+def qty_loaded_for_line(order: dict, line_idx: int) -> int:
+    lines = loading_lines_stored(order)
+    if lines is not None:
+        for it in lines:
+            if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
+                return max(0, _safe_int(it.get("loaded_qty")))
+        return 0
+    events = loading_events_stored(order)
+    if events:
+        return sum(
+            max(0, _safe_int(ev.get("qty")))
+            for ev in events
+            if _safe_int(ev.get("line_idx"), default=-1) == int(line_idx)
+        )
+    return 0
+
+
+def qty_loaded(order: dict) -> int:
+    lines = loading_lines_stored(order)
+    if lines is None:
+        return 0
+    return sum(max(0, _safe_int(it.get("loaded_qty"))) for it in lines)
+
+
+def effective_loaded_qty(order: dict) -> int:
+    """Loaded qty for delivery evidence. Historical checklist is read-only fallback."""
+    loaded = qty_loaded(order)
+    if loaded > 0:
+        return loaded
+    lc = order.get("loading_checklist") or {}
+    if lc.get("items_loaded") and lc.get("seal_ok"):
+        return qty_packed(order)
+    return 0
+
+
+def loading_cap_for_line(order: dict, line_idx: int) -> int:
+    """Hard cap Loading = min(packed, shipped-if-SJ-lines-exist). Never > packed."""
+    packed = packed_qty_for_line(order, line_idx)
+    if has_shipment_line_quantities(order):
+        shipped = qty_shipped_for_line(order, line_idx)
+        return max(0, min(packed, shipped))
+    return max(0, packed)
+
+
+def available_for_loading_line(order: dict, line_idx: int) -> int:
+    return max(0, loading_cap_for_line(order, line_idx) - qty_loaded_for_line(order, line_idx))
+
+
+def line_shipment_mismatch(order: dict, line_idx: int) -> bool:
+    return qty_shipped_for_line(order, line_idx) > packed_qty_for_line(order, line_idx)
+
+
+def match_po_line_idx(order: dict, ship_line: dict) -> tuple:
+    """Map a shipment line to PO line_idx. Never matches by item name.
+
+    Returns (line_idx, error_message). error_message is None on success.
+    Prefer accurate_item_id, then explicit line_idx.
+    """
+    lis = list(order.get("line_items") or [])
+    aid = str(ship_line.get("accurate_item_id") or "").strip()
+    explicit = ship_line.get("line_idx")
+    has_explicit = explicit is not None and str(explicit).strip() != ""
+    idx_explicit = _safe_int(explicit, default=-1) if has_explicit else None
+
+    if aid:
+        matches = [
+            i for i, li in enumerate(lis)
+            if str(li.get("accurate_item_id") or "").strip() == aid
+        ]
+        if idx_explicit is not None and idx_explicit in matches:
+            return idx_explicit, None
+        if len(matches) == 1:
+            return matches[0], None
+        if not matches:
+            return None, f"accurate_item_id {aid} tidak ditemukan pada line PO ini."
+        if idx_explicit is not None:
+            return None, f"line_idx {idx_explicit} tidak cocok dengan accurate_item_id {aid}."
+        return None, f"accurate_item_id {aid} ambigu pada beberapa line PO — sertakan line_idx."
+
+    if idx_explicit is not None:
+        if not lis and idx_explicit == 0:
+            return 0, None
+        if 0 <= idx_explicit < len(lis):
+            return idx_explicit, None
+        return None, f"line_idx {idx_explicit} tidak valid."
+
+    return None, "Line Surat Jalan wajib punya accurate_item_id atau line_idx."
+
+
+def remaining_delivery_note_updates(order: dict) -> list:
+    """Allocate remaining packed-not-yet-SJ qty per line (partial SJ)."""
+    updates = []
+    for i in range(_line_count(order)):
+        avail = available_for_delivery_note_line(order, i)
+        if avail > 0:
+            updates.append({"line_idx": i, "qty": avail})
+    return updates
+
+
+def validate_shipment_lines(
+    updates: list,
+    order: dict,
+    *,
+    source: str = SHIPMENT_SOURCE_MANUAL,
+    exclude_shipment_id: Optional[str] = None,
+) -> Optional[str]:
+    """Validate a new/updated shipment's line quantities.
+
+    Manual SJ: cannot exceed packed remaining (no over-allocation).
+    Accurate import: mapping must be valid; qty > packed is recorded as
+    mismatch later and does not raise here (loading still capped at packed).
+    """
+    if not updates:
+        return "Qty Surat Jalan per line wajib diisi."
+    seen = set()
+    total = 0
+    for u in updates:
+        qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
+        if qty < 0:
+            return "Qty Surat Jalan tidak boleh negatif."
+        idx, err = match_po_line_idx(order, u)
+        if err:
+            return err
+        if idx in seen:
+            return f"Line #{idx + 1} duplikat pada Surat Jalan yang sama."
+        seen.add(idx)
+        total += qty
+        packed = packed_qty_for_line(order, idx)
+        already = qty_shipped_for_line(order, idx, exclude_shipment_id=exclude_shipment_id)
+        if source != SHIPMENT_SOURCE_ACCURATE:
+            avail = max(0, packed - already)
+            if qty > avail:
+                name = _line_name(order, idx)
+                return (
+                    f"Qty Surat Jalan '{name}' ({qty}) melebihi qty packing "
+                    f"yang belum dialokasikan ({avail})."
+                )
+    if total <= 0:
+        return "Qty Surat Jalan tidak valid."
+    return None
+
+
+def shipment_line_mismatches(updates: list, order: dict, *, exclude_shipment_id: Optional[str] = None) -> list:
+    """Per-line warnings when Accurate shipped qty exceeds Eternal packed qty."""
+    warnings = []
+    for u in updates:
+        idx, err = match_po_line_idx(order, u)
+        if err or idx is None:
+            continue
+        qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
+        packed = packed_qty_for_line(order, idx)
+        already = qty_shipped_for_line(order, idx, exclude_shipment_id=exclude_shipment_id)
+        projected = already + qty
+        if projected > packed:
+            warnings.append({
+                "line_idx": idx,
+                "name": _line_name(order, idx),
+                "packed": packed,
+                "shipped": projected,
+                "message": (
+                    f"Qty Surat Jalan Accurate '{_line_name(order, idx)}' ({projected}) "
+                    f"melebihi qty Packing Helper ({packed}). Loading dibatasi packing."
+                ),
+            })
+    return warnings
+
+
+def _line_name(order: dict, line_idx: int) -> str:
+    lis = order.get("line_items") or []
+    if not lis:
+        return "Total PO"
+    if 0 <= int(line_idx) < len(lis):
+        return lis[int(line_idx)].get("name") or f"Line #{int(line_idx) + 1}"
+    return f"Line #{int(line_idx) + 1}"
+
+
+def _line_accurate_item_id(order: dict, line_idx: int) -> Optional[str]:
+    lis = order.get("line_items") or []
+    if 0 <= int(line_idx) < len(lis):
+        aid = lis[int(line_idx)].get("accurate_item_id")
+        return str(aid) if aid not in (None, "") else None
+    return None
+
+
+def normalize_shipment_line_updates(updates: list, order: dict) -> list:
+    rows = []
+    for u in updates:
+        idx, err = match_po_line_idx(order, u)
+        if err or idx is None:
+            continue
+        qty = max(0, _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity")))
+        packed = packed_qty_for_line(order, idx)
+        rows.append({
+            "line_idx": idx,
+            "qty": qty,
+            "accurate_item_id": str(u.get("accurate_item_id") or _line_accurate_item_id(order, idx) or "") or None,
+            "packed_qty": packed,
+            "mismatch": qty > packed,
+        })
+    return rows
+
+
+def find_shipment_by_accurate_id(order: dict, accurate_shipment_id: str) -> Optional[dict]:
+    key = str(accurate_shipment_id or "").strip()
+    if not key:
+        return None
+    for sh in shipments_stored(order):
+        if str(sh.get("accurate_shipment_id") or "").strip() == key:
+            return sh
+    return None
+
+
+def apply_shipment_record(
+    order: dict,
+    *,
+    number: str,
+    lines: list,
+    source: str,
+    actor: Optional[dict] = None,
+    accurate_shipment_id: Optional[str] = None,
+    notes: Optional[str] = None,
+    shipment_id: Optional[str] = None,
+    created_at: Optional[str] = None,
+) -> dict:
+    """Append or update a shipment on the order (idempotent by accurate_shipment_id)."""
+    acc_id = str(accurate_shipment_id or "").strip() or None
+    existing = find_shipment_by_accurate_id(order, acc_id) if acc_id else None
+    exclude = str(existing.get("id") or acc_id) if existing else None
+    normalized = normalize_shipment_line_updates(lines, order)
+    mismatches = shipment_line_mismatches(lines, order, exclude_shipment_id=exclude)
+    actor = actor or {}
+    record = {
+        "id": (existing or {}).get("id") or shipment_id or "",
+        "source": source,
+        "accurate_shipment_id": acc_id,
+        "number": number,
+        "notes": (notes or "").strip() or None,
+        "lines": normalized,
+        "mismatch": bool(mismatches),
+        "mismatch_reasons": [m["message"] for m in mismatches],
+        "created_by": actor.get("email") or (existing or {}).get("created_by"),
+        "created_by_name": actor.get("name") or (existing or {}).get("created_by_name"),
+        "created_at": (existing or {}).get("created_at") or created_at,
+        "updated_by": actor.get("email"),
+        "updated_by_name": actor.get("name"),
+        "updated_at": created_at,
+    }
+    shipments = shipments_stored(order)
+    if existing:
+        next_list = []
+        for sh in shipments:
+            if str(sh.get("accurate_shipment_id") or "") == acc_id or str(sh.get("id") or "") == str(existing.get("id") or ""):
+                next_list.append(record)
+            else:
+                next_list.append(sh)
+        order["shipments"] = next_list
+    else:
+        order.setdefault("shipments", []).append(record)
+    return record
+
+
+def validate_loading_lines(updates: list, order: dict) -> Optional[str]:
+    if not updates:
+        return "Qty Loading per line wajib diisi."
+    seen = set()
+    total = 0
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        qty = _safe_int(u.get("loaded_qty") if u.get("loaded_qty") is not None else u.get("qty"))
+        n = _line_count(order)
+        if idx < 0 or idx >= n:
+            return f"line_idx {idx} tidak valid."
+        if idx in seen:
+            return f"Line #{idx + 1} duplikat pada Loading."
+        seen.add(idx)
+        if qty < 0:
+            return "Qty Loading tidak boleh negatif."
+        cap = loading_cap_for_line(order, idx)
+        packed = packed_qty_for_line(order, idx)
+        name = _line_name(order, idx)
+        if qty > packed:
+            return f"Qty Loading '{name}' ({qty}) melebihi qty packing ({packed})."
+        if qty > cap:
+            shipped = qty_shipped_for_line(order, idx)
+            if has_shipment_line_quantities(order) and qty > shipped:
+                return (
+                    f"Qty Loading '{name}' ({qty}) melebihi qty Surat Jalan line tersebut ({shipped})."
+                )
+            return (
+                f"Qty Loading '{name}' ({qty}) melebihi qty tersedia untuk loading ({cap})."
+            )
+        total += qty
+    merged_total = 0
+    n = _line_count(order)
+    current = {i: qty_loaded_for_line(order, i) for i in range(n)}
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        current[idx] = max(0, _safe_int(u.get("loaded_qty") if u.get("loaded_qty") is not None else u.get("qty")))
+    merged_total = sum(current.values())
+    if merged_total < 0:
+        return "Qty Loading tidak valid."
+    return None
+
+
+def merge_loading_line_updates(order: dict, updates: list) -> list:
+    n = _line_count(order)
+    merged = {i: qty_loaded_for_line(order, i) for i in range(n)}
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        merged[idx] = max(0, _safe_int(u.get("loaded_qty") if u.get("loaded_qty") is not None else u.get("qty")))
+    return [{"line_idx": i, "loaded_qty": merged.get(i, 0)} for i in range(n)]
+
+
+def _loading_increment_qty(u: dict) -> int:
+    if u.get("qty") is not None:
+        return _safe_int(u.get("qty"))
+    return _safe_int(u.get("add_qty"))
+
+
+def validate_loading_increments(updates: list, order: dict) -> Optional[str]:
+    """Validate additive loading qty (this save) against remaining available."""
+    if not updates:
+        return "Qty Loading per line wajib diisi."
+    seen = set()
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        qty = _loading_increment_qty(u)
+        n = _line_count(order)
+        if idx < 0 or idx >= n:
+            return f"line_idx {idx} tidak valid."
+        if idx in seen:
+            return f"Line #{idx + 1} duplikat pada Loading."
+        seen.add(idx)
+        if qty <= 0:
+            return "Qty Loading harus lebih dari 0."
+        packed = packed_qty_for_line(order, idx)
+        cap = loading_cap_for_line(order, idx)
+        current = qty_loaded_for_line(order, idx)
+        new_total = current + qty
+        name = _line_name(order, idx)
+        if new_total > packed:
+            return f"Qty Loading '{name}' ({new_total}) melebihi qty packing ({packed})."
+        if new_total > cap:
+            shipped = qty_shipped_for_line(order, idx)
+            if has_shipment_line_quantities(order) and new_total > shipped:
+                return (
+                    f"Qty Loading '{name}' ({new_total}) melebihi qty Surat Jalan line tersebut ({shipped})."
+                )
+            avail = available_for_loading_line(order, idx)
+            return (
+                f"Qty Loading '{name}' ({qty}) melebihi qty tersedia untuk loading ({avail})."
+            )
+    return None
+
+
+def apply_loading_increments(order: dict, updates: list) -> tuple:
+    """Append loading events and return cumulative lines + full event list.
+
+    Does not replace prior events. `loading_info.lines` stays the running total.
+    """
+    n = _line_count(order)
+    merged = {i: qty_loaded_for_line(order, i) for i in range(n)}
+    events = list(loading_events_stored(order))
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        qty = _loading_increment_qty(u)
+        merged[idx] = merged.get(idx, 0) + qty
+        events.append({
+            "line_idx": idx,
+            "qty": qty,
+            "loaded_qty_after": merged[idx],
+        })
+    lines = [{"line_idx": i, "loaded_qty": merged.get(i, 0)} for i in range(n)]
+    return lines, events
+
+
+def shipment_line_breakdown(order: dict) -> list:
+    """Derived per-line SJ + loading tracker (not persisted)."""
+    rows = packing_line_breakdown(order)
+    if not rows:
+        n = _line_count(order)
+        rows = [{
+            "line_idx": i,
+            "name": _line_name(order, i),
+            "qty_po": packed_qty_for_line(order, i) if i == 0 and not (order.get("line_items") or []) else 0,
+            "packed": packed_qty_for_line(order, i),
+        } for i in range(n)]
+    out = []
+    for row in rows:
+        idx = _safe_int(row.get("line_idx"), default=-1)
+        packed = packed_qty_for_line(order, idx)
+        shipped = qty_shipped_for_line(order, idx)
+        loaded = qty_loaded_for_line(order, idx)
+        avail_sj = available_for_delivery_note_line(order, idx)
+        cap_load = loading_cap_for_line(order, idx)
+        avail_load = available_for_loading_line(order, idx)
+        mismatch = shipped > packed
+        out.append({
+            "line_idx": idx,
+            "name": row.get("name") or _line_name(order, idx),
+            "color": row.get("color"),
+            "qty_po": row.get("qty_po"),
+            "packed": packed,
+            "shipped": shipped,
+            "available_sj": avail_sj,
+            "loaded": loaded,
+            "loading_cap": cap_load,
+            "available_loading": avail_load,
+            "remaining_loading": avail_load,
+            "mismatch": mismatch,
+        })
+    return out
+
+
+def surat_jalan_status_semantic(order: dict) -> str:
+    """pending / partial / completed from quantity evidence.
+
+    Completion = all currently packed qty has been allocated to SJ,
+    NOT full original PO qty. Presence of one partial SJ does not
+    complete the whole PO.
+    """
+    packed = qty_packed(order)
+    shipped = qty_shipped(order)
+    if shipped <= 0:
+        if order.get("delivery_note_number") and order.get("delivery_note_created_at") and order.get("delivery_note_created_by"):
+            return SJ_STATUS_COMPLETED if packed <= 0 else SJ_STATUS_PARTIAL
+        return SJ_STATUS_PENDING
+    if packed > 0 and shipped >= packed:
+        return SJ_STATUS_COMPLETED
+    if shipped > 0:
+        return SJ_STATUS_PARTIAL
+    return SJ_STATUS_PENDING
+
+
+def loading_status_semantic(order: dict) -> str:
+    packed = qty_packed(order)
+    loaded = qty_loaded(order)
+    cap = sum(loading_cap_for_line(order, i) for i in range(_line_count(order)))
+    if loaded <= 0:
+        return SJ_STATUS_PENDING
+    target = cap if cap > 0 else packed
+    if target > 0 and loaded >= target:
+        return SJ_STATUS_COMPLETED
+    return SJ_STATUS_PARTIAL

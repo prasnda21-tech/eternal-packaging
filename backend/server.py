@@ -10,7 +10,17 @@ from typing import List, Optional, Any, Dict, Tuple
 from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
-from services.accurate import AccurateClient, sync_sales_orders, get_last_list_error, sanitize_accurate_error, log_master_items_sync_failure
+from services.accurate import (
+    AccurateClient,
+    ACCURATE_DELIVERY_ENDPOINT_AVAILABLE,
+    ACCURATE_DELIVERY_ENDPOINT_REASON,
+    fetch_delivery_notes,
+    get_last_list_error,
+    get_mock_delivery_note,
+    log_master_items_sync_failure,
+    sanitize_accurate_error,
+    sync_sales_orders,
+)
 from services.import_parser import parse_import_file, ImportParseError
 from services.pdf_parser import parse_pdf_po, PDFParseError
 from services import storage as obj_storage
@@ -53,11 +63,19 @@ from output_reports import (
     _export_na,
 )
 from quantity_rules import (
+    SHIPMENT_SOURCE_ACCURATE as _QR_SRC_ACCURATE,
+    SHIPMENT_SOURCE_MANUAL as _QR_SRC_MANUAL,
+    apply_shipment_record as _qr_apply_shipment_record,
     available_for_packing as _qr_available_for_packing,
     helper_prepared_for_line as _qr_helper_prepared_for_line,
     helper_prepared_print_qty as _qr_helper_prepared_print_qty,
     is_fully_delivered as _qr_is_fully_delivered,
     is_print_line as _qr_is_print_line,
+    apply_delivery_from_proof_evidence as _qr_apply_delivery_from_proof_evidence,
+    apply_loading_increments as _qr_apply_loading_increments,
+    effective_loaded_qty as _qr_effective_loaded_qty,
+    loading_status_semantic as _qr_loading_status_semantic,
+    merge_loading_line_updates as _qr_merge_loading_line_updates,
     non_print_qty_total as _qr_non_print_qty_total,
     operator_assigned_qty as _qr_operator_assigned_qty,
     operator_assignment_cap as _qr_operator_assignment_cap,
@@ -73,13 +91,21 @@ from quantity_rules import (
     print_status as _qr_print_status,
     qty_delivered as _qr_qty_delivered,
     qty_packed as _qr_qty_packed,
+    remaining_delivery_note_updates as _qr_remaining_delivery_note_updates,
     requires_printing as _qr_requires_printing,
+    shipment_line_breakdown as _qr_shipment_line_breakdown,
+    shipments_stored as _qr_shipments_stored,
+    surat_jalan_status_semantic as _qr_surat_jalan_status_semantic,
     validate_delivery_qty as _qr_validate_delivery_qty,
     validate_helper_prepared_qty as _qr_validate_helper_prepared_qty,
+    validate_loading_increments as _qr_validate_loading_increments,
+    validate_loading_lines as _qr_validate_loading_lines,
     validate_operator_assignment_total as _qr_validate_operator_assignment_total,
     validate_packing_lines as _qr_validate_packing_lines,
     validate_packing_qty as _qr_validate_packing_qty,
     validate_print_completed_total as _qr_validate_print_completed_total,
+    validate_screener_qty as _qr_validate_screener_qty,
+    validate_shipment_lines as _qr_validate_shipment_lines,
     merge_packing_line_updates as _qr_merge_packing_line_updates,
 )
 from workflow_gates import (
@@ -352,12 +378,19 @@ class OperatorProgressPayload(BaseModel):
     qty_completed: int
 
 
+class LoadingLineInput(BaseModel):
+    line_idx: int
+    loaded_qty: Optional[int] = None
+    qty: Optional[int] = None
+
+
 class LoadingChecklistPayload(BaseModel):
     vehicle_plate: Optional[str] = None
     driver_name: Optional[str] = None
-    items_loaded: bool = False
-    seal_ok: bool = False
+    items_loaded: Optional[bool] = None
+    seal_ok: Optional[bool] = None
     notes: Optional[str] = None
+    lines: Optional[List[LoadingLineInput]] = None
 
 
 def strip_id(doc):
@@ -806,6 +839,9 @@ _DERIVED_ORDER_KEYS = (
     "workflow_ready", "operator_unlocked", "screener_gate_reason",
     "print_qty_gate_reason",
     "packing_lines",
+    "shipment_lines",
+    "surat_jalan_status_semantic",
+    "loading_qty_status",
 )
 
 
@@ -825,6 +861,9 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["print_qty_remaining"] = _qr_print_qty_remaining(order)
     order["print_status"] = _qr_print_status(order)
     order["packing_lines"] = _qr_packing_line_breakdown(order)
+    order["shipment_lines"] = _qr_shipment_line_breakdown(order)
+    order["surat_jalan_status_semantic"] = _qr_surat_jalan_status_semantic(order)
+    order["loading_qty_status"] = _qr_loading_status_semantic(order)
     _attach_workflow_snapshot(order)
 
 
@@ -840,6 +879,25 @@ def _attach_workflow_snapshot(order: dict) -> None:
 def _sync_workflow_stage(order: dict, *, force: bool = False) -> bool:
     """Idempotent evidence-based current_stage bump. No timeline side effects."""
     return _wg_sync_workflow_stage(order, force=force)
+
+
+def _sync_dispatch_stage(order: dict) -> bool:
+    """Increase-only current_stage from Loading / Terkirim evidence.
+
+    SJ record alone stays at 12 (Loading UI is gated by surat_jalan_created).
+    First loaded qty opens stage 13. Full delivered qty opens stage 14.
+    Partial delivery never jumps the whole PO to Terkirim.
+    """
+    cs = int(order.get("current_stage") or 0)
+    changed = False
+    if _surat_jalan_created(order) and _qr_effective_loaded_qty(order) > 0 and cs < 13:
+        order["current_stage"] = 13
+        changed = True
+        cs = 13
+    if _qr_is_fully_delivered(order) and cs < 14:
+        order["current_stage"] = 14
+        changed = True
+    return changed
 
 
 def _ensure_screener_for_operator_work(order: dict, *, for_sample: bool = False):
@@ -1176,8 +1234,12 @@ def _prereq_reasons_for_surat_jalan(order: dict) -> list:
 
 
 def _surat_jalan_created(order: dict) -> bool:
-    """Task 13: SJ dianggap SELESAI hanya jika sudah dicreate secara eksplisit
-    (ada delivery_note_number DAN delivery_note_created_at DAN _created_by)."""
+    """SJ done from actual evidence: imported/manual shipment, or legacy fields.
+
+    One partial SJ does not mark the whole PO packed-complete; it does open Loading.
+    """
+    if _qr_shipments_stored(order):
+        return True
     return bool(
         order.get("delivery_note_number")
         and order.get("delivery_note_created_at")
@@ -1186,9 +1248,9 @@ def _surat_jalan_created(order: dict) -> bool:
 
 
 def _loading_completed(order: dict) -> bool:
-    """Task 14 bugfix: Loading dianggap SELESAI hanya jika checklist existing
-    valid (items_loaded == True AND seal_ok == True). Field existing —
-    tidak menciptakan field duplikat."""
+    """Loading selesai dari qty actual (cap terpenuhi) atau fallback checklist historis."""
+    if _qr_loading_status_semantic(order) == "completed":
+        return True
     lc = order.get("loading_checklist") or {}
     return bool(lc.get("items_loaded")) and bool(lc.get("seal_ok"))
 
@@ -1207,18 +1269,16 @@ def _prereq_reasons_for_loading(order: dict) -> list:
 
 
 def _prereq_reasons_for_terkirim(order: dict) -> list:
-    """Task 14: gate Loading → Terkirim. Semua jalur transition/mark_delivered
-    pakai validator SAMA. Minimal:
+    """Gate Loading → Terkirim penuh (advance / mark_delivered). Minimal:
       - Surat Jalan valid
-      - Loading checklist selesai (items_loaded && seal_ok)
-    Business rule existing delivery_proofs (mandatory hanya untuk role driver)
-    tetap dienforce di endpoint mark_delivered — bukan di sini karena berbasis
-    role actor, bukan state PO."""
+      - Loading qty mencapai cap (atau fallback checklist historis)
+    Bukti pengiriman parsial tidak memakai gate ini — lihat upload_delivery_proof.
+    """
     reasons = []
     if not _surat_jalan_created(order):
         reasons.append("Surat Jalan belum dibuat.")
     if not _loading_completed(order):
-        reasons.append("Checklist Loading belum lengkap (items_loaded & seal_ok).")
+        reasons.append("Loading belum lengkap.")
     return reasons
 
 
@@ -2076,15 +2136,13 @@ def _po_needs_surat_jalan(o: dict) -> bool:
 def _po_needs_loading(o: dict) -> bool:
     if o.get("delivery_status") == "Terkirim":
         return False
-    lc = o.get("loading_checklist") or {}
-    return bool(o.get("delivery_note")) and not (lc.get("items_loaded") and lc.get("seal_ok"))
+    return bool(o.get("delivery_note") or o.get("surat_jalan_created")) and not _loading_completed(o)
 
 
 def _po_needs_terkirim(o: dict) -> bool:
     if o.get("delivery_status") == "Terkirim":
         return False
-    lc = o.get("loading_checklist") or {}
-    return bool(lc.get("items_loaded") and lc.get("seal_ok"))
+    return _loading_completed(o)
 
 
 def _op_task_predicate(o: dict, user_email: str, is_supervisor: bool):
@@ -2235,8 +2293,9 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "screen.update")
-    if payload.screen_qty < 0:
-        raise HTTPException(400, "Screen qty tidak boleh negatif")
+    screener_err = _qr_validate_screener_qty(payload.screen_qty, order)
+    if screener_err:
+        raise HTTPException(400, screener_err)
     before = order.get("screener_info") or {}
     order["screener_info"] = {
         "screen_qty": payload.screen_qty,
@@ -2628,48 +2687,95 @@ async def add_note(order_id: str, payload: NotePayload, user=Depends(current_use
 
 @api_router.post("/orders/{order_id}/loading")
 async def update_loading(order_id: str, payload: LoadingChecklistPayload, user=Depends(current_user)):
-    """Task 14 bugfix: Loading checklist source of truth Loading completion.
-    Perm-based (`loading.update`), TIDAK auto-advance stage.
-    Loading dianggap selesai hanya jika items_loaded && seal_ok. Field
-    loading_completed_at/by dicatat saat pertama kali checklist menjadi valid
-    (source of truth Loading completion actor)."""
+    """Loading qty/events (additive) + optional checklist metadata.
+    Perm-based (`loading.update`). Saving loaded qty bumps stage to Loading
+    (13) from evidence; never jumps to Terkirim.
+    Completion = qty actual mencapai cap, dengan fallback checklist historis.
+    """
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "loading.update")
-    # Prasyarat: SJ harus sudah dibuat sebelum Loading dapat diinput.
-    if not _surat_jalan_created(order):
-        raise HTTPException(400, "Surat Jalan harus dibuat terlebih dahulu.")
-    prev_complete = _loading_completed(order)
-    existing = order.get("loading_checklist") or {}
-    order["loading_checklist"] = {
-        "vehicle_plate": payload.vehicle_plate,
-        # Driver name = metadata pengantar. Preserve existing bila payload kosong.
-        "driver_name": payload.driver_name or existing.get("driver_name"),
-        "items_loaded": bool(payload.items_loaded),
-        "seal_ok": bool(payload.seal_ok),
-        "notes": payload.notes,
-        "updated_by": user.get("email"),
-        "updated_by_name": user.get("name"),
-        "updated_at": now_iso(),
-    }
-    now_complete = _loading_completed(order)
-    # Task 14: catat completion actor Loading saat checklist pertama kali valid.
-    if now_complete and not order.get("loading_completed_at"):
-        order["loading_completed_at"] = now_iso()
-        order["loading_completed_by"] = user.get("email")
-        order["loading_completed_by_name"] = user.get("name")
-    # Timeline actor Loading yang benar (bukan SJ).
-    if now_complete and not prev_complete:
-        add_timeline(order, 13, user, note="Loading selesai — checklist lengkap")
-    else:
-        add_timeline(order, order["current_stage"], user,
-                     note=f"Loading checklist diperbarui ({'lengkap' if now_complete else 'belum lengkap'})")
-    # Task 14 bugfix: JANGAN auto-advance current_stage. Advance ke Loading
-    # (13) harus lewat /advance dengan SJ valid, dan advance ke Terkirim (14)
-    # harus lewat /delivered atau /advance dengan Loading complete.
-    await _persist_order(order)
+
+    def mutate(order: dict):
+        if not _surat_jalan_created(order):
+            raise HTTPException(400, "Surat Jalan harus dibuat terlebih dahulu.")
+        prev_complete = _loading_completed(order)
+        existing = order.get("loading_checklist") or {}
+        items_loaded = existing.get("items_loaded") if payload.items_loaded is None else bool(payload.items_loaded)
+        seal_ok = existing.get("seal_ok") if payload.seal_ok is None else bool(payload.seal_ok)
+        order["loading_checklist"] = {
+            "vehicle_plate": payload.vehicle_plate if payload.vehicle_plate is not None else existing.get("vehicle_plate"),
+            "driver_name": payload.driver_name if payload.driver_name is not None else existing.get("driver_name"),
+            "items_loaded": items_loaded,
+            "seal_ok": seal_ok,
+            "notes": payload.notes if payload.notes is not None else existing.get("notes"),
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name"),
+            "updated_at": now_iso(),
+        }
+        qty_note = ""
+        if payload.lines is not None:
+            increments = []
+            absolutes = []
+            for x in payload.lines:
+                if x.qty is not None:
+                    increments.append({"line_idx": int(x.line_idx), "qty": int(x.qty)})
+                elif x.loaded_qty is not None:
+                    absolutes.append({"line_idx": int(x.line_idx), "loaded_qty": int(x.loaded_qty)})
+            order.setdefault("loading_info", {})
+            if increments:
+                err = _qr_validate_loading_increments(increments, order)
+                if err:
+                    raise HTTPException(400, err)
+                merged, events = _qr_apply_loading_increments(order, increments)
+                stamped = []
+                for ev in events:
+                    if ev.get("created_at"):
+                        stamped.append(ev)
+                        continue
+                    stamped.append({
+                        **ev,
+                        "id": str(uuid.uuid4()),
+                        "created_by": user.get("email"),
+                        "created_by_name": user.get("name"),
+                        "created_at": now_iso(),
+                    })
+                order["loading_info"]["lines"] = merged
+                order["loading_info"]["events"] = stamped
+                detail = ", ".join(f"#{u['line_idx']}+{u['qty']}" for u in increments)
+                qty_note = f" · qty {detail}"
+            if absolutes:
+                err = _qr_validate_loading_lines(absolutes, order)
+                if err:
+                    raise HTTPException(400, err)
+                merged = _qr_merge_loading_line_updates(order, absolutes)
+                order["loading_info"]["lines"] = merged
+                detail = ", ".join(
+                    f"#{x['line_idx']}={x['loaded_qty']}" for x in merged if int(x.get("loaded_qty") or 0) > 0
+                )
+                qty_note = f" · qty {detail or '0'}"
+            order["loading_info"]["updated_by"] = user.get("email")
+            order["loading_info"]["updated_by_name"] = user.get("name")
+            order["loading_info"]["updated_at"] = now_iso()
+        now_complete = _loading_completed(order)
+        if now_complete and not order.get("loading_completed_at"):
+            order["loading_completed_at"] = now_iso()
+            order["loading_completed_by"] = user.get("email")
+            order["loading_completed_by_name"] = user.get("name")
+        _sync_dispatch_stage(order)
+        if now_complete and not prev_complete:
+            add_timeline(order, 13, user, note=f"Loading selesai{qty_note}")
+        else:
+            add_timeline(
+                order,
+                order["current_stage"],
+                user,
+                note=f"Loading diperbarui ({'lengkap' if now_complete else 'parsial/berjalan'}){qty_note}",
+            )
+
+    order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
 
 
@@ -2799,44 +2905,248 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
     return {"order": order}
 
 
+class SuratJalanLineInput(BaseModel):
+    line_idx: Optional[int] = None
+    qty: int
+    accurate_item_id: Optional[str] = None
+
+
 class SuratJalanPayload(BaseModel):
     delivery_note_number: Optional[str] = None
     notes: Optional[str] = None
+    lines: Optional[List[SuratJalanLineInput]] = None
+
+
+class ImportSuratJalanPayload(BaseModel):
+    accurate_shipment_id: str
+    number: Optional[str] = None
+    notes: Optional[str] = None
+    lines: Optional[List[SuratJalanLineInput]] = None
+
+
+def _stamp_legacy_delivery_note(order: dict, shipment: dict, user: dict):
+    """Keep historical delivery_note_* fields in sync with the latest shipment."""
+    number = shipment.get("number") or order.get("delivery_note_number")
+    order["delivery_note_number"] = number
+    order["delivery_note_created_by"] = shipment.get("created_by") or user.get("email")
+    order["delivery_note_created_by_name"] = shipment.get("created_by_name") or user.get("name")
+    order["delivery_note_created_at"] = shipment.get("created_at") or order.get("delivery_note_created_at") or now_iso()
+    if shipment.get("notes"):
+        order["delivery_note_notes"] = shipment.get("notes")
+
+
+def _shipment_line_payload(rows: list) -> list:
+    out = []
+    for x in rows:
+        row = {"qty": int(x.qty)}
+        if x.line_idx is not None:
+            row["line_idx"] = int(x.line_idx)
+        if x.accurate_item_id:
+            row["accurate_item_id"] = str(x.accurate_item_id)
+        out.append(row)
+    return out
 
 
 @api_router.post("/orders/{order_id}/surat-jalan")
 async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Depends(current_user)):
-    """Task 13 bugfix: Buat Surat Jalan (source of truth SJ completion).
-    Butuh permission `delivery_note.manage`. Boleh dipanggil ulang untuk
-    update nomor/catatan — actor + timestamp akan diperbarui pada revision."""
+    """Buat Surat Jalan parsial per line. Permission `delivery_note.manage`.
+
+    Tanpa `lines`: alokasi sisa packing (PO pertama) atau perbarui nomor/catatan
+    shipment terakhir (kompatibel test legacy).
+    """
+    await _require_perm(user, "delivery_note.manage")
+    before_holder = {}
+
+    def mutate(order: dict):
+        if (order.get("current_stage") or 0) < 12:
+            raise HTTPException(400, "Belum bisa membuat Surat Jalan — tahap Packing belum selesai.")
+        before_holder["delivery_note_number"] = order.get("delivery_note_number")
+        before_holder["delivery_note_created_by"] = order.get("delivery_note_created_by")
+        number = (
+            payload.delivery_note_number
+            or order.get("delivery_note_number")
+            or f"SJ-{order['po_number'].replace('PO-', '').replace('PO.', '')}"
+        )
+        existing = _qr_shipments_stored(order)
+        explicit_lines = _shipment_line_payload(payload.lines) if payload.lines else None
+        creating_new = bool(explicit_lines) or not existing
+        if creating_new:
+            updates = explicit_lines if explicit_lines else _qr_remaining_delivery_note_updates(order)
+            err = _qr_validate_shipment_lines(updates, order, source=_QR_SRC_MANUAL)
+            if err:
+                raise HTTPException(400, err)
+            stamp = now_iso()
+            record = _qr_apply_shipment_record(
+                order,
+                number=number,
+                lines=updates,
+                source=_QR_SRC_MANUAL,
+                actor=user,
+                notes=payload.notes,
+                shipment_id=str(uuid.uuid4()),
+                created_at=stamp,
+            )
+            if not record.get("id"):
+                record["id"] = str(uuid.uuid4())
+                order["shipments"][-1]["id"] = record["id"]
+            _stamp_legacy_delivery_note(order, record, user)
+            add_timeline(order, 12, user, note=f"Surat Jalan dibuat: {number}")
+        else:
+            latest = existing[-1]
+            latest["number"] = number
+            if payload.notes:
+                latest["notes"] = payload.notes
+            latest["updated_by"] = user.get("email")
+            latest["updated_by_name"] = user.get("name")
+            latest["updated_at"] = now_iso()
+            order["delivery_note_number"] = number
+            order["delivery_note_created_by"] = user.get("email")
+            order["delivery_note_created_by_name"] = user.get("name")
+            order["delivery_note_created_at"] = order.get("delivery_note_created_at") or now_iso()
+            if payload.notes:
+                order["delivery_note_notes"] = payload.notes
+            add_timeline(order, 12, user, note=f"Surat Jalan dibuat: {number}")
+
+    order = await _with_quantity_lock(order_id, mutate)
+    await _audit_po(
+        order,
+        "delivery_note.create",
+        user,
+        before={
+            "delivery_note_number": before_holder.get("delivery_note_number"),
+            "delivery_note_created_by": before_holder.get("delivery_note_created_by"),
+        },
+        after={
+            "delivery_note_number": order.get("delivery_note_number"),
+            "delivery_note_created_by": order.get("delivery_note_created_by"),
+            "shipments": order.get("shipments"),
+        },
+        note=payload.notes or "",
+    )
+    return {"order": order}
+
+
+@api_router.get("/orders/{order_id}/surat-jalan/accurate-preview")
+async def preview_accurate_surat_jalan(order_id: str, user=Depends(current_user)):
+    """Preview mock Accurate Pengiriman Pesanan for this PO. Never hits production."""
+    await _require_perm(user, "delivery_note.manage")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    await _require_perm(user, "delivery_note.manage")
-    # Prasyarat: Packing harus sudah selesai (stage >= 12).
-    if (order.get("current_stage") or 0) < 12:
-        raise HTTPException(400, "Belum bisa membuat Surat Jalan — tahap Packing belum selesai.")
-    before = {
-        "delivery_note_number": order.get("delivery_note_number"),
-        "delivery_note_created_by": order.get("delivery_note_created_by"),
+    client = AccurateClient()
+    result = await fetch_delivery_notes(
+        client,
+        accurate_so_id=order.get("accurate_id"),
+        po_number=order.get("po_number"),
+    )
+    return {
+        "order_id": order_id,
+        "po_number": order.get("po_number"),
+        "accurate_id": order.get("accurate_id"),
+        "endpoint_available": ACCURATE_DELIVERY_ENDPOINT_AVAILABLE,
+        **result,
     }
-    number = (payload.delivery_note_number or order.get("delivery_note_number")
-              or f"SJ-{order['po_number'].replace('PO-', '').replace('PO.', '')}")
-    order["delivery_note_number"] = number
-    order["delivery_note_created_by"] = user.get("email")
-    order["delivery_note_created_by_name"] = user.get("name")
-    order["delivery_note_created_at"] = now_iso()
-    if payload.notes:
-        order["delivery_note_notes"] = payload.notes
-    add_timeline(order, 12, user, note=f"Surat Jalan dibuat: {number}")
-    await _persist_order(order)
-    await _audit_po(order, "delivery_note.create", user,
-                    before=before,
-                    after={"delivery_note_number": number,
-                           "delivery_note_created_by": order["delivery_note_created_by"]},
-                    note=payload.notes or "")
-    return {"order": order}
+
+
+@api_router.post("/orders/{order_id}/surat-jalan/import")
+async def import_surat_jalan(order_id: str, payload: ImportSuratJalanPayload, user=Depends(current_user)):
+    """Import Surat Jalan / Pengiriman from Accurate (mock catalog or posted lines).
+
+    Live Accurate Pengiriman Pesanan is not called — endpoint is not in repo.
+    Idempotent on accurate_shipment_id. Does not auto-complete Loading.
+    """
+    await _require_perm(user, "delivery_note.manage")
+    before_holder = {}
+
+    def mutate(order: dict):
+        acc_id = (payload.accurate_shipment_id or "").strip()
+        if not acc_id:
+            raise HTTPException(400, "accurate_shipment_id wajib.")
+        before_holder["shipments"] = list(order.get("shipments") or [])
+        lines = _shipment_line_payload(payload.lines) if payload.lines else None
+        number = payload.number
+        notes = payload.notes
+        if not lines:
+            mock = get_mock_delivery_note(
+                accurate_shipment_id=acc_id,
+                accurate_so_id=order.get("accurate_id"),
+                po_number=order.get("po_number"),
+            )
+            if not mock:
+                raise HTTPException(
+                    400,
+                    "Shipment Accurate tidak ditemukan di catalog mock. "
+                    "Kirim lines + accurate_item_id, atau pastikan PO terhubung ke mock Accurate.",
+                )
+            lines = [
+                {"accurate_item_id": x.get("accurate_item_id"), "qty": x.get("quantity")}
+                for x in (mock.get("lines") or [])
+            ]
+            number = number or mock.get("number")
+            notes = notes or mock.get("notes")
+
+        err = _qr_validate_shipment_lines(
+            lines, order, source=_QR_SRC_ACCURATE, exclude_shipment_id=acc_id,
+        )
+        if err:
+            raise HTTPException(400, err)
+        stamp = now_iso()
+        existing = None
+        for sh in _qr_shipments_stored(order):
+            if str(sh.get("accurate_shipment_id") or "") == acc_id:
+                existing = sh
+                break
+        record = _qr_apply_shipment_record(
+            order,
+            number=number or (existing or {}).get("number") or acc_id,
+            lines=lines,
+            source=_QR_SRC_ACCURATE,
+            actor=user,
+            accurate_shipment_id=acc_id,
+            notes=notes,
+            shipment_id=(existing or {}).get("id") or str(uuid.uuid4()),
+            created_at=stamp,
+        )
+        if not record.get("id"):
+            record["id"] = (existing or {}).get("id") or str(uuid.uuid4())
+            for sh in order.get("shipments") or []:
+                if str(sh.get("accurate_shipment_id") or "") == acc_id:
+                    sh["id"] = record["id"]
+        _stamp_legacy_delivery_note(order, record, user)
+        if (order.get("current_stage") or 0) < 12:
+            order["current_stage"] = 12
+        mismatches = record.get("mismatch_reasons") or []
+        note = f"Surat Jalan diimport dari Accurate: {record.get('number')}"
+        if mismatches:
+            note += " · mismatch packing"
+        add_timeline(order, 12, user, note=note)
+        before_holder["imported"] = record
+        before_holder["idempotent"] = bool(existing)
+
+    order = await _with_quantity_lock(order_id, mutate)
+    imported = None
+    for sh in order.get("shipments") or []:
+        if str(sh.get("accurate_shipment_id") or "") == (payload.accurate_shipment_id or "").strip():
+            imported = sh
+            break
+    await _audit_po(
+        order,
+        "delivery_note.import",
+        user,
+        before={"shipments": before_holder.get("shipments")},
+        after={"shipment": imported, "source": "accurate"},
+        note=payload.notes or payload.accurate_shipment_id,
+    )
+    return {
+        "order": order,
+        "shipment": imported,
+        "idempotent": bool(before_holder.get("idempotent")),
+        "mismatch": bool((imported or {}).get("mismatch")),
+        "mismatch_reasons": (imported or {}).get("mismatch_reasons") or [],
+        "endpoint_available": ACCURATE_DELIVERY_ENDPOINT_AVAILABLE,
+        "endpoint_reason": ACCURATE_DELIVERY_ENDPOINT_REASON if not ACCURATE_DELIVERY_ENDPOINT_AVAILABLE else None,
+    }
 
 
 @api_router.post("/orders/{order_id}/packed")
@@ -3269,7 +3579,7 @@ def _production_row(o: dict) -> dict:
         "packing_status": _packing_status_semantic(o),
         "packing_qty": (o.get("packing_info") or {}).get("qty_packed"),
         "delivery_note_number": o.get("delivery_note_number"),
-        "loading_ok": bool(loading.get("items_loaded") and loading.get("seal_ok")) if loading else False,
+        "loading_ok": _loading_completed(o),
         "vehicle_plate": (loading or {}).get("vehicle_plate"),
         "driver_name": (loading or {}).get("driver_name"),
         "delivery_status": o.get("delivery_status"),
@@ -3430,7 +3740,7 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
                         STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
                         o.get("packing_status") or "-",
                         o.get("delivery_note_number") or "",
-                        "OK" if (loading.get("items_loaded") and loading.get("seal_ok")) else "-",
+                        "OK" if _loading_completed(o) else "-",
                         loading.get("vehicle_plate") or "",
                         loading.get("driver_name") or "",
                         o.get("delivery_status") or "-",
@@ -3460,7 +3770,7 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
                 STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
                 o.get("packing_status") or "-",
                 o.get("delivery_note_number") or "",
-                "OK" if (loading.get("items_loaded") and loading.get("seal_ok")) else "-",
+                "OK" if _loading_completed(o) else "-",
                 loading.get("vehicle_plate") or "",
                 loading.get("driver_name") or "",
                 o.get("delivery_status") or "-",
@@ -4841,9 +5151,11 @@ async def download_file(path: str, user=Depends(current_user)):
         raise HTTPException(404, "File tidak ditemukan")
     try:
         data, ct = obj_storage.get_object(path)
-    except Exception as e:
+    except FileNotFoundError:
+        raise HTTPException(404, "File tidak ditemukan")
+    except Exception:
         logger.exception("Failed to fetch object %s", path)
-        raise HTTPException(502, f"Gagal mengambil file: {e}")
+        raise HTTPException(502, "Gagal mengambil file.")
     return FastAPIResponse(content=data, media_type=rec.get("content_type") or ct)
 
 
@@ -4867,7 +5179,7 @@ async def upload_delivery_proof(
     _ensure_not_cancelled(order)
     # Content-type and size first, so error messages remain actionable
     ct = (file.content_type or "").lower()
-    if not ct.startswith("image/"):
+    if ct not in ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"):
         raise HTTPException(400, "Hanya file gambar yang diperbolehkan")
     existing_proofs = order.get("delivery_proofs", [])
     if len(existing_proofs) >= 5:
@@ -4884,15 +5196,17 @@ async def upload_delivery_proof(
     path = f"{obj_storage.APP_NAME}/delivery-proof/{order['po_number']}/{file_id}.{ext}"
     try:
         result = obj_storage.put_object(path, body, ct)
-    except Exception as e:
+    except Exception:
         logger.exception("Storage upload failed")
-        raise HTTPException(502, f"Upload ke storage gagal: {e}")
+        raise HTTPException(502, "Gagal mengunggah foto. Silakan coba lagi.")
 
     now = now_iso()
+    orig_name = Path(file.filename or f"proof.{ext}").name
+    orig_name = re.sub(r"[^A-Za-z0-9._-]+", "_", orig_name).strip("._") or f"proof.{ext}"
     file_doc = {
         "id": file_id,
-        "storage_path": result["path"],
-        "original_filename": file.filename or f"proof.{ext}",
+        "storage_path": result.get("path") or path,
+        "original_filename": orig_name,
         "content_type": ct,
         "size": result.get("size") or len(body),
         "kind": "delivery-proof",
@@ -4920,6 +5234,36 @@ async def upload_delivery_proof(
         "note": note or "",
     }
     order.setdefault("delivery_proofs", []).append(proof_ref)
+    shipments = _qr_shipments_stored(order)
+    if shipments:
+        latest = shipments[-1]
+        if latest.get("id"):
+            proof_ref["shipment_id"] = latest.get("id")
+        if latest.get("number"):
+            proof_ref["shipment_number"] = latest.get("number")
+        if latest.get("accurate_shipment_id"):
+            proof_ref["accurate_shipment_id"] = latest.get("accurate_shipment_id")
+    evidence = _qr_apply_delivery_from_proof_evidence(order)
+    if evidence:
+        proof_ref["qty_loaded_at_upload"] = evidence["loaded"]
+        proof_ref["qty_delivered_at_upload"] = evidence["qty_delivered"]
+        order["qty_delivered"] = evidence["qty_delivered"]
+        order["delivery_status"] = evidence["delivery_status"]
+        order["delivered_at"] = now
+        order["delivered_by"] = user.get("email")
+        order["delivered_by_name"] = user.get("name")
+        _sync_dispatch_stage(order)
+        required = evidence["required"] or evidence["qty_delivered"]
+        if evidence["full"]:
+            add_timeline(
+                order, 14, user,
+                note=f"Terkirim penuh via bukti kirim: {evidence['qty_delivered']}/{required} pcs",
+            )
+        else:
+            add_timeline(
+                order, order.get("current_stage") or 13, user,
+                note=f"Terkirim sebagian via bukti kirim: {evidence['qty_delivered']}/{required} pcs",
+            )
     add_timeline(order, order["current_stage"], user, note=f"Upload bukti kirim: {file_doc['original_filename']}")
     await _persist_order(order)
     return {"order": order, "proof": proof_ref}

@@ -3,11 +3,12 @@ Iteration 28 — Task 14 targeted BUGFIX: Loading (stage 13) → Terkirim (stage
 
 Covers:
 - Perm-based /loading (loading.update) — operator 403, admin 200
-- /loading TIDAK auto-advance current_stage
-- Loading completion actor recorded when checklist first becomes valid
+- /loading checklist-only TIDAK auto-advance ke Terkirim
+- Saving loaded qty bumps current_stage to Loading (13) from evidence
+- Loading completion actor recorded when checklist/qty first becomes valid
 - Loading gate: /loading di stage <12 → 400 SJ prereq
 - Actor SJ→Loading timeline transition (advance 12→13 note "Surat Jalan selesai — menuju Loading")
-- /advance 13→14 gate: prereq_reasons multi-line when checklist incomplete
+- /advance 13→14 gate: prereq_reasons when loading incomplete
 - /delivered gate: same validator as advance path
 - /delivered perm-based (delivery.update) — operator 403, admin 200
 - Driver role business rule: delivery_proofs mandatory
@@ -232,7 +233,7 @@ def test_6_advance_terkirim_gate(db, admin_tok, cleanup):
     detail = r_block.json().get("detail")
     assert isinstance(detail, dict)
     reasons = detail.get("prereq_reasons") or []
-    assert any("Checklist Loading" in x for x in reasons), reasons
+    assert any("Loading belum lengkap" in x or "Checklist Loading" in x for x in reasons), reasons
 
     # Now complete loading, then advance
     lp = {"vehicle_plate": "B", "driver_name": "S", "items_loaded": True, "seal_ok": True}
@@ -252,7 +253,7 @@ def test_7_delivered_gate_same_validator(db, admin_tok, cleanup):
     detail = r_block.json().get("detail")
     assert isinstance(detail, dict)
     reasons = detail.get("prereq_reasons") or []
-    assert any("Checklist Loading" in x for x in reasons), reasons
+    assert any("Loading belum lengkap" in x or "Checklist Loading" in x for x in reasons), reasons
 
     # complete loading and mark delivered
     lp = {"vehicle_plate": "B", "driver_name": "S", "items_loaded": True, "seal_ok": True}

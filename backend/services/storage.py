@@ -9,11 +9,13 @@ Historic public API preserved so existing callers do NOT change:
     ext_for(content_type, fallback="bin") -> str
 
 Provider selection via env `STORAGE_PROVIDER`:
-    - "emergent"  (default; keeps current production intact)
-    - "s3"        (portable S3-compatible target)
+    - "emergent"  (legacy / current production Emergent object store)
+    - "s3"        (portable S3-compatible / Biznet)
+    - "local"     (filesystem; local preview only)
 
-Backward compatibility rule: if `STORAGE_PROVIDER` is unset, we fall back to
-`emergent` so no production behavior changes silently.
+If STORAGE_PROVIDER is unset, production stays on `emergent` when that
+provider is configured. Local Mongo without Emergent/S3 credentials uses
+the filesystem adapter — never a production S3 account.
 """
 from __future__ import annotations
 import os
@@ -22,6 +24,7 @@ from typing import Tuple
 
 from .providers.base import StorageProvider
 from .providers.emergent import EmergentStorageProvider
+from .providers.local import LocalFilesystemStorageProvider
 from .providers.s3 import S3StorageProvider
 
 logger = logging.getLogger(__name__)
@@ -31,18 +34,51 @@ APP_NAME = "eternal-packaging"
 _provider: StorageProvider | None = None
 
 
+def _mongo_is_local() -> bool:
+    url = (os.environ.get("MONGO_URL") or "").lower()
+    return "localhost" in url or "127.0.0.1" in url
+
+
 def _select_provider() -> StorageProvider:
     global _provider
     if _provider is not None:
         return _provider
-    name = (os.environ.get("STORAGE_PROVIDER") or "emergent").strip().lower()
-    if name == "s3":
-        _provider = S3StorageProvider()
+    name = (os.environ.get("STORAGE_PROVIDER") or "").strip().lower()
+    if name in ("local", "filesystem"):
+        _provider = LocalFilesystemStorageProvider()
+    elif name == "s3":
+        s3 = S3StorageProvider()
+        if s3.is_configured():
+            _provider = s3
+        elif _mongo_is_local():
+            logger.warning("S3 not configured; using local filesystem storage for preview.")
+            _provider = LocalFilesystemStorageProvider()
+        else:
+            _provider = s3
     elif name == "emergent":
-        _provider = EmergentStorageProvider()
+        em = EmergentStorageProvider()
+        if em.is_configured():
+            _provider = em
+        elif _mongo_is_local():
+            logger.warning("Emergent object storage not configured; using local filesystem storage for preview.")
+            _provider = LocalFilesystemStorageProvider()
+        else:
+            _provider = em
+    elif not name:
+        em = EmergentStorageProvider()
+        s3 = S3StorageProvider()
+        if em.is_configured():
+            _provider = em
+        elif s3.is_configured():
+            _provider = s3
+        elif _mongo_is_local():
+            logger.warning("No remote object storage configured; using local filesystem storage for preview.")
+            _provider = LocalFilesystemStorageProvider()
+        else:
+            _provider = em
     else:
-        logger.warning("Unknown STORAGE_PROVIDER=%s, falling back to 'emergent'.", name)
-        _provider = EmergentStorageProvider()
+        logger.warning("Unknown STORAGE_PROVIDER=%s, falling back to local filesystem.", name)
+        _provider = LocalFilesystemStorageProvider() if _mongo_is_local() else EmergentStorageProvider()
     logger.info("Storage provider selected: %s", _provider.name)
     return _provider
 

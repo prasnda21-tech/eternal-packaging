@@ -1143,6 +1143,124 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
 ]
 
 
+# Pengiriman Pesanan / delivery shipment is NOT in the existing Accurate client.
+# Do not invent live URLs. Local mock catalog only — same identity fields as SO lines.
+ACCURATE_DELIVERY_ENDPOINT_AVAILABLE = False
+ACCURATE_DELIVERY_ENDPOINT_REASON = (
+    "Tidak ada endpoint Pengiriman Pesanan di services/accurate.py, tests, "
+    "atau dokumentasi repository (hanya sales-order/list.do, sales-order/detail.do, "
+    "item/list.do, item/detail.do). Live fetch tidak diimplementasikan."
+)
+
+_MOCK_DELIVERY_NOTES: List[Dict[str, Any]] = [
+    {
+        "accurate_shipment_id": "ACC-DO-2001-1",
+        "accurate_so_id": "ACC-SO-2001",
+        "po_number": "PO-2001",
+        "number": "SJ-2001-01",
+        "notes": "Mock Pengiriman Pesanan parsial 1",
+        "lines": [
+            {"accurate_item_id": "104", "quantity": 3000},
+            {"accurate_item_id": "105", "quantity": 1000},
+        ],
+    },
+    {
+        "accurate_shipment_id": "ACC-DO-2001-2",
+        "accurate_so_id": "ACC-SO-2001",
+        "po_number": "PO-2001",
+        "number": "SJ-2001-02",
+        "notes": "Mock Pengiriman Pesanan parsial 2",
+        "lines": [
+            {"accurate_item_id": "104", "quantity": 4000},
+        ],
+    },
+    {
+        "accurate_shipment_id": "ACC-DO-1050-1",
+        "accurate_so_id": "ACC-SO-1050",
+        "po_number": "PO-1050",
+        "number": "SJ-1050-01",
+        "notes": "Mock SJ Lunchbox + Jumbo",
+        "lines": [
+            {"accurate_item_id": "202", "quantity": 300},
+            {"accurate_item_id": "203", "quantity": 100},
+        ],
+    },
+]
+
+
+def list_mock_delivery_notes(
+    *,
+    accurate_so_id: Optional[str] = None,
+    po_number: Optional[str] = None,
+    accurate_shipment_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    rows = list(_MOCK_DELIVERY_NOTES)
+    so = str(accurate_so_id or "").strip()
+    po = str(po_number or "").strip()
+    sid = str(accurate_shipment_id or "").strip()
+    if sid:
+        rows = [r for r in rows if str(r.get("accurate_shipment_id") or "") == sid]
+    if so:
+        rows = [r for r in rows if str(r.get("accurate_so_id") or "") == so]
+    elif po:
+        rows = [r for r in rows if str(r.get("po_number") or "").upper() == po.upper()]
+    return [dict(r) for r in rows]
+
+
+def get_mock_delivery_note(
+    *,
+    accurate_shipment_id: str,
+    accurate_so_id: Optional[str] = None,
+    po_number: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    sid = str(accurate_shipment_id or "").strip()
+    if not sid:
+        return None
+    rows = list_mock_delivery_notes(accurate_shipment_id=sid)
+    if not rows:
+        return None
+    note = rows[0]
+    so = str(accurate_so_id or "").strip()
+    po = str(po_number or "").strip()
+    if so and str(note.get("accurate_so_id") or "") not in ("", so):
+        return None
+    if po and str(note.get("po_number") or "").upper() not in ("", po.upper()):
+        return None
+    return dict(note)
+
+
+async def fetch_delivery_notes(
+    client: AccurateClient,
+    *,
+    accurate_so_id: Optional[str] = None,
+    po_number: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return mock Pengiriman Pesanan. Live Accurate is never called here."""
+    if client.is_live():
+        return {
+            "ok": False,
+            "blocked": True,
+            "mode": "live",
+            "reason": ACCURATE_DELIVERY_ENDPOINT_REASON,
+            "notes": [],
+        }
+    notes = list_mock_delivery_notes(accurate_so_id=accurate_so_id, po_number=po_number)
+    if not notes and (accurate_so_id or po_number):
+        notes = list_mock_delivery_notes()
+        notes = [
+            n for n in notes
+            if str(n.get("accurate_so_id") or "") == str(accurate_so_id or "")
+            or str(n.get("po_number") or "").upper() == str(po_number or "").upper()
+        ]
+    return {
+        "ok": True,
+        "blocked": False,
+        "mode": "mock",
+        "reason": None,
+        "notes": notes,
+    }
+
+
 # Fields that Accurate owns and can safely refresh on existing PO
 _SALES_FIELDS = (
     "customer", "outlet", "recipient", "address", "payment_terms",

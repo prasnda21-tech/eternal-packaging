@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Printer, Download, Save, CheckCircle2, XCircle } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -15,7 +15,7 @@ export default function SuratJalan() {
   const [loading, setLoading] = useState(true);
   // Pisahkan error state:
   //   `loadErr`   -> gagal load awal halaman (boleh replace halaman)
-  //   `actionErr` -> gagal action (Simpan checklist / Tandai Terkirim). Tampil inline,
+  //   `actionErr` -> gagal action (Simpan data loading). Tampil inline,
   //                  jangan unmount halaman supaya konteks user tidak hilang.
   const [loadErr, setLoadErr] = useState("");
   const [actionErr, setActionErr] = useState("");
@@ -24,8 +24,6 @@ export default function SuratJalan() {
   // Checklist form (pre-filled from server data)
   const [vehiclePlate, setVehiclePlate] = useState("");
   const [driverName, setDriverName] = useState("");
-  const [itemsLoaded, setItemsLoaded] = useState(false);
-  const [sealOk, setSealOk] = useState(false);
   const [notes, setNotes] = useState("");
 
   useEffect(() => {
@@ -35,8 +33,6 @@ export default function SuratJalan() {
       if (c) {
         setVehiclePlate(c.vehicle_plate || "");
         setDriverName(c.driver_name || "");
-        setItemsLoaded(!!c.items_loaded);
-        setSealOk(!!c.seal_ok);
         setNotes(c.notes || "");
       } else if (user?.role === "driver") {
         setDriverName(user.name || "");
@@ -51,10 +47,9 @@ export default function SuratJalan() {
   const deliveredEvent = useMemo(() => timelineEvent(15), [order]);
 
   // Auth gating via Effective Permission (bukan role name).
-  //   `loading.update` = izin update checklist loading (kendaraan/plat/driver/dsb.)
-  //   `delivery.update` = izin menandai terkirim
+  //   `loading.update` = izin update data loading (kendaraan/plat/driver/dsb.)
+  //   Bukti pengiriman (Terkirim) di-upload lewat DeliveryProofPanel.
   const canEditChecklist = !!user && hasPerm("loading.update");
-  const canMarkDelivered = !!user && hasPerm("delivery.update");
 
   const saveChecklist = async () => {
     setBusy(true);
@@ -63,28 +58,12 @@ export default function SuratJalan() {
       const r = await api.updateLoading(order.id, {
         vehicle_plate: vehiclePlate,
         driver_name: driverName,
-        items_loaded: itemsLoaded,
-        seal_ok: sealOk,
         notes,
       });
       setOrder(r.order);
       setActionErr("");
     } catch (e) {
       setActionErr(formatApiError(e, "Gagal menyimpan checklist"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const markDelivered = async () => {
-    setBusy(true);
-    setActionErr("");
-    try {
-      const r = await api.markDelivered(order.id);
-      setOrder(r.order);
-      setActionErr("");
-    } catch (e) {
-      setActionErr(formatApiError(e, "Gagal menandai terkirim"));
     } finally {
       setBusy(false);
     }
@@ -200,26 +179,6 @@ export default function SuratJalan() {
                 placeholder="Nama pengemudi"
               />
             </label>
-            <label className="sj-check">
-              <input
-                type="checkbox"
-                checked={itemsLoaded}
-                onChange={(e) => setItemsLoaded(e.target.checked)}
-                disabled={!canEditChecklist || busy}
-                data-testid="sj-items-loaded"
-              />
-              <span>Barang sudah dimuat sesuai qty</span>
-            </label>
-            <label className="sj-check">
-              <input
-                type="checkbox"
-                checked={sealOk}
-                onChange={(e) => setSealOk(e.target.checked)}
-                disabled={!canEditChecklist || busy}
-                data-testid="sj-seal-ok"
-              />
-              <span>Segel / seal bagus &amp; utuh</span>
-            </label>
             <label className="sj-field sj-notes">
               <span>Catatan loading</span>
               <textarea
@@ -236,13 +195,8 @@ export default function SuratJalan() {
           {canEditChecklist && (
             <div className="no-print sj-actions">
               <button className="primary" onClick={saveChecklist} disabled={busy} data-testid="sj-save-checklist">
-                <Save size={14} /> Simpan checklist
+                <Save size={14} /> Simpan data loading
               </button>
-              {canMarkDelivered && !isDelivered && (
-                <button className="ghost" onClick={markDelivered} disabled={busy} data-testid="sj-mark-delivered">
-                  <CheckCircle2 size={14} /> Tandai Terkirim
-                </button>
-              )}
             </div>
           )}
 
@@ -285,8 +239,10 @@ export default function SuratJalan() {
             <div>
               <b>Status pengiriman:</b> {isDelivered ? (
                 <span className="status-ok"><CheckCircle2 size={12} /> Terkirim</span>
+              ) : order.delivery_status === "Sebagian Terkirim" ? (
+                <span className="status-wait"><CheckCircle2 size={12} /> Sebagian Terkirim</span>
               ) : (
-                <span className="status-wait"><XCircle size={12} /> Belum Terkirim</span>
+                <span className="status-wait"><XCircle size={12} /> {order.delivery_status || "Belum Terkirim"}</span>
               )}
               {deliveredEvent ? <span className="muted small"> · {formatDate(deliveredEvent.at)} oleh {deliveredEvent.by_name}</span> : null}
             </div>
