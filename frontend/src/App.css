@@ -1423,25 +1423,128 @@
   .today-cards{grid-template-columns:1fr}
 }
 
-/* -------- Jadwal Produksi compact-to-top -------- */
-.content:has(.prod-schedule-page){padding:4px 12px 12px}
-.prod-schedule-page .prod-heading{margin-bottom:2px;gap:8px;align-items:center}
-.prod-schedule-page .prod-heading .eyebrow{margin:0 0 0;font-size:9px;letter-spacing:.12em;line-height:1}
-.prod-schedule-page .prod-heading h1{font-size:15px;line-height:1.15;margin:0}
-.prod-schedule-page .prod-heading .subhead{margin:1px 0 0;font-size:11px;line-height:1.25}
+/* -------- Jadwal Produksi: full-viewport Excel-like grid -------- */
+html:has(.prod-schedule-page),
+html:has(.prod-schedule-page) body,
+html:has(.prod-schedule-page) #root{
+  height:100dvh;
+  max-height:100dvh;
+  overflow:hidden;
+}
+.app-shell:has(.prod-schedule-page){
+  height:100dvh;
+  min-height:100dvh;
+  max-height:100dvh;
+  overflow:hidden;
+  grid-template-columns:228px minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
+}
+.app-shell:has(.prod-schedule-page) .app-sidebar{
+  height:100%;
+  max-height:100%;
+}
+.app-main:has(.prod-schedule-page){
+  min-width:0;
+  min-height:0;
+  height:100%;
+  max-height:100%;
+  overflow:hidden;
+}
+.app-main:has(.prod-schedule-page) .topbar{flex-shrink:0}
+.content:has(.prod-schedule-page){
+  flex:1 1 auto;
+  min-height:0;
+  max-width:none;
+  width:100%;
+  margin:0;
+  padding:2px 8px 0;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  box-sizing:border-box;
+}
+.prod-schedule-page{
+  display:flex;
+  flex-direction:column;
+  flex:1 1 auto;
+  min-height:0;
+  height:100%;
+  overflow:hidden;
+}
+.prod-schedule-chrome{flex:0 0 auto;min-width:0}
+.prod-schedule-page .prod-heading{margin-bottom:2px;gap:6px;align-items:center}
+.prod-schedule-page .prod-heading .eyebrow{display:none}
+.prod-schedule-page .prod-heading h1{font-size:15px;line-height:1.1;margin:0}
+.prod-schedule-page .prod-heading .subhead{margin:1px 0 0;font-size:11px;line-height:1.2}
 .prod-schedule-page .prod-toolbar{margin:0 0 4px;gap:4px 6px}
 .prod-schedule-page .prod-toolbar .search-inline{min-height:24px;height:24px}
 .prod-schedule-page .prod-check{min-height:24px;font-size:12px}
-.prod-schedule-page .prod-table-wrap{max-height:calc(100vh - 96px);border-radius:4px}
-.prod-schedule-page .prod-table{font-size:12px}
-.prod-schedule-page .prod-table thead th{padding:4px 6px}
-.prod-schedule-page .prod-table tbody td{padding:3px 6px;line-height:1.2}
-.prod-schedule-page .prod-op-line{margin-bottom:2px;gap:0;line-height:1.2}
+.prod-schedule-page .prod-mode button,
+.prod-schedule-page .prod-mode .ghost.sm{min-height:24px;padding:3px 8px;font-size:11px}
+.prod-schedule-page .error{margin:0 0 4px;flex-shrink:0}
+.prod-schedule-page .prod-table-wrap,
+.prod-schedule-page .prod-schedule-grid,
+.prod-schedule-page .prod-schedule-cards{
+  flex:1 1 0;
+  min-height:0;
+  max-height:none;
+  overflow:auto;
+  width:100%;
+  border-radius:0;
+  border-bottom:0;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+}
+.prod-schedule-page .prod-schedule-cards{
+  margin-top:0;
+  align-content:start;
+  border-bottom:1px solid var(--line);
+}
+.prod-schedule-page .prod-table{
+  font-size:12px;
+  border-collapse:separate;
+  border-spacing:0;
+}
+.prod-schedule-page .prod-table thead th{
+  position:sticky;
+  top:0;
+  z-index:4;
+  padding:3px 6px;
+  background:var(--ep-dark);
+  border-bottom:1px solid #0b2d22;
+  border-right:1px solid rgba(255,255,255,.12);
+  box-shadow:0 1px 0 #0b2d22;
+}
+.prod-schedule-page .prod-table thead th:last-child{border-right:0}
+.prod-schedule-page .prod-table tbody td{
+  padding:2px 6px;
+  line-height:1.2;
+  vertical-align:middle;
+  border-bottom:1px solid var(--line);
+  border-right:1px solid var(--line);
+}
+.prod-schedule-page .prod-table tbody td:last-child{border-right:0}
+.prod-schedule-page .prod-table tbody td.col-text{line-height:1.2}
+.prod-schedule-page .prod-op-line{margin-bottom:1px;gap:0;line-height:1.15}
 .prod-schedule-page .prod-date-line{padding:0}
-.prod-schedule-page > .muted.small{margin-top:6px;font-size:11px}
+.prod-schedule-page .pill.sm{padding:1px 5px;font-size:10px}
+.prod-schedule-page .prod-qty-over{color:var(--red);font-weight:650}
+@media (max-width:960px){
+  .app-shell:has(.prod-schedule-page){
+    grid-template-columns:minmax(0,1fr);
+    grid-template-rows:auto minmax(0,1fr);
+  }
+  .app-shell:has(.prod-schedule-page) .app-sidebar{
+    height:auto;
+    max-height:none;
+  }
+  .app-main:has(.prod-schedule-page){
+    height:auto;
+    min-height:0;
+  }
+}
 @media (max-width:700px){
-  .content:has(.prod-schedule-page){padding:8px 8px 72px}
-  .prod-schedule-page .prod-table-wrap{max-height:none}
+  .content:has(.prod-schedule-page){padding:2px 6px 0}
 }
 
 /* -------- Stock Saat Ini -------- */

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
+import { Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
@@ -12,6 +12,7 @@ import {
   productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
+import { printQtyProgress } from "../lib/productionScheduleQty";
 
 const STATUS_OPTS = [
   { key: "all", label: "Semua status" },
@@ -353,51 +354,53 @@ export default function ProductionSchedule() {
 
   return (
     <div className="prod-page prod-schedule-page" data-testid="production-schedule-page">
-      <div className="page-heading prod-heading">
-        <div className="prod-heading-copy">
-          <p className="eyebrow">Produksi · Jadwal</p>
-          <h1>Jadwal Produksi</h1>
-          <p className="subhead">
-            {total} PO real-time · sumber MongoDB · sortir, filter, dan export siap pakai
-            {schedLastUpdated && (
-              <span data-testid="prod-last-updated" style={{ marginLeft: 10, fontSize: 12, color: "#7a6f52" }}>
-                · Terakhir diperbarui: {new Date(schedLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
-              </span>
-            )}
-          </p>
+      <div className="prod-schedule-chrome">
+        <div className="page-heading prod-heading">
+          <div className="prod-heading-copy">
+            <p className="eyebrow">Produksi · Jadwal</p>
+            <h1>Jadwal Produksi</h1>
+            <p className="subhead">
+              {total} PO real-time · sumber MongoDB · sortir, filter, dan export satu arah
+              {schedLastUpdated && (
+                <span data-testid="prod-last-updated" style={{ marginLeft: 10, fontSize: 12, color: "#7a6f52" }}>
+                  · Terakhir diperbarui: {new Date(schedLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
+            <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
+              <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
+            </button>
+            <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
+            <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
+          </div>
         </div>
-        <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
-          <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
-            <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
+
+        <div className="prod-toolbar" data-testid="prod-filters">
+          <div className="search-inline">
+            <Search size={13}/>
+            <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
+          </div>
+          <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
+          <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
+          <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
+          <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === FILTER_DEFAULTS.sortBy}>
+            Reset Filter
           </button>
-          <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
-          <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
+          {canExport && (
+            <>
+              <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
+              <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
+            </>
+          )}
         </div>
-      </div>
 
-      <div className="prod-toolbar" data-testid="prod-filters">
-        <div className="search-inline">
-          <Search size={13}/>
-          <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
-        </div>
-        <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
-        <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
-        <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
-        <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === FILTER_DEFAULTS.sortBy}>
-          Reset Filter
-        </button>
-        {canExport && (
-          <>
-            <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
-            <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
-          </>
-        )}
+        {err && <div className="error" data-testid="prod-error">{err}</div>}
       </div>
-
-      {err && <div className="error" data-testid="prod-error">{err}</div>}
 
       {mode === "tabel" ? (
-        <div className="prod-table-wrap" data-testid="prod-table">
+        <div className="prod-table-wrap prod-schedule-grid" data-testid="prod-table">
           <table className="prod-table">
             <thead>
               <tr>
@@ -426,7 +429,9 @@ export default function ProductionSchedule() {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((r) => (
+              {sorted.map((r) => {
+                const qtyProg = printQtyProgress(r);
+                return (
                 <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
                   <td className="mono small col-fit">{formatDate(r.deadline)}</td>
                   <td className="mono small prod-cell-stack col-text" data-testid={`prod-deadline-effective-${r.po_number}`}>
@@ -481,7 +486,13 @@ export default function ProductionSchedule() {
                   <td className="mono col-fit"><Link to={`/po/${r.id}`} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
                   <td className="prod-cell-wrap col-text"><strong>{r.customer || "-"}</strong></td>
                   <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
-                  <td className="num col-fit">{(r.total_quantity || 0).toLocaleString("id-ID")}</td>
+                  <td
+                    className={"num col-fit" + (qtyProg.over ? " prod-qty-over" : "")}
+                    data-testid={`prod-qty-${r.po_number}`}
+                    title={qtyProg.title}
+                  >
+                    {qtyProg.text}
+                  </td>
                   <td className="prod-ops col-text">
                     {(r.operators || []).length === 0 ? <span className="muted small">-</span> :
                       (r.operators || []).map((op, i) => (
@@ -522,7 +533,8 @@ export default function ProductionSchedule() {
                      <span className="pill sm">{r.status_final}</span>}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {!sorted.length && !busy && (
                 <tr><td colSpan={TABLE_COLS.length} className="empty-state">Tidak ada PO cocok dengan filter.</td></tr>
               )}
@@ -530,7 +542,7 @@ export default function ProductionSchedule() {
           </table>
         </div>
       ) : (
-        <section className="prod-cards" data-testid="prod-cards">
+        <section className="prod-cards prod-schedule-cards" data-testid="prod-cards">
           {sorted.map((r) => (
             <Link key={r.id} to={`/po/${r.id}`} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
               <header>
@@ -553,10 +565,6 @@ export default function ProductionSchedule() {
           {!sorted.length && !busy && <div className="empty-state" data-testid="prod-empty">Tidak ada PO cocok dengan filter.</div>}
         </section>
       )}
-
-      <p className="muted small" style={{marginTop:12}}>
-        <AlertCircle size={12} style={{verticalAlign:"-2px"}}/> Semua data diambil dari MongoDB real-time. Export Excel adalah satu arah — tidak mengubah data.
-      </p>
     </div>
   );
 }
