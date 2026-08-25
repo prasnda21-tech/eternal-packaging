@@ -18,6 +18,7 @@ import StatusPengiriman from "./pages/StatusPengiriman";
 import StatusPO from "./pages/StatusPO";
 import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
+import CustomerTrackingPage from "./pages/CustomerTrackingPage";
 import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import "@/App.css";
 
@@ -75,8 +76,9 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
-          {/* Public — customer approval link (no login required) */}
+          {/* Public — customer pages (no login required) */}
           <Route path="/customer/design-approval/:token" element={<PublicCustomerApproval />} />
+          <Route path="/tracking/:token" element={<CustomerTrackingPage />} />
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />

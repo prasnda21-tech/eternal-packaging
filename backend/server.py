@@ -38,6 +38,7 @@ from services.shipment_status import (
 )
 from services.status_po import build_status_po
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
+from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
 from services.work_panel_settings import SETTINGS_KEY as WORK_PANEL_SETTINGS_KEY
 from services import work_panel_settings as work_panel_cfg
 from services.dashboard_today import (
@@ -720,6 +721,7 @@ async def list_orders(status: Optional[str] = None, user=Depends(current_user)):
         # Task 14 bugfix: expose terkirim_confirmed juga di list (agar Jadwal
         # dan Timeline konsisten memakai source of truth yang sama).
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
+        _strip_tracking_secret(o)
     # Post-filter by computed status when requested
     if st == "hold":
         orders = [o for o in orders if o.get("hold")]
@@ -772,6 +774,7 @@ async def get_order(order_id: str, user=Depends(current_user)):
     # Batch 1: delivery deadline effective/source/status
     _dd_settings = await _get_delivery_deadline_settings()
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
+    _strip_tracking_secret(order)
     return {"order": order}
 
 
@@ -1048,6 +1051,7 @@ async def _persist_order(order, *, require_lock: bool = False):
         _attach_deadline_snapshot(order, _lt)
     except Exception:
         pass
+    _strip_tracking_secret(order)
     return order
 
 
@@ -6733,6 +6737,15 @@ _ca_router = _ca_mod.build_router({
 })
 app.include_router(_ca_router)
 
+import services.customer_tracking as _ct_mod
+_ct_router = _ct_mod.build_router({
+    "db": db,
+    "current_user": current_user,
+    "require_perm": _require_perm,
+    "logger": logging.getLogger("customer_tracking"),
+})
+app.include_router(_ct_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -6743,6 +6756,7 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+_ct_mod.install_access_log_mask()
 
 
 @app.on_event("shutdown")
@@ -6758,6 +6772,12 @@ async def seed():
     await db.orders.create_index("id", unique=True)
     await db.orders.create_index("po_number", unique=True)
     await db.orders.create_index("accurate_id", sparse=True)
+    await db.orders.create_index(
+        [("tracking_token", 1)],
+        unique=True,
+        name="tracking_token_unique",
+        partialFilterExpression={"tracking_token": {"$exists": True, "$gt": ""}},
+    )
     await db.master_items.create_index("id", unique=True)
     await db[MASTER_ITEMS_COLLECTION].create_index("accurate_item_id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)

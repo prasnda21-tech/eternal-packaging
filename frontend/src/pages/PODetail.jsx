@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDateTime } from "../lib/constants";
@@ -53,6 +53,8 @@ export default function PODetail() {
   const [screenerDraft, setScreenerDraft] = useState("");
   const [screenerNotes, setScreenerNotes] = useState("");
   const [actionConfirm, setActionConfirm] = useState(null);
+  const [trackingCopyMsg, setTrackingCopyMsg] = useState("");
+  const [trackingBusy, setTrackingBusy] = useState(false);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -264,6 +266,7 @@ export default function PODetail() {
   const canScreenerUpdate = hasPerm("screen.update");
   const canViewCustomerApproval = hasPerm("customer_approval.view");
   const canManageCustomerApproval = hasPerm("customer_approval.manage");
+  const canCopyTrackingLink = hasPerm("po.view");
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
   const canLoadingUpdate = hasPerm("loading.update");
@@ -276,6 +279,24 @@ export default function PODetail() {
     canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
     canLoadingUpdate || canManageSuratJalan
   );
+
+  const copyTrackingLink = async () => {
+    if (!order?.id || trackingBusy) return;
+    setTrackingBusy(true);
+    try {
+      const r = await api.orderTrackingLink(order.id);
+      const url = `${window.location.origin}${r.path || `/tracking/${r.token}`}`;
+      await navigator.clipboard.writeText(url);
+      setTrackingCopyMsg("Link tracking disalin");
+      setTimeout(() => setTrackingCopyMsg(""), 2200);
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      setTrackingCopyMsg(typeof d === "string" ? d : "Gagal menyalin link tracking");
+      setTimeout(() => setTrackingCopyMsg(""), 2800);
+    } finally {
+      setTrackingBusy(false);
+    }
+  };
 
   const doBypassDesign = async () => {
     const reason = window.prompt("Alasan bypass Approval Design (wajib):");
@@ -1003,6 +1024,24 @@ export default function PODetail() {
             <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
               <MessageSquare size={14} /> Simpan catatan
             </button>
+          </div>
+        )}
+      </section>
+
+      <section className="panel tracking-customer-panel" data-testid="tracking-customer-panel">
+        <header className="panel-head"><h3>Tracking Customer</h3></header>
+        <p className="muted small">Link publik hanya menampilkan No PO dan alur kerja.</p>
+        {canCopyTrackingLink && (
+          <div className="tracking-customer-actions">
+            <button
+              className="ghost sm"
+              onClick={copyTrackingLink}
+              disabled={trackingBusy || order.cancelled}
+              data-testid="copy-tracking-link"
+            >
+              <Copy size={14} /> Salin Link Tracking
+            </button>
+            {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
           </div>
         )}
       </section>

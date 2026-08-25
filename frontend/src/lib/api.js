@@ -201,6 +201,14 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  orderTrackingLink: (id) => client.post(`/orders/${id}/tracking-link`).then((r) => r.data),
+  publicTracking: async (token) => {
+    const r = await fetch(`${API}/public/tracking/${encodeURIComponent(token)}`);
+    let d = {};
+    try { d = await r.json(); } catch { d = {}; }
+    if (!r.ok) throw { response: { status: r.status, data: d } };
+    return d;
+  },
 };
 
 export default api;
