@@ -6,23 +6,23 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { isAccuratePurchaseSource, purchaseSourceLabel } from "../lib/currentStock";
 
-function parseInputQty(raw) {
+function parseInputQty(raw, { allowNegative = false } = {}) {
   const t = String(raw ?? "").trim();
   if (t === "") return { ok: false, error: "Qty wajib diisi" };
   const n = Number(t.replace(",", "."));
   if (!Number.isFinite(n) || Number.isNaN(n)) return { ok: false, error: "Qty harus angka" };
-  if (n < 0) return { ok: false, error: "Qty tidak boleh negatif" };
+  if (!allowNegative && n < 0) return { ok: false, error: "Qty tidak boleh negatif" };
   return { ok: true, value: n };
 }
 
-function QtyCell({ value, disabled, testid, onSave }) {
+function QtyCell({ value, disabled, testid, onSave, allowNegative = false }) {
   const [draft, setDraft] = useState(value ?? 0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   useEffect(() => { setDraft(value ?? 0); }, [value]);
 
   const commit = async () => {
-    const parsed = parseInputQty(draft);
+    const parsed = parseInputQty(draft, { allowNegative });
     if (!parsed.ok) {
       setErr(parsed.error);
       setDraft(value ?? 0);
@@ -50,7 +50,7 @@ function QtyCell({ value, disabled, testid, onSave }) {
     <span className="stock-qty-edit">
       <input
         type="number"
-        min="0"
+        min={allowNegative ? undefined : "0"}
         step="1"
         value={draft}
         disabled={busy}
@@ -58,6 +58,7 @@ function QtyCell({ value, disabled, testid, onSave }) {
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
         data-testid={testid}
+        className="manual-input"
       />
       {err && <span className="stock-qty-err">{err}</span>}
     </span>
@@ -272,6 +273,7 @@ export default function StockSaatIni() {
                   <QtyCell
                     value={it.manual_current_qty}
                     disabled={!canUpdate}
+                    allowNegative
                     testid={`stock-manual-${it.accurate_item_id}`}
                     onSave={(v) => patchRow(it, { manual_current_qty: v })}
                   />

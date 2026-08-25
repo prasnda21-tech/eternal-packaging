@@ -44,6 +44,7 @@ describe("reportsNavVisible", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports));
     expect(v.parent).toBe(false);
     expect(v.analytics).toBe(false);
+    expect(v.statusPo).toBe(false);
     expect(v.shipmentStatus).toBe(false);
   });
 
@@ -51,6 +52,7 @@ describe("reportsNavVisible", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.shipmentStatus));
     expect(v.parent).toBe(true);
     expect(v.shipmentStatus).toBe(true);
+    expect(v.statusPo).toBe(false);
     expect(v.analytics).toBe(false);
   });
 
@@ -58,6 +60,15 @@ describe("reportsNavVisible", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.analytics));
     expect(v.parent).toBe(true);
     expect(v.analytics).toBe(true);
+    expect(v.shipmentStatus).toBe(false);
+    expect(v.statusPo).toBe(false);
+  });
+
+  test("shows parent for status po only", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.statusPo));
+    expect(v.parent).toBe(true);
+    expect(v.statusPo).toBe(true);
+    expect(v.analytics).toBe(false);
     expect(v.shipmentStatus).toBe(false);
   });
 });

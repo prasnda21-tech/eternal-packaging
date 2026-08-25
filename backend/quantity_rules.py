@@ -551,6 +551,34 @@ def merge_packing_line_updates(order: dict, updates: list) -> list:
     return [{"line_idx": i, "packed_qty": merged.get(i, 0)} for i in range(n)]
 
 
+def packing_events_stored(order: dict) -> list:
+    return list((order.get("packing_info") or {}).get("events") or [])
+
+
+def apply_packing_increments(order: dict, updates: list) -> tuple:
+    """Append packing events; packing_info.lines stays the running total."""
+    lis = list(order.get("line_items") or [])
+    n = len(lis) if lis else 1
+    merged = {i: qty_packed_for_line(order, i) for i in range(n)}
+    events = list(packing_events_stored(order))
+    for u in updates:
+        idx = _safe_int(u.get("line_idx"), default=-1)
+        qty = _safe_int(u.get("qty"))
+        if qty <= 0:
+            continue
+        if idx < 0:
+            idx = 0
+        merged[idx] = merged.get(idx, 0) + qty
+        events.append({
+            "line_idx": idx,
+            "qty": qty,
+            "packed_qty_after": merged[idx],
+            "action_id": u.get("action_id"),
+        })
+    lines = [{"line_idx": i, "packed_qty": merged.get(i, 0)} for i in range(n)]
+    return lines, events
+
+
 def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     if new_delivered is None or new_delivered < 0:
         return "Qty pengiriman tidak valid."

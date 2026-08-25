@@ -15,6 +15,7 @@ import StockSaatIni from "./pages/StockSaatIni";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
 import AnalitikOutput from "./pages/AnalitikOutput";
 import StatusPengiriman from "./pages/StatusPengiriman";
+import StatusPO from "./pages/StatusPO";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import "@/App.css";
@@ -62,6 +63,7 @@ function LaporanIndex() {
   const { hasPerm } = useAuth();
   const r = reportsNavVisible(hasPerm);
   if (r.analytics) return <Navigate to="/laporan/analitik-output" replace />;
+  if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
   if (r.shipmentStatus) return <Navigate to="/laporan/status-pengiriman" replace />;
   return <Navigate to="/" replace />;
 }
@@ -86,6 +88,7 @@ export default function App() {
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
+            <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />

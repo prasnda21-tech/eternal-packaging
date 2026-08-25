@@ -52,9 +52,9 @@ def qty_num(v: Any) -> float:
         return 0
 
 
-def parse_manual_qty(v: Any) -> float:
-    """Validate user input: numeric, >= 0, not NaN. Follows existing int qty
-    convention when the value is whole; otherwise keeps a finite decimal."""
+def parse_manual_qty(v: Any, *, allow_negative: bool = False) -> float:
+    """Validate user input: numeric, not NaN. Qty Saat Ini may be negative;
+    other manual fields stay >= 0 unless allow_negative=True."""
     if v is None or (isinstance(v, str) and not str(v).strip()):
         raise ValueError("Qty wajib diisi")
     if isinstance(v, bool):
@@ -65,7 +65,7 @@ def parse_manual_qty(v: Any) -> float:
         raise ValueError("Qty harus angka") from e
     if math.isnan(n) or math.isinf(n):
         raise ValueError("Qty tidak valid")
-    if n < 0:
+    if n < 0 and not allow_negative:
         raise ValueError("Qty tidak boleh negatif")
     if n == int(n):
         return int(n)

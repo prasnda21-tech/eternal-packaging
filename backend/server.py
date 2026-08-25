@@ -36,6 +36,8 @@ from services.shipment_status import (
     SHIPMENT_STATUS_PROJECTION,
     shipment_status_row,
 )
+from services.status_po import build_status_po
+from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.dashboard_today import (
     SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
@@ -142,6 +144,7 @@ from quantity_rules import (
     validate_screener_qty as _qr_validate_screener_qty,
     validate_shipment_lines as _qr_validate_shipment_lines,
     merge_packing_line_updates as _qr_merge_packing_line_updates,
+    apply_packing_increments as _qr_apply_packing_increments,
 )
 from workflow_gates import (
     SCREENER_GATE_OPERATOR_MSG,
@@ -354,17 +357,22 @@ class HelperPrepPayload(BaseModel):
 
 class HelperPrepItem(BaseModel):
     line_idx: int
-    qty_prepared: int
+    qty_prepared: Optional[int] = None
+    qty: Optional[int] = None
+    action_id: Optional[str] = None
 
 
 class HelperPrepItemsPayload(BaseModel):
     items: List[HelperPrepItem]
     notes: Optional[str] = None
+    action_id: Optional[str] = None
 
 
 class ScreenerInfoPayload(BaseModel):
-    screen_qty: int
+    screen_qty: Optional[int] = None
+    qty: Optional[int] = None
     notes: Optional[str] = None
+    action_id: Optional[str] = None
 
 
 class OperatorSplit(BaseModel):
@@ -410,13 +418,16 @@ class NotePayload(BaseModel):
 
 class OperatorProgressPayload(BaseModel):
     operator_id: str
-    qty_completed: int
+    qty_completed: Optional[int] = None
+    qty: Optional[int] = None
+    action_id: Optional[str] = None
 
 
 class LoadingLineInput(BaseModel):
     line_idx: int
     loaded_qty: Optional[int] = None
     qty: Optional[int] = None
+    action_id: Optional[str] = None
 
 
 class LoadingChecklistPayload(BaseModel):
@@ -1998,8 +2009,56 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
     # Revisi routing: Helper hanya menyiapkan barang Cetak. Non-print line
     # DIABAIKAN dari total qty_required/qty_prepared/qty_shortage.
     print_idx_set = set(_print_line_indices(order))
-    # Build map qty_required per line_idx dari PO
-    prepared_map = {int(it.line_idx): max(0, int(it.qty_prepared)) for it in payload.items}
+    hp_before = order.get("helper_prep") or {}
+    entries = list(hp_before.get("entries") or [])
+    increment_mode = any(it.qty is not None for it in payload.items)
+    if increment_mode:
+        if not entries:
+            for it in (hp_before.get("items") or []):
+                q = int(it.get("qty_prepared") or 0)
+                if q > 0:
+                    entries, _, _ = append_qty_entry(
+                        entries, qty=q, stage="helper", user={"email": hp_before.get("updated_by"), "name": hp_before.get("updated_by_name")},
+                        now=hp_before.get("updated_at") or now_iso(),
+                        action_id=f"legacy-helper-{it.get('line_idx')}",
+                        po_id=order.get("id"),
+                        line_idx=it.get("line_idx"),
+                        extra={"legacy": True},
+                    )
+        for it in payload.items:
+            if it.qty is None:
+                continue
+            aid = it.action_id or payload.action_id
+            if find_by_action_id(entries, aid):
+                continue
+            inc = max(0, int(it.qty))
+            if inc <= 0:
+                continue
+            if it.line_idx not in print_idx_set:
+                raise HTTPException(400, "Line item bukan proses Cetak — tidak masuk Persiapan Helper.")
+            line_qty = int((line_items[it.line_idx] or {}).get("quantity") or 0)
+            already = sum(int(e.get("qty") or 0) for e in entries if e.get("line_idx") == it.line_idx and not e.get("cancelled"))
+            if already + inc > line_qty:
+                raise HTTPException(
+                    400,
+                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({already + inc}) melebihi qty Cetak line ({line_qty}).",
+                )
+            entries, _, created = append_qty_entry(
+                entries, qty=inc, stage="helper", user=user, now=now_iso(),
+                action_id=aid, po_id=order.get("id"), line_idx=it.line_idx,
+            )
+        prepared_map = {}
+        for e in entries:
+            if e.get("cancelled"):
+                continue
+            idx = int(e.get("line_idx") if e.get("line_idx") is not None else -1)
+            if idx < 0:
+                continue
+            prepared_map[idx] = prepared_map.get(idx, 0) + int(e.get("qty") or 0)
+    else:
+        if entries:
+            raise HTTPException(409, "Entry Helper sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+        prepared_map = {int(it.line_idx): max(0, int(it.qty_prepared or 0)) for it in payload.items}
     items_out = []
     total_required = 0
     total_prepared = 0
@@ -2039,6 +2098,16 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
     total_shortage = max(total_required - total_prepared, 0)
     before = order.get("helper_prep") or {}
     order["_expected_updated_at"] = order.get("updated_at")
+    if not increment_mode:
+        for it in items_out:
+            q = int(it.get("qty_prepared") or 0)
+            if q <= 0:
+                continue
+            entries, _, _ = append_qty_entry(
+                entries, qty=q, stage="helper", user=user, now=now_iso(),
+                action_id=payload.action_id or f"helper-first-{it.get('line_idx')}",
+                po_id=order.get("id"), line_idx=it.get("line_idx"),
+            )
     order["helper_prep"] = {
         # Keep total fields for backward compatibility (Timeline & schedule pakai ini)
         "qty_required": total_required,
@@ -2047,6 +2116,7 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
         "shortage_status": "Barang Kurang" if total_shortage > 0 else "Cukup",
         "notes": (payload.notes or "").strip() or None,
         "items": items_out,
+        "entries": entries,
         "updated_by": user.get("email"),
         "updated_by_name": user.get("name"),
         "updated_at": now_iso(),
@@ -2328,20 +2398,57 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "screen.update")
-    screener_err = _qr_validate_screener_qty(payload.screen_qty, order)
+    screener_err = _qr_validate_screener_qty(
+        payload.qty if payload.qty is not None else payload.screen_qty, order
+    )
     if screener_err:
         raise HTTPException(400, screener_err)
     before = order.get("screener_info") or {}
+    entries = list(before.get("entries") or [])
+    increment = payload.qty
+    if increment is None and payload.screen_qty is not None and not entries:
+        increment = int(payload.screen_qty)
+        entries = []
+    elif increment is None and payload.screen_qty is not None and entries:
+        raise HTTPException(409, "Entry Screener sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+    if increment is None:
+        raise HTTPException(400, "Qty Screener wajib diisi.")
+    if find_by_action_id(entries, payload.action_id):
+        return {"order": order}
+    entries = seed_legacy(
+        entries,
+        snapshot_qty=before.get("screen_qty"),
+        stage="screener",
+        now=now_iso(),
+        at=before.get("updated_at"),
+        by=before.get("updated_by"),
+        by_name=before.get("updated_by_name"),
+        po_id=order.get("id"),
+    )
+    entries, _entry, created = append_qty_entry(
+        entries,
+        qty=int(increment),
+        stage="screener",
+        user=user,
+        now=now_iso(),
+        action_id=payload.action_id,
+        po_id=order.get("id"),
+        extra={"notes": (payload.notes or "").strip() or None},
+    )
+    if not created:
+        return {"order": order}
+    total = sum_entry_qty(entries)
     order["screener_info"] = {
-        "screen_qty": payload.screen_qty,
-        "notes": (payload.notes or "").strip() or None,
+        "screen_qty": total,
+        "notes": (payload.notes or "").strip() or before.get("notes"),
+        "entries": entries,
         "updated_by": user.get("email"),
         "updated_by_name": user.get("name"),
         "updated_at": now_iso(),
     }
     # Auto-progress: setelah Screener Save, Operator menjadi READY.
     # Tidak menandai Helper selesai (paralel).
-    add_timeline(order, order["current_stage"], user, note=f"Screen qty: {payload.screen_qty}")
+    add_timeline(order, order["current_stage"], user, note=f"Screen qty +{increment} (total {total})")
     _sync_workflow_stage(order)
     await _persist_order(order)
     await _audit_po(order, "screener.info.update", user, before=before, after=order["screener_info"])
@@ -2417,6 +2524,7 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
                 "operator_name": s.operator_name,
                 "quantity": int(s.quantity),
                 "qty_completed": (existing.get("qty_completed", 0) if existing else 0),
+                "progress_entries": list((existing.get("progress_entries") or []) if existing else []),
                 "stage": (existing["stage"] if existing else 8),
                 "updated_at": now_iso(),
                 "line_idx": s.line_idx,
@@ -2517,25 +2625,62 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         if role == "operator" and found["operator_email"] != user.get("email"):
             raise HTTPException(403, "Anda hanya dapat memperbarui qty Anda sendiri")
         _ensure_print_qty_allowed(order)
-        requested = int(payload.qty_completed)
         cap = int(found["quantity"])
-        if requested < 0:
+        entries = list(found.get("progress_entries") or [])
+        if find_by_action_id(entries, payload.action_id):
+            return
+        increment = payload.qty
+        if increment is None and payload.qty_completed is not None and not entries:
+            increment = int(payload.qty_completed)
+        elif increment is None and payload.qty_completed is not None and entries:
+            raise HTTPException(409, "Entry Operator sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
+        if increment is None:
+            raise HTTPException(400, "Qty cetak selesai wajib diisi.")
+        increment = int(increment)
+        if increment < 0:
             raise HTTPException(400, "Qty cetak selesai tidak boleh negatif.")
-        if requested > cap:
+        entries = seed_legacy(
+            entries,
+            snapshot_qty=found.get("qty_completed"),
+            stage="operator",
+            now=now_iso(),
+            at=found.get("updated_at"),
+            by=found.get("operator_email"),
+            by_name=found.get("operator_name"),
+            po_id=order.get("id"),
+            line_idx=found.get("line_idx"),
+            split_id=found.get("id"),
+        )
+        new_total = sum_entry_qty(entries) + increment
+        if new_total > cap:
             raise HTTPException(
                 400,
-                f"Qty selesai ({requested}) melebihi alokasi operator ({cap}).",
+                f"Qty selesai ({new_total}) melebihi alokasi operator ({cap}).",
             )
         others = sum(
             int(s.get("qty_completed") or 0)
             for s in splits if s.get("id") != found.get("id")
         )
-        err = _qr_validate_print_completed_total(others + requested, order)
+        err = _qr_validate_print_completed_total(others + new_total, order)
         if err:
             raise HTTPException(400, err)
-        found["qty_completed"] = requested
+        entries, _entry, created = append_qty_entry(
+            entries,
+            qty=increment,
+            stage="operator",
+            user=user,
+            now=now_iso(),
+            action_id=payload.action_id,
+            po_id=order.get("id"),
+            line_idx=found.get("line_idx"),
+            split_id=found.get("id"),
+        )
+        if not created:
+            return
+        found["progress_entries"] = entries
+        found["qty_completed"] = sum_entry_qty(entries)
         found["updated_at"] = now_iso()
-        add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: {requested}/{found['quantity']}")
+        add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: +{increment} (total {found['qty_completed']}/{found['quantity']})")
 
     order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
@@ -2756,10 +2901,18 @@ async def update_loading(order_id: str, payload: LoadingChecklistPayload, user=D
             absolutes = []
             for x in payload.lines:
                 if x.qty is not None:
-                    increments.append({"line_idx": int(x.line_idx), "qty": int(x.qty)})
+                    increments.append({"line_idx": int(x.line_idx), "qty": int(x.qty), "action_id": x.action_id})
                 elif x.loaded_qty is not None:
                     absolutes.append({"line_idx": int(x.line_idx), "loaded_qty": int(x.loaded_qty)})
             order.setdefault("loading_info", {})
+            existing_events = list((order.get("loading_info") or {}).get("events") or [])
+            if increments:
+                remaining = []
+                for u in increments:
+                    if u.get("action_id") and any(ev.get("action_id") == u.get("action_id") for ev in existing_events):
+                        continue
+                    remaining.append(u)
+                increments = remaining
             if increments:
                 err = _qr_validate_loading_increments(increments, order)
                 if err:
@@ -2770,12 +2923,16 @@ async def update_loading(order_id: str, payload: LoadingChecklistPayload, user=D
                     if ev.get("created_at"):
                         stamped.append(ev)
                         continue
+                    match = next((u for u in increments if int(u["line_idx"]) == int(ev.get("line_idx")) and not u.get("_used")), None)
+                    if match:
+                        match["_used"] = True
                     stamped.append({
                         **ev,
                         "id": str(uuid.uuid4()),
                         "created_by": user.get("email"),
                         "created_by_name": user.get("name"),
                         "created_at": now_iso(),
+                        "action_id": (match or {}).get("action_id"),
                     })
                 order["loading_info"]["lines"] = merged
                 order["loading_info"]["events"] = stamped
@@ -2878,7 +3035,9 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
 
 class PackingLineInput(BaseModel):
     line_idx: int
-    packed_qty: int
+    packed_qty: Optional[int] = None
+    qty: Optional[int] = None
+    action_id: Optional[str] = None
 
 
 class PackingInfoPayload(BaseModel):
@@ -2897,9 +3056,62 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
         pi = order.get("packing_info") or {}
         before_holder["qty_packed"] = pi.get("qty_packed")
         before_holder["lines"] = list(pi.get("lines") or [])
+        events = list(pi.get("events") or [])
+        increment_rows = []
+        if payload.lines:
+            increment_rows = [x for x in payload.lines if x.qty is not None]
+        if increment_rows:
+            for x in increment_rows:
+                if x.action_id and any(ev.get("action_id") == x.action_id for ev in events):
+                    return
+            abs_updates = []
+            incs = []
+            for x in increment_rows:
+                inc = int(x.qty)
+                if inc <= 0:
+                    continue
+                idx = int(x.line_idx)
+                current = 0
+                for row in (pi.get("lines") or []):
+                    if int(row.get("line_idx") or 0) == idx:
+                        current = int(row.get("packed_qty") or 0)
+                abs_updates.append({"line_idx": idx, "packed_qty": current + inc})
+                incs.append({"line_idx": idx, "qty": inc, "action_id": x.action_id})
+            if not incs:
+                raise HTTPException(400, "Qty Packing per line wajib diisi.")
+            err = _qr_validate_packing_lines(abs_updates, order)
+            if err:
+                raise HTTPException(400, err)
+            merged, new_events = _qr_apply_packing_increments(order, incs)
+            stamped = []
+            for ev in new_events:
+                if ev.get("created_at"):
+                    stamped.append(ev)
+                    continue
+                stamped.append({
+                    **ev,
+                    "id": str(uuid.uuid4()),
+                    "created_by": user.get("email"),
+                    "created_by_name": user.get("name"),
+                    "created_at": now_iso(),
+                })
+            total = sum(max(0, int(x.get("packed_qty") or 0)) for x in merged)
+            order.setdefault("packing_info", {})
+            order["packing_info"]["lines"] = merged
+            order["packing_info"]["qty_packed"] = total
+            order["packing_info"]["events"] = stamped
+            order["packing_info"]["notes"] = payload.notes or ""
+            order["packing_info"]["updated_by"] = user.get("email")
+            order["packing_info"]["updated_by_name"] = user.get("name")
+            order["packing_info"]["updated_at"] = now_iso()
+            detail = ", ".join(f"#{u['line_idx']}+{u['qty']}" for u in incs)
+            add_timeline(order, 11, user, note=f"Qty Packing +{detail} (total {total} pcs)")
+            return
+        if events:
+            raise HTTPException(409, "Entry Packing sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
         updates = None
         if payload.lines:
-            updates = [{"line_idx": int(x.line_idx), "packed_qty": int(x.packed_qty)} for x in payload.lines]
+            updates = [{"line_idx": int(x.line_idx), "packed_qty": int(x.packed_qty or 0)} for x in payload.lines]
             err = _qr_validate_packing_lines(updates, order)
             if err:
                 raise HTTPException(400, err)
@@ -2921,9 +3133,24 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
             raise HTTPException(400, "Qty Packing per line wajib diisi.")
         merged = _qr_merge_packing_line_updates(order, updates)
         total = sum(max(0, int(x.get("packed_qty") or 0)) for x in merged)
+        seeded = []
+        for x in merged:
+            q = int(x.get("packed_qty") or 0)
+            if q <= 0:
+                continue
+            seeded.append({
+                "id": str(uuid.uuid4()),
+                "line_idx": x["line_idx"],
+                "qty": q,
+                "packed_qty_after": q,
+                "created_by": user.get("email"),
+                "created_by_name": user.get("name"),
+                "created_at": now_iso(),
+            })
         order.setdefault("packing_info", {})
         order["packing_info"]["lines"] = merged
         order["packing_info"]["qty_packed"] = total
+        order["packing_info"]["events"] = seeded
         order["packing_info"]["notes"] = payload.notes or ""
         order["packing_info"]["updated_by"] = user.get("email")
         order["packing_info"]["updated_by_name"] = user.get("name")
@@ -3691,6 +3918,62 @@ async def shipment_status_dashboard(
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
         rows.append(shipment_status_row(o))
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+
+
+STATUS_PO_PROJECTION = {
+    **SHIPMENT_STATUS_PROJECTION,
+    "work_date": 1,
+    "operator_splits.work_date": 1,
+    "operator_splits.operator_name": 1,
+    "hold": 1,
+    "priority": 1,
+    "status_label": 1,
+    "design_status": 1,
+    "design_bypassed": 1,
+    "design_files": 1,
+    "payment_status": 1,
+    "payment_bypassed": 1,
+    "payment_files": 1,
+    "screener_info.screen_qty": 1,
+    "helper_prep.qty_prepared": 1,
+    "sample_files": 1,
+    "sample_approved": 1,
+    "packing_info": 1,
+    "packing_status_semantic": 1,
+    "surat_jalan_created": 1,
+    "surat_jalan_status_semantic": 1,
+    "delivery_note_number": 1,
+    "delivery_note_created_at": 1,
+    "loading_info": 1,
+    "loading_completed": 1,
+    "loading_completed_at": 1,
+    "delivery_proofs.uploaded_at": 1,
+    "terkirim_confirmed": 1,
+    "print_status": 1,
+    "print_completed_qty": 1,
+    "shipments.created_at": 1,
+    "shipments.number": 1,
+}
+
+
+@api_router.get("/dashboard/status-po")
+async def status_po_dashboard(
+    view: Optional[str] = None,
+    include_cancelled: bool = False,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Laporan Status PO — one query, dashboard card subsets, shipment % reuse."""
+    q: dict = {}
+    if not include_cancelled:
+        q["cancelled"] = {"$ne": True}
+    orders = await db.orders.find(q, STATUS_PO_PROJECTION).sort("deadline", 1).to_list(1000)
+    _dd_settings = await _get_delivery_deadline_settings()
+    for o in orders:
+        _apply_hold_snapshot(o)
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+    data = build_status_po(orders, view)
+    data["generated_at"] = now_iso()
+    return data
 
 
 class ProductionExportPayload(BaseModel):
@@ -5352,7 +5635,7 @@ async def current_stock_update(
     fields = {}
     if payload.manual_current_qty is not None:
         try:
-            fields["manual_current_qty"] = parse_manual_qty(payload.manual_current_qty)
+            fields["manual_current_qty"] = parse_manual_qty(payload.manual_current_qty, allow_negative=True)
         except ValueError as e:
             raise HTTPException(400, str(e))
     if payload.manual_purchase_qty is not None:

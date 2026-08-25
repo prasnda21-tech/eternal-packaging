@@ -1,8 +1,10 @@
 import { useRef, useState } from "react";
 import { Upload, Image as ImageIcon } from "lucide-react";
 import api from "../lib/api";
-import { formatDate, ROLES } from "../lib/constants";
+import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
+import { useAuth } from "../lib/auth";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 /**
  * Dua card terpisah:
@@ -11,9 +13,11 @@ import { getWorkflowReady } from "../lib/stageState";
  * Tidak digabung dalam satu panel.
  */
 export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null, section = "all" }) {
+  const { user: authUser } = useAuth();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
+  const [pendingSample, setPendingSample] = useState(null);
   const designInput = useRef(null);
   const sampleInput = useRef(null);
 
@@ -29,7 +33,18 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
         setErr(order?.screener_gate_reason || "Qty Screener harus diisi sebelum Cetak Sample.");
         return;
       }
+      setPendingSample({
+        file,
+        time: formatDisplayDateTime(new Date().toISOString()),
+      });
+      if (sampleInput.current) sampleInput.current.value = "";
+      return;
     }
+    await uploadFile(file, kind);
+  };
+
+  const uploadFile = async (file, kind) => {
+    if (!file) return;
     if (file.size > 4 * 1024 * 1024) {
       setErr("Ukuran file maksimal 4MB");
       return;
@@ -46,6 +61,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
             kind,
           });
           onUpdated(res.order);
+          setPendingSample(null);
         } catch (e) {
           const d = e.response?.data?.detail;
           setErr(typeof d === "string" ? d : (d?.message || "Gagal upload file"));
@@ -220,6 +236,17 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           <img src={preview.data_url || preview.url} alt={preview.name} />
         </div>
       )}
+      <ConfirmActionModal
+        open={!!pendingSample}
+        stage="Konfirmasi Sample"
+        name={authUser?.name || user?.name || user?.email}
+        time={pendingSample?.time}
+        extra={pendingSample?.file ? <p className="muted small">Upload: {pendingSample.file.name}</p> : null}
+        busy={busy}
+        error={err}
+        onCancel={() => { if (!busy) setPendingSample(null); }}
+        onConfirm={() => uploadFile(pendingSample?.file, "sample")}
+      />
     </>
   );
 }

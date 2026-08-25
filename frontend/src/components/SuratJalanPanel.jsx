@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { FileText, Truck, Cloud } from "lucide-react";
-import { formatDate } from "../lib/constants";
+import { formatDate, formatDisplayDateTime } from "../lib/constants";
+import { useAuth } from "../lib/auth";
 import { shipmentLinesForOrder, storedShipments } from "../lib/shipmentLines";
 import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("id-ID");
@@ -34,11 +36,14 @@ export default function SuratJalanPanel({
   accuratePreview,
   footerActions = null,
 }) {
+  const { user } = useAuth();
   const rows = shipmentLinesForOrder(order);
   const shipments = storedShipments(order);
   const [number, setNumber] = useState(order.delivery_note_number || "");
   const [notes, setNotes] = useState(order.delivery_note_notes || "");
   const [draft, setDraft] = useState(() => initialDraft(rows));
+  const [confirm, setConfirm] = useState(null);
+  const [err, setErr] = useState("");
   const created = !!order.surat_jalan_created;
   const availableTotal = rows.reduce((s, r) => s + Number(r.available_sj || 0), 0);
   const packedTotal = rows.reduce((s, r) => s + Number(r.packed || 0), 0);
@@ -56,7 +61,7 @@ export default function SuratJalanPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id, order?.delivery_note_number, order?.surat_jalan_status_semantic, packedTotal, shippedTotal, shipments.length]);
 
-  const handleCreate = async () => {
+  const openConfirm = () => {
     const lines = rows
       .map((row) => ({
         line_idx: row.line_idx,
@@ -65,7 +70,24 @@ export default function SuratJalanPanel({
       }))
       .filter((l) => l.qty > 0);
     if (!lines.length) return;
-    await onCreate(number || null, notes || "", lines);
+    setErr("");
+    setConfirm({
+      lines,
+      qty: lines.reduce((s, l) => s + l.qty, 0),
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
+  };
+
+  const executeCreate = async () => {
+    if (!confirm || busy) return;
+    setErr("");
+    try {
+      await onCreate(number || null, notes || "", confirm.lines);
+      setConfirm(null);
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Gagal membuat Surat Jalan"));
+    }
   };
 
   return (
@@ -186,6 +208,7 @@ export default function SuratJalanPanel({
                   <span className="lbl">Nomor Surat Jalan</span>
                   <input
                     type="text"
+                    className="manual-input"
                     value={number}
                     onChange={(e) => setNumber(e.target.value)}
                     disabled={busy}
@@ -197,6 +220,7 @@ export default function SuratJalanPanel({
                   <span className="lbl">Catatan</span>
                   <input
                     type="text"
+                    className="manual-input"
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     disabled={busy}
@@ -213,7 +237,7 @@ export default function SuratJalanPanel({
                 <button
                   type="button"
                   className="primary"
-                  onClick={handleCreate}
+                  onClick={openConfirm}
                   disabled={!canSubmit}
                   data-testid="create-surat-jalan-button"
                 >
@@ -258,6 +282,18 @@ export default function SuratJalanPanel({
         </>
       )}
       {footerActions}
+      <ConfirmActionModal
+        open={!!confirm}
+        stage="Surat Jalan"
+        qty={confirm?.qty}
+        name={user?.name || user?.email}
+        time={confirm?.time}
+        extra={number ? <p className="muted small">No SJ: {number}</p> : null}
+        busy={busy}
+        error={err}
+        onCancel={() => { if (!busy) setConfirm(null); }}
+        onConfirm={executeCreate}
+      />
     </section>
   );
 }

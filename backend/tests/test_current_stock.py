@@ -65,6 +65,22 @@ def test_parse_manual_rejects_negative_nan():
         pass
 
 
+def test_parse_manual_current_allows_negative():
+    assert parse_manual_qty(-1000, allow_negative=True) == -1000
+    assert parse_manual_qty("-2500", allow_negative=True) == -2500
+    # purchase / other fields still reject negative
+    try:
+        parse_manual_qty(-1)
+        assert False
+    except ValueError:
+        pass
+
+
+def test_formula_negative_qty_saat_ini_preserved():
+    # Qty Saat Ini -1000 + Pembelian 3000 - PO 500 - Cetak 250 = 1250
+    assert compute_stock_current(500, -1000, 3000, 250) == 1250
+
+
 def _master(aid, name, mid=None, code=None, unit="pcs"):
     return {
         "id": mid or f"m-{aid}",

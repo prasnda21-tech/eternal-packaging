@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
-import { Truck, Check } from "lucide-react";
+import { Truck } from "lucide-react";
 import api from "../lib/api";
-import { formatDate } from "../lib/constants";
+import { formatDate, formatDisplayDateTime } from "../lib/constants";
+import { useAuth } from "../lib/auth";
+import { entriesForLine, newActionId } from "../lib/workflowEntries";
 import {
   canSubmitLoadingIncrement,
   loadingStatusText,
   parsePositiveQty,
   shipmentLinesForOrder,
 } from "../lib/shipmentLines";
-import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
+import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "./qtyUi";
+import AppendQtyEntries from "./AppendQtyEntries";
+import ConfirmActionModal from "./ConfirmActionModal";
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("id-ID");
@@ -30,14 +34,17 @@ function panelStatus(rows, sjReady) {
 }
 
 export default function LoadingPanel({ order, canManage, busy, onUpdated, footerActions = null }) {
+  const { user } = useAuth();
   const lc = order?.loading_checklist || {};
   const rows = shipmentLinesForOrder(order);
+  const loadingEvents = order?.loading_info?.events || [];
   const [vehiclePlate, setVehiclePlate] = useState(lc.vehicle_plate || "");
   const [driverName, setDriverName] = useState(lc.driver_name || "");
   const [notes, setNotes] = useState(lc.notes || "");
   const [draft, setDraft] = useState(() => emptyDraft(rows));
   const [savingLine, setSavingLine] = useState(null);
   const [err, setErr] = useState("");
+  const [confirm, setConfirm] = useState(null);
 
   useEffect(() => {
     const c = order?.loading_checklist || {};
@@ -56,21 +63,33 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
   const badge = panelStatus(rows, sjReady);
   const saving = savingLine != null;
 
-  const saveLine = async (row) => {
+  const openConfirm = (row) => {
     const avail = Number(row.available_loading || 0);
     const qty = parsePositiveQty(draft[row.line_idx]);
     if (!canSubmitLoadingIncrement(draft[row.line_idx], avail)) return;
-    setSavingLine(row.line_idx);
+    setErr("");
+    setConfirm({
+      row,
+      qty,
+      actionId: newActionId(),
+      time: formatDisplayDateTime(new Date().toISOString()),
+    });
+  };
+
+  const execute = async () => {
+    if (!confirm || savingLine != null) return;
+    setSavingLine(confirm.row.line_idx);
     setErr("");
     try {
       const r = await api.updateLoading(order.id, {
         vehicle_plate: vehiclePlate,
         driver_name: driverName,
         notes,
-        lines: [{ line_idx: row.line_idx, qty }],
+        lines: [{ line_idx: confirm.row.line_idx, qty: confirm.qty, action_id: confirm.actionId }],
       });
       onUpdated?.(r.order);
-      setDraft((prev) => ({ ...prev, [row.line_idx]: "" }));
+      setDraft((prev) => ({ ...prev, [confirm.row.line_idx]: "" }));
+      setConfirm(null);
     } catch (e) {
       const d = e.response?.data?.detail;
       setErr(typeof d === "string" ? d : (d?.message || "Gagal menyimpan qty Loading"));
@@ -110,15 +129,12 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
                     <th className="num">Sudah Loading</th>
                     <th className="num">Tersedia</th>
                     <th className="num">Input Qty Loading</th>
-                    <th />
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row, idx) => {
                     const avail = Number(row.available_loading || 0);
                     const loaded = Number(row.loaded || 0);
-                    const enabled = canManage && avail > 0 && !busy && savingLine == null;
-                    const canSave = enabled && canSubmitLoadingIncrement(draft[row.line_idx], avail);
                     return (
                       <tr key={row.line_idx ?? idx} data-testid={`loading-line-row-${idx}`}>
                         <td>
@@ -136,35 +152,26 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
                           <span data-testid={`loading-line-status-${idx}`}>{loadingStatusText(loaded)}</span>
                         </td>
                         <td className="num mono pack-cell-ready" data-testid={`loading-line-available-${idx}`}>{fmt(avail)}</td>
-                        <td className="num packing-line-input-cell">
-                          {avail <= 0 ? (
+                        <td className="num packing-line-input-cell" colSpan={2}>
+                          {avail <= 0 && entriesForLine(loadingEvents, row.line_idx).length === 0 && Number(loaded || 0) <= 0 ? (
                             <span className="mono muted" data-testid={`loading-qty-input-${row.line_idx}`}>{fmt(0)}</span>
                           ) : (
-                            <QuantityInput
-                              label=""
-                              className="is-compact"
-                              min="1"
-                              max={avail}
-                              value={draft[row.line_idx] ?? ""}
-                              onChange={(e) => setDraft((prev) => ({ ...prev, [row.line_idx]: e.target.value }))}
-                              disabled={!enabled}
-                              testid={`loading-qty-input-${row.line_idx}`}
-                              aria-label={`Qty Loading ${row.name}`}
+                            <AppendQtyEntries
+                              entries={entriesForLine(loadingEvents, row.line_idx)}
+                              snapshotQty={loaded}
+                              snapshotAt={order?.loading_info?.updated_at}
+                              snapshotName={order?.loading_info?.updated_by_name}
+                              draft={draft[row.line_idx] ?? ""}
+                              onDraftChange={(v) => setDraft((prev) => ({ ...prev, [row.line_idx]: v }))}
+                              onConfirmClick={() => openConfirm(row)}
+                              canEdit={canManage && avail > 0 && !busy && savingLine == null}
+                              busy={savingLine === row.line_idx}
+                              remaining={avail}
+                              testid={`loading-append-${row.line_idx}`}
+                              inputTestid={`loading-qty-input-${row.line_idx}`}
+                              confirmTestid={`loading-save-button-${row.line_idx}`}
                             />
                           )}
-                        </td>
-                        <td className="packing-line-save-cell">
-                          {canManage && avail > 0 ? (
-                            <button
-                              type="button"
-                              className="primary sm"
-                              onClick={() => saveLine(row)}
-                              disabled={!canSave || savingLine === row.line_idx}
-                              data-testid={`loading-save-button-${row.line_idx}`}
-                            >
-                              <Check size={13} /> Simpan
-                            </button>
-                          ) : null}
                         </td>
                       </tr>
                     );
@@ -178,6 +185,7 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
             <label>Plat kendaraan
               <input
                 type="text"
+                className="manual-input"
                 value={vehiclePlate}
                 onChange={(e) => setVehiclePlate(e.target.value)}
                 disabled={!canManage || saving || busy}
@@ -187,6 +195,7 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
             <label>Nama pengantar
               <input
                 type="text"
+                className="manual-input"
                 value={driverName}
                 onChange={(e) => setDriverName(e.target.value)}
                 disabled={!canManage || saving || busy}
@@ -196,6 +205,7 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
             <label className="span-2">Catatan
               <input
                 type="text"
+                className="manual-input"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 disabled={!canManage || saving || busy}
@@ -217,6 +227,18 @@ export default function LoadingPanel({ order, canManage, busy, onUpdated, footer
         </>
       )}
       {footerActions}
+      <ConfirmActionModal
+        open={!!confirm}
+        stage="Loading"
+        qty={confirm?.qty}
+        name={user?.name || user?.email}
+        time={confirm?.time}
+        extra={confirm?.row?.name ? <p className="muted small">{confirm.row.name}</p> : null}
+        busy={savingLine != null}
+        error={err}
+        onCancel={() => { if (savingLine == null) setConfirm(null); }}
+        onConfirm={execute}
+      />
     </section>
   );
 }

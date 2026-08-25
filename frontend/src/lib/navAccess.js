@@ -13,6 +13,7 @@ export const NAV_KEYS = {
   reports: "nav.reports",
   analytics: "nav.reports.analytics_output",
   shipmentStatus: "nav.reports.shipment_status",
+  statusPo: "nav.reports.status_po",
   settings: "nav.settings",
 };
 
@@ -28,6 +29,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.shipmentStatus, label: "Status Pengiriman", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
@@ -46,8 +48,9 @@ export function salesNavVisible(hasPerm) {
 export function reportsNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
   const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
+  const statusPo = parent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const shipmentStatus = parent && canSeeNav(hasPerm, NAV_KEYS.shipmentStatus);
-  return { parent: !!(analytics || shipmentStatus), analytics, shipmentStatus };
+  return { parent: !!(analytics || statusPo || shipmentStatus), analytics, statusPo, shipmentStatus };
 }
 
 export function purchasingNavVisible(hasPerm) {

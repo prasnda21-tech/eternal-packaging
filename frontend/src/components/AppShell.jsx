@@ -193,6 +193,11 @@ export default function AppShell() {
                       <FileBarChart size={16} /> Analitik Output
                     </NavLink>
                   )}
+                  {reportsNav.statusPo && (
+                    <NavLink to="/laporan/status-po" className={navClass} data-testid="top-nav-status-po">
+                      <TableIcon size={16} /> Status PO
+                    </NavLink>
+                  )}
                   {reportsNav.shipmentStatus && (
                     <NavLink to="/laporan/status-pengiriman" className={navClass} data-testid="top-nav-status-pengiriman">
                       <Truck size={16} /> Status Pengiriman
