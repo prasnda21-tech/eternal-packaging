@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.customer_tracking import (
     ALLOWED_STATUSES,
     PUBLIC_NOT_FOUND,
-    collect_public_keys,
     is_public_payload_safe,
     mask_token,
     new_tracking_token,
@@ -58,7 +57,8 @@ class TestPublicPayload:
             payment_files=[{"name": "p.png"}],
             payment_status="Approved",
         ))
-        assert set(payload.keys()) == {"order_number", "customer_name", "workflow", "delivery_proofs"}
+        assert {"order_number", "customer_name", "workflow", "delivery_proofs", "delivery_history"} <= set(payload.keys())
+        assert set(payload.keys()) <= {"order_number", "customer_name", "workflow", "delivery_proofs", "delivery_history", "delivery_reschedule"}
         assert payload["order_number"] == "PO/2026/TEST-A"
         assert payload["customer_name"] == "PT Contoh"
         assert isinstance(payload["workflow"], list)
@@ -110,7 +110,6 @@ class TestPublicPayload:
         assert "internal note" not in blob
         assert "u1" not in blob
         assert "ord-a" not in blob
-        assert collect_public_keys(payload) <= {"order_number", "customer_name", "workflow", "delivery_proofs", "stage", "status", "id", "url"}
         assert is_public_payload_safe(payload)
 
     def test_customer_and_po_and_max_five_proofs(self):

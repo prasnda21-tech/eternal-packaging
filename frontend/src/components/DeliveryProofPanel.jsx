@@ -5,6 +5,7 @@ import { compressImage } from "../lib/imageCompress";
 import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { confirmableProofCount, canConfirmDelivered, MIN_DELIVERY_PROOFS, proofUploadUserError } from "../lib/deliveryProof";
+import { deliveryHistoryEntries, displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 import { newActionId } from "../lib/workflowEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
 import RescheduleDeliveryModal from "./RescheduleDeliveryModal";
@@ -28,12 +29,14 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const [confirmDeliver, setConfirmDeliver] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [previewId, setPreviewId] = useState(null);
 
   const canUpload = hasPerm("delivery.update");
   const canDelete = hasPerm("delivery.update");
   const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
   const canSetDate = hasPerm("delivery.reschedule.set_date");
   const proofs = order.delivery_proofs || [];
+  const history = deliveryHistoryEntries(order);
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
   const stagedNotYetUploaded = staged.filter((s) => s.status !== "done");
   const freeSlotsForNewSelection = Math.max(0, remainingSlots - stagedNotYetUploaded.length);
@@ -230,7 +233,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   return (
     <section className="panel" data-testid="delivery-proof-panel">
       <header className="panel-head">
-        <h3>Foto Bukti Kirim</h3>
+        <h3>Bukti Kirim</h3>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span className="muted small">{proofs.length}/{MAX_PHOTOS} foto tersimpan</span>
           <span className={order.delivery_status === "Terkirim" ? "status-ok" : "status-wait"}>
@@ -238,6 +241,45 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
           </span>
         </div>
       </header>
+
+      {history.length > 0 && (
+        <div className="delivery-history" data-testid="delivery-history">
+          {history.map((row, i) => {
+            const photoIds = (row.proof_ids && row.proof_ids.length)
+              ? row.proof_ids
+              : (row.photos || []).map((p) => p.id).filter(Boolean);
+            return (
+              <article key={row.id || i} className="delivery-history-entry" data-testid={`delivery-history-row-${i}`}>
+                <dl className="delivery-history-dl">
+                  <dt>Nama Driver</dt><dd data-testid={`delivery-history-driver-${i}`}>{displayOrDash(row.driver_name)}</dd>
+                  <dt>Barang / Item</dt><dd data-testid={`delivery-history-item-${i}`}>{displayOrDash(row.item)}</dd>
+                  <dt>Qty</dt><dd className="mono" data-testid={`delivery-history-qty-${i}`}>{row.qty != null ? Number(row.qty).toLocaleString("id-ID") : "—"}</dd>
+                  <dt>Waktu</dt><dd className="mono" data-testid={`delivery-history-time-${i}`}>{historyTimeLabel(row.time)}</dd>
+                  <dt>Plat Kendaraan</dt><dd data-testid={`delivery-history-plate-${i}`}>{displayOrDash(row.vehicle_plate)}</dd>
+                </dl>
+                <div className="delivery-history-photos">
+                  {photoIds.length === 0 ? (
+                    <span className="muted small">—</span>
+                  ) : photoIds.map((pid) => (
+                    <button
+                      type="button"
+                      key={pid}
+                      onClick={() => setPreviewId(pid)}
+                      data-testid={`delivery-history-photo-${i}-${pid}`}
+                    >
+                      {proofBlobs[pid] ? (
+                        <img src={proofBlobs[pid]} alt="Bukti foto pengiriman" />
+                      ) : (
+                        <span className="proof-loading"><Loader2 size={14} className="spin" /></span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
 
       {/* Uploaded proofs gallery */}
       {proofs.length === 0 ? (
@@ -467,6 +509,11 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         onCancel={() => setRescheduleOpen(false)}
         onDone={(next) => { setRescheduleOpen(false); if (next) onUpdated(next); }}
       />
+      {previewId && proofBlobs[previewId] && (
+        <div className="tracking-lightbox" data-testid="delivery-history-lightbox" onClick={() => setPreviewId(null)}>
+          <img src={proofBlobs[previewId]} alt="Bukti foto pengiriman" />
+        </div>
+      )}
     </section>
   );
 }

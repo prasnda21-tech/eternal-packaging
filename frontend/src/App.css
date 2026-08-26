@@ -43,7 +43,8 @@
 .profile-meta [data-testid="current-user-role"]{font:10.5px 'IBM Plex Mono';color:var(--soft);text-transform:uppercase;letter-spacing:.06em}
 .profile button,.icon-button{border:1px solid var(--line);background:transparent;color:var(--ink);width:34px;height:34px;border-radius:6px;display:grid;place-items:center;cursor:pointer;transition:background .18s}
 .profile button:hover,.icon-button:hover{background:var(--muted)}
-.content{max-width:1440px;margin:auto;width:100%;padding:20px 24px 72px;box-sizing:border-box}
+.content{max-width:1440px;margin:auto;width:100%;padding:20px 24px 72px;box-sizing:border-box;min-width:0}
+.settings-page{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
 .content:has(.prod-page){max-width:none;width:100%;padding:12px 16px 48px;box-sizing:border-box}
 
 /* -------- Page heading -------- */
@@ -1208,9 +1209,14 @@
 .gaji-unset-warn{margin:0 0 8px;padding:8px 10px;border-radius:8px;background:#fef4d6;color:#7a5414;font-size:13px}
 .gaji-unset-tag{color:#a16d1f;font-size:11px}
 .gaji-detail-cell{font-size:12.5px;color:#5c656d}
-.wage-settings{display:grid;gap:16px;max-width:960px}
-.wage-section{padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.wage-settings{display:grid;gap:16px;width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+.wage-section{padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--surface);min-width:0;max-width:100%;box-sizing:border-box}
 .wage-section h3{margin:0 0 10px;font-size:14px;letter-spacing:.04em;text-transform:uppercase}
+.wage-table-wrap{width:100%;max-width:100%;min-width:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.wage-table{width:100%;max-width:100%;min-width:560px;border-collapse:separate;border-spacing:0;table-layout:auto;font-size:13px;box-sizing:border-box}
+.wage-table thead th{background:var(--ep-dark);color:#fff;padding:8px 10px;text-align:left;font:10.5px 'IBM Plex Mono';letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
+.wage-table thead th.num,.wage-table tbody td.num{text-align:right}
+.wage-table tbody td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;background:var(--surface);box-sizing:border-box}
 .wage-bonus-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:10px}
 .wage-bonus-grid label,.wage-bonus-mode label{display:flex;flex-direction:column;gap:4px;font-size:12px}
 .wage-bonus-grid span{font:10px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#6a7680}
@@ -1294,6 +1300,7 @@
 .qty-control.is-manual .qty-control-field{
   background:#FBF4DE;border-color:#D9BE7A;
 }
+.qty-control.is-manual .qty-control-field input.manual-qty-input{color:#1f2a24}
 .qty-control.is-manual .qty-control-unit{background:#F3E8C4;border-left-color:#D9BE7A}
 .qty-control.is-manual .qty-control-field:focus-within{border-color:#C4A24A;box-shadow:0 0 0 1px #C4A24A}
 .qty-control.is-disabled .qty-control-field{background:#EEF7F2;border-color:var(--line)}
@@ -1357,9 +1364,9 @@
 .pack-badge-nonprint{color:#7a6f52;border-color:#d8d0bc;background:transparent}
 .pack-cell-ready,.pack-cell-done,.pack-cell-rest{font-weight:650}
 .packing-form{display:grid;gap:12px;margin:0;padding:12px 16px 16px;background:transparent;border:0}
-.packing-qty-input{width:100%;min-height:36px;padding:6px 10px;border:1px solid #B7D2C6;background:#fff;color:var(--ink);font:650 16px 'IBM Plex Mono',monospace;border-radius:4px;text-align:right}
-.packing-qty-input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
-.packing-qty-input:disabled{background:#EEF7F2;color:var(--soft)}
+.packing-qty-input{width:100%;min-height:36px;padding:6px 10px;border:1px solid #D9BE7A;background:#FBF4DE;color:var(--ink);font:650 16px 'IBM Plex Mono',monospace;border-radius:4px;text-align:right}
+.packing-qty-input:focus{outline:none;border-color:#C4A24A;box-shadow:0 0 0 1px #C4A24A}
+.packing-qty-input:disabled{background:#EEF7F2;color:var(--soft);border-color:var(--line)}
 .packing-line-save-cell{width:1%;white-space:nowrap;text-align:right}
 .packing-line-qty-input{width:132px;min-height:36px;margin-left:auto}
 .packing-notes-input{width:100%;min-height:36px;padding:8px 10px;border:1px solid #D9BE7A;background:#FBF4DE;color:var(--ink);font-size:13px;border-radius:4px}
@@ -1754,6 +1761,14 @@ html:has(.ship-status-page) #root{
 .confirm-action-dl > div{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:baseline}
 .confirm-action-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
 .confirm-action-dl dd{margin:0;font-weight:650}
+.delivery-history{display:flex;flex-direction:column;gap:8px;padding:8px 16px 12px}
+.delivery-history-entry{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fafaf7}
+.delivery-history-dl{margin:0;display:grid;grid-template-columns:132px 1fr;gap:3px 10px;font-size:13px}
+.delivery-history-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.06em;text-transform:uppercase;color:var(--soft)}
+.delivery-history-dl dd{margin:0;font-weight:600}
+.delivery-history-photos{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.delivery-history-photos button{padding:0;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.delivery-history-photos img{display:block;width:56px;height:56px;object-fit:cover;border-radius:4px}
 .reschedule-field{display:flex;flex-direction:column;gap:4px;margin:8px 0;font-size:13px}
 .reschedule-field textarea,.reschedule-field input[type="date"]{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font:inherit}
 

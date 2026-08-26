@@ -175,8 +175,8 @@ export default function OperatorWageSettings({ notify, canEdit }) {
 
       <section className="wage-section" data-testid="wage-base-section">
         <h3>Upah Dasar Operator</h3>
-        <div className="prod-table-wrap">
-          <table className="prod-table" data-testid="wage-operator-table">
+        <div className="wage-table-wrap">
+          <table className="wage-table" data-testid="wage-operator-table">
             <thead>
               <tr>
                 <th>Nama Operator</th>
@@ -322,8 +322,8 @@ export default function OperatorWageSettings({ notify, canEdit }) {
       <section className="wage-section" data-testid="wage-product-section">
         <h3>Tambahan Upah Produk Khusus</h3>
         <p className="muted small">Tambahan ditambahkan di atas upah dasar (bukan mengganti). ID produk, bukan nama.</p>
-        <div className="prod-table-wrap">
-          <table className="prod-table" data-testid="wage-addition-table">
+        <div className="wage-table-wrap">
+          <table className="wage-table" data-testid="wage-addition-table">
             <thead>
               <tr>
                 <th>Produk</th>
@@ -411,8 +411,8 @@ export default function OperatorWageSettings({ notify, canEdit }) {
         <section className="wage-section" data-testid="wage-legacy-override-section">
           <h3>Rate Override Lama (pengganti upah)</h3>
           <p className="muted small">Data historis absolut — tidak diubah menjadi tambahan.</p>
-          <div className="prod-table-wrap">
-            <table className="prod-table">
+          <div className="wage-table-wrap">
+            <table className="wage-table">
               <thead><tr><th>Operator</th><th>Produk</th><th className="num">Rate / pcs</th><th>Aktif</th></tr></thead>
               <tbody>
                 {overrides.map((o, i) => (

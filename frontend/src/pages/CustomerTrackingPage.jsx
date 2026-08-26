@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import api, { publicApiUrl } from "../lib/api";
 import BrandMark from "../components/BrandMark";
 import { trackingStatusClass, trackingStatusLabel } from "../lib/customerTracking";
+import { displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 
 export default function CustomerTrackingPage() {
   const { token } = useParams();
@@ -86,6 +87,36 @@ export default function CustomerTrackingPage() {
                 </tbody>
               </table>
             </section>
+            {(data.delivery_history || []).length > 0 && (
+              <section className="tracking-proofs" data-testid="tracking-delivery-history">
+                <h2>Riwayat Pengiriman</h2>
+                {(data.delivery_history || []).map((row, i) => (
+                  <article key={row.time || i} className="delivery-history-entry" data-testid={`tracking-history-row-${i}`}>
+                    <dl className="delivery-history-dl">
+                      <dt>Nama Driver</dt><dd data-testid={`tracking-history-driver-${i}`}>{displayOrDash(row.driver_name)}</dd>
+                      <dt>Barang / Item</dt><dd data-testid={`tracking-history-item-${i}`}>{displayOrDash(row.item)}</dd>
+                      <dt>Qty</dt><dd data-testid={`tracking-history-qty-${i}`}>{row.qty != null ? Number(row.qty).toLocaleString("id-ID") : "—"}</dd>
+                      <dt>Waktu</dt><dd data-testid={`tracking-history-time-${i}`}>{historyTimeLabel(row.time)}</dd>
+                      <dt>Plat Kendaraan</dt><dd data-testid={`tracking-history-plate-${i}`}>{displayOrDash(row.vehicle_plate)}</dd>
+                    </dl>
+                    {(row.photos || []).length > 0 && (
+                      <div className="delivery-history-photos">
+                        {(row.photos || []).map((p) => (
+                          <button
+                            type="button"
+                            key={p.id}
+                            onClick={() => setPreview(publicApiUrl(p.url))}
+                            data-testid={`tracking-history-photo-${p.id}`}
+                          >
+                            <img src={publicApiUrl(p.url)} alt="Bukti foto pengiriman" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </section>
+            )}
             <section className="tracking-proofs" data-testid="tracking-proofs">
               <h2>Bukti Pengiriman</h2>
               {proofs.length === 0 ? (

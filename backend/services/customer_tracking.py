@@ -313,6 +313,13 @@ def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
         "workflow": customer_workflow(order),
         "delivery_proofs": public_delivery_proofs(order, tok),
     }
+    proofs = payload["delivery_proofs"]
+    allowed_photo_ids = {str(p.get("id")) for p in proofs if p.get("id")}
+    try:
+        from services.delivery_history import public_delivery_history
+        payload["delivery_history"] = public_delivery_history(order, tok, allowed_photo_ids)
+    except Exception:
+        payload["delivery_history"] = []
     try:
         from services.delivery_schedule import public_reschedule_snippet
         snippet = public_reschedule_snippet(order)
@@ -324,13 +331,18 @@ def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
 
 
 def collect_public_keys(payload: dict) -> set:
-    keys = set(payload.keys())
-    for row in payload.get("workflow") or []:
-        if isinstance(row, dict):
-            keys.update(row.keys())
-    for p in payload.get("delivery_proofs") or []:
-        if isinstance(p, dict):
-            keys.update(p.keys())
+    keys = set()
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            keys.update(obj.keys())
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(payload)
     return keys
 
 
@@ -339,6 +351,7 @@ def is_public_payload_safe(payload: dict) -> bool:
         "order_number", "customer_name", "workflow", "delivery_proofs",
         "stage", "status", "id", "url",
         "delivery_reschedule", "scheduled_date",
+        "delivery_history", "driver_name", "item", "qty", "time", "vehicle_plate", "photos",
     }
     return collect_public_keys(payload) <= allowed
 
@@ -418,6 +431,23 @@ def build_router(deps: dict) -> APIRouter:
         snippet = payload.get("delivery_reschedule")
         if isinstance(snippet, dict) and snippet.get("scheduled_date"):
             out["delivery_reschedule"] = {"scheduled_date": str(snippet.get("scheduled_date"))}
+        hist = []
+        for row in payload.get("delivery_history") or []:
+            if not isinstance(row, dict):
+                continue
+            hist.append({
+                "driver_name": row.get("driver_name"),
+                "item": row.get("item"),
+                "qty": row.get("qty"),
+                "time": row.get("time"),
+                "vehicle_plate": row.get("vehicle_plate"),
+                "photos": [
+                    {"id": p.get("id"), "url": p.get("url")}
+                    for p in (row.get("photos") or [])
+                    if isinstance(p, dict) and p.get("id") and p.get("url")
+                ],
+            })
+        out["delivery_history"] = hist
         return out
 
     @router.get("/public/tracking/{token}")
