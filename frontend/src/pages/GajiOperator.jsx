@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
 import { Link } from "react-router-dom";
-import { Download, RefreshCw, Settings2 } from "lucide-react";
+import { Download, RefreshCw, Settings2, ChevronDown, ChevronRight } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { NAV_KEYS } from "../lib/navAccess";
+import { exportOperatorIds } from "../lib/operatorFilter";
+import OperatorMultiSelect from "../components/OperatorMultiSelect";
 
 function todayIso() {
   const d = new Date();
@@ -26,12 +28,8 @@ function fmtQty(n) {
 }
 
 function fmtMoney(n) {
-  if (n === "" || n == null) return "Belum disetel";
+  if (n === "" || n == null) return "Belum Disetel";
   return Number(n || 0).toLocaleString("id-ID");
-}
-
-function operatorKey(o) {
-  return o.operator_user_id || o.id || o.email || "";
 }
 
 export default function GajiOperator() {
@@ -43,14 +41,17 @@ export default function GajiOperator() {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [openId, setOpenId] = useState("");
   const canWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm(NAV_KEYS.settings);
 
+  const operators = data?.filters?.operators || [];
+  const operatorIdsParam = exportOperatorIds(selectedOps, operators);
   const params = useMemo(() => ({
     from,
     to,
-    operator_ids: selectedOps.length ? selectedOps.join(",") : undefined,
+    operator_ids: operatorIdsParam,
     item: item || undefined,
-  }), [from, to, selectedOps, item]);
+  }), [from, to, operatorIdsParam, item]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -84,20 +85,9 @@ export default function GajiOperator() {
   };
 
   const rows = data?.rows || [];
-  const operators = data?.filters?.operators || [];
+  const people = data?.people || [];
   const items = data?.filters?.items || [];
-  const allIds = operators.map(operatorKey).filter(Boolean);
-  const allSelected = allIds.length > 0 && allIds.every((id) => selectedOps.includes(id));
-  const noneSelected = selectedOps.length === 0;
-
-  const toggleAll = () => {
-    if (allSelected && !noneSelected) setSelectedOps([]);
-    else setSelectedOps(allIds);
-  };
-
-  const toggleOp = (id) => {
-    setSelectedOps((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  };
+  const missing = data?.missing_base_rate || [];
 
   return (
     <div className="ship-status-page" data-testid="gaji-operator-page">
@@ -114,43 +104,11 @@ export default function GajiOperator() {
             <span>Tanggal Selesai</span>
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} data-testid="gaji-filter-to" />
           </label>
-          <fieldset className="ship-filter-field gaji-op-filter" data-testid="gaji-filter-operator">
-            <legend>Operator</legend>
-            <label className="gaji-op-check">
-              <input
-                type="checkbox"
-                checked={noneSelected || allSelected}
-                onChange={toggleAll}
-                data-testid="gaji-filter-operator-all"
-              />
-              Pilih Semua
-            </label>
-            {operators.map((o) => {
-              const id = operatorKey(o);
-              return (
-                <label key={id} className="gaji-op-check">
-                  <input
-                    type="checkbox"
-                    checked={noneSelected || selectedOps.includes(id)}
-                    onChange={() => {
-                      if (noneSelected) {
-                        setSelectedOps(allIds.filter((x) => x !== id));
-                      } else {
-                        toggleOp(id);
-                      }
-                    }}
-                    data-testid={`gaji-filter-operator-${id}`}
-                  />
-                  {o.name || o.email || id}
-                </label>
-              );
-            })}
-            {!!selectedOps.length && (
-              <button type="button" className="ghost sm" onClick={() => setSelectedOps([])} data-testid="gaji-filter-operator-clear">
-                Reset
-              </button>
-            )}
-          </fieldset>
+          <OperatorMultiSelect
+            operators={operators}
+            selectedIds={selectedOps}
+            onChange={setSelectedOps}
+          />
           <label className="ship-filter-field">
             <span>Produk / Item</span>
             <select value={item} onChange={(e) => setItem(e.target.value)} data-testid="gaji-filter-item">
@@ -170,38 +128,66 @@ export default function GajiOperator() {
           </button>
           {canWage && (
             <Link to="/settings?tab=operator-wage" className="ghost sm" data-testid="gaji-open-wage-settings">
-              <Settings2 size={14} /> Pengaturan Upah
+              <Settings2 size={14} /> Sistem Upah
             </Link>
           )}
         </div>
         {err && <div className="error" data-testid="gaji-error">{err}</div>}
+        {(data?.missing_base_rate_message || missing.length > 0) && (
+          <div className="gaji-unset-warn" data-testid="gaji-unset-warning">
+            Upah Operator belum disetel{missing.length ? `: ${missing.join(", ")}` : ""}
+          </div>
+        )}
       </div>
       <div className="ship-status-grid" data-testid="gaji-table">
-        <table className="ship-table">
+        <table className="ship-table" data-testid="gaji-rekap-table">
           <thead>
             <tr>
+              <th></th>
               <th>Nama Operator</th>
-              <th>Kode Item</th>
-              <th>Nama Produk</th>
-              <th className="num">Output</th>
-              <th>Periode / Waktu</th>
-              <th className="num">Rate / pcs</th>
+              <th className="num">Total Output</th>
+              <th className="num">Upah Dasar</th>
+              <th className="num">Tambahan Produk</th>
+              <th className="num">Bonus</th>
               <th className="num">Total Upah</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
-              <tr key={`${r.order_id}-${r.operator_id}-${r.tanggal}-${r.line_id}-${i}`} data-testid={`gaji-row-${i}`}>
-                <td>{r.operator || r.employee_name}</td>
-                <td className="mono">{r.item_code || "-"}</td>
-                <td>{r.item_name || r.cup_item || "-"}</td>
-                <td className="num mono">{fmtQty(r.qty_completed)}</td>
-                <td className="mono">{formatDisplayDate(r.tanggal || r.date)}</td>
-                <td className="num mono">{r.rate_unset ? "Belum disetel" : fmtMoney(r.rate_per_pcs)}</td>
-                <td className="num mono">{fmtMoney(r.total_upah)}</td>
-              </tr>
-            ))}
-            {!rows.length && !busy && (
+            {people.map((p) => {
+              const pid = p.operator_user_id || p.id;
+              const open = openId === pid;
+              const detail = rows.filter((r) => (r.operator_user_id || r.operator_id) === pid || r.operator === p.name);
+              return (
+                <Fragment key={pid}>
+                  <tr data-testid={`gaji-person-${pid}`}>
+                    <td>
+                      <button type="button" className="ghost sm" onClick={() => setOpenId(open ? "" : pid)} data-testid={`gaji-person-toggle-${pid}`}>
+                        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                    </td>
+                    <td>{p.name || p.email}{p.rate_unset ? <span className="gaji-unset-tag"> Belum Disetel</span> : null}</td>
+                    <td className="num mono">{fmtQty(p.qty)}</td>
+                    <td className="num mono">{p.rate_unset ? "Belum Disetel" : fmtMoney(p.base_wage)}</td>
+                    <td className="num mono">{fmtMoney(p.product_addition)}</td>
+                    <td className="num mono">{fmtMoney(p.bonus)}</td>
+                    <td className="num mono">{fmtMoney(p.total_upah)}</td>
+                  </tr>
+                  {open && detail.map((r, i) => (
+                    <tr key={`${pid}-d-${i}`} className="gaji-detail-row" data-testid={`gaji-row-${pid}-${i}`}>
+                      <td></td>
+                      <td colSpan={6} className="gaji-detail-cell">
+                        {r.item_name || r.cup_item || "-"} · {formatDisplayDate(r.tanggal || r.date)} ·
+                        {" "}Output {fmtQty(r.qty_completed)}
+                        {r.rate_unset ? " × Rate Belum Disetel" : ` × ${fmtMoney(r.base_rate_per_pcs)} = ${fmtMoney(r.base_wage)}`}
+                        {r.product_addition ? ` · Tambahan ${fmtMoney(r.product_addition)}` : ""}
+                        {" · Subtotal "}{r.rate_unset ? "Belum Disetel" : fmtMoney(r.total_upah)}
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
+            {!people.length && !busy && (
               <tr><td colSpan={7} className="empty-state">Tidak ada output Operator pada periode ini.</td></tr>
             )}
           </tbody>
