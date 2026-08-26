@@ -12,7 +12,7 @@ import {
   productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
-import { printQtyProgress, scheduledPrintQtyProgress } from "../lib/productionScheduleQty";
+import { formatIdQty, scheduledPrintQtyProgress, totalQtyScheduledCell } from "../lib/productionScheduleQty";
 import { schedulePoHref } from "../lib/workPanel";
 
 const STATUS_OPTS = [
@@ -432,7 +432,7 @@ export default function ProductionSchedule() {
             </thead>
             <tbody>
               {sorted.map((r) => {
-                const qtyProg = printQtyProgress(r);
+                const qtyProg = totalQtyScheduledCell(r);
                 const cetakProg = scheduledPrintQtyProgress(r);
                 return (
                 <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
@@ -490,11 +490,17 @@ export default function ProductionSchedule() {
                   <td className="prod-cell-wrap col-text"><strong>{r.customer || "-"}</strong></td>
                   <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
                   <td
-                    className={"num col-fit" + (qtyProg.over ? " prod-qty-over" : "")}
+                    className="num col-fit"
                     data-testid={`prod-qty-${r.po_number}`}
                     title={qtyProg.title}
                   >
-                    {qtyProg.text}
+                    {qtyProg.lines?.length ? (
+                      qtyProg.lines.map((l, i) => (
+                        <div key={`${l.operator_email || l.operator_user_id || i}-${l.line_idx}`} className="prod-op-line" data-testid={`prod-qty-op-${r.po_number}-${i}`}>
+                          {formatIdQty(l.quantity)}
+                        </div>
+                      ))
+                    ) : qtyProg.text}
                   </td>
                   <td
                     className={"num col-fit" + (cetakProg.over ? " prod-qty-over" : "")}

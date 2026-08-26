@@ -64,11 +64,18 @@ describe("reportsNavVisible", () => {
     expect(v.statusPo).toBe(false);
   });
 
-  test("shows parent for status po only", () => {
+    test("shows parent for status po only", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.statusPo));
     expect(v.parent).toBe(true);
     expect(v.statusPo).toBe(true);
     expect(v.analytics).toBe(false);
+    expect(v.shipmentStatus).toBe(false);
+  });
+
+  test("shows parent for gaji operator only", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.gajiOperator));
+    expect(v.parent).toBe(true);
+    expect(v.gajiOperator).toBe(true);
     expect(v.shipmentStatus).toBe(false);
   });
 });

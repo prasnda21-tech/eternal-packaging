@@ -625,10 +625,11 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
 
 
 def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
-    """Delivery fields from loaded qty after a successful bukti-kirim upload.
+    """Delivery fields from loaded qty after explicit Konfirmasi Terkirim.
 
     Returns None when there is no loading evidence yet (photo may still be stored).
     Full PO Terkirim only if delivered >= packing_required_total.
+    Upload of photos does NOT call this — confirmation does.
     """
     loaded = effective_loaded_qty(order)
     if loaded <= 0:
@@ -667,6 +668,32 @@ def is_fully_delivered(order: dict) -> bool:
     ):
         return True
     return False
+
+
+MIN_DELIVERY_PROOFS = 2
+MAX_PUBLIC_DELIVERY_PROOFS = 5
+
+
+def valid_delivery_proofs(order: dict) -> list:
+    return [p for p in (order.get("delivery_proofs") or []) if isinstance(p, dict) and p.get("id")]
+
+
+def valid_delivery_proof_count(order: dict) -> int:
+    return len(valid_delivery_proofs(order))
+
+
+def can_confirm_delivery(order: dict) -> bool:
+    return valid_delivery_proof_count(order) >= MIN_DELIVERY_PROOFS
+
+
+def confirm_delivery_block_reason(order: dict) -> Optional[str]:
+    n = valid_delivery_proof_count(order)
+    if n < MIN_DELIVERY_PROOFS:
+        return (
+            f"Wajib upload minimal {MIN_DELIVERY_PROOFS} foto bukti kirim "
+            f"sebelum Konfirmasi Terkirim (saat ini {n})."
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------

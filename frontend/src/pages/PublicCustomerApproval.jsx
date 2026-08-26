@@ -8,7 +8,7 @@ import SignaturePad from "../components/SignaturePad";
 const STATUS_LABEL = {
   active: "Menunggu Approval Anda",
   approved: "Sudah Approved",
-  rejected: "Sudah Reject",
+  rejected: "Revisi Diminta",
   expired: "Link Kedaluwarsa",
   revoked: "Link Sudah Dicabut",
   invalidated: "Design Sudah Diperbarui",
@@ -87,7 +87,7 @@ export default function PublicCustomerApproval() {
       return;
     }
     if (action === "reject" && settings.reject_reason_required && !note.trim()) {
-      setActionErr("Alasan reject wajib diisi.");
+      setActionErr("Alasan revisi wajib diisi.");
       return;
     }
     setBusy(true);
@@ -231,7 +231,7 @@ export default function PublicCustomerApproval() {
           <div className={`alert ${view.status === "approved" ? "ok" : "err"}`} data-testid="public-approval-completed">
             {view.status === "approved" ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
             <div>
-              <b>Approval sudah dikirim {view.status === "approved" ? "(Approved)" : "(Rejected)"}.</b>
+              <b>Approval sudah dikirim {view.status === "approved" ? "(Approved)" : "(Revisi Diminta)"}.</b>
               <div className="muted small">
                 Oleh: {view.signer_name || "-"} · {fmt(view.responded_at)}
               </div>
@@ -260,12 +260,12 @@ export default function PublicCustomerApproval() {
             </label>
 
             <label className="pfld">
-              <span>Catatan {settings.reject_reason_required ? <span className="muted small">(wajib untuk Reject)</span> : null}</span>
+              <span>Catatan {settings.reject_reason_required ? <span className="muted small">(wajib untuk Revisi)</span> : null}</span>
               <textarea
                 rows={2}
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="Opsional untuk Approve, wajib untuk Reject."
+                placeholder="Opsional untuk Approve, wajib untuk Revisi."
                 disabled={busy}
                 data-testid="public-approval-note"
               />
@@ -301,9 +301,9 @@ export default function PublicCustomerApproval() {
                   className="ghost big"
                   onClick={() => submit("reject")}
                   disabled={busy}
-                  data-testid="public-approval-reject-button"
+                  data-testid="public-approval-revisi-button"
                 >
-                  <XCircle size={16} /> Reject Design
+                  <XCircle size={16} /> Revisi
                 </button>
               )}
             </div>

@@ -203,6 +203,11 @@ export default function AppShell() {
                       <Truck size={16} /> Status Pengiriman
                     </NavLink>
                   )}
+                  {reportsNav.gajiOperator && (
+                    <NavLink to="/laporan/gaji-operator" className={navClass} data-testid="top-nav-gaji-operator">
+                      <FileBarChart size={16} /> Gaji Operator
+                    </NavLink>
+                  )}
                 </div>
               )}
             </div>

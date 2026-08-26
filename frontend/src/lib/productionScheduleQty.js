@@ -1,12 +1,10 @@
 /** Jadwal Produksi qty cells.
 
-Total Qty (printQtyProgress) — DO NOT CHANGE semantics:
-- numerator  = print_completed_qty  (operator_splits.qty_completed snapshot)
-- denominator = print_qty_total     (sum of print line quantities, not PO total)
+Total Qty — active scheduled printable qty per operator per line.
+Not PO total, not print_qty_total repeated on every operator, not actual output.
 
-Qty Cetak (scheduledPrintQtyProgress) — Penjadwalan assignment, not actual print:
-- numerator  = operator_assigned_qty, else sum of current operators[].quantity
-- denominator = print_qty_total     (printable target, not PO total)
+Qty Cetak (scheduledPrintQtyProgress) — Penjadwalan assignment vs print target
+(PO-level ratio). Not identical to Total Qty.
 */
 
 function qtyInt(v) {
@@ -45,6 +43,43 @@ export function printQtyProgress(row) {
       `Target item cetak: ${formatIdQty(target)}`,
       `Total Qty PO: ${formatIdQty(poTotal)}`,
     ].join("\n"),
+  };
+}
+
+/** Active scheduled printable qty per operator per line. quantity is current assignment (cancel already subtracted). */
+export function operatorLineScheduledQtys(row) {
+  const lines = [];
+  for (const op of row?.operators || []) {
+    const printable = op?.line_printable !== false;
+    const qty = qtyInt(op?.quantity);
+    if (!printable || qty <= 0) continue;
+    lines.push({
+      operator_user_id: op.operator_user_id || "",
+      operator_email: op.operator_email || "",
+      operator_name: op.operator_name || "",
+      line_idx: op.line_idx,
+      quantity: qty,
+    });
+  }
+  return lines;
+}
+
+export function totalQtyScheduledCell(row) {
+  const lines = operatorLineScheduledQtys(row);
+  const poTotal = qtyInt(row?.total_quantity);
+  if (!lines.length) {
+    return {
+      text: "—",
+      lines: [],
+      poTotal,
+      title: poTotal > 0 ? `Total Qty PO: ${formatIdQty(poTotal)} (bukan kolom ini)` : undefined,
+    };
+  }
+  return {
+    text: lines.map((l) => formatIdQty(l.quantity)).join("\n"),
+    lines,
+    poTotal,
+    title: lines.map((l) => `${l.operator_name || "Operator"} · line ${l.line_idx}: ${formatIdQty(l.quantity)}`).join("\n"),
   };
 }
 

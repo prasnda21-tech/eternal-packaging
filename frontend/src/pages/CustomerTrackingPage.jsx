@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import api from "../lib/api";
+import api, { publicApiUrl } from "../lib/api";
 import BrandMark from "../components/BrandMark";
 import { trackingStatusClass, trackingStatusLabel } from "../lib/customerTracking";
 
@@ -9,6 +9,7 @@ export default function CustomerTrackingPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [data, setData] = useState(null);
+  const [preview, setPreview] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,6 +29,8 @@ export default function CustomerTrackingPage() {
     return () => { cancelled = true; };
   }, [token]);
 
+  const proofs = (data?.delivery_proofs || []).slice(0, 5);
+
   return (
     <main className="tracking-page" data-testid="customer-tracking-page">
       <div className="tracking-card">
@@ -44,6 +47,10 @@ export default function CustomerTrackingPage() {
 
         {!loading && data && (
           <>
+            <div className="tracking-po" data-testid="tracking-customer">
+              <span className="lbl">Nama Customer</span>
+              <strong data-testid="tracking-customer-name">{data.customer_name || "—"}</strong>
+            </div>
             <div className="tracking-po" data-testid="tracking-po">
               <span className="lbl">No PO</span>
               <strong data-testid="tracking-order-number">{data.order_number}</strong>
@@ -71,9 +78,34 @@ export default function CustomerTrackingPage() {
                 </tbody>
               </table>
             </section>
+            <section className="tracking-proofs" data-testid="tracking-proofs">
+              <h2>Bukti Pengiriman</h2>
+              {proofs.length === 0 ? (
+                <p className="muted small">Belum ada bukti kirim.</p>
+              ) : (
+                <div className="tracking-proof-grid">
+                  {proofs.map((p) => (
+                    <button
+                      type="button"
+                      key={p.id}
+                      className="tracking-proof-thumb"
+                      onClick={() => setPreview(publicApiUrl(p.url))}
+                      data-testid={`tracking-proof-${p.id}`}
+                    >
+                      <img src={publicApiUrl(p.url)} alt="Bukti pengiriman" loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
           </>
         )}
       </div>
+      {preview && (
+        <div className="tracking-lightbox" data-testid="tracking-lightbox" onClick={() => setPreview(null)}>
+          <img src={preview} alt="Bukti pengiriman" />
+        </div>
+      )}
     </main>
   );
 }

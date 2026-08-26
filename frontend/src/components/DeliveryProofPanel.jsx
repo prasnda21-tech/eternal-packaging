@@ -4,7 +4,8 @@ import api, { fileUrl } from "../lib/api";
 import { compressImage } from "../lib/imageCompress";
 import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
-import { confirmableProofCount, proofUploadUserError } from "../lib/deliveryProof";
+import { confirmableProofCount, canConfirmDelivered, MIN_DELIVERY_PROOFS, proofUploadUserError } from "../lib/deliveryProof";
+import { newActionId } from "../lib/workflowEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
 
 const MAX_PHOTOS = 5;
@@ -23,6 +24,8 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const [err, setErr] = useState("");
   const [proofBlobs, setProofBlobs] = useState({});
   const [confirmUpload, setConfirmUpload] = useState(null);
+  const [confirmDeliver, setConfirmDeliver] = useState(null);
+  const [confirming, setConfirming] = useState(false);
 
   const canUpload = hasPerm("delivery.update");
   const canDelete = hasPerm("delivery.update");
@@ -32,6 +35,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const freeSlotsForNewSelection = Math.max(0, remainingSlots - stagedNotYetUploaded.length);
   const readyCount = confirmableProofCount(staged);
   const doneCount = staged.filter((s) => s.status === "done").length;
+  const deliverEnabled = canUpload && canConfirmDelivered(proofs) && order.delivery_status !== "Terkirim";
 
   // Load proof images as blob URLs (cookie auth on same origin)
   useEffect(() => {
@@ -192,6 +196,32 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   };
 
   const anyErrors = staged.some((s) => s.status === "error");
+
+  const openDeliverConfirm = () => {
+    if (!deliverEnabled || confirming) return;
+    setErr("");
+    setConfirmDeliver({
+      count: proofs.length,
+      time: formatDisplayDateTime(new Date().toISOString()),
+      actionId: newActionId(),
+    });
+  };
+
+  const executeDeliver = async () => {
+    if (!confirmDeliver || confirming || uploading) return;
+    setConfirming(true);
+    setErr("");
+    try {
+      const res = await api.confirmDelivered(order.id, { action_id: confirmDeliver.actionId });
+      onUpdated(res.order);
+      setConfirmDeliver(null);
+    } catch (ex) {
+      const d = ex.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || proofUploadUserError(ex)));
+    } finally {
+      setConfirming(false);
+    }
+  };
 
   return (
     <section className="panel" data-testid="delivery-proof-panel">
@@ -368,7 +398,19 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
           )}
 
           {err && <div className="error" data-testid="proof-error">{err}</div>}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+            <button
+              type="button"
+              className="primary"
+              onClick={openDeliverConfirm}
+              disabled={!deliverEnabled || confirming || uploading}
+              data-testid="confirm-delivered-button"
+            >
+              Konfirmasi Terkirim
+            </button>
+          </div>
           <p className="muted small">
+            Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu Konfirmasi Terkirim.
             Batas {MAX_PHOTOS} foto per PO. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
             {remainingSlots > 0 ? ` Sisa slot: ${remainingSlots}.` : " Slot penuh — hapus foto untuk menambah."}
           </p>
@@ -386,6 +428,21 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         error={err}
         onCancel={() => { if (!uploading) setConfirmUpload(null); }}
         onConfirm={uploadAll}
+      />
+      <ConfirmActionModal
+        open={!!confirmDeliver}
+        title="KONFIRMASI PENGIRIMAN"
+        stage="Terkirim"
+        poNumber={order.po_number}
+        customer={order.customer_name || order.customer}
+        name={user?.name || user?.email}
+        time={confirmDeliver?.time}
+        extra={confirmDeliver ? <p className="muted small" data-testid="confirm-proof-count">Bukti Kirim: {confirmDeliver.count} foto</p> : null}
+        busy={confirming}
+        error={err}
+        confirmLabel="Konfirmasi Terkirim"
+        onCancel={() => { if (!confirming) setConfirmDeliver(null); }}
+        onConfirm={executeDeliver}
       />
     </section>
   );

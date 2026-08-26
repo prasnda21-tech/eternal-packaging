@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft, ClipboardList,
+  Target as TargetIcon, PanelLeft, ClipboardList, Coins,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -1583,9 +1584,246 @@ function WorkPanelSettingsTab({ notify, canEdit }) {
   );
 }
 
+/* ---------------- Sidebar access tab ---------------- */
+function SidebarAccessTab({ permissionCatalog, canManagePerms, notify }) {
+  const { user, refresh } = useAuth();
+  const [roles, setRoles] = useState([]);
+  useEffect(() => {
+    api.adminListRoles().then((d) => setRoles(d.roles || [])).catch(() => {});
+  }, []);
+  return (
+    <div data-testid="settings-sidebar-access">
+      <NavAccessMatrix
+        roles={roles}
+        permissionCatalog={permissionCatalog}
+        canManagePerms={canManagePerms}
+        notify={notify}
+        currentUserRole={user?.role}
+        onRefreshMe={refresh}
+      />
+    </div>
+  );
+}
+
+function OperatorWageTab({ notify, canEdit }) {
+  const [operators, setOperators] = useState([]);
+  const [overrides, setOverrides] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState([]);
+  const [overrideOp, setOverrideOp] = useState("");
+
+  const load = () => {
+    setBusy(true);
+    Promise.all([
+      api.operatorWageSettings(),
+      api.masterItems({ page: 1, page_size: 100, q }).catch(() => ({ items: [] })),
+    ]).then(([d, m]) => {
+      const s = d.settings || {};
+      setOperators((d.operators || []).map((o) => ({
+        ...o,
+        default_rate_per_pcs: o.default_rate_per_pcs ?? "",
+      })));
+      setOverrides((s.overrides || []).map((o) => ({ ...o, rate_per_pcs: o.rate_per_pcs ?? "" })));
+      setItems(m.items || []);
+    }).catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat upah")).finally(() => setBusy(false));
+  };
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const upsertOverride = (item, rate) => {
+    const op = operators.find((o) => (o.operator_user_id || o.operator_email) === overrideOp) || operators[0];
+    if (!op) return;
+    const next = [...overrides];
+    const idx = next.findIndex((o) => (
+      ((op.operator_user_id && String(o.operator_user_id) === String(op.operator_user_id))
+        || (!op.operator_user_id && String(o.operator_email) === String(op.operator_email)))
+      && (
+        (item.accurate_item_id && String(o.accurate_item_id) === String(item.accurate_item_id))
+        || (!item.accurate_item_id && String(o.master_item_id) === String(item.id))
+      )
+    ));
+    const row = {
+      operator_user_id: op.operator_user_id || "",
+      operator_email: op.operator_email || "",
+      accurate_item_id: item.accurate_item_id || "",
+      master_item_id: item.id || item.master_item_id || "",
+      item_code: item.item_code || "",
+      item_name: item.item_name || "",
+      rate_per_pcs: rate,
+      active: true,
+    };
+    if (idx >= 0) next[idx] = { ...next[idx], ...row };
+    else next.push(row);
+    setOverrides(next);
+  };
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      await api.updateOperatorWageSettings({
+        operators: operators.map((o) => ({
+          operator_user_id: o.operator_user_id || null,
+          operator_email: o.operator_email || null,
+          operator_name: o.operator_name || "",
+          default_rate_per_pcs: o.default_rate_per_pcs === "" ? null : Number(o.default_rate_per_pcs),
+        })),
+        overrides: overrides.map((o) => ({
+          operator_user_id: o.operator_user_id || null,
+          operator_email: o.operator_email || null,
+          accurate_item_id: o.accurate_item_id || null,
+          master_item_id: o.master_item_id || null,
+          item_code: o.item_code || "",
+          item_name: o.item_name || "",
+          rate_per_pcs: o.rate_per_pcs === "" ? null : Number(o.rate_per_pcs),
+          active: o.active !== false,
+        })),
+      });
+      notify?.("Upah operator disimpan");
+      load();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan upah");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div data-testid="operator-wage-tab" style={{ display: "grid", gap: 12, maxWidth: 920 }}>
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
+        <h3 style={{ marginTop: 0 }}>Upah Operator</h3>
+        <p className="muted small">Rate / pcs per Operator (identitas user id, bukan nama). Override produk hanya berlaku untuk Operator yang dipilih. Perubahan hari ini tidak menimpa histori payroll.</p>
+        <div className="prod-table-wrap" style={{ marginTop: 12 }}>
+          <table className="prod-table" data-testid="wage-operator-table">
+            <thead>
+              <tr>
+                <th>Nama Operator</th>
+                <th className="num">Default Rate / pcs</th>
+                <th>Terakhir Update</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {operators.map((o, i) => (
+                <tr key={o.operator_user_id || o.operator_email || i} data-testid={`wage-operator-${i}`}>
+                  <td>{o.operator_name || o.operator_email}</td>
+                  <td className="num">
+                    <input
+                      type="number"
+                      min="0"
+                      value={o.default_rate_per_pcs}
+                      disabled={!canEdit}
+                      placeholder="Belum disetel"
+                      onChange={(e) => {
+                        const next = [...operators];
+                        next[i] = { ...next[i], default_rate_per_pcs: e.target.value };
+                        setOperators(next);
+                      }}
+                      data-testid={`wage-operator-rate-${i}`}
+                      style={{ width: 110, textAlign: "right" }}
+                    />
+                  </td>
+                  <td className="mono muted small">{o.updated_at ? formatDate(o.updated_at) : "-"}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      disabled={!canEdit}
+                      onClick={() => setOverrideOp(o.operator_user_id || o.operator_email)}
+                      data-testid={`wage-operator-override-${i}`}
+                    >
+                      Override produk
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!operators.length && !busy && <tr><td colSpan={4} className="empty-state">Belum ada Operator aktif.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <h4 style={{ margin: "16px 0 8px" }}>Rate khusus produk</h4>
+        <div className="prod-table-wrap">
+          <table className="prod-table">
+            <thead><tr><th>Operator</th><th>Kode Item</th><th>Nama Produk</th><th className="num">Rate / pcs</th><th>Aktif</th></tr></thead>
+            <tbody>
+              {overrides.map((o, i) => (
+                <tr key={`${o.operator_user_id}-${o.accurate_item_id || o.master_item_id}-${i}`} data-testid={`wage-override-${i}`}>
+                  <td>{operators.find((x) => x.operator_user_id === o.operator_user_id || x.operator_email === o.operator_email)?.operator_name || o.operator_email || "-"}</td>
+                  <td className="mono">{o.item_code || "-"}</td>
+                  <td>{o.item_name || "-"}</td>
+                  <td className="num">
+                    <input
+                      type="number"
+                      min="0"
+                      value={o.rate_per_pcs}
+                      disabled={!canEdit}
+                      onChange={(e) => {
+                        const next = [...overrides];
+                        next[i] = { ...next[i], rate_per_pcs: e.target.value };
+                        setOverrides(next);
+                      }}
+                      data-testid={`wage-override-rate-${i}`}
+                      style={{ width: 110, textAlign: "right" }}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={o.active !== false}
+                      disabled={!canEdit}
+                      onChange={(e) => {
+                        const next = [...overrides];
+                        next[i] = { ...next[i], active: e.target.checked };
+                        setOverrides(next);
+                      }}
+                      data-testid={`wage-override-active-${i}`}
+                    />
+                  </td>
+                </tr>
+              ))}
+              {!overrides.length && !busy && <tr><td colSpan={5} className="empty-state">Belum ada override produk.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <select value={overrideOp} onChange={(e) => setOverrideOp(e.target.value)} data-testid="wage-override-operator" disabled={!canEdit}>
+            <option value="">Pilih Operator untuk override</option>
+            {operators.map((o) => (
+              <option key={o.operator_user_id || o.operator_email} value={o.operator_user_id || o.operator_email}>
+                {o.operator_name || o.operator_email}
+              </option>
+            ))}
+          </select>
+          <input placeholder="Cari item master" value={q} onChange={(e) => setQ(e.target.value)} data-testid="wage-item-search" />
+          <button type="button" className="ghost sm" onClick={load} data-testid="wage-item-search-btn">Cari</button>
+        </div>
+        {!!items.length && canEdit && (
+          <ul className="muted small" data-testid="wage-item-results" style={{ listStyle: "none", padding: 0 }}>
+            {items.slice(0, 8).map((it) => (
+              <li key={it.id || it.accurate_item_id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                <span className="mono">{it.item_code}</span> {it.item_name}
+                <button type="button" className="ghost sm" onClick={() => upsertOverride(it, "")} data-testid={`wage-add-item-${it.accurate_item_id || it.id}`}>
+                  Tambah override
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div style={{ marginTop: 12 }}>
+          <button className="primary sm" onClick={save} disabled={!canEdit || busy} data-testid="wage-save">Simpan Upah</button>
+        </div>
+        {err && <p style={{ color: "#8f1f1f", marginTop: 8 }}>{err}</p>}
+        {!canEdit && <p className="muted small" style={{ marginTop: 8 }}>Butuh permission <code>settings.operator_wage.manage</code>.</p>}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Root ---------------- */
 export default function Settings() {
   const { user, hasPerm } = useAuth();
+  const [searchParams] = useSearchParams();
   const canViewUsers = hasPerm("users.view") || hasPerm("users.manage");
   const canManageUsers = hasPerm("users.manage");
   const canManageRoles = hasPerm("roles.manage");
@@ -1599,8 +1837,11 @@ export default function Settings() {
   const canEditOpTarget = hasPerm("schedule.edit");
   const canViewWorkPanel = hasPerm("settings.work_panel.view") || hasPerm("settings.work_panel.manage") || hasPerm("permissions.manage");
   const canEditWorkPanel = hasPerm("settings.work_panel.manage");
+  const canViewSidebarAccess = canManagePerms;
+  const canViewWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm("reports.gaji_operator.view");
+  const canEditWage = hasPerm("settings.operator_wage.manage");
 
-  const initialTab = canViewUsers ? "employees" : canManagePerms ? "roles" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees";
+  const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
   const [catalog, setCatalog] = useState(null);
   const [toast, setToast] = useState("");
@@ -1634,6 +1875,12 @@ export default function Settings() {
         )}
         {canManagePerms && (
           <button role="tab" className={tab === "roles" ? "active" : ""} onClick={() => setTab("roles")} data-testid="settings-tab-roles"><Shield size={14}/> Role &amp; Hak Akses</button>
+        )}
+        {canViewSidebarAccess && (
+          <button role="tab" className={tab === "sidebar-access" ? "active" : ""} onClick={() => setTab("sidebar-access")} data-testid="settings-tab-sidebar-access"><PanelLeft size={14}/> Akses Menu Sidebar</button>
+        )}
+        {canViewWage && (
+          <button role="tab" className={tab === "operator-wage" ? "active" : ""} onClick={() => setTab("operator-wage")} data-testid="settings-tab-operator-wage"><Coins size={14}/> Upah Operator</button>
         )}
         {canViewCaSettings && (
           <button role="tab" className={tab === "customer-approval" ? "active" : ""} onClick={() => setTab("customer-approval")} data-testid="settings-tab-customer-approval"><ClipboardCheck size={14}/> Customer Approval</button>
@@ -1669,6 +1916,10 @@ export default function Settings() {
         />
       )}
       {tab === "roles" && canManagePerms && <RolesTab permissionCatalog={catalog} canManagePerms={canManagePerms} notify={notify}/>}
+      {tab === "sidebar-access" && canViewSidebarAccess && (
+        <SidebarAccessTab permissionCatalog={catalog} canManagePerms={canManagePerms} notify={notify}/>
+      )}
+      {tab === "operator-wage" && canViewWage && <OperatorWageTab notify={notify} canEdit={canEditWage}/>}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}

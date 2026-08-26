@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDateTime } from "../lib/constants";
@@ -201,6 +201,7 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
         title="KONFIRMASI PEKERJAAN"
         stage="Operator"
         poNumber={order.po_number}
+        customer={order.customer_name || order.customer}
         item={confirm?.line?.name}
         qty={confirm?.qty}
         name={user?.name || user?.email}
@@ -357,6 +358,7 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
         title="KONFIRMASI PEKERJAAN"
         stage={model.stage}
         poNumber={order.po_number}
+        customer={order.customer_name || order.customer}
         item={confirm?.line?.name}
         qty={confirm?.qty}
         name={user?.name || user?.email}
@@ -372,7 +374,6 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
 
 function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
   const { hasPerm } = useAuth();
-  const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const canManage = canSubmitDivision(hasPerm, division);
   const evidence = suratJalanEvidence(order);
@@ -381,11 +382,6 @@ function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
   const itemLabel = (order?.line_items || []).length === 1
     ? (order.line_items[0].name || "—")
     : `${(order?.line_items || []).length} item`;
-
-  useEffect(() => {
-    if (!order?.id) return;
-    api.previewAccurateSuratJalan(order.id).then(setPreview).catch(() => setPreview(null));
-  }, [order?.id]);
 
   return (
     <section className="panel work-panel" data-testid="role-work-panel">
@@ -413,21 +409,10 @@ function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
         order={order}
         canManage={canManage}
         busy={busy}
-        accuratePreview={preview}
         onCreate={async (number, notes, lines) => {
           setBusy(true);
           try {
             const res = await api.createSuratJalan(order.id, number, notes, lines);
-            onUpdated?.(res.order);
-            return res;
-          } finally {
-            setBusy(false);
-          }
-        }}
-        onImport={async (payload) => {
-          setBusy(true);
-          try {
-            const res = await api.importSuratJalan(order.id, payload);
             onUpdated?.(res.order);
             return res;
           } finally {

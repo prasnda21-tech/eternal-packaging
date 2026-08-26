@@ -9,6 +9,7 @@ import {
   permittedDivisionIds,
   schedulePoHref,
   screenerWorkModel,
+  taskPoHref,
 } from "./workPanel";
 import { sumEntryQty } from "./workflowEntries";
 
@@ -87,6 +88,12 @@ describe("operator work panel models", () => {
   test("click PO uses work panel for operator.submit perm", () => {
     expect(schedulePoHref("abc", (p) => p === "operator.update")).toBe("/po/abc/kerja?divisi=operator");
     expect(schedulePoHref("abc", () => false)).toBe("/po/abc");
+  });
+
+  test("tugas saya without full PO perm goes to own work panel", () => {
+    expect(taskPoHref("abc", (p) => p === "operator.update", "operator_work")).toBe("/po/abc/kerja?divisi=operator");
+    expect(taskPoHref("abc", (p) => p === "po.view", "operator_work")).toBe("/po/abc");
+    expect(taskPoHref("abc", (p) => p === "helper.prepare", "helper")).toBe("/po/abc/kerja?divisi=helper");
   });
 
   test("cannot submit without division perm", () => {

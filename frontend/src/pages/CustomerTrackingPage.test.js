@@ -45,9 +45,19 @@ describe("Customer tracking public page", () => {
   });
 
   test("internal detail has compact copy-link action", () => {
-    expect(detail).toMatch(/Tracking Customer/);
+    expect(detail).toMatch(/Live Tracking Customer/);
     expect(detail).toMatch(/Salin Link Tracking/);
     expect(detail).toMatch(/copy-tracking-link/);
     expect(detail).toMatch(/orderTrackingLink/);
+    const routeIdx = detail.indexOf("Proses Produksi");
+    const trackIdx = detail.indexOf("tracking-customer-panel");
+    expect(trackIdx).toBeGreaterThan(detail.indexOf("ProductionRoutePanel"));
+  });
+
+  test("public page shows customer name po and proofs", () => {
+    expect(page).toMatch(/Nama Customer/);
+    expect(page).toMatch(/tracking-customer-name/);
+    expect(page).toMatch(/Bukti Pengiriman/);
+    expect(page).toMatch(/slice\(0, 5\)/);
   });
 });

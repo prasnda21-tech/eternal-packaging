@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 from quantity_rules import (
     PRINT_STATUS_DONE,
@@ -24,6 +25,8 @@ from quantity_rules import (
     requires_printing,
     shipments_stored,
     surat_jalan_status_semantic,
+    valid_delivery_proofs,
+    MAX_PUBLIC_DELIVERY_PROOFS,
 )
 from workflow_gates import (
     group2_complete,
@@ -282,11 +285,33 @@ def customer_workflow(order: dict) -> List[Dict[str, str]]:
     return out
 
 
-def public_payload(order: dict) -> Dict[str, Any]:
-    """Minimal public JSON: order_number + workflow only."""
+def public_delivery_proofs(order: dict, token: str) -> List[Dict[str, str]]:
+    """Newest proofs first, max 5. Public proxy URL only — no storage keys."""
+    proofs = valid_delivery_proofs(order)
+    def _sort_key(p):
+        return str(p.get("uploaded_at") or p.get("created_at") or "")
+    ordered = sorted(proofs, key=_sort_key, reverse=True)[:MAX_PUBLIC_DELIVERY_PROOFS]
+    t = (token or "").strip()
+    out = []
+    for p in ordered:
+        pid = str(p.get("id") or "").strip()
+        if not pid:
+            continue
+        out.append({
+            "id": pid,
+            "url": f"/api/public/tracking/{t}/proofs/{pid}",
+        })
+    return out
+
+
+def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
+    """Minimal public JSON: customer, order number, workflow, bounded proofs."""
+    tok = (token or order.get("tracking_token") or "").strip()
     return {
+        "customer_name": order.get("customer") or order.get("customer_name") or "",
         "order_number": order.get("po_number") or "",
         "workflow": customer_workflow(order),
+        "delivery_proofs": public_delivery_proofs(order, tok),
     }
 
 
@@ -295,11 +320,17 @@ def collect_public_keys(payload: dict) -> set:
     for row in payload.get("workflow") or []:
         if isinstance(row, dict):
             keys.update(row.keys())
+    for p in payload.get("delivery_proofs") or []:
+        if isinstance(p, dict):
+            keys.update(p.keys())
     return keys
 
 
 def is_public_payload_safe(payload: dict) -> bool:
-    allowed = {"order_number", "workflow", "stage", "status"}
+    allowed = {
+        "order_number", "customer_name", "workflow", "delivery_proofs",
+        "stage", "status", "id", "url",
+    }
     return collect_public_keys(payload) <= allowed
 
 
@@ -352,8 +383,29 @@ def build_router(deps: dict) -> APIRouter:
     current_user = deps["current_user"]
     require_perm = deps["require_perm"]
     logger = deps["logger"]
+    obj_storage = deps.get("obj_storage")
 
     router = APIRouter(prefix="/api", tags=["customer-tracking"])
+
+    def _safe_public_payload(order: dict, token: str) -> dict:
+        payload = public_payload(order, token)
+        if is_public_payload_safe(payload):
+            return payload
+        logger.warning("public tracking payload sanitized token=%s", mask_token(token))
+        return {
+            "customer_name": payload.get("customer_name") or "",
+            "order_number": payload.get("order_number") or "",
+            "workflow": [
+                {"stage": r.get("stage"), "status": r.get("status")}
+                for r in (payload.get("workflow") or [])
+                if r.get("stage") and r.get("status") in ALLOWED_STATUSES
+            ],
+            "delivery_proofs": [
+                {"id": p.get("id"), "url": p.get("url")}
+                for p in (payload.get("delivery_proofs") or [])
+                if isinstance(p, dict) and p.get("id") and p.get("url")
+            ][:MAX_PUBLIC_DELIVERY_PROOFS],
+        }
 
     @router.get("/public/tracking/{token}")
     async def public_tracking(token: str):
@@ -366,18 +418,38 @@ def build_router(deps: dict) -> APIRouter:
             raise HTTPException(404, PUBLIC_NOT_FOUND)
         if not order or order.get("cancelled"):
             raise HTTPException(404, PUBLIC_NOT_FOUND)
-        payload = public_payload(order)
-        if not is_public_payload_safe(payload):
-            logger.warning("public tracking payload sanitized token=%s", mask_token(token))
-            payload = {
-                "order_number": payload.get("order_number") or "",
-                "workflow": [
-                    {"stage": r.get("stage"), "status": r.get("status")}
-                    for r in (payload.get("workflow") or [])
-                    if r.get("stage") and r.get("status") in ALLOWED_STATUSES
-                ],
-            }
-        return payload
+        return _safe_public_payload(order, token)
+
+    @router.get("/public/tracking/{token}/proofs/{proof_id}")
+    async def public_tracking_proof(token: str, proof_id: str):
+        if not _token_usable(token) or not obj_storage:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        pid = (proof_id or "").strip()
+        if not pid or len(pid) > 80:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        try:
+            order = await db.orders.find_one({"tracking_token": token}, {"_id": 0})
+        except Exception:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        if not order or order.get("cancelled"):
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        proof = next((p for p in valid_delivery_proofs(order) if str(p.get("id")) == pid), None)
+        if not proof:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        path = (proof.get("storage_path") or "").strip()
+        if not path:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        try:
+            data, ct = obj_storage.get_object(path)
+        except FileNotFoundError:
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        except Exception:
+            logger.warning("public tracking proof fetch failed token=%s", mask_token(token))
+            raise HTTPException(404, PUBLIC_NOT_FOUND)
+        media = proof.get("content_type") or ct or "image/jpeg"
+        if not str(media).startswith("image/"):
+            media = "image/jpeg"
+        return Response(content=data, media_type=media)
 
     @router.post("/orders/{order_id}/tracking-link")
     async def tracking_link(order_id: str, user=Depends(current_user)):

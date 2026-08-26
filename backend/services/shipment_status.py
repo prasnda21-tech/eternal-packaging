@@ -29,6 +29,8 @@ SHIPMENT_STATUS_PROJECTION = {
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
     "delivered_at": 1,
+    "delivery_proofs.uploaded_at": 1,
+    "delivery_proofs.created_at": 1,
     "qty_delivered": 1,
     "delivery_status": 1,
     "current_stage": 1,
@@ -67,8 +69,26 @@ def qty_dapat_dikirim(order: dict) -> int:
     return print_completed_qty(order)
 
 
+def _date_key(raw) -> Optional[str]:
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    return text or None
+
+
 def delivery_date_value(order: dict) -> Optional[str]:
-    return order.get("delivery_deadline_effective") or order.get("deadline") or None
+    """Actual delivery date (delivered_at / bukti kirim), not deadline."""
+    key = _date_key(order.get("delivered_at"))
+    if key:
+        return key
+    times = []
+    for p in order.get("delivery_proofs") or []:
+        key = _date_key(p.get("uploaded_at") or p.get("created_at"))
+        if key:
+            times.append(key)
+    return min(times) if times else None
 
 
 def shipment_status_row(order: dict) -> dict:

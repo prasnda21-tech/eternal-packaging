@@ -52,14 +52,22 @@ ANALYTICS_PROJECTION = {
     "product_name": 1,
     "line_items.name": 1,
     "line_items.item_code": 1,
+    "line_items.accurate_item_id": 1,
+    "line_items.master_item_id": 1,
     "line_items.quantity": 1,
     "line_items.color": 1,
     "line_items.production_process": 1,
     "operator_splits.id": 1,
     "operator_splits.operator_email": 1,
+    "operator_splits.operator_user_id": 1,
     "operator_splits.operator_name": 1,
     "operator_splits.quantity": 1,
     "operator_splits.qty_completed": 1,
+    "operator_splits.progress_entries.qty": 1,
+    "operator_splits.progress_entries.created_at": 1,
+    "operator_splits.progress_entries.confirmed_at": 1,
+    "operator_splits.progress_entries.rate_per_pcs": 1,
+    "operator_splits.progress_entries.cancelled": 1,
     "operator_splits.work_date": 1,
     "operator_splits.updated_at": 1,
     "operator_splits.line_idx": 1,
@@ -440,11 +448,32 @@ def _doc_match_filters(
     item: Optional[str] = None,
     po: Optional[str] = None,
     operator_id: Optional[str] = None,
+    operator_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Mongo match for analytics doc facet. Combines customer/outlet + item $or safely."""
     clauses: List[dict] = []
-    if operator_id and operator_id not in ("all", ""):
-        clauses.append({"operator_splits.operator_email": operator_id})
+    ids = [
+        str(x).strip()
+        for x in list(operator_ids or []) + ([operator_id] if operator_id else [])
+        if str(x or "").strip() and str(x).strip() not in ("all", "*")
+    ]
+    # unique
+    seen = set()
+    uniq = []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            uniq.append(i)
+    if len(uniq) == 1:
+        clauses.append({"$or": [
+            {"operator_splits.operator_email": uniq[0]},
+            {"operator_splits.operator_user_id": uniq[0]},
+        ]})
+    elif len(uniq) > 1:
+        clauses.append({"$or": [
+            {"operator_splits.operator_email": {"$in": uniq}},
+            {"operator_splits.operator_user_id": {"$in": uniq}},
+        ]})
     if customer and customer not in ("all", ""):
         clauses.append({"$or": [{"customer": customer}, {"outlet": customer}]})
     if po and po not in ("all", ""):
@@ -758,6 +787,7 @@ def build_operator_analytics_pipeline(
     customer: Optional[str] = None,
     item: Optional[str] = None,
     po: Optional[str] = None,
+    operator_ids: Optional[Sequence[str]] = None,
 ) -> List[dict]:
     """Single Mongo aggregation: one scan, not per-operator queries.
 
@@ -768,7 +798,7 @@ def build_operator_analytics_pipeline(
         "cancelled": {"$ne": True},
         "operator_splits.0": {"$exists": True},
     }
-    doc_match = _doc_match_filters(customer, item, po, operator_id)
+    doc_match = _doc_match_filters(customer, item, po, operator_id, operator_ids=operator_ids)
 
     docs_stage: List[dict] = []
     if doc_match:

@@ -129,7 +129,8 @@ webpackConfig.devServer = (devServerConfig) => {
 };
 
 // Wrap with visual edits (automatically adds babel plugin, dev server, and overlay in dev mode)
-if (isDevServer) {
+const runningJest = process.argv.includes("test");
+if (isDevServer && !runningJest) {
   try {
     const { withVisualEdits } = require("@emergentbase/visual-edits/craco");
     webpackConfig = withVisualEdits(webpackConfig);
@@ -142,6 +143,9 @@ if (isDevServer) {
       throw err;
     }
   }
+}
+if (webpackConfig.babel && Array.isArray(webpackConfig.babel.plugins)) {
+  webpackConfig.babel.plugins = webpackConfig.babel.plugins.filter(Boolean);
 }
 
 const configureDevServer = webpackConfig.devServer;
