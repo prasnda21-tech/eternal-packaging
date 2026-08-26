@@ -1,6 +1,51 @@
-import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, NAV_KEYS } from "./navAccess";
+import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, tasksNavVisible, NAV_KEYS, NAV_MENU_FALLBACK } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
+
+describe("tasksNavVisible", () => {
+  test("hides parent when no child is granted", () => {
+    const v = tasksNavVisible(has(NAV_KEYS.tasks));
+    expect(v.parent).toBe(false);
+    expect(v.operator).toBe(false);
+    expect(v.helper).toBe(false);
+  });
+
+  test("operator only sees Operator submenu", () => {
+    const v = tasksNavVisible(has(NAV_KEYS.tasks, NAV_KEYS.tasksOperator));
+    expect(v.parent).toBe(true);
+    expect(v.operator).toBe(true);
+    expect(v.helper).toBe(false);
+    expect(v.packing).toBe(false);
+  });
+
+  test("submit perm operator.update shows Operator without stored nav.*", () => {
+    const v = tasksNavVisible(has("operator.update"));
+    expect(v.parent).toBe(true);
+    expect(v.operator).toBe(true);
+    expect(v.helper).toBe(false);
+  });
+
+  test("admin-like grant shows all children", () => {
+    const v = tasksNavVisible(has(
+      NAV_KEYS.tasks,
+      NAV_KEYS.tasksScreener,
+      NAV_KEYS.tasksHelper,
+      NAV_KEYS.tasksOperator,
+      NAV_KEYS.tasksPacking,
+      NAV_KEYS.tasksSuratJalan,
+      NAV_KEYS.tasksLoading,
+      NAV_KEYS.tasksDelivery,
+    ));
+    expect(v.parent).toBe(true);
+    expect(v.screener).toBe(true);
+    expect(v.helper).toBe(true);
+    expect(v.operator).toBe(true);
+    expect(v.packing).toBe(true);
+    expect(v.surat_jalan).toBe(true);
+    expect(v.loading).toBe(true);
+    expect(v.terkirim).toBe(true);
+  });
+});
 
 describe("inventoryNavVisible", () => {
   test("hides parent when no child is granted", () => {
@@ -77,5 +122,24 @@ describe("reportsNavVisible", () => {
     expect(v.parent).toBe(true);
     expect(v.gajiOperator).toBe(true);
     expect(v.shipmentStatus).toBe(false);
+  });
+});
+
+describe("NAV_MENU_FALLBACK Settings catalog", () => {
+  test("includes Tugas per Divisi and all division children", () => {
+    const keys = NAV_MENU_FALLBACK.map((m) => m.key);
+    expect(keys).toEqual(expect.arrayContaining([
+      NAV_KEYS.tasks,
+      NAV_KEYS.tasksScreener,
+      NAV_KEYS.tasksHelper,
+      NAV_KEYS.tasksOperator,
+      NAV_KEYS.tasksPacking,
+      NAV_KEYS.tasksSuratJalan,
+      NAV_KEYS.tasksLoading,
+      NAV_KEYS.tasksDelivery,
+    ]));
+    const parent = NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasks);
+    expect(parent.label).toBe("Tugas per Divisi");
+    expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksDelivery).label).toBe("Driver / Terkirim");
   });
 });

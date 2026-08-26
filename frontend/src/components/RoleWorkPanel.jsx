@@ -17,6 +17,7 @@ import {
   helperWorkModel,
   loadingWorkModel,
   operatorLineModels,
+  operatorMyAssignmentModels,
   operatorStatusLabel,
   orderPrintDone,
   orderPrintTarget,
@@ -26,11 +27,18 @@ import {
   terkirimEvidence,
 } from "../lib/workPanel";
 
+function PoDetailLink({ order }) {
+  const { hasPerm } = useAuth();
+  if (!hasPerm("po.view")) return null;
+  return <Link className="ghost sm" to={`/po/${order.id}`} data-testid="work-open-detail">Detail PO</Link>;
+}
+
 function InactivePanel({ order, division, reason }) {
+  const { hasPerm } = useAuth();
   return (
     <section className="panel work-panel" data-testid="role-work-panel">
       <p className="muted">{reason || `Form ${division?.label || ""} belum diaktifkan sebagai Work Panel.`}</p>
-      <Link to={`/po/${order.id}`}>Buka Detail PO</Link>
+      {hasPerm("po.view") && <Link to={`/po/${order.id}`}>Buka Detail PO</Link>}
     </section>
   );
 }
@@ -50,7 +58,7 @@ function WorkHero({ order, title, itemLabel, testid, compactHeader }) {
           Item: {itemLabel}
         </p>
       </div>
-      <Link className="ghost sm" to={`/po/${order.id}`} data-testid="work-open-detail">Detail PO</Link>
+      <PoDetailLink order={order} />
     </header>
   );
 }
@@ -62,12 +70,13 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState(null);
 
+  const personal = !hasPerm("schedule.edit");
   const lines = useMemo(
-    () => operatorLineModels(order, division?.target_source || "print_line_qty"),
-    [order, division?.target_source]
+    () => (personal ? operatorMyAssignmentModels(order, user) : operatorLineModels(order, division?.target_source || "print_line_qty")),
+    [order, division?.target_source, personal, user]
   );
-  const headerTarget = orderPrintTarget(order);
-  const headerDone = orderPrintDone(order);
+  const headerTarget = personal ? lines.reduce((s, l) => s + Number(l.target || 0), 0) : orderPrintTarget(order);
+  const headerDone = personal ? lines.reduce((s, l) => s + Number(l.done || 0), 0) : orderPrintDone(order);
   const headerRemain = Math.max(0, headerTarget - headerDone);
   const status = operatorStatusLabel(headerDone, headerTarget);
   const itemLabel = lines.length === 1 ? lines[0].name : (lines.length ? `${lines.length} item` : "—");
@@ -138,7 +147,7 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
               Item: {itemLabel}
             </p>
           </div>
-          <Link className="ghost sm" to={`/po/${order.id}`} data-testid="work-open-detail">Detail PO</Link>
+          <PoDetailLink order={order} />
         </header>
       )}
       {!compactHeader && (

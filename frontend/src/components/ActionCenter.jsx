@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AlertTriangle, Clock, ArrowUpRight, ListChecks } from "lucide-react";
 import api from "../lib/api";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import { useAuth } from "../lib/auth";
 import { taskPoHref } from "../lib/workPanel";
+import { actionKeyToTaskPath } from "../lib/navAccess";
 
 /**
  * ActionCenter — Batch 3 · "Tugas Saya" untuk user berdasarkan Effective
@@ -35,6 +36,7 @@ function DeadlineChip({ status }) {
 
 export default function ActionCenter() {
   const { hasPerm } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [selectedKey, setSelectedKey] = useState(null);
@@ -77,7 +79,14 @@ export default function ActionCenter() {
           <button
             key={a.key}
             className={selectedKey === a.key ? "primary" : "ghost"}
-            onClick={() => setSelectedKey(a.key === selectedKey ? null : a.key)}
+            onClick={() => {
+              const href = actionKeyToTaskPath(a.key);
+              if (href && href.startsWith("/tasks/")) {
+                navigate(href);
+                return;
+              }
+              setSelectedKey(a.key === selectedKey ? null : a.key);
+            }}
             data-testid={`ac-card-${a.key}`}
             style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", padding: 10, textAlign: "left" }}
           >

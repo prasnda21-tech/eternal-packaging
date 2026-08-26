@@ -175,6 +175,38 @@ export function pickSubmitSplit(line, user, hasPerm) {
   return null;
 }
 
+/** Personal Operator rows: scheduled qty of this user, never line/PO aggregate. */
+export function operatorMyAssignmentModels(order, user) {
+  const email = (user?.email || "").trim().toLowerCase();
+  const uid = String(user?.id || "").trim();
+  const items = order?.line_items || [];
+  const out = [];
+  for (const s of order?.operator_splits || []) {
+    const qty = Number(s?.quantity || 0);
+    if (qty <= 0) continue;
+    const se = (s.operator_email || "").trim().toLowerCase();
+    const su = String(s.operator_user_id || s.operator_id || "").trim();
+    const mine = (email && se && se === email) || (uid && su && su === uid);
+    if (!mine) continue;
+    const idx = Number(s.line_idx);
+    const li = items[idx] || {};
+    const done = splitDone(s);
+    out.push({
+      lineIdx: idx,
+      itemId: li.item_id || li.id || s.id || `split-${idx}`,
+      name: li.name || `Line ${idx + 1}`,
+      color: li.color || "",
+      unit: li.unit || "pcs",
+      target: qty,
+      done,
+      remaining: Math.max(0, qty - done),
+      entries: visibleEntries(s.progress_entries, s.qty_completed, s.updated_at, s.operator_name),
+      splits: [s],
+    });
+  }
+  return out;
+}
+
 export function canSubmitDivision(hasPerm, division) {
   if (!division || division.active === false || division.implemented === false) return false;
   const perm = division.submit_perm;

@@ -8,4 +8,9 @@ describe("Tugas Saya routing", () => {
     expect(src).not.toMatch(/to=\{`\/po\/\$\{o\.id\}`\}/);
     expect(src).not.toMatch(/& Tim/);
   });
+
+  test("division cards redirect to /tasks submenu", () => {
+    expect(src).toMatch(/actionKeyToTaskPath/);
+    expect(src).toMatch(/navigate\(href\)/);
+  });
 });

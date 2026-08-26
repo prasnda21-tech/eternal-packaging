@@ -29,6 +29,14 @@ def test_catalog_includes_nav_keys():
         "nav.reports.status_po",
         "nav.reports.gaji_operator",
         "nav.settings",
+        "nav.tasks",
+        "nav.tasks.screener",
+        "nav.tasks.helper",
+        "nav.tasks.operator",
+        "nav.tasks.packing",
+        "nav.tasks.surat_jalan",
+        "nav.tasks.loading",
+        "nav.tasks.delivery",
         NAV_CONFIGURED,
         "nav.inventory.master_items",
         "nav.inventory.current_stock",
@@ -65,6 +73,10 @@ def test_helper_keeps_schedule_and_always_visible_menus():
     assert "purchase_receipts.view" not in helper
     assert "purchase_receipts.sync" not in helper
     assert "nav.purchasing.receipts" not in helper
+    assert "nav.tasks" in helper
+    assert "nav.tasks.helper" in helper
+    assert "nav.tasks.packing" in helper
+    assert "nav.tasks.operator" not in helper
 
 
 def test_head_production_gets_dashboard_nav():
@@ -85,6 +97,8 @@ def test_legacy_stored_role_without_nav_keys_derives_defaults():
     assert "nav.sales" in derived
     assert "nav.dashboard" not in derived
     assert "helper.prepare" in derived
+    assert "nav.tasks" in derived
+    assert "nav.tasks.helper" in derived
 
 
 def test_legacy_without_schedule_does_not_gain_jadwal():

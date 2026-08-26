@@ -98,6 +98,13 @@ from permissions import (
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
     NAV_MENU_ITEMS, NAV_CONFIGURED, with_nav_defaults,
 )
+from services.division_tasks import (
+    DIVISION_DEFS as _DIVISION_TASK_DEFS,
+    TASK_PROJECTION as _DIVISION_TASK_PROJECTION,
+    build_division_tasks as _build_division_tasks,
+    can_view_all_division as _can_view_all_division,
+    resolve_division as _resolve_division,
+)
 from operator_analytics import (
     build_activity_analytics_pipeline,
     build_design_analytics_pipeline,
@@ -2445,6 +2452,45 @@ async def dashboard_action_items(user=Depends(current_user)):
         })
 
     return {"actions": actions, "generated_at": now_iso()}
+
+
+@api_router.get("/work/division-tasks")
+async def work_division_tasks(
+    division: str,
+    scope: str = "mine",
+    user=Depends(current_user),
+):
+    """One list query per division. Server scopes Operator rows to the session user."""
+    div = _resolve_division(division)
+    if not div:
+        raise HTTPException(400, "Divisi tidak dikenali")
+    cfg = _DIVISION_TASK_DEFS[div]
+    await _require_perm(user, cfg["submit_perm"])
+    if user.get("role") == "admin":
+        perms = set(ALL_PERMISSIONS)
+    else:
+        perms = set(await user_permissions(user))
+    view_all = _can_view_all_division(perms)
+    mine_only = (scope or "mine").strip().lower() != "all" or not view_all
+    query: dict = {"cancelled": {"$ne": True}}
+    if div == "operator" and mine_only:
+        email = (user.get("email") or "").strip()
+        if email:
+            query["operator_splits.operator_email"] = email
+    raw = await db.orders.find(query, _DIVISION_TASK_PROJECTION).to_list(1000)
+    tasks = _build_division_tasks(raw, div, user, mine_only=mine_only)
+    return {
+        "division": div,
+        "slug": cfg["slug"],
+        "label": cfg["label"],
+        "scope": "mine" if mine_only else "all",
+        "can_view_all": view_all,
+        "can_view_po": "po.view" in perms,
+        "required_input": cfg["required_input"],
+        "tasks": tasks,
+        "count": len(tasks),
+        "generated_at": now_iso(),
+    }
 
 
 # ---- Screener info (Requirement 10) ----
