@@ -55,11 +55,9 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   }, [canEdit]);
 
   const totalAssigned = splits.reduce((s, x) => s + Number(x.quantity || 0), 0);
-  const helperPrepared = order?.helper_prepared_print_qty;
-  const helperCapSet = helperPrepared !== null && helperPrepared !== undefined;
   const assignmentCap = typeof order?.operator_assignment_cap === "number"
     ? order.operator_assignment_cap
-    : (helperCapSet ? Math.min(printQtyTotal, Number(helperPrepared)) : printQtyTotal);
+    : printQtyTotal;
   const remaining = assignmentCap - totalAssigned;
   const ready = getWorkflowReady(order);
   const scheduleLocked = mode !== "progress" && !ready.penjadwalan;
@@ -121,11 +119,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       return;
     }
     if (totalAssigned > assignmentCap) {
-      setErr(
-        helperCapSet
-          ? `Total pembagian ${totalAssigned} melebihi qty Helper Persiapan (${assignmentCap}).`
-          : `Total pembagian ${totalAssigned} melebihi total qty Cetak PO (${printQtyTotal}).`
-      );
+      setErr(`Total pembagian ${totalAssigned} melebihi total qty Cetak PO (${printQtyTotal}).`);
       return;
     }
     for (const s of splits) {
@@ -238,11 +232,6 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
             Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
           </span>
         )}
-        {helperCapSet && (
-          <span className="muted small" data-testid="operator-helper-cap-badge">
-            Cap Helper: {Number(assignmentCap).toLocaleString("id-ID")} pcs
-          </span>
-        )}
       </QtyOpsHead>
 
       {showProgress && (
@@ -352,8 +341,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
           <div className="split-edit-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
             <h4 style={{ margin: 0 }} data-testid="atur-pembagian-title">Atur Pembagian</h4>
             <span className={remaining < 0 ? "warn" : "muted"}>
-              Sisa cap: {remaining.toLocaleString("id-ID")} pcs
-              {helperCapSet ? " (Helper Persiapan)" : " (scope Cetak)"}
+              Sisa cap: {remaining.toLocaleString("id-ID")} pcs (scope Cetak)
             </span>
           </div>
           {splits.map((s, i) => {

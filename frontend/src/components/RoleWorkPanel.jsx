@@ -306,11 +306,16 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
         compactHeader={compactHeader}
       />
       <MetricRow columns={4} testid={`${division.id}-work-metrics`}>
-        <MetricCell label="Target" value={model.headerTarget} testid="work-target" />
-        <MetricCell label="Sudah Dikerjakan" value={model.headerDone} testid="work-done" />
-        <MetricCell label="Sisa" value={model.headerRemain} testid="work-remain" />
+        <MetricCell label={model.metricLabels?.target || "Target"} value={model.headerTarget} testid="work-target" />
+        <MetricCell label={model.metricLabels?.done || "Sudah Dikerjakan"} value={model.headerDone} testid="work-done" />
+        <MetricCell label={model.metricLabels?.remain || "Sisa"} value={model.headerRemain} testid="work-remain" />
         <MetricCell label="Status" value={model.status} format="text" className="is-status" testid="work-status" />
       </MetricRow>
+      {model.overPrepared > 0 && (
+        <p className="muted small" data-testid="helper-over-prepared-note">
+          Kelebihan persiapan: {fmtQty(model.overPrepared)}
+        </p>
+      )}
       {model.gateLocked && <p className="muted small" data-testid={`${division.id}-work-gate`}>{model.gateMsg}</p>}
       {err && <div className="error" data-testid={`${division.id}-work-error`}>{err}</div>}
       {model.lines.length === 0 && (

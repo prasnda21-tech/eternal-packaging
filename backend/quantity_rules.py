@@ -137,24 +137,59 @@ def helper_prepared_print_qty(order: dict) -> Optional[int]:
 
 
 def helper_prepared_for_line(order: dict, line_idx: int) -> Optional[int]:
-    """Per-line helper prepared. None jika items per-line belum ada."""
+    """Per-line helper prepared actual. None jika items per-line belum ada.
+
+    Tidak di-clamp ke qty_required: kelebihan persiapan vs jadwal harus tetap terbaca.
+    """
     hp = order.get("helper_prep") or {}
     items = hp.get("items") or []
     for it in items:
         if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
-            req = max(0, _safe_int(it.get("qty_required")))
-            prep = max(0, _safe_int(it.get("qty_prepared")))
-            return min(prep, req) if req else prep
+            return max(0, _safe_int(it.get("qty_prepared")))
     return None
 
 
+def helper_target_qty(order: dict) -> int:
+    """Target Persiapan Helper = active operator schedule. Bukan actual Helper.
+
+    Jika belum ada assignment, fallback ke qty Cetak PO.
+    """
+    splits = order.get("operator_splits") or []
+    if splits:
+        return operator_assigned_qty(order)
+    return print_qty_total(order)
+
+
+def helper_target_for_line(order: dict, line_idx: int) -> int:
+    """Target Helper per line Cetak dari active schedule."""
+    splits = order.get("operator_splits") or []
+    idx = int(line_idx)
+    if splits:
+        total = 0
+        for s in splits:
+            if s.get("line_idx") is None:
+                continue
+            if _safe_int(s.get("line_idx"), default=-1) == idx:
+                total += max(0, _safe_int(s.get("quantity")))
+        return total
+    lis = order.get("line_items") or []
+    if 0 <= idx < len(lis):
+        return max(0, _safe_int(lis[idx].get("quantity")))
+    return 0
+
+
+def helper_over_prepared_qty(order: dict) -> int:
+    """Actual Helper di atas target jadwal. 0 jika tidak kelebihan."""
+    hp = order.get("helper_prep") or {}
+    raw = hp.get("qty_prepared")
+    if raw is None or str(raw).strip() == "":
+        return 0
+    return max(0, _safe_int(raw) - helper_target_qty(order))
+
+
 def operator_assignment_cap(order: dict) -> int:
-    """Hard cap assignment Operator = min(print_qty, helper_prepared jika sudah diisi)."""
-    print_total = print_qty_total(order)
-    prepared = helper_prepared_print_qty(order)
-    if prepared is None:
-        return print_total
-    return min(print_total, prepared)
+    """Cap Penjadwalan Operator = qty Cetak PO. Tidak dibatasi Helper Prepared."""
+    return print_qty_total(order)
 
 
 def print_available_for_packing(order: dict) -> int:
@@ -383,18 +418,13 @@ def validate_operator_assignment_total(
     print_total: int,
     prepared_print_qty: Optional[int] = None,
 ) -> Optional[str]:
+    """Scheduling is free of Helper qty. prepared_print_qty is ignored (kept for callers).
+
+    Actual Operator print still uses validate_print_completed_total vs Helper.
+    """
     if total_split < 0:
         return "Qty assignment tidak boleh negatif."
-    cap = print_total
-    if prepared_print_qty is not None:
-        cap = min(print_total, max(0, _safe_int(prepared_print_qty)))
-    if total_split > cap:
-        if prepared_print_qty is not None and cap < print_total:
-            return (
-                f"Total pembagian Operator ({total_split}) melebihi qty Helper Persiapan ({cap}). "
-                f"Operator hanya boleh mengerjakan qty Cetak yang sudah disiapkan Helper "
-                f"(maks {cap} dari {print_total} qty Cetak)."
-            )
+    if total_split > print_total:
         return (
             f"Total pembagian Operator ({total_split}) melebihi total qty Cetak PO ({print_total}). "
             "Operator hanya untuk barang dengan proses Cetak."

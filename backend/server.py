@@ -109,6 +109,9 @@ from quantity_rules import (
     available_for_packing as _qr_available_for_packing,
     helper_prepared_for_line as _qr_helper_prepared_for_line,
     helper_prepared_print_qty as _qr_helper_prepared_print_qty,
+    helper_over_prepared_qty as _qr_helper_over_prepared_qty,
+    helper_target_for_line as _qr_helper_target_for_line,
+    helper_target_qty as _qr_helper_target_qty,
     is_fully_delivered as _qr_is_fully_delivered,
     is_print_line as _qr_is_print_line,
     apply_delivery_from_proof_evidence as _qr_apply_delivery_from_proof_evidence,
@@ -885,6 +888,7 @@ _DERIVED_ORDER_KEYS = (
     "requires_printing", "print_qty_total", "packing_required_total",
     "non_print_qty_total", "print_completed_qty", "available_for_packing",
     "operator_assigned_qty", "helper_prepared_print_qty",
+    "helper_target_qty", "helper_over_prepared_qty",
     "operator_assignment_cap", "print_available_for_packing",
     "print_qty_target", "print_qty_remaining", "print_status",
     "workflow_ready", "operator_unlocked", "screener_gate_reason",
@@ -905,6 +909,8 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["print_completed_qty"] = _print_completed_qty(order)
     order["operator_assigned_qty"] = _operator_assigned_qty(order)
     order["helper_prepared_print_qty"] = _helper_prepared_print_qty(order)
+    order["helper_target_qty"] = _qr_helper_target_qty(order)
+    order["helper_over_prepared_qty"] = _qr_helper_over_prepared_qty(order)
     order["operator_assignment_cap"] = _operator_assignment_cap(order)
     order["print_available_for_packing"] = _print_available_for_packing(order)
     order["available_for_packing"] = _available_for_packing(order)
@@ -1974,8 +1980,6 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
             400,
             f"Qty disiapkan Helper ({payload.qty_prepared}) melebihi total qty Cetak ({print_cap})."
         )
-    if payload.qty_prepared > payload.qty_required:
-        raise HTTPException(400, "Qty disiapkan tidak boleh melebihi qty dibutuhkan.")
     err = _qr_validate_helper_prepared_qty(payload.qty_prepared, order)
     if err:
         raise HTTPException(400, err)
@@ -2044,10 +2048,18 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
                 raise HTTPException(400, "Line item bukan proses Cetak — tidak masuk Persiapan Helper.")
             line_qty = int((line_items[it.line_idx] or {}).get("quantity") or 0)
             already = sum(int(e.get("qty") or 0) for e in entries if e.get("line_idx") == it.line_idx and not e.get("cancelled"))
-            if already + inc > line_qty:
+            new_total = already + inc
+            if new_total > line_qty:
                 raise HTTPException(
                     400,
-                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({already + inc}) melebihi qty Cetak line ({line_qty}).",
+                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi qty Cetak line ({line_qty}).",
+                )
+            target = _qr_helper_target_for_line(order, it.line_idx)
+            new_cap = min(line_qty, max(target, already))
+            if new_total > new_cap:
+                raise HTTPException(
+                    400,
+                    f"Qty disiapkan untuk '{line_items[it.line_idx].get('name')}' ({new_total}) melebihi target jadwal ({target}).",
                 )
             entries, _, created = append_qty_entry(
                 entries, qty=inc, stage="helper", user=user, now=now_iso(),
@@ -2074,12 +2086,12 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
         if prep_input < 0:
             prep_input = 0
         if idx in print_idx_set:
-            req = req_full
-            prep = min(prep_input, req)  # cap: tidak boleh over-prep per line
-            if prep_input > req:
+            req = _qr_helper_target_for_line(order, idx)
+            prep = prep_input
+            if prep_input > req_full:
                 raise HTTPException(
                     400,
-                    f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req})."
+                    f"Qty disiapkan untuk '{li.get('name')}' ({prep_input}) melebihi qty Cetak line ({req_full})."
                 )
             shortage = max(req - prep, 0)
             total_required += req
@@ -2187,14 +2199,13 @@ def _po_needs_screener(o: dict) -> bool:
 
 
 def _po_needs_helper(o: dict) -> bool:
-    # Revisi routing: Helper hanya menyiapkan barang Cetak. Full non-print PO
-    # tidak butuh Persiapan Helper. Tersedia setelah Penjadwalan (paralel Screener).
+    # Helper target mengikuti jadwal aktif. Actual prepared tidak diubah penjadwalan.
     if not _requires_printing(o) or not _stage_penjadwalan_done(o):
         return False
+    target = _qr_helper_target_qty(o)
     hp = o.get("helper_prep") or {}
-    total_req = hp.get("qty_required") or _print_qty_total(o) or 0
     total_prep = hp.get("qty_prepared") or 0
-    return total_prep < total_req or total_req == 0
+    return total_prep < target
 
 
 def _po_needs_design_upload(o: dict) -> bool:
@@ -2471,9 +2482,8 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
         print_qty_total = _print_qty_total(order)
 
         total_split = sum(max(0, int(s.quantity)) for s in payload.splits)
-        err = _qr_validate_operator_assignment_total(
-            total_split, print_qty_total, _helper_prepared_print_qty(order)
-        )
+        helper_before = order.get("helper_prep")
+        err = _qr_validate_operator_assignment_total(total_split, print_qty_total)
         if err:
             raise HTTPException(400, err)
         if any(int(s.quantity) < 0 for s in payload.splits):
@@ -2494,17 +2504,7 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
             per_line_totals[s.line_idx] = per_line_totals.get(s.line_idx, 0) + int(s.quantity)
         for idx, qty in per_line_totals.items():
             line_qty = int(line_items[idx].get("quantity") or 0)
-            line_cap = line_qty
-            prep_line = _qr_helper_prepared_for_line(order, idx)
-            if prep_line is not None:
-                line_cap = min(line_qty, prep_line)
-            if qty > line_cap:
-                if prep_line is not None and prep_line < line_qty:
-                    raise HTTPException(
-                        400,
-                        f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) "
-                        f"melebihi qty Helper Persiapan line tersebut ({prep_line})."
-                    )
+            if qty > line_qty:
                 raise HTTPException(
                     400,
                     f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) melebihi qty line ({line_qty})."
@@ -2537,6 +2537,8 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
                 "work_date": wd,
             })
         order["operator_splits"] = new_splits
+        if order.get("helper_prep") != helper_before:
+            raise HTTPException(400, "Penjadwalan tidak boleh mengubah Qty Persiapan Helper.")
         add_timeline(order, order["current_stage"], user, note=f"Assign {len(new_splits)} operator")
         _sync_workflow_stage(order)
 
@@ -3836,6 +3838,15 @@ def _production_row(o: dict) -> dict:
     for the Excel export — the main row still contains the aggregate qty."""
     splits = o.get("operator_splits", []) or []
     hp = o.get("helper_prep") or {}
+    helper_target = _qr_helper_target_qty(o) if (splits or hp) else hp.get("qty_required")
+    helper_prepared = hp.get("qty_prepared")
+    helper_shortage = (
+        max(int(helper_target or 0) - int(helper_prepared or 0), 0)
+        if (splits or hp) else hp.get("qty_shortage")
+    )
+    helper_status = (
+        "Barang Kurang" if helper_shortage else "Cukup"
+    ) if (splits or hp) else hp.get("shortage_status")
     sc = o.get("screener_info") or {}
     loading = o.get("loading_checklist") or {}
     hold = bool(o.get("hold"))
@@ -3884,10 +3895,10 @@ def _production_row(o: dict) -> dict:
         "delivery_deadline_source": o.get("delivery_deadline_source"),
         "screen_qty": sc.get("screen_qty"),
         "screener_notes": sc.get("notes"),
-        "helper_required": hp.get("qty_required"),
-        "helper_prepared": hp.get("qty_prepared"),
-        "helper_shortage": hp.get("qty_shortage"),
-        "helper_shortage_status": hp.get("shortage_status"),
+        "helper_required": helper_target,
+        "helper_prepared": helper_prepared,
+        "helper_shortage": helper_shortage,
+        "helper_shortage_status": helper_status,
         # Task 12 bugfix: kolom Packing memakai semantic derived dari
         # current_stage — konsisten dengan Status Akhir (STAGES[current_stage]).
         # PO existing dengan stale packing_status="Sudah" (dulu di-set otomatis

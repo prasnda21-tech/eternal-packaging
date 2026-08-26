@@ -306,14 +306,16 @@ def _helper_po(prepared=2000, completed=None, packed=0, delivered=None, print_qt
     return o
 
 
-def test_a_helper_prepared_caps_operator_assignment():
-    """TEST A: Helper 2000, Cetak 3000 → assignment max 2000; 2001 ditolak."""
+def test_a_scheduling_not_capped_by_helper_prepared():
+    """TEST A: Helper 2000, Cetak 3000 → assignment boleh 3000; execution tetap cap Helper."""
     o = _helper_po(prepared=2000)
     assert print_qty_total(o) == 3000
     assert helper_prepared_print_qty(o) == 2000
-    assert operator_assignment_cap(o) == 2000
-    assert validate_operator_assignment_total(2000, 3000, 2000) is None
-    assert validate_operator_assignment_total(2001, 3000, 2000) is not None
+    assert operator_assignment_cap(o) == 3000
+    assert validate_operator_assignment_total(3000, 3000, 2000) is None
+    assert validate_operator_assignment_total(3001, 3000, 2000) is not None
+    assert validate_print_completed_total(2000, o) is None
+    assert validate_print_completed_total(2001, o) is not None
 
 
 def test_b_packing_print_capped_by_completed_and_helper():
@@ -336,17 +338,18 @@ def test_b_packing_print_never_exceeds_helper_even_if_completed_higher():
     assert available_for_packing(o) == 5000  # 3000 non-print + 2000 print
 
 
-def test_c_helper_increase_unlocks_more_operator_qty():
-    """TEST C: Helper 2000 → 2500 membuka tambahan assignment 500."""
+def test_c_helper_increase_unlocks_more_operator_execution():
+    """TEST C: Helper 2000 → 2500 membuka tambahan actual print, bukan scheduling."""
     o = _helper_po(prepared=2000)
-    assert operator_assignment_cap(o) == 2000
-    assert validate_operator_assignment_total(2000, 3000, 2000) is None
-    assert validate_operator_assignment_total(2500, 3000, 2000) is not None
+    assert operator_assignment_cap(o) == 3000
+    assert validate_operator_assignment_total(3000, 3000, 2000) is None
+    assert validate_print_completed_total(2000, o) is None
+    assert validate_print_completed_total(2500, o) is not None
     o["helper_prep"]["qty_prepared"] = 2500
     o["helper_prep"]["items"][0]["qty_prepared"] = 2500
-    assert operator_assignment_cap(o) == 2500
-    assert validate_operator_assignment_total(2500, 3000, 2500) is None
-    assert validate_operator_assignment_total(2501, 3000, 2500) is not None
+    assert operator_assignment_cap(o) == 3000
+    assert validate_print_completed_total(2500, o) is None
+    assert validate_print_completed_total(2501, o) is not None
 
 
 def test_d_delivered_capped_by_packed():
