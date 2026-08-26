@@ -1228,6 +1228,19 @@
 .wage-item-results li{display:flex;gap:8px;align-items:center;margin-top:4px}
 .wage-save-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .wage-err{color:#8f1f1f;margin:0}
+.op-target-settings{display:grid;gap:12px;width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+.op-target-card{padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface);min-width:0;max-width:100%;box-sizing:border-box}
+.op-target-card h3{margin:0 0 10px;font-size:14px;letter-spacing:.04em;text-transform:uppercase}
+.op-target-table-wrap{width:100%;max-width:100%;min-width:0;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px}
+.op-target-table{width:100%;max-width:100%;min-width:480px;border-collapse:separate;border-spacing:0;table-layout:auto;font-size:13px;box-sizing:border-box}
+.op-target-table thead th{background:var(--ep-dark);color:#fff;padding:8px 10px;text-align:left;font:10.5px 'IBM Plex Mono';letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
+.op-target-table thead th.num,.op-target-table tbody td.num{text-align:right}
+.op-target-table tbody td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;background:var(--surface);box-sizing:border-box}
+.op-target-table .op-target-name{width:auto;min-width:0}
+.op-target-table .op-target-id,.op-target-table .op-target-qty{width:1%;white-space:nowrap}
+.op-target-qty-input{display:block;width:100%;max-width:140px;min-width:72px;margin-left:auto;box-sizing:border-box;min-height:36px;padding:6px 10px;border:1px solid #D9BE7A;background:#FBF4DE;color:#1f2a24;font:650 16px 'IBM Plex Mono',monospace;border-radius:4px;text-align:right}
+.op-target-qty-input:focus{outline:none;border-color:#C4A24A;box-shadow:0 0 0 1px #C4A24A}
+.op-target-qty-input:disabled{background:#EEF7F2;color:var(--soft);border-color:var(--line)}
 @media (max-width:480px){
   .tracking-card{max-width:100%}
   .tracking-po strong{font-size:16px;word-break:break-word}

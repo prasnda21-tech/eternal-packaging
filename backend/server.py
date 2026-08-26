@@ -5901,7 +5901,7 @@ async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
             pass
         raise HTTPException(
             502,
-            "Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.",
+            "Gagal sinkronisasi Barang/Jasa dari Accurate. Data existing tidak diubah.",
         )
     return result
 

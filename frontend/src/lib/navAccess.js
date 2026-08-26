@@ -52,7 +52,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
-  { key: NAV_KEYS.masterItems, label: "Master Barang/Jasa", parent: NAV_KEYS.inventory },
+  { key: NAV_KEYS.masterItems, label: "Barang/Jasa", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },

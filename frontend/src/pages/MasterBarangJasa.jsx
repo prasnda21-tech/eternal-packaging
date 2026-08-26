@@ -41,7 +41,7 @@ export default function MasterBarangJasa() {
       setData(d);
     } catch (ex) {
       const det = ex.response?.data?.detail;
-      setLoadError(typeof det === "object" ? det.message : (det || "Gagal memuat Master Barang/Jasa"));
+      setLoadError(typeof det === "object" ? det.message : (det || "Gagal memuat Barang/Jasa"));
     } finally {
       setLoading(false);
     }
@@ -94,7 +94,7 @@ export default function MasterBarangJasa() {
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
-          <h1 data-testid="master-items-title">Master Barang/Jasa</h1>
+          <h1 data-testid="master-items-title">Barang/Jasa</h1>
           <p className="subhead">Referensi resmi item Eternal Packaging dari Accurate</p>
         </div>
         {canSync && (
@@ -219,7 +219,7 @@ export default function MasterBarangJasa() {
             {!loading && items.length === 0 && (
               <tr>
                 <td colSpan={7} className="muted small" data-testid="master-items-empty">
-                  Belum ada Master Barang/Jasa. {canSync ? "Klik Sinkronkan dari Accurate." : "Hubungi Admin untuk sinkronisasi."}
+                  Belum ada Barang/Jasa. {canSync ? "Klik Sinkronkan dari Accurate." : "Hubungi Admin untuk sinkronisasi."}
                 </td>
               </tr>
             )}

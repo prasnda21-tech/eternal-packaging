@@ -17,8 +17,8 @@ from services.accurate import AccurateClient, normalize_accurate_item
 
 COLLECTION = "master_items"
 UNKNOWN_ITEM_MSG = (
-    "Item belum tersedia di Master Barang/Jasa. "
-    "Sinkronkan Master Barang/Jasa dari Accurate terlebih dahulu."
+    "Item belum tersedia di Barang/Jasa. "
+    "Sinkronkan Barang/Jasa dari Accurate terlebih dahulu."
 )
 ACCURATE_OWNED_FIELDS = (
     "item_code",
@@ -137,7 +137,7 @@ async def upsert_master_item(db, incoming: Dict[str, Any]) -> Tuple[Dict[str, An
 async def sync_master_items(db, client: AccurateClient) -> Dict[str, Any]:
     """Pull Accurate items and upsert. Never truncates. Idempotent by accurate_item_id."""
     if _sync_lock.locked():
-        raise SyncInProgressError("Sinkronisasi Master Barang/Jasa sedang berjalan")
+        raise SyncInProgressError("Sinkronisasi Barang/Jasa sedang berjalan")
     async with _sync_lock:
         rows = await client.fetch_all_items()
         created = updated = unchanged = failed = 0

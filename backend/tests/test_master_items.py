@@ -430,7 +430,7 @@ def test_no_name_match_different_id():
         _await(resolve_po_line_items(db, FakeAccurate([]), lines, require_master=True))
         assert False, "must not match by name"
     except MasterItemUnresolvedError as e:
-        assert "Sinkronkan Master Barang/Jasa" in str(e)
+        assert "Sinkronkan Barang/Jasa" in str(e)
     # still only master 101
     assert _await(db.master_items.count_documents({})) == 1
 

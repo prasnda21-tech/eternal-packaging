@@ -1,5 +1,5 @@
 export const SYNC_FAIL_MSG =
-  "Gagal sinkronisasi Master Barang/Jasa dari Accurate. Data existing tidak diubah.";
+  "Gagal sinkronisasi Barang/Jasa dari Accurate. Data existing tidak diubah.";
 
 /** Sync banner state. Failures are never restored on reload. */
 export function nextMasterSyncBanner(action, payload) {
