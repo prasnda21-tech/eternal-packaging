@@ -43,6 +43,7 @@ from services.operator_schedule import (
 )
 from services.operator_payroll import (
     PAYROLL_EXPORT_COLUMNS,
+    PAYROLL_REKAP_COLUMNS,
     SETTINGS_KEY as OPERATOR_WAGE_SETTINGS_KEY,
     compute_operator_payroll,
     item_identity as _wage_item_identity,
@@ -52,6 +53,7 @@ from services.operator_payroll import (
     normalize_wage_settings,
     parse_operator_ids as _parse_operator_ids,
     merge_operators_for_settings as _merge_wage_operators,
+    validate_wage_settings as _validate_wage_settings,
 )
 from services.payment_files import (
     MAX_PAYMENT_PROOFS,
@@ -6723,6 +6725,8 @@ class OperatorWageOverrideIn(BaseModel):
     item_code: Optional[str] = None
     item_name: Optional[str] = None
     rate_per_pcs: Optional[float] = None
+    rate_type: Optional[str] = None
+    effective_from: Optional[str] = None
     active: bool = True
 
 
@@ -6731,12 +6735,36 @@ class OperatorWageOperatorIn(BaseModel):
     operator_email: Optional[str] = None
     operator_name: Optional[str] = None
     default_rate_per_pcs: Optional[float] = None
+    effective_from: Optional[str] = None
+    active: Optional[bool] = True
+
+
+class OperatorWageBonusIn(BaseModel):
+    target_qty: Optional[float] = None
+    amount: Optional[float] = None
+    mode: Optional[str] = None
+    effective_from: Optional[str] = None
+    active: Optional[bool] = True
+
+
+class OperatorWageProductAdditionIn(BaseModel):
+    operator_user_id: Optional[str] = None
+    operator_email: Optional[str] = None
+    accurate_item_id: Optional[str] = None
+    master_item_id: Optional[str] = None
+    item_code: Optional[str] = None
+    item_name: Optional[str] = None
+    additional_rate_per_pcs: Optional[float] = None
+    effective_from: Optional[str] = None
+    active: bool = True
 
 
 class OperatorWageSettingsPayload(BaseModel):
     default_rate_per_pcs: Optional[float] = None
     operators: Optional[List[OperatorWageOperatorIn]] = None
     overrides: Optional[List[OperatorWageOverrideIn]] = None
+    bonus: Optional[OperatorWageBonusIn] = None
+    product_additions: Optional[List[OperatorWageProductAdditionIn]] = None
 
 
 async def _require_gaji_view(user: dict):
@@ -6759,27 +6787,20 @@ async def gaji_operator_report(
     await _require_gaji_view(user)
     start, end, preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
     ids = _parse_operator_ids(operator_id, operator_ids)
-    pipeline = build_operator_analytics_pipeline(
-        ids[0] if len(ids) == 1 else None, None, item, None, operator_ids=ids or None,
-    )
+    # One aggregation: keep the full operator dropdown; apply selection in compute.
+    pipeline = build_operator_analytics_pipeline(None, None, item, None, operator_ids=None)
     blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
     wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
+    docs = blob.get("docs") or []
     result = compute_operator_payroll(
-        blob.get("docs") or [],
+        docs,
         wage,
         date_from=start,
         date_to=end,
         operator_ids=ids or None,
         item=item,
     )
-    ops_facet = [
-        {"id": r.get("_id"), "name": r.get("name") or r.get("_id")}
-        for r in (blob.get("operators") or [])
-        if r.get("_id")
-    ]
-    ops, items = _payroll_filter_options(blob.get("docs") or [])
-    if ops_facet:
-        ops = ops_facet
+    ops, items = _payroll_filter_options(docs)
     result["filters"] = {"operators": ops, "items": items}
     result["period"]["preset"] = preset
     result["generated_at"] = now_iso()
@@ -6799,9 +6820,7 @@ async def gaji_operator_export(
     await _require_gaji_view(user)
     start, end, _preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
     ids = _parse_operator_ids(operator_id, operator_ids)
-    pipeline = build_operator_analytics_pipeline(
-        ids[0] if len(ids) == 1 else None, None, item, None, operator_ids=ids or None,
-    )
+    pipeline = build_operator_analytics_pipeline(None, None, item, None, operator_ids=None)
     blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
     wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
     result = compute_operator_payroll(
@@ -6813,20 +6832,27 @@ async def gaji_operator_export(
         item=item,
     )
     rows = result.get("rows") or []
+    people = result.get("people") or []
     keys = [c[0] for c in PAYROLL_EXPORT_COLUMNS]
     headers = [c[1] for c in PAYROLL_EXPORT_COLUMNS]
+    rekap_keys = [c[0] for c in PAYROLL_REKAP_COLUMNS]
+    rekap_headers = [c[1] for c in PAYROLL_REKAP_COLUMNS]
     fmt = (fmt or "xlsx").strip().lower()
     filename = f"Gaji_Operator_{start.isoformat()}_{end.isoformat()}." + ("xlsx" if fmt == "xlsx" else "csv")
-    numeric = {"qty_completed", "rate_per_pcs", "total_upah"}
+    numeric = {"qty_completed", "rate_per_pcs", "base_wage", "product_addition", "total_upah", "qty", "bonus"}
     if fmt == "xlsx":
         from io import BytesIO
         from openpyxl import Workbook
         wb = Workbook()
         ws = wb.active
-        ws.title = "Gaji Operator"
-        ws.append(headers)
+        ws.title = "Rekap"
+        ws.append(rekap_headers)
+        for row in people:
+            ws.append([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in rekap_keys])
+        detail = wb.create_sheet("Rincian")
+        detail.append(headers)
         for row in rows:
-            ws.append([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in keys])
+            detail.append([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in keys])
         buf = BytesIO()
         wb.save(buf)
         payload, media = buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -6836,6 +6862,10 @@ async def gaji_operator_export(
         buf = StringIO()
         buf.write("\ufeff")
         writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(rekap_headers)
+        for row in people:
+            writer.writerow([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in rekap_keys])
+        writer.writerow([])
         writer.writerow(headers)
         for row in rows:
             writer.writerow([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in keys])
@@ -6876,7 +6906,18 @@ async def put_operator_wage_settings(payload: OperatorWageSettingsPayload, user=
             [o.model_dump() if hasattr(o, "model_dump") else o.dict() for o in payload.overrides]
             if payload.overrides is not None else (prev.get("overrides") or [])
         ),
+        "bonus": (
+            (payload.bonus.model_dump() if hasattr(payload.bonus, "model_dump") else payload.bonus.dict())
+            if payload.bonus is not None else prev.get("bonus")
+        ),
+        "product_additions": (
+            [o.model_dump() if hasattr(o, "model_dump") else o.dict() for o in payload.product_additions]
+            if payload.product_additions is not None else (prev.get("product_additions") or [])
+        ),
     }
+    err = _validate_wage_settings(incoming)
+    if err:
+        raise HTTPException(400, err)
     saved = _wage_snapshot_on_save(prev, incoming, user, now_iso())
     saved["key"] = OPERATOR_WAGE_SETTINGS_KEY
     await db.app_settings.update_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"$set": saved}, upsert=True)
