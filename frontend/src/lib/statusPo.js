@@ -1,5 +1,8 @@
 import { STAGES } from "./constants";
+import { dateKey } from "./shipmentStatus";
 import { resolveTimelineChip } from "./timelineChip";
+
+export const EMPTY_STATUS_PO_FILTERS = { po: "", customer: "", status: "", dateFrom: "", dateTo: "" };
 
 export const STATUS_PO_VIEWS = {
   active: "PO Aktif",
@@ -49,4 +52,29 @@ export function deliveredPercentLabel(pct) {
   const n = Number(pct);
   if (!Number.isFinite(n) || n <= 0) return "0%";
   return `${Math.round(n)}%`;
+}
+
+export function statusPoFilterOptions(rows, selected) {
+  const set = new Set();
+  for (const r of rows || []) {
+    if (r?.status) set.add(r.status);
+  }
+  if (selected) set.add(selected);
+  return [...set].sort((a, b) => a.localeCompare(b, "id"));
+}
+
+/** Same AND + partial text pattern as Status Pengiriman (`matchesShipFilters`). */
+export function matchesStatusPoFilters(row, filters) {
+  const po = (filters?.po || "").trim().toLowerCase();
+  const customer = (filters?.customer || "").trim().toLowerCase();
+  const status = (filters?.status || "").trim();
+  const dateFrom = (filters?.dateFrom || "").trim();
+  const dateTo = (filters?.dateTo || "").trim();
+  if (po && !(row?.po_number || "").toLowerCase().includes(po)) return false;
+  if (customer && !(row?.customer || "").toLowerCase().includes(customer)) return false;
+  if (status && (row?.status || "") !== status) return false;
+  const key = dateKey(row?.order_date);
+  if (dateFrom && (!key || key < dateFrom)) return false;
+  if (dateTo && (!key || key > dateTo)) return false;
+  return true;
 }

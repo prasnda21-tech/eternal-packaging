@@ -9,6 +9,7 @@ from services.status_po import (
     build_status_po,
     effective_workflow_status,
     filter_orders_for_view,
+    matches_status_po_filters,
     status_po_row,
 )
 from services.shipment_status import status_percent
@@ -65,3 +66,66 @@ def test_build_rows_have_required_columns():
     row = data["rows"][0]
     for key in ("po_number", "order_date", "customer", "status", "percent_delivered"):
         assert key in row
+
+
+def _row(**kw):
+    return {
+        "po_number": kw.get("po_number", "PO-001"),
+        "customer": kw.get("customer", "ABC Pack"),
+        "status": kw.get("status", "Operator"),
+        "order_date": kw.get("order_date", "2026-08-10"),
+    }
+
+
+def test_filter_po_partial():
+    assert matches_status_po_filters(_row(), {"po": "PO-001"}) is True
+    assert matches_status_po_filters(_row(po_number="PO-002"), {"po": "PO-001"}) is False
+    assert matches_status_po_filters(_row(), {"po": "001"}) is True
+
+
+def test_filter_customer_partial():
+    assert matches_status_po_filters(_row(), {"customer": "ABC"}) is True
+    assert matches_status_po_filters(_row(customer="XYZ"), {"customer": "ABC"}) is False
+
+
+def test_filter_status_exact():
+    assert matches_status_po_filters(_row(status="Operator"), {"status": "Operator"}) is True
+    assert matches_status_po_filters(_row(status="Packing"), {"status": "Operator"}) is False
+
+
+def test_filter_date_range():
+    f = {"date_from": "2026-08-01", "date_to": "2026-08-31"}
+    assert matches_status_po_filters(_row(order_date="2026-08-10"), f) is True
+    assert matches_status_po_filters(_row(order_date="2026-07-15"), f) is False
+
+
+def test_filter_combined_and():
+    f = {"customer": "ABC", "status": "Operator", "date_from": "2026-08-01", "date_to": "2026-08-31"}
+    assert matches_status_po_filters(_row(), f) is True
+    assert matches_status_po_filters(_row(customer="XYZ"), f) is False
+    assert matches_status_po_filters(_row(status="Packing"), f) is False
+    assert matches_status_po_filters(_row(order_date="2026-07-15"), f) is False
+
+
+def test_filter_empty_matches_all():
+    assert matches_status_po_filters(_row(), {}) is True
+    assert matches_status_po_filters(_row(), {"po": "", "customer": "", "status": ""}) is True
+
+
+def test_build_status_po_applies_filters_after_view():
+    orders = [
+        _po(id="a", po_number="PO-001", customer="ABC", current_stage=8, order_date="2026-08-10"),
+        _po(id="b", po_number="PO-002", customer="XYZ", current_stage=8, order_date="2026-08-20"),
+        _po(id="c", po_number="PO-003", customer="ABC", current_stage=14, qty_delivered=10000, delivery_status="Terkirim", order_date="2026-08-12"),
+    ]
+    data = build_status_po(orders, "active", filters={"customer": "ABC"})
+    assert [r["id"] for r in data["rows"]] == ["a"]
+    assert data["total"] == 1
+    reset = build_status_po(orders, "active")
+    assert {r["id"] for r in reset["rows"]} == {"a", "b"}
+
+
+def test_build_status_po_empty_filter_result():
+    data = build_status_po([_po(po_number="PO-001")], filters={"po": "NOPE"})
+    assert data["rows"] == []
+    assert data["total"] == 0

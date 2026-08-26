@@ -1666,6 +1666,9 @@ html:has(.ship-status-page) #root{
 .ship-need-order{
   min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#eef2f5;color:#6a7680;border-radius:3px;cursor:not-allowed;
 }
+.ship-reset-btn{
+  min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer;
+}
 .ship-status-grid{
   flex:1 1 0;min-height:0;overflow:auto;width:100%;border:1px solid #c5ced6;
   -webkit-overflow-scrolling:touch;overscroll-behavior:contain;
