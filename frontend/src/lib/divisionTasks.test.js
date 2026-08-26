@@ -4,6 +4,8 @@ describe("division task helpers", () => {
   test("kerja href is focused work panel not full PO", () => {
     expect(taskWorkHref({ order_id: "po1", division: "operator" })).toBe("/po/po1/kerja?divisi=operator");
     expect(taskWorkHref({ order_id: "po1", division: "packing" })).not.toMatch(/^\/po\/po1$/);
+    expect(taskWorkHref({ order_id: "po1", division: "designer" })).toBe("/po/po1/kerja?divisi=designer");
+    expect(taskWorkHref({ order_id: "po1", division: "kepala_produksi", line_idx: 0 })).toBe("/po/po1/kerja?divisi=kepala_produksi&line=0");
   });
 
   test("search matches po customer item", () => {

@@ -5,16 +5,19 @@ describe("Division task UI", () => {
   const page = fs.readFileSync(path.join(__dirname, "DivisionTaskPage.jsx"), "utf8");
   const shell = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+  const lib = fs.readFileSync(path.join(__dirname, "../lib/divisionTasks.js"), "utf8");
   const packing = fs.readFileSync(path.join(__dirname, "../components/PackingPanel.jsx"), "utf8");
   const sj = fs.readFileSync(path.join(__dirname, "../components/SuratJalanPanel.jsx"), "utf8");
 
   test("sidebar Tugas per Divisi and all submenus", () => {
     expect(shell).toMatch(/Tugas per Divisi/);
     expect(shell).toMatch(/top-nav-tasks-\$\{id\}/);
-    expect(shell).toMatch(/"screener", "helper", "operator", "packing", "surat_jalan", "loading", "terkirim"/);
+    expect(shell).toMatch(/TASK_NAV_ORDER/);
   });
 
   test("routes exist per division", () => {
+    expect(app).toMatch(/\/tasks\/designer/);
+    expect(app).toMatch(/\/tasks\/kepala-produksi/);
     expect(app).toMatch(/\/tasks\/screener/);
     expect(app).toMatch(/\/tasks\/helper/);
     expect(app).toMatch(/\/tasks\/operator/);
@@ -32,6 +35,11 @@ describe("Division task UI", () => {
 
   test("Yang Harus Diinput column and no Packing Sebagian", () => {
     expect(page).toMatch(/Yang Harus Diinput/);
+    expect(page).toMatch(/inputColLabel/);
+    expect(lib).toMatch(/Yang Harus Dilakukan/);
+    expect(lib).toMatch(/TUGAS DESIGNER/);
+    expect(lib).toMatch(/TUGAS KEPALA PRODUKSI/);
+    expect(lib).toMatch(/Sudah Dijadwalkan/);
     expect(page).toMatch(/required_input/);
     expect(page).not.toMatch(/Packing Sebagian/);
     expect(packing).not.toMatch(/Packing Sebagian/);

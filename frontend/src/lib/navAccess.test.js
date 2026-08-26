@@ -1,4 +1,4 @@
-import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, tasksNavVisible, NAV_KEYS, NAV_MENU_FALLBACK } from "./navAccess";
+import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, tasksNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -28,6 +28,8 @@ describe("tasksNavVisible", () => {
   test("admin-like grant shows all children", () => {
     const v = tasksNavVisible(has(
       NAV_KEYS.tasks,
+      NAV_KEYS.tasksDesigner,
+      NAV_KEYS.tasksKepalaProduksi,
       NAV_KEYS.tasksScreener,
       NAV_KEYS.tasksHelper,
       NAV_KEYS.tasksOperator,
@@ -37,6 +39,8 @@ describe("tasksNavVisible", () => {
       NAV_KEYS.tasksDelivery,
     ));
     expect(v.parent).toBe(true);
+    expect(v.designer).toBe(true);
+    expect(v.kepala_produksi).toBe(true);
     expect(v.screener).toBe(true);
     expect(v.helper).toBe(true);
     expect(v.operator).toBe(true);
@@ -44,6 +48,21 @@ describe("tasksNavVisible", () => {
     expect(v.surat_jalan).toBe(true);
     expect(v.loading).toBe(true);
     expect(v.terkirim).toBe(true);
+  });
+
+  test("designer upload perm shows Designer not Kepala Produksi", () => {
+    const v = tasksNavVisible(has("design.upload"));
+    expect(v.parent).toBe(true);
+    expect(v.designer).toBe(true);
+    expect(v.kepala_produksi).toBe(false);
+    expect(v.screener).toBe(false);
+  });
+
+  test("schedule.edit shows Kepala Produksi not Designer", () => {
+    const v = tasksNavVisible(has("schedule.edit"));
+    expect(v.parent).toBe(true);
+    expect(v.kepala_produksi).toBe(true);
+    expect(v.designer).toBe(false);
   });
 });
 
@@ -130,6 +149,8 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
     const keys = NAV_MENU_FALLBACK.map((m) => m.key);
     expect(keys).toEqual(expect.arrayContaining([
       NAV_KEYS.tasks,
+      NAV_KEYS.tasksDesigner,
+      NAV_KEYS.tasksKepalaProduksi,
       NAV_KEYS.tasksScreener,
       NAV_KEYS.tasksHelper,
       NAV_KEYS.tasksOperator,
@@ -140,6 +161,24 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
     ]));
     const parent = NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasks);
     expect(parent.label).toBe("Tugas per Divisi");
+    expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksDesigner).label).toBe("Designer");
+    expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksKepalaProduksi).label).toBe("Kepala Produksi");
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksDelivery).label).toBe("Driver / Terkirim");
+    const taskKeys = NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.tasks).map((m) => m.key);
+    expect(taskKeys).toEqual([
+      NAV_KEYS.tasksDesigner,
+      NAV_KEYS.tasksScreener,
+      NAV_KEYS.tasksKepalaProduksi,
+      NAV_KEYS.tasksHelper,
+      NAV_KEYS.tasksOperator,
+      NAV_KEYS.tasksPacking,
+      NAV_KEYS.tasksSuratJalan,
+      NAV_KEYS.tasksLoading,
+      NAV_KEYS.tasksDelivery,
+    ]);
+    expect(TASK_NAV_ORDER).toEqual([
+      "designer", "screener", "kepala_produksi", "helper", "operator",
+      "packing", "surat_jalan", "loading", "terkirim",
+    ]);
   });
 });

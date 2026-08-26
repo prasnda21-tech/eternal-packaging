@@ -11,7 +11,7 @@ import ConfirmActionModal from "./ConfirmActionModal";
 
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
-export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null, mode = "all" }) {
+export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null, mode = "all", focusLineIdx = null }) {
   const { user, hasPerm } = useAuth();
   const [operators, setOperators] = useState([]);
   const [splits, setSplits] = useState([]);
@@ -27,6 +27,11 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const printLines = useMemo(
     () => lineItems.map((li, idx) => ({ li, idx })).filter(({ li }) => isPrintLine(li)),
     [lineItems]
+  );
+  const focusedIdx = focusLineIdx == null || Number.isNaN(Number(focusLineIdx)) ? null : Number(focusLineIdx);
+  const visiblePrintLines = useMemo(
+    () => (focusedIdx == null ? printLines : printLines.filter(({ idx }) => Number(idx) === focusedIdx)),
+    [printLines, focusedIdx]
   );
   const printQtyTotal = useMemo(
     () => (typeof order?.print_qty_total === "number"
@@ -101,7 +106,8 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   }, [splits]);
 
   const addRow = () => {
-    setSplits([...splits, { operator_email: "", operator_name: "", quantity: 0, line_idx: printLines[0]?.idx ?? "", work_date: "" }]);
+    const defaultLine = focusedIdx != null ? focusedIdx : (visiblePrintLines[0]?.idx ?? printLines[0]?.idx ?? "");
+    setSplits([...splits, { operator_email: "", operator_name: "", quantity: 0, line_idx: defaultLine, work_date: "" }]);
   };
 
   const updateRow = (i, patch) => {
@@ -247,6 +253,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     );
   }
 
+  const focusLineQty = focusedIdx == null ? 0 : Number(lineItems[focusedIdx]?.quantity || 0);
+  const focusAssigned = focusedIdx == null ? 0 : (perLineAssigned[focusedIdx] || 0);
+  const focusRemain = Math.max(0, focusLineQty - focusAssigned);
+
   const lineName = (idx) => {
     const li = lineItems[Number(idx)];
     return li ? `${li.name}${li.color ? ` · ${li.color}` : ""}` : `Line #${idx}`;
@@ -258,7 +268,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         <span className={`qty-status ${statusClassFor(statusLabel)}`} data-testid={showProgress && !showSchedule ? "print-status-badge" : undefined}>{statusLabel}</span>
         {showSchedule && (
           <span className="muted small" data-testid="operator-scope-badge">
-            Scope Cetak: {printQtyTotal.toLocaleString("id-ID")} pcs
+            Scope Cetak: {(focusedIdx == null ? printQtyTotal : focusLineQty).toLocaleString("id-ID")} pcs
           </span>
         )}
       </QtyOpsHead>
@@ -278,7 +288,14 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         </MetricRow>
       )}
 
-      {showSchedule && (
+      {showSchedule && focusedIdx != null && (
+        <MetricRow columns={3} testid="schedule-line-metrics">
+          <MetricCell label="Qty Cetak" value={focusLineQty} testid="schedule-qty-cetak" />
+          <MetricCell label="Sudah Dijadwalkan" value={focusAssigned} testid="schedule-qty-assigned" />
+          <MetricCell label="Sisa" value={focusRemain} testid="schedule-qty-remain" />
+        </MetricRow>
+      )}
+      {showSchedule && focusedIdx == null && (
         <MetricRow columns={3}>
           <MetricCell label="Target" value={printQtyTotal} />
           <MetricCell label="Allocated" value={totalAssigned} />
@@ -369,11 +386,16 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         <div className="atur-pembagian-card" data-testid="atur-pembagian-card">
           <div className="split-edit-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
             <h4 style={{ margin: 0 }} data-testid="atur-pembagian-title">Atur Pembagian</h4>
-            <span className={remaining < 0 ? "warn" : "muted"}>
-              Sisa cap: {remaining.toLocaleString("id-ID")} pcs (scope Cetak)
+            <span className={(focusedIdx == null ? remaining : focusRemain) < 0 ? "warn" : "muted"}>
+              Sisa: {(focusedIdx == null ? remaining : focusRemain).toLocaleString("id-ID")} pcs
             </span>
           </div>
           {splits.map((s, i) => {
+            if (focusedIdx != null) {
+              const li = s.line_idx;
+              const isEmpty = li === "" || li === null || li === undefined;
+              if (!isEmpty && Number(li) !== focusedIdx) return null;
+            }
             const lineQty = Number(lineItems[Number(s.line_idx)]?.quantity || 0);
             const lineAssigned = perLineAssigned[Number(s.line_idx)] || 0;
             const overLine = s.line_idx !== "" && lineAssigned > lineQty;
@@ -384,10 +406,11 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                   <select
                     value={s.line_idx}
                     onChange={(e) => updateRow(i, { line_idx: e.target.value === "" ? "" : Number(e.target.value) })}
+                    disabled={focusedIdx != null}
                     data-testid={`split-line-select-${i}`}
                   >
                     <option value="">-- Pilih barang (Cetak) --</option>
-                    {printLines.map(({ li, idx }) => (
+                    {visiblePrintLines.map(({ li, idx }) => (
                       <option key={idx} value={idx}>
                         {li.name}{li.color ? ` · ${li.color}` : ""} ({Number(li.quantity || 0).toLocaleString("id-ID")})
                       </option>
@@ -452,10 +475,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
           })}
           {err && <div className="error" data-testid="split-error">{err}</div>}
           <div className="split-actions qty-ops-foot" style={{ borderTop: splits.length ? undefined : "none", marginTop: splits.length ? undefined : 0, paddingTop: splits.length ? undefined : 0 }}>
-            <button className="ghost" onClick={addRow} disabled={printLines.length === 0 || scheduleLocked} data-testid="split-add-row">
+            <button className="ghost" onClick={addRow} disabled={visiblePrintLines.length === 0 || scheduleLocked} data-testid="split-add-row">
               <Plus size={14} /> Tambah operator
             </button>
-            <button className="primary" onClick={save} disabled={busy || printLines.length === 0 || scheduleLocked} data-testid="split-save">
+            <button className="primary" onClick={save} disabled={busy || visiblePrintLines.length === 0 || scheduleLocked} data-testid="split-save">
               Simpan pembagian
             </button>
           </div>

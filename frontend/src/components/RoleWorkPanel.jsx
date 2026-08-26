@@ -11,6 +11,8 @@ import RoleWorkHistory from "./RoleWorkHistory";
 import RoleWorkEntryForm from "./RoleWorkEntryForm";
 import SuratJalanPanel from "./SuratJalanPanel";
 import DeliveryProofPanel from "./DeliveryProofPanel";
+import AttachmentsPanel from "./AttachmentsPanel";
+import OperatorSplitPanel from "./OperatorSplitPanel";
 import {
   canSubmitDivision,
   fallbackDivision,
@@ -380,6 +382,66 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
   );
 }
 
+function DesignerWorkPanel({ order, division, onUpdated, compactHeader }) {
+  const { user, hasPerm } = useAuth();
+  const itemLabel = (order?.line_items || []).length === 1
+    ? (order.line_items[0].name || "—")
+    : `${(order?.line_items || []).length} item`;
+  const revisi = (order?.customer_approval?.status || "").toLowerCase() === "rejected";
+  const canSubmit = canSubmitDivision(hasPerm, division);
+  return (
+    <section className="panel work-panel" data-testid="role-work-panel">
+      <WorkHero
+        order={order}
+        title="Pekerjaan Designer"
+        itemLabel={itemLabel}
+        testid="designer-work-header"
+        compactHeader={compactHeader}
+      />
+      {revisi && (
+        <p className="muted small" data-testid="designer-revisi-note">
+          Customer meminta Revisi. Upload design baru.
+        </p>
+      )}
+      <AttachmentsPanel
+        order={order}
+        user={user}
+        onUpdated={(next) => onUpdated?.(next?.order || next)}
+        section="design"
+        confirmUpload={canSubmit}
+      />
+    </section>
+  );
+}
+
+function KepalaProduksiWorkPanel({ order, division, onUpdated, compactHeader, focusLineIdx }) {
+  const { hasPerm } = useAuth();
+  const items = order?.line_items || [];
+  const idx = focusLineIdx == null || Number.isNaN(Number(focusLineIdx)) ? null : Number(focusLineIdx);
+  const line = idx != null && items[idx] ? items[idx] : null;
+  const itemLabel = line?.name
+    || (items.length === 1 ? (items[0].name || "—") : `${items.length} item`);
+  const canEdit = canSubmitDivision(hasPerm, division);
+  return (
+    <section className="panel work-panel" data-testid="role-work-panel">
+      <WorkHero
+        order={order}
+        title="Pekerjaan Kepala Produksi"
+        itemLabel={itemLabel}
+        testid="kepala_produksi-work-header"
+        compactHeader={compactHeader}
+      />
+      <OperatorSplitPanel
+        order={order}
+        canEdit={canEdit}
+        onUpdated={onUpdated}
+        mode="schedule"
+        focusLineIdx={idx}
+      />
+    </section>
+  );
+}
+
 function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
   const { hasPerm } = useAuth();
   const canManage = canSubmitDivision(hasPerm, division);
@@ -443,6 +505,7 @@ export default function RoleWorkPanel({
   division,
   onUpdated,
   compactHeader = true,
+  focusLineIdx = null,
 }) {
   if (!order) return null;
   const resolved = division || fallbackDivision("operator");
@@ -455,6 +518,27 @@ export default function RoleWorkPanel({
         order={order}
         division={resolved}
         reason={`Form ${resolved.label} sedang nonaktif di Pengaturan.`}
+      />
+    );
+  }
+  if (resolved.id === "designer") {
+    return (
+      <DesignerWorkPanel
+        order={order}
+        division={resolved}
+        onUpdated={onUpdated}
+        compactHeader={compactHeader}
+      />
+    );
+  }
+  if (resolved.id === "kepala_produksi") {
+    return (
+      <KepalaProduksiWorkPanel
+        order={order}
+        division={resolved}
+        onUpdated={onUpdated}
+        compactHeader={compactHeader}
+        focusLineIdx={focusLineIdx}
       />
     );
   }

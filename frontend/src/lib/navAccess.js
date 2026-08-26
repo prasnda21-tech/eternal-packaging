@@ -3,6 +3,8 @@
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
   tasks: "nav.tasks",
+  tasksDesigner: "nav.tasks.designer",
+  tasksKepalaProduksi: "nav.tasks.kepala_produksi",
   tasksScreener: "nav.tasks.screener",
   tasksHelper: "nav.tasks.helper",
   tasksOperator: "nav.tasks.operator",
@@ -29,7 +31,9 @@ export const NAV_KEYS = {
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
   { key: NAV_KEYS.tasks, label: "Tugas per Divisi", parent: null },
+  { key: NAV_KEYS.tasksDesigner, label: "Designer", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksScreener, label: "Screener", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksKepalaProduksi, label: "Kepala Produksi", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksHelper, label: "Helper", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksOperator, label: "Operator", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksPacking, label: "Packing", parent: NAV_KEYS.tasks },
@@ -85,8 +89,22 @@ export function inventoryNavVisible(hasPerm) {
   return { parent: !!(masterItems || currentStock), masterItems, currentStock };
 }
 
+export const TASK_NAV_ORDER = [
+  "designer",
+  "screener",
+  "kepala_produksi",
+  "helper",
+  "operator",
+  "packing",
+  "surat_jalan",
+  "loading",
+  "terkirim",
+];
+
 const TASK_CHILDREN = [
+  ["designer", NAV_KEYS.tasksDesigner],
   ["screener", NAV_KEYS.tasksScreener],
+  ["kepala_produksi", NAV_KEYS.tasksKepalaProduksi],
   ["helper", NAV_KEYS.tasksHelper],
   ["operator", NAV_KEYS.tasksOperator],
   ["packing", NAV_KEYS.tasksPacking],
@@ -97,6 +115,8 @@ const TASK_CHILDREN = [
 
 /** Same submit perms used by derived_nav_permissions — not a second RBAC system. */
 export const TASK_SUBMIT_PERMS = {
+  designer: "design.upload",
+  kepala_produksi: "schedule.edit",
   screener: "screen.update",
   helper: "helper.prepare",
   operator: "operator.update",
@@ -107,6 +127,8 @@ export const TASK_SUBMIT_PERMS = {
 };
 
 export const TASK_NAV_PATHS = {
+  designer: "/tasks/designer",
+  kepala_produksi: "/tasks/kepala-produksi",
   screener: "/tasks/screener",
   helper: "/tasks/helper",
   operator: "/tasks/operator",
@@ -117,6 +139,8 @@ export const TASK_NAV_PATHS = {
 };
 
 export const TASK_NAV_LABELS = {
+  designer: "Designer",
+  kepala_produksi: "Kepala Produksi",
   screener: "Screener",
   helper: "Helper",
   operator: "Operator",
@@ -148,6 +172,8 @@ export function firstTaskNavPath(hasPerm) {
 
 export function actionKeyToTaskPath(actionKey) {
   const map = {
+    design_upload: TASK_NAV_PATHS.designer,
+    penjadwalan: TASK_NAV_PATHS.kepala_produksi,
     screener: TASK_NAV_PATHS.screener,
     helper: TASK_NAV_PATHS.helper,
     operator_work: TASK_NAV_PATHS.operator,

@@ -18,6 +18,8 @@ export default function PoWorkView() {
   const [params] = useSearchParams();
   const { hasPerm } = useAuth();
   const requested = params.get("divisi") || "";
+  const lineRaw = params.get("line");
+  const focusLineIdx = lineRaw != null && lineRaw !== "" ? Number(lineRaw) : null;
   const [order, setOrder] = useState(null);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -92,7 +94,7 @@ export default function PoWorkView() {
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
-      <RoleWorkPanel order={order} division={division} onUpdated={setOrder} />
+      <RoleWorkPanel order={order} division={division} onUpdated={setOrder} focusLineIdx={focusLineIdx} />
     </div>
   );
 }

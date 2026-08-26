@@ -95,6 +95,8 @@ describe("operator work panel models", () => {
     expect(taskPoHref("abc", (p) => p === "operator.update", "operator_work")).toBe("/po/abc/kerja?divisi=operator");
     expect(taskPoHref("abc", (p) => p === "po.view", "operator_work")).toBe("/po/abc");
     expect(taskPoHref("abc", (p) => p === "helper.prepare", "helper")).toBe("/po/abc/kerja?divisi=helper");
+    expect(taskPoHref("abc", (p) => p === "design.upload", "design_upload")).toBe("/po/abc/kerja?divisi=designer");
+    expect(taskPoHref("abc", (p) => p === "schedule.edit", "penjadwalan")).toBe("/po/abc/kerja?divisi=kepala_produksi");
   });
 
   test("cannot submit without division perm", () => {

@@ -4,7 +4,9 @@ import { getWorkflowReady } from "./stageState";
 import { entriesForLine, sumEntryQty, validEntries, visibleEntries } from "./workflowEntries";
 
 export const WORK_DIVISION_IDS = [
+  "designer",
   "screener",
+  "kepala_produksi",
   "helper",
   "operator",
   "packing",
@@ -14,6 +16,8 @@ export const WORK_DIVISION_IDS = [
 ];
 
 export const DIVISION_SUBMIT_PERMS = [
+  ["designer", "design.upload"],
+  ["kepala_produksi", "schedule.edit"],
   ["screener", "screen.update"],
   ["helper", "helper.prepare"],
   ["operator", "operator.update"],
@@ -49,6 +53,8 @@ export function schedulePoHref(orderId, hasPerm, preferredDivision) {
 }
 
 export const ACTION_DIVISION = {
+  design_upload: "designer",
+  penjadwalan: "kepala_produksi",
   screener: "screener",
   helper: "helper",
   operator_work: "operator",
@@ -83,6 +89,8 @@ export function divisionById(settings, id) {
 
 export function fallbackDivision(id) {
   const map = {
+    designer: { id: "designer", label: "Designer", active: true, implemented: true, submit_perm: "design.upload", input_label: "Upload Design", target_source: "design_file", input_kind: "evidence" },
+    kepala_produksi: { id: "kepala_produksi", label: "Kepala Produksi", active: true, implemented: true, submit_perm: "schedule.edit", input_label: "Penjadwalan", target_source: "print_line_qty", input_kind: "schedule" },
     screener: { id: "screener", label: "Screener", active: true, implemented: true, submit_perm: "screen.update", input_label: "Qty Screener", target_source: "screener_qty", input_kind: "qty" },
     helper: { id: "helper", label: "Helper", active: true, implemented: true, submit_perm: "helper.prepare", input_label: "Qty Prepared", target_source: "helper_prepared", input_kind: "qty" },
     operator: { id: "operator", label: "Operator", active: true, implemented: true, submit_perm: "operator.update", input_label: "Qty Cetak", target_source: "print_line_qty", input_kind: "qty" },
