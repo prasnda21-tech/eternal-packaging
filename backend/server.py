@@ -445,7 +445,7 @@ class UrgentPayload(BaseModel):
 class AttachmentInput(BaseModel):
     name: str
     data_url: str  # base64 encoded
-    kind: str  # "design" | "sample" | "payment"
+    kind: str  # "design" | "sample" | "payment" | "surat_jalan"
 
 
 class NotePayload(BaseModel):
@@ -2786,6 +2786,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
     elif kind == "sample":
         await _require_perm(user, "operator.sample_upload")
         _ensure_screener_for_operator_work(order, for_sample=True)
+    elif kind == "surat_jalan":
+        await _require_perm(user, "delivery_note.manage")
     else:
         raise HTTPException(400, "Jenis attachment tidak dikenal")
     if len(payload.data_url) > 8_000_000:
@@ -2884,13 +2886,46 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
         else:
             _sync_workflow_stage(order)
         audit_action = "sample.upload"
+    elif kind == "surat_jalan":
+        if (order.get("current_stage") or 0) < 12:
+            raise HTTPException(400, "Belum bisa membuat Surat Jalan — tahap Packing belum selesai.")
+        updates = _qr_remaining_delivery_note_updates(order)
+        if not updates:
+            raise HTTPException(400, "Tidak ada qty packing tersisa untuk Surat Jalan.")
+        err = _qr_validate_shipment_lines(updates, order, source=_QR_SRC_MANUAL)
+        if err:
+            raise HTTPException(400, err)
+        number = (
+            order.get("delivery_note_number")
+            or f"SJ-{str(order.get('po_number') or '').replace('PO-', '').replace('PO.', '')}"
+        )
+        stamp = now_iso()
+        order.setdefault("surat_jalan_files", []).append(entry)
+        record = _qr_apply_shipment_record(
+            order,
+            number=number,
+            lines=updates,
+            source=_QR_SRC_MANUAL,
+            actor=user,
+            notes=f"File: {payload.name}",
+            shipment_id=str(uuid.uuid4()),
+            created_at=stamp,
+        )
+        if not record.get("id"):
+            record["id"] = str(uuid.uuid4())
+            order["shipments"][-1]["id"] = record["id"]
+        order["shipments"][-1]["file_id"] = entry["id"]
+        order["shipments"][-1]["file_name"] = entry["name"]
+        _stamp_legacy_delivery_note(order, record, user)
+        _sync_workflow_stage(order)
+        audit_action = "delivery_note.upload"
     else:
         order.setdefault("sample_files", []).append(entry)
         _sync_workflow_stage(order)
     # Attribute timeline to the workflow stage of the upload kind — never to
     # whatever current_stage happens to be (Payment-first flow must not bury
     # Design uploads under Approval Payment stage).
-    _KIND_TIMELINE_STAGE = {"design": 1, "payment": 3, "sample": 8}
+    _KIND_TIMELINE_STAGE = {"design": 1, "payment": 3, "sample": 8, "surat_jalan": 12}
     tl_stage = _KIND_TIMELINE_STAGE.get(kind, order.get("current_stage") or 0)
     add_timeline(order, tl_stage, user, note=f"Upload {kind}: {payload.name}")
     await _persist_order(order)
