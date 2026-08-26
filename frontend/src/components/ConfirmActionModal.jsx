@@ -10,6 +10,7 @@ export default function ConfirmActionModal({
   title = "Konfirmasi",
   stage,
   poNumber,
+  customer,
   item,
   qty,
   name,
@@ -18,6 +19,7 @@ export default function ConfirmActionModal({
   extra,
   busy,
   error,
+  confirmLabel = "Konfirmasi",
   onCancel,
   onConfirm,
 }) {
@@ -31,6 +33,7 @@ export default function ConfirmActionModal({
         <div className="confirm-action-body">
           <dl className="confirm-action-dl">
             {poNumber ? <div><dt>No PO</dt><dd data-testid="confirm-po">{poNumber}</dd></div> : null}
+            {customer ? <div><dt>Customer</dt><dd data-testid="confirm-customer">{customer}</dd></div> : null}
             <div><dt>Tahap</dt><dd data-testid="confirm-stage">{stage || "—"}</dd></div>
             {item ? <div><dt>Item</dt><dd data-testid="confirm-item">{item}</dd></div> : null}
             {action ? <div><dt>Aksi / dokumen</dt><dd data-testid="confirm-action">{action}</dd></div> : null}
@@ -46,7 +49,7 @@ export default function ConfirmActionModal({
         <div className="delete-modal-actions">
           <button type="button" className="ghost" onClick={onCancel} disabled={busy} data-testid="confirm-cancel">Batal</button>
           <button type="button" className="primary" onClick={onConfirm} disabled={busy} data-testid="confirm-ok">
-            {busy ? "Menyimpan…" : "Konfirmasi"}
+            {busy ? "Menyimpan…" : confirmLabel}
           </button>
         </div>
       </div>

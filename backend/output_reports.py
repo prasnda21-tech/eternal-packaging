@@ -595,14 +595,17 @@ def iter_operator_export_rows(
     date_from: date,
     date_to: date,
     operator_id: Optional[str] = None,
+    operator_ids: Optional[Sequence[str]] = None,
     customer: Optional[str] = None,
     item: Optional[str] = None,
     po: Optional[str] = None,
     daily_targets: Optional[Dict[str, int]] = None,
 ) -> List[dict]:
-    op_filter = (operator_id or "").strip()
-    if op_filter in ("all", ""):
-        op_filter = ""
+    op_ids = {
+        str(x).strip()
+        for x in (list(operator_ids or []) + ([operator_id] if operator_id else []))
+        if str(x or "").strip() and str(x).strip() not in ("all", "*")
+    }
     targets = daily_targets or {}
     out: List[dict] = []
     for order in orders:
@@ -620,11 +623,14 @@ def iter_operator_export_rows(
         events = _timeline_qty_events(order)
         for split in order.get("operator_splits") or []:
             email = (split.get("operator_email") or "").strip()
-            if not email or (op_filter and email != op_filter):
+            uid = str(split.get("operator_user_id") or "").strip()
+            if not email and not uid:
+                continue
+            if op_ids and email not in op_ids and uid not in op_ids:
                 continue
             if not line_matches_item(order, split.get("line_idx"), item):
                 continue
-            name = split.get("operator_name") or email
+            name = split.get("operator_name") or email or uid
             target = targets.get(email)
             assigned = max(0, safe_int(split.get("quantity")))
             snapshot = max(0, safe_int(split.get("qty_completed")))
@@ -661,8 +667,9 @@ def iter_operator_export_rows(
                     "tanggal": day.isoformat(),
                     "minggu": iso_week_key(day),
                     "operator": name,
-                    "operator_id": email,
-                    "employee_id": email,
+                    "operator_id": email or uid,
+                    "operator_user_id": uid,
+                    "employee_id": email or uid,
                     "employee_name": name,
                     "order_id": po_id,
                     "no_po": po_num,

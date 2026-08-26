@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -23,6 +23,8 @@ import StageDetailDrawer from "../components/StageDetailDrawer";
 import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
+import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../lib/paymentProof";
+import { schedulePoHref } from "../lib/workPanel";
 
 export default function PODetail() {
   const { id } = useParams();
@@ -45,8 +47,6 @@ export default function PODetail() {
 
   // Stage detail drawer (B3 — Req 8): clickable stages open a read-only drawer
   const [stageDrawer, setStageDrawer] = useState(null); // stage index or null
-  const [sjPreview, setSjPreview] = useState(null);
-
   // Payment upload state (Req wiring)
   const [payUploading, setPayUploading] = useState(false);
   const [payUploadErr, setPayUploadErr] = useState("");
@@ -77,11 +77,6 @@ export default function PODetail() {
     setScreenerNotes(order?.screener_info?.notes || "");
   }, [order?.id, order?.screener_info?.updated_at]);
 
-  useEffect(() => {
-    if (!id) return;
-    api.previewAccurateSuratJalan(id).then(setSjPreview).catch(() => setSjPreview(null));
-  }, [id, order?.accurate_id, order?.po_number]);
-
   // Batch 2: auto refresh 30s untuk PODetail — hanya update server-backed state
   // (order), tidak menyentuh state form lokal panel-panel (Helper draft,
   // Deadline draft, Notes, Screener draft, signature dsb). Panel-panel memakai
@@ -91,6 +86,12 @@ export default function PODetail() {
     () => api.getOrder(id),
     { intervalMs: 30_000, enabled: !!order, onData: (d) => { if (d?.order) setOrder(d.order); } }
   );
+
+  if (!hasPerm("po.view")) {
+    const href = schedulePoHref(id, hasPerm);
+    if (href.includes("/kerja")) return <Navigate to={href} replace />;
+    return <Navigate to="/" replace />;
+  }
 
   if (loading) return <div className="loading" data-testid="po-loading">Memuat detail PO...</div>;
   if (err) return <div className="error-page" data-testid="po-error" style={{whiteSpace:"pre-line"}}>{String(err)}</div>;
@@ -653,6 +654,23 @@ export default function PODetail() {
         </div>
       </section>
       <ProductionRoutePanel order={order} canEdit={canEditRoute} onUpdated={setOrder} />
+      <section className="panel tracking-customer-panel" data-testid="tracking-customer-panel">
+        <header className="panel-head"><h3>Live Tracking Customer</h3></header>
+        <p className="muted small">Link publik menampilkan nama customer, No PO, alur kerja, dan bukti kirim.</p>
+        {canCopyTrackingLink && (
+          <div className="tracking-customer-actions">
+            <button
+              className="ghost sm"
+              onClick={copyTrackingLink}
+              disabled={trackingBusy || order.cancelled}
+              data-testid="copy-tracking-link"
+            >
+              <Copy size={14} /> Salin Link Tracking
+            </button>
+            {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
+          </div>
+        )}
+      </section>
       </div>
 
       <div className="workflow-group" data-testid="workflow-group-2">
@@ -713,6 +731,9 @@ export default function PODetail() {
       <section className="panel payment-panel" data-testid="payment-panel">
         <header className="panel-head">
           <h3>Payment</h3>
+          <span className="muted small" data-testid="payment-proof-count">
+            Bukti Payment {paymentProofCount(order.payment_files)} / {MAX_PAYMENT_PROOFS} file
+          </span>
           <PaymentStatusBadge order={order} />
         </header>
         <div className="payment-body">
@@ -722,6 +743,7 @@ export default function PODetail() {
           )}
           <div className="payment-actions">
             {canUploadPayment && !order.cancelled && (
+              canAddPaymentProof(order.payment_files) ? (
               <label className={"primary btn-file" + (payUploading ? " disabled" : "")} data-testid="upload-payment-label">
                 <input
                   type="file"
@@ -735,8 +757,11 @@ export default function PODetail() {
                   data-testid="upload-payment-input"
                   style={{display:"none"}}
                 />
-                <FileText size={16} /> {payUploading ? "Mengupload..." : (order.payment_files?.length ? "Ganti Bukti Pembayaran" : "Upload Bukti Pembayaran")}
+                <FileText size={16} /> {payUploading ? "Mengupload..." : "Tambah Bukti"}
               </label>
+              ) : (
+                <p className="muted small" data-testid="payment-max-reached">Maksimal {MAX_PAYMENT_PROOFS} file.</p>
+              )
             )}
             {!canUploadPayment && (
               <p className="muted small" data-testid="payment-readonly-note">Anda hanya dapat melihat bukti pembayaran (read-only).</p>
@@ -958,10 +983,6 @@ export default function PODetail() {
           showToast("Surat Jalan disimpan");
           return res;
         }}
-        onImport={async (payload) => {
-          await run(() => api.importSuratJalan(order.id, payload), "Surat Jalan Accurate diimpor");
-        }}
-        accuratePreview={sjPreview}
         footerActions={(
           <>
             <div style={{ marginTop: 10 }}>
@@ -1000,7 +1021,7 @@ export default function PODetail() {
           {" "}· Total PO: <b>{Number(order?.packing_required_total || order?.total_quantity || 0).toLocaleString("id-ID")}</b>
         </p>
         <p className="muted small">
-          Status Terkirim mengikuti bukti pengiriman yang berhasil di-upload — tidak ada tombol lanjut manual.
+          Status Terkirim hanya setelah minimal 2 foto bukti kirim di-upload, lalu Konfirmasi Terkirim.
         </p>
       </section>
       <DeliveryProofPanel order={order} onUpdated={setOrder} />
@@ -1024,24 +1045,6 @@ export default function PODetail() {
             <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
               <MessageSquare size={14} /> Simpan catatan
             </button>
-          </div>
-        )}
-      </section>
-
-      <section className="panel tracking-customer-panel" data-testid="tracking-customer-panel">
-        <header className="panel-head"><h3>Tracking Customer</h3></header>
-        <p className="muted small">Link publik hanya menampilkan No PO dan alur kerja.</p>
-        {canCopyTrackingLink && (
-          <div className="tracking-customer-actions">
-            <button
-              className="ghost sm"
-              onClick={copyTrackingLink}
-              disabled={trackingBusy || order.cancelled}
-              data-testid="copy-tracking-link"
-            >
-              <Copy size={14} /> Salin Link Tracking
-            </button>
-            {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
           </div>
         )}
       </section>
@@ -1171,7 +1174,7 @@ function PaymentFilesList({ files, order }) {
     <>
       <ul className="payment-files" data-testid="payment-files-list">
         {files.map((f, i) => (
-          <PaymentFileRow key={f.id || i} file={f} />
+          <PaymentFileRow key={f.id || i} file={f} index={i + 1} />
         ))}
       </ul>
       {order.payment_status === "Approved" && (
@@ -1184,7 +1187,7 @@ function PaymentFilesList({ files, order }) {
   );
 }
 
-function PaymentFileRow({ file }) {
+function PaymentFileRow({ file, index }) {
   const url = file.data_url || file.url;
   const isImage = url && (url.startsWith("data:image/") || /\.(jpe?g|png|gif|webp)$/i.test(file.name || ""));
   const isPdf = url && (url.startsWith("data:application/pdf") || /\.pdf$/i.test(file.name || ""));
@@ -1242,7 +1245,7 @@ function PaymentFileRow({ file }) {
       </div>
 
       <div className="payment-file-meta">
-        <strong className="mono small">{file.name}</strong>
+        <strong className="mono small">{index ? `${index}. ` : ""}{file.name}</strong>
         <span className="muted small">
           Diupload oleh {file.uploaded_by_name || file.uploaded_by}
         </span>

@@ -43,8 +43,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         quantity: s.quantity,
         id: s.id,
         stage: s.stage,
-        line_idx: s.line_idx ?? "", // legacy = "" (unassigned line)
-        work_date: s.work_date || "", // Fix: prefill tanggal existing per assignment
+        line_idx: s.line_idx ?? "",
+        work_date: s.work_date || "",
+        qty_completed: Number(s.qty_completed || 0),
+        qty_cancelled: Number(s.qty_cancelled || 0),
       }))
     );
   }, [order.operator_splits]);
@@ -109,7 +111,29 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   };
 
   const removeRow = (i) => {
+    const row = splits[i];
+    const done = Number(row?.qty_completed || 0);
+    if (row?.id && done > 0) {
+      updateRow(i, { quantity: done });
+      return;
+    }
     setSplits(splits.filter((_, idx) => idx !== i));
+  };
+
+  const cancelRemaining = async (split) => {
+    const remaining = Math.max(0, Number(split.quantity || 0) - Number(split.qty_completed || 0));
+    if (!split.id || remaining <= 0) return;
+    setErr("");
+    setBusy(true);
+    try {
+      const res = await api.cancelOperatorSplit(order.id, split.id, remaining);
+      onUpdated(res.order);
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Gagal lepas sisa"));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const save = async () => {
@@ -127,6 +151,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         setErr("Setiap baris harus punya operator dan kuantitas.");
         return;
       }
+      if (Number(s.quantity) < Number(s.qty_completed || 0)) {
+        setErr(`Qty ${s.operator_name || s.operator_email} tidak boleh lebih kecil dari completed (${s.qty_completed}). Lepas sisa saja.`);
+        return;
+      }
       if (s.line_idx === "" || s.line_idx === null || s.line_idx === undefined) {
         setErr("Setiap baris harus terikat ke barang (line Cetak).");
         return;
@@ -140,6 +168,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     setBusy(true);
     try {
       const res = await api.assignOperators(order.id, splits.map((s) => ({
+        id: s.id || undefined,
         operator_email: s.operator_email,
         operator_name: s.operator_name,
         quantity: Number(s.quantity),
@@ -383,7 +412,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                 </label>
                 <QuantityInput
                   label="Qty dialokasikan"
-                  min="1"
+                  min={String(Math.max(1, Number(s.qty_completed || 0)))}
                   value={s.quantity}
                   onChange={(e) => updateRow(i, { quantity: e.target.value })}
                   placeholder="Qty"
@@ -391,6 +420,20 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                   className={overLine ? "is-invalid" : ""}
                   title={overLine ? `Total ${lineAssigned} melebihi qty line ${lineQty}` : undefined}
                 />
+                {s.id && Number(s.qty_completed || 0) > 0 && (
+                  <span className="muted small" data-testid={`split-completed-${i}`}>Selesai {Number(s.qty_completed).toLocaleString("id-ID")}</span>
+                )}
+                {s.id && Math.max(0, Number(s.quantity || 0) - Number(s.qty_completed || 0)) > 0 && (
+                  <button
+                    type="button"
+                    className="ghost sm"
+                    disabled={busy || scheduleLocked}
+                    onClick={() => cancelRemaining(s)}
+                    data-testid={`split-cancel-remaining-${i}`}
+                  >
+                    Lepas sisa
+                  </button>
+                )}
                 <label className="qty-field">
                   <span className="qty-field-label">Tanggal</span>
                   <input

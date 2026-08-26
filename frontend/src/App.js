@@ -16,13 +16,14 @@ import PenerimaanBarang from "./pages/PenerimaanBarang";
 import AnalitikOutput from "./pages/AnalitikOutput";
 import StatusPengiriman from "./pages/StatusPengiriman";
 import StatusPO from "./pages/StatusPO";
+import GajiOperator from "./pages/GajiOperator";
 import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
 import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import "@/App.css";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view"];
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -67,6 +68,7 @@ function LaporanIndex() {
   if (r.analytics) return <Navigate to="/laporan/analitik-output" replace />;
   if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
   if (r.shipmentStatus) return <Navigate to="/laporan/status-pengiriman" replace />;
+  if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -93,6 +95,7 @@ export default function App() {
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
+            <Route path="/laporan/gaji-operator" element={<PermGate anyOf={[NAV_KEYS.gajiOperator]} alsoAnyOf={["reports.gaji_operator.view", "schedule.view"]}><GajiOperator /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id/kerja" element={<PermGate anyOf={["work_panel.view", "operator.update", "po.view"]}><PoWorkView /></PermGate>} />

@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, Clock, ArrowUpRight, ListChecks } from "lucide-react";
 import api from "../lib/api";
 import useAutoRefresh from "../lib/useAutoRefresh";
+import { useAuth } from "../lib/auth";
+import { taskPoHref } from "../lib/workPanel";
 
 /**
  * ActionCenter — Batch 3 · "Tugas Saya" untuk user berdasarkan Effective
@@ -32,6 +34,7 @@ function DeadlineChip({ status }) {
 }
 
 export default function ActionCenter() {
+  const { hasPerm } = useAuth();
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [selectedKey, setSelectedKey] = useState(null);
@@ -62,7 +65,7 @@ export default function ActionCenter() {
   return (
     <section className="panel" data-testid="action-center">
       <header className="panel-head" style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <h3><ListChecks size={14}/> Tugas Saya {actions.some((a) => a.scope === "team") ? "& Tim" : ""}</h3>
+        <h3><ListChecks size={14}/> Tugas Saya</h3>
         {selected && (
           <button className="ghost sm" onClick={() => setSelectedKey(null)} data-testid="ac-clear-filter">
             Hapus Filter
@@ -80,7 +83,7 @@ export default function ActionCenter() {
           >
             <span className="muted small">{a.label}</span>
             <span className="mono" style={{ fontSize: 20, fontWeight: 700 }} data-testid={`ac-count-${a.key}`}>{a.count}</span>
-            {a.scope === "team" && <span className="pill sm" style={{ marginTop: 4, fontSize: 10 }}>Tim</span>}
+            {a.scope === "mine" ? <span className="muted small" style={{ marginTop: 4, fontSize: 10 }}>Saya</span> : null}
           </button>
         ))}
       </div>
@@ -94,7 +97,7 @@ export default function ActionCenter() {
             {selected.items.map((o) => (
               <li key={o.id}>
                 <Link
-                  to={`/po/${o.id}`}
+                  to={taskPoHref(o.id, hasPerm, selected.key)}
                   data-testid={`ac-row-${selected.key}-${o.po_number}`}
                   style={{
                     display: "grid",

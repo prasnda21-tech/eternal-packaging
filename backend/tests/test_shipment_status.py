@@ -120,6 +120,7 @@ def test_nav_key_in_catalog():
 def test_derived_nav_from_schedule_view():
     nav = derived_nav_permissions({"schedule.view", "po.view"})
     assert "nav.reports.shipment_status" in nav
+    assert "nav.reports.gaji_operator" in nav
     assert "nav.production_schedule" in nav
 
 

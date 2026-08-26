@@ -14,6 +14,7 @@ export const NAV_KEYS = {
   analytics: "nav.reports.analytics_output",
   shipmentStatus: "nav.reports.shipment_status",
   statusPo: "nav.reports.status_po",
+  gajiOperator: "nav.reports.gaji_operator",
   settings: "nav.settings",
 };
 
@@ -31,6 +32,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.shipmentStatus, label: "Status Pengiriman", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
@@ -50,7 +52,8 @@ export function reportsNavVisible(hasPerm) {
   const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
   const statusPo = parent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const shipmentStatus = parent && canSeeNav(hasPerm, NAV_KEYS.shipmentStatus);
-  return { parent: !!(analytics || statusPo || shipmentStatus), analytics, statusPo, shipmentStatus };
+  const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
+  return { parent: !!(analytics || statusPo || shipmentStatus || gajiOperator), analytics, statusPo, shipmentStatus, gajiOperator };
 }
 
 export function purchasingNavVisible(hasPerm) {

@@ -1,4 +1,4 @@
-import { confirmableProofCount, proofUploadUserError } from "./deliveryProof";
+import { confirmableProofCount, canConfirmDelivered, MIN_DELIVERY_PROOFS, proofUploadUserError } from "./deliveryProof";
 
 describe("deliveryProof helpers", () => {
   test("confirmable count includes ready files", () => {
@@ -21,5 +21,13 @@ describe("deliveryProof helpers", () => {
     });
     expect(msg).toBe("Gagal mengunggah foto. Silakan coba lagi.");
     expect(msg).not.toMatch(/EMERGENT_LLM_KEY/);
+  });
+
+  test("confirm delivered needs at least 2 stored photos", () => {
+    expect(MIN_DELIVERY_PROOFS).toBe(2);
+    expect(canConfirmDelivered([])).toBe(false);
+    expect(canConfirmDelivered([{ id: "a" }])).toBe(false);
+    expect(canConfirmDelivered([{ id: "a" }, { id: "b" }])).toBe(true);
+    expect(canConfirmDelivered([{ id: "a" }, { id: "b" }, { id: "c" }])).toBe(true);
   });
 });

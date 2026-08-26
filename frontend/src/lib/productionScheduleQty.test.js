@@ -1,4 +1,4 @@
-import { formatIdQty, printQtyProgress, scheduledPrintQtyProgress } from "./productionScheduleQty";
+import { formatIdQty, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell } from "./productionScheduleQty";
 
 describe("Jadwal Produksi Total Qty print progress", () => {
   test("TEST 1: 5.000 / 10.000 not PO 15.000", () => {
@@ -84,6 +84,45 @@ describe("Jadwal Produksi Total Qty print progress", () => {
       operators: [{ quantity: 5000, qty_completed: 2000 }],
     };
     expect(printQtyProgress(row).text).toBe("2.000 / 10.000");
+  });
+});
+
+describe("Jadwal Produksi Total Qty = active schedule per operator per printable line", () => {
+  test("A 6.000 and B 4.000 not PO 15.000 or line 10.000", () => {
+    const cell = totalQtyScheduledCell({
+      total_quantity: 15000,
+      print_qty_total: 10000,
+      print_completed_qty: 0,
+      operators: [
+        { operator_name: "A", operator_email: "a@x.com", quantity: 6000, line_idx: 0, line_printable: true },
+        { operator_name: "B", operator_email: "b@x.com", quantity: 4000, line_idx: 0, line_printable: true },
+      ],
+    });
+    expect(cell.lines.map((l) => l.quantity)).toEqual([6000, 4000]);
+    expect(cell.text).toBe("6.000\n4.000");
+    expect(cell.text).not.toBe("15.000");
+    expect(cell.text).not.toContain("10.000");
+  });
+
+  test("non-print line is excluded", () => {
+    const cell = totalQtyScheduledCell({
+      total_quantity: 15000,
+      operators: [
+        { operator_name: "A", quantity: 6000, line_idx: 0, line_printable: true },
+        { operator_name: "A", quantity: 5000, line_idx: 1, line_printable: false },
+      ],
+    });
+    expect(cell.lines.map((l) => l.quantity)).toEqual([6000]);
+  });
+
+  test("cancel/reassign uses active quantity", () => {
+    const cell = totalQtyScheduledCell({
+      operators: [
+        { operator_name: "A", quantity: 4000, line_idx: 0, line_printable: true },
+        { operator_name: "B", quantity: 6000, line_idx: 0, line_printable: true },
+      ],
+    });
+    expect(cell.lines.map((l) => l.quantity)).toEqual([4000, 6000]);
   });
 });
 

@@ -48,6 +48,34 @@ export function schedulePoHref(orderId, hasPerm, preferredDivision) {
   return `/po/${orderId}`;
 }
 
+export const ACTION_DIVISION = {
+  screener: "screener",
+  helper: "helper",
+  operator_work: "operator",
+  cetak_qty: "operator",
+  sample_upload: "operator",
+  packing: "packing",
+  surat_jalan: "surat_jalan",
+  loading: "loading",
+  terkirim: "terkirim",
+};
+
+/** Tugas Saya: work panel of own division unless the user may open full Detail PO and has no work submit perm. */
+export function taskPoHref(orderId, hasPerm, actionKey) {
+  const preferred = ACTION_DIVISION[actionKey];
+  const workIds = permittedDivisionIds(hasPerm);
+  const canFullPo = typeof hasPerm === "function" && hasPerm("po.view");
+  if (preferred && workIds.includes(preferred)) {
+    return workPanelPath(orderId, preferred);
+  }
+  if (workIds.length && (!canFullPo || preferred)) {
+    return schedulePoHref(orderId, hasPerm, preferred);
+  }
+  if (canFullPo) return `/po/${orderId}`;
+  if (workIds.length) return workPanelPath(orderId, workIds[0]);
+  return `/po/${orderId}`;
+}
+
 export function divisionById(settings, id) {
   const rows = settings?.divisions || [];
   return rows.find((d) => d.id === id) || null;

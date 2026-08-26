@@ -23,6 +23,7 @@ def _print_po(**extra):
     order = {
         "id": "ord-a",
         "po_number": "PO/2026/TEST-A",
+        "customer": extra.pop("customer", "PT Contoh"),
         "current_stage": 0,
         "design_files": [],
         "payment_files": [],
@@ -57,8 +58,9 @@ class TestPublicPayload:
             payment_files=[{"name": "p.png"}],
             payment_status="Approved",
         ))
-        assert set(payload.keys()) == {"order_number", "workflow"}
+        assert set(payload.keys()) == {"order_number", "customer_name", "workflow", "delivery_proofs"}
         assert payload["order_number"] == "PO/2026/TEST-A"
+        assert payload["customer_name"] == "PT Contoh"
         assert isinstance(payload["workflow"], list)
         assert payload["workflow"]
         for row in payload["workflow"]:
@@ -92,7 +94,31 @@ class TestPublicPayload:
         assert "internal note" not in blob
         assert "u1" not in blob
         assert "ord-a" not in blob
-        assert collect_public_keys(payload) <= {"order_number", "workflow", "stage", "status"}
+        assert collect_public_keys(payload) <= {"order_number", "customer_name", "workflow", "delivery_proofs", "stage", "status", "id", "url"}
+        assert is_public_payload_safe(payload)
+
+    def test_customer_and_po_and_max_five_proofs(self):
+        proofs = [
+            {"id": f"p{i}", "storage_path": f"eternal-packaging/delivery-proof/secret/{i}.jpg",
+             "uploaded_at": f"2026-08-2{i}T10:00:00+07:00"}
+            for i in range(7)
+        ]
+        payload = public_payload(_print_po(
+            customer="PT Abadi",
+            tracking_token="tok-public-aaaaaaaaaaaaaaaa",
+            delivery_proofs=proofs,
+        ), token="tok-public-aaaaaaaaaaaaaaaa")
+        assert payload["customer_name"] == "PT Abadi"
+        assert payload["order_number"] == "PO/2026/TEST-A"
+        assert len(payload["delivery_proofs"]) == 5
+        blob = json.dumps(payload)
+        assert "storage_path" not in blob
+        assert "eternal-packaging" not in blob
+        assert "secret/" not in blob
+        for p in payload["delivery_proofs"]:
+            assert set(p.keys()) == {"id", "url"}
+            assert p["url"].startswith("/api/public/tracking/")
+            assert "/proofs/" in p["url"]
         assert is_public_payload_safe(payload)
 
 

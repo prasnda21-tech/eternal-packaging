@@ -11,6 +11,13 @@ const client = axios.create({
 
 export const fileUrl = (storagePath) => `${API}/files/${storagePath}`;
 
+export const publicApiUrl = (path) => {
+  if (!path) return "";
+  if (/^https?:/i.test(path)) return path;
+  const origin = API.replace(/\/api$/, "");
+  return path.startsWith("/") ? `${origin}${path}` : `${origin}/${path}`;
+};
+
 export const api = {
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
@@ -34,6 +41,8 @@ export const api = {
   updateHelperPrepItems: (id, items, notes = "") => client.post(`/orders/${id}/helper-prep/items`, { items, notes }).then((r) => r.data),
   updateScreenerInfo: (id, payload) => client.post(`/orders/${id}/screener-info`, payload).then((r) => r.data),
   assignOperators: (id, splits) => client.post(`/orders/${id}/assign-operators`, { splits }).then((r) => r.data),
+  cancelOperatorSplit: (id, splitId, qty, reason = "") =>
+    client.post(`/orders/${id}/operator-splits/${splitId}/cancel`, { qty, reason }).then((r) => r.data),
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
@@ -54,14 +63,7 @@ export const api = {
       notes,
       ...(Array.isArray(lines) ? { lines } : {}),
     }).then((r) => r.data),
-  previewAccurateSuratJalan: (id) =>
-    client.get(`/orders/${id}/surat-jalan/accurate-preview`).then((r) => r.data),
-  importSuratJalan: (id, payload) =>
-    client.post(`/orders/${id}/surat-jalan/import`, payload).then((r) => r.data),
-  markDelivered: (id, qty_delivered = null) =>
-    client.post(`/orders/${id}/delivered`, null, {
-      params: qty_delivered == null ? {} : { qty_delivered },
-    }).then((r) => r.data),
+  confirmDelivered: (id, payload = {}) => client.post(`/orders/${id}/confirm-delivered`, payload).then((r) => r.data),
   syncAccurate: () => client.post(`/accurate/sync`).then((r) => r.data),
   accurateStatus: () => client.get(`/accurate/status`).then((r) => r.data),
   accurateList: (limit = 20, refresh = false, page = 1, keyword = "") =>
@@ -91,6 +93,11 @@ export const api = {
   updateOperatorTargets: (payload) => client.put(`/analytics/operator-targets`, payload).then((r) => r.data),
   analyticsOutputExport: (params = {}) =>
     client.get(`/analytics/output/export`, { params, responseType: "blob" }).then((r) => r.data),
+  gajiOperator: (params = {}) => client.get(`/reports/gaji-operator`, { params }).then((r) => r.data),
+  gajiOperatorExport: (params = {}) =>
+    client.get(`/reports/gaji-operator/export`, { params, responseType: "blob" }).then((r) => r.data),
+  operatorWageSettings: () => client.get(`/settings/operator-wage`).then((r) => r.data),
+  updateOperatorWageSettings: (payload) => client.put(`/settings/operator-wage`, payload).then((r) => r.data),
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),
   dashboardSummary: () => client.get(`/dashboard/summary`).then((r) => r.data),
   dashboardToday: () => client.get(`/dashboard/today`).then((r) => r.data),

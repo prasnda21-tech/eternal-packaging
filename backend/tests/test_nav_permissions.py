@@ -27,6 +27,7 @@ def test_catalog_includes_nav_keys():
         "nav.reports.analytics_output",
         "nav.reports.shipment_status",
         "nav.reports.status_po",
+        "nav.reports.gaji_operator",
         "nav.settings",
         NAV_CONFIGURED,
         "nav.inventory.master_items",
@@ -35,6 +36,9 @@ def test_catalog_includes_nav_keys():
         "work_panel.view",
         "settings.work_panel.view",
         "settings.work_panel.manage",
+        "reports.gaji_operator.view",
+        "settings.operator_wage.view",
+        "settings.operator_wage.manage",
     ):
         assert key in ALL_PERMISSIONS, key
 

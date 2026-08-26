@@ -1,5 +1,16 @@
+export const MAX_PHOTOS = 5;
+export const MIN_DELIVERY_PROOFS = 2;
+
 export function confirmableProofCount(staged) {
   return (staged || []).filter((s) => s.status === "ready" || (s.status === "error" && s.file)).length;
+}
+
+export function storedProofCount(proofs) {
+  return Array.isArray(proofs) ? proofs.length : 0;
+}
+
+export function canConfirmDelivered(proofs) {
+  return storedProofCount(proofs) >= MIN_DELIVERY_PROOFS;
 }
 
 export function proofUploadUserError(ex) {

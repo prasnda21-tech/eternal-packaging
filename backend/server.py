@@ -36,6 +36,27 @@ from services.shipment_status import (
     SHIPMENT_STATUS_PROJECTION,
     shipment_status_row,
 )
+from services.operator_schedule import (
+    apply_operator_assignments as _apply_operator_assignments,
+    cancel_split_remaining as _cancel_split_remaining,
+    pending_splits_for_user as _pending_splits_for_user,
+)
+from services.operator_payroll import (
+    PAYROLL_EXPORT_COLUMNS,
+    SETTINGS_KEY as OPERATOR_WAGE_SETTINGS_KEY,
+    compute_operator_payroll,
+    item_identity as _wage_item_identity,
+    operators_and_items as _payroll_filter_options,
+    snapshot_on_save as _wage_snapshot_on_save,
+    effective_rate_as_of as _wage_effective_rate,
+    normalize_wage_settings,
+    parse_operator_ids as _parse_operator_ids,
+    merge_operators_for_settings as _merge_wage_operators,
+)
+from services.payment_files import (
+    MAX_PAYMENT_PROOFS,
+    payment_proof_reject_reason,
+)
 from services.status_po import build_status_po
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
@@ -87,6 +108,7 @@ from operator_analytics import (
     compute_preparation_report,
     resolve_period,
     series_grouping,
+    wib_today,
 )
 from output_reports import (
     EXPORT_COLUMNS,
@@ -115,6 +137,8 @@ from quantity_rules import (
     is_fully_delivered as _qr_is_fully_delivered,
     is_print_line as _qr_is_print_line,
     apply_delivery_from_proof_evidence as _qr_apply_delivery_from_proof_evidence,
+    confirm_delivery_block_reason as _qr_confirm_delivery_block_reason,
+    valid_delivery_proof_count as _qr_valid_delivery_proof_count,
     apply_loading_increments as _qr_apply_loading_increments,
     effective_loaded_qty as _qr_effective_loaded_qty,
     loading_status_semantic as _qr_loading_status_semantic,
@@ -394,6 +418,7 @@ class OperatorSplitInput(BaseModel):
     operator_email: str
     operator_name: str
     quantity: int
+    id: Optional[str] = None
     # Revisi routing per line item: additive & backward-compatible. Kalau None,
     # split ini dianggap "legacy print-scope" (unassigned line) — akan divalidasi
     # secara agregat terhadap total print qty. Kalau ada nilai, wajib mengarah
@@ -402,6 +427,11 @@ class OperatorSplitInput(BaseModel):
     # Fix: tanggal pengerjaan per assignment. Optional; ISO date "YYYY-MM-DD"
     # atau None untuk membiarkan kosong. Additive & tidak mengubah stage.
     work_date: Optional[str] = None
+
+
+class CancelSplitPayload(BaseModel):
+    qty: int
+    reason: Optional[str] = None
 
 
 class AssignOperatorsPayload(BaseModel):
@@ -757,6 +787,16 @@ async def get_order(order_id: str, user=Depends(current_user)):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
+    if user.get("role") != "admin":
+        eff = await user_permissions(user)
+        view_ok = any(p in eff for p in (
+            "po.view", "work_panel.view", "schedule.view",
+            "screen.update", "helper.prepare", "operator.update",
+            "packing.update", "delivery_note.view", "delivery_note.manage",
+            "loading.update", "delivery.update", "design.view", "payment.view",
+        ))
+        if not view_ok:
+            raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     _apply_hold_snapshot(order)
     # Workflow 06-12 targeted bugfix: expose prereq status untuk UI gating.
     order["packing_prereq_reasons"] = _prereq_reasons_for_packing(order)
@@ -2267,23 +2307,19 @@ def _po_needs_terkirim(o: dict) -> bool:
     return _loading_completed(o)
 
 
-def _op_task_predicate(o: dict, user_email: str, is_supervisor: bool):
-    """Untuk task Operator: kembalikan splits yang masih perlu dikerjakan +
-    yang di-assign ke user (kecuali supervisor scope)."""
+def _op_task_predicate(o: dict, user_email: str, is_supervisor: bool = False):
+    """Tugas Saya Operator: only splits assigned to the authenticated user.
+
+    `is_supervisor` is ignored — Tugas Saya is always MY assignments, never team.
+    """
     if not _requires_printing(o):
         return []
     if not _sample_ok(o):
         return []
-    splits = o.get("operator_splits") or []
-    pending = []
-    for s in splits:
-        remaining = max(int(s.get("quantity", 0)) - int(s.get("qty_completed", 0) or 0), 0)
-        if remaining <= 0:
-            continue
-        if not is_supervisor and s.get("operator_email") != user_email:
-            continue
-        pending.append(s)
-    return pending
+    email = (user_email or "").strip()
+    if not email:
+        return []
+    return _pending_splits_for_user(o, email)
 
 
 # Mapping: action_key → (label, permission_required, predicate)
@@ -2335,10 +2371,16 @@ async def dashboard_action_items(user=Depends(current_user)):
         perms = set(ALL_PERMISSIONS)
     else:
         perms = set(await user_permissions(user))
-    # Superadmin bypass: kalau punya po.edit + design.approve + payment.approve dsb
-    # tetap dihandle via permission check individual di bawah.
-    # Ambil semua active order (non-cancelled) + attach snapshot deadline.
-    raw = await db.orders.find({"cancelled": {"$ne": True}}, {"_id": 0}).to_list(2000)
+    user_email = (user.get("email") or "").strip()
+    action_keys_needed = [key for key, _label, req_perm, _pred in _ACTION_DEFS if req_perm in perms and key != "cetak_qty"]
+    operator_only = (
+        "operator.update" in perms
+        and not action_keys_needed
+    )
+    query: dict = {"cancelled": {"$ne": True}}
+    if operator_only:
+        query["operator_splits.operator_email"] = user_email
+    raw = await db.orders.find(query, {"_id": 0}).to_list(2000)
     dd_settings = await _get_delivery_deadline_settings()
     for o in raw:
         _apply_hold_snapshot(o)
@@ -2346,14 +2388,11 @@ async def dashboard_action_items(user=Depends(current_user)):
         o["requires_printing"] = _requires_printing(o)
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
 
-    # Supervisor scope untuk Operator task: user yang bisa lihat semua schedule
-    # (schedule.edit) ATAU operator supervisor (dashboard.production.view + tidak
-    # spesifik operator). Simpelnya: schedule.edit → supervisor scope.
-    is_operator_supervisor = "schedule.edit" in perms
-
     actions = []
     for key, label, req_perm, predicate in _ACTION_DEFS:
         if req_perm not in perms:
+            continue
+        if key == "cetak_qty":
             continue
         matched = []
         for o in raw:
@@ -2380,7 +2419,7 @@ async def dashboard_action_items(user=Depends(current_user)):
         for o in raw:
             if o.get("delivery_status") == "Terkirim":
                 continue
-            splits = _op_task_predicate(o, user.get("email"), is_operator_supervisor)
+            splits = _op_task_predicate(o, user_email)
             if not splits:
                 continue
             slim = _slim_action(o)
@@ -2399,7 +2438,7 @@ async def dashboard_action_items(user=Depends(current_user)):
             "key": "operator_work",
             "label": "Pekerjaan Operator",
             "permission": "operator.update",
-            "scope": "team" if is_operator_supervisor else "mine",
+            "scope": "mine",
             "count": len(matched),
             "items": [m[0] for m in matched],
         })
@@ -2477,69 +2516,56 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
     await _require_perm(user, "schedule.edit")
 
     def mutate(order: dict):
-        line_items = order.get("line_items") or []
-        print_indices = set(_print_line_indices(order))
-        print_qty_total = _print_qty_total(order)
-
-        total_split = sum(max(0, int(s.quantity)) for s in payload.splits)
-        helper_before = order.get("helper_prep")
-        err = _qr_validate_operator_assignment_total(total_split, print_qty_total)
-        if err:
-            raise HTTPException(400, err)
-        if any(int(s.quantity) < 0 for s in payload.splits):
-            raise HTTPException(400, "Qty assignment tidak boleh negatif.")
-
-        per_line_totals = {}
+        rows = []
         for s in payload.splits:
-            if s.line_idx is None:
-                continue
-            if s.line_idx < 0 or s.line_idx >= len(line_items):
-                raise HTTPException(400, f"line_idx {s.line_idx} tidak valid")
-            if s.line_idx not in print_indices:
-                li = line_items[s.line_idx]
-                raise HTTPException(
-                    400,
-                    f"Line item '{li.get('name')}' bukan proses Cetak — tidak boleh di-assign Operator."
-                )
-            per_line_totals[s.line_idx] = per_line_totals.get(s.line_idx, 0) + int(s.quantity)
-        for idx, qty in per_line_totals.items():
-            line_qty = int(line_items[idx].get("quantity") or 0)
-            if qty > line_qty:
-                raise HTTPException(
-                    400,
-                    f"Total pembagian untuk '{line_items[idx].get('name')}' ({qty}) melebihi qty line ({line_qty})."
-                )
-
-        new_splits = []
-        for s in payload.splits:
-            existing = next(
-                (
-                    x for x in order.get("operator_splits", [])
-                    if x["operator_email"] == s.operator_email
-                    and (x.get("line_idx") == s.line_idx)
-                ),
-                None,
-            )
-            if s.work_date is not None:
-                wd = _parse_work_date(s.work_date)
-            else:
-                wd = existing.get("work_date") if existing else None
-            new_splits.append({
-                "id": (existing["id"] if existing else str(uuid.uuid4())),
+            wd = s.work_date
+            if wd is not None:
+                wd = _parse_work_date(wd)
+            rows.append({
+                "id": s.id,
                 "operator_email": s.operator_email,
                 "operator_name": s.operator_name,
                 "quantity": int(s.quantity),
-                "qty_completed": (existing.get("qty_completed", 0) if existing else 0),
-                "progress_entries": list((existing.get("progress_entries") or []) if existing else []),
-                "stage": (existing["stage"] if existing else 8),
-                "updated_at": now_iso(),
                 "line_idx": s.line_idx,
                 "work_date": wd,
             })
-        order["operator_splits"] = new_splits
-        if order.get("helper_prep") != helper_before:
-            raise HTTPException(400, "Penjadwalan tidak boleh mengubah Qty Persiapan Helper.")
-        add_timeline(order, order["current_stage"], user, note=f"Assign {len(new_splits)} operator")
+        try:
+            new_splits, cancel_notes = _apply_operator_assignments(
+                order, rows, user, now_iso(), new_id_fn=lambda: str(uuid.uuid4()),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        note = f"Assign {len(new_splits)} operator"
+        if cancel_notes:
+            released = sum(int(c.get("cancel_qty") or 0) for c in cancel_notes)
+            note = f"{note}; lepas sisa {released}"
+        add_timeline(order, order["current_stage"], user, note=note)
+        _sync_workflow_stage(order)
+
+    order = await _with_quantity_lock(order_id, mutate)
+    return {"order": order}
+
+
+@api_router.post("/orders/{order_id}/operator-splits/{split_id}/cancel")
+async def cancel_operator_split_remaining(
+    order_id: str, split_id: str, payload: CancelSplitPayload, user=Depends(current_user),
+):
+    """Partial cancel of remaining scheduled qty. Completed qty and assignment history stay."""
+    await _require_perm(user, "schedule.edit")
+
+    def mutate(order: dict):
+        try:
+            found = _cancel_split_remaining(
+                order, split_id, int(payload.qty), user, now_iso(), payload.reason,
+            )
+        except ValueError as e:
+            msg = str(e)
+            code = 404 if "tidak ditemukan" in msg else 400
+            raise HTTPException(code, msg)
+        add_timeline(
+            order, order["current_stage"], user,
+            note=f"Lepas sisa {payload.qty} dari {found.get('operator_name')} (completed {found.get('qty_completed')})",
+        )
         _sync_workflow_stage(order)
 
     order = await _with_quantity_lock(order_id, mutate)
@@ -2623,6 +2649,7 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
 async def update_operator_progress(order_id: str, payload: OperatorProgressPayload, user=Depends(current_user)):
     await _require_perm(user, "operator.update")
     eff = await user_permissions(user)
+    wage_doc = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
 
     def mutate(order: dict):
         splits = order.get("operator_splits", [])
@@ -2671,6 +2698,16 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         err = _qr_validate_print_completed_total(others + new_total, order)
         if err:
             raise HTTPException(400, err)
+        lis = order.get("line_items") or []
+        ident = {}
+        try:
+            idx = int(found.get("line_idx"))
+            if 0 <= idx < len(lis):
+                ident = _wage_item_identity(lis[idx])
+        except (TypeError, ValueError):
+            ident = {}
+        rate = _wage_effective_rate(ident, wib_today(), wage_doc, operator=found)
+        extra = {"rate_per_pcs": rate} if rate is not None else None
         entries, _entry, created = append_qty_entry(
             entries,
             qty=increment,
@@ -2681,6 +2718,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
             po_id=order.get("id"),
             line_idx=found.get("line_idx"),
             split_id=found.get("id"),
+            extra=extra,
         )
         if not created:
             return
@@ -2807,6 +2845,9 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
             logger.exception("Gagal invalidate customer approval link")
         audit_action = "design.upload"
     elif kind == "payment":
+        deny = payment_proof_reject_reason(order.get("payment_files"))
+        if deny:
+            raise HTTPException(400, deny)
         was_approved = order.get("payment_status") == "Approved"
         order.setdefault("payment_files", []).append(entry)
         if was_approved:
@@ -3481,8 +3522,10 @@ async def mark_delivered(
                 "message": "Belum bisa Terkirim — prerequisite belum lengkap.",
                 "prereq_reasons": reasons,
             })
-        if user.get("role") == "driver" and not order.get("delivery_proofs"):
-            raise HTTPException(400, "Wajib upload minimal 1 foto bukti kirim sebelum tandai Terkirim.")
+        if user.get("role") == "driver":
+            blocked = _qr_confirm_delivery_block_reason(order)
+            if blocked:
+                raise HTTPException(400, blocked)
         packed = _qr_qty_packed(order)
         required = _packing_required_total(order)
         new_delivered = packed if qty_delivered is None else int(qty_delivered)
@@ -3508,6 +3551,54 @@ async def mark_delivered(
                 user,
                 note=f"Terkirim sebagian: {new_delivered}/{required} pcs",
             )
+
+    order = await _with_quantity_lock(order_id, mutate)
+    return {"order": order}
+
+
+class ConfirmDeliveredPayload(BaseModel):
+    action_id: Optional[str] = None
+
+
+@api_router.post("/orders/{order_id}/confirm-delivered")
+async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, user=Depends(current_user)):
+    """Explicit Konfirmasi Terkirim after >= 2 bukti kirim. Upload alone does not deliver."""
+    await _require_perm(user, "delivery.update")
+    action_id = (payload.action_id if payload else None) or None
+    if action_id:
+        action_id = str(action_id).strip() or None
+
+    def mutate(order: dict):
+        ids = list(order.get("delivery_confirm_action_ids") or [])
+        if action_id and action_id in ids:
+            return
+        blocked = _qr_confirm_delivery_block_reason(order)
+        if blocked:
+            raise HTTPException(400, blocked)
+        evidence = _qr_apply_delivery_from_proof_evidence(order)
+        if not evidence:
+            raise HTTPException(400, "Belum ada qty loading untuk dikonfirmasi terkirim.")
+        now = now_iso()
+        order["qty_delivered"] = evidence["qty_delivered"]
+        order["delivery_status"] = evidence["delivery_status"]
+        order["delivered_at"] = now
+        order["delivered_by"] = user.get("email")
+        order["delivered_by_name"] = user.get("name")
+        _sync_dispatch_stage(order)
+        required = evidence["required"] or evidence["qty_delivered"]
+        if evidence["full"]:
+            add_timeline(
+                order, 14, user,
+                note=f"Terkirim penuh: {evidence['qty_delivered']}/{required} pcs",
+            )
+        else:
+            add_timeline(
+                order, order.get("current_stage") or 13, user,
+                note=f"Terkirim sebagian: {evidence['qty_delivered']}/{required} pcs",
+            )
+        if action_id:
+            ids.append(action_id)
+            order["delivery_confirm_action_ids"] = ids[-20:]
 
     order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
@@ -3858,6 +3949,17 @@ def _production_row(o: dict) -> dict:
         status_final = "HOLD"
     else:
         status_final = o.get("status_label") or STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)]
+    line_items = o.get("line_items") or []
+
+    def _split_printable(s):
+        try:
+            idx = int(s.get("line_idx"))
+        except (TypeError, ValueError):
+            return False
+        if 0 <= idx < len(line_items):
+            return _is_print_line(line_items[idx])
+        return False
+
     return {
         "id": o.get("id"),
         "po_number": o.get("po_number"),
@@ -3878,8 +3980,11 @@ def _production_row(o: dict) -> dict:
         "operators": [{
             "operator_name": s.get("operator_name"),
             "operator_email": s.get("operator_email"),
+            "operator_user_id": s.get("operator_user_id") or s.get("operator_id"),
             "quantity": s.get("quantity", 0),
             "qty_completed": s.get("qty_completed", 0),
+            "line_idx": s.get("line_idx"),
+            "line_printable": _split_printable(s),
             "stage": s.get("stage"),
             "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
         } for s in splits],
@@ -4135,10 +4240,10 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
                         "; ".join(o.get("hold_reasons") or []),
                         sc.get("screen_qty"),
                         sc.get("notes") or "",
-                        hp.get("qty_required"),
+                        _qr_helper_target_qty(o),
                         hp.get("qty_prepared"),
-                        hp.get("qty_shortage"),
-                        hp.get("shortage_status") or "-",
+                        max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0),
+                        ("Barang Kurang" if max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0) > 0 else "Cukup"),
                         STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
                         o.get("packing_status") or "-",
                         o.get("delivery_note_number") or "",
@@ -4165,10 +4270,10 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
                 "; ".join(o.get("hold_reasons") or []),
                 sc.get("screen_qty"),
                 sc.get("notes") or "",
-                hp.get("qty_required"),
+                _qr_helper_target_qty(o),
                 hp.get("qty_prepared"),
-                hp.get("qty_shortage"),
-                hp.get("shortage_status") or "-",
+                max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0),
+                ("Barang Kurang" if max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0) > 0 else "Cukup"),
                 STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
                 o.get("packing_status") or "-",
                 o.get("delivery_note_number") or "",
@@ -5984,27 +6089,6 @@ async def upload_delivery_proof(
             proof_ref["shipment_number"] = latest.get("number")
         if latest.get("accurate_shipment_id"):
             proof_ref["accurate_shipment_id"] = latest.get("accurate_shipment_id")
-    evidence = _qr_apply_delivery_from_proof_evidence(order)
-    if evidence:
-        proof_ref["qty_loaded_at_upload"] = evidence["loaded"]
-        proof_ref["qty_delivered_at_upload"] = evidence["qty_delivered"]
-        order["qty_delivered"] = evidence["qty_delivered"]
-        order["delivery_status"] = evidence["delivery_status"]
-        order["delivered_at"] = now
-        order["delivered_by"] = user.get("email")
-        order["delivered_by_name"] = user.get("name")
-        _sync_dispatch_stage(order)
-        required = evidence["required"] or evidence["qty_delivered"]
-        if evidence["full"]:
-            add_timeline(
-                order, 14, user,
-                note=f"Terkirim penuh via bukti kirim: {evidence['qty_delivered']}/{required} pcs",
-            )
-        else:
-            add_timeline(
-                order, order.get("current_stage") or 13, user,
-                note=f"Terkirim sebagian via bukti kirim: {evidence['qty_delivered']}/{required} pcs",
-            )
     add_timeline(order, order["current_stage"], user, note=f"Upload bukti kirim: {file_doc['original_filename']}")
     await _persist_order(order)
     return {"order": order, "proof": proof_ref}
@@ -6523,6 +6607,185 @@ async def analytics_output_export(
     return FastAPIResponse(content=payload, media_type=media, headers=headers)
 
 
+class OperatorWageOverrideIn(BaseModel):
+    operator_user_id: Optional[str] = None
+    operator_email: Optional[str] = None
+    accurate_item_id: Optional[str] = None
+    master_item_id: Optional[str] = None
+    item_code: Optional[str] = None
+    item_name: Optional[str] = None
+    rate_per_pcs: Optional[float] = None
+    active: bool = True
+
+
+class OperatorWageOperatorIn(BaseModel):
+    operator_user_id: Optional[str] = None
+    operator_email: Optional[str] = None
+    operator_name: Optional[str] = None
+    default_rate_per_pcs: Optional[float] = None
+
+
+class OperatorWageSettingsPayload(BaseModel):
+    default_rate_per_pcs: Optional[float] = None
+    operators: Optional[List[OperatorWageOperatorIn]] = None
+    overrides: Optional[List[OperatorWageOverrideIn]] = None
+
+
+async def _require_gaji_view(user: dict):
+    if user.get("role") == "admin":
+        return
+    eff = await user_permissions(user)
+    if "reports.gaji_operator.view" not in eff and "schedule.view" not in eff:
+        raise HTTPException(403, "Permission 'reports.gaji_operator.view' diperlukan")
+
+
+@api_router.get("/reports/gaji-operator")
+async def gaji_operator_report(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    operator_id: Optional[str] = None,
+    operator_ids: Optional[str] = None,
+    item: Optional[str] = None,
+    user=Depends(current_user),
+):
+    await _require_gaji_view(user)
+    start, end, preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
+    ids = _parse_operator_ids(operator_id, operator_ids)
+    pipeline = build_operator_analytics_pipeline(
+        ids[0] if len(ids) == 1 else None, None, item, None, operator_ids=ids or None,
+    )
+    blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+    wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
+    result = compute_operator_payroll(
+        blob.get("docs") or [],
+        wage,
+        date_from=start,
+        date_to=end,
+        operator_ids=ids or None,
+        item=item,
+    )
+    ops_facet = [
+        {"id": r.get("_id"), "name": r.get("name") or r.get("_id")}
+        for r in (blob.get("operators") or [])
+        if r.get("_id")
+    ]
+    ops, items = _payroll_filter_options(blob.get("docs") or [])
+    if ops_facet:
+        ops = ops_facet
+    result["filters"] = {"operators": ops, "items": items}
+    result["period"]["preset"] = preset
+    result["generated_at"] = now_iso()
+    return result
+
+
+@api_router.get("/reports/gaji-operator/export")
+async def gaji_operator_export(
+    fmt: str = Query("xlsx"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    operator_id: Optional[str] = None,
+    operator_ids: Optional[str] = None,
+    item: Optional[str] = None,
+    user=Depends(current_user),
+):
+    await _require_gaji_view(user)
+    start, end, _preset = resolve_period("custom" if (date_from or date_to) else "month", date_from, date_to)
+    ids = _parse_operator_ids(operator_id, operator_ids)
+    pipeline = build_operator_analytics_pipeline(
+        ids[0] if len(ids) == 1 else None, None, item, None, operator_ids=ids or None,
+    )
+    blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+    wage = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
+    result = compute_operator_payroll(
+        blob.get("docs") or [],
+        wage,
+        date_from=start,
+        date_to=end,
+        operator_ids=ids or None,
+        item=item,
+    )
+    rows = result.get("rows") or []
+    keys = [c[0] for c in PAYROLL_EXPORT_COLUMNS]
+    headers = [c[1] for c in PAYROLL_EXPORT_COLUMNS]
+    fmt = (fmt or "xlsx").strip().lower()
+    filename = f"Gaji_Operator_{start.isoformat()}_{end.isoformat()}." + ("xlsx" if fmt == "xlsx" else "csv")
+    numeric = {"qty_completed", "rate_per_pcs", "total_upah"}
+    if fmt == "xlsx":
+        from io import BytesIO
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Gaji Operator"
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in keys])
+        buf = BytesIO()
+        wb.save(buf)
+        payload, media = buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        import csv
+        from io import StringIO
+        buf = StringIO()
+        buf.write("\ufeff")
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow([row.get(k, "") if k not in numeric else (row.get(k) if row.get(k) is not None else 0) for k in keys])
+        payload, media = buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8"
+    return FastAPIResponse(content=payload, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@api_router.get("/settings/operator-wage")
+async def get_operator_wage_settings(user=Depends(current_user)):
+    if user.get("role") != "admin":
+        eff = await user_permissions(user)
+        if not any(p in eff for p in ("settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "schedule.view")):
+            raise HTTPException(403, "Permission 'settings.operator_wage.view' diperlukan")
+    doc = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
+    settings = normalize_wage_settings(doc)
+    ops = await db.users.find(
+        {"role": "operator", "status": {"$ne": "inactive"}},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(200)
+    return {
+        "settings": settings,
+        "operators": _merge_wage_operators(ops, settings),
+    }
+
+
+@api_router.put("/settings/operator-wage")
+async def put_operator_wage_settings(payload: OperatorWageSettingsPayload, user=Depends(current_user)):
+    if user.get("role") != "admin":
+        await _require_perm(user, "settings.operator_wage.manage")
+    prev = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
+    incoming = {
+        "default_rate_per_pcs": payload.default_rate_per_pcs if payload.default_rate_per_pcs is not None else prev.get("default_rate_per_pcs"),
+        "operators": (
+            [o.model_dump() if hasattr(o, "model_dump") else o.dict() for o in payload.operators]
+            if payload.operators is not None else (prev.get("operators") or [])
+        ),
+        "overrides": (
+            [o.model_dump() if hasattr(o, "model_dump") else o.dict() for o in payload.overrides]
+            if payload.overrides is not None else (prev.get("overrides") or [])
+        ),
+    }
+    saved = _wage_snapshot_on_save(prev, incoming, user, now_iso())
+    saved["key"] = OPERATOR_WAGE_SETTINGS_KEY
+    await db.app_settings.update_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"$set": saved}, upsert=True)
+    await _write_audit(
+        "settings.operator_wage.update", user,
+        target_email=None,
+        before={"operators": (prev.get("operators") or [])[:20]},
+        after={"operators": (saved.get("operators") or [])[:20]},
+        note="Update upah operator / pcs",
+    )
+    ops = await db.users.find(
+        {"role": "operator", "status": {"$ne": "inactive"}},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(200)
+    return {"settings": normalize_wage_settings(saved), "operators": _merge_wage_operators(ops, saved)}
+
+
 @api_router.get("/analytics/operator-targets")
 async def get_operator_output_targets(user=Depends(require_perm("schedule.view"))):
     """Current daily output targets per operator. Analytics uses this current value for all periods."""
@@ -6754,6 +7017,7 @@ _ct_router = _ct_mod.build_router({
     "current_user": current_user,
     "require_perm": _require_perm,
     "logger": logging.getLogger("customer_tracking"),
+    "obj_storage": obj_storage,
 })
 app.include_router(_ct_router)
 

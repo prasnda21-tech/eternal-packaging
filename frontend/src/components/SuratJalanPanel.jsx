@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FileText, Truck, Cloud } from "lucide-react";
+import { FileText, Truck } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { shipmentLinesForOrder, storedShipments } from "../lib/shipmentLines";
@@ -32,8 +32,6 @@ export default function SuratJalanPanel({
   canManage,
   busy,
   onCreate,
-  onImport,
-  accuratePreview,
   footerActions = null,
 }) {
   const { user } = useAuth();
@@ -43,7 +41,6 @@ export default function SuratJalanPanel({
   const [notes, setNotes] = useState(order.delivery_note_notes || "");
   const [draft, setDraft] = useState(() => initialDraft(rows));
   const [confirm, setConfirm] = useState(null);
-  const [importConfirm, setImportConfirm] = useState(null);
   const [err, setErr] = useState("");
   const created = !!order.surat_jalan_created;
   const availableTotal = rows.reduce((s, r) => s + Number(r.available_sj || 0), 0);
@@ -51,8 +48,6 @@ export default function SuratJalanPanel({
   const shippedTotal = rows.reduce((s, r) => s + Number(r.shipped || 0), 0);
   const draftTotal = rows.reduce((s, r) => s + Number(draft[r.line_idx] || 0), 0);
   const canSubmit = canManage && !busy && availableTotal > 0 && draftTotal > 0;
-  const mockNotes = accuratePreview?.notes || [];
-  const importBlocked = accuratePreview?.blocked;
   const packingWait = (order.current_stage || 0) < 12 && !created;
 
   useEffect(() => {
@@ -137,7 +132,7 @@ export default function SuratJalanPanel({
                           {row.color && <div className="muted small">{row.color}</div>}
                           {row.mismatch && (
                             <div className="muted small" data-testid={`sj-line-mismatch-${idx}`} style={{ color: "#8f1f1f" }}>
-                              Qty SJ Accurate &gt; packing
+                              Qty SJ melebihi packing
                             </div>
                           )}
                         </td>
@@ -245,46 +240,6 @@ export default function SuratJalanPanel({
                   <Truck size={16} /> {created ? "Buat Surat Jalan berikutnya" : "Buat Surat Jalan"}
                 </button>
               </div>
-              {onImport && (
-                <div data-testid="sj-accurate-import" style={{ marginTop: 8 }}>
-                  {importBlocked && (
-                    <p className="muted small" data-testid="sj-accurate-blocked">
-                      Import Accurate Pengiriman Pesanan live tidak tersedia di repository ini. Mock lokal tetap bisa dipakai.
-                    </p>
-                  )}
-                  {mockNotes.length > 0 && (
-                    <div className="muted small">
-                      {mockNotes.map((n) => (
-                        <button
-                          key={n.accurate_shipment_id}
-                          type="button"
-                          className="ghost sm"
-                          disabled={busy}
-                          data-testid={`import-sj-mock-${n.accurate_shipment_id}`}
-                          onClick={() => {
-                            setErr("");
-                            setImportConfirm({
-                              payload: {
-                                accurate_shipment_id: n.accurate_shipment_id,
-                                number: n.number,
-                                notes: n.notes,
-                                lines: (n.lines || []).map((l) => ({
-                                  accurate_item_id: l.accurate_item_id,
-                                  qty: l.quantity,
-                                })),
-                              },
-                              action: `Import ${n.number || n.accurate_shipment_id}`,
-                              time: formatDisplayDateTime(new Date().toISOString()),
-                            });
-                          }}
-                        >
-                          <Cloud size={13} /> Import {n.number || n.accurate_shipment_id}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
         </>
@@ -303,28 +258,6 @@ export default function SuratJalanPanel({
         error={err}
         onCancel={() => { if (!busy) setConfirm(null); }}
         onConfirm={executeCreate}
-      />
-      <ConfirmActionModal
-        open={!!importConfirm}
-        stage="Surat Jalan"
-        poNumber={order.po_number}
-        action={importConfirm?.action}
-        name={user?.name || user?.email}
-        time={importConfirm?.time}
-        busy={busy}
-        error={err}
-        onCancel={() => { if (!busy) setImportConfirm(null); }}
-        onConfirm={async () => {
-          if (!importConfirm || busy) return;
-          setErr("");
-          try {
-            await onImport(importConfirm.payload);
-            setImportConfirm(null);
-          } catch (e) {
-            const d = e?.response?.data?.detail;
-            setErr(typeof d === "string" ? d : (d?.message || "Gagal import Surat Jalan"));
-          }
-        }}
       />
     </section>
   );

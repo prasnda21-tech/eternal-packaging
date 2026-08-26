@@ -19,7 +19,13 @@ describe("append-only workflow UI", () => {
     expect(src("PackingPanel.jsx")).toMatch(/qty: confirm\.qty/);
     expect(src("LoadingPanel.jsx")).toMatch(/action_id: confirm\.actionId/);
     expect(src("SuratJalanPanel.jsx")).toMatch(/ConfirmActionModal/);
-    expect(src("DeliveryProofPanel.jsx")).toMatch(/ConfirmActionModal/);
+    expect(src("DeliveryProofPanel.jsx")).toMatch(/confirm-delivered-button/);
+    expect(src("DeliveryProofPanel.jsx")).toMatch(/KONFIRMASI PENGIRIMAN/);
+    expect(src("DeliveryProofPanel.jsx")).toMatch(/confirmDelivered/);
+    expect(src("SuratJalanPanel.jsx")).not.toMatch(/sj-accurate-import/);
+    expect(src("SuratJalanPanel.jsx")).not.toMatch(/previewAccurateSuratJalan/);
+    expect(src("RoleWorkPanel.jsx")).not.toMatch(/previewAccurateSuratJalan/);
+    expect(src("RoleWorkPanel.jsx")).not.toMatch(/importSuratJalan/);
   });
 
   test("cancel path does not call save in confirm open", () => {
