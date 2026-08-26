@@ -1422,24 +1422,31 @@ function OperatorTargetSettingsTab({ notify, canEdit }) {
   };
 
   return (
-    <div data-testid="op-target-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 720 }}>
-      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-        <h3 style={{ marginTop: 0 }}>Target Output Operator</h3>
+    <div data-testid="op-target-settings-tab" className="op-target-settings">
+      <div className="op-target-card">
+        <h3>Target Output Operator</h3>
         <p className="muted small">Target qty cetak per hari aktif, keyed by operator ID (bukan nama). Achievement analytics membandingkan avg/hari aktif vs target ini. Tidak ada kalender kerja — target mingguan tidak dikarang.</p>
         {note && <p className="muted small">{note}</p>}
         {busy && <p className="muted">Memuat…</p>}
-        <div className="prod-table-wrap" style={{ marginTop: 8 }}>
-          <table className="prod-table">
-            <thead><tr><th>Operator</th><th>ID</th><th className="num">Target qty / hari</th></tr></thead>
+        <div className="op-target-table-wrap">
+          <table className="op-target-table">
+            <thead>
+              <tr>
+                <th className="op-target-name">Operator</th>
+                <th className="op-target-id">ID</th>
+                <th className="num op-target-qty">Target qty / hari</th>
+              </tr>
+            </thead>
             <tbody>
               {rows.map((r, i) => (
                 <tr key={r.operator_id || r.email}>
-                  <td><strong>{r.name}</strong><div className="muted small">{r.email}</div></td>
-                  <td className="mono muted small">{r.operator_id}</td>
-                  <td className="num">
+                  <td className="op-target-name"><strong>{r.name}</strong><div className="muted small">{r.email}</div></td>
+                  <td className="mono muted small op-target-id">{r.operator_id}</td>
+                  <td className="num op-target-qty">
                     <input
                       type="number"
                       min="0"
+                      className="op-target-qty-input"
                       value={r.qty_per_day}
                       disabled={!canEdit}
                       onChange={(e) => {
@@ -1448,7 +1455,6 @@ function OperatorTargetSettingsTab({ notify, canEdit }) {
                         setRows(next);
                       }}
                       data-testid={`op-target-${r.email}`}
-                      style={{ width: 120, textAlign: "right" }}
                     />
                   </td>
                 </tr>

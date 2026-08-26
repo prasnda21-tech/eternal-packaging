@@ -225,7 +225,7 @@ export default function AppShell() {
                 <div className="nav-sub">
                   {inventoryNav.masterItems && (
                     <NavLink to="/persediaan/master-barang-jasa" className={navClass} data-testid="top-nav-master-barang-jasa">
-                      <Package size={16} /> Master Barang/Jasa
+                      <Package size={16} /> Barang/Jasa
                     </NavLink>
                   )}
                   {inventoryNav.currentStock && (
