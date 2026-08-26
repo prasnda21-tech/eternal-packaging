@@ -173,6 +173,39 @@ def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: 
     return src
 
 
+def _date_key(iso: Any) -> str:
+    if not iso:
+        return ""
+    text = str(iso).strip()
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text[:10]
+    dt = _parse_dt(iso)
+    return dt.strftime("%Y-%m-%d") if dt else ""
+
+
+def matches_status_po_filters(row: dict, filters: Optional[dict] = None) -> bool:
+    """AND filters on Status PO rows. Empty filter = match. Does not change status calc."""
+    if not filters:
+        return True
+    po = str(filters.get("po") or "").strip().lower()
+    customer = str(filters.get("customer") or "").strip().lower()
+    status = str(filters.get("status") or "").strip()
+    date_from = str(filters.get("date_from") or filters.get("dateFrom") or "").strip()
+    date_to = str(filters.get("date_to") or filters.get("dateTo") or "").strip()
+    if po and po not in str(row.get("po_number") or "").lower():
+        return False
+    if customer and customer not in str(row.get("customer") or "").lower():
+        return False
+    if status and str(row.get("status") or "") != status:
+        return False
+    key = _date_key(row.get("order_date"))
+    if date_from and (not key or key < date_from):
+        return False
+    if date_to and (not key or key > date_to):
+        return False
+    return True
+
+
 def status_po_row(order: dict) -> dict:
     ship = shipment_status_row(order)
     return {
@@ -191,9 +224,17 @@ def status_po_row(order: dict) -> dict:
     }
 
 
-def build_status_po(orders: Iterable[dict], view: Optional[str] = None, *, now: Optional[datetime] = None) -> dict:
+def build_status_po(
+    orders: Iterable[dict],
+    view: Optional[str] = None,
+    *,
+    now: Optional[datetime] = None,
+    filters: Optional[dict] = None,
+) -> dict:
     filtered = filter_orders_for_view(orders, view, now=now)
     rows = [status_po_row(o) for o in filtered]
+    if filters:
+        rows = [r for r in rows if matches_status_po_filters(r, filters)]
     rows.sort(key=lambda r: (r.get("order_date") or "", r.get("po_number") or ""))
     return {
         "view": (view or "").strip().lower() or None,

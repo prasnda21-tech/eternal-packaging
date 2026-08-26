@@ -4209,6 +4209,11 @@ STATUS_PO_PROJECTION = {
 @api_router.get("/dashboard/status-po")
 async def status_po_dashboard(
     view: Optional[str] = None,
+    po: Optional[str] = None,
+    customer: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     include_cancelled: bool = False,
     user=Depends(require_perm("schedule.view")),
 ):
@@ -4221,7 +4226,13 @@ async def status_po_dashboard(
     for o in orders:
         _apply_hold_snapshot(o)
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
-    data = build_status_po(orders, view)
+    data = build_status_po(orders, view, filters={
+        "po": po or "",
+        "customer": customer or "",
+        "status": status or "",
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+    })
     data["generated_at"] = now_iso()
     return data
 
