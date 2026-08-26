@@ -16,6 +16,9 @@ describe("Sistem Upah Operator settings", () => {
     expect(src).toMatch(/per_target_block/);
     expect(src).toMatch(/wage-bonus-target/);
     expect(src).toMatch(/wage-bonus-amount/);
+    expect(src).toMatch(/wage-item-search/);
+    expect(src).toMatch(/wage-table-wrap/);
+    expect(src).not.toMatch(/className="prod-table"/);
     expect(src).toMatch(/Isi manual/);
     expect(src).toMatch(/Belum Disetel/);
     expect(src).not.toMatch(/default_rate_per_pcs:\s*20/);

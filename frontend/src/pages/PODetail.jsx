@@ -18,6 +18,7 @@ import ProductionRoutePanel from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
 import StageBar from "../components/StageBar";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
+import { terkirimQtySummary } from "../lib/deliveryHistory";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import StageDetailDrawer from "../components/StageDetailDrawer";
 import AppendQtyEntries from "../components/AppendQtyEntries";
@@ -966,8 +967,9 @@ export default function PODetail() {
       />
       </div>
 
-      {/* 15 Terkirim */}
+      {/* 15 Bukti Kirim then Terkirim */}
       <div data-testid="workflow-slot-14" data-workflow-stage="14">
+      <DeliveryProofPanel order={order} onUpdated={setOrder} />
       <section className="panel" data-testid="terkirim-panel">
         <header className="panel-head">
           <h3>Terkirim</h3>
@@ -975,17 +977,15 @@ export default function PODetail() {
             {order.delivery_status || "Belum Terkirim"}
           </span>
         </header>
-        <p className="muted small">
-          Qty packing: <b>{Number(order?.packing_info?.qty_packed || 0).toLocaleString("id-ID")}</b>
-          {" "}· Qty loading: <b>{Number((order?.shipment_lines || []).reduce((s, r) => s + Number(r?.loaded || 0), 0) || 0).toLocaleString("id-ID")}</b>
-          {" "}· Qty dikirim: <b>{Number(order?.qty_delivered || 0).toLocaleString("id-ID")}</b>
-          {" "}· Total PO: <b>{Number(order?.packing_required_total || order?.total_quantity || 0).toLocaleString("id-ID")}</b>
-        </p>
+        <MetricRow testid="terkirim-summary">
+          <MetricCell label="Total PO" value={terkirimQtySummary(order).total} testid="terkirim-total-po" />
+          <MetricCell label="Sudah Terkirim" value={terkirimQtySummary(order).delivered} testid="terkirim-delivered-qty" />
+          <MetricCell label="Belum Terkirim" value={terkirimQtySummary(order).remaining} testid="terkirim-remaining-qty" />
+        </MetricRow>
         <p className="muted small">
           Status Terkirim hanya setelah minimal 2 foto bukti kirim di-upload, lalu Konfirmasi Terkirim.
         </p>
       </section>
-      <DeliveryProofPanel order={order} onUpdated={setOrder} />
       </div>
       </div>
 

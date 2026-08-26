@@ -1670,7 +1670,7 @@ export default function Settings() {
   };
 
   return (
-    <div data-testid="settings-page">
+    <div data-testid="settings-page" className="settings-page">
       <div className="page-heading">
         <div>
           <p className="eyebrow">Pengaturan · Karyawan &amp; Hak Akses</p>

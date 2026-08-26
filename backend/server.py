@@ -46,6 +46,10 @@ from services.delivery_schedule import (
     reschedule_rows as _delivery_reschedule_rows,
     schedule_row as _delivery_schedule_row,
 )
+from services.delivery_history import (
+    append_confirmation as _append_delivery_confirmation,
+    attach_delivery_history,
+)
 from services.operator_schedule import (
     apply_operator_assignments as _apply_operator_assignments,
     cancel_split_remaining as _cancel_split_remaining,
@@ -959,6 +963,7 @@ _DERIVED_ORDER_KEYS = (
     "surat_jalan_status_semantic",
     "loading_qty_status",
     "effective_delivery_date", "delivery_schedule_status",
+    "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
 )
 
 
@@ -983,6 +988,7 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["shipment_lines"] = _qr_shipment_line_breakdown(order)
     order["surat_jalan_status_semantic"] = _qr_surat_jalan_status_semantic(order)
     order["loading_qty_status"] = _qr_loading_status_semantic(order)
+    attach_delivery_history(order)
     _attach_workflow_snapshot(order)
 
 
@@ -3675,11 +3681,16 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         if not evidence:
             raise HTTPException(400, "Belum ada qty loading untuk dikonfirmasi terkirim.")
         now = now_iso()
+        current_delivered = _qr_qty_delivered(order)
+        increment = int(evidence["qty_delivered"]) - int(current_delivered or 0)
         order["qty_delivered"] = evidence["qty_delivered"]
         order["delivery_status"] = evidence["delivery_status"]
         order["delivered_at"] = now
         order["delivered_by"] = user.get("email")
         order["delivered_by_name"] = user.get("name")
+        _append_delivery_confirmation(
+            order, user, qty_increment=increment, now=now, action_id=action_id,
+        )
         _sync_dispatch_stage(order)
         required = evidence["required"] or evidence["qty_delivered"]
         if evidence["full"]:

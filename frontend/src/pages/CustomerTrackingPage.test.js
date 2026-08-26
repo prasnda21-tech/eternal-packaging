@@ -67,4 +67,14 @@ describe("Customer tracking public page", () => {
     expect(page).not.toMatch(/requested_by/);
     expect(page).not.toMatch(/reason/);
   });
+
+  test("public page shows customer-safe delivery history", () => {
+    expect(page).toMatch(/tracking-delivery-history/);
+    expect(page).toMatch(/Nama Driver/);
+    expect(page).toMatch(/Plat Kendaraan/);
+    expect(page).toMatch(/slice\(0, 5\)/);
+    expect(page).not.toMatch(/driver_id/);
+    expect(page).not.toMatch(/storage_path/);
+    expect(page).not.toMatch(/user_id/);
+  });
 });
