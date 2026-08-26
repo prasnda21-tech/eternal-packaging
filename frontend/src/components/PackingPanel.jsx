@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Package, CheckCircle2 } from "lucide-react";
+import { Package } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { packingLinesForOrder, packingSubmitEnabled } from "../lib/packingCard";
 import { entriesForLine, newActionId } from "../lib/workflowEntries";
@@ -20,7 +20,7 @@ function emptyDraft(packingLines) {
 
 // Packing = print (setelah selesai operator) + non_print (langsung tersedia).
 // Input & persist PER LINE. Total PO hanya ringkasan (SUM). Append-only increments.
-export default function PackingPanel({ order, canManage, busy, onSaveQty, onComplete, footerActions = null }) {
+export default function PackingPanel({ order, canManage, busy, onSaveQty, footerActions = null }) {
   const { user } = useAuth();
   const pi = order.packing_info || {};
   const packingLines = packingLinesForOrder(order);
@@ -59,8 +59,6 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
   const helperPrepared = order.helper_prepared_print_qty;
   const nonPrintTotal = Number(order.non_print_qty_total || 0);
   const shortageSaved = Math.max(requiredTotal - packedSaved, 0);
-  const canProceedPartial = hasQty && packedSaved > 0;
-  const isComplete = hasQty && packedSaved >= requiredTotal;
   const remainingAvailable = Math.max(available - packedSaved, 0);
   const canSubmitQty = packingSubmitEnabled(canManage, available);
   const saving = busy || localBusy;
@@ -276,25 +274,6 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, onComp
             </p>
           )}
           {err && <p className="error" data-testid="packing-error">{err}</p>}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <button
-              type="button"
-              className="ghost"
-              onClick={onComplete}
-              disabled={saving || !canProceedPartial}
-              title={
-                !hasQty
-                  ? "Qty Packing harus diisi terlebih dahulu"
-                  : isComplete
-                    ? "Selesaikan Packing lengkap dan lanjut ke Surat Jalan"
-                    : "Lanjut ke Surat Jalan dengan qty packing sebagian"
-              }
-              data-testid="complete-packing-button"
-              data-mark-packed="true"
-            >
-              <CheckCircle2 size={16} /> {isComplete ? "Selesai Packing" : "Lanjut Packing Sebagian"}
-            </button>
-          </div>
         </div>
       )}
       {footerActions}

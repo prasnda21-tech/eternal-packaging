@@ -179,31 +179,6 @@ export default function PODetail() {
       setPayUploading(false);
     }
   };
-  const packed = async () => {
-    // Task 12 bugfix: proteksi klik tidak sengaja + konfirmasi eksplisit.
-    // Sekarang wajib Qty Packing valid (bukan cuma prereq masuk Packing).
-    const prereqReasons = order?.packing_prereq_reasons || [];
-    const qtyPacked = order?.packing_info?.qty_packed;
-    const hasQty = qtyPacked !== null && qtyPacked !== undefined && String(qtyPacked).trim() !== "" && Number(qtyPacked) > 0;
-    if (prereqReasons.length > 0) {
-      setErr(`Belum bisa Packing:\n• ${prereqReasons.join("\n• ")}`);
-      return;
-    }
-    if (!hasQty) {
-      setErr("Belum bisa Packing:\n• Qty Packing harus diisi terlebih dahulu.");
-      return;
-    }
-    const shortage = Math.max((order.packing_required_total || 0) - Number(qtyPacked || 0), 0);
-    setActionConfirm({
-      kind: "packing-complete",
-      stage: "Packing",
-      qty: Number(qtyPacked || 0),
-      extra: shortage > 0
-        ? `Lanjut packing sebagian (${qtyPacked} pcs, kurang ${shortage}) ke Surat Jalan.`
-        : "Konfirmasi Packing selesai dan PO siap masuk Surat Jalan.",
-      time: formatDisplayDateTime(new Date().toISOString()),
-    });
-  };
   const toggleUrgent = () => run(() => api.setUrgent(order.id, order.priority !== "urgent"), "Prioritas diperbarui");
   const toggleBufferStock = () => run(
     () => api.setBufferStock(order.id, !order.buffer_stock),
@@ -232,10 +207,6 @@ export default function PODetail() {
         const res = await api.approveSample(order.id, true, note);
         setOrder(res.order);
         showToast("Sampel di-approve");
-      } else if (actionConfirm.kind === "packing-complete") {
-        const res = await api.markPacked(order.id);
-        setOrder(res.order);
-        showToast("Packing dikonfirmasi — masuk Surat Jalan");
       }
       setActionConfirm(null);
     } catch (e) {
@@ -967,7 +938,6 @@ export default function PODetail() {
           setOrder(res.order);
           showToast("Qty Packing disimpan");
         }}
-        onComplete={packed}
       />
       </div>
 

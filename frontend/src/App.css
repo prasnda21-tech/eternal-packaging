@@ -1040,7 +1040,12 @@
 .prod-table tbody tr.cancelled td{background:#faece9;opacity:.72;text-decoration:line-through}
 .prod-table tbody tr.cancelled td .pill{text-decoration:none}
 .prod-ops{min-width:7.25rem;max-width:16.5rem}
-.prod-op-line{display:flex;flex-direction:column;align-items:flex-start;gap:1px;margin-bottom:8px;line-height:1.35}
+.prod-qty-cell,.prod-ops{vertical-align:top}
+.prod-line-qty-block{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;gap:1px;font-variant-numeric:tabular-nums}
+.prod-line-qty-name{display:block;font-size:10px;font-weight:500;color:var(--soft);line-height:1.2;max-width:9.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prod-line-qty-value{display:block;font-weight:650}
+.prod-line-ops-block{display:flex;flex-direction:column;justify-content:center;gap:2px}
+.prod-op-line{display:flex;flex-direction:row;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px;line-height:1.35}
 .prod-op-line:last-child{margin-bottom:0}
 .prod-op-name{display:block;font-weight:600;overflow-wrap:break-word;word-break:break-word}
 .prod-date-line{display:block;padding:1px 0;white-space:nowrap}
@@ -1566,7 +1571,10 @@ html:has(.prod-schedule-page) #root{
 }
 .prod-schedule-page .prod-table tbody td:last-child{border-right:0}
 .prod-schedule-page .prod-table tbody td.col-text{line-height:1.2}
-.prod-schedule-page .prod-op-line{margin-bottom:1px;gap:0;line-height:1.15}
+.prod-schedule-page .prod-table tbody td.prod-qty-cell,
+.prod-schedule-page .prod-table tbody td.prod-ops{vertical-align:top}
+.prod-schedule-page .prod-table tbody td.prod-qty-cell{white-space:normal}
+.prod-schedule-page .prod-op-line{margin-bottom:1px;gap:8px;line-height:1.15}
 .prod-schedule-page .prod-date-line{padding:0}
 .prod-schedule-page .pill.sm{padding:1px 5px;font-size:10px}
 .prod-schedule-page .prod-qty-over{color:var(--red);font-weight:650}
