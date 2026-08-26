@@ -1,7 +1,7 @@
 /** Jadwal Produksi qty cells.
 
-Total Qty — active scheduled printable qty per operator per line.
-Not PO total, not print_qty_total repeated on every operator, not actual output.
+Total Qty — SUM(active scheduled printable qty) grouped by printable line
+(order + stable line identity). Not per-operator, not PO total, not actual output.
 
 Qty Cetak (scheduledPrintQtyProgress) — Penjadwalan assignment vs print target
 (PO-level ratio). Not identical to Total Qty.
@@ -46,6 +46,14 @@ export function printQtyProgress(row) {
   };
 }
 
+/** Stable printable-line key: order line identity only. Never item name, SKU, or operator. */
+export function printableLineKey(op) {
+  const lineId = op?.line_id != null && String(op.line_id).trim();
+  if (lineId) return `lid:${lineId}`;
+  if (op?.line_idx != null && op.line_idx !== "") return `idx:${op.line_idx}`;
+  return "";
+}
+
 /** Active scheduled printable qty per operator per line. quantity is current assignment (cancel already subtracted). */
 export function operatorLineScheduledQtys(row) {
   const lines = [];
@@ -58,28 +66,56 @@ export function operatorLineScheduledQtys(row) {
       operator_email: op.operator_email || "",
       operator_name: op.operator_name || "",
       line_idx: op.line_idx,
+      line_id: op.line_id || "",
+      line_name: op.line_name || "",
+      accurate_item_id: op.accurate_item_id || "",
+      master_item_id: op.master_item_id || "",
       quantity: qty,
     });
   }
   return lines;
 }
 
+/** SUM active scheduled printable qty grouped by stable line identity. */
+export function scheduledPrintableLineTotals(row) {
+  const grouped = new Map();
+  for (const op of operatorLineScheduledQtys(row)) {
+    const key = printableLineKey(op) || `idx:${op.line_idx ?? grouped.size}`;
+    const prev = grouped.get(key) || {
+      key,
+      line_idx: op.line_idx,
+      line_id: op.line_id,
+      line_name: op.line_name || "",
+      accurate_item_id: op.accurate_item_id,
+      master_item_id: op.master_item_id,
+      total: 0,
+      operators: [],
+    };
+    prev.total += op.quantity;
+    prev.operators.push(op);
+    grouped.set(key, prev);
+  }
+  return Array.from(grouped.values());
+}
+
 export function totalQtyScheduledCell(row) {
-  const lines = operatorLineScheduledQtys(row);
+  const groups = scheduledPrintableLineTotals(row);
   const poTotal = qtyInt(row?.total_quantity);
-  if (!lines.length) {
+  if (!groups.length) {
     return {
       text: "—",
-      lines: [],
+      groups: [],
       poTotal,
       title: poTotal > 0 ? `Total Qty PO: ${formatIdQty(poTotal)} (bukan kolom ini)` : undefined,
     };
   }
   return {
-    text: lines.map((l) => formatIdQty(l.quantity)).join("\n"),
-    lines,
+    text: groups.map((g) => formatIdQty(g.total)).join("\n"),
+    groups,
     poTotal,
-    title: lines.map((l) => `${l.operator_name || "Operator"} · line ${l.line_idx}: ${formatIdQty(l.quantity)}`).join("\n"),
+    title: groups
+      .map((g) => `${g.line_name || `Line ${g.line_idx}`}: ${formatIdQty(g.total)}`)
+      .join("\n"),
   };
 }
 

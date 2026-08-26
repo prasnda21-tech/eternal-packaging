@@ -490,14 +490,22 @@ export default function ProductionSchedule() {
                   <td className="prod-cell-wrap col-text"><strong>{r.customer || "-"}</strong></td>
                   <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
                   <td
-                    className="num col-fit"
+                    className="num col-fit prod-qty-cell"
                     data-testid={`prod-qty-${r.po_number}`}
                     title={qtyProg.title}
                   >
-                    {qtyProg.lines?.length ? (
-                      qtyProg.lines.map((l, i) => (
-                        <div key={`${l.operator_email || l.operator_user_id || i}-${l.line_idx}`} className="prod-op-line" data-testid={`prod-qty-op-${r.po_number}-${i}`}>
-                          {formatIdQty(l.quantity)}
+                    {qtyProg.groups?.length ? (
+                      qtyProg.groups.map((g, i) => (
+                        <div
+                          key={g.key}
+                          className="prod-line-qty-block"
+                          style={{ minHeight: `${Math.max((g.operators || []).length, 1) * 1.35}em` }}
+                          data-testid={`prod-qty-line-${r.po_number}-${i}`}
+                        >
+                          {g.line_name ? (
+                            <span className="prod-line-qty-name">{g.line_name}</span>
+                          ) : null}
+                          <span className="prod-line-qty-value">{formatIdQty(g.total)}</span>
                         </div>
                       ))
                     ) : qtyProg.text}
@@ -510,13 +518,30 @@ export default function ProductionSchedule() {
                     {cetakProg.text}
                   </td>
                   <td className="prod-ops col-text">
-                    {(r.operators || []).length === 0 ? <span className="muted small">-</span> :
+                    {qtyProg.groups?.length ? (
+                      qtyProg.groups.map((g) => (
+                        <div
+                          key={g.key}
+                          className="prod-line-ops-block"
+                          style={{ minHeight: `${Math.max((g.operators || []).length, 1) * 1.35}em` }}
+                          data-testid={`prod-ops-line-${r.po_number}-${g.key}`}
+                        >
+                          {(g.operators || []).map((op, i) => (
+                            <div key={`${op.operator_email || op.operator_user_id || i}`} className="prod-op-line">
+                              <span className="prod-op-name">{op.operator_name || "-"}</span>
+                              <span className="prod-op-qty muted small mono">{formatIdQty(op.quantity)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ))
+                    ) : (
+                      (r.operators || []).length === 0 ? <span className="muted small">-</span> :
                       (r.operators || []).map((op, i) => (
                         <div key={i} className="prod-op-line">
                           <span className="prod-op-name">{op.operator_name || "-"}</span>
                         </div>
                       ))
-                    }
+                    )}
                   </td>
                   <td className="col-fit">
                     <span className={"pill sm " + ((r.design_status === "Approved") ? "pill-ok" : "pill-warn")}>{r.design_status || "-"}</span>

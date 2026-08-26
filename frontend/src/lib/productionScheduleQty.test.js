@@ -87,42 +87,107 @@ describe("Jadwal Produksi Total Qty print progress", () => {
   });
 });
 
-describe("Jadwal Produksi Total Qty = active schedule per operator per printable line", () => {
-  test("A 6.000 and B 4.000 not PO 15.000 or line 10.000", () => {
+describe("Jadwal Produksi Total Qty = SUM active schedule per printable line", () => {
+  test("TEST A: A 4.000 + B 1.000 = 5.000 once, not per operator", () => {
     const cell = totalQtyScheduledCell({
       total_quantity: 15000,
-      print_qty_total: 10000,
-      print_completed_qty: 0,
+      print_qty_total: 5000,
       operators: [
-        { operator_name: "A", operator_email: "a@x.com", quantity: 6000, line_idx: 0, line_printable: true },
-        { operator_name: "B", operator_email: "b@x.com", quantity: 4000, line_idx: 0, line_printable: true },
+        { operator_name: "A", operator_email: "a@x.com", quantity: 4000, line_idx: 0, line_printable: true, accurate_item_id: "PC-16" },
+        { operator_name: "B", operator_email: "b@x.com", quantity: 1000, line_idx: 0, line_printable: true, accurate_item_id: "PC-16" },
       ],
     });
-    expect(cell.lines.map((l) => l.quantity)).toEqual([6000, 4000]);
-    expect(cell.text).toBe("6.000\n4.000");
+    expect(cell.groups).toHaveLength(1);
+    expect(cell.groups[0].total).toBe(5000);
+    expect(cell.text).toBe("5.000");
+    expect(cell.text).not.toBe("4.000\n1.000");
     expect(cell.text).not.toBe("15.000");
-    expect(cell.text).not.toContain("10.000");
+  });
+
+  test("TEST B: cancel without reassign uses active qty 3.000 + 1.000 = 4.000", () => {
+    const cell = totalQtyScheduledCell({
+      operators: [
+        { operator_name: "A", quantity: 3000, line_idx: 0, line_printable: true, accurate_item_id: "PC-16" },
+        { operator_name: "B", quantity: 1000, line_idx: 0, line_printable: true, accurate_item_id: "PC-16" },
+      ],
+    });
+    expect(cell.text).toBe("4.000");
+  });
+
+  test("TEST C: reassign keeps line total 3.000 + 2.000 = 5.000", () => {
+    const cell = totalQtyScheduledCell({
+      operators: [
+        { operator_name: "A", quantity: 3000, line_idx: 0, line_printable: true, accurate_item_id: "PC-16" },
+        { operator_name: "B", quantity: 2000, line_idx: 0, line_printable: true, accurate_item_id: "PC-16" },
+      ],
+    });
+    expect(cell.text).toBe("5.000");
   });
 
   test("non-print line is excluded", () => {
     const cell = totalQtyScheduledCell({
       total_quantity: 15000,
       operators: [
-        { operator_name: "A", quantity: 6000, line_idx: 0, line_printable: true },
-        { operator_name: "A", quantity: 5000, line_idx: 1, line_printable: false },
+        { operator_name: "A", quantity: 6000, line_idx: 0, line_printable: true, accurate_item_id: "PRINT" },
+        { operator_name: "A", quantity: 5000, line_idx: 1, line_printable: false, accurate_item_id: "NOPRINT" },
       ],
     });
-    expect(cell.lines.map((l) => l.quantity)).toEqual([6000]);
+    expect(cell.groups.map((g) => g.total)).toEqual([6000]);
+    expect(cell.text).toBe("6.000");
+    expect(cell.text).not.toContain("5.000");
   });
 
-  test("cancel/reassign uses active quantity", () => {
+  test("two printable lines each appear once, not summed as PO total", () => {
     const cell = totalQtyScheduledCell({
+      total_quantity: 15000,
       operators: [
-        { operator_name: "A", quantity: 4000, line_idx: 0, line_printable: true },
-        { operator_name: "B", quantity: 6000, line_idx: 0, line_printable: true },
+        { operator_name: "A", quantity: 4000, line_idx: 0, line_printable: true, accurate_item_id: "A" },
+        { operator_name: "B", quantity: 1000, line_idx: 0, line_printable: true, accurate_item_id: "A" },
+        { operator_name: "C", quantity: 2000, line_idx: 1, line_printable: true, accurate_item_id: "B" },
       ],
     });
-    expect(cell.lines.map((l) => l.quantity)).toEqual([4000, 6000]);
+    expect(cell.groups.map((g) => g.total)).toEqual([5000, 2000]);
+    expect(cell.text).toBe("5.000\n2.000");
+    expect(cell.text).not.toBe("7.000");
+    expect(cell.text).not.toBe("15.000");
+  });
+
+  test("CASE 2: three operators on one line still one total 5.000", () => {
+    const cell = totalQtyScheduledCell({
+      operators: [
+        { operator_name: "A", quantity: 2000, line_idx: 0, line_id: "line-a", line_printable: true },
+        { operator_name: "B", quantity: 2000, line_idx: 0, line_id: "line-a", line_printable: true },
+        { operator_name: "C", quantity: 1000, line_idx: 0, line_id: "line-a", line_printable: true },
+      ],
+    });
+    expect(cell.groups).toHaveLength(1);
+    expect(cell.groups[0].operators).toHaveLength(3);
+    expect(cell.text).toBe("5.000");
+    expect(cell.text.split("\n")).toEqual(["5.000"]);
+  });
+
+  test("cancelled qty uses remaining assignment, not original_quantity", () => {
+    const cell = totalQtyScheduledCell({
+      operators: [
+        { operator_name: "A", quantity: 3000, original_quantity: 4000, qty_cancelled: 1000, line_idx: 0, line_id: "L1", line_printable: true },
+        { operator_name: "B", quantity: 1000, original_quantity: 1000, line_idx: 0, line_id: "L1", line_printable: true },
+      ],
+    });
+    expect(cell.text).toBe("4.000");
+    expect(cell.text).not.toBe("5.000");
+  });
+
+  test("CASE 5: same item / SKU on two PO lines stays 5.000 and 3.000", () => {
+    const cell = totalQtyScheduledCell({
+      operators: [
+        { operator_name: "A", quantity: 4000, line_idx: 0, line_id: "L1", accurate_item_id: "CUP", line_printable: true },
+        { operator_name: "B", quantity: 1000, line_idx: 0, line_id: "L1", accurate_item_id: "CUP", line_printable: true },
+        { operator_name: "C", quantity: 3000, line_idx: 1, line_id: "L2", accurate_item_id: "CUP", line_printable: true },
+      ],
+    });
+    expect(cell.groups.map((g) => g.total)).toEqual([5000, 3000]);
+    expect(cell.text).toBe("5.000\n3.000");
+    expect(cell.text).not.toBe("8.000");
   });
 });
 

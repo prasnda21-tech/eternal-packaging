@@ -413,6 +413,28 @@ def packing_status_semantic(order: dict) -> str:
     return "Belum"
 
 
+def apply_confirmed_packing_progress(order: dict) -> bool:
+    """After packing qty is confirmed, packed qty is immediately eligible downstream.
+
+    Partial packing opens Surat Jalan (stage 12). Does not invent packed qty.
+    Returns True if packing_status or current_stage changed.
+    """
+    packed = qty_packed(order)
+    if packed <= 0:
+        return False
+    changed = False
+    required = packing_required_total(order)
+    status = "Sudah" if required and packed >= required else "Berjalan"
+    if order.get("packing_status") != status:
+        order["packing_status"] = status
+        changed = True
+    cs = _safe_int(order.get("current_stage"))
+    if cs < 12:
+        order["current_stage"] = 12
+        changed = True
+    return changed
+
+
 def validate_operator_assignment_total(
     total_split: int,
     print_total: int,

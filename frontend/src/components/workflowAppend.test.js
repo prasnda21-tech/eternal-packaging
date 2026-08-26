@@ -17,6 +17,11 @@ describe("append-only workflow UI", () => {
     expect(src("../pages/PODetail.jsx")).toMatch(/kind: "screener"/);
     expect(src("HelperPrepPanel.jsx")).toMatch(/ConfirmActionModal/);
     expect(src("PackingPanel.jsx")).toMatch(/qty: confirm\.qty/);
+    expect(src("PackingPanel.jsx")).toMatch(/ConfirmActionModal/);
+    expect(src("PackingPanel.jsx")).not.toMatch(/Packing Sebagian/);
+    expect(src("PackingPanel.jsx")).not.toMatch(/Lanjut Packing/);
+    expect(src("PackingPanel.jsx")).not.toMatch(/complete-packing-button/);
+    expect(src("RoleWorkPanel.jsx")).not.toMatch(/Packing Sebagian/);
     expect(src("LoadingPanel.jsx")).toMatch(/action_id: confirm\.actionId/);
     expect(src("SuratJalanPanel.jsx")).toMatch(/ConfirmActionModal/);
     expect(src("DeliveryProofPanel.jsx")).toMatch(/confirm-delivered-button/);

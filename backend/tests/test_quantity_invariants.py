@@ -19,6 +19,7 @@ from quantity_rules import (
     packing_lines_stored,
     packing_required_total,
     packing_status_semantic,
+    apply_confirmed_packing_progress,
     print_available_for_packing,
     print_completed_qty,
     print_qty_target,
@@ -34,6 +35,7 @@ from quantity_rules import (
     validate_print_completed_total,
     available_for_packing_line,
     qty_packed_for_line,
+    remaining_delivery_note_updates,
 )
 
 
@@ -283,6 +285,36 @@ def test_packing_semantic_legacy_stage():
         "packing_info": {},
     }
     assert packing_status_semantic(o) == "Belum"
+
+
+def test_confirmed_packing_opens_downstream_partial():
+    o = _mixed_po(completed=[3000], packed=2000)
+    o["current_stage"] = 11
+    o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 2000}], "qty_packed": 2000}
+    assert apply_confirmed_packing_progress(o) is True
+    assert o["current_stage"] == 12
+    assert o["packing_status"] == "Berjalan"
+    updates = remaining_delivery_note_updates(o)
+    assert sum(int(u.get("qty") or 0) for u in updates) == 2000
+
+
+def test_confirmed_packing_zero_does_not_mutate():
+    o = _mixed_po(completed=[3000], packed=0)
+    o["current_stage"] = 11
+    o["packing_info"] = {}
+    snap = dict(o)
+    assert apply_confirmed_packing_progress(o) is False
+    assert o["current_stage"] == 11
+    assert o.get("packing_status") == snap.get("packing_status")
+
+
+def test_confirmed_packing_idempotent_same_stage():
+    o = _mixed_po(completed=[3000], packed=2000)
+    o["current_stage"] = 12
+    o["packing_status"] = "Berjalan"
+    o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 2000}], "qty_packed": 2000}
+    assert apply_confirmed_packing_progress(o) is False
+    assert o["current_stage"] == 12
 
 
 def test_no_negative_or_over_allocation():

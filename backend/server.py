@@ -149,6 +149,7 @@ from quantity_rules import (
     packing_line_breakdown as _qr_packing_line_breakdown,
     packing_required_total as _qr_packing_required_total,
     packing_status_semantic as _qr_packing_status_semantic,
+    apply_confirmed_packing_progress as _qr_apply_confirmed_packing_progress,
     print_available_for_packing as _qr_print_available_for_packing,
     print_completed_qty as _qr_print_completed_qty,
     print_line_indices as _qr_print_line_indices,
@@ -3189,6 +3190,7 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
             order["packing_info"]["updated_at"] = now_iso()
             detail = ", ".join(f"#{u['line_idx']}+{u['qty']}" for u in incs)
             add_timeline(order, 11, user, note=f"Qty Packing +{detail} (total {total} pcs)")
+            _qr_apply_confirmed_packing_progress(order)
             return
         if events:
             raise HTTPException(409, "Entry Packing sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
@@ -3240,6 +3242,7 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
         order["packing_info"]["updated_at"] = now_iso()
         detail = ", ".join(f"#{x['line_idx']}={x['packed_qty']}" for x in merged if int(x.get("packed_qty") or 0) > 0)
         add_timeline(order, 11, user, note=f"Qty Packing: {total} pcs ({detail or 'per line'})")
+        _qr_apply_confirmed_packing_progress(order)
 
     order = await _with_quantity_lock(order_id, mutate)
     await _audit_po(order, "packing.update", user,
@@ -3511,7 +3514,6 @@ async def mark_packed(order_id: str, user=Depends(current_user)):
                 "message": "Qty Packing harus diisi terlebih dahulu.",
                 "prereq_reasons": ["Qty Packing harus diisi terlebih dahulu."],
             })
-        required_total = _packing_required_total(order)
         packed_qty = _qr_qty_packed(order)
         avail = _available_for_packing(order)
         if packed_qty > avail:
@@ -3521,16 +3523,14 @@ async def mark_packed(order_id: str, user=Depends(current_user)):
                     f"Qty Packing ({packed_qty}) melebihi qty tersedia untuk packing ({avail})."
                 ],
             })
+        required_total = _packing_required_total(order)
+        _qr_apply_confirmed_packing_progress(order)
         if required_total and packed_qty >= required_total:
-            order["packing_status"] = "Sudah"
             note = f"Packing lengkap: {packed_qty} pcs"
         else:
-            order["packing_status"] = "Berjalan"
             shortage = max((required_total or 0) - packed_qty, 0)
             note = f"Packing sebagian: {packed_qty}/{required_total} pcs (kurang {shortage})"
         add_timeline(order, 11, user, note=note)
-        if order["current_stage"] < 12:
-            order["current_stage"] = 12
 
     order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
@@ -3995,6 +3995,21 @@ def _production_row(o: dict) -> dict:
             return _is_print_line(line_items[idx])
         return False
 
+    def _split_line_identity(s):
+        try:
+            idx = int(s.get("line_idx"))
+        except (TypeError, ValueError):
+            return {"line_id": None, "line_name": None, "accurate_item_id": None, "master_item_id": None}
+        if not (0 <= idx < len(line_items)):
+            return {"line_id": None, "line_name": None, "accurate_item_id": None, "master_item_id": None}
+        li = line_items[idx]
+        return {
+            "line_id": li.get("id") or li.get("line_id"),
+            "line_name": li.get("name") or li.get("item_name"),
+            "accurate_item_id": li.get("accurate_item_id"),
+            "master_item_id": li.get("master_item_id") or li.get("item_id"),
+        }
+
     return {
         "id": o.get("id"),
         "po_number": o.get("po_number"),
@@ -4019,6 +4034,7 @@ def _production_row(o: dict) -> dict:
             "quantity": s.get("quantity", 0),
             "qty_completed": s.get("qty_completed", 0),
             "line_idx": s.get("line_idx"),
+            **_split_line_identity(s),
             "line_printable": _split_printable(s),
             "stage": s.get("stage"),
             "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
