@@ -1,4 +1,4 @@
-import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, tasksNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
+import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, tasksNavVisible, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -145,9 +145,13 @@ describe("reportsNavVisible", () => {
 });
 
 describe("NAV_MENU_FALLBACK Settings catalog", () => {
-  test("includes Tugas per Divisi and all division children", () => {
+  test("includes Produksi parent, Tugas Produksi, and all division children", () => {
     const keys = NAV_MENU_FALLBACK.map((m) => m.key);
     expect(keys).toEqual(expect.arrayContaining([
+      NAV_KEYS.production,
+      NAV_KEYS.schedule,
+      NAV_KEYS.deliverySchedule,
+      NAV_KEYS.deliveryReschedule,
       NAV_KEYS.tasks,
       NAV_KEYS.tasksDesigner,
       NAV_KEYS.tasksKepalaProduksi,
@@ -159,8 +163,12 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.tasksLoading,
       NAV_KEYS.tasksDelivery,
     ]));
+    expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.production).label).toBe("Produksi");
+    expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.schedule).parent).toBe(NAV_KEYS.production);
     const parent = NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasks);
-    expect(parent.label).toBe("Tugas per Divisi");
+    expect(parent.label).toBe("Tugas Produksi");
+    expect(parent.parent).toBe(NAV_KEYS.production);
+    expect(NAV_MENU_FALLBACK.some((m) => m.label === "Tugas per Divisi")).toBe(false);
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksDesigner).label).toBe("Designer");
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksKepalaProduksi).label).toBe("Kepala Produksi");
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasksDelivery).label).toBe("Driver / Terkirim");
@@ -180,5 +188,22 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       "designer", "screener", "kepala_produksi", "helper", "operator",
       "packing", "surat_jalan", "loading", "terkirim",
     ]);
+  });
+});
+
+describe("productionNavVisible", () => {
+  test("shows parent when only jadwal produksi is granted", () => {
+    const v = productionNavVisible(has(NAV_KEYS.schedule));
+    expect(v.parent).toBe(true);
+    expect(v.schedule).toBe(true);
+    expect(v.deliverySchedule).toBe(false);
+    expect(v.tasks.parent).toBe(false);
+  });
+
+  test("shows parent when only tugas produksi child is granted", () => {
+    const v = productionNavVisible(has(NAV_KEYS.tasksOperator, "operator.update"));
+    expect(v.parent).toBe(true);
+    expect(v.tasks.operator).toBe(true);
+    expect(v.schedule).toBe(false);
   });
 });

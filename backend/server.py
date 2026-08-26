@@ -36,6 +36,16 @@ from services.shipment_status import (
     SHIPMENT_STATUS_PROJECTION,
     shipment_status_row,
 )
+from services.delivery_schedule import (
+    RESCHEDULE_PROJECTION,
+    SCHEDULE_PROJECTION,
+    RescheduleError,
+    apply_reschedule as _apply_delivery_reschedule,
+    apply_set_date as _apply_delivery_set_date,
+    attach_schedule_snapshot,
+    reschedule_rows as _delivery_reschedule_rows,
+    schedule_row as _delivery_schedule_row,
+)
 from services.operator_schedule import (
     apply_operator_assignments as _apply_operator_assignments,
     cancel_split_remaining as _cancel_split_remaining,
@@ -827,6 +837,7 @@ async def get_order(order_id: str, user=Depends(current_user)):
     # Batch 1: delivery deadline effective/source/status
     _dd_settings = await _get_delivery_deadline_settings()
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
+    attach_schedule_snapshot(order)
     _strip_tracking_secret(order)
     return {"order": order}
 
@@ -947,6 +958,7 @@ _DERIVED_ORDER_KEYS = (
     "shipment_lines",
     "surat_jalan_status_semantic",
     "loading_qty_status",
+    "effective_delivery_date", "delivery_schedule_status",
 )
 
 
@@ -1107,6 +1119,7 @@ async def _persist_order(order, *, require_lock: bool = False):
         _attach_deadline_snapshot(order, _lt)
     except Exception:
         pass
+    attach_schedule_snapshot(order)
     _strip_tracking_secret(order)
     return order
 
@@ -3685,6 +3698,139 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     order = await _with_quantity_lock(order_id, mutate)
     return {"order": order}
+
+
+class DeliveryReschedulePayload(BaseModel):
+    reason: str
+    new_date: Optional[str] = None
+    shipment_id: Optional[str] = None
+    action_id: Optional[str] = None
+
+
+class DeliveryRescheduleSetDatePayload(BaseModel):
+    new_date: str
+    reason: Optional[str] = None
+    action_id: Optional[str] = None
+
+
+async def _require_any_perm(user: dict, *perms: str):
+    if user.get("role") == "admin":
+        return
+    eff = await user_permissions(user)
+    if not any(p in eff for p in perms):
+        raise HTTPException(403, f"Permission {' / '.join(perms)} diperlukan")
+
+
+@api_router.post("/orders/{order_id}/delivery-reschedule")
+async def create_delivery_reschedule(order_id: str, payload: DeliveryReschedulePayload, user=Depends(current_user)):
+    """Request or confirm a delivery reschedule. Does not mark Terkirim."""
+    await _require_any_perm(user, "delivery.reschedule", "delivery.reschedule.set_date")
+    eff = await user_permissions(user)
+    can_set_date = user.get("role") == "admin" or "delivery.reschedule.set_date" in eff
+
+    def mutate(order: dict):
+        deadline_before = order.get("deadline")
+        proofs_before = list(order.get("delivery_proofs") or [])
+        packed_before = order.get("packing_info")
+        loading_before = order.get("loading_info")
+        status_before = order.get("delivery_status")
+        try:
+            rec, mutated = _apply_delivery_reschedule(
+                order,
+                reason=payload.reason,
+                new_date=payload.new_date,
+                can_set_date=can_set_date,
+                user=user,
+                action_id=payload.action_id,
+                shipment_id=payload.shipment_id,
+            )
+        except RescheduleError as e:
+            raise HTTPException(400, str(e))
+        if order.get("deadline") != deadline_before:
+            raise HTTPException(500, "Deadline asli tidak boleh berubah")
+        if not mutated:
+            return rec
+        if order.get("delivery_proofs") != proofs_before:
+            raise HTTPException(500, "Bukti kirim tidak boleh berubah")
+        if order.get("packing_info") != packed_before or order.get("loading_info") != loading_before:
+            raise HTTPException(500, "Qty packing/loading tidak boleh berubah")
+        if order.get("delivery_status") != status_before:
+            raise HTTPException(500, "Status pengiriman tidak boleh berubah")
+        return rec
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    rec = mutate(order)
+    persisted = await _persist_order(order)
+    attach_schedule_snapshot(persisted)
+    return {"order": persisted, "reschedule": rec}
+
+
+@api_router.get("/delivery/schedule")
+async def list_delivery_schedule(user=Depends(current_user)):
+    await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
+    docs = await db.orders.find(
+        {"cancelled": {"$ne": True}},
+        SCHEDULE_PROJECTION,
+    ).sort("deadline", 1).to_list(1000)
+    rows = [_delivery_schedule_row(o) for o in docs]
+    return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+
+
+@api_router.get("/delivery/reschedules")
+async def list_delivery_reschedules(user=Depends(current_user)):
+    await _require_any_perm(
+        user,
+        "delivery.reschedule",
+        "delivery.reschedule.set_date",
+        "nav.delivery_reschedule",
+        "schedule.edit",
+    )
+    docs = await db.orders.find(
+        {"cancelled": {"$ne": True}, "delivery_reschedules.0": {"$exists": True}},
+        RESCHEDULE_PROJECTION,
+    ).to_list(1000)
+    rows = []
+    for o in docs:
+        rows.extend(_delivery_reschedule_rows(o))
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+
+
+@api_router.patch("/delivery/reschedules/{reschedule_id}")
+async def set_delivery_reschedule_date(
+    reschedule_id: str,
+    payload: DeliveryRescheduleSetDatePayload,
+    user=Depends(current_user),
+):
+    await _require_perm(user, "delivery.reschedule.set_date")
+    rid = (reschedule_id or "").strip()
+    if not rid:
+        raise HTTPException(400, "reschedule_id wajib")
+    order = await db.orders.find_one(
+        {"delivery_reschedules.reschedule_id": rid, "cancelled": {"$ne": True}},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(404, "Permintaan penjadwalan ulang tidak ditemukan")
+    deadline_before = order.get("deadline")
+    try:
+        rec, mutated = _apply_delivery_set_date(
+            order,
+            rid,
+            new_date=payload.new_date,
+            user=user,
+            reason=payload.reason,
+            action_id=payload.action_id,
+        )
+    except RescheduleError as e:
+        raise HTTPException(400, str(e))
+    if order.get("deadline") != deadline_before:
+        raise HTTPException(500, "Deadline asli tidak boleh berubah")
+    persisted = await _persist_order(order)
+    attach_schedule_snapshot(persisted)
+    return {"order": persisted, "reschedule": rec, "mutated": mutated}
 
 
 # ---- Batch 1: Delivery Deadline Settings + Manual Override ----

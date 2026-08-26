@@ -2,6 +2,10 @@
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
+  production: "nav.production",
+  schedule: "nav.production_schedule",
+  deliverySchedule: "nav.delivery_schedule",
+  deliveryReschedule: "nav.delivery_reschedule",
   tasks: "nav.tasks",
   tasksDesigner: "nav.tasks.designer",
   tasksKepalaProduksi: "nav.tasks.kepala_produksi",
@@ -14,7 +18,6 @@ export const NAV_KEYS = {
   tasksDelivery: "nav.tasks.delivery",
   sales: "nav.sales",
   importPo: "nav.sales.import_po",
-  schedule: "nav.production_schedule",
   purchasing: "nav.purchasing",
   purchaseReceipts: "nav.purchasing.receipts",
   inventory: "nav.inventory",
@@ -30,7 +33,11 @@ export const NAV_KEYS = {
 
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
-  { key: NAV_KEYS.tasks, label: "Tugas per Divisi", parent: null },
+  { key: NAV_KEYS.production, label: "Produksi", parent: null },
+  { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: NAV_KEYS.production },
+  { key: NAV_KEYS.deliverySchedule, label: "Jadwal Pengiriman", parent: NAV_KEYS.production },
+  { key: NAV_KEYS.deliveryReschedule, label: "Jadwal Pengiriman Ulang", parent: NAV_KEYS.production },
+  { key: NAV_KEYS.tasks, label: "Tugas Produksi", parent: NAV_KEYS.production },
   { key: NAV_KEYS.tasksDesigner, label: "Designer", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksScreener, label: "Screener", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksKepalaProduksi, label: "Kepala Produksi", parent: NAV_KEYS.tasks },
@@ -42,7 +49,6 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.tasksDelivery, label: "Driver / Terkirim", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
-  { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: null },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.inventory, label: "Persediaan", parent: null },
@@ -160,6 +166,20 @@ export function tasksNavVisible(hasPerm) {
     if (on) any = true;
   }
   return { parent: any, ...children };
+}
+
+export function productionNavVisible(hasPerm) {
+  const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
+  const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
+  const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
+  const tasks = tasksNavVisible(hasPerm);
+  return {
+    parent: !!(schedule || deliverySchedule || deliveryReschedule || tasks.parent),
+    schedule,
+    deliverySchedule,
+    deliveryReschedule,
+    tasks,
+  };
 }
 
 export function firstTaskNavPath(hasPerm) {

@@ -67,6 +67,22 @@ class TestPublicPayload:
             assert set(row.keys()) == {"stage", "status"}
             assert row["status"] in ALLOWED_STATUSES
 
+    def test_reschedule_snippet_is_date_only(self):
+        payload = public_payload(_print_po(
+            scheduled_delivery_date="2026-08-31",
+            delivery_reschedules=[{
+                "status": "scheduled",
+                "new_date": "2026-08-31",
+                "reason": "INTERNAL SECRET",
+                "requested_by_id": "u-1",
+            }],
+        ))
+        assert payload["delivery_reschedule"] == {"scheduled_date": "2026-08-31"}
+        blob = json.dumps(payload)
+        assert "INTERNAL" not in blob
+        assert "u-1" not in blob
+        assert is_public_payload_safe(payload)
+
     def test_c_no_sensitive_fields(self):
         dirty = _print_po(
             employee_id="E1",

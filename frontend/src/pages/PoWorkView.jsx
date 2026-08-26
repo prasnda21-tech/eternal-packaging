@@ -70,7 +70,7 @@ export default function PoWorkView() {
     <div data-testid="po-work-view">
       <div className="page-heading work-page-heading">
         <Link to={TASK_NAV_PATHS[activeId] || "/tasks"} className="ghost sm" data-testid="work-back-schedule">
-          <ArrowLeft size={14} /> Tugas per Divisi
+          <ArrowLeft size={14} /> Tugas Produksi
         </Link>
         {permitted.length > 1 && (
           <nav className="work-divisi-switch" data-testid="work-divisi-switch">

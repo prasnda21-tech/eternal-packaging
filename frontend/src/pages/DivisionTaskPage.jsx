@@ -70,7 +70,7 @@ export default function DivisionTaskPage() {
     <div className="prod-page division-task-page" data-testid="division-task-page">
       <div className="page-heading">
         <div>
-          <p className="eyebrow">Tugas per Divisi</p>
+          <p className="eyebrow">Tugas Produksi</p>
           <h1 data-testid="division-task-title">{cfg.title}</h1>
           <p className="muted small">{data?.scope === "all" ? "Semua tugas divisi" : "Tugas Saya"} · {rows.length} baris</p>
         </div>

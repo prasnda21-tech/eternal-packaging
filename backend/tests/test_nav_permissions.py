@@ -21,6 +21,9 @@ def test_catalog_includes_nav_keys():
         "nav.sales",
         "nav.sales.import_po",
         "nav.production_schedule",
+        "nav.production",
+        "nav.delivery_schedule",
+        "nav.delivery_reschedule",
         "nav.purchasing",
         "nav.inventory",
         "nav.reports",
@@ -43,6 +46,9 @@ def test_catalog_includes_nav_keys():
         "nav.inventory.master_items",
         "nav.inventory.current_stock",
         "nav.purchasing.receipts",
+        "delivery.reschedule",
+        "delivery.reschedule.set_date",
+        "delivery.schedule.view",
         "work_panel.view",
         "settings.work_panel.view",
         "settings.work_panel.manage",
@@ -63,6 +69,7 @@ def test_admin_still_has_all_including_nav():
 def test_helper_keeps_schedule_and_always_visible_menus():
     helper = set(ROLE_DEFAULT_PERMISSIONS["helper"])
     assert "nav.production_schedule" in helper
+    assert "nav.production" in helper
     assert "nav.sales" in helper
     assert "nav.settings" in helper
     assert "nav.inventory" in helper
@@ -87,6 +94,9 @@ def test_head_production_gets_dashboard_nav():
     hp = set(ROLE_DEFAULT_PERMISSIONS["head_production"])
     assert "nav.dashboard" in hp
     assert "nav.production_schedule" in hp
+    assert "nav.production" in hp
+    assert "nav.delivery_schedule" in hp
+    assert "nav.delivery_reschedule" in hp
     assert "current_stock.view" in hp
     assert "purchase_receipts.view" in hp
     assert "purchase_receipts.sync" in hp
@@ -111,6 +121,7 @@ def test_legacy_stored_role_without_nav_keys_derives_defaults():
     stored = {"po.view", "schedule.view", "helper.prepare"}
     derived = with_nav_defaults(stored)
     assert "nav.production_schedule" in derived
+    assert "nav.production" in derived
     assert "nav.sales" in derived
     assert "nav.dashboard" not in derived
     assert "helper.prepare" in derived
@@ -175,6 +186,8 @@ def test_driver_has_work_panel_view():
     assert "work_panel.view" in driver
     assert "loading.update" in driver
     assert "delivery.update" in driver
+    assert "delivery.reschedule" in driver
+    assert "delivery.reschedule.set_date" not in driver
 
 
 def test_screener_has_work_panel_view():

@@ -55,6 +55,14 @@ export default function CustomerTrackingPage() {
               <span className="lbl">No PO</span>
               <strong data-testid="tracking-order-number">{data.order_number}</strong>
             </div>
+            {data.delivery_reschedule?.scheduled_date && (
+              <div className="tracking-po" data-testid="tracking-reschedule">
+                <span className="lbl">Pengiriman dijadwalkan ulang</span>
+                <strong data-testid="tracking-reschedule-date">
+                  Tanggal: {data.delivery_reschedule.scheduled_date}
+                </strong>
+              </div>
+            )}
             <section className="tracking-workflow" data-testid="tracking-workflow">
               <h2>Alur Kerja</h2>
               <table className="tracking-table">

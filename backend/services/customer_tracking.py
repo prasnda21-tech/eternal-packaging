@@ -307,12 +307,20 @@ def public_delivery_proofs(order: dict, token: str) -> List[Dict[str, str]]:
 def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
     """Minimal public JSON: customer, order number, workflow, bounded proofs."""
     tok = (token or order.get("tracking_token") or "").strip()
-    return {
+    payload = {
         "customer_name": order.get("customer") or order.get("customer_name") or "",
         "order_number": order.get("po_number") or "",
         "workflow": customer_workflow(order),
         "delivery_proofs": public_delivery_proofs(order, tok),
     }
+    try:
+        from services.delivery_schedule import public_reschedule_snippet
+        snippet = public_reschedule_snippet(order)
+    except Exception:
+        snippet = None
+    if snippet:
+        payload["delivery_reschedule"] = snippet
+    return payload
 
 
 def collect_public_keys(payload: dict) -> set:
@@ -330,6 +338,7 @@ def is_public_payload_safe(payload: dict) -> bool:
     allowed = {
         "order_number", "customer_name", "workflow", "delivery_proofs",
         "stage", "status", "id", "url",
+        "delivery_reschedule", "scheduled_date",
     }
     return collect_public_keys(payload) <= allowed
 
@@ -392,7 +401,7 @@ def build_router(deps: dict) -> APIRouter:
         if is_public_payload_safe(payload):
             return payload
         logger.warning("public tracking payload sanitized token=%s", mask_token(token))
-        return {
+        out = {
             "customer_name": payload.get("customer_name") or "",
             "order_number": payload.get("order_number") or "",
             "workflow": [
@@ -406,6 +415,10 @@ def build_router(deps: dict) -> APIRouter:
                 if isinstance(p, dict) and p.get("id") and p.get("url")
             ][:MAX_PUBLIC_DELIVERY_PROOFS],
         }
+        snippet = payload.get("delivery_reschedule")
+        if isinstance(snippet, dict) and snippet.get("scheduled_date"):
+            out["delivery_reschedule"] = {"scheduled_date": str(snippet.get("scheduled_date"))}
+        return out
 
     @router.get("/public/tracking/{token}")
     async def public_tracking(token: str):
