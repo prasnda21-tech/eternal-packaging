@@ -30,6 +30,8 @@ def test_catalog_includes_nav_keys():
         "nav.reports.gaji_operator",
         "nav.settings",
         "nav.tasks",
+        "nav.tasks.designer",
+        "nav.tasks.kepala_produksi",
         "nav.tasks.screener",
         "nav.tasks.helper",
         "nav.tasks.operator",
@@ -77,6 +79,8 @@ def test_helper_keeps_schedule_and_always_visible_menus():
     assert "nav.tasks.helper" in helper
     assert "nav.tasks.packing" in helper
     assert "nav.tasks.operator" not in helper
+    assert "nav.tasks.designer" not in helper
+    assert "nav.tasks.kepala_produksi" not in helper
 
 
 def test_head_production_gets_dashboard_nav():
@@ -88,6 +92,19 @@ def test_head_production_gets_dashboard_nav():
     assert "purchase_receipts.sync" in hp
     assert "nav.purchasing.receipts" in hp
     assert "nav.inventory.current_stock" in hp
+    assert "nav.tasks.kepala_produksi" in hp
+    assert "nav.tasks.designer" not in hp
+    assert "design.upload" not in hp
+    assert "schedule.edit" in hp
+
+
+def test_designer_gets_designer_task_nav_not_scheduling():
+    designer = set(ROLE_DEFAULT_PERMISSIONS["designer"])
+    assert "design.upload" in designer
+    assert "nav.tasks" in designer
+    assert "nav.tasks.designer" in designer
+    assert "nav.tasks.kepala_produksi" not in designer
+    assert "schedule.edit" not in designer
 
 
 def test_legacy_stored_role_without_nav_keys_derives_defaults():
@@ -99,6 +116,17 @@ def test_legacy_stored_role_without_nav_keys_derives_defaults():
     assert "helper.prepare" in derived
     assert "nav.tasks" in derived
     assert "nav.tasks.helper" in derived
+    assert "nav.tasks.designer" not in derived
+    assert "nav.tasks.kepala_produksi" not in derived
+
+
+def test_derived_nav_from_design_upload_and_schedule_edit():
+    designer_nav = derived_nav_permissions({"design.upload", "po.view"})
+    assert "nav.tasks.designer" in designer_nav
+    assert "nav.tasks.kepala_produksi" not in designer_nav
+    sched = derived_nav_permissions({"schedule.edit", "po.view"})
+    assert "nav.tasks.kepala_produksi" in sched
+    assert "nav.tasks.designer" not in sched
 
 
 def test_legacy_without_schedule_does_not_gain_jadwal():

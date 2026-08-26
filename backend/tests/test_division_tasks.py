@@ -5,9 +5,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.division_tasks import (
+    TASK_PROJECTION,
     build_delivery_tasks,
+    build_designer_tasks,
     build_division_tasks,
     build_helper_tasks,
+    build_kepala_produksi_tasks,
     build_loading_tasks,
     build_operator_tasks,
     build_packing_tasks,
@@ -45,6 +48,9 @@ def test_resolve_slug():
     assert resolve_division("surat-jalan") == "surat_jalan"
     assert resolve_division("delivery") == "terkirim"
     assert resolve_division("operator") == "operator"
+    assert resolve_division("designer") == "designer"
+    assert resolve_division("kepala-produksi") == "kepala_produksi"
+    assert resolve_division("kepala_produksi") == "kepala_produksi"
 
 
 def test_view_all_uses_existing_perms_not_role_string():
@@ -187,3 +193,200 @@ def test_cancelled_orders_excluded():
     o = _print_po(cancelled=True)
     rows = build_division_tasks([o], "operator", {"email": "budi@x.com"}, mine_only=True)
     assert rows == []
+
+
+def _ready_print_po(**kwargs):
+    return _print_po(
+        design_status="Approved",
+        payment_status="Approved",
+        **kwargs,
+    )
+
+
+def test_designer_needs_upload_design():
+    o = _print_po(design_files=[], design_status="Waiting")
+    rows = build_designer_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["required_input"] == "Upload Design"
+    assert rows[0]["action_label"] == "Kerjakan"
+    assert rows[0]["status"] == "belum"
+    assert rows[0]["design_status_label"] == "Belum ada design"
+    assert rows[0]["target_qty"] is None
+    assert rows[0]["assigned_user_id"] is None
+
+
+def test_designer_upload_done_waiting_approval():
+    o = _print_po(
+        design_files=[{"id": "d1", "name": "a.png", "uploaded_at": "2026-08-26T08:00:00+00:00"}],
+        design_status="Waiting",
+    )
+    rows = build_designer_tasks(o)
+    assert rows[0]["status"] == "selesai"
+    assert rows[0]["required_input"] == "Upload Design"
+    assert rows[0]["design_status_label"] == "Menunggu approval"
+
+
+def test_designer_customer_revisi_needs_reupload():
+    o = _print_po(
+        design_files=[{"id": "d1", "name": "a.png", "uploaded_at": "2026-08-26T08:00:00+00:00"}],
+        design_status="Waiting",
+        customer_approval={"status": "rejected", "responded_at": "2026-08-26T09:00:00+00:00"},
+    )
+    rows = build_designer_tasks(o)
+    assert rows[0]["status"] == "belum"
+    assert rows[0]["required_input"] == "Upload Design"
+    assert rows[0]["design_status_label"] == "Revisi"
+
+
+def test_designer_reupload_after_revisi_clears_need():
+    o = _print_po(
+        design_files=[
+            {"id": "d1", "name": "a.png", "uploaded_at": "2026-08-26T08:00:00+00:00"},
+            {"id": "d2", "name": "b.png", "uploaded_at": "2026-08-26T10:00:00+00:00"},
+        ],
+        design_status="Waiting",
+        customer_approval={"status": "rejected", "responded_at": "2026-08-26T09:00:00+00:00"},
+    )
+    rows = build_designer_tasks(o)
+    assert rows[0]["status"] == "selesai"
+    assert rows[0]["design_status_label"] == "Menunggu approval"
+
+
+def test_designer_bypass_without_file_is_not_a_task():
+    o = _print_po(design_files=[], design_bypassed=True)
+    assert build_designer_tasks(o) == []
+
+
+def test_designer_no_fake_assignment():
+    o = _print_po(design_files=[])
+    rows = build_designer_tasks(o)
+    assert rows[0]["assigned_user_email"] is None
+    assert rows[0]["assigned_user_id"] is None
+
+
+def test_projection_omits_design_file_bytes():
+    assert "design_files.id" in TASK_PROJECTION
+    assert "design_files" not in TASK_PROJECTION
+    joined = " ".join(str(k) for k in TASK_PROJECTION)
+    assert "data_url" not in joined
+
+
+def test_kepala_produksi_case_a_no_schedule():
+    o = _ready_print_po(
+        operator_splits=[],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    rows = build_kepala_produksi_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["target_qty"] == 5000
+    assert rows[0]["completed_qty"] == 0
+    assert rows[0]["remaining_qty"] == 5000
+    assert rows[0]["required_input"] == "Penjadwalan"
+    assert rows[0]["action_label"] == "Jadwalkan"
+    assert rows[0]["status"] == "belum"
+
+
+def test_kepala_produksi_case_b_partial_one_operator():
+    o = _ready_print_po(
+        operator_splits=[{"id": "a", "line_idx": 0, "quantity": 4000, "operator_email": "a@x.com"}],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    rows = build_kepala_produksi_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["completed_qty"] == 4000
+    assert rows[0]["remaining_qty"] == 1000
+    assert rows[0]["required_input"] == "Penjadwalan"
+
+
+def test_kepala_produksi_case_c_multi_operator_one_line_task():
+    o = _ready_print_po(
+        operator_splits=[
+            {"id": "a", "line_idx": 0, "quantity": 4000, "operator_email": "a@x.com"},
+            {"id": "b", "line_idx": 0, "quantity": 1000, "operator_email": "b@x.com"},
+        ],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    rows = build_kepala_produksi_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["target_qty"] == 5000
+    assert rows[0]["completed_qty"] == 5000
+    assert rows[0]["remaining_qty"] == 0
+    assert rows[0]["status"] == "selesai"
+    assert rows[0]["status_label"] == "Selesai Dijadwalkan"
+
+
+def test_kepala_produksi_case_d_cancel_reopens_remainder():
+    o = _ready_print_po(
+        operator_splits=[
+            {"id": "a", "line_idx": 0, "quantity": 3000, "qty_cancelled": 1000, "operator_email": "a@x.com"},
+            {"id": "b", "line_idx": 0, "quantity": 1000, "operator_email": "b@x.com"},
+        ],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    rows = build_kepala_produksi_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["completed_qty"] == 4000
+    assert rows[0]["remaining_qty"] == 1000
+    assert rows[0]["required_input"] == "Penjadwalan"
+    assert rows[0]["status"] == "sebagian"
+
+
+def test_kepala_produksi_case_e_reassign_fills_line():
+    o = _ready_print_po(
+        operator_splits=[
+            {"id": "a", "line_idx": 0, "quantity": 3000, "operator_email": "a@x.com"},
+            {"id": "b", "line_idx": 0, "quantity": 2000, "operator_email": "b@x.com"},
+        ],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    rows = build_kepala_produksi_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["completed_qty"] == 5000
+    assert rows[0]["remaining_qty"] == 0
+
+
+def test_kepala_produksi_non_print_excluded():
+    o = _ready_print_po()
+    rows = build_kepala_produksi_tasks(o)
+    assert all(r["line_idx"] != 2 for r in rows)
+    assert not any("Non" == r["item"] for r in rows)
+
+
+def test_kepala_produksi_full_non_print_po_excluded():
+    o = _ready_print_po(
+        line_items=[{"id": "L3", "name": "Non", "quantity": 2000, "production_process": "non_print"}],
+        operator_splits=[],
+    )
+    assert build_kepala_produksi_tasks(o) == []
+
+
+def test_kepala_produksi_waits_for_design_payment():
+    o = _print_po(
+        design_status="Waiting",
+        payment_status="Waiting",
+        operator_splits=[],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    assert build_kepala_produksi_tasks(o) == []
+
+
+def test_kepala_produksi_same_name_lines_not_merged():
+    o = _ready_print_po()
+    rows = build_kepala_produksi_tasks(o)
+    assert len(rows) == 2
+    by = {r["line_id"]: r for r in rows}
+    assert set(by) == {"L1", "L2"}
+    assert by["L1"]["completed_qty"] == 5000
+    assert by["L1"]["remaining_qty"] == 0
+    assert by["L2"]["completed_qty"] == 0
+    assert by["L2"]["remaining_qty"] == 3000
+    assert by["L2"]["required_input"] == "Penjadwalan"
+    o = _ready_print_po(
+        helper_prep={"qty_prepared": 2000, "items": [{"line_idx": 0, "qty_prepared": 2000}]},
+        operator_splits=[{"id": "a", "line_idx": 0, "quantity": 4000}],
+        line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
+    )
+    rows = build_kepala_produksi_tasks(o)
+    assert rows[0]["completed_qty"] == 4000
+    assert rows[0]["remaining_qty"] == 1000
+    assert rows[0]["completed_qty"] != 2000

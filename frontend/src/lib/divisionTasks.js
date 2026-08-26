@@ -2,6 +2,17 @@ import { TASK_NAV_PATHS } from "./navAccess";
 import { workPanelPath } from "./workPanel";
 
 export const DIVISION_TASK_PAGES = {
+  designer: { id: "designer", title: "TUGAS DESIGNER", qtyCols: false, extra: "design", inputColLabel: "Yang Harus Diinput" },
+  "kepala-produksi": {
+    id: "kepala_produksi",
+    title: "TUGAS KEPALA PRODUKSI",
+    qtyCols: true,
+    extra: "schedule",
+    targetLabel: "Qty Item Cetak",
+    doneLabel: "Sudah Dijadwalkan",
+    remainLabel: "Belum Dijadwalkan",
+    inputColLabel: "Yang Harus Dilakukan",
+  },
   screener: { id: "screener", title: "Tugas Screener", qtyCols: true },
   helper: { id: "helper", title: "Tugas Helper", qtyCols: true, targetLabel: "Target Helper", doneLabel: "Prepared" },
   operator: { id: "operator", title: "Tugas Operator", qtyCols: true, targetLabel: "Qty Dijadwalkan", doneLabel: "Qty Cetak Aktual" },
@@ -12,7 +23,11 @@ export const DIVISION_TASK_PAGES = {
 };
 
 export function taskWorkHref(task) {
-  return workPanelPath(task.order_id, task.division);
+  const href = workPanelPath(task.order_id, task.division);
+  if (task.division === "kepala_produksi" && task.line_idx != null && task.line_idx !== "") {
+    return `${href}&line=${encodeURIComponent(task.line_idx)}`;
+  }
+  return href;
 }
 
 export function formatIdQty(n) {

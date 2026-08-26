@@ -82,7 +82,9 @@ PERMISSION_CATALOG = [
     # Sidebar / menu visibility (additional layer; does not replace API RBAC)
     ("Akses Menu", "nav.dashboard", "Menu Dashboard"),
     ("Akses Menu", "nav.tasks", "Menu Tugas per Divisi"),
+    ("Akses Menu", "nav.tasks.designer", "Menu Tugas Designer"),
     ("Akses Menu", "nav.tasks.screener", "Menu Tugas Screener"),
+    ("Akses Menu", "nav.tasks.kepala_produksi", "Menu Tugas Kepala Produksi"),
     ("Akses Menu", "nav.tasks.helper", "Menu Tugas Helper"),
     ("Akses Menu", "nav.tasks.operator", "Menu Tugas Operator"),
     ("Akses Menu", "nav.tasks.packing", "Menu Tugas Packing"),
@@ -131,7 +133,9 @@ NAV_ALWAYS_VISIBLE = (
 NAV_MENU_ITEMS = (
     ("nav.dashboard", "Dashboard", None),
     ("nav.tasks", "Tugas per Divisi", None),
+    ("nav.tasks.designer", "Designer", "nav.tasks"),
     ("nav.tasks.screener", "Screener", "nav.tasks"),
+    ("nav.tasks.kepala_produksi", "Kepala Produksi", "nav.tasks"),
     ("nav.tasks.helper", "Helper", "nav.tasks"),
     ("nav.tasks.operator", "Operator", "nav.tasks"),
     ("nav.tasks.packing", "Packing", "nav.tasks"),
@@ -175,6 +179,12 @@ def derived_nav_permissions(existing: set) -> set:
     if "purchase_receipts.view" in existing:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.receipts")
+    if "design.upload" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.designer")
+    if "schedule.edit" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.kepala_produksi")
     if "screen.update" in existing:
         nav.add("nav.tasks")
         nav.add("nav.tasks.screener")

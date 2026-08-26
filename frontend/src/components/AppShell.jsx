@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_PATHS, tasksNavVisible } from "../lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_ORDER, TASK_NAV_PATHS, tasksNavVisible } from "../lib/navAccess";
 import BrandMark from "./BrandMark";
 
 const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
@@ -120,7 +120,7 @@ export default function AppShell() {
               </button>
               {tasksOpen && (
                 <div className="nav-sub">
-                  {["screener", "helper", "operator", "packing", "surat_jalan", "loading", "terkirim"].map((id) => (
+                  {TASK_NAV_ORDER.map((id) => (
                     tasksNav[id] ? (
                       <NavLink key={id} to={TASK_NAV_PATHS[id]} className={navClass} data-testid={`top-nav-tasks-${id}`}>
                         {TASK_NAV_LABELS[id]}

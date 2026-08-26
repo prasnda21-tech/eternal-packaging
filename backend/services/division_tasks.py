@@ -22,6 +22,7 @@ from quantity_rules import (
     requires_printing,
     valid_delivery_proof_count,
 )
+from workflow_gates import group2_complete
 
 VIEW_ALL_PERMS = frozenset({
     "schedule.edit",
@@ -30,6 +31,26 @@ VIEW_ALL_PERMS = frozenset({
 })
 
 DIVISION_DEFS = {
+    "designer": {
+        "id": "designer",
+        "slug": "designer",
+        "label": "Designer",
+        "submit_perm": "design.upload",
+        "nav_key": "nav.tasks.designer",
+        "required_input": "Upload Design",
+        "required_input_type": "upload_design",
+        "action_label": "Kerjakan",
+    },
+    "kepala_produksi": {
+        "id": "kepala_produksi",
+        "slug": "kepala-produksi",
+        "label": "Kepala Produksi",
+        "submit_perm": "schedule.edit",
+        "nav_key": "nav.tasks.kepala_produksi",
+        "required_input": "Penjadwalan",
+        "required_input_type": "penjadwalan",
+        "action_label": "Jadwalkan",
+    },
     "screener": {
         "id": "screener",
         "slug": "screener",
@@ -131,6 +152,15 @@ TASK_PROJECTION = {
     "delivery_proofs": 1,
     "sample_approved": 1,
     "sample_status": 1,
+    "design_status": 1,
+    "design_bypassed": 1,
+    "design_files.id": 1,
+    "design_files.name": 1,
+    "design_files.uploaded_at": 1,
+    "customer_approval": 1,
+    "customer_approval_history": 1,
+    "payment_status": 1,
+    "payment_bypassed": 1,
 }
 
 
@@ -272,6 +302,133 @@ def _helper_done_for_line(order: dict, idx: int) -> int:
             return 0
         return max(0, _safe_int(raw))
     return 0
+
+
+def _has_design_file(order: dict) -> bool:
+    files = order.get("design_files") or []
+    return any(
+        isinstance(f, dict) and (f.get("id") or f.get("name") or f.get("uploaded_at") or f.get("storage_path"))
+        for f in files
+    )
+
+
+def _latest_design_upload_at(order: dict) -> Optional[str]:
+    times = [
+        f.get("uploaded_at")
+        for f in (order.get("design_files") or [])
+        if isinstance(f, dict) and f.get("uploaded_at")
+    ]
+    return max(str(t) for t in times) if times else None
+
+
+def _customer_revisi_at(order: dict) -> Optional[str]:
+    snap = order.get("customer_approval") or {}
+    if (snap.get("status") or "").strip().lower() == "rejected":
+        return snap.get("responded_at") or snap.get("generated_at") or ""
+    last = None
+    for h in (order.get("customer_approval_history") or []):
+        if (h.get("action") or "") == "customer-reject":
+            last = h.get("at") or h.get("responded_at")
+    return last
+
+
+def needs_design_upload(order: dict) -> bool:
+    """True when Designer still needs to upload / re-upload. No fake assignment."""
+    if order.get("design_bypassed"):
+        return False
+    if not _has_design_file(order):
+        return True
+    rev = _customer_revisi_at(order)
+    if rev is None:
+        return False
+    uploaded = _latest_design_upload_at(order)
+    if not uploaded:
+        return True
+    if rev == "":
+        return True
+    return str(uploaded) <= str(rev)
+
+
+def _design_status_label(order: dict) -> str:
+    if order.get("design_bypassed"):
+        return "Bypass"
+    if order.get("design_status") == "Approved":
+        return "Approved"
+    if needs_design_upload(order) and _has_design_file(order):
+        return "Revisi"
+    if _has_design_file(order):
+        return "Menunggu approval"
+    return "Belum ada design"
+
+
+def build_designer_tasks(order: dict) -> List[dict]:
+    if order.get("design_bypassed") and not _has_design_file(order):
+        return []
+    need = needs_design_upload(order)
+    if not need and not _has_design_file(order):
+        return []
+    row = _base_row(order, "designer")
+    row["design_status"] = order.get("design_status") or "Waiting"
+    row["design_status_label"] = _design_status_label(order)
+    row["required_input"] = "Upload Design"
+    row["required_input_type"] = "upload_design"
+    row["action_label"] = "Kerjakan"
+    if need:
+        row["status"] = "belum"
+    else:
+        row["status"] = "selesai"
+    row["status_label"] = _status_label(row["status"])
+    return [row]
+
+
+def active_scheduled_qty_for_line(order: dict, line_idx: int) -> int:
+    """SUM active operator assignment qty for one printable line.
+
+    Empty schedule is 0 — do not fall back to printable qty.
+    `quantity` is the current assignment (cancel already subtracted).
+    """
+    total = 0
+    idx = int(line_idx)
+    for s in (order.get("operator_splits") or []):
+        if s.get("line_idx") is None:
+            continue
+        if _safe_int(s.get("line_idx"), default=-1) == idx:
+            total += max(0, _safe_int(s.get("quantity")))
+    return total
+
+
+def build_kepala_produksi_tasks(order: dict) -> List[dict]:
+    if not requires_printing(order):
+        return []
+    if not group2_complete(order):
+        return []
+    out = []
+    for idx, li in enumerate(order.get("line_items") or []):
+        if not is_print_line(li):
+            continue
+        printable = max(0, _safe_int(li.get("quantity")))
+        if printable <= 0:
+            continue
+        scheduled = max(0, active_scheduled_qty_for_line(order, idx))
+        remaining = max(0, printable - scheduled)
+        row = _base_row(order, "kepala_produksi", line_idx=idx)
+        row["target_qty"] = printable
+        row["completed_qty"] = scheduled
+        row["remaining_qty"] = remaining
+        row["required_input"] = "Penjadwalan"
+        row["required_input_type"] = "penjadwalan"
+        row["action_label"] = "Jadwalkan"
+        if remaining <= 0 and scheduled > 0:
+            row["status"] = "selesai"
+            row["status_label"] = "Selesai Dijadwalkan"
+        elif scheduled <= 0:
+            row["status"] = "belum"
+            row["status_label"] = _status_label("belum")
+        else:
+            row["status"] = "sebagian"
+            row["status_label"] = _status_label("sebagian")
+        out.append(row)
+    return out
 
 
 def build_screener_tasks(order: dict) -> List[dict]:
@@ -462,6 +619,8 @@ def build_delivery_tasks(order: dict) -> List[dict]:
 
 
 BUILDERS = {
+    "designer": lambda o, u, mine: build_designer_tasks(o),
+    "kepala_produksi": lambda o, u, mine: build_kepala_produksi_tasks(o),
     "screener": lambda o, u, mine: build_screener_tasks(o),
     "helper": lambda o, u, mine: build_helper_tasks(o),
     "operator": lambda o, u, mine: build_operator_tasks(o, u, mine_only=mine),

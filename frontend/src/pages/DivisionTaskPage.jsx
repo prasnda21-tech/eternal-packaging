@@ -119,12 +119,13 @@ export default function DivisionTaskPage() {
               <th>No PO</th>
               <th>Customer</th>
               <th>Item</th>
+              {cfg.extra === "design" && <th>Status Design</th>}
               {cfg.extra === "sj" && <th>Status SJ</th>}
               {cfg.extra === "driver" && <th>Bukti Foto</th>}
               {qty && <th className="num">{cfg.targetLabel || "Target"}</th>}
               {qty && <th className="num">{cfg.doneLabel || "Sudah"}</th>}
-              {qty && <th className="num">Sisa</th>}
-              <th>Yang Harus Diinput</th>
+              {qty && <th className="num">{cfg.remainLabel || "Sisa"}</th>}
+              <th>{cfg.inputColLabel || "Yang Harus Diinput"}</th>
               <th>Status</th>
               <th>Aksi</th>
             </tr>
@@ -140,6 +141,7 @@ export default function DivisionTaskPage() {
                 <td className="mono">{t.order_number}</td>
                 <td>{t.customer_name || "—"}</td>
                 <td>{t.item || "—"}</td>
+                {cfg.extra === "design" && <td data-testid={`division-task-design-${t.order_number}`}>{t.design_status_label || t.design_status || "—"}</td>}
                 {cfg.extra === "sj" && <td>{t.sj_status || "—"}</td>}
                 {cfg.extra === "driver" && <td className="mono">{t.photo_count ?? 0} foto</td>}
                 {qty && <td className="num mono">{formatIdQty(t.target_qty)}</td>}

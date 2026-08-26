@@ -86,6 +86,8 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
+            <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
+            <Route path="/tasks/kepala-produksi" element={<PermGate anyOf={[NAV_KEYS.tasksKepalaProduksi, "schedule.edit"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/screener" element={<PermGate anyOf={[NAV_KEYS.tasksScreener, "screen.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/helper" element={<PermGate anyOf={[NAV_KEYS.tasksHelper, "helper.prepare"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/operator" element={<PermGate anyOf={[NAV_KEYS.tasksOperator, "operator.update"]}><DivisionTaskPage /></PermGate>} />

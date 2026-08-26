@@ -62,6 +62,22 @@ describe("append-only workflow UI", () => {
     expect(s).not.toMatch(/Prototype aktif/);
   });
 
+  test("focused designer reuses existing upload and kepala reuses scheduler", () => {
+    const s = src("RoleWorkPanel.jsx");
+    const att = src("AttachmentsPanel.jsx");
+    expect(s).toMatch(/DesignerWorkPanel/);
+    expect(s).toMatch(/KepalaProduksiWorkPanel/);
+    expect(s).toMatch(/AttachmentsPanel/);
+    expect(s).toMatch(/section="design"/);
+    expect(s).toMatch(/OperatorSplitPanel/);
+    expect(s).toMatch(/mode="schedule"/);
+    expect(att).toMatch(/kind === "design"/);
+    expect(att).toMatch(/confirmUpload/);
+    expect(att).toMatch(/Upload Design/);
+    expect(s).not.toMatch(/role === ["']designer["']/);
+    expect(s).not.toMatch(/role === ["']kepala_produksi["']/);
+  });
+
   test("po work view focuses permitted panel without role-name hardcode", () => {
     const s = src("../pages/PoWorkView.jsx");
     expect(s).toMatch(/permittedDivisionIds/);

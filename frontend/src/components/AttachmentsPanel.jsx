@@ -12,21 +12,30 @@ import ConfirmActionModal from "./ConfirmActionModal";
  * - Cetak Sample → actor Operator
  * Tidak digabung dalam satu panel.
  */
-export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null, section = "all" }) {
-  const { user: authUser } = useAuth();
+export default function AttachmentsPanel({ order, user, onUpdated, designSlot = null, sampleSlot = null, section = "all", confirmUpload = false }) {
+  const { user: authUser, hasPerm } = useAuth();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
   const [pendingSample, setPendingSample] = useState(null);
+  const [pendingDesign, setPendingDesign] = useState(null);
   const designInput = useRef(null);
   const sampleInput = useRef(null);
 
   const perms = user?.permissions || [];
-  const canUploadDesign = perms.includes("design.upload");
-  const canUploadSample = perms.includes("operator.sample_upload");
+  const canUploadDesign = perms.includes("design.upload") || (typeof hasPerm === "function" && hasPerm("design.upload"));
+  const canUploadSample = perms.includes("operator.sample_upload") || (typeof hasPerm === "function" && hasPerm("operator.sample_upload"));
 
   const handleFile = async (file, kind) => {
     if (!file) return;
+    if (kind === "design" && confirmUpload) {
+      setPendingDesign({
+        file,
+        time: formatDisplayDateTime(new Date().toISOString()),
+      });
+      if (designInput.current) designInput.current.value = "";
+      return;
+    }
     if (kind === "sample") {
       const ready = getWorkflowReady(order);
       if (!ready.sample_upload) {
@@ -62,6 +71,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           });
           onUpdated(res.order);
           setPendingSample(null);
+          setPendingDesign(null);
         } catch (e) {
           const d = e.response?.data?.detail;
           setErr(typeof d === "string" ? d : (d?.message || "Gagal upload file"));
@@ -246,6 +256,21 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
         error={err}
         onCancel={() => { if (!busy) setPendingSample(null); }}
         onConfirm={() => uploadFile(pendingSample?.file, "sample")}
+      />
+      <ConfirmActionModal
+        open={!!pendingDesign}
+        title="KONFIRMASI PEKERJAAN"
+        stage="Design"
+        poNumber={order?.po_number}
+        customer={order?.customer_name || order?.customer}
+        action="Upload Design"
+        name={authUser?.name || user?.name || user?.email}
+        time={pendingDesign?.time}
+        extra={pendingDesign?.file ? <p className="muted small">Upload: {pendingDesign.file.name}</p> : null}
+        busy={busy}
+        error={err}
+        onCancel={() => { if (!busy) setPendingDesign(null); }}
+        onConfirm={() => uploadFile(pendingDesign?.file, "design")}
       />
     </>
   );
