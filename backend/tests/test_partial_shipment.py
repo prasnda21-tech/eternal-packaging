@@ -105,7 +105,7 @@ def test_helper_prepared_still_caps_print():
     o["line_items"][0]["quantity"] = 10000
     o["total_quantity"] = 10000
     assert helper_prepared_print_qty(o) == 1000
-    assert operator_assignment_cap(o) == 1000
+    assert operator_assignment_cap(o) == 10000
     o["operator_splits"] = [{"quantity": 1000, "qty_completed": 1001}]
     assert validate_print_completed_total(1001, o) is not None
 

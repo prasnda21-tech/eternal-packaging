@@ -6,6 +6,7 @@ import { formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { getWorkflowReady } from "../lib/stageState";
 import { newActionId, entriesForLine } from "../lib/workflowEntries";
+import { helperScheduleTarget, helperScheduleTargetForLine } from "../lib/workPanel";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "./qtyUi";
 import AppendQtyEntries from "./AppendQtyEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
@@ -50,9 +51,10 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
     const existing = helperItems.find((it) => Number(it.line_idx) === Number(idx));
     return Number(existing?.qty_prepared || 0);
   };
-  const totalRequired = printLines.reduce((s, { li }) => s + Number(li.quantity || 0), 0);
+  const totalRequired = helperScheduleTarget(order);
   const totalPrepared = printLines.reduce((s, { idx }) => s + preparedOf(idx), 0);
   const totalShortage = Math.max(totalRequired - totalPrepared, 0);
+  const overPrepared = Math.max(totalPrepared - totalRequired, 0);
   const ready = getWorkflowReady(order);
   const helperLocked = !ready.helper;
   const saved = !!(order?.helper_prep?.updated_at);
@@ -130,16 +132,21 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
               <AlertTriangle size={12}/> KURANG {totalShortage.toLocaleString("id-ID")} PCS
             </span>
           )}
+          {overPrepared > 0 && (
+            <span className="muted small" data-testid="helper-over-prepared-badge">
+              Kelebihan persiapan: {overPrepared.toLocaleString("id-ID")}
+            </span>
+          )}
           {totalShortage === 0 && totalPrepared >= totalRequired && totalRequired > 0 && (
             <span className="qty-status qty-status-done" data-testid="helper-total-ok-badge">DONE</span>
           )}
         </QtyOpsHead>
 
       <MetricRow columns={3}>
-        <MetricCell label="Required" value={totalRequired} testid="helper-total-required" />
-        <MetricCell label="Prepared" value={totalPrepared} testid="helper-total-prepared" />
+        <MetricCell label="Target Persiapan" value={totalRequired} testid="helper-total-required" />
+        <MetricCell label="Sudah Disiapkan" value={totalPrepared} testid="helper-total-prepared" />
         <div className="ind-metric" data-testid="helper-total-shortage">
-          <span className="ind-metric-label">Remain</span>
+          <span className="ind-metric-label">Sisa</span>
           <strong>
             {totalShortage > 0 ? `-${totalShortage.toLocaleString("id-ID")}` : "0"}
             <span className="ind-metric-unit">pcs</span>
@@ -171,9 +178,10 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
           </tr>
         )}
         {printLines.map(({ li, idx }) => {
-          const req = Number(li.quantity || 0);
+          const req = helperScheduleTargetForLine(order, idx);
           const prep = preparedOf(idx);
           const shortage = Math.max(req - prep, 0);
+          const extra = Math.max(prep - req, 0);
           return (
             <tr key={idx} data-testid={`helper-prep-row-${idx}`}>
               <td className="ind-item">
@@ -183,7 +191,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
               <td className="num" data-testid={`helper-required-${idx}`}>{req.toLocaleString("id-ID")}</td>
               <td className="num">{prep.toLocaleString("id-ID")}</td>
               <td className="num" data-testid={`helper-shortage-${idx}`}>
-                {shortage > 0 ? `-${shortage.toLocaleString("id-ID")}` : "0"}
+                {shortage > 0 ? `-${shortage.toLocaleString("id-ID")}` : extra > 0 ? `+${extra.toLocaleString("id-ID")}` : "0"}
               </td>
               <td>
                 <AppendQtyEntries

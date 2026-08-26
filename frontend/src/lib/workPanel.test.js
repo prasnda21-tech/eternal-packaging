@@ -160,6 +160,41 @@ describe("screener / helper / packing / loading aggregates", () => {
     expect(sumEntryQty(model.lines[0].entries)).toBe(6000);
   });
 
+  test("helper target follows active schedule not line qty", () => {
+    const model = helperWorkModel({
+      print_qty_total: 10000,
+      line_items: [{ name: "A", quantity: 10000, production_process: "print" }],
+      operator_splits: [
+        { line_idx: 0, quantity: 6000, operator_email: "a@x.com" },
+        { line_idx: 0, quantity: 4000, operator_email: "b@x.com" },
+      ],
+      helper_prep: {
+        items: [{ line_idx: 0, qty_prepared: 2000 }],
+        entries: [{ line_idx: 0, qty: 2000 }],
+      },
+    });
+    expect(model.headerTarget).toBe(10000);
+    expect(model.headerDone).toBe(2000);
+    expect(model.headerRemain).toBe(8000);
+    expect(model.lines[0].target).toBe(10000);
+  });
+
+  test("helper over-prepared keeps actual and remaining 0", () => {
+    const model = helperWorkModel({
+      line_items: [{ name: "A", quantity: 10000, production_process: "print" }],
+      operator_splits: [{ line_idx: 0, quantity: 6000, operator_email: "a@x.com" }],
+      helper_prep: {
+        items: [{ line_idx: 0, qty_prepared: 8000 }],
+        entries: [{ line_idx: 0, qty: 8000 }],
+      },
+    });
+    expect(model.headerTarget).toBe(6000);
+    expect(model.headerDone).toBe(8000);
+    expect(model.headerRemain).toBe(0);
+    expect(model.overPrepared).toBe(2000);
+    expect(model.lines[0].entries).toHaveLength(1);
+  });
+
   test("packing 4000 + 3000 = 7000 partial", () => {
     const model = packingWorkModel({
       line_items: [{ name: "A", quantity: 10000, production_process: "print" }],

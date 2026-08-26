@@ -189,6 +189,25 @@ export function screenerWorkModel(order) {
   };
 }
 
+export function helperScheduleTarget(order) {
+  const splits = order?.operator_splits || [];
+  if (splits.length) {
+    return splits.reduce((s, x) => s + Number(x.quantity || 0), 0);
+  }
+  if (typeof order?.print_qty_total === "number") return Number(order.print_qty_total);
+  return printItems(order).reduce((s, { li }) => s + Number(li.quantity || 0), 0);
+}
+
+export function helperScheduleTargetForLine(order, lineIdx) {
+  const splits = order?.operator_splits || [];
+  if (splits.length) {
+    return splits
+      .filter((s) => Number(s.line_idx) === Number(lineIdx))
+      .reduce((s, x) => s + Number(x.quantity || 0), 0);
+  }
+  return Number((order?.line_items || [])[lineIdx]?.quantity || 0);
+}
+
 export function helperWorkModel(order) {
   const items = printItems(order);
   const helperItems = order?.helper_prep?.items || [];
@@ -198,7 +217,8 @@ export function helperWorkModel(order) {
     const lineEntries = entriesForLine(helperEntries, idx);
     const vis = visibleEntries(lineEntries, stored?.qty_prepared, order?.helper_prep?.updated_at, order?.helper_prep?.updated_by_name);
     const done = vis.length ? sumEntryQty(vis) : Number(stored?.qty_prepared || 0);
-    const target = Number(li.quantity || 0);
+    const target = helperScheduleTargetForLine(order, idx);
+    const remaining = Math.max(0, target - done);
     return {
       lineIdx: idx,
       itemId: li.item_id || li.id || `helper-${idx}`,
@@ -207,19 +227,23 @@ export function helperWorkModel(order) {
       unit: li.unit || "pcs",
       target,
       done,
-      remaining: Math.max(0, target - done),
+      remaining,
+      overPrepared: Math.max(0, done - target),
       entries: vis,
     };
   });
-  const headerTarget = lines.reduce((s, l) => s + l.target, 0);
+  const headerTarget = helperScheduleTarget(order);
   const headerDone = lines.reduce((s, l) => s + l.done, 0);
   const ready = getWorkflowReady(order);
+  const headerRemain = Math.max(0, headerTarget - headerDone);
   return {
     title: "Pekerjaan Helper",
     stage: "Helper",
     headerTarget,
     headerDone,
-    headerRemain: Math.max(0, headerTarget - headerDone),
+    headerRemain,
+    overPrepared: Math.max(0, headerDone - headerTarget),
+    metricLabels: { target: "Target Persiapan", done: "Sudah Disiapkan", remain: "Sisa" },
     status: operatorStatusLabel(headerDone, headerTarget),
     itemLabel: lines.length === 1 ? lines[0].name : `${lines.length} item`,
     gateLocked: ready.helper !== true,
