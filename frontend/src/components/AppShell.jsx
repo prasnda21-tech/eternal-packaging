@@ -1,10 +1,10 @@
-import { BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Warehouse } from "lucide-react";
+import { ClipboardList, BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible } from "../lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_PATHS, tasksNavVisible } from "../lib/navAccess";
 import BrandMark from "./BrandMark";
 
 const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
@@ -17,10 +17,12 @@ export default function AppShell() {
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
+  const tasksActive = location.pathname.startsWith("/tasks");
   const [salesOpen, setSalesOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
   const [purchasingOpen, setPurchasingOpen] = useState(true);
+  const [tasksOpen, setTasksOpen] = useState(true);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -56,6 +58,10 @@ export default function AppShell() {
     if (purchasingActive) setPurchasingOpen(true);
   }, [purchasingActive]);
 
+  useEffect(() => {
+    if (tasksActive) setTasksOpen(true);
+  }, [tasksActive]);
+
   const doLogout = async () => {
     await logout();
     navigate("/login");
@@ -83,6 +89,7 @@ export default function AppShell() {
   const reportsNav = reportsNavVisible(hasPerm);
   const inventoryNav = inventoryNavVisible(hasPerm);
   const purchasingNav = purchasingNavVisible(hasPerm);
+  const tasksNav = tasksNavVisible(hasPerm);
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showSchedule = hasPerm(NAV_KEYS.schedule);
   const showSettings = hasPerm(NAV_KEYS.settings);
@@ -98,6 +105,31 @@ export default function AppShell() {
             <NavLink to="/dashboard" end className={navClass} data-testid="top-nav-dashboard">
               <LayoutDashboard size={16} /> Dashboard
             </NavLink>
+          )}
+          {tasksNav.parent && (
+            <div className="nav-group" data-testid="top-nav-tasks-group">
+              <button
+                type="button"
+                className={"top-nav-link nav-group-toggle" + (tasksActive ? " parent-open" : "")}
+                aria-expanded={tasksOpen}
+                onClick={() => setTasksOpen((open) => !open)}
+                data-testid="top-nav-tasks"
+              >
+                <ClipboardList size={16} /> Tugas per Divisi
+                <ChevronDown size={14} className="nav-chevron" />
+              </button>
+              {tasksOpen && (
+                <div className="nav-sub">
+                  {["screener", "helper", "operator", "packing", "surat_jalan", "loading", "terkirim"].map((id) => (
+                    tasksNav[id] ? (
+                      <NavLink key={id} to={TASK_NAV_PATHS[id]} className={navClass} data-testid={`top-nav-tasks-${id}`}>
+                        {TASK_NAV_LABELS[id]}
+                      </NavLink>
+                    ) : null
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           {salesNav.parent && (
             <div className="nav-group">

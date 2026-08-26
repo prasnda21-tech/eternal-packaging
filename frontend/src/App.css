@@ -1739,6 +1739,12 @@ html:has(.ship-status-page) #root{
 .role-work-entry-title{font:11px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)}
 .role-work-entry-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
 .work-settings-table input,.work-settings-table select{max-width:180px}
+.division-task-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px}
+.division-task-search{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--surface);min-width:min(100%,280px)}
+.division-task-search input{border:0;outline:0;font:13px inherit;width:100%;background:transparent}
+.division-task-filters,.division-task-scope{display:flex;flex-wrap:wrap;gap:6px}
+.division-task-actions{display:flex;flex-wrap:wrap;gap:6px}
+.division-task-page .prod-table-wrap{overflow:auto}
 @media (max-width:720px){
   .work-panel-hero{flex-direction:column}
 }

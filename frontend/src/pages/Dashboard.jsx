@@ -7,6 +7,7 @@ import { ROLES, STAGES, isToday, formatDate } from "../lib/constants";
 import POCard from "../components/POCard";
 import ReminderList from "../components/ReminderList";
 import TodayActivityCards from "../components/TodayActivityCards";
+import ActionCenter from "../components/ActionCenter";
 
 const NAV = [
   { key: "today", label: "Hari ini", icon: Package },
@@ -153,6 +154,8 @@ export default function Dashboard() {
           <RefreshCw size={19} className={busy ? "spin" : ""} />
         </button>
       </div>
+
+      {view === "today" && !stageIsValid && <ActionCenter />}
 
       <section className="dash-kpi-row" data-testid="dash-kpi-row">
         <div className="dash-kpi"><span>Aktif</span><strong>{counts.aktif ?? 0}</strong></div>

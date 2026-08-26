@@ -2,6 +2,14 @@
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
+  tasks: "nav.tasks",
+  tasksScreener: "nav.tasks.screener",
+  tasksHelper: "nav.tasks.helper",
+  tasksOperator: "nav.tasks.operator",
+  tasksPacking: "nav.tasks.packing",
+  tasksSuratJalan: "nav.tasks.surat_jalan",
+  tasksLoading: "nav.tasks.loading",
+  tasksDelivery: "nav.tasks.delivery",
   sales: "nav.sales",
   importPo: "nav.sales.import_po",
   schedule: "nav.production_schedule",
@@ -20,6 +28,14 @@ export const NAV_KEYS = {
 
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
+  { key: NAV_KEYS.tasks, label: "Tugas per Divisi", parent: null },
+  { key: NAV_KEYS.tasksScreener, label: "Screener", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksHelper, label: "Helper", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksOperator, label: "Operator", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksPacking, label: "Packing", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksSuratJalan, label: "Surat Jalan", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksLoading, label: "Loading", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksDelivery, label: "Driver / Terkirim", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: null },
@@ -67,4 +83,79 @@ export function inventoryNavVisible(hasPerm) {
   const masterItems = parent && canSeeNav(hasPerm, NAV_KEYS.masterItems);
   const currentStock = parent && canSeeNav(hasPerm, NAV_KEYS.currentStock);
   return { parent: !!(masterItems || currentStock), masterItems, currentStock };
+}
+
+const TASK_CHILDREN = [
+  ["screener", NAV_KEYS.tasksScreener],
+  ["helper", NAV_KEYS.tasksHelper],
+  ["operator", NAV_KEYS.tasksOperator],
+  ["packing", NAV_KEYS.tasksPacking],
+  ["surat_jalan", NAV_KEYS.tasksSuratJalan],
+  ["loading", NAV_KEYS.tasksLoading],
+  ["terkirim", NAV_KEYS.tasksDelivery],
+];
+
+/** Same submit perms used by derived_nav_permissions — not a second RBAC system. */
+export const TASK_SUBMIT_PERMS = {
+  screener: "screen.update",
+  helper: "helper.prepare",
+  operator: "operator.update",
+  packing: "packing.update",
+  surat_jalan: "delivery_note.manage",
+  loading: "loading.update",
+  terkirim: "delivery.update",
+};
+
+export const TASK_NAV_PATHS = {
+  screener: "/tasks/screener",
+  helper: "/tasks/helper",
+  operator: "/tasks/operator",
+  packing: "/tasks/packing",
+  surat_jalan: "/tasks/surat-jalan",
+  loading: "/tasks/loading",
+  terkirim: "/tasks/delivery",
+};
+
+export const TASK_NAV_LABELS = {
+  screener: "Screener",
+  helper: "Helper",
+  operator: "Operator",
+  packing: "Packing",
+  surat_jalan: "Surat Jalan",
+  loading: "Loading",
+  terkirim: "Driver / Terkirim",
+};
+
+/** Parent hidden unless at least one child is granted via nav.* or matching submit perm. */
+export function tasksNavVisible(hasPerm) {
+  const children = {};
+  let any = false;
+  for (const [id, key] of TASK_CHILDREN) {
+    const on = canSeeNav(hasPerm, key) || canSeeNav(hasPerm, TASK_SUBMIT_PERMS[id]);
+    children[id] = on;
+    if (on) any = true;
+  }
+  return { parent: any, ...children };
+}
+
+export function firstTaskNavPath(hasPerm) {
+  const v = tasksNavVisible(hasPerm);
+  for (const [id] of TASK_CHILDREN) {
+    if (v[id]) return TASK_NAV_PATHS[id];
+  }
+  return "/";
+}
+
+export function actionKeyToTaskPath(actionKey) {
+  const map = {
+    screener: TASK_NAV_PATHS.screener,
+    helper: TASK_NAV_PATHS.helper,
+    operator_work: TASK_NAV_PATHS.operator,
+    cetak_qty: TASK_NAV_PATHS.operator,
+    packing: TASK_NAV_PATHS.packing,
+    surat_jalan: TASK_NAV_PATHS.surat_jalan,
+    loading: TASK_NAV_PATHS.loading,
+    terkirim: TASK_NAV_PATHS.terkirim,
+  };
+  return map[actionKey] || "/tasks";
 }

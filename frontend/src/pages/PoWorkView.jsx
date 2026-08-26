@@ -11,6 +11,7 @@ import {
   permittedDivisionIds,
   workPanelPath,
 } from "../lib/workPanel";
+import { TASK_NAV_PATHS } from "../lib/navAccess";
 
 export default function PoWorkView() {
   const { id } = useParams();
@@ -54,7 +55,7 @@ export default function PoWorkView() {
     return (
       <div className="page-heading" data-testid="po-work-forbidden">
         <p>Anda tidak punya permission untuk Form Pekerjaan Divisi.</p>
-        <Link to={`/po/${order.id}`}>Buka Detail PO</Link>
+        {hasPerm("po.view") && <Link to={`/po/${order.id}`}>Buka Detail PO</Link>}
       </div>
     );
   }
@@ -66,8 +67,8 @@ export default function PoWorkView() {
   return (
     <div data-testid="po-work-view">
       <div className="page-heading work-page-heading">
-        <Link to="/produksi" className="ghost sm" data-testid="work-back-schedule">
-          <ArrowLeft size={14} /> Jadwal Produksi
+        <Link to={TASK_NAV_PATHS[activeId] || "/tasks"} className="ghost sm" data-testid="work-back-schedule">
+          <ArrowLeft size={14} /> Tugas per Divisi
         </Link>
         {permitted.length > 1 && (
           <nav className="work-divisi-switch" data-testid="work-divisi-switch">

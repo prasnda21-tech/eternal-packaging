@@ -4,6 +4,7 @@ import {
   helperWorkModel,
   loadingWorkModel,
   operatorLineModels,
+  operatorMyAssignmentModels,
   operatorStatusLabel,
   packingWorkModel,
   permittedDivisionIds,
@@ -254,5 +255,19 @@ describe("screener / helper / packing / loading aggregates", () => {
     expect(model.lines[0].entries).toHaveLength(1);
     expect(model.lines[0].entries[0].legacy).toBe(true);
     expect(model.lines[0].entries[0].qty).toBe(7000);
+  });
+
+  test("Budi assignment is 4000 not Andi 1000 or line 5000", () => {
+    const rows = operatorMyAssignmentModels({
+      line_items: [{ name: "Cup A", quantity: 5000, production_process: "print" }],
+      operator_splits: [
+        { id: "b", line_idx: 0, operator_email: "budi@x.com", quantity: 4000, qty_completed: 1500 },
+        { id: "a", line_idx: 0, operator_email: "andi@x.com", quantity: 1000, qty_completed: 0 },
+      ],
+    }, { email: "budi@x.com" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].target).toBe(4000);
+    expect(rows[0].done).toBe(1500);
+    expect(rows[0].remaining).toBe(2500);
   });
 });

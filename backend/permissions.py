@@ -81,6 +81,14 @@ PERMISSION_CATALOG = [
     ("Customer Approval", "customer_approval.settings", "Atur Customer Approval"),
     # Sidebar / menu visibility (additional layer; does not replace API RBAC)
     ("Akses Menu", "nav.dashboard", "Menu Dashboard"),
+    ("Akses Menu", "nav.tasks", "Menu Tugas per Divisi"),
+    ("Akses Menu", "nav.tasks.screener", "Menu Tugas Screener"),
+    ("Akses Menu", "nav.tasks.helper", "Menu Tugas Helper"),
+    ("Akses Menu", "nav.tasks.operator", "Menu Tugas Operator"),
+    ("Akses Menu", "nav.tasks.packing", "Menu Tugas Packing"),
+    ("Akses Menu", "nav.tasks.surat_jalan", "Menu Tugas Surat Jalan"),
+    ("Akses Menu", "nav.tasks.loading", "Menu Tugas Loading"),
+    ("Akses Menu", "nav.tasks.delivery", "Menu Tugas Driver / Terkirim"),
     ("Akses Menu", "nav.sales", "Menu Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
     ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
@@ -122,6 +130,14 @@ NAV_ALWAYS_VISIBLE = (
 
 NAV_MENU_ITEMS = (
     ("nav.dashboard", "Dashboard", None),
+    ("nav.tasks", "Tugas per Divisi", None),
+    ("nav.tasks.screener", "Screener", "nav.tasks"),
+    ("nav.tasks.helper", "Helper", "nav.tasks"),
+    ("nav.tasks.operator", "Operator", "nav.tasks"),
+    ("nav.tasks.packing", "Packing", "nav.tasks"),
+    ("nav.tasks.surat_jalan", "Surat Jalan", "nav.tasks"),
+    ("nav.tasks.loading", "Loading", "nav.tasks"),
+    ("nav.tasks.delivery", "Driver / Terkirim", "nav.tasks"),
     ("nav.sales", "Penjualan", None),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
     ("nav.production_schedule", "Jadwal Produksi", None),
@@ -159,6 +175,27 @@ def derived_nav_permissions(existing: set) -> set:
     if "purchase_receipts.view" in existing:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.receipts")
+    if "screen.update" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.screener")
+    if "helper.prepare" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.helper")
+    if "operator.update" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.operator")
+    if "packing.update" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.packing")
+    if "delivery_note.manage" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.surat_jalan")
+    if "loading.update" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.loading")
+    if "delivery.update" in existing:
+        nav.add("nav.tasks")
+        nav.add("nav.tasks.delivery")
     return nav
 
 

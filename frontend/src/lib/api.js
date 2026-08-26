@@ -178,6 +178,7 @@ export const api = {
   // ---- Batch 3: Production routing + Action Center ----
   setLineItemRoute: (id, items) => client.post(`/orders/${id}/line-items/route`, { items }).then((r) => r.data),
   dashboardActionItems: () => client.get(`/dashboard/action-items`).then((r) => r.data),
+  divisionTasks: (division, scope = "mine") => client.get(`/work/division-tasks`, { params: { division, scope } }).then((r) => r.data),
   // ---- Delivery Deadline (Batch 1) ----
   deliveryDeadlineSettings: () => client.get(`/delivery-deadline/settings`).then((r) => r.data),
   updateDeliveryDeadlineSettings: (payload) => client.put(`/delivery-deadline/settings`, payload).then((r) => r.data),
