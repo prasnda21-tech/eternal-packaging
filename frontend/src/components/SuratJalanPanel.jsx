@@ -1,88 +1,92 @@
-import { useEffect, useState } from "react";
-import { FileText, Truck } from "lucide-react";
+import { useRef, useState } from "react";
+import { FileText, Upload } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
-import { shipmentLinesForOrder, storedShipments } from "../lib/shipmentLines";
-import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
+import { storedShipments } from "../lib/shipmentLines";
+import { QtyOpsHead, statusClassFor } from "./qtyUi";
 import ConfirmActionModal from "./ConfirmActionModal";
+import api from "../lib/api";
 
-function fmt(n) {
-  return Number(n || 0).toLocaleString("id-ID");
-}
+const ALLOWED_MIME = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
+const MAX_BYTES = 4 * 1024 * 1024;
 
-function initialDraft(rows) {
-  const map = {};
-  for (const row of rows) {
-    map[row.line_idx] = Number(row.available_sj || 0);
-  }
-  return map;
-}
-
-function statusLabel(order, created) {
-  const semantic = order.surat_jalan_status_semantic;
-  if ((order.current_stage || 0) >= 13 && created) return "Surat Jalan Selesai";
-  if (semantic === "completed") return "SJ lengkap — siap Loading";
-  if (semantic === "partial") return "SJ parsial — siap Loading";
-  if (created) return "SJ dibuat — siap Loading";
-  return "Menunggu pembuatan Surat Jalan";
+function sjFiles(order) {
+  const fromField = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  if (fromField.length) return fromField;
+  // Legacy: shipment rows without file still readable as history labels.
+  return storedShipments(order).map((sh, i) => ({
+    id: sh.id || sh.accurate_shipment_id || `sj-legacy-${i}`,
+    name: sh.file_name || sh.number || sh.accurate_shipment_id || "Surat Jalan",
+    uploaded_by_name: sh.created_by_name || sh.created_by || "",
+    uploaded_at: sh.created_at,
+    legacy: true,
+  }));
 }
 
 export default function SuratJalanPanel({
   order,
   canManage,
-  busy,
-  onCreate,
+  busy: busyProp,
+  onUpdated,
   footerActions = null,
 }) {
   const { user } = useAuth();
-  const rows = shipmentLinesForOrder(order);
-  const shipments = storedShipments(order);
-  const [number, setNumber] = useState(order.delivery_note_number || "");
-  const [notes, setNotes] = useState(order.delivery_note_notes || "");
-  const [draft, setDraft] = useState(() => initialDraft(rows));
-  const [confirm, setConfirm] = useState(null);
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [confirm, setConfirm] = useState(null);
+  const uploading = busyProp || busy;
   const created = !!order.surat_jalan_created;
-  const availableTotal = rows.reduce((s, r) => s + Number(r.available_sj || 0), 0);
-  const packedTotal = rows.reduce((s, r) => s + Number(r.packed || 0), 0);
-  const shippedTotal = rows.reduce((s, r) => s + Number(r.shipped || 0), 0);
-  const draftTotal = rows.reduce((s, r) => s + Number(draft[r.line_idx] || 0), 0);
-  const canSubmit = canManage && !busy && availableTotal > 0 && draftTotal > 0;
   const packingWait = (order.current_stage || 0) < 12 && !created;
+  const files = sjFiles(order);
 
-  useEffect(() => {
-    setNumber(order.delivery_note_number || "");
-    setNotes(order.delivery_note_notes || "");
-    setDraft(initialDraft(shipmentLinesForOrder(order)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order?.id, order?.delivery_note_number, order?.surat_jalan_status_semantic, packedTotal, shippedTotal, shipments.length]);
+  const pickFile = () => {
+    setErr("");
+    inputRef.current?.click();
+  };
 
-  const openConfirm = () => {
-    const lines = rows
-      .map((row) => ({
-        line_idx: row.line_idx,
-        qty: Math.max(0, parseInt(draft[row.line_idx], 10) || 0),
-        accurate_item_id: (order.line_items || [])[row.line_idx]?.accurate_item_id || undefined,
-      }))
-      .filter((l) => l.qty > 0);
-    if (!lines.length) return;
+  const onFileChosen = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!ALLOWED_MIME.includes(file.type)) {
+      setErr("Format file tidak didukung. Gunakan JPG, PNG, atau PDF.");
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      setErr("Ukuran file terlalu besar (maks 4MB).");
+      return;
+    }
     setErr("");
     setConfirm({
-      lines,
-      qty: lines.reduce((s, l) => s + l.qty, 0),
+      file,
       time: formatDisplayDateTime(new Date().toISOString()),
     });
   };
 
-  const executeCreate = async () => {
-    if (!confirm || busy) return;
+  const executeUpload = async () => {
+    if (!confirm?.file || uploading) return;
+    setBusy(true);
     setErr("");
     try {
-      await onCreate(number || null, notes || "", confirm.lines);
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error("Gagal membaca file"));
+        r.readAsDataURL(confirm.file);
+      });
+      const result = await api.addAttachment(order.id, {
+        kind: "surat_jalan",
+        name: confirm.file.name,
+        data_url: dataUrl,
+      });
+      onUpdated?.(result?.order || result);
       setConfirm(null);
     } catch (e) {
       const d = e?.response?.data?.detail;
-      setErr(typeof d === "string" ? d : (d?.message || "Gagal membuat Surat Jalan"));
+      setErr(typeof d === "string" ? d : (d?.message || "Upload Surat Jalan gagal. Silakan coba kembali."));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -93,171 +97,72 @@ export default function SuratJalanPanel({
           className={`qty-status ${statusClassFor(created ? "SAVED" : packingWait ? "IDLE" : "READY")}`}
           data-testid="surat-jalan-semantic-badge"
         >
-          {packingWait ? "Menunggu Packing" : statusLabel(order, created)}
+          {packingWait ? "Menunggu Packing" : created ? "File tersimpan" : "Menunggu upload"}
         </span>
       </QtyOpsHead>
 
       {packingWait ? (
         <p className="muted small" data-testid="surat-jalan-wait-note" style={{ padding: "8px 16px 0" }}>
-          Surat Jalan dapat dibuat setelah Qty Packing disimpan dan packing sebagian/lengkap dikonfirmasi.
+          Surat Jalan dapat di-upload setelah Qty Packing disimpan dan packing sebagian/lengkap dikonfirmasi.
         </p>
       ) : (
-        <>
-          <MetricRow testid="sj-summary">
-            <MetricCell label="Packed" value={packedTotal} testid="sj-packed-total" />
-            <MetricCell label="Sudah SJ" value={shippedTotal} testid="sj-shipped-total" />
-            <MetricCell label="Tersedia" value={availableTotal} testid="sj-available-total" />
-          </MetricRow>
-
-          {rows.length > 0 && (
-            <div className="packing-lines-wrap">
-              <table className="packing-lines-table" data-testid="sj-lines-table">
-                <thead>
-                  <tr>
-                    <th>Barang / Item</th>
-                    <th className="num">Qty PO</th>
-                    <th className="num">Packed</th>
-                    <th className="num">Sudah SJ</th>
-                    <th className="num">Tersedia</th>
-                    <th className="num">Input</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, idx) => {
-                    const avail = Number(row.available_sj || 0);
-                    return (
-                      <tr key={row.line_idx ?? idx} data-testid={`sj-line-row-${idx}`}>
-                        <td>
-                          <div><strong>{row.name}</strong></div>
-                          {row.color && <div className="muted small">{row.color}</div>}
-                          {row.mismatch && (
-                            <div className="muted small" data-testid={`sj-line-mismatch-${idx}`} style={{ color: "#8f1f1f" }}>
-                              Qty SJ melebihi packing
-                            </div>
-                          )}
-                        </td>
-                        <td className="num mono">{fmt(row.qty_po)}</td>
-                        <td className="num mono pack-cell-done">{fmt(row.packed)}</td>
-                        <td className="num mono" data-testid={`sj-line-shipped-${idx}`}>{fmt(row.shipped)}</td>
-                        <td className="num mono pack-cell-ready" data-testid={`sj-line-available-${idx}`}>{fmt(avail)}</td>
-                        <td className="num packing-line-input-cell">
-                          {!canManage || avail <= 0 ? (
-                            <span className="mono">{fmt(0)}</span>
-                          ) : (
-                            <QuantityInput
-                              label=""
-                              className="is-compact"
-                              min="0"
-                              max={avail}
-                              value={draft[row.line_idx] ?? avail}
-                              onChange={(e) => setDraft((prev) => ({ ...prev, [row.line_idx]: e.target.value }))}
-                              disabled={busy || avail <= 0}
-                              testid={`sj-qty-input-${row.line_idx}`}
-                              aria-label={`Qty Surat Jalan ${row.name}`}
-                            />
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {shipments.length > 0 && (
-            <div className="qty-ops-body" data-testid="sj-history">
-              <p className="muted small" style={{ margin: "8px 0 4px" }}>Surat Jalan tersimpan</p>
-              <table className="packing-lines-table" data-testid="sj-history-table">
-                <thead>
-                  <tr>
-                    <th>Nomor</th>
-                    <th>Sumber</th>
-                    <th className="num">Qty</th>
-                    <th>Waktu</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shipments.map((sh, i) => (
-                    <tr key={sh.id || sh.accurate_shipment_id || i} data-testid={`sj-history-row-${i}`}>
-                      <td>{sh.number || sh.accurate_shipment_id}</td>
-                      <td>{sh.source === "accurate" ? "Accurate" : "Eternal"}</td>
-                      <td className="num mono">
-                        {fmt((sh.lines || []).reduce((s, l) => s + Number(l.qty || l.quantity || 0), 0))}
-                      </td>
-                      <td className="muted small">{sh.created_at ? formatDate(sh.created_at) : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <div className="qty-ops-body" style={{ display: "grid", gap: 10 }}>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
+            hidden
+            onChange={onFileChosen}
+            data-testid="surat-jalan-file-input"
+          />
 
           {!canManage ? (
             <p className="muted small" data-testid="surat-jalan-readonly-note">
-              Anda tidak memiliki permission <code>delivery_note.manage</code> untuk membuat Surat Jalan.
+              Anda tidak memiliki permission untuk mengupload Surat Jalan.
             </p>
           ) : (
-            <div className="surat-jalan-form packing-form" data-testid="surat-jalan-form">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <label>
-                  <span className="lbl">Nomor Surat Jalan</span>
-                  <input
-                    type="text"
-                    className="manual-input"
-                    value={number}
-                    onChange={(e) => setNumber(e.target.value)}
-                    disabled={busy}
-                    placeholder={`SJ-${(order.po_number || "").replace(/^PO[.-]/, "")}`}
-                    data-testid="surat-jalan-number-input"
-                  />
-                </label>
-                <label>
-                  <span className="lbl">Catatan</span>
-                  <input
-                    type="text"
-                    className="manual-input"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    disabled={busy}
-                    data-testid="surat-jalan-notes-input"
-                  />
-                </label>
-              </div>
-              {created && (
-                <p className="muted small" data-testid="surat-jalan-last-update">
-                  Terakhir: SJ #{order.delivery_note_number} oleh {order.delivery_note_created_by_name || order.delivery_note_created_by} · {formatDate(order.delivery_note_created_at)}
-                </p>
-              )}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={openConfirm}
-                  disabled={!canSubmit}
-                  data-testid="create-surat-jalan-button"
-                >
-                  <Truck size={16} /> {created ? "Buat Surat Jalan berikutnya" : "Buat Surat Jalan"}
-                </button>
-              </div>
-            </div>
+            <button
+              type="button"
+              className="primary"
+              onClick={pickFile}
+              disabled={uploading}
+              data-testid="surat-jalan-upload-button"
+            >
+              <Upload size={16} /> Upload File Surat Jalan
+            </button>
           )}
-        </>
+
+          {err && <div className="error" data-testid="surat-jalan-upload-error">{err}</div>}
+
+          {files.length > 0 && (
+            <ul className="sj-file-list" data-testid="surat-jalan-file-list" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
+              {files.map((f) => (
+                <li key={f.id || f.name} data-testid={`surat-jalan-file-${f.id || f.name}`} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+                  <strong>{f.name}</strong>
+                  {(f.uploaded_by_name || f.uploaded_by) && (
+                    <span className="muted small">{f.uploaded_by_name || f.uploaded_by}</span>
+                  )}
+                  {f.uploaded_at && <span className="muted small mono">{formatDate(f.uploaded_at)}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
+
       {footerActions}
       <ConfirmActionModal
         open={!!confirm}
         stage="Surat Jalan"
         poNumber={order.po_number}
-        action={number ? `Buat Surat Jalan ${number}` : "Buat Surat Jalan"}
-        qty={confirm?.qty}
+        action={confirm ? `Upload file ${confirm.file.name}` : "Upload Surat Jalan"}
         name={user?.name || user?.email}
         time={confirm?.time}
-        extra={number ? <p className="muted small">No SJ: {number}</p> : null}
-        busy={busy}
+        busy={uploading}
         error={err}
-        onCancel={() => { if (!busy) setConfirm(null); }}
-        onConfirm={executeCreate}
+        confirmLabel="Konfirmasi"
+        onCancel={() => { if (!uploading) { setConfirm(null); setErr(""); } }}
+        onConfirm={executeUpload}
       />
     </section>
   );

@@ -23,7 +23,6 @@ import {
   packingWorkModel,
   pickSubmitSplit,
   screenerWorkModel,
-  suratJalanEvidence,
   terkirimEvidence,
 } from "../lib/workPanel";
 
@@ -374,51 +373,23 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
 
 function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
   const { hasPerm } = useAuth();
-  const [busy, setBusy] = useState(false);
   const canManage = canSubmitDivision(hasPerm, division);
-  const evidence = suratJalanEvidence(order);
-  const packed = Number(order?.qty_packed || 0);
-  const shipped = evidence.reduce((s, e) => s + Number(e.qty || 0), 0);
-  const itemLabel = (order?.line_items || []).length === 1
-    ? (order.line_items[0].name || "—")
-    : `${(order?.line_items || []).length} item`;
 
   return (
     <section className="panel work-panel" data-testid="role-work-panel">
       <WorkHero
         order={order}
         title="Pekerjaan Surat Jalan"
-        itemLabel={itemLabel}
+        itemLabel={(order?.line_items || []).length === 1
+          ? (order.line_items[0].name || "—")
+          : `${(order?.line_items || []).length} item`}
         testid="surat_jalan-work-header"
         compactHeader={compactHeader}
       />
-      <MetricRow columns={4} testid="surat_jalan-work-metrics">
-        <MetricCell label="Target" value={packed} testid="work-target" />
-        <MetricCell label="Sudah Dikerjakan" value={shipped} testid="work-done" />
-        <MetricCell label="Sisa" value={Math.max(0, packed - shipped)} testid="work-remain" />
-        <MetricCell
-          label="Status"
-          value={operatorStatusLabel(shipped, packed)}
-          format="text"
-          className="is-status"
-          testid="work-status"
-        />
-      </MetricRow>
-      <RoleWorkHistory entries={evidence} mode="evidence" testid="work-history-sj" />
       <SuratJalanPanel
         order={order}
         canManage={canManage}
-        busy={busy}
-        onCreate={async (number, notes, lines) => {
-          setBusy(true);
-          try {
-            const res = await api.createSuratJalan(order.id, number, notes, lines);
-            onUpdated?.(res.order);
-            return res;
-          } finally {
-            setBusy(false);
-          }
-        }}
+        onUpdated={onUpdated}
       />
     </section>
   );

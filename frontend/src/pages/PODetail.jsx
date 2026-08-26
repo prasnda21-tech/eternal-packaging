@@ -977,21 +977,12 @@ export default function PODetail() {
         order={order}
         canManage={canManageSuratJalan}
         busy={busy}
-        onCreate={async (number, notes, lines) => {
-          const res = await api.createSuratJalan(order.id, number, notes, lines);
-          setOrder(res.order);
-          showToast("Surat Jalan disimpan");
-          return res;
+        onUpdated={(next) => {
+          if (next) {
+            setOrder(next);
+            showToast("Surat Jalan diupload");
+          }
         }}
-        footerActions={(
-          <>
-            <div style={{ marginTop: 10 }}>
-              <Link to={`/po/${order.id}/surat-jalan`} className="ghost sm" data-testid="open-surat-jalan-button">
-                <FileText size={14} /> Buka Surat Jalan
-              </Link>
-            </div>
-          </>
-        )}
       />
       </div>
 
