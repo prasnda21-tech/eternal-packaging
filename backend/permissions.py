@@ -60,6 +60,9 @@ PERMISSION_CATALOG = [
     ("Surat Jalan", "delivery_note.manage", "Kelola Surat Jalan"),
     ("Loading", "loading.update", "Loading kendaraan"),
     ("Pengiriman", "delivery.update", "Update status kirim"),
+    ("Pengiriman", "delivery.reschedule", "Ajukan penjadwalan ulang pengiriman"),
+    ("Pengiriman", "delivery.reschedule.set_date", "Tetapkan tanggal penjadwalan ulang"),
+    ("Pengiriman", "delivery.schedule.view", "Lihat Jadwal Pengiriman"),
     ("Pengiriman", "delivery.deadline.edit", "Edit Deadline Pengiriman"),
     ("Pengiriman", "delivery.deadline.settings", "Atur Perhitungan Deadline Pengiriman"),
     ("Produksi", "production.route.edit", "Atur Proses Cetak / Non-Cetak per Line Item"),
@@ -81,7 +84,11 @@ PERMISSION_CATALOG = [
     ("Customer Approval", "customer_approval.settings", "Atur Customer Approval"),
     # Sidebar / menu visibility (additional layer; does not replace API RBAC)
     ("Akses Menu", "nav.dashboard", "Menu Dashboard"),
-    ("Akses Menu", "nav.tasks", "Menu Tugas per Divisi"),
+    ("Akses Menu", "nav.production", "Menu Produksi"),
+    ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
+    ("Akses Menu", "nav.delivery_schedule", "Menu Jadwal Pengiriman"),
+    ("Akses Menu", "nav.delivery_reschedule", "Menu Jadwal Pengiriman Ulang"),
+    ("Akses Menu", "nav.tasks", "Menu Tugas Produksi"),
     ("Akses Menu", "nav.tasks.designer", "Menu Tugas Designer"),
     ("Akses Menu", "nav.tasks.screener", "Menu Tugas Screener"),
     ("Akses Menu", "nav.tasks.kepala_produksi", "Menu Tugas Kepala Produksi"),
@@ -93,7 +100,6 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.tasks.delivery", "Menu Tugas Driver / Terkirim"),
     ("Akses Menu", "nav.sales", "Menu Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
-    ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
@@ -132,7 +138,11 @@ NAV_ALWAYS_VISIBLE = (
 
 NAV_MENU_ITEMS = (
     ("nav.dashboard", "Dashboard", None),
-    ("nav.tasks", "Tugas per Divisi", None),
+    ("nav.production", "Produksi", None),
+    ("nav.production_schedule", "Jadwal Produksi", "nav.production"),
+    ("nav.delivery_schedule", "Jadwal Pengiriman", "nav.production"),
+    ("nav.delivery_reschedule", "Jadwal Pengiriman Ulang", "nav.production"),
+    ("nav.tasks", "Tugas Produksi", "nav.production"),
     ("nav.tasks.designer", "Designer", "nav.tasks"),
     ("nav.tasks.screener", "Screener", "nav.tasks"),
     ("nav.tasks.kepala_produksi", "Kepala Produksi", "nav.tasks"),
@@ -144,7 +154,6 @@ NAV_MENU_ITEMS = (
     ("nav.tasks.delivery", "Driver / Terkirim", "nav.tasks"),
     ("nav.sales", "Penjualan", None),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
-    ("nav.production_schedule", "Jadwal Produksi", None),
     ("nav.purchasing", "Pembelian", None),
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
     ("nav.inventory", "Persediaan", None),
@@ -168,11 +177,19 @@ def derived_nav_permissions(existing: set) -> set:
     if "dashboard.production.view" in existing:
         nav.add("nav.dashboard")
     if "schedule.view" in existing:
+        nav.add("nav.production")
         nav.add("nav.production_schedule")
+        nav.add("nav.delivery_schedule")
         nav.add("nav.reports")
         nav.add("nav.reports.shipment_status")
         nav.add("nav.reports.status_po")
         nav.add("nav.reports.gaji_operator")
+    if "delivery.schedule.view" in existing:
+        nav.add("nav.production")
+        nav.add("nav.delivery_schedule")
+    if "delivery.reschedule" in existing or "delivery.reschedule.set_date" in existing:
+        nav.add("nav.production")
+        nav.add("nav.delivery_reschedule")
     if "current_stock.view" in existing:
         nav.add("nav.inventory")
         nav.add("nav.inventory.current_stock")
@@ -180,30 +197,39 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.receipts")
     if "design.upload" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.designer")
     if "schedule.edit" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.kepala_produksi")
     if "screen.update" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.screener")
     if "helper.prepare" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.helper")
     if "operator.update" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.operator")
     if "packing.update" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.packing")
     if "delivery_note.manage" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.surat_jalan")
     if "loading.update" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.loading")
     if "delivery.update" in existing:
+        nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.delivery")
     return nav
@@ -242,6 +268,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "work_panel.view", "settings.work_panel.view", "settings.work_panel.manage",
         "customer_approval.view", "customer_approval.manage", "customer_approval.settings",
         "delivery.deadline.edit", "delivery.deadline.settings",
+        "delivery.reschedule", "delivery.reschedule.set_date", "delivery.schedule.view",
         "production.route.edit",
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
@@ -260,6 +287,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "dashboard.production.export",
         "work_panel.view", "settings.work_panel.view", "settings.work_panel.manage",
         "delivery.deadline.edit", "delivery.deadline.settings",
+        "delivery.reschedule", "delivery.reschedule.set_date", "delivery.schedule.view",
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
         "reports.gaji_operator.view",
@@ -284,6 +312,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     "driver": [
         "po.view", "schedule.view", "schedule.work_date.view",
         "delivery_note.view", "loading.update", "delivery.update", "work_panel.view",
+        "delivery.reschedule",
     ],
     "crm": [
         "po.view", "design.view", "payment.view",

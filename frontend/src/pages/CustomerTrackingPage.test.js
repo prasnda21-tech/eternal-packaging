@@ -60,4 +60,11 @@ describe("Customer tracking public page", () => {
     expect(page).toMatch(/Bukti Pengiriman/);
     expect(page).toMatch(/slice\(0, 5\)/);
   });
+
+  test("public page may show reschedule date only", () => {
+    expect(page).toMatch(/tracking-reschedule/);
+    expect(page).toMatch(/scheduled_date/);
+    expect(page).not.toMatch(/requested_by/);
+    expect(page).not.toMatch(/reason/);
+  });
 });

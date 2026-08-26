@@ -1,10 +1,10 @@
-import { ClipboardList, BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_ORDER, TASK_NAV_PATHS, tasksNavVisible } from "../lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, productionNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_ORDER, TASK_NAV_PATHS } from "../lib/navAccess";
 import BrandMark from "./BrandMark";
 
 const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
@@ -18,10 +18,12 @@ export default function AppShell() {
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
   const tasksActive = location.pathname.startsWith("/tasks");
+  const produksiActive = location.pathname.startsWith("/produksi") || tasksActive;
   const [salesOpen, setSalesOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
   const [purchasingOpen, setPurchasingOpen] = useState(true);
+  const [produksiOpen, setProduksiOpen] = useState(true);
   const [tasksOpen, setTasksOpen] = useState(true);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
@@ -59,8 +61,9 @@ export default function AppShell() {
   }, [purchasingActive]);
 
   useEffect(() => {
+    if (produksiActive) setProduksiOpen(true);
     if (tasksActive) setTasksOpen(true);
-  }, [tasksActive]);
+  }, [produksiActive, tasksActive]);
 
   const doLogout = async () => {
     await logout();
@@ -89,9 +92,9 @@ export default function AppShell() {
   const reportsNav = reportsNavVisible(hasPerm);
   const inventoryNav = inventoryNavVisible(hasPerm);
   const purchasingNav = purchasingNavVisible(hasPerm);
-  const tasksNav = tasksNavVisible(hasPerm);
+  const productionNav = productionNavVisible(hasPerm);
+  const tasksNav = productionNav.tasks;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
-  const showSchedule = hasPerm(NAV_KEYS.schedule);
   const showSettings = hasPerm(NAV_KEYS.settings);
 
   return (
@@ -106,27 +109,60 @@ export default function AppShell() {
               <LayoutDashboard size={16} /> Dashboard
             </NavLink>
           )}
-          {tasksNav.parent && (
-            <div className="nav-group" data-testid="top-nav-tasks-group">
+          {productionNav.parent && (
+            <div className="nav-group" data-testid="top-nav-produksi-group">
               <button
                 type="button"
-                className={"top-nav-link nav-group-toggle" + (tasksActive ? " parent-open" : "")}
-                aria-expanded={tasksOpen}
-                onClick={() => setTasksOpen((open) => !open)}
-                data-testid="top-nav-tasks"
+                className={"top-nav-link nav-group-toggle" + (produksiActive ? " parent-open" : "")}
+                aria-expanded={produksiOpen}
+                onClick={() => setProduksiOpen((open) => !open)}
+                data-testid="top-nav-produksi"
               >
-                <ClipboardList size={16} /> Tugas per Divisi
+                <TableIcon size={16} /> Produksi
                 <ChevronDown size={14} className="nav-chevron" />
               </button>
-              {tasksOpen && (
+              {produksiOpen && (
                 <div className="nav-sub">
-                  {TASK_NAV_ORDER.map((id) => (
-                    tasksNav[id] ? (
-                      <NavLink key={id} to={TASK_NAV_PATHS[id]} className={navClass} data-testid={`top-nav-tasks-${id}`}>
-                        {TASK_NAV_LABELS[id]}
-                      </NavLink>
-                    ) : null
-                  ))}
+                  {productionNav.schedule && (
+                    <NavLink to="/produksi" end className={navClass} data-testid="top-nav-jadwal-produksi">
+                      Jadwal Produksi
+                    </NavLink>
+                  )}
+                  {productionNav.deliverySchedule && (
+                    <NavLink to="/produksi/jadwal-pengiriman" className={navClass} data-testid="top-nav-jadwal-pengiriman">
+                      Jadwal Pengiriman
+                    </NavLink>
+                  )}
+                  {productionNav.deliveryReschedule && (
+                    <NavLink to="/produksi/jadwal-pengiriman-ulang" className={navClass} data-testid="top-nav-jadwal-pengiriman-ulang">
+                      Jadwal Pengiriman Ulang
+                    </NavLink>
+                  )}
+                  {tasksNav.parent && (
+                    <div className="nav-nested" data-testid="top-nav-tasks-group">
+                      <button
+                        type="button"
+                        className={"top-nav-link nav-group-toggle" + (tasksActive ? " parent-open" : "")}
+                        aria-expanded={tasksOpen}
+                        onClick={() => setTasksOpen((open) => !open)}
+                        data-testid="top-nav-tasks"
+                      >
+                        Tugas Produksi
+                        <ChevronDown size={14} className="nav-chevron" />
+                      </button>
+                      {tasksOpen && (
+                        <div className="nav-sub-sub">
+                          {TASK_NAV_ORDER.map((id) => (
+                            tasksNav[id] ? (
+                              <NavLink key={id} to={TASK_NAV_PATHS[id]} className={navClass} data-testid={`top-nav-tasks-${id}`}>
+                                {TASK_NAV_LABELS[id]}
+                              </NavLink>
+                            ) : null
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -151,11 +187,6 @@ export default function AppShell() {
                 </div>
               )}
             </div>
-          )}
-          {showSchedule && (
-            <NavLink to="/produksi" end className={navClass} data-testid="top-nav-produksi">
-              <TableIcon size={16} /> Jadwal Produksi
-            </NavLink>
           )}
           {purchasingNav.parent && (
             <div className="nav-group">

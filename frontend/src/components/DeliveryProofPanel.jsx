@@ -7,6 +7,7 @@ import { useAuth } from "../lib/auth";
 import { confirmableProofCount, canConfirmDelivered, MIN_DELIVERY_PROOFS, proofUploadUserError } from "../lib/deliveryProof";
 import { newActionId } from "../lib/workflowEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
+import RescheduleDeliveryModal from "./RescheduleDeliveryModal";
 
 const MAX_PHOTOS = 5;
 
@@ -26,9 +27,12 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const [confirmUpload, setConfirmUpload] = useState(null);
   const [confirmDeliver, setConfirmDeliver] = useState(null);
   const [confirming, setConfirming] = useState(false);
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
 
   const canUpload = hasPerm("delivery.update");
   const canDelete = hasPerm("delivery.update");
+  const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
+  const canSetDate = hasPerm("delivery.reschedule.set_date");
   const proofs = order.delivery_proofs || [];
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
   const stagedNotYetUploaded = staged.filter((s) => s.status !== "done");
@@ -408,6 +412,17 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
             >
               Konfirmasi Terkirim
             </button>
+            {canReschedule && order.delivery_status !== "Terkirim" && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setRescheduleOpen(true)}
+                disabled={confirming || uploading}
+                data-testid="reschedule-delivery-button"
+              >
+                Jadwalkan Ulang
+              </button>
+            )}
           </div>
           <p className="muted small">
             Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu Konfirmasi Terkirim.
@@ -443,6 +458,14 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         confirmLabel="Konfirmasi Terkirim"
         onCancel={() => { if (!confirming) setConfirmDeliver(null); }}
         onConfirm={executeDeliver}
+      />
+      <RescheduleDeliveryModal
+        open={rescheduleOpen}
+        order={order}
+        canSetDate={canSetDate}
+        currentDate={order.effective_delivery_date || order.scheduled_delivery_date || order.deadline}
+        onCancel={() => setRescheduleOpen(false)}
+        onDone={(next) => { setRescheduleOpen(false); if (next) onUpdated(next); }}
       />
     </section>
   );

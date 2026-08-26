@@ -650,6 +650,22 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
     });
     return map;
   }, [menus]);
+  const descendantsOf = (key) => {
+    const out = [];
+    for (const child of (childrenOf[key] || [])) {
+      out.push(child, ...descendantsOf(child));
+    }
+    return out;
+  };
+  const depthOf = (key) => {
+    let d = 0;
+    let p = parentOf[key];
+    while (p) {
+      d += 1;
+      p = parentOf[p];
+    }
+    return d;
+  };
 
   const dirty = useMemo(() => {
     return visibleRoles.some((r) => {
@@ -682,10 +698,14 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
     }
     if (turningOff) {
       current.delete(key);
-      (childrenOf[key] || []).forEach((child) => current.delete(child));
+      descendantsOf(key).forEach((child) => current.delete(child));
     } else {
       current.add(key);
-      if (parentOf[key]) current.add(parentOf[key]);
+      let p = parentOf[key];
+      while (p) {
+        current.add(p);
+        p = parentOf[p];
+      }
     }
     setDraft((prev) => ({ ...prev, [roleDoc.role]: current }));
   };
@@ -748,9 +768,12 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
             </tr>
           </thead>
           <tbody>
-            {menus.map((m) => (
+            {menus.map((m) => {
+              const depth = depthOf(m.key);
+              const rowClass = depth >= 2 ? "nav-access-grandchild" : (depth === 1 ? "nav-access-child" : "");
+              return (
               <tr key={m.key} data-testid={`nav-access-row-${m.key}`}>
-                <th scope="row" className={m.parent ? "nav-access-child" : ""}>{m.label}</th>
+                <th scope="row" className={rowClass}>{m.label}</th>
                 {visibleRoles.map((r) => {
                   const locked = r.role === "admin" || !canManagePerms;
                   const checked = r.role === "admin" ? true : hasNav(r.role, m.key);
@@ -770,7 +793,8 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
                   );
                 })}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

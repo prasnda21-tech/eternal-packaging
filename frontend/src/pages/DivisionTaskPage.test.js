@@ -9,8 +9,9 @@ describe("Division task UI", () => {
   const packing = fs.readFileSync(path.join(__dirname, "../components/PackingPanel.jsx"), "utf8");
   const sj = fs.readFileSync(path.join(__dirname, "../components/SuratJalanPanel.jsx"), "utf8");
 
-  test("sidebar Tugas per Divisi and all submenus", () => {
-    expect(shell).toMatch(/Tugas per Divisi/);
+  test("sidebar Tugas Produksi and all submenus", () => {
+    expect(shell).toMatch(/Tugas Produksi/);
+    expect(shell).not.toMatch(/Tugas per Divisi/);
     expect(shell).toMatch(/top-nav-tasks-\$\{id\}/);
     expect(shell).toMatch(/TASK_NAV_ORDER/);
   });
