@@ -1,12 +1,35 @@
 /* -------- Shell & Topbar -------- */
-.app-shell{min-height:100vh;display:grid;grid-template-columns:228px 1fr;background:var(--paper)}
-.app-sidebar{background:var(--ep-dark);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow:auto;z-index:40;border-right:1px solid #0b2d22}
-.app-sidebar .brand{padding:16px 14px 14px;border-bottom:1px solid rgba(255,255,255,.08);color:#fff;gap:10px}
-.app-sidebar-nav{display:flex;flex-direction:column;gap:2px;padding:10px 8px;flex:1}
+.app-shell{--sidebar-rail:64px;min-height:100vh;display:grid;grid-template-columns:var(--sidebar-rail) 1fr;background:var(--paper)}
+.app-sidebar-slot{position:relative;z-index:56;width:var(--sidebar-rail);min-width:var(--sidebar-rail);max-width:var(--sidebar-rail);overflow:visible}
+.app-sidebar{background:var(--ep-dark);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;width:100%;overflow:visible;z-index:2;border-right:1px solid #0b2d22;box-sizing:border-box}
+.app-sidebar .brand{padding:12px 8px;border-bottom:1px solid rgba(255,255,255,.08);color:#fff;gap:0;justify-content:center}
+.app-sidebar .brand-copy{display:none}
+.app-sidebar-nav{display:flex;flex-direction:column;gap:4px;padding:10px 8px;flex:1;align-items:center;overflow-y:auto;overflow-x:visible}
+.rail-btn{position:relative;width:44px;height:44px;display:grid;place-items:center;border:0;background:transparent;color:#C5D9CF;border-radius:8px;cursor:pointer;text-decoration:none;flex-shrink:0}
+.rail-btn:hover,.rail-btn:focus-visible{background:rgba(255,255,255,.1);color:#fff;outline:none}
+.rail-btn.is-active,.rail-btn.is-open{background:var(--ep-primary);color:#fff}
+.rail-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--ink);color:#fff;font:600 12px 'IBM Plex Sans',sans-serif;padding:6px 8px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;box-shadow:var(--shadow);z-index:60}
+.rail-btn:hover .rail-tooltip,.rail-btn:focus-visible .rail-tooltip{opacity:1}
+.rail-btn.is-open .rail-tooltip,.rail-btn.is-open:hover .rail-tooltip,.rail-btn.is-open:focus-visible .rail-tooltip{opacity:0}
+.sidebar-flyout-scrim{position:fixed;inset:0;left:var(--sidebar-rail);border:0;padding:0;margin:0;background:transparent;z-index:54;cursor:default}
+.sidebar-flyout{position:fixed;left:var(--sidebar-rail);width:260px;max-width:min(320px,calc(100vw - var(--sidebar-rail)));max-height:calc(100vh - 16px);overflow-x:hidden;overflow-y:auto;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);z-index:1;padding:8px 8px 10px;box-sizing:border-box}
+.sidebar-flyout-head{padding:8px 10px 10px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.sidebar-flyout-head h2{margin:0;font:10.5px 'IBM Plex Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--soft)}
+.sidebar-flyout .nav-sub{display:flex;flex-direction:column;gap:1px;padding:0}
+.sidebar-flyout .top-nav-link{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;color:var(--ink);font:500 13.5px 'IBM Plex Sans',sans-serif;text-decoration:none;text-transform:none;letter-spacing:0;border:0;background:transparent;width:100%;text-align:left;cursor:pointer;box-sizing:border-box}
+.sidebar-flyout .top-nav-link:hover{background:#EEF7F2}
+.sidebar-flyout .top-nav-link.active{background:var(--ep-primary);color:#fff;font-weight:600;border-bottom-color:transparent}
+.sidebar-flyout .nav-nested{display:flex;flex-direction:column;gap:1px}
+.sidebar-flyout .nav-group-toggle{width:100%}
+.sidebar-flyout .nav-group-toggle .nav-chevron{margin-left:auto;opacity:.7;flex-shrink:0;transition:transform .15s ease}
+.sidebar-flyout .nav-group-toggle[aria-expanded="false"] .nav-chevron{transform:rotate(-90deg)}
+.sidebar-flyout .nav-group-toggle.parent-open{font-weight:600}
+.sidebar-flyout .nav-sub-sub{display:flex;flex-direction:column;gap:1px}
+.sidebar-flyout .nav-sub-sub .top-nav-link{padding-left:22px;font-size:13px}
 .app-sidebar .top-nav-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;color:#C5D9CF;font:500 13.5px 'IBM Plex Sans',sans-serif;letter-spacing:0;text-transform:none;border-bottom:0;text-decoration:none}
 .app-sidebar .top-nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
 .app-sidebar .top-nav-link.active{background:var(--ep-primary);color:#fff;font-weight:600;border-bottom-color:transparent}
-.app-sidebar .nav-group{display:flex;flex-direction:column;gap:1px}
+.app-sidebar .nav-group{display:flex;flex-direction:column;gap:1px;align-items:center}
 .app-sidebar .nav-group-toggle{width:100%;border:0;background:transparent;cursor:pointer;text-align:left}
 .app-sidebar .nav-group-toggle.parent-open{background:rgba(255,255,255,.1);color:#fff;font-weight:600}
 .app-sidebar .nav-group-toggle .nav-chevron{margin-left:auto;opacity:.7;flex-shrink:0;transition:transform .15s ease}
@@ -429,7 +452,7 @@
 @media print{
   body{background:#fff}
   .app-shell,.content,.app-main{background:#fff !important;padding:0 !important}
-  .app-sidebar,.topbar,.bottom-nav,.no-print{display:none !important}
+  .app-sidebar,.app-sidebar-slot,.sidebar-flyout,.sidebar-flyout-scrim,.topbar,.bottom-nav,.no-print{display:none !important}
   .app-shell{display:block}
   .surat-jalan-wrap{max-width:none;margin:0}
   .surat-jalan{border:0;box-shadow:none;padding:12mm 14mm;page-break-inside:auto}
@@ -1447,20 +1470,21 @@
 }
 
 @media (max-width:960px){
-  .app-shell{grid-template-columns:1fr}
-  .app-sidebar{position:sticky;top:0;height:auto;flex-direction:row;align-items:stretch;overflow:auto;z-index:50}
-  .app-sidebar .brand{border-bottom:0;border-right:1px solid rgba(255,255,255,.08);padding:8px 12px;flex-shrink:0}
-  .app-sidebar .brand-copy{display:none}
-  .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px;align-items:stretch}
-  .app-sidebar .top-nav-link{white-space:nowrap;padding:8px 10px;font-size:12.5px}
-  .app-sidebar .nav-group{flex-shrink:0;min-width:max-content}
-  .app-sidebar .nav-sub .top-nav-link{padding:6px 10px 6px 16px;font-size:12px}
   .dash-kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ind-metrics.cols-5{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prod-filter-kicker{flex:1 1 100%}
 }
 
 @media (max-width:640px){
+  .app-shell{grid-template-columns:1fr}
+  .app-sidebar-slot{width:100%;min-width:0;max-width:none}
+  .app-sidebar{position:sticky;top:0;height:auto;width:100%;flex-direction:row;align-items:stretch;overflow:auto;z-index:2}
+  .app-sidebar .brand{border-bottom:0;border-right:1px solid rgba(255,255,255,.08);padding:8px 12px;flex-shrink:0}
+  .app-sidebar .brand-copy{display:none}
+  .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px;align-items:center}
+  .app-sidebar .nav-group{flex-shrink:0}
+  .rail-tooltip{display:none}
+  .sidebar-flyout{width:min(280px,calc(100vw - 16px));max-width:calc(100vw - 16px)}
   .dash-kpi-row{grid-template-columns:1fr 1fr}
   .jobs-section{display:flex;flex-direction:column}
   .po-kpi-strip .ind-metrics.cols-5{grid-template-columns:1fr 1fr}
@@ -1531,7 +1555,7 @@ html:has(.prod-schedule-page) #root{
   min-height:100dvh;
   max-height:100dvh;
   overflow:hidden;
-  grid-template-columns:228px minmax(0,1fr);
+  grid-template-columns:var(--sidebar-rail) minmax(0,1fr);
   grid-template-rows:minmax(0,1fr);
 }
 .app-shell:has(.prod-schedule-page) .app-sidebar{
@@ -1627,7 +1651,7 @@ html:has(.prod-schedule-page) #root{
 .prod-schedule-page .prod-date-line{padding:0}
 .prod-schedule-page .pill.sm{padding:1px 5px;font-size:10px}
 .prod-schedule-page .prod-qty-over{color:var(--red);font-weight:650}
-@media (max-width:960px){
+@media (max-width:640px){
   .app-shell:has(.prod-schedule-page){
     grid-template-columns:minmax(0,1fr);
     grid-template-rows:auto minmax(0,1fr);
@@ -1679,7 +1703,7 @@ html:has(.ship-status-page) #root{
   min-height:100dvh;
   max-height:100dvh;
   overflow:hidden;
-  grid-template-columns:228px minmax(0,1fr);
+  grid-template-columns:var(--sidebar-rail) minmax(0,1fr);
   grid-template-rows:minmax(0,1fr);
 }
 .app-shell:has(.ship-status-page) .app-sidebar{height:100%;max-height:100%}
@@ -1749,7 +1773,7 @@ html:has(.ship-status-page) #root{
 .ship-bar-full .ship-bar-fill{background:#5aa85a}
 .ship-bar-ready .ship-bar-fill{background:#5aa85a}
 .ship-bar-full .ship-bar-label,.ship-bar-ready .ship-bar-label{color:#143214}
-@media (max-width:900px){
+@media (max-width:640px){
   .app-shell:has(.ship-status-page){grid-template-columns:1fr}
   .content:has(.ship-status-page){padding:4px 6px 0}
 }
