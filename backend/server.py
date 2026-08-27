@@ -745,8 +745,11 @@ async def login(input: LoginInput, response: Response):
     if user.get("status", "active") != "active":
         raise HTTPException(403, "Akun Anda dinonaktifkan. Hubungi admin.")
     safe = {"id": str(user["_id"]), "email": user["email"], "name": user["name"], "role": user["role"]}
-    response.set_cookie("access_token", token_for(safe), httponly=True, samesite="lax", max_age=28800)
-    return safe
+    # Cookie keeps existing web session behavior. access_token in the body is for
+    # mobile/native clients that cannot rely on httpOnly cookies (Authorization: Bearer).
+    token = token_for(safe)
+    response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=28800)
+    return {**safe, "access_token": token}
 
 
 @api_router.post("/auth/logout")
