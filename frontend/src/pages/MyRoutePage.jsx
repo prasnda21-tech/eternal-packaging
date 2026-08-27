@@ -79,6 +79,7 @@ export default function MyRoutePage() {
                 <li key={s.stop_id} data-testid={`my-route-stop-${s.stop_id}`}>
                   <div>
                     <strong>{s.sequence}. {s.customer}</strong>
+                    {s.outlet_name ? <p className="muted small">{s.outlet_name}</p> : null}
                     <p className="muted small">{s.address}</p>
                     <p className="muted small">No PO {s.order_number} · Qty {s.qty}{s.outlet_closing_time ? ` · Jam Tutup ${s.outlet_closing_time}` : ""} · {s.priority_label || s.priority} · {s.status}</p>
                   </div>

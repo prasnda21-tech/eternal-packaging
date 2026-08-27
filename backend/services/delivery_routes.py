@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from services.delivery_batches import actor_id, actor_name, now_iso, ready_vehicles
 from services.delivery_depot import normalize_depot
-from services.delivery_stops import LOCATION_NEED
+from services.delivery_stops import LOCATION_NEED, MISSING_LOCATION_REASON
 from services.route_optimizer.types import (
     OptimizeRequest,
     OptimizeResult,
@@ -177,7 +177,7 @@ def apply_optimize_result(
         src = dict(st)
         if src.get("location_status") == LOCATION_NEED:
             src["status"] = STOP_UNASSIGNED
-            src["unassigned_reason"] = "Belum Ada Lokasi"
+            src["unassigned_reason"] = MISSING_LOCATION_REASON
         else:
             src["status"] = STOP_UNASSIGNED
             src["unassigned_reason"] = "Tidak dapat di-assign"
@@ -360,6 +360,46 @@ def edit_draft(plan: dict, payload: dict, user: dict) -> dict:
     return plan
 
 
+def freeze_destination_snapshot(stop: dict) -> dict:
+    """Lock the destination used at confirm so later master edits cannot rewrite it."""
+    dest = {
+        "formatted_address": stop.get("address") or stop.get("formatted_address"),
+        "place_id": stop.get("place_id") or stop.get("google_place_id"),
+        "google_place_id": stop.get("google_place_id") or stop.get("place_id"),
+        "lat": stop.get("lat"),
+        "lng": stop.get("lng"),
+        "outlet_id": stop.get("outlet_id"),
+        "outlet_name": stop.get("outlet_name"),
+    }
+    stop["destination_snapshot"] = dest
+    return dest
+
+
+def destination_for_navigation(stop: Optional[dict]) -> dict:
+    """Prefer the confirmed snapshot; never fall back to customer/outlet name."""
+    src = stop if isinstance(stop, dict) else {}
+    snap = src.get("destination_snapshot") if isinstance(src.get("destination_snapshot"), dict) else {}
+    if snap.get("lat") is not None and snap.get("lng") is not None:
+        return {
+            "formatted_address": snap.get("formatted_address") or src.get("address"),
+            "place_id": snap.get("place_id") or snap.get("google_place_id") or src.get("place_id"),
+            "google_place_id": snap.get("google_place_id") or snap.get("place_id") or src.get("google_place_id"),
+            "lat": snap.get("lat"),
+            "lng": snap.get("lng"),
+            "outlet_id": snap.get("outlet_id") or src.get("outlet_id"),
+            "outlet_name": snap.get("outlet_name") or src.get("outlet_name"),
+        }
+    return {
+        "formatted_address": src.get("address") or src.get("formatted_address"),
+        "place_id": src.get("place_id") or src.get("google_place_id"),
+        "google_place_id": src.get("google_place_id") or src.get("place_id"),
+        "lat": src.get("lat"),
+        "lng": src.get("lng"),
+        "outlet_id": src.get("outlet_id"),
+        "outlet_name": src.get("outlet_name"),
+    }
+
+
 def confirm_plan(plan: dict, user: dict, now: Optional[datetime] = None) -> dict:
     if plan.get("status") != ROUTE_DRAFT:
         raise RouteError("Hanya draf yang dapat dikonfirmasi menjadi jadwal.")
@@ -371,6 +411,8 @@ def confirm_plan(plan: dict, user: dict, now: Optional[datetime] = None) -> dict
     plan["confirmed_by_name"] = actor_name(user)
     for r in plan.get("routes") or []:
         r["status"] = ASSIGNMENT_SCHEDULED
+        for s in r.get("stops") or []:
+            freeze_destination_snapshot(s)
     _append_version(plan, KIND_CONFIRMED, user, now)
     return plan
 
@@ -554,7 +596,10 @@ def my_route_view(plan: dict, assignment: dict, user: dict) -> dict:
                 "stop_id": s.get("stop_id"),
                 "sequence": s.get("sequence"),
                 "customer": s.get("customer"),
-                "address": s.get("address"),
+                "outlet_id": dest.get("outlet_id"),
+                "outlet_name": dest.get("outlet_name"),
+                "address": dest.get("formatted_address"),
+                "google_place_id": dest.get("google_place_id") or dest.get("place_id"),
                 "order_number": s.get("order_number"),
                 "order_id": s.get("order_id"),
                 "shipment_id": s.get("shipment_id"),
@@ -563,12 +608,13 @@ def my_route_view(plan: dict, assignment: dict, user: dict) -> dict:
                 "priority": s.get("priority"),
                 "priority_label": s.get("priority_label"),
                 "status": s.get("status"),
-                "lat": s.get("lat"),
-                "lng": s.get("lng"),
-                "place_id": s.get("place_id"),
+                "lat": dest.get("lat"),
+                "lng": dest.get("lng"),
+                "place_id": dest.get("place_id"),
                 "eta": s.get("eta"),
             }
             for s in stops
+            for dest in [destination_for_navigation(s)]
         ],
     }
 

@@ -3,9 +3,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatKm, formatDuration } from "../lib/deliveryRoute";
+import { formatKm, formatDuration, MISSING_LOCATION_REASON } from "../lib/deliveryRoute";
 import RouteMap from "../components/RouteMap";
 import ConfirmActionModal from "../components/ConfirmActionModal";
+import OutletLocationModal from "../components/OutletLocationModal";
 
 export default function DeliveryBatchPage() {
   const { batchId } = useParams();
@@ -19,12 +20,14 @@ export default function DeliveryBatchPage() {
   const [err, setErr] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [summary, setSummary] = useState(null);
+  const [locRow, setLocRow] = useState(null);
 
   const canOptimize = hasPerm("delivery.route.optimize");
   const canEdit = hasPerm("delivery.route.edit");
   const canConfirm = hasPerm("delivery.route.confirm");
   const canReady = hasPerm("delivery.update") || hasPerm("delivery.vehicle.manage");
   const canPublish = hasPerm("delivery.schedule.publish");
+  const canSetLocation = hasPerm("delivery.location.manage") || hasPerm("delivery.schedule.create");
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -147,6 +150,25 @@ export default function DeliveryBatchPage() {
         </div>
       </div>
 
+      {(batch?.stops || []).some((s) => s.location_status === "need_location" || s.lat == null) && (
+        <div className="error" data-testid="dbatch-missing-location">
+          Lokasi outlet belum diatur
+          {(batch.stops || []).filter((s) => s.location_status === "need_location" || s.lat == null).map((s) => (
+            canSetLocation ? (
+              <button
+                key={s.stop_id}
+                type="button"
+                className="ghost sm"
+                onClick={() => setLocRow(s)}
+                data-testid={`dbatch-queue-set-location-${s.stop_id}`}
+              >
+                Atur Lokasi · {s.customer || s.order_number}
+              </button>
+            ) : null
+          ))}
+        </div>
+      )}
+
       <section className="route-card" data-testid="dbatch-driver-vehicle">
         <h2>Driver &amp; Kendaraan</h2>
         <p data-testid="dbatch-driver-name">Nama Driver: <strong>{user?.name}</strong> <span className="muted small">(otomatis dari akun login)</span></p>
@@ -192,7 +214,7 @@ export default function DeliveryBatchPage() {
                 <li>Gudang</li>
                 {(r.stops || []).map((s) => (
                   <li key={s.stop_id} data-testid={`dbatch-stop-${s.stop_id}`}>
-                    {s.sequence}. {s.customer} · {s.order_number} · {s.priority_label || s.priority}
+                    {s.sequence}. {s.customer}{s.outlet_name ? ` · ${s.outlet_name}` : ""} · {s.order_number} · {s.priority_label || s.priority}
                     {s.outlet_closing_time ? ` · Tutup ${s.outlet_closing_time}` : ""}
                     {canEdit && plan.status === "draft" && (
                       <button type="button" className="ghost sm" onClick={() => moveStop(s.stop_id, null)} data-testid={`dbatch-remove-${s.stop_id}`}>Lepas</button>
@@ -207,9 +229,30 @@ export default function DeliveryBatchPage() {
             <div data-testid="dbatch-unassigned">
               <h3>Unassigned</h3>
               <ul>
-                {(plan.unassigned || []).map((s) => (
-                  <li key={s.stop_id}>{s.customer || s.stop_id}: {s.unassigned_reason || "Tidak di-assign"}</li>
-                ))}
+                {(plan.unassigned || []).map((s) => {
+                  const missing = s.location_status === "need_location" || (s.unassigned_reason || "").includes("Lokasi");
+                  return (
+                    <li key={s.stop_id} data-testid={`dbatch-unassigned-${s.stop_id}`}>
+                      {s.customer || s.stop_id}: {s.unassigned_reason || "Tidak di-assign"}
+                      {missing && (
+                        <span>
+                          {" "}
+                          {MISSING_LOCATION_REASON}
+                          {canSetLocation && (
+                            <button
+                              type="button"
+                              className="ghost sm"
+                              onClick={() => setLocRow(s)}
+                              data-testid={`dbatch-set-location-${s.stop_id}`}
+                            >
+                              Atur Lokasi
+                            </button>
+                          )}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -237,6 +280,14 @@ export default function DeliveryBatchPage() {
         error={err}
         onCancel={() => setConfirmOpen(false)}
         onConfirm={doConfirm}
+      />
+      <OutletLocationModal
+        open={!!locRow}
+        row={locRow}
+        batchId={batchId}
+        canEdit={canSetLocation}
+        onClose={() => setLocRow(null)}
+        onSaved={() => load()}
       />
       <p className="muted small"><Link to="/produksi/jadwal-pengiriman">Kembali ke Jadwal Pengiriman</Link></p>
     </div>

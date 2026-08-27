@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from services.delivery_stops import (
     LOCATION_LABEL,
+    LOCATION_NEED,
     PRIORITY_LABELS,
     normalize_closing_time,
     normalize_priority,
@@ -131,8 +132,13 @@ def apply_stop_updates(batch: dict, updates: List[dict]) -> dict:
             st["lat"] = loc.get("lat")
             st["lng"] = loc.get("lng")
             st["place_id"] = loc.get("place_id")
+            st["google_place_id"] = loc.get("place_id")
             if loc.get("formatted_address"):
                 st["address"] = loc.get("formatted_address")
+            if u.get("location", {}).get("outlet_id"):
+                st["outlet_id"] = u["location"]["outlet_id"]
+            if u.get("location", {}).get("outlet_name"):
+                st["outlet_name"] = u["location"]["outlet_name"]
             st["location_status"] = loc.get("location_status")
             st["location_label"] = LOCATION_LABEL.get(loc.get("location_status"), st.get("location_label"))
         by_id[sid] = st
@@ -194,3 +200,7 @@ def upsert_driver_ready(
 
 def ready_vehicles(batch: dict) -> List[dict]:
     return [r for r in (batch.get("driver_readiness") or []) if r.get("ready") and r.get("vehicle_id")]
+
+
+def missing_location_stops(batch: dict) -> List[dict]:
+    return [s for s in (batch.get("stops") or []) if (s.get("location_status") == LOCATION_NEED)]

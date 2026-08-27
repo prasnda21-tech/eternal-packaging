@@ -1,4 +1,4 @@
-import { googleMapsNavUrl, openGoogleMapsNavigation, navigationDestination, selectAllState, toggleSelectAll, formatKm, formatDuration } from "./deliveryRoute";
+import { googleMapsNavUrl, openGoogleMapsNavigation, navigationDestination, selectAllState, toggleSelectAll, formatKm, formatDuration, outletAddressLabel } from "./deliveryRoute";
 
 describe("google maps navigation", () => {
   test("builds destination url with place id and does not mutate", () => {
@@ -27,12 +27,17 @@ describe("google maps navigation", () => {
     expect(url).not.toMatch(/Toko/);
     expect(openGoogleMapsNavigation({ customer: "Toko ABC", outlet_name: "Jakarta" })).toBe("");
   });
+
+  test("outlet address cell does not expose lat lng place id", () => {
+    expect(outletAddressLabel({ outlet_name: "Utama", address: "Jl Preview Dummy", lat: -6.1, lng: 106.8, place_id: "ChIJX" })).toBe("Utama · Jl Preview Dummy");
+    expect(outletAddressLabel({ outlet_name: "Utama", address: "Jl Preview Dummy", lat: -6.1, lng: 106.8, place_id: "ChIJX" })).not.toMatch(/ChIJ/);
+  });
 });
 
 describe("select all", () => {
   const rows = [
     { stop_id: "a", selectable: true, location_status: "ok", lat: 1, lng: 2 },
-    { stop_id: "b", selectable: false, location_status: "need_location", exclude_reason: "Belum Ada Lokasi" },
+    { stop_id: "b", selectable: false, location_status: "need_location", exclude_reason: "Lokasi outlet belum diatur" },
     { stop_id: "c", selectable: true, location_status: "ok", lat: 3, lng: 4 },
   ];
 

@@ -267,7 +267,7 @@ def test_missing_location_unassigned_reason():
         vehicles=[OptimizerVehicle("veh-a", "u-budi", "Budi")],
     )
     result = LocalMockRouteOptimizer().optimize(req)
-    assert result.unassigned[0].reason == "Belum Ada Lokasi"
+    assert result.unassigned[0].reason == "Lokasi outlet belum diatur"
 
 
 def test_no_vehicle_unassigned():
@@ -428,13 +428,14 @@ def test_catalog_has_route_permissions():
         "delivery.vehicle.manage",
         "settings.depot.view",
         "settings.depot.manage",
+        "delivery.location.manage",
         "nav.driver_route",
     ):
         assert key in ALL_PERMISSIONS, key
-    assert "delivery.location.manage" not in ALL_PERMISSIONS
     driver = set(ROLE_DEFAULT_PERMISSIONS["driver"])
     assert "delivery.route.optimize" in driver
     assert "delivery.schedule.create" not in driver
+    assert "delivery.location.manage" not in driver
     assert "nav.driver_route" in driver
     helper = effective_permissions("helper", None)
     assert "delivery.schedule.create" not in helper

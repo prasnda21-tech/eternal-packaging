@@ -14,10 +14,16 @@ describe("delivery route optimization UI", () => {
     expect(create).toMatch(/cds-check-all/);
     expect(create).toMatch(/indeterminate/);
     expect(create).toMatch(/Belum Ada Lokasi/);
+    expect(create).toMatch(/Atur Lokasi/);
     expect(create).toMatch(/Lokasi Siap/);
-    expect(create).not.toMatch(/OutletLocationModal/);
-    expect(create).not.toMatch(/Atur Lokasi/);
+    expect(create).toMatch(/OutletLocationModal/);
     expect(create).toMatch(/Jam Tutup/);
+    expect(create).toMatch(/Alamat \/ Outlet/);
+    expect(create).toMatch(/Status Lokasi/);
+    expect(create).toMatch(/cds-qty-/);
+    expect(create).toMatch(/cds-status-/);
+    expect(create).not.toMatch(/placeholder="Lat"/);
+    expect(create).not.toMatch(/placeholder="Place ID"/);
     expect(create).toMatch(/cds-priority-/);
     expect(create).toMatch(/cds-closing-/);
     expect(create).toMatch(/Publish ke Driver/);
@@ -32,8 +38,8 @@ describe("delivery route optimization UI", () => {
     expect(batch).toMatch(/OPTIMIZE RUTE/);
     expect(batch).toMatch(/KONFIRMASI JADWAL/);
     expect(batch).toMatch(/dbatch-unassigned/);
-    expect(batch).not.toMatch(/Atur Lokasi/);
-    expect(batch).not.toMatch(/OutletLocationModal/);
+    expect(batch).toMatch(/Atur Lokasi/);
+    expect(batch).toMatch(/Lokasi outlet belum diatur/);
     expect(batch).toMatch(/deliveryBatchReady/);
     expect(batch).not.toMatch(/driver_user_id:/);
   });
@@ -43,6 +49,7 @@ describe("delivery route optimization UI", () => {
     expect(mine).toMatch(/my-route-driver-name/);
     expect(mine).toMatch(/MULAI RUTE/);
     expect(mine).toMatch(/Navigasi/);
+    expect(mine).toMatch(/outlet_name/);
     expect(mine).toMatch(/openGoogleMapsNavigation/);
     expect(mine).toMatch(/Bukti Kirim/);
     expect(mine).toMatch(/kerja\?divisi=terkirim/);

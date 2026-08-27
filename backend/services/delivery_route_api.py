@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from services.delivery_batches import (
@@ -50,7 +50,19 @@ from services.delivery_stops import (
     occupied_stop_keys,
     parse_location,
 )
+from services.delivery_outlets import (
+    COLLECTION as OUTLETS_COLLECTION,
+    apply_location_to_stops,
+    build_outlet_doc,
+    customer_key,
+    order_set_from_outlet,
+    outlet_key,
+    plan_is_historical,
+    public_outlet,
+)
 from services.delivery_vehicles import normalize_vehicle, public_vehicle
+from services.places_provider.base import PlacesNotConfigured, PlacesProviderError
+from services.places_provider.factory import get_places_provider
 from services.route_optimizer.base import RouteOptimizerError, RouteOptimizerNotConfigured
 from services.route_optimizer.factory import get_route_optimizer
 
@@ -103,6 +115,27 @@ class VehiclePayload(BaseModel):
     active: Optional[bool] = None
 
 
+class SaveOutletPayload(BaseModel):
+    order_id: str
+    batch_id: Optional[str] = None
+    stop_id: Optional[str] = None
+    name: Optional[str] = None
+    place_id: Optional[str] = None
+    google_place_id: Optional[str] = None
+    formatted_address: Optional[str] = None
+    lat: float
+    lng: float
+
+
+class PatchOutletPayload(BaseModel):
+    name: Optional[str] = None
+    place_id: Optional[str] = None
+    google_place_id: Optional[str] = None
+    formatted_address: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+
 def register(api_router: APIRouter, deps: dict) -> None:
     db = deps["db"]
     current_user = deps["current_user"]
@@ -146,7 +179,25 @@ def register(api_router: APIRouter, deps: dict) -> None:
     async def _queue_rows():
         docs = await db.orders.find(MONGO_QUEUE_FILTER, QUEUE_PROJECTION).to_list(2000)
         occ = await _occupied()
-        return build_queue_stops(docs, occupied_keys=occ)
+        outlet_ids = [str(d.get("delivery_outlet_id")).strip() for d in docs if d.get("delivery_outlet_id")]
+        cust_names = list({
+            str(d.get("customer_name") or d.get("customer") or "").strip()
+            for d in docs
+            if (d.get("customer_name") or d.get("customer"))
+        })
+        cust_keys = list({customer_key(n) for n in cust_names if n})
+        query: Dict[str, Any] = {}
+        clauses = []
+        if outlet_ids:
+            clauses.append({"id": {"$in": outlet_ids}})
+        if cust_keys:
+            clauses.append({"customer_key": {"$in": cust_keys}})
+        if clauses:
+            query = {"$or": clauses} if len(clauses) > 1 else clauses[0]
+            outlets = await db[OUTLETS_COLLECTION].find(query, {"_id": 0}).to_list(2000)
+        else:
+            outlets = []
+        return build_queue_stops(docs, occupied_keys=occ, outlets=outlets)
 
     async def _get_batch(batch_id: str) -> dict:
         doc = await db.delivery_batches.find_one({"id": batch_id}, {"_id": 0})
@@ -183,19 +234,93 @@ def register(api_router: APIRouter, deps: dict) -> None:
         await db.delivery_route_plans.update_one({"id": doc["id"]}, {"$set": doc}, upsert=True)
         return doc
 
-    async def _save_order_location(order_id: str, loc: dict) -> None:
+    async def _require_location_edit(user: dict):
+        await require_any_perm(user, "delivery.location.manage", "delivery.schedule.create")
+
+    async def _apply_outlet_live(outlet: dict, *, order_id: Optional[str] = None, batch_id: Optional[str] = None) -> None:
+        """Push master location to orders + draft batches/plans. Never rewrite confirmed routes."""
+        oid = str(order_id or "").strip()
+        fields = order_set_from_outlet(outlet)
+        if oid:
+            await db.orders.update_one({"id": oid}, {"$set": fields})
+        # Reuse: same customer + same outlet name, or already linked.
+        name = outlet.get("customer_name") or ""
+        label = outlet.get("name") or ""
+        reuse_filter: Dict[str, Any] = {
+            "$or": [
+                {"delivery_outlet_id": outlet.get("id")},
+                {
+                    "$and": [
+                        {"$or": [{"customer": name}, {"customer_name": name}]},
+                        {"outlet": label},
+                    ]
+                },
+            ]
+        }
+        if oid:
+            reuse_filter = {"$and": [{"id": {"$ne": oid}}, reuse_filter]}
+        await db.orders.update_many(reuse_filter, {"$set": fields})
+
+        batch_q: Dict[str, Any] = {"status": {"$in": [STATUS_DRAFT, STATUS_PUBLISHED]}}
+        if batch_id:
+            batch_q = {"id": batch_id, "status": {"$in": [STATUS_DRAFT, STATUS_PUBLISHED]}}
+        batches = await db.delivery_batches.find(batch_q, {"_id": 0}).to_list(200)
+        for batch in batches:
+            if apply_location_to_stops(batch.get("stops") or [], order_id=oid or None, outlet=outlet):
+                await _persist_batch(batch)
+            plan_id = batch.get("route_plan_id")
+            if not plan_id:
+                continue
+            plan = await db.delivery_route_plans.find_one({"id": plan_id}, {"_id": 0})
+            if not plan or plan_is_historical(plan):
+                continue
+            changed = 0
+            for r in plan.get("routes") or []:
+                changed += apply_location_to_stops(r.get("stops") or [], order_id=oid or None, outlet=outlet)
+            changed += apply_location_to_stops(plan.get("unassigned") or [], order_id=oid or None, outlet=outlet)
+            if changed:
+                await _persist_plan(plan)
+
+    async def _upsert_outlet_for_order(order: dict, loc: dict, *, name: Optional[str], user: dict) -> dict:
+        parsed = parse_location(loc)
+        if parsed.get("lat") is None or parsed.get("lng") is None:
+            raise HTTPException(400, "Lokasi wajib punya latitude dan longitude.")
+        customer_name = str(order.get("customer_name") or order.get("customer") or "").strip()
+        label = (name or loc.get("outlet_name") or order.get("outlet") or customer_name or "Utama").strip()
+        existing = None
+        existing_id = str(order.get("delivery_outlet_id") or loc.get("outlet_id") or "").strip()
+        if existing_id:
+            existing = await db[OUTLETS_COLLECTION].find_one({"id": existing_id}, {"_id": 0})
+        if existing is None:
+            existing = await db[OUTLETS_COLLECTION].find_one({
+                "customer_key": customer_key(customer_name),
+                "outlet_key": outlet_key(label),
+            }, {"_id": 0})
+        outlet = build_outlet_doc(
+            existing=existing,
+            customer_name=customer_name,
+            customer_id=order.get("customer_id"),
+            name=label,
+            location={
+                "lat": parsed.get("lat"),
+                "lng": parsed.get("lng"),
+                "place_id": parsed.get("place_id") or loc.get("google_place_id"),
+                "formatted_address": parsed.get("formatted_address"),
+            },
+            user=user,
+        )
+        await db[OUTLETS_COLLECTION].update_one({"id": outlet["id"]}, {"$set": outlet}, upsert=True)
+        return outlet
+
+    async def _save_order_location(order_id: str, loc: dict, user: Optional[dict] = None) -> None:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0, "id": 1, "customer": 1, "customer_name": 1, "customer_id": 1, "outlet": 1, "delivery_outlet_id": 1})
+        if not order:
+            return
         parsed = parse_location(loc)
         if parsed.get("lat") is None or parsed.get("lng") is None:
             return
-        await db.orders.update_one(
-            {"id": order_id},
-            {"$set": {"delivery_location": {
-                "lat": parsed["lat"],
-                "lng": parsed["lng"],
-                "place_id": parsed.get("place_id"),
-                "formatted_address": parsed.get("formatted_address"),
-            }}},
-        )
+        outlet = await _upsert_outlet_for_order(order, loc, name=loc.get("outlet_name"), user=user or {})
+        await _apply_outlet_live(outlet, order_id=order_id)
 
     # ---------- Queue / batch ----------
     @api_router.get("/delivery/queue")
@@ -203,6 +328,112 @@ def register(api_router: APIRouter, deps: dict) -> None:
         await require_any_perm(user, "delivery.schedule.view", "delivery.schedule.create", "schedule.view")
         rows = await _queue_rows()
         return {"rows": rows, "total": len(rows)}
+
+    @api_router.get("/delivery/places/search")
+    async def places_search(q: str = Query("", min_length=0), user=Depends(current_user)):
+        await _require_location_edit(user)
+        query = (q or "").strip()
+        if len(query) < 2:
+            return {"provider": "none", "suggestions": []}
+        try:
+            provider = get_places_provider()
+            result = provider.search(query)
+        except PlacesNotConfigured as e:
+            raise HTTPException(503, str(e))
+        except PlacesProviderError as e:
+            raise HTTPException(502, str(e))
+        return {
+            "provider": result.provider,
+            "suggestions": [
+                {"place_id": s.place_id, "label": s.label, "formatted_address": s.formatted_address}
+                for s in result.suggestions
+            ],
+        }
+
+    @api_router.get("/delivery/places/details")
+    async def places_details(place_id: str = Query(...), user=Depends(current_user)):
+        await _require_location_edit(user)
+        pid = (place_id or "").strip()
+        if not pid:
+            raise HTTPException(400, "place_id wajib.")
+        try:
+            provider = get_places_provider()
+            det = provider.details(pid)
+        except PlacesNotConfigured as e:
+            raise HTTPException(503, str(e))
+        except PlacesProviderError as e:
+            raise HTTPException(502, str(e))
+        if not det:
+            raise HTTPException(404, "Tempat tidak ditemukan")
+        return {
+            "place": {
+                "place_id": det.place_id,
+                "google_place_id": det.place_id,
+                "name": det.name,
+                "formatted_address": det.formatted_address,
+                "lat": det.lat,
+                "lng": det.lng,
+            }
+        }
+
+    @api_router.get("/delivery/outlets")
+    async def list_outlets(customer: Optional[str] = None, user=Depends(current_user)):
+        await require_any_perm(
+            user, "delivery.location.manage", "delivery.schedule.create", "delivery.schedule.view",
+        )
+        q: Dict[str, Any] = {}
+        if customer:
+            q["customer_key"] = customer_key(customer)
+        docs = await db[OUTLETS_COLLECTION].find(q, {"_id": 0}).to_list(500)
+        return {"outlets": [public_outlet(d) for d in docs]}
+
+    @api_router.post("/delivery/outlets")
+    async def save_outlet(payload: SaveOutletPayload, user=Depends(current_user)):
+        await _require_location_edit(user)
+        order = await db.orders.find_one(
+            {"id": payload.order_id},
+            {"_id": 0, "id": 1, "customer": 1, "customer_name": 1, "customer_id": 1, "outlet": 1, "delivery_outlet_id": 1, "address": 1},
+        )
+        if not order:
+            raise HTTPException(404, "PO tidak ditemukan")
+        loc = {
+            "lat": payload.lat,
+            "lng": payload.lng,
+            "place_id": payload.google_place_id or payload.place_id,
+            "formatted_address": payload.formatted_address,
+            "outlet_name": payload.name,
+        }
+        outlet = await _upsert_outlet_for_order(order, loc, name=payload.name, user=user)
+        await _apply_outlet_live(outlet, order_id=payload.order_id, batch_id=payload.batch_id)
+        return {"outlet": public_outlet(outlet)}
+
+    @api_router.patch("/delivery/outlets/{outlet_id}")
+    async def patch_outlet(outlet_id: str, payload: PatchOutletPayload, user=Depends(current_user)):
+        await _require_location_edit(user)
+        existing = await db[OUTLETS_COLLECTION].find_one({"id": outlet_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(404, "Lokasi outlet tidak ditemukan")
+        data = payload.model_dump(exclude_unset=True)
+        loc = {
+            "lat": data.get("lat", existing.get("lat")),
+            "lng": data.get("lng", existing.get("lng")),
+            "place_id": data.get("google_place_id") or data.get("place_id") or existing.get("place_id") or existing.get("google_place_id"),
+            "formatted_address": data.get("formatted_address", existing.get("formatted_address")),
+        }
+        try:
+            outlet = build_outlet_doc(
+                existing=existing,
+                customer_name=existing.get("customer_name") or "",
+                customer_id=existing.get("customer_id"),
+                name=data.get("name") or existing.get("name") or "",
+                location=loc,
+                user=user,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        await db[OUTLETS_COLLECTION].update_one({"id": outlet_id}, {"$set": outlet})
+        await _apply_outlet_live(outlet)
+        return {"outlet": public_outlet(outlet)}
 
     @api_router.post("/delivery/batches")
     async def create_delivery_batch(payload: CreateBatchPayload, user=Depends(current_user)):
@@ -227,7 +458,7 @@ def register(api_router: APIRouter, deps: dict) -> None:
             if sid:
                 edits[sid] = extra
                 if extra.get("location") and by_id.get(sid):
-                    await _save_order_location(by_id[sid]["order_id"], extra.get("location"))
+                    await _save_order_location(by_id[sid]["order_id"], extra.get("location"), user)
         batch = build_batch(
             delivery_date=date_key,
             queue_rows=selected,

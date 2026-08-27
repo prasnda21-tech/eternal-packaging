@@ -31,6 +31,11 @@ export function googleMapsNavUrl({ lat, lng, placeId, address } = {}) {
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+export function googleMapsEmbedUrl({ lat, lng } = {}) {
+  if (lat == null || lng == null || lat === "" || lng === "") return "";
+  return `https://maps.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}&z=16&output=embed`;
+}
+
 export function openGoogleMapsNavigation(stop) {
   const dest = navigationDestination(stop);
   if (!dest.placeId && dest.lat == null && !dest.address) return "";
@@ -53,6 +58,13 @@ export function formatDuration(seconds) {
   return `${h}j ${m}m`;
 }
 
+export function outletAddressLabel(row) {
+  const name = String(row?.outlet_name || "").trim();
+  const addr = String(row?.formatted_address || row?.address || "").trim();
+  if (name && addr && name !== addr) return `${name} · ${addr}`;
+  return name || addr || "—";
+}
+
 export function stopLocationOk(row) {
   return row?.location_status === "ok" && row?.lat != null && row?.lng != null;
 }
@@ -72,6 +84,8 @@ export function toggleSelectAll(rows, selectedIds) {
   if (checked) return [];
   return eligible.map((r) => r.stop_id);
 }
+
+export const MISSING_LOCATION_REASON = "Lokasi outlet belum diatur";
 
 export function remainingStops(stops) {
   return (stops || []).filter((s) => !["delivered", "removed", "rescheduled"].includes(s.status));
