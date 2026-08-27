@@ -158,10 +158,7 @@ def normalize_closing_time(raw: Any) -> Optional[str]:
 
 
 def remaining_eligible_qty(order: dict) -> int:
-    """Packed/SJ qty not yet confirmed delivered. Source of truth for SIAP DIKIRIM.
-
-    Does not use loaded_qty as an active delivery limit.
-    """
+    """Confirmed Loading (or historical SJ qty) not yet delivered."""
     if is_fully_delivered(order):
         return 0
     eligible = eligible_delivery_qty(order)

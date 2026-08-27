@@ -5,14 +5,42 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { DELIVERY_SCHEDULE_STATUS_OPTIONS, EMPTY_DELIVERY_FILTERS, matchesDeliveryScheduleFilters } from "../lib/deliverySchedule";
+import SuratJalanViewButton from "../components/SuratJalanViewButton";
+import OutletLocationModal from "../components/OutletLocationModal";
+
+async function outletRowForOrder({ orderId, customer, outlet }) {
+  const row = {
+    order_id: orderId,
+    customer: customer || "",
+    outlet: outlet || "",
+    outlet_name: outlet || "",
+  };
+  if (!customer) return row;
+  try {
+    const d = await api.listDeliveryOutlets(customer);
+    const o = (d.outlets || [])[0];
+    if (o) {
+      row.outlet_id = o.id;
+      row.outlet_name = o.name || outlet || "";
+      row.lat = o.lat;
+      row.lng = o.lng;
+      row.place_id = o.place_id || o.google_place_id;
+      row.formatted_address = o.formatted_address;
+    }
+  } catch {
+    /* list is optional; modal still opens for a new pin */
+  }
+  return row;
+}
 
 export default function DeliverySchedulePage() {
   const { hasPerm } = useAuth();
-  const canCreate = hasPerm("delivery.schedule.create");
+  const canSetLocation = hasPerm("delivery.location.manage");
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [filters, setFilters] = useState(EMPTY_DELIVERY_FILTERS);
+  const [locRow, setLocRow] = useState(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -45,13 +73,6 @@ export default function DeliverySchedulePage() {
           <p className="eyebrow">Produksi</p>
           <h1>Jadwal Pengiriman</h1>
         </header>
-        {canCreate && (
-          <div className="route-page-actions" style={{ marginBottom: 8 }}>
-            <Link className="primary" to="/produksi/jadwal-pengiriman/buat" data-testid="ds-create-schedule">
-              Buat Jadwal Pengiriman
-            </Link>
-          </div>
-        )}
         <div className="ship-status-toolbar" data-testid="delivery-schedule-filters">
           <label className="ship-filter-field">
             <span>Tanggal Mulai</span>
@@ -96,6 +117,7 @@ export default function DeliverySchedulePage() {
               <th>Jadwal Manual</th>
               <th>Status</th>
               <th>Driver</th>
+              <th>Surat Jalan</th>
               <th>Aksi</th>
             </tr>
           </thead>
@@ -113,16 +135,46 @@ export default function DeliverySchedulePage() {
                 <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>
                 <td>{r.driver_name || "—"}</td>
                 <td>
+                  <SuratJalanViewButton
+                    order={{ id: r.id, po_number: r.order_number, customer_name: r.customer_name, sj_files: r.sj_files }}
+                    entries={r.sj_files}
+                    label={r.sj_file_count > 1 ? `Lihat Surat Jalan (${r.sj_file_count})` : "Lihat Surat Jalan"}
+                    testid={`ds-sj-lihat-${r.order_number}`}
+                  />
+                </td>
+                <td>
                   {r.id && <Link className="ghost sm" to={`/po/${r.id}/kerja?divisi=terkirim`}>Kerjakan</Link>}
+                  {canSetLocation && r.id && (
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      data-testid={`ds-atur-lokasi-${r.order_number}`}
+                      onClick={async () => {
+                        setLocRow(await outletRowForOrder({
+                          orderId: r.id,
+                          customer: r.customer_name,
+                        }));
+                      }}
+                    >
+                      Atur Lokasi
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
             {!visible.length && !busy && (
-              <tr><td colSpan={9} className="empty-state">Tidak ada jadwal pengiriman.</td></tr>
+              <tr><td colSpan={10} className="empty-state">Tidak ada jadwal pengiriman.</td></tr>
             )}
           </tbody>
         </table>
       </div>
+      <OutletLocationModal
+        open={!!locRow}
+        row={locRow}
+        canEdit={canSetLocation}
+        onClose={() => setLocRow(null)}
+        onSaved={() => load()}
+      />
     </div>
   );
 }

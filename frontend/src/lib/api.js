@@ -47,6 +47,7 @@ export const api = {
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
+  confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
   updateLoading: (id, payload) => client.post(`/orders/${id}/loading`, payload).then((r) => r.data),
   markPacked: (id) => client.post(`/orders/${id}/packed`).then((r) => r.data),
   savePackingInfo: (id, linesOrQty, notes = "") => {
@@ -214,8 +215,6 @@ export const api = {
   deliveryReschedules: (params = {}) => client.get(`/delivery/reschedules`, { params }).then((r) => r.data),
   requestDeliveryReschedule: (id, payload) => client.post(`/orders/${id}/delivery-reschedule`, payload).then((r) => r.data),
   setDeliveryRescheduleDate: (rescheduleId, payload) => client.patch(`/delivery/reschedules/${encodeURIComponent(rescheduleId)}`, payload).then((r) => r.data),
-  deliveryQueue: () => client.get(`/delivery/queue`).then((r) => r.data),
-  createDeliveryBatch: (payload) => client.post(`/delivery/batches`, payload).then((r) => r.data),
   listDeliveryBatches: () => client.get(`/delivery/batches`).then((r) => r.data),
   getDeliveryBatch: (id) => client.get(`/delivery/batches/${encodeURIComponent(id)}`).then((r) => r.data),
   patchDeliveryBatch: (id, payload) => client.patch(`/delivery/batches/${encodeURIComponent(id)}`, payload).then((r) => r.data),

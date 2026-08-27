@@ -19,6 +19,13 @@ describe("PO Detail delivery cards", () => {
     expect(slot.split("terkirim-panel").length - 1).toBe(1);
   });
 
+  test("Atur Lokasi is available on PO detail without create-schedule", () => {
+    expect(detail).toMatch(/Atur Lokasi|Edit Lokasi/);
+    expect(detail).toMatch(/po-atur-lokasi/);
+    expect(detail).toMatch(/OutletLocationModal/);
+    expect(detail).toMatch(/delivery.location.manage/);
+  });
+
   test("Terkirim summary has total delivered remaining qty", () => {
     expect(detail).toMatch(/terkirim-total-po/);
     expect(detail).toMatch(/terkirim-delivered-qty/);

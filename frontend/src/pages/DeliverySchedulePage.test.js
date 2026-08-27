@@ -29,7 +29,7 @@ describe("delivery reschedule UI", () => {
   });
 
   test("sidebar Produksi hierarchy without old labels", () => {
-    expect(shell).toMatch(/label="Produksi"/);
+    expect(shell).toMatch(/<h2>Produksi<\/h2>/);
     expect(shell).toMatch(/Jadwal Produksi/);
     expect(shell).toMatch(/Jadwal Pengiriman Ulang/);
     expect(shell).toMatch(/Tugas Produksi/);
@@ -42,6 +42,10 @@ describe("delivery reschedule UI", () => {
     expect(app).toMatch(/path="\/produksi"/);
     expect(app).toMatch(/path="\/produksi\/jadwal-pengiriman"/);
     expect(app).toMatch(/path="\/produksi\/jadwal-pengiriman-ulang"/);
+    expect(app).toMatch(/path="\/produksi\/jadwal-pengiriman\/buat"/);
+    expect(app).toMatch(/Navigate to="\/produksi\/jadwal-pengiriman"/);
+    expect(app).toMatch(/path="\/produksi\/rute-saya"/);
+    expect(app).toMatch(/Navigate to="\/"/);
     expect(app).toMatch(/path="\/tasks\/delivery"/);
   });
 
@@ -51,6 +55,10 @@ describe("delivery reschedule UI", () => {
     expect(schedule).toMatch(/effective_delivery_date/);
     expect(schedule).toMatch(/Tanggal Mulai/);
     expect(schedule).toMatch(/ds-filter-reset/);
+    expect(schedule).not.toMatch(/Buat Jadwal Pengiriman/);
+    expect(schedule).not.toMatch(/delivery.schedule.create/);
+    expect(schedule).toMatch(/Atur Lokasi/);
+    expect(schedule).toMatch(/OutletLocationModal/);
   });
 
   test("reschedule page has reason history and set date action", () => {

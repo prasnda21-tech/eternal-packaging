@@ -10,13 +10,17 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from quantity_rules import (
     can_confirm_delivery,
+    eligible_delivery_qty,
     helper_prepared_for_line,
     helper_target_for_line,
     is_fully_delivered,
     is_print_line,
     packing_line_breakdown,
     print_qty_total,
-    qty_packed,
+    has_surat_jalan_file,
+    qty_confirmed_loading,
+    available_for_loading_confirm_line,
+    qty_loaded,
     requires_printing,
     valid_delivery_proof_count,
 )
@@ -99,6 +103,16 @@ DIVISION_DEFS = {
         "required_input_type": "upload_sj",
         "action_label": "Kerjakan",
     },
+    "loading": {
+        "id": "loading",
+        "slug": "loading",
+        "label": "Loading",
+        "submit_perm": "loading.update",
+        "nav_key": "nav.tasks.loading",
+        "required_input": "Konfirmasi Item & Qty",
+        "required_input_type": "qty_loading",
+        "action_label": "Kerjakan",
+    },
     "terkirim": {
         "id": "terkirim",
         "slug": "delivery",
@@ -137,6 +151,7 @@ TASK_PROJECTION = {
     "surat_jalan_created": 1,
     "delivery_note": 1,
     "shipments": 1,
+    "loading_confirmations": 1,
     "delivery_proofs": 1,
     "sample_approved": 1,
     "sample_status": 1,
@@ -512,9 +527,8 @@ def build_packing_tasks(order: dict) -> List[dict]:
 
 
 def build_surat_jalan_tasks(order: dict) -> List[dict]:
-    packed = qty_packed(order)
     files = _sj_file_count(order)
-    if packed <= 0 and files <= 0:
+    if is_fully_delivered(order) and files <= 0:
         return []
     row = _base_row(order, "surat_jalan")
     row["target_qty"] = None
@@ -532,14 +546,45 @@ def build_surat_jalan_tasks(order: dict) -> List[dict]:
     return [row]
 
 
+def build_loading_tasks(order: dict) -> List[dict]:
+    if not has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
+        return []
+    done = qty_confirmed_loading(order) or qty_loaded(order)
+    remaining = 0
+    lis = order.get("line_items") or []
+    n = len(lis) if lis else 1
+    for i in range(n):
+        remaining += max(0, available_for_loading_confirm_line(order, i))
+    target = done + remaining
+    row = _base_row(order, "loading")
+    row["target_qty"] = target if target > 0 else None
+    row["completed_qty"] = done
+    row["remaining_qty"] = remaining if remaining > 0 else 0
+    if remaining <= 0 and done > 0:
+        row["status"] = "selesai"
+        row["required_input"] = "Konfirmasi Item & Qty"
+        row["action_label"] = "Kerjakan"
+    elif done > 0:
+        row["status"] = "sebagian"
+        row["required_input"] = "Konfirmasi Item & Qty"
+        row["action_label"] = "Kerjakan"
+    else:
+        row["status"] = "siap"
+        row["required_input"] = "Konfirmasi Item & Qty"
+        row["action_label"] = "Konfirmasi Loading"
+    row["status_label"] = _status_label(row["status"])
+    row["sj_file_count"] = _sj_file_count(order)
+    return [row]
+
+
 def build_delivery_tasks(order: dict) -> List[dict]:
     photos = valid_delivery_proof_count(order)
     confirmed = is_fully_delivered(order) or bool(order.get("delivered_at")) or (
         (order.get("delivery_status") or "") == "Terkirim"
     )
-    if photos <= 0 and not confirmed and _sj_file_count(order) <= 0 and not order.get("surat_jalan_created"):
-        if qty_packed(order) <= 0:
-            return []
+    eligible = max(0, eligible_delivery_qty(order))
+    if photos <= 0 and not confirmed and eligible <= 0:
+        return []
     row = _base_row(order, "terkirim")
     row["photo_count"] = photos
     row["target_qty"] = 2
@@ -580,6 +625,7 @@ BUILDERS = {
     "operator": lambda o, u, mine: build_operator_tasks(o, u, mine_only=mine),
     "packing": lambda o, u, mine: build_packing_tasks(o),
     "surat_jalan": lambda o, u, mine: build_surat_jalan_tasks(o),
+    "loading": lambda o, u, mine: build_loading_tasks(o),
     "terkirim": lambda o, u, mine: build_delivery_tasks(o),
 }
 
