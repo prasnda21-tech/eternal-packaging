@@ -76,6 +76,7 @@ from services.payment_files import (
 from services.status_po import build_status_po
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
+from services import delivery_route_api as _delivery_route_api
 from services.work_panel_settings import SETTINGS_KEY as WORK_PANEL_SETTINGS_KEY
 from services import work_panel_settings as work_panel_cfg
 from services.dashboard_today import (
@@ -738,6 +739,7 @@ async def me(user=Depends(current_user)):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1})
         is_sa = bool(u and u.get("is_super_admin"))
     return {
+        "id": user.get("user_id") or user.get("sub") or user.get("id"),
         "email": user.get("email"),
         "role": user.get("role"),
         "name": user.get("name"),
@@ -3708,6 +3710,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             order["delivery_confirm_action_ids"] = ids[-20:]
 
     order = await _with_quantity_lock(order_id, mutate)
+    on_confirmed = getattr(_delivery_route_api, "_hooks", {}).get("on_delivery_confirmed")
+    if callable(on_confirmed):
+        try:
+            await on_confirmed(order)
+        except Exception:
+            logging.getLogger(__name__).warning("route stop progress update failed", exc_info=True)
     return {"order": order}
 
 
@@ -3775,6 +3783,12 @@ async def create_delivery_reschedule(order_id: str, payload: DeliveryRescheduleP
     rec = mutate(order)
     persisted = await _persist_order(order)
     attach_schedule_snapshot(persisted)
+    on_rs = getattr(_delivery_route_api, "_hooks", {}).get("on_rescheduled")
+    if callable(on_rs):
+        try:
+            await on_rs(persisted, payload.shipment_id)
+        except Exception:
+            logging.getLogger(__name__).warning("route reschedule hook failed", exc_info=True)
     return {"order": persisted, "reschedule": rec}
 
 
@@ -7300,6 +7314,15 @@ async def list_operators(user=Depends(current_user)):
 
 
 # ---------- App bootstrap ----------
+_delivery_route_api.register(api_router, {
+    "db": db,
+    "current_user": current_user,
+    "require_perm": _require_perm,
+    "require_any_perm": _require_any_perm,
+    "user_permissions": user_permissions,
+    "Depends": Depends,
+})
+
 app.include_router(api_router)
 
 # ---- Customer Design Approval router (registered before CORS/middleware) ----
@@ -7381,6 +7404,13 @@ async def seed():
     await db.customer_approvals.create_index("order_id")
     await db.customer_approvals.create_index("status")
     await db.app_settings.create_index("key", unique=True)
+    await db.delivery_batches.create_index("id", unique=True)
+    await db.delivery_batches.create_index("status")
+    await db.delivery_route_plans.create_index("id", unique=True)
+    await db.delivery_route_plans.create_index("batch_id")
+    await db.delivery_route_plans.create_index("status")
+    await db.delivery_route_plans.create_index("routes.driver_user_id")
+    await db.delivery_vehicles.create_index("id", unique=True)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()

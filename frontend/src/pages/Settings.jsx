@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft, ClipboardList, Coins,
+  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Warehouse,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -1640,6 +1640,74 @@ function OperatorWageTab(props) {
   return <OperatorWageSettings {...props} />;
 }
 
+function DepotSettingsTab({ notify, canEdit }) {
+  const [form, setForm] = useState({ name: "", address: "", place_id: "", lat: "", lng: "" });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.depotSettings().then((d) => {
+      const depot = d.depot || {};
+      setForm({
+        name: depot.name || "",
+        address: depot.address || "",
+        place_id: depot.place_id || "",
+        lat: depot.lat ?? "",
+        lng: depot.lng ?? "",
+      });
+    }).catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat gudang"));
+  }, []);
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    try {
+      const r = await api.updateDepotSettings({
+        name: form.name,
+        address: form.address,
+        place_id: form.place_id || null,
+        lat: form.lat === "" ? null : Number(form.lat),
+        lng: form.lng === "" ? null : Number(form.lng),
+      });
+      notify?.("Gudang disimpan");
+      const depot = r.depot || {};
+      setForm({
+        name: depot.name || "",
+        address: depot.address || "",
+        place_id: depot.place_id || "",
+        lat: depot.lat ?? "",
+        lng: depot.lng ?? "",
+      });
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan gudang");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div data-testid="depot-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 560 }}>
+      <p className="muted small">Titik berangkat/kembali rute. Jangan isi alamat fiktif produksi. Kosongkan koordinat jika belum ada.</p>
+      {err && <div className="error">{err}</div>}
+      <label>Nama Gudang
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} disabled={!canEdit} data-testid="depot-name" />
+      </label>
+      <label>Alamat
+        <input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} disabled={!canEdit} data-testid="depot-address" />
+      </label>
+      <label>Place ID
+        <input value={form.place_id} onChange={(e) => setForm({ ...form, place_id: e.target.value })} disabled={!canEdit} data-testid="depot-place-id" />
+      </label>
+      <label>Latitude
+        <input value={form.lat} onChange={(e) => setForm({ ...form, lat: e.target.value })} disabled={!canEdit} data-testid="depot-lat" />
+      </label>
+      <label>Longitude
+        <input value={form.lng} onChange={(e) => setForm({ ...form, lng: e.target.value })} disabled={!canEdit} data-testid="depot-lng" />
+      </label>
+      {canEdit && (
+        <button type="button" className="primary" onClick={save} disabled={saving} data-testid="depot-save"><Save size={14} /> Simpan</button>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Root ---------------- */
 export default function Settings() {
   const { user, hasPerm } = useAuth();
@@ -1653,6 +1721,8 @@ export default function Settings() {
   const canEditCaSettings = hasPerm("customer_approval.settings");
   const canViewDdSettings = hasPerm("delivery.deadline.settings") || hasPerm("delivery.deadline.edit") || hasPerm("dashboard.production.view");
   const canEditDdSettings = hasPerm("delivery.deadline.settings");
+  const canViewDepot = hasPerm("settings.depot.view") || hasPerm("settings.depot.manage") || hasPerm("delivery.schedule.view");
+  const canEditDepot = hasPerm("settings.depot.manage");
   const canViewOpTarget = hasPerm("schedule.edit") || hasPerm("users.manage");
   const canEditOpTarget = hasPerm("schedule.edit");
   const canViewWorkPanel = hasPerm("settings.work_panel.view") || hasPerm("settings.work_panel.manage") || hasPerm("permissions.manage");
@@ -1708,6 +1778,9 @@ export default function Settings() {
         {canViewDdSettings && (
           <button role="tab" className={tab === "delivery-deadline" ? "active" : ""} onClick={() => setTab("delivery-deadline")} data-testid="settings-tab-delivery-deadline"><Truck size={14}/> Deadline Pengiriman</button>
         )}
+        {canViewDepot && (
+          <button role="tab" className={tab === "depot" ? "active" : ""} onClick={() => setTab("depot")} data-testid="settings-tab-depot"><Warehouse size={14}/> Gudang / Depot</button>
+        )}
         {canViewOpTarget && (
           <button role="tab" className={tab === "operator-target" ? "active" : ""} onClick={() => setTab("operator-target")} data-testid="settings-tab-operator-target"><TargetIcon size={14}/> Target Output Operator</button>
         )}
@@ -1742,6 +1815,7 @@ export default function Settings() {
       {tab === "operator-wage" && canViewWage && <OperatorWageTab notify={notify} canEdit={canEditWage}/>}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
+      {tab === "depot" && canViewDepot && <DepotSettingsTab notify={notify} canEdit={canEditDepot}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
       {tab === "work-panel" && canViewWorkPanel && <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}

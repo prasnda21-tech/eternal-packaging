@@ -152,6 +152,7 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.schedule,
       NAV_KEYS.deliverySchedule,
       NAV_KEYS.deliveryReschedule,
+      NAV_KEYS.driverRoute,
       NAV_KEYS.tasks,
       NAV_KEYS.tasksDesigner,
       NAV_KEYS.tasksKepalaProduksi,
