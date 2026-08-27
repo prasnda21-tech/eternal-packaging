@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import api from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { DELIVERY_SCHEDULE_STATUS_OPTIONS, EMPTY_DELIVERY_FILTERS, matchesDeliveryScheduleFilters } from "../lib/deliverySchedule";
 
 export default function DeliverySchedulePage() {
+  const { hasPerm } = useAuth();
+  const canCreate = hasPerm("delivery.schedule.create");
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -42,6 +45,13 @@ export default function DeliverySchedulePage() {
           <p className="eyebrow">Produksi</p>
           <h1>Jadwal Pengiriman</h1>
         </header>
+        {canCreate && (
+          <div className="route-page-actions" style={{ marginBottom: 8 }}>
+            <Link className="primary" to="/produksi/jadwal-pengiriman/buat" data-testid="ds-create-schedule">
+              Buat Jadwal Pengiriman
+            </Link>
+          </div>
+        )}
         <div className="ship-status-toolbar" data-testid="delivery-schedule-filters">
           <label className="ship-filter-field">
             <span>Tanggal Mulai</span>

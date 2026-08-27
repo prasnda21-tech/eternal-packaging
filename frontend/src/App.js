@@ -24,9 +24,12 @@ import { NAV_KEYS, inventoryNavVisible, purchasingNavVisible, reportsNavVisible 
 import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
 import DeliverySchedulePage from "./pages/DeliverySchedulePage";
 import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
+import CreateDeliverySchedulePage from "./pages/CreateDeliverySchedulePage";
+import DeliveryBatchPage from "./pages/DeliveryBatchPage";
+import MyRoutePage from "./pages/MyRoutePage";
 import "@/App.css";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage"];
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -98,7 +101,10 @@ export default function App() {
             <Route path="/tasks/loading" element={<PermGate anyOf={[NAV_KEYS.tasksLoading, "loading.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/delivery" element={<PermGate anyOf={[NAV_KEYS.tasksDelivery, "delivery.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "schedule.view"]}><DeliverySchedulePage /></PermGate>} />
+            <Route path="/produksi/jadwal-pengiriman/buat" element={<PermGate anyOf={["delivery.schedule.create"]}><CreateDeliverySchedulePage /></PermGate>} />
+            <Route path="/produksi/jadwal-pengiriman/batch/:batchId" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, NAV_KEYS.driverRoute, "delivery.schedule.view", "delivery.update"]}><DeliveryBatchPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />
+            <Route path="/produksi/rute-saya" element={<PermGate anyOf={[NAV_KEYS.driverRoute, "delivery.update"]}><MyRoutePage /></PermGate>} />
             <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />

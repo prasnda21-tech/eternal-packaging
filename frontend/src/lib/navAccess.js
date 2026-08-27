@@ -6,6 +6,7 @@ export const NAV_KEYS = {
   schedule: "nav.production_schedule",
   deliverySchedule: "nav.delivery_schedule",
   deliveryReschedule: "nav.delivery_reschedule",
+  driverRoute: "nav.driver_route",
   tasks: "nav.tasks",
   tasksDesigner: "nav.tasks.designer",
   tasksKepalaProduksi: "nav.tasks.kepala_produksi",
@@ -37,6 +38,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliverySchedule, label: "Jadwal Pengiriman", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliveryReschedule, label: "Jadwal Pengiriman Ulang", parent: NAV_KEYS.production },
+  { key: NAV_KEYS.driverRoute, label: "Rute Saya", parent: NAV_KEYS.production },
   { key: NAV_KEYS.tasks, label: "Tugas Produksi", parent: NAV_KEYS.production },
   { key: NAV_KEYS.tasksDesigner, label: "Designer", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksScreener, label: "Screener", parent: NAV_KEYS.tasks },
@@ -172,12 +174,14 @@ export function productionNavVisible(hasPerm) {
   const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
   const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
   const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
+  const driverRoute = canSeeNav(hasPerm, NAV_KEYS.driverRoute);
   const tasks = tasksNavVisible(hasPerm);
   return {
-    parent: !!(schedule || deliverySchedule || deliveryReschedule || tasks.parent),
+    parent: !!(schedule || deliverySchedule || deliveryReschedule || driverRoute || tasks.parent),
     schedule,
     deliverySchedule,
     deliveryReschedule,
+    driverRoute,
     tasks,
   };
 }
