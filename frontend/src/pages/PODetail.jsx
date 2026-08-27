@@ -242,7 +242,6 @@ export default function PODetail() {
   const canCopyTrackingLink = hasPerm("po.view");
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
-  const canLoadingUpdate = hasPerm("loading.update");
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -250,7 +249,7 @@ export default function PODetail() {
     canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
     canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
-    canLoadingUpdate || canManageSuratJalan
+    canManageSuratJalan
   );
 
   const copyTrackingLink = async () => {
@@ -957,14 +956,9 @@ export default function PODetail() {
       />
       </div>
 
-      {/* 14 Loading */}
+      {/* 14 Riwayat Loading (legacy, read-only) */}
       <div data-testid="workflow-slot-13" data-workflow-stage="13">
-      <LoadingPanel
-        order={order}
-        canManage={canLoadingUpdate}
-        busy={busy}
-        onUpdated={setOrder}
-      />
+      <LoadingPanel order={order} />
       </div>
 
       {/* 15 Bukti Kirim then Terkirim */}

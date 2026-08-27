@@ -10,7 +10,7 @@ from services.work_panel_settings import default_divisions, merge_settings, sani
 def test_defaults_include_operator_active():
     rows = default_divisions()
     ids = [r["id"] for r in rows]
-    assert ids == ["screener", "helper", "operator", "packing", "surat_jalan", "loading", "terkirim"]
+    assert ids == ["screener", "helper", "operator", "packing", "surat_jalan", "terkirim"]
     op = next(r for r in rows if r["id"] == "operator")
     assert op["active"] is True
     assert op["implemented"] is True

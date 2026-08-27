@@ -639,6 +639,9 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     current = qty_delivered(order)
     if new_delivered > packed:
         return f"Qty dikirim ({new_delivered}) melebihi qty packing ({packed})."
+    eligible = eligible_delivery_qty(order)
+    if eligible > 0 and new_delivered > eligible:
+        return f"Qty dikirim ({new_delivered}) melebihi qty yang eligible dikirim ({eligible})."
     if required and new_delivered > required:
         return f"Qty dikirim ({new_delivered}) melebihi total qty PO ({required})."
     if new_delivered < current:
@@ -647,18 +650,19 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
 
 
 def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
-    """Delivery fields from loaded qty after explicit Konfirmasi Terkirim.
+    """Delivery fields from packed/SJ eligible qty after explicit Konfirmasi Terkirim.
 
-    Returns None when there is no loading evidence yet (photo may still be stored).
+    Does not use loaded_qty as an active delivery limit.
+    Returns None when there is no packed/SJ eligible qty yet (photo may still be stored).
     Full PO Terkirim only if delivered >= packing_required_total.
     Upload of photos does NOT call this — confirmation does.
     """
-    loaded = effective_loaded_qty(order)
-    if loaded <= 0:
+    eligible = eligible_delivery_qty(order)
+    if eligible <= 0:
         return None
     packed = qty_packed(order)
     current = qty_delivered(order)
-    new_delivered = max(current, loaded)
+    new_delivered = max(current, eligible)
     if packed:
         new_delivered = min(new_delivered, packed)
     required = packing_required_total(order)
@@ -671,7 +675,8 @@ def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
         "delivery_status": "Terkirim" if full else "Sebagian Terkirim",
         "full": full,
         "required": required,
-        "loaded": loaded,
+        "loaded": eligible,
+        "eligible": eligible,
     }
 
 
@@ -855,13 +860,33 @@ def effective_loaded_qty(order: dict) -> int:
     return 0
 
 
+def surat_jalan_created(order: dict) -> bool:
+    if shipments_stored(order):
+        return True
+    return bool(
+        order.get("delivery_note_number")
+        and order.get("delivery_note_created_at")
+        and order.get("delivery_note_created_by")
+    )
+
+
 def loading_cap_for_line(order: dict, line_idx: int) -> int:
-    """Hard cap Loading = min(packed, shipped-if-SJ-lines-exist). Never > packed."""
+    """Hard cap = min(packed, shipped-if-SJ-lines-exist). Never > packed.
+
+    Historical loading used this cap. Delivery eligibility reuses the same packed/SJ truth.
+    """
     packed = packed_qty_for_line(order, line_idx)
     if has_shipment_line_quantities(order):
         shipped = qty_shipped_for_line(order, line_idx)
         return max(0, min(packed, shipped))
     return max(0, packed)
+
+
+def eligible_delivery_qty(order: dict) -> int:
+    """Packed/SJ qty legally eligible to deliver. Does not use loaded_qty."""
+    if not surat_jalan_created(order):
+        return 0
+    return sum(loading_cap_for_line(order, i) for i in range(_line_count(order)))
 
 
 def available_for_loading_line(order: dict, line_idx: int) -> int:

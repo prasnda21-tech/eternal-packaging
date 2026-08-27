@@ -40,7 +40,6 @@ def test_catalog_includes_nav_keys():
         "nav.tasks.operator",
         "nav.tasks.packing",
         "nav.tasks.surat_jalan",
-        "nav.tasks.loading",
         "nav.tasks.delivery",
         NAV_CONFIGURED,
         "nav.inventory.master_items",

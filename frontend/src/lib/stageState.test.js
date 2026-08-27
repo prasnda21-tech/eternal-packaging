@@ -13,25 +13,24 @@ describe("SJ / Loading / Terkirim chips", () => {
     expect(sj.state).toBe("current");
   });
 
-  test("Loading partial does not look completed", () => {
+  test("Loading is not an active stage chip", () => {
     const loading = resolveStageState(13, {
       surat_jalan_created: true,
       loading_qty_status: "partial",
       loading_completed: false,
-      current_stage: 13,
-    }, 13);
-    expect(loading.label).toMatch(/parsial/i);
-    expect(loading.state).toBe("current");
+      current_stage: 12,
+    }, 12);
+    expect(loading.label).toMatch(/riwayat/i);
+    expect(loading.state).toBe("done");
   });
 
-  test("Terkirim waits for proof after loading, not a manual confirm label", () => {
+  test("Terkirim waits for proof after Surat Jalan, not Loading", () => {
     const terkirim = resolveStageState(14, {
-      loading_qty_status: "completed",
-      loading_completed: true,
+      surat_jalan_created: true,
       terkirim_confirmed: false,
       delivery_status: "Belum Terkirim",
-      current_stage: 13,
-    }, 13);
+      current_stage: 12,
+    }, 12);
     expect(terkirim.label).toMatch(/bukti/i);
     expect(terkirim.state).toBe("current");
   });

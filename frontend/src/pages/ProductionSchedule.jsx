@@ -42,7 +42,6 @@ const TABLE_COLS = [
   { key: "helper", label: "Persiapan", fit: true, filter: "helper" },
   { key: "packing", label: "Packing", fit: true, filter: "packing" },
   { key: "sj", label: "Surat Jalan", fit: true },
-  { key: "loading", label: "Loading", fit: true },
   { key: "driver", label: "Driver" },
   { key: "status", label: "Status Akhir", fit: true, filter: "status" },
 ];
@@ -564,7 +563,6 @@ export default function ProductionSchedule() {
                      <span className="pill sm">Belum</span>}
                   </td>
                   <td className="mono small col-fit">{r.delivery_note_number || "-"}</td>
-                  <td className="col-fit">{r.loading_ok ? <span className="pill sm pill-ok">OK</span> : <span className="muted small">-</span>}</td>
                   <td className="small col-text">{r.driver_name || "-"}</td>
                   <td className="col-fit">
                     {r.cancelled ? <span className="pill sm pill-cancel"><XCircle size={10}/> Cancelled</span> :
