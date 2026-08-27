@@ -210,44 +210,56 @@ export function resolveStageState(idx, order, currentStage) {
       if (sjStatus === "partial") {
         return currentStage > idx
           ? { state: "done", label: "Parsial" }
-          : { state: "current", label: "SJ parsial — siap Driver" };
+          : { state: "current", label: "SJ parsial — siap Loading" };
       }
       return currentStage > idx
         ? { state: "done", label: "Selesai" }
-        : { state: "current", label: "SJ dibuat — siap Driver" };
+        : { state: "current", label: "SJ dibuat — siap Loading" };
     }
     if (currentStage >= idx) return { state: "current", label: "Menunggu pembuatan Surat Jalan" };
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_LOADING) {
-    const hasHistory = Number(order?.loading_info?.lines?.length || 0) > 0
+    const confirmations = Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [];
+    const hasConfirm = confirmations.length > 0;
+    const qtyStatus = order?.loading_qty_status;
+    const hasLegacy = Number(order?.loading_info?.lines?.length || 0) > 0
       || Number(order?.loading_info?.events?.length || 0) > 0
       || !!(order?.loading_completed)
-      || order?.loading_qty_status === "completed"
-      || order?.loading_qty_status === "partial";
-    if (!hasHistory) {
-      if (terkirimConfirmed(order) || order?.delivery_status === "Terkirim") {
-        return { state: "done", label: "Dilewati" };
+      || qtyStatus === "completed"
+      || qtyStatus === "partial";
+    if (hasConfirm) {
+      if (qtyStatus === "completed" || loadingCompleted(order)) {
+        return { state: "done", label: "Selesai" };
       }
-      return { state: "pending", label: "Tidak dipakai" };
+      if (qtyStatus === "partial") return { state: "current", label: "Parsial" };
+      return { state: "current", label: "Konfirmasi qty SJ" };
     }
-    const qtyStatus = order?.loading_qty_status;
-    if ((qtyStatus === "completed" || loadingCompleted(order)) && (currentStage > idx || terkirimConfirmed(order))) {
+    if (suratJalanCreated(order)) {
+      return { state: "current", label: "Konfirmasi qty SJ" };
+    }
+    if (hasLegacy) {
       return { state: "done", label: "Riwayat Loading" };
     }
-    if (qtyStatus === "completed" || loadingCompleted(order)) {
-      return { state: "done", label: "Riwayat Loading" };
+    if (terkirimConfirmed(order) || order?.delivery_status === "Terkirim") {
+      return { state: "done", label: "Dilewati" };
     }
-    if (qtyStatus === "partial") return { state: "done", label: "Riwayat Loading" };
-    return { state: "done", label: "Riwayat Loading" };
+    return { state: "pending", label: "Menunggu Surat Jalan" };
   }
   if (idx === STAGE_TERKIRIM) {
     if (terkirimConfirmed(order) || order?.delivery_status === "Terkirim") return { state: "done", label: "Selesai" };
     if (order?.delivery_status === "Sebagian Terkirim" || Number(order?.qty_delivered || 0) > 0) {
       return { state: "current", label: "Parsial" };
     }
-    if (suratJalanCreated(order) || currentStage >= STAGE_SURAT_JALAN) {
+    const eligible = Number(order?.eligible_delivery_qty || 0);
+    if (eligible > 0) {
       return { state: "current", label: "Menunggu bukti pengiriman" };
+    }
+    if (suratJalanCreated(order)) {
+      return { state: "pending", label: "Menunggu konfirmasi Loading" };
+    }
+    if (currentStage >= STAGE_SURAT_JALAN) {
+      return { state: "pending", label: "Menunggu konfirmasi Loading" };
     }
     return { state: "pending", label: "Menunggu" };
   }

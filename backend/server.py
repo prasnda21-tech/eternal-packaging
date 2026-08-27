@@ -73,6 +73,15 @@ from services.payment_files import (
     MAX_PAYMENT_PROOFS,
     payment_proof_reject_reason,
 )
+from services.surat_jalan_files import (
+    PERM_VIEW_FILE as _SJ_VIEW_FILE,
+    content_disposition as _sj_content_disposition,
+    decode_data_url as _sj_decode_data_url,
+    find_file as _sj_find_file,
+    history_entries as _sj_history_entries,
+    sniffer_content_type as _sj_sniff_ct,
+    strip_sj_bytes_from_order as _strip_sj_bytes,
+)
 from services.status_po import build_status_po
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
@@ -164,7 +173,9 @@ from quantity_rules import (
     confirm_delivery_block_reason as _qr_confirm_delivery_block_reason,
     valid_delivery_proof_count as _qr_valid_delivery_proof_count,
     apply_loading_increments as _qr_apply_loading_increments,
+    apply_loading_confirmation as _qr_apply_loading_confirmation,
     effective_loaded_qty as _qr_effective_loaded_qty,
+    eligible_delivery_qty as _qr_eligible_delivery_qty,
     loading_status_semantic as _qr_loading_status_semantic,
     merge_loading_line_updates as _qr_merge_loading_line_updates,
     non_print_qty_total as _qr_non_print_qty_total,
@@ -191,6 +202,7 @@ from quantity_rules import (
     validate_delivery_qty as _qr_validate_delivery_qty,
     validate_helper_prepared_qty as _qr_validate_helper_prepared_qty,
     validate_loading_increments as _qr_validate_loading_increments,
+    validate_loading_confirmation as _qr_validate_loading_confirmation,
     validate_loading_lines as _qr_validate_loading_lines,
     validate_operator_assignment_total as _qr_validate_operator_assignment_total,
     validate_packing_lines as _qr_validate_packing_lines,
@@ -491,6 +503,18 @@ class LoadingLineInput(BaseModel):
     action_id: Optional[str] = None
 
 
+class LoadingConfirmLineInput(BaseModel):
+    line_idx: Optional[int] = None
+    qty: int
+    accurate_item_id: Optional[str] = None
+
+
+class LoadingConfirmPayload(BaseModel):
+    surat_jalan_id: str
+    lines: List[LoadingConfirmLineInput]
+    action_id: Optional[str] = None
+
+
 class LoadingChecklistPayload(BaseModel):
     vehicle_plate: Optional[str] = None
     driver_name: Optional[str] = None
@@ -781,6 +805,7 @@ async def list_orders(status: Optional[str] = None, user=Depends(current_user)):
         # dan Timeline konsisten memakai source of truth yang sama).
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
         _strip_tracking_secret(o)
+    orders = [_strip_sj_bytes(o) for o in orders]
     # Post-filter by computed status when requested
     if st == "hold":
         orders = [o for o in orders if o.get("hold")]
@@ -845,7 +870,7 @@ async def get_order(order_id: str, user=Depends(current_user)):
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
     attach_schedule_snapshot(order)
     _strip_tracking_secret(order)
-    return {"order": order}
+    return {"order": _strip_sj_bytes(order)}
 
 
 def _check_stage_permission(current_stage: int, role: str):
@@ -963,7 +988,9 @@ _DERIVED_ORDER_KEYS = (
     "packing_lines",
     "shipment_lines",
     "surat_jalan_status_semantic",
+    "sj_files",
     "loading_qty_status",
+    "eligible_delivery_qty",
     "effective_delivery_date", "delivery_schedule_status",
     "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
 )
@@ -989,7 +1016,9 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["packing_lines"] = _qr_packing_line_breakdown(order)
     order["shipment_lines"] = _qr_shipment_line_breakdown(order)
     order["surat_jalan_status_semantic"] = _qr_surat_jalan_status_semantic(order)
+    order["sj_files"] = _sj_history_entries(order)
     order["loading_qty_status"] = _qr_loading_status_semantic(order)
+    order["eligible_delivery_qty"] = _qr_eligible_delivery_qty(order)
     attach_delivery_history(order)
     _attach_workflow_snapshot(order)
 
@@ -1078,6 +1107,28 @@ async def _persist_order(order, *, require_lock: bool = False):
     else:
         order["status_label"] = STAGES[min(order["current_stage"], len(STAGES) - 1)]
     _apply_hold_snapshot(order)
+    # Never let a stripped API projection wipe Surat Jalan bytes on the next persist.
+    incoming_files = order.get("surat_jalan_files")
+    if isinstance(incoming_files, list) and incoming_files:
+        existing = await db.orders.find_one({"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0})
+        old_by_id = {
+            str(f.get("id") or ""): f
+            for f in ((existing or {}).get("surat_jalan_files") or [])
+            if isinstance(f, dict) and f.get("id")
+        }
+        if old_by_id:
+            merged = []
+            for f in incoming_files:
+                if not isinstance(f, dict):
+                    continue
+                old = old_by_id.get(str(f.get("id") or ""))
+                if old:
+                    if not str(f.get("storage_path") or "").strip() and old.get("storage_path"):
+                        f = {**f, "storage_path": old.get("storage_path")}
+                    if not str(f.get("data_url") or "").startswith("data:") and str(old.get("data_url") or "").startswith("data:"):
+                        f = {**f, "data_url": old.get("data_url")}
+                merged.append(f)
+            order["surat_jalan_files"] = merged
     # DB write pakai field yang persistable (skip yang derived).
     to_write = {k: v for k, v in order.items() if k not in _DERIVED_ORDER_KEYS}
     query = {"id": order["id"]}
@@ -1124,6 +1175,10 @@ async def _persist_order(order, *, require_lock: bool = False):
         pass
     attach_schedule_snapshot(order)
     _strip_tracking_secret(order)
+    public = _strip_sj_bytes(order)
+    if public is not order:
+        order["surat_jalan_files"] = public.get("surat_jalan_files") or []
+        order["sj_files"] = public.get("sj_files") or order.get("sj_files")
     return order
 
 
@@ -1358,17 +1413,9 @@ def _prereq_reasons_for_surat_jalan(order: dict) -> list:
 
 
 def _surat_jalan_created(order: dict) -> bool:
-    """SJ done from actual evidence: imported/manual shipment, or legacy fields.
-
-    One partial SJ does not mark the whole PO packed-complete; it does open Loading.
-    """
-    if _qr_shipments_stored(order):
-        return True
-    return bool(
-        order.get("delivery_note_number")
-        and order.get("delivery_note_created_at")
-        and order.get("delivery_note_created_by")
-    )
+    """SJ done from stored file, imported/manual shipment, or legacy fields."""
+    from quantity_rules import surat_jalan_created as _qr_sj_created
+    return _qr_sj_created(order)
 
 
 def _loading_completed(order: dict) -> bool:
@@ -2947,41 +2994,49 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
             _sync_workflow_stage(order)
         audit_action = "sample.upload"
     elif kind == "surat_jalan":
-        if (order.get("current_stage") or 0) < 12:
-            raise HTTPException(400, "Belum bisa membuat Surat Jalan — tahap Packing belum selesai.")
-        updates = _qr_remaining_delivery_note_updates(order)
-        if not updates:
-            raise HTTPException(400, "Tidak ada qty packing tersisa untuk Surat Jalan.")
-        err = _qr_validate_shipment_lines(updates, order, source=_QR_SRC_MANUAL)
-        if err:
-            raise HTTPException(400, err)
-        number = (
-            order.get("delivery_note_number")
-            or f"SJ-{str(order.get('po_number') or '').replace('PO-', '').replace('PO.', '')}"
-        )
+        # File-only. Independent of packing / Loading / previous production stage.
+        # Item/Qty is confirmed later on the Loading card, linked to this file id.
         stamp = now_iso()
+        try:
+            raw_bytes, decoded_ct = _sj_decode_data_url(payload.data_url)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ct = _sj_sniff_ct(raw_bytes, payload.name, decoded_ct or detected_ct)
+        entry["content_type"] = ct
+        ext = obj_storage.ext_for(ct, "bin")
+        storage_path = f"{obj_storage.APP_NAME}/surat-jalan/{order.get('id')}/{entry['id']}.{ext}"
+        try:
+            stored = obj_storage.put_object(storage_path, raw_bytes, ct)
+            entry["storage_path"] = stored.get("path") or storage_path
+            await db.files.insert_one({
+                "id": entry["id"],
+                "storage_path": entry["storage_path"],
+                "original_filename": payload.name,
+                "content_type": ct,
+                "size": stored.get("size") or len(raw_bytes),
+                "kind": "surat_jalan",
+                "order_id": order["id"],
+                "uploaded_by": user.get("email"),
+                "uploaded_at": stamp,
+                "is_deleted": False,
+            })
+            # Bytes live in object storage; do not keep a second copy on the PO.
+            entry.pop("data_url", None)
+        except Exception:
+            logger.exception("Surat Jalan object storage write failed; keeping data_url fallback")
         order.setdefault("surat_jalan_files", []).append(entry)
-        record = _qr_apply_shipment_record(
-            order,
-            number=number,
-            lines=updates,
-            source=_QR_SRC_MANUAL,
-            actor=user,
-            notes=f"File: {payload.name}",
-            shipment_id=str(uuid.uuid4()),
-            created_at=stamp,
-        )
-        if not record.get("id"):
-            record["id"] = str(uuid.uuid4())
-            order["shipments"][-1]["id"] = record["id"]
-        order["shipments"][-1]["file_id"] = entry["id"]
-        order["shipments"][-1]["file_name"] = entry["name"]
-        _stamp_legacy_delivery_note(order, record, user)
+        if not order.get("delivery_note_number"):
+            order["delivery_note_number"] = (
+                f"SJ-{str(order.get('po_number') or '').replace('PO-', '').replace('PO.', '')}"
+            )
+        if not order.get("delivery_note_created_at"):
+            order["delivery_note_created_at"] = stamp
+            order["delivery_note_created_by"] = user.get("email")
+            order["delivery_note_created_by_name"] = user.get("name")
         _sync_workflow_stage(order)
         audit_action = "delivery_note.upload"
     else:
-        order.setdefault("sample_files", []).append(entry)
-        _sync_workflow_stage(order)
+        raise HTTPException(400, "Jenis attachment tidak dikenal")
     # Attribute timeline to the workflow stage of the upload kind — never to
     # whatever current_stage happens to be (Payment-first flow must not bury
     # Design uploads under Approval Payment stage).
@@ -2991,7 +3046,67 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
     await _persist_order(order)
     if audit_action:
         await _audit_po(order, audit_action, user, note=f"{payload.name}")
-    return {"order": order}
+    return {"order": _strip_sj_bytes(order)}
+
+
+@api_router.get("/orders/{order_id}/surat-jalan/files/{file_id}")
+async def download_surat_jalan_file(
+    order_id: str,
+    file_id: str,
+    download: bool = False,
+    user=Depends(current_user),
+):
+    """Preview or download a Surat Jalan file. Requires delivery_note.view_file.
+
+    Never returns a permanent public object-storage URL. Bytes are streamed
+    through this authenticated proxy after the permission check.
+    """
+    await _require_perm(user, _SJ_VIEW_FILE)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    entry = _sj_find_file(order, file_id) or {}
+    rec = await db.files.find_one(
+        {"id": file_id, "kind": "surat_jalan", "order_id": order_id, "is_deleted": {"$ne": True}},
+        {"_id": 0},
+    )
+    if not rec:
+        rec = await db.files.find_one(
+            {"id": file_id, "kind": "surat_jalan", "is_deleted": {"$ne": True}},
+            {"_id": 0},
+        )
+    if not entry and not rec:
+        raise HTTPException(404, "File Surat Jalan tidak ditemukan")
+    data = None
+    filename = (entry.get("name") or (rec or {}).get("original_filename") or "surat-jalan")
+    ct = (entry.get("content_type") or (rec or {}).get("content_type") or "").strip() or "application/octet-stream"
+    storage_path = (entry.get("storage_path") or (rec or {}).get("storage_path") or "").strip()
+    if storage_path:
+        if not rec:
+            rec = await db.files.find_one({"storage_path": storage_path, "is_deleted": {"$ne": True}}, {"_id": 0})
+        try:
+            data, fetched_ct = obj_storage.get_object(storage_path)
+            ct = (rec or {}).get("content_type") or fetched_ct or ct
+        except FileNotFoundError:
+            data = None
+        except Exception:
+            logger.exception("Failed to fetch Surat Jalan object %s", storage_path)
+            raise HTTPException(502, "Gagal mengambil file Surat Jalan.")
+    if data is None and str(entry.get("data_url") or "").startswith("data:"):
+        try:
+            data, decoded_ct = _sj_decode_data_url(entry["data_url"])
+            ct = decoded_ct or ct
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    if not data:
+        raise HTTPException(404, "Isi file Surat Jalan tidak tersedia")
+    ct = _sj_sniff_ct(data, filename, ct)
+    headers = {
+        "Content-Disposition": _sj_content_disposition(filename, download=download),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
+    return FastAPIResponse(content=data, media_type=ct, headers=headers)
 
 
 @api_router.post("/orders/{order_id}/note")
@@ -3010,13 +3125,51 @@ async def add_note(order_id: str, payload: NotePayload, user=Depends(current_use
 
 @api_router.post("/orders/{order_id}/loading")
 async def update_loading(order_id: str, payload: LoadingChecklistPayload, user=Depends(current_user)):
-    """Loading is no longer an active workflow. Historical records stay stored."""
+    """Deprecated checklist write. Use POST /loading-confirm for SJ qty confirmation."""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "loading.update")
-    raise HTTPException(400, "Loading bukan lagi workflow aktif. Data historis tetap tersimpan.")
+    raise HTTPException(400, "Gunakan Konfirmasi Loading (item/qty Surat Jalan). Data historis tetap tersimpan.")
+
+
+@api_router.post("/orders/{order_id}/loading-confirm")
+async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=Depends(current_user)):
+    """Confirm Item + Qty after reading the Surat Jalan file. Append-safe."""
+    await _require_perm(user, "loading.update")
+
+    def _mutate(order):
+        _ensure_not_cancelled(order)
+        action_id = (payload.action_id or "").strip() or None
+        if action_id:
+            for existing in order.get("loading_confirmations") or []:
+                if isinstance(existing, dict) and existing.get("action_id") == action_id:
+                    return
+        lines = [ln.model_dump() for ln in (payload.lines or [])]
+        err = _qr_validate_loading_confirmation(order, payload.surat_jalan_id, lines)
+        if err:
+            raise HTTPException(400, err)
+        stamp = now_iso()
+        record = _qr_apply_loading_confirmation(
+            order,
+            surat_jalan_id=payload.surat_jalan_id,
+            lines=lines,
+            actor=user,
+            confirmation_id=str(uuid.uuid4()),
+            confirmed_at=stamp,
+            action_id=action_id,
+        )
+        if not record.get("id"):
+            record["id"] = str(uuid.uuid4())
+            order["loading_confirmations"][-1]["id"] = record["id"]
+        names = ", ".join(f"{ln.get('name')} {ln.get('qty')}" for ln in record.get("lines") or [])
+        add_timeline(order, 13, user, note=f"Konfirmasi Loading ({record.get('surat_jalan_name')}): {names}")
+        _sync_workflow_stage(order)
+
+    order = await _with_quantity_lock(order_id, _mutate)
+    await _audit_po(order, "loading.confirm", user, note=payload.surat_jalan_id)
+    return {"order": _strip_sj_bytes(order)}
 
 
 @api_router.post("/orders/{order_id}/approve-sample")
@@ -6171,6 +6324,8 @@ async def download_file(path: str, user=Depends(current_user)):
     rec = await db.files.find_one({"storage_path": path, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not rec:
         raise HTTPException(404, "File tidak ditemukan")
+    if rec.get("kind") == "surat_jalan":
+        await _require_perm(user, _SJ_VIEW_FILE)
     try:
         data, ct = obj_storage.get_object(path)
     except FileNotFoundError:
@@ -6178,7 +6333,17 @@ async def download_file(path: str, user=Depends(current_user)):
     except Exception:
         logger.exception("Failed to fetch object %s", path)
         raise HTTPException(502, "Gagal mengambil file.")
-    return FastAPIResponse(content=data, media_type=rec.get("content_type") or ct)
+    media = rec.get("content_type") or ct
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
+    if rec.get("kind") == "surat_jalan":
+        media = _sj_sniff_ct(data, rec.get("original_filename") or "", media)
+        headers["Content-Disposition"] = _sj_content_disposition(
+            rec.get("original_filename") or "surat-jalan", download=False,
+        )
+    return FastAPIResponse(content=data, media_type=media, headers=headers)
 
 
 class DeliveryProofDeletePayload(BaseModel):
@@ -7251,6 +7416,7 @@ app.add_middleware(
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Content-Type"],
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

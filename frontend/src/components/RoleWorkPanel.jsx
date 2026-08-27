@@ -10,7 +10,9 @@ import ConfirmActionModal from "./ConfirmActionModal";
 import RoleWorkHistory from "./RoleWorkHistory";
 import RoleWorkEntryForm from "./RoleWorkEntryForm";
 import SuratJalanPanel from "./SuratJalanPanel";
+import LoadingPanel from "./LoadingPanel";
 import DeliveryProofPanel from "./DeliveryProofPanel";
+import SuratJalanViewButton from "./SuratJalanViewButton";
 import AttachmentsPanel from "./AttachmentsPanel";
 import OperatorSplitPanel from "./OperatorSplitPanel";
 import {
@@ -453,8 +455,28 @@ function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
       <SuratJalanPanel
         order={order}
         canManage={canManage}
+        canViewFile={hasPerm("delivery_note.view_file")}
         onUpdated={onUpdated}
       />
+    </section>
+  );
+}
+
+function LoadingWorkPanel({ order, division, onUpdated, compactHeader }) {
+  const { hasPerm } = useAuth();
+  const canManage = canSubmitDivision(hasPerm, division);
+  return (
+    <section className="panel work-panel" data-testid="role-work-panel">
+      <WorkHero
+        order={order}
+        title="Pekerjaan Loading"
+        itemLabel={(order?.line_items || []).length === 1
+          ? (order.line_items[0].name || "—")
+          : `${(order?.line_items || []).length} item`}
+        testid="loading-work-header"
+        compactHeader={compactHeader}
+      />
+      <LoadingPanel order={order} canManage={canManage} onUpdated={onUpdated} />
     </section>
   );
 }
@@ -462,7 +484,10 @@ function SuratJalanWorkPanel({ order, division, onUpdated, compactHeader }) {
 function TerkirimWorkPanel({ order, onUpdated, compactHeader }) {
   const evidence = terkirimEvidence(order);
   const delivered = Number(order?.qty_delivered || order?.delivered_qty || 0);
-  const target = Number(order?.packing_required_total || order?.total_quantity || 0);
+  const eligible = Number(order?.eligible_delivery_qty);
+  const target = Number.isFinite(eligible)
+    ? eligible
+    : Number(order?.packing_required_total || order?.total_quantity || 0);
   const itemLabel = (order?.line_items || []).length === 1
     ? (order.line_items[0].name || "—")
     : `${(order?.line_items || []).length} item`;
@@ -489,6 +514,9 @@ function TerkirimWorkPanel({ order, onUpdated, compactHeader }) {
       </MetricRow>
       <RoleWorkHistory entries={evidence} mode="evidence" testid="work-history-delivery" />
       <DeliveryProofPanel order={order} onUpdated={onUpdated} />
+      <div style={{ padding: "0 16px 12px" }}>
+        <SuratJalanViewButton order={order} testid="terkirim-sj-lihat" />
+      </div>
     </section>
   );
 }
@@ -548,6 +576,16 @@ export default function RoleWorkPanel({
   if (resolved.id === "surat_jalan") {
     return (
       <SuratJalanWorkPanel
+        order={order}
+        division={resolved}
+        onUpdated={onUpdated}
+        compactHeader={compactHeader}
+      />
+    );
+  }
+  if (resolved.id === "loading") {
+    return (
+      <LoadingWorkPanel
         order={order}
         division={resolved}
         onUpdated={onUpdated}

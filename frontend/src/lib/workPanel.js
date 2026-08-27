@@ -11,6 +11,7 @@ export const WORK_DIVISION_IDS = [
   "operator",
   "packing",
   "surat_jalan",
+  "loading",
   "terkirim",
 ];
 
@@ -22,6 +23,7 @@ export const DIVISION_SUBMIT_PERMS = [
   ["operator", "operator.update"],
   ["packing", "packing.update"],
   ["surat_jalan", "delivery_note.manage"],
+  ["loading", "loading.update"],
   ["terkirim", "delivery.update"],
 ];
 
@@ -60,6 +62,7 @@ export const ACTION_DIVISION = {
   sample_upload: "operator",
   packing: "packing",
   surat_jalan: "surat_jalan",
+  loading: "loading",
   terkirim: "terkirim",
 };
 
@@ -93,6 +96,7 @@ export function fallbackDivision(id) {
     operator: { id: "operator", label: "Operator", active: true, implemented: true, submit_perm: "operator.update", input_label: "Qty Cetak", target_source: "print_line_qty", input_kind: "qty" },
     packing: { id: "packing", label: "Packing", active: true, implemented: true, submit_perm: "packing.update", input_label: "Qty Packing", target_source: "packing_cap", input_kind: "qty" },
     surat_jalan: { id: "surat_jalan", label: "Surat Jalan", active: true, implemented: true, submit_perm: "delivery_note.manage", input_label: "Surat Jalan", target_source: "packed_qty", input_kind: "evidence" },
+    loading: { id: "loading", label: "Loading", active: true, implemented: true, submit_perm: "loading.update", input_label: "Qty Loading", target_source: "confirmed_loading", input_kind: "qty" },
     terkirim: { id: "terkirim", label: "Terkirim", active: true, implemented: true, submit_perm: "delivery.update", input_label: "Bukti Pengiriman", target_source: "delivered_qty", input_kind: "evidence" },
   };
   return map[id] || map.operator;

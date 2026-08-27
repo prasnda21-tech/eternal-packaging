@@ -2,43 +2,38 @@ import { useRef, useState } from "react";
 import { FileText, Upload } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
-import { storedShipments } from "../lib/shipmentLines";
 import { QtyOpsHead, statusClassFor } from "./qtyUi";
 import ConfirmActionModal from "./ConfirmActionModal";
+import SuratJalanPreviewModal from "./SuratJalanPreviewModal";
 import api from "../lib/api";
+import {
+  SJ_VIEW_FILE_PERM,
+  downloadSuratJalanFile,
+  sjHistory,
+} from "../lib/suratJalan";
 
 const ALLOWED_MIME = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
 const MAX_BYTES = 4 * 1024 * 1024;
 
-function sjFiles(order) {
-  const fromField = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
-  if (fromField.length) return fromField;
-  // Legacy: shipment rows without file still readable as history labels.
-  return storedShipments(order).map((sh, i) => ({
-    id: sh.id || sh.accurate_shipment_id || `sj-legacy-${i}`,
-    name: sh.file_name || sh.number || sh.accurate_shipment_id || "Surat Jalan",
-    uploaded_by_name: sh.created_by_name || sh.created_by || "",
-    uploaded_at: sh.created_at,
-    legacy: true,
-  }));
-}
-
 export default function SuratJalanPanel({
   order,
   canManage,
+  canViewFile: canViewFileProp,
   busy: busyProp,
   onUpdated,
   footerActions = null,
 }) {
-  const { user } = useAuth();
+  const { user, hasPerm } = useAuth();
+  const canViewFile = canViewFileProp ?? hasPerm(SJ_VIEW_FILE_PERM);
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [file, setFile] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [preview, setPreview] = useState(null);
   const uploading = busyProp || busy;
   const created = !!order.surat_jalan_created;
-  const packingWait = (order.current_stage || 0) < 12 && !created;
-  const files = sjFiles(order);
+  const files = sjHistory(order);
 
   const pickFile = () => {
     setErr("");
@@ -46,22 +41,25 @@ export default function SuratJalanPanel({
   };
 
   const onFileChosen = (e) => {
-    const file = e.target.files?.[0];
+    const next = e.target.files?.[0];
     e.target.value = "";
-    if (!file) return;
-    if (!ALLOWED_MIME.includes(file.type)) {
+    if (!next) return;
+    if (!ALLOWED_MIME.includes(next.type) && !/\.(pdf|jpe?g|png)$/i.test(next.name || "")) {
       setErr("Format file tidak didukung. Gunakan JPG, PNG, atau PDF.");
       return;
     }
-    if (file.size > MAX_BYTES) {
+    if (next.size > MAX_BYTES) {
       setErr("Ukuran file terlalu besar (maks 4MB).");
       return;
     }
     setErr("");
-    setConfirm({
-      file,
-      time: formatDisplayDateTime(new Date().toISOString()),
-    });
+    setFile(next);
+  };
+
+  const openConfirm = () => {
+    if (!file || uploading) return;
+    setErr("");
+    setConfirm({ file, time: formatDisplayDateTime(new Date().toISOString()) });
   };
 
   const executeUpload = async () => {
@@ -82,6 +80,7 @@ export default function SuratJalanPanel({
       });
       onUpdated?.(result?.order || result);
       setConfirm(null);
+      setFile(null);
     } catch (e) {
       const d = e?.response?.data?.detail;
       setErr(typeof d === "string" ? d : (d?.message || "Upload Surat Jalan gagal. Silakan coba kembali."));
@@ -94,61 +93,88 @@ export default function SuratJalanPanel({
     <section className="panel packing-panel" data-testid="surat-jalan-panel">
       <QtyOpsHead icon={FileText} title="Surat Jalan">
         <span
-          className={`qty-status ${statusClassFor(created ? "SAVED" : packingWait ? "IDLE" : "READY")}`}
+          className={`qty-status ${statusClassFor(created ? "SAVED" : "READY")}`}
           data-testid="surat-jalan-semantic-badge"
         >
-          {packingWait ? "Menunggu Packing" : created ? "File tersimpan" : "Menunggu upload"}
+          {created ? "File tersimpan" : "Menunggu upload"}
         </span>
       </QtyOpsHead>
 
-      {packingWait ? (
-        <p className="muted small" data-testid="surat-jalan-wait-note" style={{ padding: "8px 16px 0" }}>
-          Surat Jalan dapat di-upload setelah Qty Packing disimpan dan packing sebagian/lengkap dikonfirmasi.
-        </p>
-      ) : (
-        <div className="qty-ops-body" style={{ display: "grid", gap: 10 }}>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
-            hidden
-            onChange={onFileChosen}
-            data-testid="surat-jalan-file-input"
-          />
+      <div className="qty-ops-body" style={{ display: "grid", gap: 10 }}>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
+          hidden
+          onChange={onFileChosen}
+          data-testid="surat-jalan-file-input"
+        />
 
-          {!canManage ? (
-            <p className="muted small" data-testid="surat-jalan-readonly-note">
-              Anda tidak memiliki permission untuk mengupload Surat Jalan.
-            </p>
-          ) : (
+        {!canManage ? (
+          <p className="muted small" data-testid="surat-jalan-readonly-note">
+            Anda tidak memiliki permission untuk mengupload Surat Jalan.
+          </p>
+        ) : (
+          <>
+            <p className="muted small" data-testid="sj-file-only-note">File Surat Jalan</p>
+            <div className="sj-upload-file-row">
+              <button
+                type="button"
+                className="primary"
+                onClick={pickFile}
+                disabled={uploading}
+                data-testid="surat-jalan-upload-button"
+              >
+                <Upload size={16} /> {file ? "Ganti File" : "Pilih File"}
+              </button>
+              {file && <span className="muted small" data-testid="surat-jalan-chosen-name">{file.name}</span>}
+            </div>
             <button
               type="button"
               className="primary"
-              onClick={pickFile}
-              disabled={uploading}
-              data-testid="surat-jalan-upload-button"
+              onClick={openConfirm}
+              disabled={uploading || !file}
+              data-testid="surat-jalan-submit-button"
             >
-              <Upload size={16} /> Upload File Surat Jalan
+              Upload Surat Jalan
             </button>
-          )}
+          </>
+        )}
 
-          {err && <div className="error" data-testid="surat-jalan-upload-error">{err}</div>}
+        {err && <div className="error" data-testid="surat-jalan-upload-error">{err}</div>}
 
-          {files.length > 0 && (
-            <ul className="sj-file-list" data-testid="surat-jalan-file-list" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
-              {files.map((f) => (
-                <li key={f.id || f.name} data-testid={`surat-jalan-file-${f.id || f.name}`} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+        {files.length > 0 && (
+          <ul className="sj-file-list" data-testid="surat-jalan-file-list" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 10 }}>
+            {files.map((f) => {
+              const fileId = f.file_id || f.id;
+              return (
+                <li key={fileId || f.name} data-testid={`surat-jalan-file-${fileId || f.name}`} className="sj-file-card">
                   <strong>{f.name}</strong>
                   {(f.uploaded_by_name || f.uploaded_by) && (
                     <span className="muted small">{f.uploaded_by_name || f.uploaded_by}</span>
                   )}
                   {f.uploaded_at && <span className="muted small mono">{formatDate(f.uploaded_at)}</span>}
+                  {canViewFile && fileId && (
+                    <div className="sj-file-actions">
+                      <button type="button" className="ghost sm" onClick={() => setPreview(f)} data-testid={`sj-lihat-${fileId}`}>
+                        Lihat Surat Jalan
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        onClick={() => downloadSuratJalanFile(order.id, fileId, f.name).catch((e) => setErr(e.message))}
+                        data-testid={`sj-download-${fileId}`}
+                      >
+                        Download
+                      </button>
+                    </div>
+                  )}
                 </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+              );
+            })}
+          </ul>
+        )}
+      </div>
 
       {footerActions}
       <ConfirmActionModal
@@ -163,6 +189,13 @@ export default function SuratJalanPanel({
         confirmLabel="Konfirmasi"
         onCancel={() => { if (!uploading) { setConfirm(null); setErr(""); } }}
         onConfirm={executeUpload}
+      />
+      <SuratJalanPreviewModal
+        open={!!preview}
+        order={order}
+        entries={preview ? [preview] : files}
+        canDownload={canViewFile}
+        onClose={() => setPreview(null)}
       />
     </section>
   );

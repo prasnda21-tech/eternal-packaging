@@ -145,7 +145,7 @@ def test_scheduler_create_and_unauthorized_keys():
     assert batch["status"] == "published"
     hp = set(ROLE_DEFAULT_PERMISSIONS["head_production"])
     helper = set(ROLE_DEFAULT_PERMISSIONS["helper"])
-    assert "delivery.schedule.create" in hp
+    assert "delivery.schedule.create" not in hp
     assert "delivery.location.manage" in hp
     assert "delivery.schedule.create" not in helper
     assert "delivery.schedule.publish" not in helper
@@ -420,8 +420,6 @@ def test_historical_route_records_still_readable():
 
 def test_catalog_keeps_legacy_route_keys_without_active_defaults():
     for key in (
-        "delivery.schedule.create",
-        "delivery.schedule.publish",
         "delivery.route.optimize",
         "delivery.route.edit",
         "delivery.route.confirm",
@@ -432,8 +430,13 @@ def test_catalog_keeps_legacy_route_keys_without_active_defaults():
         "nav.driver_route",
         "delivery.update",
         "delivery.reschedule",
+        "delivery.schedule.view",
+        "loading.update",
+        "delivery_note.view_file",
     ):
         assert key in ALL_PERMISSIONS, key
+    assert "delivery.schedule.create" not in ALL_PERMISSIONS
+    assert "delivery.schedule.publish" not in ALL_PERMISSIONS
     driver = set(ROLE_DEFAULT_PERMISSIONS["driver"])
     assert "delivery.update" in driver
     assert "delivery.reschedule" in driver
@@ -444,6 +447,6 @@ def test_catalog_keeps_legacy_route_keys_without_active_defaults():
     helper = effective_permissions("helper", None)
     assert "delivery.schedule.create" not in helper
     hp = set(ROLE_DEFAULT_PERMISSIONS["head_production"])
-    assert "delivery.schedule.create" in hp
+    assert "delivery.schedule.create" not in hp
     assert "delivery.location.manage" in hp
     assert "delivery.route.optimize" not in hp

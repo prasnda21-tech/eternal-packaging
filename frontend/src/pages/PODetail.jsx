@@ -11,11 +11,13 @@ import PackingPanel from "../components/PackingPanel";
 import SuratJalanPanel from "../components/SuratJalanPanel";
 import AttachmentsPanel from "../components/AttachmentsPanel";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
+import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import CustomerApprovalPanel from "../components/CustomerApprovalPanel";
 import DeliveryDeadlinePanel from "../components/DeliveryDeadlinePanel";
 import HelperPrepPanel from "../components/HelperPrepPanel";
 import ProductionRoutePanel from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
+import OutletLocationModal from "../components/OutletLocationModal";
 import StageBar from "../components/StageBar";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import { terkirimQtySummary } from "../lib/deliveryHistory";
@@ -56,6 +58,7 @@ export default function PODetail() {
   const [actionConfirm, setActionConfirm] = useState(null);
   const [trackingCopyMsg, setTrackingCopyMsg] = useState("");
   const [trackingBusy, setTrackingBusy] = useState(false);
+  const [locRow, setLocRow] = useState(null);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -230,6 +233,8 @@ export default function PODetail() {
   const canMarkPacked = hasPerm("packing.update");
   const canMarkDelivered = hasPerm("delivery.update");
   const canManageSuratJalan = hasPerm("delivery_note.manage");
+  const canViewSjFile = hasPerm("delivery_note.view_file");
+  const canLoadingUpdate = hasPerm("loading.update");
   const canBypassDesign = hasPerm("design.bypass_approval");
   const canBypassPayment = hasPerm("payment.bypass_approval");
   const canRollback = hasPerm("workflow.rollback");
@@ -242,6 +247,7 @@ export default function PODetail() {
   const canCopyTrackingLink = hasPerm("po.view");
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
+  const canSetLocation = hasPerm("delivery.location.manage");
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -490,6 +496,38 @@ export default function PODetail() {
         <div>
           <span className="lbl">Outlet</span>
           <strong>{order.outlet}</strong>
+          {canSetLocation && (
+            <button
+              type="button"
+              className="ghost sm"
+              data-testid="po-atur-lokasi"
+              onClick={async () => {
+                const row = {
+                  order_id: order.id,
+                  customer: order.customer || order.customer_name || "",
+                  outlet: order.outlet || "",
+                  outlet_name: order.outlet || "",
+                };
+                try {
+                  const d = await api.listDeliveryOutlets(row.customer);
+                  const o = (d.outlets || [])[0];
+                  if (o) {
+                    row.outlet_id = o.id;
+                    row.outlet_name = o.name || order.outlet || "";
+                    row.lat = o.lat;
+                    row.lng = o.lng;
+                    row.place_id = o.place_id || o.google_place_id;
+                    row.formatted_address = o.formatted_address;
+                  }
+                } catch {
+                  /* modal still opens */
+                }
+                setLocRow(row);
+              }}
+            >
+              {order.outlet ? "Edit Lokasi" : "Atur Lokasi"}
+            </button>
+          )}
         </div>
         <div>
           <span className="lbl">Tanggal PO</span>
@@ -946,6 +984,7 @@ export default function PODetail() {
       <SuratJalanPanel
         order={order}
         canManage={canManageSuratJalan}
+        canViewFile={canViewSjFile}
         busy={busy}
         onUpdated={(next) => {
           if (next) {
@@ -956,9 +995,18 @@ export default function PODetail() {
       />
       </div>
 
-      {/* 14 Riwayat Loading (legacy, read-only) */}
+      {/* 14 Loading */}
       <div data-testid="workflow-slot-13" data-workflow-stage="13">
-      <LoadingPanel order={order} />
+      <LoadingPanel
+        order={order}
+        canManage={canLoadingUpdate}
+        onUpdated={(next) => {
+          if (next) {
+            setOrder(next);
+            showToast("Loading dikonfirmasi");
+          }
+        }}
+      />
       </div>
 
       {/* 15 Bukti Kirim then Terkirim */}
@@ -979,6 +1027,7 @@ export default function PODetail() {
         <p className="muted small">
           Status Terkirim hanya setelah minimal 2 foto bukti kirim di-upload, lalu Konfirmasi Terkirim.
         </p>
+        <SuratJalanViewButton order={order} testid="terkirim-sj-lihat" />
       </section>
       </div>
       </div>
@@ -1101,6 +1150,13 @@ export default function PODetail() {
       {stageDrawer != null && (
         <StageDetailDrawer order={order} stageIdx={stageDrawer} onClose={() => setStageDrawer(null)} />
       )}
+      <OutletLocationModal
+        open={!!locRow}
+        row={locRow}
+        canEdit={canSetLocation}
+        onClose={() => setLocRow(null)}
+        onSaved={() => refreshPO()}
+      />
     </div>
   );
 }

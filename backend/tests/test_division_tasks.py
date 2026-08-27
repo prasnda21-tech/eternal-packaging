@@ -173,17 +173,18 @@ def test_screener_required_input():
     assert rows[0]["target_qty"] == 8000
 
 
-def test_loading_division_removed():
+def test_loading_division_present_after_sj():
     o = _print_po(
         packing_info={"qty_packed": 5000, "lines": [{"line_idx": 0, "packed_qty": 5000}]},
         loading_info={"qty_loaded": 2000, "lines": [{"line_idx": 0, "loaded_qty": 2000}]},
         surat_jalan_created=True,
+        surat_jalan_files=[{"id": "f-sj-1", "name": "sj.pdf"}],
         line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
         operator_splits=[{"id": "s", "line_idx": 0, "quantity": 5000, "qty_completed": 5000}],
     )
-    assert resolve_division("loading") is None
+    assert resolve_division("loading") == "loading"
     rows = build_division_tasks([o], "loading", {"email": "a@x.com"}, mine_only=False)
-    assert rows == []
+    assert len(rows) == 1
 
 
 def test_cancelled_orders_excluded():

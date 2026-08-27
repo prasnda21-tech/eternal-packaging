@@ -634,14 +634,11 @@ def apply_packing_increments(order: dict, updates: list) -> tuple:
 def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     if new_delivered is None or new_delivered < 0:
         return "Qty pengiriman tidak valid."
-    packed = qty_packed(order)
     required = packing_required_total(order)
     current = qty_delivered(order)
-    if new_delivered > packed:
-        return f"Qty dikirim ({new_delivered}) melebihi qty packing ({packed})."
     eligible = eligible_delivery_qty(order)
-    if eligible > 0 and new_delivered > eligible:
-        return f"Qty dikirim ({new_delivered}) melebihi qty yang eligible dikirim ({eligible})."
+    if new_delivered > eligible:
+        return f"Qty dikirim ({new_delivered}) melebihi qty Loading terkonfirmasi ({eligible})."
     if required and new_delivered > required:
         return f"Qty dikirim ({new_delivered}) melebihi total qty PO ({required})."
     if new_delivered < current:
@@ -650,22 +647,19 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
 
 
 def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
-    """Delivery fields from packed/SJ eligible qty after explicit Konfirmasi Terkirim.
+    """Delivery fields from confirmed Loading after explicit Konfirmasi Terkirim.
 
-    Does not use loaded_qty as an active delivery limit.
-    Returns None when there is no packed/SJ eligible qty yet (photo may still be stored).
-    Full PO Terkirim only if delivered >= packing_required_total.
+    Historical SJ line quantities remain eligible when no loading_confirmations exist.
     Upload of photos does NOT call this — confirmation does.
     """
     eligible = eligible_delivery_qty(order)
     if eligible <= 0:
         return None
-    packed = qty_packed(order)
     current = qty_delivered(order)
     new_delivered = max(current, eligible)
-    if packed:
-        new_delivered = min(new_delivered, packed)
     required = packing_required_total(order)
+    if required:
+        new_delivered = min(new_delivered, required)
     err = validate_delivery_qty(new_delivered, order)
     if err:
         return None
@@ -774,6 +768,19 @@ def packed_qty_for_line(order: dict, line_idx: int) -> int:
     return 0
 
 
+def po_qty_for_line(order: dict, line_idx: int) -> int:
+    """Ordered qty for a stable PO line. Never merge by item name."""
+    lis = order.get("line_items") or []
+    idx = int(line_idx)
+    if lis:
+        if 0 <= idx < len(lis):
+            return max(0, _safe_int(lis[idx].get("quantity")))
+        return 0
+    if idx == 0:
+        return max(0, _safe_int(order.get("total_quantity") or order.get("quantity")))
+    return 0
+
+
 def shipments_stored(order: dict) -> list:
     raw = order.get("shipments")
     return list(raw) if isinstance(raw, list) else []
@@ -825,7 +832,8 @@ def loading_events_stored(order: dict) -> list:
     return raw
 
 
-def qty_loaded_for_line(order: dict, line_idx: int) -> int:
+def _legacy_loaded_qty_for_line(order: dict, line_idx: int) -> int:
+    """Historical loading_info totals. Not used for new SJ-linked confirmations."""
     lines = loading_lines_stored(order)
     if lines is not None:
         for it in lines:
@@ -842,11 +850,63 @@ def qty_loaded_for_line(order: dict, line_idx: int) -> int:
     return 0
 
 
+def loading_confirmations_stored(order: dict) -> list:
+    raw = order.get("loading_confirmations")
+    return [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+
+
+def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
+    want = str(file_id or "").strip()
+    if not want:
+        return None
+    files = order.get("surat_jalan_files")
+    if not isinstance(files, list):
+        return None
+    for f in files:
+        if isinstance(f, dict) and str(f.get("id") or "").strip() == want:
+            return f
+    return None
+
+
+def has_surat_jalan_file(order: dict) -> bool:
+    files = order.get("surat_jalan_files")
+    if not isinstance(files, list):
+        return False
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        if str(f.get("id") or "").strip() and (
+            str(f.get("data_url") or "").startswith("data:")
+            or str(f.get("storage_path") or "").strip()
+            or str(f.get("name") or "").strip()
+            or f.get("uploaded_at")
+        ):
+            return True
+    return False
+
+
+def qty_confirmed_loading_for_line(order: dict, line_idx: int) -> int:
+    total = 0
+    for conf in loading_confirmations_stored(order):
+        for ln in conf.get("lines") or []:
+            if not isinstance(ln, dict):
+                continue
+            if _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
+                total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+    return total
+
+
+def qty_confirmed_loading(order: dict) -> int:
+    return sum(qty_confirmed_loading_for_line(order, i) for i in range(_line_count(order)))
+
+
+def qty_loaded_for_line(order: dict, line_idx: int) -> int:
+    """Cumulative Loading: new SJ-linked confirmations + historical loaded_qty."""
+    return qty_confirmed_loading_for_line(order, line_idx) + _legacy_loaded_qty_for_line(order, line_idx)
+
+
 def qty_loaded(order: dict) -> int:
-    lines = loading_lines_stored(order)
-    if lines is None:
-        return 0
-    return sum(max(0, _safe_int(it.get("loaded_qty"))) for it in lines)
+    return sum(qty_loaded_for_line(order, i) for i in range(_line_count(order)))
 
 
 def effective_loaded_qty(order: dict) -> int:
@@ -861,6 +921,8 @@ def effective_loaded_qty(order: dict) -> int:
 
 
 def surat_jalan_created(order: dict) -> bool:
+    if has_surat_jalan_file(order):
+        return True
     if shipments_stored(order):
         return True
     return bool(
@@ -871,9 +933,9 @@ def surat_jalan_created(order: dict) -> bool:
 
 
 def loading_cap_for_line(order: dict, line_idx: int) -> int:
-    """Hard cap = min(packed, shipped-if-SJ-lines-exist). Never > packed.
+    """Historical increment cap = min(packed, shipped-if-SJ-lines). Never > packed.
 
-    Historical loading used this cap. Delivery eligibility reuses the same packed/SJ truth.
+    New SJ-linked confirmations use `available_for_loading_confirm_line` (PO qty).
     """
     packed = packed_qty_for_line(order, line_idx)
     if has_shipment_line_quantities(order):
@@ -883,14 +945,99 @@ def loading_cap_for_line(order: dict, line_idx: int) -> int:
 
 
 def eligible_delivery_qty(order: dict) -> int:
-    """Packed/SJ qty legally eligible to deliver. Does not use loaded_qty."""
-    if not surat_jalan_created(order):
-        return 0
-    return sum(loading_cap_for_line(order, i) for i in range(_line_count(order)))
+    """Qty legally eligible to deliver.
+
+    New workflow: confirmed Loading (SJ-linked). Historical POs with SJ item/qty
+    lines remain deliverable without rewriting those records.
+    """
+    if loading_confirmations_stored(order):
+        return qty_confirmed_loading(order)
+    if has_shipment_line_quantities(order):
+        return qty_shipped(order)
+    legacy = sum(_legacy_loaded_qty_for_line(order, i) for i in range(_line_count(order)))
+    if legacy > 0:
+        return legacy
+    return 0
+
+
+def available_for_loading_confirm_line(order: dict, line_idx: int) -> int:
+    return max(0, po_qty_for_line(order, line_idx) - qty_loaded_for_line(order, line_idx))
 
 
 def available_for_loading_line(order: dict, line_idx: int) -> int:
     return max(0, loading_cap_for_line(order, line_idx) - qty_loaded_for_line(order, line_idx))
+
+
+def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list) -> Optional[str]:
+    """Manual Item/Qty against a specific Surat Jalan file. Cap = remaining PO line qty."""
+    entry = find_sj_file(order, surat_jalan_id)
+    if not entry:
+        return "Surat Jalan tidak ditemukan. Loading harus terhubung ke file Surat Jalan."
+    if not (str(entry.get("data_url") or "").startswith("data:") or str(entry.get("storage_path") or "").strip() or str(entry.get("id") or "").strip()):
+        return "File Surat Jalan tidak valid."
+    if not lines:
+        return "Item dan Qty Loading wajib diisi sesuai isi Surat Jalan."
+    seen = set()
+    n = _line_count(order)
+    for u in lines:
+        if not isinstance(u, dict):
+            return "Item Loading tidak valid."
+        idx, err = match_po_line_idx(order, u)
+        if err:
+            return err
+        if idx is None or idx < 0 or idx >= n:
+            return f"line_idx {idx} tidak valid."
+        if idx in seen:
+            return "Item Loading duplikat. Gunakan line PO yang berbeda."
+        seen.add(idx)
+        qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
+        if qty <= 0:
+            return "Qty Loading harus angka lebih dari 0."
+        avail = available_for_loading_confirm_line(order, idx)
+        name = _line_name(order, idx)
+        if qty > avail:
+            return f"Qty Loading '{name}' ({qty}) melebihi sisa qty PO yang belum dikonfirmasi ({avail})."
+    return None
+
+
+def apply_loading_confirmation(
+    order: dict,
+    *,
+    surat_jalan_id: str,
+    lines: list,
+    actor: Optional[dict] = None,
+    confirmation_id: Optional[str] = None,
+    confirmed_at: Optional[str] = None,
+    action_id: Optional[str] = None,
+) -> dict:
+    """Append-only SJ-linked Loading confirmation. Does not rewrite loading_info."""
+    actor = actor or {}
+    entry = find_sj_file(order, surat_jalan_id) or {}
+    normalized = []
+    for u in lines:
+        idx, _err = match_po_line_idx(order, u)
+        qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
+        row = {
+            "line_idx": idx,
+            "qty": qty,
+            "name": _line_name(order, idx),
+        }
+        aid = str(u.get("accurate_item_id") or "").strip() or _line_accurate_item_id(order, idx)
+        if aid:
+            row["accurate_item_id"] = aid
+        normalized.append(row)
+    record = {
+        "id": confirmation_id or "",
+        "surat_jalan_id": str(surat_jalan_id).strip(),
+        "surat_jalan_name": entry.get("name") or "Surat Jalan",
+        "lines": normalized,
+        "confirmed_by": actor.get("email"),
+        "confirmed_by_name": actor.get("name") or actor.get("email"),
+        "confirmed_at": confirmed_at,
+        "action_id": action_id,
+    }
+    order.setdefault("loading_confirmations", []).append(record)
+    return record
 
 
 def line_shipment_mismatch(order: dict, line_idx: int) -> bool:
@@ -1239,14 +1386,16 @@ def shipment_line_breakdown(order: dict) -> list:
         shipped = qty_shipped_for_line(order, idx)
         loaded = qty_loaded_for_line(order, idx)
         avail_sj = available_for_delivery_note_line(order, idx)
-        cap_load = loading_cap_for_line(order, idx)
-        avail_load = available_for_loading_line(order, idx)
+        cap_load = po_qty_for_line(order, idx)
+        avail_load = available_for_loading_confirm_line(order, idx)
         mismatch = shipped > packed
         out.append({
             "line_idx": idx,
             "name": row.get("name") or _line_name(order, idx),
+            "item_code": (order.get("line_items") or [{}])[idx].get("item_code") if 0 <= idx < len(order.get("line_items") or []) else None,
+            "accurate_item_id": _line_accurate_item_id(order, idx),
             "color": row.get("color"),
-            "qty_po": row.get("qty_po"),
+            "qty_po": row.get("qty_po") if row.get("qty_po") is not None else po_qty_for_line(order, idx),
             "packed": packed,
             "shipped": shipped,
             "available_sj": avail_sj,
@@ -1269,7 +1418,9 @@ def surat_jalan_status_semantic(order: dict) -> str:
     packed = qty_packed(order)
     shipped = qty_shipped(order)
     if shipped <= 0:
-        if order.get("delivery_note_number") and order.get("delivery_note_created_at") and order.get("delivery_note_created_by"):
+        if has_surat_jalan_file(order) or (
+            order.get("delivery_note_number") and order.get("delivery_note_created_at") and order.get("delivery_note_created_by")
+        ):
             return SJ_STATUS_COMPLETED if packed <= 0 else SJ_STATUS_PARTIAL
         return SJ_STATUS_PENDING
     if packed > 0 and shipped >= packed:
@@ -1280,6 +1431,14 @@ def surat_jalan_status_semantic(order: dict) -> str:
 
 
 def loading_status_semantic(order: dict) -> str:
+    if loading_confirmations_stored(order):
+        loaded = qty_confirmed_loading(order)
+        remaining = sum(available_for_loading_confirm_line(order, i) for i in range(_line_count(order)))
+        if loaded <= 0:
+            return SJ_STATUS_PENDING
+        if remaining <= 0:
+            return SJ_STATUS_COMPLETED
+        return SJ_STATUS_PARTIAL
     packed = qty_packed(order)
     loaded = qty_loaded(order)
     cap = sum(loading_cap_for_line(order, i) for i in range(_line_count(order)))

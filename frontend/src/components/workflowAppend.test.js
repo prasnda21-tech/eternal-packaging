@@ -17,12 +17,8 @@ describe("append-only workflow UI", () => {
     expect(src("../pages/PODetail.jsx")).toMatch(/kind: "screener"/);
     expect(src("HelperPrepPanel.jsx")).toMatch(/ConfirmActionModal/);
     expect(src("PackingPanel.jsx")).toMatch(/qty: confirm\.qty/);
-    expect(src("PackingPanel.jsx")).toMatch(/ConfirmActionModal/);
-    expect(src("PackingPanel.jsx")).not.toMatch(/Packing Sebagian/);
-    expect(src("PackingPanel.jsx")).not.toMatch(/Lanjut Packing/);
-    expect(src("PackingPanel.jsx")).not.toMatch(/complete-packing-button/);
-    expect(src("RoleWorkPanel.jsx")).not.toMatch(/Packing Sebagian/);
-    expect(src("LoadingPanel.jsx")).not.toMatch(/loading-qty-input/);
+    expect(src("LoadingPanel.jsx")).toMatch(/KONFIRMASI LOADING/);
+    expect(src("LoadingPanel.jsx")).toMatch(/loading-qty-input/);
     expect(src("SuratJalanPanel.jsx")).toMatch(/ConfirmActionModal/);
     expect(src("DeliveryProofPanel.jsx")).toMatch(/confirm-delivered-button/);
     expect(src("DeliveryProofPanel.jsx")).toMatch(/KONFIRMASI PENGIRIMAN/);

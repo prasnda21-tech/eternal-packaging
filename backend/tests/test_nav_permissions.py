@@ -40,6 +40,7 @@ def test_catalog_includes_nav_keys():
         "nav.tasks.operator",
         "nav.tasks.packing",
         "nav.tasks.surat_jalan",
+        "nav.tasks.loading",
         "nav.tasks.delivery",
         NAV_CONFIGURED,
         "nav.inventory.master_items",
@@ -48,8 +49,6 @@ def test_catalog_includes_nav_keys():
         "delivery.reschedule",
         "delivery.reschedule.set_date",
         "delivery.schedule.view",
-        "delivery.schedule.create",
-        "delivery.schedule.publish",
         "delivery.location.manage",
         "delivery.route.optimize",
         "delivery.route.edit",
@@ -58,6 +57,7 @@ def test_catalog_includes_nav_keys():
         "settings.depot.view",
         "settings.depot.manage",
         "nav.driver_route",
+        "delivery_note.view_file",
         "work_panel.view",
         "settings.work_panel.view",
         "settings.work_panel.manage",
@@ -194,6 +194,8 @@ def test_driver_has_work_panel_view():
     driver = set(ROLE_DEFAULT_PERMISSIONS["driver"])
     assert "work_panel.view" in driver
     assert "loading.update" in driver
+    assert "delivery_note.view_file" in driver
+    assert "delivery_note.manage" not in driver
     assert "delivery.update" in driver
     assert "delivery.reschedule" in driver
     assert "delivery.reschedule.set_date" not in driver
@@ -207,3 +209,11 @@ def test_screener_has_work_panel_view():
     screener = set(ROLE_DEFAULT_PERMISSIONS["screener"])
     assert "work_panel.view" in screener
     assert "screen.update" in screener
+
+
+def test_loading_nav_derived_from_loading_update():
+    derived = derived_nav_permissions({"loading.update"})
+    assert "nav.tasks.loading" in derived
+    assert "nav.tasks" in derived
+    assert "delivery.schedule.create" not in ALL_PERMISSIONS
+    assert "delivery.schedule.publish" not in ALL_PERMISSIONS

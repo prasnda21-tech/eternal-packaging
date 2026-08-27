@@ -14,6 +14,7 @@ ALLOWED_SUBMIT_PERMS = {
     "operator": ("operator.update",),
     "packing": ("packing.update",),
     "surat_jalan": ("delivery_note.manage", "delivery_note.view"),
+    "loading": ("loading.update",),
     "terkirim": ("delivery.update",),
 }
 
@@ -23,6 +24,7 @@ ALLOWED_TARGET_SOURCES = {
     "operator": ("print_line_qty", "print_qty_target", "split_allocation"),
     "packing": ("packing_cap",),
     "surat_jalan": ("packed_qty",),
+    "loading": ("confirmed_loading",),
     "terkirim": ("delivered_qty",),
 }
 
@@ -91,6 +93,19 @@ _DEFAULTS: List[dict] = [
         "unit": "item",
         "helper_text": "",
         "sort_order": 50,
+    },
+    {
+        "id": "loading",
+        "label": "Loading",
+        "active": True,
+        "implemented": True,
+        "submit_perm": "loading.update",
+        "input_label": "Qty Loading",
+        "target_source": "confirmed_loading",
+        "input_kind": "qty",
+        "unit": "item",
+        "helper_text": "Konfirmasi item & qty berdasarkan file Surat Jalan",
+        "sort_order": 60,
     },
     {
         "id": "terkirim",

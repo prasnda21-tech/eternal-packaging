@@ -4,47 +4,53 @@ import { DIVISION_TASK_PAGES } from "./divisionTasks";
 import { NAV_MENU_FALLBACK, TASK_NAV_LABELS, tasksNavVisible } from "./navAccess";
 import { WORK_DIVISION_IDS, fallbackDivision, permittedDivisionIds } from "./workPanel";
 
-describe("Loading removed from active workflow", () => {
-  test("sidebar and tugas produksi have no Loading item", () => {
-    expect(NAV_MENU_FALLBACK.some((m) => m.label === "Loading")).toBe(false);
-    expect(NAV_MENU_FALLBACK.some((m) => String(m.key).includes("loading"))).toBe(false);
-    expect(TASK_NAV_LABELS.loading).toBeUndefined();
-    expect(TASK_NAV_LABELS.surat_jalan).toBe("Surat Jalan");
+describe("Loading restored as SJ qty confirmation", () => {
+  test("sidebar Tugas Produksi includes Loading", () => {
+    expect(NAV_MENU_FALLBACK.some((m) => m.label === "Loading")).toBe(true);
+    expect(TASK_NAV_LABELS.loading).toBe("Loading");
     expect(TASK_NAV_LABELS.terkirim).toBe("Driver / Terkirim");
-    expect(TASK_NAV_LABELS.packing).toBe("Packing");
   });
 
-  test("division task pages have no Loading workspace", () => {
-    expect(DIVISION_TASK_PAGES.loading).toBeUndefined();
-    expect(WORK_DIVISION_IDS).not.toContain("loading");
-    expect(WORK_DIVISION_IDS).toEqual(expect.arrayContaining(["packing", "surat_jalan", "terkirim"]));
-    expect(fallbackDivision("loading").id).not.toBe("loading");
+  test("division task pages include Loading workspace", () => {
+    expect(DIVISION_TASK_PAGES.loading).toBeTruthy();
+    expect(WORK_DIVISION_IDS).toContain("loading");
+    expect(fallbackDivision("loading").id).toBe("loading");
   });
 
-  test("qty loading input is gone from LoadingPanel", () => {
+  test("LoadingPanel has manual item/qty and confirm, no SJ item/qty on that card purpose", () => {
     const panel = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
-    expect(panel).toMatch(/Riwayat Loading/);
-    expect(panel).not.toMatch(/loading-qty-input/);
-    expect(panel).not.toMatch(/updateLoading/);
-    expect(panel).not.toMatch(/Input Qty Loading/);
-    expect(panel).not.toMatch(/canManage/);
+    expect(panel).toMatch(/KONFIRMASI ITEM & QTY/);
+    expect(panel).toMatch(/loading-qty-input/);
+    expect(panel).toMatch(/confirmLoading/);
+    expect(panel).toMatch(/KONFIRMASI LOADING/);
+    expect(panel).toMatch(/surat_jalan_id/);
+    expect(panel).toMatch(/Lihat Surat Jalan|loading-sj-lihat/);
   });
 
-  test("PO detail has no active Loading action", () => {
+  test("PO detail has active Loading action", () => {
     const po = fs.readFileSync(path.join(__dirname, "../pages/PODetail.jsx"), "utf8");
-    expect(po).not.toMatch(/canLoadingUpdate/);
-    expect(po).not.toMatch(/canManage=\{canLoadingUpdate\}/);
-    expect(po).toMatch(/<LoadingPanel order=\{order\}/);
+    expect(po).toMatch(/canLoadingUpdate/);
+    expect(po).toMatch(/canManage=\{canLoadingUpdate\}/);
   });
 
-  test("loading.update does not show a tugas produksi child", () => {
+  test("loading.update shows a tugas produksi child", () => {
     const v = tasksNavVisible((k) => k === "loading.update");
-    expect(v.loading).toBeUndefined();
-    expect(v.parent).toBe(false);
+    expect(v.loading).toBe(true);
+    expect(v.parent).toBe(true);
   });
 
-  test("permitted divisions never include loading", () => {
+  test("permitted divisions include loading", () => {
     const ids = permittedDivisionIds((k) => true);
-    expect(ids).not.toContain("loading");
+    expect(ids).toContain("loading");
+  });
+
+  test("no Buat Jadwal Pengiriman in active schedule page", () => {
+    const schedule = fs.readFileSync(path.join(__dirname, "../pages/DeliverySchedulePage.jsx"), "utf8");
+    expect(schedule).not.toMatch(/Buat Jadwal Pengiriman/);
+    expect(schedule).not.toMatch(/ds-create-schedule/);
+    const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+    expect(app).toMatch(/path="\/produksi\/jadwal-pengiriman\/buat"/);
+    expect(app).toMatch(/Navigate to="\/produksi\/jadwal-pengiriman"/);
+    expect(app).not.toMatch(/CreateDeliverySchedulePage/);
   });
 });

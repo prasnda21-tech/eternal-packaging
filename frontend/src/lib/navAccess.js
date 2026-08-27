@@ -15,6 +15,7 @@ export const NAV_KEYS = {
   tasksOperator: "nav.tasks.operator",
   tasksPacking: "nav.tasks.packing",
   tasksSuratJalan: "nav.tasks.surat_jalan",
+  tasksLoading: "nav.tasks.loading",
   tasksDelivery: "nav.tasks.delivery",
   sales: "nav.sales",
   importPo: "nav.sales.import_po",
@@ -45,6 +46,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.tasksOperator, label: "Operator", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksPacking, label: "Packing", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksSuratJalan, label: "Surat Jalan", parent: NAV_KEYS.tasks },
+  { key: NAV_KEYS.tasksLoading, label: "Loading", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksDelivery, label: "Driver / Terkirim", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
@@ -102,6 +104,7 @@ export const TASK_NAV_ORDER = [
   "operator",
   "packing",
   "surat_jalan",
+  "loading",
   "terkirim",
 ];
 
@@ -113,6 +116,7 @@ const TASK_CHILDREN = [
   ["operator", NAV_KEYS.tasksOperator],
   ["packing", NAV_KEYS.tasksPacking],
   ["surat_jalan", NAV_KEYS.tasksSuratJalan],
+  ["loading", NAV_KEYS.tasksLoading],
   ["terkirim", NAV_KEYS.tasksDelivery],
 ];
 
@@ -125,6 +129,7 @@ export const TASK_SUBMIT_PERMS = {
   operator: "operator.update",
   packing: "packing.update",
   surat_jalan: "delivery_note.manage",
+  loading: "loading.update",
   terkirim: "delivery.update",
 };
 
@@ -136,6 +141,7 @@ export const TASK_NAV_PATHS = {
   operator: "/tasks/operator",
   packing: "/tasks/packing",
   surat_jalan: "/tasks/surat-jalan",
+  loading: "/tasks/loading",
   terkirim: "/tasks/delivery",
 };
 
@@ -147,6 +153,7 @@ export const TASK_NAV_LABELS = {
   operator: "Operator",
   packing: "Packing",
   surat_jalan: "Surat Jalan",
+  loading: "Loading",
   terkirim: "Driver / Terkirim",
 };
 
@@ -194,6 +201,7 @@ export function actionKeyToTaskPath(actionKey) {
     cetak_qty: TASK_NAV_PATHS.operator,
     packing: TASK_NAV_PATHS.packing,
     surat_jalan: TASK_NAV_PATHS.surat_jalan,
+    loading: TASK_NAV_PATHS.loading,
     terkirim: TASK_NAV_PATHS.terkirim,
   };
   return map[actionKey] || "/tasks";

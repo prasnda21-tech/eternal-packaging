@@ -53,6 +53,7 @@ from services.places_provider.factory import get_places_provider
 
 
 ROUTE_OPTIMIZATION_INACTIVE = "Route optimization bukan lagi workflow aktif. Data historis tetap tersimpan."
+CREATE_SCHEDULE_INACTIVE = "Buat Jadwal Pengiriman tidak lagi tersedia."
 MY_ROUTE_INACTIVE = "Rute Saya bukan lagi workflow aktif."
 
 _hooks: dict = {}
@@ -223,7 +224,7 @@ def register(api_router: APIRouter, deps: dict) -> None:
         return doc
 
     async def _require_location_edit(user: dict):
-        await require_any_perm(user, "delivery.location.manage", "delivery.schedule.create")
+        await require_any_perm(user, "delivery.location.manage")
 
     async def _apply_outlet_live(outlet: dict, *, order_id: Optional[str] = None, batch_id: Optional[str] = None) -> None:
         """Push master location to orders + draft batches/plans. Never rewrite confirmed routes."""
@@ -313,9 +314,8 @@ def register(api_router: APIRouter, deps: dict) -> None:
     # ---------- Queue / batch ----------
     @api_router.get("/delivery/queue")
     async def delivery_queue(user=Depends(current_user)):
-        await require_any_perm(user, "delivery.schedule.view", "delivery.schedule.create", "schedule.view")
-        rows = await _queue_rows()
-        return {"rows": rows, "total": len(rows)}
+        await require_any_perm(user, "delivery.schedule.view", "schedule.view")
+        raise HTTPException(410, CREATE_SCHEDULE_INACTIVE)
 
     @api_router.get("/delivery/places/search")
     async def places_search(q: str = Query("", min_length=0), user=Depends(current_user)):
@@ -367,7 +367,7 @@ def register(api_router: APIRouter, deps: dict) -> None:
     @api_router.get("/delivery/outlets")
     async def list_outlets(customer: Optional[str] = None, user=Depends(current_user)):
         await require_any_perm(
-            user, "delivery.location.manage", "delivery.schedule.create", "delivery.schedule.view",
+            user, "delivery.location.manage", "delivery.schedule.view",
         )
         q: Dict[str, Any] = {}
         if customer:
@@ -425,37 +425,8 @@ def register(api_router: APIRouter, deps: dict) -> None:
 
     @api_router.post("/delivery/batches")
     async def create_delivery_batch(payload: CreateBatchPayload, user=Depends(current_user)):
-        await require_perm(user, "delivery.schedule.create")
-        date_key = (payload.delivery_date or "").strip()[:10]
-        if len(date_key) != 10:
-            raise HTTPException(400, "Tanggal pengiriman wajib diisi (YYYY-MM-DD).")
-        wanted = [str(s).strip() for s in (payload.stop_ids or []) if str(s).strip()]
-        if not wanted:
-            raise HTTPException(400, "Pilih minimal satu stop SIAP DIKIRIM.")
-        queue = await _queue_rows()
-        by_id = {r["stop_id"]: r for r in queue}
-        missing = [sid for sid in wanted if sid not in by_id]
-        if missing:
-            raise HTTPException(400, f"Stop tidak ada di antrian SIAP DIKIRIM: {missing[0]}")
-        selected = [by_id[sid] for sid in wanted]
-        if any(r.get("occupied") for r in selected):
-            raise HTTPException(400, "Stop sudah masuk batch aktif.")
-        edits = {}
-        for extra in payload.stops or []:
-            sid = str((extra or {}).get("stop_id") or "")
-            if sid:
-                edits[sid] = extra
-                if extra.get("location") and by_id.get(sid):
-                    await _save_order_location(by_id[sid]["order_id"], extra.get("location"), user)
-        batch = build_batch(
-            delivery_date=date_key,
-            queue_rows=selected,
-            stop_edits=edits,
-            user=user,
-            notes=payload.notes or "",
-        )
-        await _persist_batch(batch)
-        return {"batch": public_batch(batch)}
+        await require_any_perm(user, "delivery.schedule.view", "schedule.view")
+        raise HTTPException(410, CREATE_SCHEDULE_INACTIVE)
 
     @api_router.get("/delivery/batches")
     async def list_delivery_batches(user=Depends(current_user)):
@@ -501,33 +472,18 @@ def register(api_router: APIRouter, deps: dict) -> None:
 
     @api_router.patch("/delivery/batches/{batch_id}")
     async def patch_delivery_batch(batch_id: str, payload: PatchBatchPayload, user=Depends(current_user)):
-        await require_any_perm(user, "delivery.schedule.create", "delivery.schedule.publish")
-        batch = await _get_batch(batch_id)
-        if batch.get("status") not in (STATUS_DRAFT, STATUS_PUBLISHED):
-            raise HTTPException(400, "Batch ini tidak dapat diubah.")
-        if payload.delivery_date:
-            batch["delivery_date"] = payload.delivery_date.strip()[:10]
-        if payload.notes is not None:
-            batch["notes"] = payload.notes
-        if payload.stops:
-            apply_stop_updates(batch, payload.stops)
-            for extra in payload.stops:
-                if extra.get("location") and extra.get("stop_id"):
-                    st = next((s for s in batch.get("stops") or [] if s.get("stop_id") == extra.get("stop_id")), None)
-                    if st:
-                        await _save_order_location(st.get("order_id"), extra.get("location"))
-        await _persist_batch(batch)
-        return {"batch": public_batch(batch)}
+        await require_any_perm(user, "delivery.schedule.view", "schedule.view")
+        raise HTTPException(410, CREATE_SCHEDULE_INACTIVE)
 
     @api_router.post("/delivery/batches/{batch_id}/publish")
     async def publish_delivery_batch(batch_id: str, user=Depends(current_user)):
-        await require_any_perm(user, "delivery.schedule.create", "delivery.schedule.publish")
-        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
+        await require_any_perm(user, "delivery.schedule.view", "schedule.view")
+        raise HTTPException(410, CREATE_SCHEDULE_INACTIVE)
 
     @api_router.post("/delivery/batches/{batch_id}/ready")
     async def driver_ready(batch_id: str, payload: ReadyPayload, user=Depends(current_user)):
         await require_any_perm(user, "delivery.update", "delivery.vehicle.manage")
-        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
+        raise HTTPException(410, CREATE_SCHEDULE_INACTIVE)
 
     @api_router.post("/delivery/batches/{batch_id}/optimize")
     async def optimize_batch(batch_id: str, user=Depends(current_user)):

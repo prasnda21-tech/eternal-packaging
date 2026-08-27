@@ -104,6 +104,7 @@ def test_b_no_double_count_packing():
 
 def test_c_partial_delivery_not_final():
     o = _mixed_po(completed=[1000], packed=1000)
+    o["shipments"] = [{"id": "s1", "lines": [{"line_idx": 0, "qty": 1000}]}]
     assert validate_delivery_qty(1000, o) is None
     assert validate_delivery_qty(1001, o) is not None
     o["qty_delivered"] = 1000
@@ -117,8 +118,10 @@ def test_c_partial_delivery_not_final():
 
 def test_c_delivery_cumulative_when_packed_increases():
     o = _mixed_po(completed=[2000], packed=1000, delivered=1000)
+    o["shipments"] = [{"id": "s1", "lines": [{"line_idx": 0, "qty": 1000}]}]
     assert validate_delivery_qty(1000, o) is None
     o["packing_info"] = {"qty_packed": 2000}
+    o["shipments"] = [{"id": "s1", "lines": [{"line_idx": 0, "qty": 2000}]}]
     assert validate_delivery_qty(2000, o) is None
     assert validate_delivery_qty(2001, o) is not None
 
@@ -385,8 +388,9 @@ def test_c_helper_increase_unlocks_more_operator_execution():
 
 
 def test_d_delivered_capped_by_packed():
-    """TEST D: Packed 1000 → delivered max 1000."""
+    """TEST D: Confirmed/SJ 1000 → delivered max 1000."""
     o = _helper_po(prepared=2000, completed=[1000], packed=1000)
+    o["shipments"] = [{"id": "s1", "lines": [{"line_idx": 0, "qty": 1000}]}]
     assert validate_delivery_qty(1000, o) is None
     assert validate_delivery_qty(1001, o) is not None
 
