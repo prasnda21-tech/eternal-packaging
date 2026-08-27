@@ -51,6 +51,7 @@ def test_catalog_includes_nav_keys():
         "delivery.schedule.view",
         "delivery.schedule.create",
         "delivery.schedule.publish",
+        "delivery.location.manage",
         "delivery.route.optimize",
         "delivery.route.edit",
         "delivery.route.confirm",

@@ -32,6 +32,7 @@ LOCATION_LABEL = {
     LOCATION_OK: "Lokasi Siap",
     LOCATION_NEED: "Belum Ada Lokasi",
 }
+MISSING_LOCATION_REASON = "Lokasi outlet belum diatur"
 
 QUEUE_PROJECTION = {
     "_id": 0,
@@ -58,6 +59,8 @@ QUEUE_PROJECTION = {
     "loading_info": 1,
     "loading_checklist": 1,
     "delivery_location": 1,
+    "delivery_outlet_id": 1,
+    "customer_id": 1,
     "urgent": 1,
     "cancelled": 1,
     "total_quantity": 1,
@@ -116,8 +119,13 @@ def parse_location(raw: Any) -> dict:
     }
 
 
-def order_location(order: dict) -> dict:
+def order_location(order: dict, outlets_index: Optional[dict] = None) -> dict:
+    if outlets_index is not None:
+        from services.delivery_outlets import resolved_location
+        return resolved_location(order, outlets_index)
     loc = parse_location(order.get("delivery_location"))
+    loc["outlet_id"] = order.get("delivery_outlet_id")
+    loc["outlet_name"] = (order.get("outlet") or "").strip() or None
     if not loc.get("formatted_address"):
         loc["formatted_address"] = (order.get("address") or "").strip() or None
     return loc
@@ -214,9 +222,14 @@ def build_queue_stops(
     orders: Iterable[dict],
     *,
     occupied_keys: Optional[Set[str]] = None,
+    outlets: Optional[Iterable[dict]] = None,
 ) -> List[dict]:
     """Build SIAP DIKIRIM stops. occupied_keys = already in an active batch."""
     busy = occupied_keys or set()
+    outlets_index = None
+    if outlets is not None:
+        from services.delivery_outlets import index_outlets
+        outlets_index = index_outlets(outlets)
     rows = []
     for order in orders:
         if order.get("cancelled"):
@@ -227,9 +240,10 @@ def build_queue_stops(
         remaining = remaining_eligible_qty(order)
         if remaining <= 0:
             continue
-        loc = order_location(order)
+        loc = order_location(order, outlets_index)
         loc_status = loc["location_status"]
         deadline = original_deadline(order)
+        outlet_name = loc.get("outlet_name") or (order.get("outlet") or "").strip() or None
         for part in split_remaining_by_shipment(order, remaining):
             stop_id = _stable_stop_id(oid, part.get("shipment_id"))
             key = stop_id
@@ -241,10 +255,14 @@ def build_queue_stops(
                 "order_id": oid,
                 "order_number": order.get("po_number") or "",
                 "customer": _customer(order),
+                "customer_id": order.get("customer_id"),
+                "outlet_id": loc.get("outlet_id") or order.get("delivery_outlet_id"),
+                "outlet_name": outlet_name,
                 "address": loc.get("formatted_address") or _address(order),
                 "lat": loc.get("lat"),
                 "lng": loc.get("lng"),
                 "place_id": loc.get("place_id"),
+                "google_place_id": loc.get("place_id"),
                 "qty": part.get("qty") or 0,
                 "package_count": None,
                 "deadline": deadline,
@@ -259,7 +277,7 @@ def build_queue_stops(
                 "occupied": occupied,
                 "exclude_reason": (
                     "Sudah masuk batch aktif" if occupied
-                    else ("Belum Ada Lokasi" if loc_status == LOCATION_NEED else None)
+                    else (MISSING_LOCATION_REASON if loc_status == LOCATION_NEED else None)
                 ),
             })
     rows.sort(key=lambda r: (r.get("effective_delivery_date") or "9999", r.get("order_number") or "", r.get("stop_id") or ""))
@@ -267,10 +285,11 @@ def build_queue_stops(
 
 
 def snapshot_stop(queue_row: dict, *, priority=None, outlet_closing_time=None, location=None) -> dict:
+    src_loc = location if isinstance(location, dict) else {}
     loc = parse_location(location) if location is not None else parse_location({
         "lat": queue_row.get("lat"),
         "lng": queue_row.get("lng"),
-        "place_id": queue_row.get("place_id"),
+        "place_id": queue_row.get("place_id") or queue_row.get("google_place_id"),
         "formatted_address": queue_row.get("address"),
     })
     pr = normalize_priority(priority if priority is not None else queue_row.get("priority"))
@@ -278,6 +297,8 @@ def snapshot_stop(queue_row: dict, *, priority=None, outlet_closing_time=None, l
         outlet_closing_time if outlet_closing_time is not None else queue_row.get("outlet_closing_time")
     )
     loc_status = loc["location_status"]
+    outlet_id = src_loc.get("outlet_id") or queue_row.get("outlet_id")
+    outlet_name = src_loc.get("outlet_name") or queue_row.get("outlet_name")
     return {
         "stop_id": queue_row["stop_id"],
         "shipment_id": queue_row.get("shipment_id"),
@@ -285,10 +306,13 @@ def snapshot_stop(queue_row: dict, *, priority=None, outlet_closing_time=None, l
         "order_id": queue_row.get("order_id"),
         "order_number": queue_row.get("order_number"),
         "customer": queue_row.get("customer"),
+        "outlet_id": outlet_id,
+        "outlet_name": outlet_name,
         "address": loc.get("formatted_address") or queue_row.get("address"),
         "lat": loc.get("lat"),
         "lng": loc.get("lng"),
         "place_id": loc.get("place_id"),
+        "google_place_id": loc.get("place_id"),
         "qty": int(queue_row.get("qty") or 0),
         "package_count": queue_row.get("package_count"),
         "deadline": queue_row.get("deadline"),

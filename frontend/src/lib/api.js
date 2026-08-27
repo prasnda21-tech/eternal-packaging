@@ -233,6 +233,11 @@ export const api = {
   createDeliveryVehicle: (payload) => client.post(`/delivery/vehicles`, payload).then((r) => r.data),
   depotSettings: () => client.get(`/settings/depot`).then((r) => r.data),
   updateDepotSettings: (payload) => client.put(`/settings/depot`, payload).then((r) => r.data),
+  searchDeliveryPlaces: (q) => client.get(`/delivery/places/search`, { params: { q } }).then((r) => r.data),
+  deliveryPlaceDetails: (placeId) => client.get(`/delivery/places/details`, { params: { place_id: placeId } }).then((r) => r.data),
+  listDeliveryOutlets: (customer) => client.get(`/delivery/outlets`, { params: customer ? { customer } : {} }).then((r) => r.data),
+  saveDeliveryOutlet: (payload) => client.post(`/delivery/outlets`, payload).then((r) => r.data),
+  patchDeliveryOutlet: (id, payload) => client.patch(`/delivery/outlets/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   publicTracking: async (token) => {
     const r = await fetch(`${API}/public/tracking/${encodeURIComponent(token)}`);
     let d = {};

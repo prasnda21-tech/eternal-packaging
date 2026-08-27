@@ -1851,10 +1851,26 @@ html:has(.ship-status-page) #root{
 .route-stop-list li{border:1px solid #e4e8ec;padding:8px 10px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
 .route-stop-actions{display:flex;gap:6px;flex-wrap:wrap}
 .route-map{max-width:320px;border:1px solid #c5ced6;background:#f7faf8;margin:8px 0}
-.route-loc-fill{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.route-loc-fill input{width:88px;min-height:26px}
 .route-loc-ok{color:#1f6b3a;font-weight:700}
 .route-loc-need{color:#8a3b12;font-weight:700}
+.outlet-loc-modal{max-width:560px}
+.outlet-loc-form{display:flex;flex-direction:column;gap:10px}
+.outlet-loc-form label{display:flex;flex-direction:column;gap:4px;font-size:12px}
+.outlet-loc-form input{min-height:32px;padding:4px 8px}
+.outlet-place-suggest{list-style:none;margin:0;padding:0;border:1px solid #c5ced6;max-height:180px;overflow:auto}
+.outlet-place-suggest button{display:block;width:100%;text-align:left;background:#fff;border:0;border-bottom:1px solid #eef1f4;padding:8px 10px;cursor:pointer}
+.outlet-place-suggest button:hover{background:#eaf1f6}
+.outlet-map-preview{position:relative;width:100%;height:240px;border:1px solid #c5ced6;background:#e8eef2;overflow:hidden}
+.outlet-map-preview.is-empty{display:flex;align-items:center;justify-content:center;color:#6a7680;font-size:12px}
+.outlet-map-interactive{cursor:crosshair;user-select:none}
+.outlet-map-tile{position:absolute;width:256px;height:256px;pointer-events:none;max-width:none}
+.outlet-map-marker{position:absolute;width:22px;height:22px;margin-left:-11px;margin-top:-22px;border:0;padding:0;background:transparent;cursor:grab;z-index:2}
+.outlet-map-marker:before{content:"";display:block;width:18px;height:18px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#c0392b;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.outlet-map-marker:active{cursor:grabbing}
+.outlet-map-attrib{position:absolute;right:4px;bottom:4px;font-size:10px;background:rgba(255,255,255,.85);padding:1px 4px;z-index:2;color:#445}
+.outlet-map-google-canvas{width:100%;height:100%}
+.ship-table tbody tr.is-disabled td{opacity:.65;background:#f6f6f6}
+.primary.sm{min-height:28px;padding:3px 10px;font-size:12.5px}
 
 
 

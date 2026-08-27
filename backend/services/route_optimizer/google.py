@@ -326,7 +326,7 @@ def parse_google_response(payload: dict, req: OptimizeRequest) -> OptimizeResult
             continue
         if not st.has_location():
             unassigned.append(UnassignedStop(
-                stop_id=st.stop_id, reason="Belum Ada Lokasi", code="missing_location",
+                stop_id=st.stop_id, reason="Lokasi outlet belum diatur", code="missing_location",
             ))
         else:
             unassigned.append(UnassignedStop(

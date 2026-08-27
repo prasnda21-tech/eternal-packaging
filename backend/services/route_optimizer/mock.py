@@ -72,7 +72,7 @@ class LocalMockRouteOptimizer(RouteOptimizerProvider):
             if not st.has_location():
                 unassigned.append(UnassignedStop(
                     stop_id=st.stop_id,
-                    reason="Belum Ada Lokasi",
+                    reason="Lokasi outlet belum diatur",
                     code="missing_location",
                 ))
             else:

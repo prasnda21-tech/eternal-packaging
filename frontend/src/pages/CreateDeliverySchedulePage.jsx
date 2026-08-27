@@ -3,19 +3,22 @@ import { Link, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { PRIORITY_OPTIONS, selectAllState, stopLocationOk, toggleSelectAll } from "../lib/deliveryRoute";
+import { PRIORITY_OPTIONS, selectAllState, stopLocationOk, toggleSelectAll, outletAddressLabel } from "../lib/deliveryRoute";
+import OutletLocationModal from "../components/OutletLocationModal";
 
 export default function CreateDeliverySchedulePage() {
   const { hasPerm, user } = useAuth();
   const navigate = useNavigate();
   const canCreate = hasPerm("delivery.schedule.create");
   const canPublish = hasPerm("delivery.schedule.publish");
+  const canSetLocation = hasPerm("delivery.location.manage") || hasPerm("delivery.schedule.create");
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState([]);
   const [edits, setEdits] = useState({});
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [locRow, setLocRow] = useState(null);
   const allRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -44,8 +47,7 @@ export default function CreateDeliverySchedulePage() {
   };
 
   const toggle = (row) => {
-    const e = edits[row.stop_id] || {};
-    if (row.occupied || !(stopLocationOk(row) || (e.lat && e.lng))) return;
+    if (row.occupied || !stopLocationOk(row)) return;
     setSelected((prev) => prev.includes(row.stop_id) ? prev.filter((id) => id !== row.stop_id) : [...prev, row.stop_id]);
   };
 
@@ -56,8 +58,7 @@ export default function CreateDeliverySchedulePage() {
     try {
       const stops = selected.map((id) => {
         const e = edits[id] || {};
-        const loc = (e.lat || e.lng || e.place_id) ? { lat: e.lat, lng: e.lng, place_id: e.place_id, formatted_address: e.address } : undefined;
-        return { stop_id: id, priority: e.priority, outlet_closing_time: e.closing, location: loc };
+        return { stop_id: id, priority: e.priority, outlet_closing_time: e.closing };
       });
       const created = await api.createDeliveryBatch({ delivery_date: date, stop_ids: selected, stops });
       const id = created.batch?.id;
@@ -79,7 +80,7 @@ export default function CreateDeliverySchedulePage() {
         <header className="ship-status-heading">
           <p className="eyebrow">Produksi · Jadwal Pengiriman</p>
           <h1>Buat Jadwal Pengiriman</h1>
-          <p className="subhead">Pilih stop SIAP DIKIRIM (bukan otomatis satu PO). Partial hanya qty eligible.</p>
+          <p className="subhead">Pilih stop SIAP DIKIRIM. Atur lokasi outlet sebelum optimize. Prioritas dan jam tutup terpisah dari koordinat.</p>
         </header>
         <div className="ship-status-toolbar">
           <label className="ship-filter-field">
@@ -110,18 +111,19 @@ export default function CreateDeliverySchedulePage() {
               </th>
               <th>No PO</th>
               <th>Customer</th>
-              <th>Alamat</th>
+              <th>Alamat / Outlet</th>
               <th>Qty</th>
               <th>Prioritas</th>
               <th>Jam Tutup</th>
               <th>Status Lokasi</th>
               <th>Status</th>
+              <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => {
               const e = edits[r.stop_id] || {};
-              const locOk = stopLocationOk(r) || (e.lat && e.lng);
+              const locOk = stopLocationOk(r);
               const disabled = r.occupied || !locOk;
               return (
                 <tr key={r.stop_id} data-testid={`cds-row-${r.stop_id}`} className={disabled ? "is-disabled" : ""}>
@@ -137,18 +139,8 @@ export default function CreateDeliverySchedulePage() {
                   </td>
                   <td className="mono">{r.order_id ? <Link to={`/po/${r.order_id}`}>{r.order_number}</Link> : r.order_number}</td>
                   <td>{r.customer}</td>
-                  <td>
-                    {r.address || "—"}
-                    {r.location_status === "need_location" && (
-                      <div className="route-loc-fill" data-testid={`cds-need-location-${r.stop_id}`}>
-                        <span className="muted small">Belum Ada Lokasi</span>
-                        <input placeholder="Lat" value={e.lat || ""} onChange={(ev) => setEdit(r.stop_id, { lat: ev.target.value })} data-testid={`cds-lat-${r.stop_id}`} />
-                        <input placeholder="Lng" value={e.lng || ""} onChange={(ev) => setEdit(r.stop_id, { lng: ev.target.value })} data-testid={`cds-lng-${r.stop_id}`} />
-                        <input placeholder="Place ID" value={e.place_id || ""} onChange={(ev) => setEdit(r.stop_id, { place_id: ev.target.value })} />
-                      </div>
-                    )}
-                  </td>
-                  <td className="mono">{r.qty}</td>
+                  <td data-testid={`cds-outlet-${r.stop_id}`}>{outletAddressLabel(r)}</td>
+                  <td className="mono" data-testid={`cds-qty-${r.stop_id}`}>{r.qty ?? "—"}</td>
                   <td>
                     <select
                       value={e.priority || r.priority || "normal"}
@@ -168,16 +160,34 @@ export default function CreateDeliverySchedulePage() {
                     />
                   </td>
                   <td>
-                    <span className={locOk ? "route-loc-ok" : "route-loc-need"} data-testid={`cds-loc-status-${r.stop_id}`}>
-                      {locOk ? "Lokasi Siap" : "Belum Ada Lokasi"}
+                    <span
+                      className={locOk ? "route-loc-ok" : "route-loc-need"}
+                      data-testid={`cds-loc-status-${r.stop_id}`}
+                    >
+                      {r.location_label || (locOk ? "Lokasi Siap" : "Belum Ada Lokasi")}
                     </span>
+                    {!locOk && r.exclude_reason && (
+                      <div className="muted small" data-testid={`cds-need-location-${r.stop_id}`}>{r.exclude_reason}</div>
+                    )}
                   </td>
-                  <td>{r.exclude_reason || r.status}</td>
+                  <td data-testid={`cds-status-${r.stop_id}`}>{r.status || (locOk ? "SIAP DIKIRIM" : "Belum Ada Lokasi")}</td>
+                  <td>
+                    {canSetLocation && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        onClick={() => setLocRow(r)}
+                        data-testid={`cds-set-location-${r.stop_id}`}
+                      >
+                        {locOk ? "Edit Lokasi" : "Atur Lokasi"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
             {!rows.length && !busy && (
-              <tr><td colSpan={9} className="empty-state">Tidak ada pengiriman SIAP DIKIRIM.</td></tr>
+              <tr><td colSpan={10} className="empty-state">Tidak ada pengiriman SIAP DIKIRIM.</td></tr>
             )}
           </tbody>
         </table>
@@ -192,6 +202,13 @@ export default function CreateDeliverySchedulePage() {
         </button>
         <span className="muted small" data-testid="cds-actor">Penjadwal: {user?.name}</span>
       </div>
+      <OutletLocationModal
+        open={!!locRow}
+        row={locRow}
+        canEdit={canSetLocation}
+        onClose={() => setLocRow(null)}
+        onSaved={() => load()}
+      />
     </div>
   );
 }
