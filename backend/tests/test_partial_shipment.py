@@ -342,9 +342,12 @@ def test_proof_evidence_partial_does_not_mark_full_po():
     assert ev["delivery_status"] == "Sebagian Terkirim"
 
 
-def test_proof_evidence_none_without_loading():
+def test_proof_evidence_uses_packed_sj_without_loading():
     o = _po_a(packed=4000, shipped_lines=[{"id": "s1", "lines": [{"line_idx": 0, "qty": 4000}]}])
-    assert apply_delivery_from_proof_evidence(o) is None
+    ev = apply_delivery_from_proof_evidence(o)
+    assert ev is not None
+    assert ev["qty_delivered"] == 4000
+    assert ev["full"] is False
 
 
 def test_multi_item_loading_not_fully_complete():

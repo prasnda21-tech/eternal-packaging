@@ -17,7 +17,6 @@ import {
   canSubmitDivision,
   fallbackDivision,
   helperWorkModel,
-  loadingWorkModel,
   operatorLineModels,
   operatorMyAssignmentModels,
   operatorStatusLabel,
@@ -229,7 +228,6 @@ function qtyModelFor(divisionId, order) {
   if (divisionId === "screener") return screenerWorkModel(order);
   if (divisionId === "helper") return helperWorkModel(order);
   if (divisionId === "packing") return packingWorkModel(order);
-  if (divisionId === "loading") return loadingWorkModel(order);
   return null;
 }
 
@@ -250,11 +248,6 @@ async function submitQtyDivision(divisionId, orderId, confirm) {
       qty: confirm.qty,
       action_id: confirm.actionId,
     }]);
-  }
-  if (divisionId === "loading") {
-    return api.updateLoading(orderId, {
-      lines: [{ line_idx: confirm.line.lineIdx, qty: confirm.qty, action_id: confirm.actionId }],
-    });
   }
   throw new Error("Divisi tidak didukung");
 }

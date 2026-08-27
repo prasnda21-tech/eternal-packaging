@@ -1009,18 +1009,13 @@ def _sync_workflow_stage(order: dict, *, force: bool = False) -> bool:
 
 
 def _sync_dispatch_stage(order: dict) -> bool:
-    """Increase-only current_stage from Loading / Terkirim evidence.
+    """Increase-only current_stage from Terkirim evidence.
 
-    SJ record alone stays at 12 (Loading UI is gated by surat_jalan_created).
-    First loaded qty opens stage 13. Full delivered qty opens stage 14.
+    Loading no longer advances stage. SJ stays at 12 until full delivery (14).
     Partial delivery never jumps the whole PO to Terkirim.
     """
     cs = int(order.get("current_stage") or 0)
     changed = False
-    if _surat_jalan_created(order) and _qr_effective_loaded_qty(order) > 0 and cs < 13:
-        order["current_stage"] = 13
-        changed = True
-        cs = 13
     if _qr_is_fully_delivered(order) and cs < 14:
         order["current_stage"] = 14
         changed = True
@@ -1268,10 +1263,10 @@ def _compute_pending_queues(order: dict) -> List[str]:
 
     if cs == 11:
         queues.append("packing")
-    elif cs == 12:
+    elif not _surat_jalan_created(order) and cs >= 11:
         queues.append("delivery_note")
-    elif cs == 13:
-        queues.append("loading")
+    elif _surat_jalan_created(order) and not _terkirim_confirmed(order):
+        queues.append("driver")
 
     return queues
 
@@ -1398,16 +1393,13 @@ def _prereq_reasons_for_loading(order: dict) -> list:
 
 
 def _prereq_reasons_for_terkirim(order: dict) -> list:
-    """Gate Loading → Terkirim penuh (advance / mark_delivered). Minimal:
-      - Surat Jalan valid
-      - Loading qty mencapai cap (atau fallback checklist historis)
+    """Gate Surat Jalan → Terkirim (advance / mark_delivered). Loading is not required.
+
     Bukti pengiriman parsial tidak memakai gate ini — lihat upload_delivery_proof.
     """
     reasons = []
     if not _surat_jalan_created(order):
         reasons.append("Surat Jalan belum dibuat.")
-    if not _loading_completed(order):
-        reasons.append("Loading belum lengkap.")
     return reasons
 
 
@@ -2321,21 +2313,20 @@ def _po_needs_packing(o: dict) -> bool:
 
 
 def _po_needs_surat_jalan(o: dict) -> bool:
-    if (o.get("current_stage") or 0) >= 13:
+    if _surat_jalan_created(o) or o.get("delivery_status") == "Terkirim":
         return False
     return (o.get("current_stage") or 0) >= 11 and not o.get("delivery_note")
 
 
 def _po_needs_loading(o: dict) -> bool:
-    if o.get("delivery_status") == "Terkirim":
-        return False
-    return bool(o.get("delivery_note") or o.get("surat_jalan_created")) and not _loading_completed(o)
+    """Loading is no longer an active workflow."""
+    return False
 
 
 def _po_needs_terkirim(o: dict) -> bool:
-    if o.get("delivery_status") == "Terkirim":
+    if o.get("delivery_status") == "Terkirim" or _terkirim_confirmed(o):
         return False
-    return _loading_completed(o)
+    return _surat_jalan_created(o)
 
 
 def _op_task_predicate(o: dict, user_email: str, is_supervisor: bool = False):
@@ -2366,7 +2357,6 @@ _ACTION_DEFS = [
     ("cetak_qty", "Input Qty Cetak", "operator.update", _po_needs_cetak_qty),
     ("packing", "Packing", "packing.update", _po_needs_packing),
     ("surat_jalan", "Buat Surat Jalan", "delivery_note.manage", _po_needs_surat_jalan),
-    ("loading", "Loading", "loading.update", _po_needs_loading),
     ("terkirim", "Tandai Terkirim", "delivery.update", _po_needs_terkirim),
 ]
 
@@ -3020,108 +3010,13 @@ async def add_note(order_id: str, payload: NotePayload, user=Depends(current_use
 
 @api_router.post("/orders/{order_id}/loading")
 async def update_loading(order_id: str, payload: LoadingChecklistPayload, user=Depends(current_user)):
-    """Loading qty/events (additive) + optional checklist metadata.
-    Perm-based (`loading.update`). Saving loaded qty bumps stage to Loading
-    (13) from evidence; never jumps to Terkirim.
-    Completion = qty actual mencapai cap, dengan fallback checklist historis.
-    """
+    """Loading is no longer an active workflow. Historical records stay stored."""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "loading.update")
-
-    def mutate(order: dict):
-        if not _surat_jalan_created(order):
-            raise HTTPException(400, "Surat Jalan harus dibuat terlebih dahulu.")
-        prev_complete = _loading_completed(order)
-        existing = order.get("loading_checklist") or {}
-        items_loaded = existing.get("items_loaded") if payload.items_loaded is None else bool(payload.items_loaded)
-        seal_ok = existing.get("seal_ok") if payload.seal_ok is None else bool(payload.seal_ok)
-        order["loading_checklist"] = {
-            "vehicle_plate": payload.vehicle_plate if payload.vehicle_plate is not None else existing.get("vehicle_plate"),
-            "driver_name": payload.driver_name if payload.driver_name is not None else existing.get("driver_name"),
-            "items_loaded": items_loaded,
-            "seal_ok": seal_ok,
-            "notes": payload.notes if payload.notes is not None else existing.get("notes"),
-            "updated_by": user.get("email"),
-            "updated_by_name": user.get("name"),
-            "updated_at": now_iso(),
-        }
-        qty_note = ""
-        if payload.lines is not None:
-            increments = []
-            absolutes = []
-            for x in payload.lines:
-                if x.qty is not None:
-                    increments.append({"line_idx": int(x.line_idx), "qty": int(x.qty), "action_id": x.action_id})
-                elif x.loaded_qty is not None:
-                    absolutes.append({"line_idx": int(x.line_idx), "loaded_qty": int(x.loaded_qty)})
-            order.setdefault("loading_info", {})
-            existing_events = list((order.get("loading_info") or {}).get("events") or [])
-            if increments:
-                remaining = []
-                for u in increments:
-                    if u.get("action_id") and any(ev.get("action_id") == u.get("action_id") for ev in existing_events):
-                        continue
-                    remaining.append(u)
-                increments = remaining
-            if increments:
-                err = _qr_validate_loading_increments(increments, order)
-                if err:
-                    raise HTTPException(400, err)
-                merged, events = _qr_apply_loading_increments(order, increments)
-                stamped = []
-                for ev in events:
-                    if ev.get("created_at"):
-                        stamped.append(ev)
-                        continue
-                    match = next((u for u in increments if int(u["line_idx"]) == int(ev.get("line_idx")) and not u.get("_used")), None)
-                    if match:
-                        match["_used"] = True
-                    stamped.append({
-                        **ev,
-                        "id": str(uuid.uuid4()),
-                        "created_by": user.get("email"),
-                        "created_by_name": user.get("name"),
-                        "created_at": now_iso(),
-                        "action_id": (match or {}).get("action_id"),
-                    })
-                order["loading_info"]["lines"] = merged
-                order["loading_info"]["events"] = stamped
-                detail = ", ".join(f"#{u['line_idx']}+{u['qty']}" for u in increments)
-                qty_note = f" · qty {detail}"
-            if absolutes:
-                err = _qr_validate_loading_lines(absolutes, order)
-                if err:
-                    raise HTTPException(400, err)
-                merged = _qr_merge_loading_line_updates(order, absolutes)
-                order["loading_info"]["lines"] = merged
-                detail = ", ".join(
-                    f"#{x['line_idx']}={x['loaded_qty']}" for x in merged if int(x.get("loaded_qty") or 0) > 0
-                )
-                qty_note = f" · qty {detail or '0'}"
-            order["loading_info"]["updated_by"] = user.get("email")
-            order["loading_info"]["updated_by_name"] = user.get("name")
-            order["loading_info"]["updated_at"] = now_iso()
-        now_complete = _loading_completed(order)
-        if now_complete and not order.get("loading_completed_at"):
-            order["loading_completed_at"] = now_iso()
-            order["loading_completed_by"] = user.get("email")
-            order["loading_completed_by_name"] = user.get("name")
-        _sync_dispatch_stage(order)
-        if now_complete and not prev_complete:
-            add_timeline(order, 13, user, note=f"Loading selesai{qty_note}")
-        else:
-            add_timeline(
-                order,
-                order["current_stage"],
-                user,
-                note=f"Loading diperbarui ({'lengkap' if now_complete else 'parsial/berjalan'}){qty_note}",
-            )
-
-    order = await _with_quantity_lock(order_id, mutate)
-    return {"order": order}
+    raise HTTPException(400, "Loading bukan lagi workflow aktif. Data historis tetap tersimpan.")
 
 
 @api_router.post("/orders/{order_id}/approve-sample")
@@ -3681,7 +3576,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             raise HTTPException(400, blocked)
         evidence = _qr_apply_delivery_from_proof_evidence(order)
         if not evidence:
-            raise HTTPException(400, "Belum ada qty loading untuk dikonfirmasi terkirim.")
+            raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
         now = now_iso()
         current_delivered = _qr_qty_delivered(order)
         increment = int(evidence["qty_delivered"]) - int(current_delivered or 0)

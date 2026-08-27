@@ -1,7 +1,7 @@
 """Ready-to-ship delivery stops from existing shipment / qty truth.
 
 Unit = delivery stop / shipment stop, not always one PO.
-Partial: only remaining eligible loaded qty enters the queue.
+Partial: only remaining eligible packed/SJ qty enters the queue.
 One aggregation-style projection; callers must not fetch POs one-by-one.
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from quantity_rules import (
-    effective_loaded_qty,
+    eligible_delivery_qty,
     is_fully_delivered,
     qty_delivered,
     shipments_stored,
@@ -158,12 +158,15 @@ def normalize_closing_time(raw: Any) -> Optional[str]:
 
 
 def remaining_eligible_qty(order: dict) -> int:
-    """Loaded qty not yet confirmed delivered. Source of truth for SIAP DIKIRIM."""
+    """Packed/SJ qty not yet confirmed delivered. Source of truth for SIAP DIKIRIM.
+
+    Does not use loaded_qty as an active delivery limit.
+    """
     if is_fully_delivered(order):
         return 0
-    loaded = effective_loaded_qty(order)
+    eligible = eligible_delivery_qty(order)
     delivered = qty_delivered(order)
-    return max(0, loaded - delivered)
+    return max(0, eligible - delivered)
 
 
 def _shipment_qty(sh: dict) -> int:

@@ -22,7 +22,7 @@ describe("append-only workflow UI", () => {
     expect(src("PackingPanel.jsx")).not.toMatch(/Lanjut Packing/);
     expect(src("PackingPanel.jsx")).not.toMatch(/complete-packing-button/);
     expect(src("RoleWorkPanel.jsx")).not.toMatch(/Packing Sebagian/);
-    expect(src("LoadingPanel.jsx")).toMatch(/action_id: confirm\.actionId/);
+    expect(src("LoadingPanel.jsx")).not.toMatch(/loading-qty-input/);
     expect(src("SuratJalanPanel.jsx")).toMatch(/ConfirmActionModal/);
     expect(src("DeliveryProofPanel.jsx")).toMatch(/confirm-delivered-button/);
     expect(src("DeliveryProofPanel.jsx")).toMatch(/KONFIRMASI PENGIRIMAN/);
@@ -50,7 +50,7 @@ describe("append-only workflow UI", () => {
     expect(s).toMatch(/updateScreenerInfo/);
     expect(s).toMatch(/updateHelperPrepItems/);
     expect(s).toMatch(/savePackingInfo/);
-    expect(s).toMatch(/updateLoading/);
+    expect(s).not.toMatch(/updateLoading/);
     expect(s).toMatch(/SuratJalanPanel/);
     expect(s).toMatch(/DeliveryProofPanel/);
   });

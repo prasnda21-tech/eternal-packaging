@@ -35,7 +35,6 @@ describe("tasksNavVisible", () => {
       NAV_KEYS.tasksOperator,
       NAV_KEYS.tasksPacking,
       NAV_KEYS.tasksSuratJalan,
-      NAV_KEYS.tasksLoading,
       NAV_KEYS.tasksDelivery,
     ));
     expect(v.parent).toBe(true);
@@ -46,7 +45,6 @@ describe("tasksNavVisible", () => {
     expect(v.operator).toBe(true);
     expect(v.packing).toBe(true);
     expect(v.surat_jalan).toBe(true);
-    expect(v.loading).toBe(true);
     expect(v.terkirim).toBe(true);
   });
 
@@ -161,7 +159,6 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.tasksOperator,
       NAV_KEYS.tasksPacking,
       NAV_KEYS.tasksSuratJalan,
-      NAV_KEYS.tasksLoading,
       NAV_KEYS.tasksDelivery,
     ]));
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.production).label).toBe("Produksi");
@@ -182,12 +179,11 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.tasksOperator,
       NAV_KEYS.tasksPacking,
       NAV_KEYS.tasksSuratJalan,
-      NAV_KEYS.tasksLoading,
       NAV_KEYS.tasksDelivery,
     ]);
     expect(TASK_NAV_ORDER).toEqual([
       "designer", "screener", "kepala_produksi", "helper", "operator",
-      "packing", "surat_jalan", "loading", "terkirim",
+      "packing", "surat_jalan", "terkirim",
     ]);
   });
 });

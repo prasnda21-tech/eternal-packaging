@@ -24,7 +24,7 @@ describe("Division task UI", () => {
     expect(app).toMatch(/\/tasks\/operator/);
     expect(app).toMatch(/\/tasks\/packing/);
     expect(app).toMatch(/\/tasks\/surat-jalan/);
-    expect(app).toMatch(/\/tasks\/loading/);
+    expect(app).not.toMatch(/\/tasks\/loading/);
     expect(app).toMatch(/\/tasks\/delivery/);
   });
 

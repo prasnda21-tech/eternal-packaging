@@ -63,7 +63,7 @@ def _ready_order(**extra):
         "total_quantity": 10000,
         "packing_info": {"qty_packed": 4000, "lines": [{"line_idx": 0, "packed_qty": 4000}]},
         "shipments": extra.pop("shipments", [{"id": "sh-1", "number": "SJ-1", "lines": [{"line_idx": 0, "qty": 4000}]}]),
-        "loading_info": {"lines": [{"line_idx": 0, "loaded_qty": 4000}]},
+        "loading_info": extra.pop("loading_info", {}),
         "qty_delivered": extra.pop("qty_delivered", 0),
         "delivery_location": extra.pop("delivery_location", {"lat": -6.2, "lng": 106.8, "place_id": "ChIJA"}),
         "cancelled": False,

@@ -98,7 +98,6 @@ export default function App() {
             <Route path="/tasks/operator" element={<PermGate anyOf={[NAV_KEYS.tasksOperator, "operator.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/packing" element={<PermGate anyOf={[NAV_KEYS.tasksPacking, "packing.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/surat-jalan" element={<PermGate anyOf={[NAV_KEYS.tasksSuratJalan, "delivery_note.manage"]}><DivisionTaskPage /></PermGate>} />
-            <Route path="/tasks/loading" element={<PermGate anyOf={[NAV_KEYS.tasksLoading, "loading.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/delivery" element={<PermGate anyOf={[NAV_KEYS.tasksDelivery, "delivery.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "schedule.view"]}><DeliverySchedulePage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman/buat" element={<PermGate anyOf={["delivery.schedule.create"]}><CreateDeliverySchedulePage /></PermGate>} />

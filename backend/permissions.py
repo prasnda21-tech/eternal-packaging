@@ -58,7 +58,7 @@ PERMISSION_CATALOG = [
     ("Packing", "packing.update", "Packing"),
     ("Surat Jalan", "delivery_note.view", "Lihat Surat Jalan"),
     ("Surat Jalan", "delivery_note.manage", "Kelola Surat Jalan"),
-    ("Loading", "loading.update", "Loading kendaraan"),
+    ("Loading", "loading.update", "Loading kendaraan (legacy)"),
     ("Pengiriman", "delivery.update", "Update status kirim"),
     ("Pengiriman", "delivery.reschedule", "Ajukan penjadwalan ulang pengiriman"),
     ("Pengiriman", "delivery.reschedule.set_date", "Tetapkan tanggal penjadwalan ulang"),
@@ -106,7 +106,6 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.tasks.operator", "Menu Tugas Operator"),
     ("Akses Menu", "nav.tasks.packing", "Menu Tugas Packing"),
     ("Akses Menu", "nav.tasks.surat_jalan", "Menu Tugas Surat Jalan"),
-    ("Akses Menu", "nav.tasks.loading", "Menu Tugas Loading"),
     ("Akses Menu", "nav.tasks.delivery", "Menu Tugas Driver / Terkirim"),
     ("Akses Menu", "nav.sales", "Menu Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
@@ -161,7 +160,6 @@ NAV_MENU_ITEMS = (
     ("nav.tasks.operator", "Operator", "nav.tasks"),
     ("nav.tasks.packing", "Packing", "nav.tasks"),
     ("nav.tasks.surat_jalan", "Surat Jalan", "nav.tasks"),
-    ("nav.tasks.loading", "Loading", "nav.tasks"),
     ("nav.tasks.delivery", "Driver / Terkirim", "nav.tasks"),
     ("nav.sales", "Penjualan", None),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
@@ -235,10 +233,6 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.surat_jalan")
-    if "loading.update" in existing:
-        nav.add("nav.production")
-        nav.add("nav.tasks")
-        nav.add("nav.tasks.loading")
     if "delivery.update" in existing:
         nav.add("nav.production")
         nav.add("nav.tasks")
@@ -373,8 +367,7 @@ STAGE_PERMISSION = {
     9: "operator.update",        # Konfirmasi Sample -> Cetak
     10: "operator.update",       # Cetak -> Packing
     11: "packing.update",        # Packing -> Surat Jalan
-    13: "loading.update",        # Loading -> Driver
-    14: "delivery.update",       # Driver -> Terkirim
+    14: "delivery.update",       # Surat Jalan / Driver -> Terkirim
 }
 
 

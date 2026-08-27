@@ -18,7 +18,6 @@ from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
     is_fully_delivered,
-    loading_status_semantic,
     packing_status_semantic,
     print_status,
     qty_delivered,
@@ -140,13 +139,6 @@ def _surat_jalan_created(order: dict) -> bool:
     )
 
 
-def _loading_done(order: dict) -> bool:
-    if loading_status_semantic(order) == "completed":
-        return True
-    lc = order.get("loading_checklist") or {}
-    return bool(lc.get("items_loaded")) and bool(lc.get("seal_ok"))
-
-
 def _status(completed: bool, in_progress: bool) -> str:
     if completed:
         return STATUS_COMPLETED
@@ -236,22 +228,13 @@ def _surat_jalan_status(order: dict) -> str:
     return STATUS_WAITING
 
 
-def _loading_status(order: dict) -> str:
-    qty_st = loading_status_semantic(order)
-    if _loading_done(order):
-        return STATUS_COMPLETED
-    if qty_st == "partial" or _surat_jalan_created(order):
-        return STATUS_IN_PROGRESS
-    return STATUS_WAITING
-
-
 def _terkirim_status(order: dict) -> str:
     if is_fully_delivered(order):
         return STATUS_COMPLETED
     delivered = qty_delivered(order)
     if order.get("delivery_status") == "Sebagian Terkirim" or delivered > 0:
         return STATUS_IN_PROGRESS
-    if _loading_done(order) or loading_status_semantic(order) == "partial":
+    if _surat_jalan_created(order):
         return STATUS_IN_PROGRESS
     return STATUS_WAITING
 
@@ -272,7 +255,6 @@ def customer_workflow(order: dict) -> List[Dict[str, str]]:
         ("Cetak", _cetak_status(order, ready)),
         ("Packing", _packing_status(order, ready)),
         ("Surat Jalan", _surat_jalan_status(order)),
-        ("Loading", _loading_status(order)),
         ("Terkirim", _terkirim_status(order)),
     ]
     out: List[Dict[str, str]] = []

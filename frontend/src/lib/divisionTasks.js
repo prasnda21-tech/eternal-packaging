@@ -18,7 +18,6 @@ export const DIVISION_TASK_PAGES = {
   operator: { id: "operator", title: "Tugas Operator", qtyCols: true, targetLabel: "Qty Dijadwalkan", doneLabel: "Qty Cetak Aktual" },
   packing: { id: "packing", title: "Tugas Packing", qtyCols: true, targetLabel: "Qty Bisa Dipacking", doneLabel: "Sudah Packing" },
   "surat-jalan": { id: "surat_jalan", title: "Tugas Surat Jalan", qtyCols: false, extra: "sj" },
-  loading: { id: "loading", title: "Tugas Loading", qtyCols: true, targetLabel: "Qty Bisa Loading", doneLabel: "Sudah Loading" },
   delivery: { id: "terkirim", title: "Tugas Driver / Terkirim", qtyCols: false, extra: "driver" },
 };
 

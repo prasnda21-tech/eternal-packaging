@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Printer, Download, Save, CheckCircle2, XCircle } from "lucide-react";
+import { ArrowLeft, Printer, Download, CheckCircle2, XCircle } from "lucide-react";
 import api from "../lib/api";
-import { useAuth } from "../lib/auth";
 import { formatDate, formatDeadline } from "../lib/constants";
 import { formatApiError } from "../lib/errors";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
@@ -10,64 +9,21 @@ import DeliveryProofPanel from "../components/DeliveryProofPanel";
 export default function SuratJalan() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user, hasPerm } = useAuth();
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Pisahkan error state:
-  //   `loadErr`   -> gagal load awal halaman (boleh replace halaman)
-  //   `actionErr` -> gagal action (Simpan data loading). Tampil inline,
-  //                  jangan unmount halaman supaya konteks user tidak hilang.
   const [loadErr, setLoadErr] = useState("");
-  const [actionErr, setActionErr] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  // Checklist form (pre-filled from server data)
-  const [vehiclePlate, setVehiclePlate] = useState("");
-  const [driverName, setDriverName] = useState("");
-  const [notes, setNotes] = useState("");
 
   useEffect(() => {
     api.getOrder(id).then((d) => {
       setOrder(d.order);
-      const c = d.order.loading_checklist;
-      if (c) {
-        setVehiclePlate(c.vehicle_plate || "");
-        setDriverName(c.driver_name || "");
-        setNotes(c.notes || "");
-      } else if (user?.role === "driver") {
-        setDriverName(user.name || "");
-      }
     }).catch((e) => setLoadErr(formatApiError(e, "Gagal memuat"))).finally(() => setLoading(false));
-  }, [id, user]);
+  }, [id]);
 
   const timelineEvent = (stage) => order?.timeline?.filter((t) => t.stage === stage).slice(-1)[0] || null;
 
   const packedEvent = useMemo(() => timelineEvent(11), [order]);
   const loadingEvent = useMemo(() => timelineEvent(13), [order]);
   const deliveredEvent = useMemo(() => timelineEvent(15), [order]);
-
-  // Auth gating via Effective Permission (bukan role name).
-  //   `loading.update` = izin update data loading (kendaraan/plat/driver/dsb.)
-  //   Bukti pengiriman (Terkirim) di-upload lewat DeliveryProofPanel.
-  const canEditChecklist = !!user && hasPerm("loading.update");
-
-  const saveChecklist = async () => {
-    setBusy(true);
-    setActionErr("");
-    try {
-      const r = await api.updateLoading(order.id, {
-        vehicle_plate: vehiclePlate,
-        driver_name: driverName,
-        notes,
-      });
-      setOrder(r.order);
-      setActionErr("");
-    } catch (e) {
-      setActionErr(formatApiError(e, "Gagal menyimpan checklist"));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const doPrint = () => window.print();
 
@@ -78,6 +34,8 @@ export default function SuratJalan() {
 
   const sjNumber = order.delivery_note_number || `SJ-${order.po_number.replace("PO-", "")}`;
   const isDelivered = order.delivery_status === "Terkirim";
+  const lc = order.loading_checklist || {};
+  const driverName = lc.driver_name || "";
 
   return (
     <div className="surat-jalan-wrap">
@@ -153,89 +111,20 @@ export default function SuratJalan() {
           </table>
         </section>
 
-        {/* Loading Checklist (interactive on screen, static-look on print) */}
         <section className="sj-checklist" data-testid="sj-checklist">
-          <h4>Checklist Loading &amp; Pengiriman</h4>
-          <div className="sj-form">
-            <label className="sj-field">
-              <span>No. Kendaraan</span>
-              <input
-                type="text"
-                value={vehiclePlate}
-                onChange={(e) => setVehiclePlate(e.target.value)}
-                disabled={!canEditChecklist || busy}
-                data-testid="sj-vehicle-input"
-                placeholder="B 1234 XYZ"
-              />
-            </label>
-            <label className="sj-field">
-              <span>Nama Driver</span>
-              <input
-                type="text"
-                value={driverName}
-                onChange={(e) => setDriverName(e.target.value)}
-                disabled={!canEditChecklist || busy}
-                data-testid="sj-driver-input"
-                placeholder="Nama pengemudi"
-              />
-            </label>
-            <label className="sj-field sj-notes">
-              <span>Catatan loading</span>
-              <textarea
-                rows={2}
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                disabled={!canEditChecklist || busy}
-                data-testid="sj-notes-input"
-                placeholder="Kondisi khusus, retur, dst."
-              />
-            </label>
-          </div>
-
-          {canEditChecklist && (
-            <div className="no-print sj-actions">
-              <button className="primary" onClick={saveChecklist} disabled={busy} data-testid="sj-save-checklist">
-                <Save size={14} /> Simpan data loading
-              </button>
+          <h4>Pengiriman</h4>
+          {(lc.vehicle_plate || lc.driver_name || lc.notes) && (
+            <div className="sj-form" data-testid="sj-loading-history">
+              {lc.vehicle_plate && <p><b>No. Kendaraan:</b> {lc.vehicle_plate}</p>}
+              {lc.driver_name && <p><b>Nama Driver:</b> {lc.driver_name}</p>}
+              {lc.notes && <p><b>Catatan:</b> {lc.notes}</p>}
             </div>
           )}
-
-          {/* Inline action error banner - halaman tetap ter-render walau action gagal */}
-          {actionErr && (
-            <div
-              className="no-print"
-              role="alert"
-              data-testid="sj-action-error"
-              style={{
-                marginTop: 10,
-                padding: "10px 14px",
-                border: "1px solid #f5c2c7",
-                background: "#f8d7da",
-                color: "#842029",
-                borderRadius: 8,
-                whiteSpace: "pre-line",
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 10,
-              }}
-            >
-              <XCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-              <div style={{ flex: 1 }}>{String(actionErr)}</div>
-              <button
-                type="button"
-                className="ghost sm"
-                onClick={() => setActionErr("")}
-                data-testid="sj-action-error-dismiss"
-                style={{ marginLeft: 8 }}
-              >
-                Tutup
-              </button>
-            </div>
-          )}
-
           <div className="sj-timestamps">
             <div><b>Waktu packing:</b> {packedEvent ? formatDate(packedEvent.at) : "-"}{packedEvent ? <span className="muted small"> · oleh {packedEvent.by_name}</span> : null}</div>
-            <div><b>Waktu loading:</b> {loadingEvent ? formatDate(loadingEvent.at) : (order.loading_checklist ? formatDate(order.loading_checklist.updated_at) : "-")}{order.loading_checklist?.updated_by_name ? <span className="muted small"> · oleh {order.loading_checklist.updated_by_name}</span> : null}</div>
+            {(loadingEvent || lc.updated_at) && (
+              <div><b>Riwayat Loading:</b> {loadingEvent ? formatDate(loadingEvent.at) : formatDate(lc.updated_at)}{lc.updated_by_name ? <span className="muted small"> · oleh {lc.updated_by_name}</span> : null}</div>
+            )}
             <div>
               <b>Status pengiriman:</b> {isDelivered ? (
                 <span className="status-ok"><CheckCircle2 size={12} /> Terkirim</span>

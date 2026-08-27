@@ -8,7 +8,6 @@ from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
     is_fully_delivered,
-    loading_status_semantic,
     packing_status_semantic,
     print_completed_qty,
     print_status,
@@ -64,11 +63,6 @@ def effective_workflow_status(order: dict) -> str:
     delivered = qty_delivered(order)
     if delivered > 0 or order.get("delivery_status") == "Sebagian Terkirim":
         return "Parsial Terkirim"
-    load = loading_status_semantic(order)
-    if load == "completed":
-        return "Loading selesai"
-    if load == "partial":
-        return "Loading parsial"
     if _surat_jalan_created(order):
         semantic = order.get("surat_jalan_status_semantic")
         if semantic == "partial":

@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional
 
 from quantity_rules import (
-    available_for_loading_line,
     can_confirm_delivery,
     helper_prepared_for_line,
     helper_target_for_line,
@@ -17,7 +16,6 @@ from quantity_rules import (
     is_print_line,
     packing_line_breakdown,
     print_qty_total,
-    qty_loaded_for_line,
     qty_packed,
     requires_printing,
     valid_delivery_proof_count,
@@ -99,16 +97,6 @@ DIVISION_DEFS = {
         "nav_key": "nav.tasks.surat_jalan",
         "required_input": "Upload File Surat Jalan",
         "required_input_type": "upload_sj",
-        "action_label": "Kerjakan",
-    },
-    "loading": {
-        "id": "loading",
-        "slug": "loading",
-        "label": "Loading",
-        "submit_perm": "loading.update",
-        "nav_key": "nav.tasks.loading",
-        "required_input": "Qty Loading",
-        "required_input_type": "qty_loading",
         "action_label": "Kerjakan",
     },
     "terkirim": {
@@ -544,40 +532,6 @@ def build_surat_jalan_tasks(order: dict) -> List[dict]:
     return [row]
 
 
-def build_loading_tasks(order: dict) -> List[dict]:
-    if _sj_file_count(order) <= 0 and not order.get("surat_jalan_created") and not order.get("delivery_note"):
-        return []
-    out = []
-    lis = order.get("line_items") or []
-    if not lis:
-        cap = available_for_loading_line(order, 0) + qty_loaded_for_line(order, 0)
-        loaded = qty_loaded_for_line(order, 0)
-        if cap <= 0 and loaded <= 0:
-            return []
-        row = _base_row(order, "loading", line_idx=0)
-        row["target_qty"] = cap
-        row["completed_qty"] = loaded
-        row["remaining_qty"] = max(0, cap - loaded)
-        row["status"] = _qty_status(loaded, cap)
-        row["status_label"] = _status_label(row["status"])
-        return [row]
-    for idx, li in enumerate(lis):
-        loaded = qty_loaded_for_line(order, idx)
-        remain = available_for_loading_line(order, idx)
-        cap = loaded + remain
-        if cap <= 0 and loaded <= 0:
-            continue
-        row = _base_row(order, "loading", line_idx=idx)
-        row["item"] = li.get("name") or row["item"]
-        row["target_qty"] = cap
-        row["completed_qty"] = loaded
-        row["remaining_qty"] = remain
-        row["status"] = _qty_status(loaded, cap)
-        row["status_label"] = _status_label(row["status"])
-        out.append(row)
-    return out
-
-
 def build_delivery_tasks(order: dict) -> List[dict]:
     photos = valid_delivery_proof_count(order)
     confirmed = is_fully_delivered(order) or bool(order.get("delivered_at")) or (
@@ -626,7 +580,6 @@ BUILDERS = {
     "operator": lambda o, u, mine: build_operator_tasks(o, u, mine_only=mine),
     "packing": lambda o, u, mine: build_packing_tasks(o),
     "surat_jalan": lambda o, u, mine: build_surat_jalan_tasks(o),
-    "loading": lambda o, u, mine: build_loading_tasks(o),
     "terkirim": lambda o, u, mine: build_delivery_tasks(o),
 }
 

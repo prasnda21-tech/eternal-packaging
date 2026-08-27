@@ -269,6 +269,7 @@ export default function Dashboard() {
         <p className="muted small" style={{marginTop:0,marginBottom:8}}>Klik salah satu tahap untuk melihat PO yang sedang berada di tahap tersebut.</p>
         <div className="workflow-list workflow-list-clickable">
           {STAGES.map((s, i) => {
+            if (i === 13) return null;
             const slug = WORK_QUEUE_SLUGS[i];
             const count = stageCounts[slug] || 0;
             const active = stageIsValid && stageSlug === slug;

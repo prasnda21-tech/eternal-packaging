@@ -11,7 +11,6 @@ from services.division_tasks import (
     build_division_tasks,
     build_helper_tasks,
     build_kepala_produksi_tasks,
-    build_loading_tasks,
     build_operator_tasks,
     build_packing_tasks,
     build_surat_jalan_tasks,
@@ -174,7 +173,7 @@ def test_screener_required_input():
     assert rows[0]["target_qty"] == 8000
 
 
-def test_loading_partial_cumulative():
+def test_loading_division_removed():
     o = _print_po(
         packing_info={"qty_packed": 5000, "lines": [{"line_idx": 0, "packed_qty": 5000}]},
         loading_info={"qty_loaded": 2000, "lines": [{"line_idx": 0, "loaded_qty": 2000}]},
@@ -182,11 +181,9 @@ def test_loading_partial_cumulative():
         line_items=[{"id": "L1", "name": "Cup A", "quantity": 5000, "production_process": "print"}],
         operator_splits=[{"id": "s", "line_idx": 0, "quantity": 5000, "qty_completed": 5000}],
     )
-    rows = build_loading_tasks(o)
-    assert rows
-    assert rows[0]["required_input"] == "Qty Loading"
-    assert rows[0]["completed_qty"] == 2000
-    assert rows[0]["remaining_qty"] == 3000
+    assert resolve_division("loading") is None
+    rows = build_division_tasks([o], "loading", {"email": "a@x.com"}, mine_only=False)
+    assert rows == []
 
 
 def test_cancelled_orders_excluded():
