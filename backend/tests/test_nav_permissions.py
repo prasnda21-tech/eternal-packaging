@@ -197,6 +197,10 @@ def test_driver_has_work_panel_view():
     assert "delivery.update" in driver
     assert "delivery.reschedule" in driver
     assert "delivery.reschedule.set_date" not in driver
+    assert "nav.driver_route" not in driver
+    assert "delivery.route.optimize" not in driver
+    assert "delivery.route.edit" not in driver
+    assert "delivery.route.confirm" not in driver
 
 
 def test_screener_has_work_panel_view():

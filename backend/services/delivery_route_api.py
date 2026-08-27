@@ -17,31 +17,18 @@ from services.delivery_batches import (
     actor_name,
     apply_stop_updates,
     build_batch,
-    mark_published,
     public_batch,
-    upsert_driver_ready,
-    validate_for_publish,
 )
 from services.delivery_depot import SETTINGS_KEY as DEPOT_KEY
 from services.delivery_depot import depot_from_settings_doc, normalize_depot
 from services.delivery_routes import (
-    KIND_OPTIMIZED_DRAFT,
-    KIND_REOPTIMIZED,
     ROUTE_BERJALAN,
     ROUTE_DRAFT,
     ROUTE_TERJADWAL,
-    RouteError,
-    apply_optimize_result,
     assignment_for_driver,
-    build_optimize_request,
-    confirm_plan,
-    confirm_summary,
-    edit_draft,
     mark_stop_delivered,
     mark_stop_rescheduled,
-    my_route_view,
     public_plan,
-    start_assignment,
 )
 from services.delivery_stops import (
     MONGO_QUEUE_FILTER,
@@ -63,9 +50,10 @@ from services.delivery_outlets import (
 from services.delivery_vehicles import normalize_vehicle, public_vehicle
 from services.places_provider.base import PlacesNotConfigured, PlacesProviderError
 from services.places_provider.factory import get_places_provider
-from services.route_optimizer.base import RouteOptimizerError, RouteOptimizerNotConfigured
-from services.route_optimizer.factory import get_route_optimizer
 
+
+ROUTE_OPTIMIZATION_INACTIVE = "Route optimization bukan lagi workflow aktif. Data historis tetap tersimpan."
+MY_ROUTE_INACTIVE = "Rute Saya bukan lagi workflow aktif."
 
 _hooks: dict = {}
 
@@ -476,12 +464,10 @@ def register(api_router: APIRouter, deps: dict) -> None:
             "delivery.schedule.view",
             "delivery.schedule.create",
             "delivery.update",
-            "nav.driver_route",
         )
         q: Dict[str, Any] = {"status": {"$ne": STATUS_CANCELLED}}
         is_dispatcher = await _can(
             user, "delivery.schedule.view", "delivery.schedule.create", "delivery.schedule.publish",
-            "delivery.route.optimize", "delivery.route.confirm",
         )
         if not is_dispatcher:
             q["status"] = STATUS_PUBLISHED
@@ -495,7 +481,6 @@ def register(api_router: APIRouter, deps: dict) -> None:
             "delivery.schedule.view",
             "delivery.schedule.create",
             "delivery.update",
-            "nav.driver_route",
         )
         batch = await _get_batch(batch_id)
         if batch.get("status") != STATUS_PUBLISHED:
@@ -506,7 +491,6 @@ def register(api_router: APIRouter, deps: dict) -> None:
             plan = await db.delivery_route_plans.find_one({"id": batch["route_plan_id"]}, {"_id": 0})
         driver_only = not await _can(
             user, "delivery.schedule.view", "delivery.schedule.create",
-            "delivery.route.optimize", "delivery.route.edit", "delivery.route.confirm",
         )
         return {
             "batch": public_batch(batch),
@@ -537,142 +521,39 @@ def register(api_router: APIRouter, deps: dict) -> None:
 
     @api_router.post("/delivery/batches/{batch_id}/publish")
     async def publish_delivery_batch(batch_id: str, user=Depends(current_user)):
-        await require_perm(user, "delivery.schedule.publish")
-        batch = await _get_batch(batch_id)
-        try:
-            mark_published(batch, user)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        await _persist_batch(batch)
-        return {"batch": public_batch(batch)}
-
-    async def _resolve_vehicle(payload_vehicle: Optional[dict], vehicle_id: Optional[str], user: dict) -> dict:
-        vid = (vehicle_id or (payload_vehicle or {}).get("id") or "").strip()
-        if vid:
-            existing = await _vehicle_doc(vid)
-            if existing:
-                return existing
-        raw = dict(payload_vehicle or {})
-        if vehicle_id:
-            raw["id"] = vehicle_id
-        plate = str(raw.get("plate") or raw.get("vehicle_plate") or "").strip()
-        name = str(raw.get("name") or "").strip()
-        if not plate and not name and not vid:
-            raise HTTPException(400, "Pilih atau isi kendaraan (nama/plat).")
-        veh = normalize_vehicle(raw)
-        await db.delivery_vehicles.update_one({"id": veh["id"]}, {"$set": veh}, upsert=True)
-        return veh
+        await require_any_perm(user, "delivery.schedule.create", "delivery.schedule.publish")
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
     @api_router.post("/delivery/batches/{batch_id}/ready")
     async def driver_ready(batch_id: str, payload: ReadyPayload, user=Depends(current_user)):
-        """Siap Berangkat. Nama driver ALWAYS from authenticated account."""
         await require_any_perm(user, "delivery.update", "delivery.vehicle.manage")
-        batch = await _get_batch(batch_id)
-        if batch.get("status") != STATUS_PUBLISHED:
-            raise HTTPException(400, "Batch belum dipublish ke Driver.")
-        requested = str(payload.driver_user_id or "").strip()
-        me = _uid(user)
-        if requested and requested != me:
-            if not await _can(user, "delivery.schedule.publish", "delivery.route.confirm"):
-                raise HTTPException(403, "Nama Driver tidak dapat diubah. Gunakan akun login Anda.")
-            target = await _lookup_user(requested)
-            if not target:
-                raise HTTPException(400, "Driver tidak ditemukan.")
-            driver_id = str(target.get("id") or requested)
-            driver_nm = str(target.get("name") or target.get("email") or "")
-        else:
-            driver_id = me
-            driver_nm = actor_name(user)
-        veh = await _resolve_vehicle(payload.vehicle, payload.vehicle_id, user)
-        upsert_driver_ready(batch, driver_user_id=driver_id, driver_name=driver_nm, vehicle=veh)
-        await _persist_batch(batch)
-        return {"batch": public_batch(batch), "me": {"id": driver_id, "name": driver_nm}}
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
     @api_router.post("/delivery/batches/{batch_id}/optimize")
     async def optimize_batch(batch_id: str, user=Depends(current_user)):
-        await require_perm(user, "delivery.route.optimize")
-        batch = await _get_batch(batch_id)
-        if batch.get("status") != STATUS_PUBLISHED:
-            raise HTTPException(400, "Publish batch ke Driver sebelum optimize.")
-        depot = await _depot()
-        if not depot.get("configured"):
-            raise HTTPException(400, "Lengkapi data Gudang (nama + koordinat) di Pengaturan.")
-        req = build_optimize_request(batch, depot)
-        if not req.vehicles:
-            raise HTTPException(400, "Belum ada Driver/Kendaraan yang Siap Berangkat.")
-        try:
-            provider = get_route_optimizer()
-            result = provider.optimize(req)
-        except RouteOptimizerNotConfigured as e:
-            raise HTTPException(503, str(e))
-        except RouteOptimizerError as e:
-            raise HTTPException(502, str(e))
-        existing = None
-        if batch.get("route_plan_id"):
-            existing = await db.delivery_route_plans.find_one({"id": batch["route_plan_id"]}, {"_id": 0})
-            if existing and existing.get("status") not in (ROUTE_DRAFT,):
-                kind = KIND_REOPTIMIZED
-            else:
-                kind = KIND_OPTIMIZED_DRAFT if not existing else KIND_REOPTIMIZED
-        else:
-            kind = KIND_OPTIMIZED_DRAFT
-        plan = apply_optimize_result(batch, result, user=user, kind=kind, existing_plan=existing)
-        plan["depot"] = depot
-        await _persist_plan(plan)
-        batch["route_plan_id"] = plan["id"]
-        await _persist_batch(batch)
-        return {"plan": public_plan(plan), "batch": public_batch(batch)}
+        await require_any_perm(
+            user, "delivery.schedule.view", "delivery.schedule.create", "delivery.update",
+        )
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
     @api_router.post("/delivery/batches/{batch_id}/optimize-remaining")
     async def optimize_remaining(batch_id: str, user=Depends(current_user)):
-        await require_perm(user, "delivery.route.optimize")
-        batch = await _get_batch(batch_id)
-        depot = await _depot()
-        if not depot.get("configured"):
-            raise HTTPException(400, "Lengkapi data Gudang (nama + koordinat) di Pengaturan.")
-        existing = None
-        if batch.get("route_plan_id"):
-            existing = await db.delivery_route_plans.find_one({"id": batch["route_plan_id"]}, {"_id": 0})
-        req = build_optimize_request(batch, depot, remaining_only=True)
-        if existing:
-            delivered_ids = set()
-            for r in existing.get("routes") or []:
-                for s in r.get("stops") or []:
-                    if s.get("status") == "delivered":
-                        delivered_ids.add(s.get("stop_id"))
-            req.stops = [s for s in req.stops if s.stop_id not in delivered_ids]
-        try:
-            result = get_route_optimizer().optimize(req)
-        except RouteOptimizerNotConfigured as e:
-            raise HTTPException(503, str(e))
-        except RouteOptimizerError as e:
-            raise HTTPException(502, str(e))
-        plan = apply_optimize_result(
-            batch, result, user=user, kind=KIND_REOPTIMIZED, existing_plan=existing,
+        await require_any_perm(
+            user, "delivery.schedule.view", "delivery.schedule.create", "delivery.update",
         )
-        plan["depot"] = depot
-        await _persist_plan(plan)
-        batch["route_plan_id"] = plan["id"]
-        await _persist_batch(batch)
-        return {"plan": public_plan(plan)}
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
-    # ---------- Route plans ----------
+    # ---------- Route plans (historical read; mutations inactive) ----------
     @api_router.get("/delivery/route-plans/{plan_id}")
     async def get_route_plan(plan_id: str, user=Depends(current_user)):
         await require_any_perm(
             user,
-            "delivery.route.optimize",
-            "delivery.route.edit",
-            "delivery.route.confirm",
             "delivery.update",
             "delivery.schedule.view",
-            "nav.driver_route",
+            "delivery.schedule.create",
         )
         plan = await _get_plan(plan_id)
-        driver_only = not await _can(
-            user, "delivery.schedule.view", "delivery.route.optimize",
-            "delivery.route.edit", "delivery.route.confirm",
-        )
+        driver_only = not await _can(user, "delivery.schedule.view", "delivery.schedule.create")
         uid = _uid(user)
         if driver_only:
             if not assignment_for_driver(plan, uid):
@@ -682,76 +563,33 @@ def register(api_router: APIRouter, deps: dict) -> None:
 
     @api_router.patch("/delivery/route-plans/{plan_id}")
     async def patch_route_plan(plan_id: str, payload: EditPlanPayload, user=Depends(current_user)):
-        await require_perm(user, "delivery.route.edit")
-        plan = await _get_plan(plan_id)
-        try:
-            edit_draft(plan, payload.model_dump(), user)
-        except RouteError as e:
-            raise HTTPException(400, str(e))
-        await _persist_plan(plan)
-        return {"plan": public_plan(plan)}
+        await require_any_perm(user, "delivery.schedule.create", "delivery.schedule.view")
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
     @api_router.get("/delivery/route-plans/{plan_id}/confirm-preview")
     async def confirm_preview(plan_id: str, user=Depends(current_user)):
-        await require_any_perm(user, "delivery.route.confirm", "delivery.route.optimize")
-        plan = await _get_plan(plan_id)
-        batch = await _get_batch(plan.get("batch_id"))
-        return {"summary": confirm_summary(plan, batch)}
+        await require_any_perm(user, "delivery.schedule.create", "delivery.schedule.view")
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
     @api_router.post("/delivery/route-plans/{plan_id}/confirm")
     async def confirm_route_plan(plan_id: str, user=Depends(current_user)):
-        await require_perm(user, "delivery.route.confirm")
-        plan = await _get_plan(plan_id)
-        try:
-            confirm_plan(plan, user)
-        except RouteError as e:
-            raise HTTPException(400, str(e))
-        await _persist_plan(plan)
-        return {"plan": public_plan(plan)}
+        await require_any_perm(user, "delivery.schedule.create", "delivery.schedule.view")
+        raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)
 
     @api_router.post("/delivery/route-plans/{plan_id}/start")
     async def start_route_plan(plan_id: str, user=Depends(current_user)):
         await require_perm(user, "delivery.update")
-        plan = await _get_plan(plan_id)
-        uid = _uid(user)
-        try:
-            start_assignment(plan, driver_user_id=uid, user=user)
-        except RouteError as e:
-            raise HTTPException(403 if "tidak memiliki" in str(e).lower() else 400, str(e))
-        await _persist_plan(plan)
-        asg = assignment_for_driver(plan, uid)
-        return {"plan": public_plan(plan, driver_user_id=uid), "route": my_route_view(plan, asg, user)}
+        raise HTTPException(400, MY_ROUTE_INACTIVE)
 
     @api_router.get("/delivery/my-routes")
     async def my_routes(user=Depends(current_user)):
-        await require_any_perm(user, "delivery.update", "nav.driver_route")
-        uid = _uid(user)
-        docs = await db.delivery_route_plans.find(
-            {
-                "status": {"$in": [ROUTE_TERJADWAL, ROUTE_BERJALAN, "selesai"]},
-                "routes.driver_user_id": uid,
-            },
-            {"_id": 0},
-        ).sort("delivery_date", -1).to_list(100)
-        rows = []
-        for plan in docs:
-            asg = assignment_for_driver(plan, uid)
-            if asg:
-                rows.append(my_route_view(plan, asg, user))
-        published = await db.delivery_batches.find(
-            {"status": STATUS_PUBLISHED},
-            {"_id": 0},
-        ).sort("created_at", -1).to_list(50)
-        return {
-            "me": {"id": uid, "name": actor_name(user)},
-            "routes": rows,
-            "published_batches": [public_batch(b) for b in published],
-        }
+        await require_perm(user, "delivery.update")
+        raise HTTPException(400, MY_ROUTE_INACTIVE)
 
     # ---------- Vehicles / depot / drivers ----------
     @api_router.get("/delivery/vehicles")
     async def list_vehicles(user=Depends(current_user)):
-        await require_any_perm(user, "delivery.update", "delivery.vehicle.manage", "delivery.route.optimize")
+        await require_any_perm(user, "delivery.update", "delivery.vehicle.manage")
         docs = await db.delivery_vehicles.find({"active": {"$ne": False}}, {"_id": 0}).to_list(200)
         return {"vehicles": [public_vehicle(d) for d in docs]}
 
@@ -776,7 +614,7 @@ def register(api_router: APIRouter, deps: dict) -> None:
 
     @api_router.get("/delivery/drivers")
     async def list_delivery_drivers(user=Depends(current_user)):
-        await require_any_perm(user, "delivery.schedule.publish", "delivery.route.optimize", "delivery.vehicle.manage")
+        await require_any_perm(user, "delivery.schedule.create", "delivery.vehicle.manage")
         docs = await db.users.find(
             {"status": {"$ne": "inactive"}},
             {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
@@ -791,7 +629,7 @@ def register(api_router: APIRouter, deps: dict) -> None:
     async def get_depot(user=Depends(current_user)):
         await require_any_perm(
             user, "settings.depot.view", "settings.depot.manage",
-            "delivery.schedule.view", "delivery.route.optimize", "delivery.update",
+            "delivery.schedule.view", "delivery.update",
         )
         return {"depot": await _depot()}
 

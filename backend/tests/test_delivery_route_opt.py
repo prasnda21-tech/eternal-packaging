@@ -1,8 +1,7 @@
-"""Delivery route optimization: queue, batch, identity, mock optimizer, Google adapter.
+"""Delivery queue, batch, historical route records, and inactive optimizer endpoints.
 
 No live Google API calls. No Mongo required for these unit tests.
 """
-import os
 import sys
 from pathlib import Path
 
@@ -38,8 +37,6 @@ from services.delivery_stops import (
     snapshot_stop,
     split_remaining_by_shipment,
 )
-from services.route_optimizer.factory import get_route_optimizer, is_production_runtime
-from services.route_optimizer.base import RouteOptimizerNotConfigured
 from services.route_optimizer.google import PRIORITY_PENALTY, build_google_request, parse_google_response
 from services.route_optimizer.mock import LocalMockRouteOptimizer
 from services.route_optimizer.types import (
@@ -63,7 +60,6 @@ def _ready_order(**extra):
         "total_quantity": 10000,
         "packing_info": {"qty_packed": 4000, "lines": [{"line_idx": 0, "packed_qty": 4000}]},
         "shipments": extra.pop("shipments", [{"id": "sh-1", "number": "SJ-1", "lines": [{"line_idx": 0, "qty": 4000}]}]),
-        "loading_info": extra.pop("loading_info", {}),
         "qty_delivered": extra.pop("qty_delivered", 0),
         "delivery_location": extra.pop("delivery_location", {"lat": -6.2, "lng": 106.8, "place_id": "ChIJA"}),
         "cancelled": False,
@@ -136,7 +132,7 @@ def test_priority_and_closing_stored_on_stop_not_po():
     assert o.get("deadline") == "2026-08-30"
 
 
-def test_scheduler_create_and_publish_and_unauthorized_keys():
+def test_scheduler_create_and_unauthorized_keys():
     o = _ready_order()
     rows = build_queue_stops([o])
     admin = _user("u-hp", "Kepala", "head_production")
@@ -150,7 +146,7 @@ def test_scheduler_create_and_publish_and_unauthorized_keys():
     hp = set(ROLE_DEFAULT_PERMISSIONS["head_production"])
     helper = set(ROLE_DEFAULT_PERMISSIONS["helper"])
     assert "delivery.schedule.create" in hp
-    assert "delivery.schedule.publish" in hp
+    assert "delivery.location.manage" in hp
     assert "delivery.schedule.create" not in helper
     assert "delivery.schedule.publish" not in helper
 
@@ -379,46 +375,50 @@ def test_delivery_progress_and_reschedule_visible():
     assert any(s.get("status") == "rescheduled" or s.get("unassigned_reason") for s in plan2.get("unassigned") or [])
 
 
-def test_factory_local_is_mock_production_no_silent_fallback(monkeypatch=None):
-    os.environ.pop("ROUTE_OPTIMIZER_PROVIDER", None)
-    os.environ.pop("GOOGLE_ROUTE_OPTIMIZATION_PROJECT", None)
-    os.environ.pop("GOOGLE_ROUTE_OPTIMIZATION_API_KEY", None)
-    os.environ.pop("APP_ENV", None)
-    provider = get_route_optimizer()
-    assert provider.name == "mock"
-    assert is_production_runtime() is False
+def test_active_optimizer_and_my_route_endpoints_removed():
+    src = (Path(__file__).resolve().parents[1] / "services" / "delivery_route_api.py").read_text(encoding="utf-8")
+    from services.delivery_route_api import MY_ROUTE_INACTIVE, ROUTE_OPTIMIZATION_INACTIVE
+    assert "get_route_optimizer" not in src
+    assert "GoogleRouteOptimizer" not in src
+    assert ROUTE_OPTIMIZATION_INACTIVE in src
+    assert MY_ROUTE_INACTIVE in src
+    assert "bukan lagi workflow aktif" in ROUTE_OPTIMIZATION_INACTIVE
+    assert "Rute Saya bukan lagi workflow aktif" in MY_ROUTE_INACTIVE
+    assert 'raise HTTPException(400, ROUTE_OPTIMIZATION_INACTIVE)' in src
+    assert 'raise HTTPException(400, MY_ROUTE_INACTIVE)' in src
+    assert "/delivery/batches/{batch_id}/optimize" in src
+    assert "/delivery/my-routes" in src
 
 
-def test_factory_production_raises_without_google():
-    prev = {k: os.environ.get(k) for k in (
-        "APP_ENV", "ENVIRONMENT", "ENV", "ROUTE_OPTIMIZER_PROVIDER",
-        "GOOGLE_ROUTE_OPTIMIZATION_PROJECT", "GOOGLE_ROUTE_OPTIMIZATION_API_KEY",
-        "GOOGLE_MAPS_API_KEY", "GOOGLE_CLOUD_PROJECT",
-    )}
-    try:
-        os.environ["APP_ENV"] = "production"
-        for k in (
-            "ROUTE_OPTIMIZER_PROVIDER", "GOOGLE_ROUTE_OPTIMIZATION_PROJECT",
-            "GOOGLE_ROUTE_OPTIMIZATION_API_KEY", "GOOGLE_MAPS_API_KEY",
-            "GOOGLE_CLOUD_PROJECT", "ENVIRONMENT", "ENV",
-        ):
-            os.environ.pop(k, None)
-        raised = False
-        try:
-            get_route_optimizer()
-        except RouteOptimizerNotConfigured:
-            raised = True
-        assert raised
-        assert is_production_runtime() is True
-    finally:
-        for k, v in prev.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+def test_no_destructive_route_data_migration():
+    root = Path(__file__).resolve().parents[1]
+    for rel in ("server.py", "services/delivery_route_api.py", "services/delivery_routes.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "drop_collection" not in text
+        assert "delivery_route_plans.delete_many" not in text
+        assert "delivery_batches.delete_many" not in text
 
 
-def test_catalog_has_route_permissions():
+def test_historical_route_records_still_readable():
+    o = _ready_order()
+    batch = build_batch(delivery_date="2026-08-27", queue_rows=build_queue_stops([o]), user=_user("u-hp", "Kepala"))
+    mark_published(batch, _user("u-hp", "Kepala"))
+    upsert_driver_ready(
+        batch, driver_user_id="u-budi", driver_name="Budi",
+        vehicle={"id": "veh-1", "name": "L300", "plate": "B 1234 ABC", "capacity_dus": 200},
+    )
+    plan = apply_optimize_result(
+        batch, LocalMockRouteOptimizer().optimize(build_optimize_request(batch, _depot())),
+        user=_user("u-hp", "Kepala"),
+    )
+    confirm_plan(plan, _user("u-hp", "Kepala"))
+    view = my_route_view(plan, assignment_for_driver(plan, "u-budi"), _user("u-budi", "Budi"))
+    assert view["driver_name"] == "Budi"
+    assert plan["status"] == ROUTE_TERJADWAL
+    assert plan["routes"][0]["stops"]
+
+
+def test_catalog_keeps_legacy_route_keys_without_active_defaults():
     for key in (
         "delivery.schedule.create",
         "delivery.schedule.publish",
@@ -430,12 +430,20 @@ def test_catalog_has_route_permissions():
         "settings.depot.manage",
         "delivery.location.manage",
         "nav.driver_route",
+        "delivery.update",
+        "delivery.reschedule",
     ):
         assert key in ALL_PERMISSIONS, key
     driver = set(ROLE_DEFAULT_PERMISSIONS["driver"])
-    assert "delivery.route.optimize" in driver
+    assert "delivery.update" in driver
+    assert "delivery.reschedule" in driver
+    assert "delivery.route.optimize" not in driver
+    assert "nav.driver_route" not in driver
     assert "delivery.schedule.create" not in driver
     assert "delivery.location.manage" not in driver
-    assert "nav.driver_route" in driver
     helper = effective_permissions("helper", None)
     assert "delivery.schedule.create" not in helper
+    hp = set(ROLE_DEFAULT_PERMISSIONS["head_production"])
+    assert "delivery.schedule.create" in hp
+    assert "delivery.location.manage" in hp
+    assert "delivery.route.optimize" not in hp

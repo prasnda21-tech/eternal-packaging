@@ -48,6 +48,8 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/Jadwal Produksi/);
     expect(shell).toMatch(/Jadwal Pengiriman/);
     expect(shell).toMatch(/Jadwal Pengiriman Ulang/);
+    expect(shell).not.toMatch(/Rute Saya/);
+    expect(shell).not.toMatch(/rute-saya/);
     expect(shell).toMatch(/Tugas Produksi/);
     expect(shell).toMatch(/Penjualan/);
     expect(shell).toMatch(/Pembelian/);
