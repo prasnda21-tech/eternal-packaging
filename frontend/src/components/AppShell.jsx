@@ -298,11 +298,6 @@ export default function AppShell() {
                 Jadwal Pengiriman Ulang
               </NavLink>
             )}
-            {productionNav.driverRoute && (
-              <NavLink to="/produksi/rute-saya" className={navClass} data-testid="top-nav-rute-saya" onClick={closeFlyout}>
-                Rute Saya
-              </NavLink>
-            )}
             {tasksNav.parent && (
               <div className="nav-nested" data-testid="top-nav-tasks-group">
                 <button

@@ -64,14 +64,14 @@ PERMISSION_CATALOG = [
     ("Pengiriman", "delivery.reschedule.set_date", "Tetapkan tanggal penjadwalan ulang"),
     ("Pengiriman", "delivery.schedule.view", "Lihat Jadwal Pengiriman"),
     ("Pengiriman", "delivery.schedule.create", "Buat Jadwal Pengiriman"),
-    ("Pengiriman", "delivery.schedule.publish", "Publish Jadwal ke Driver"),
+    ("Pengiriman", "delivery.schedule.publish", "Publish Jadwal ke Driver (legacy)"),
     ("Pengiriman", "delivery.location.manage", "Atur Lokasi Outlet Pengiriman"),
-    ("Pengiriman", "delivery.route.optimize", "Optimize Rute Pengiriman"),
-    ("Pengiriman", "delivery.route.edit", "Ubah draf rute pengiriman"),
-    ("Pengiriman", "delivery.route.confirm", "Konfirmasi Jadwal Rute"),
+    ("Pengiriman", "delivery.route.optimize", "Optimize Rute Pengiriman (legacy)"),
+    ("Pengiriman", "delivery.route.edit", "Ubah draf rute pengiriman (legacy)"),
+    ("Pengiriman", "delivery.route.confirm", "Konfirmasi Jadwal Rute (legacy)"),
     ("Pengiriman", "delivery.vehicle.manage", "Kelola Master Kendaraan"),
-    ("Pengaturan", "settings.depot.view", "Lihat Gudang / Depot"),
-    ("Pengaturan", "settings.depot.manage", "Ubah Gudang / Depot"),
+    ("Pengaturan", "settings.depot.view", "Lihat Gudang / Depot (legacy)"),
+    ("Pengaturan", "settings.depot.manage", "Ubah Gudang / Depot (legacy)"),
     ("Pengiriman", "delivery.deadline.edit", "Edit Deadline Pengiriman"),
     ("Pengiriman", "delivery.deadline.settings", "Atur Perhitungan Deadline Pengiriman"),
     ("Produksi", "production.route.edit", "Atur Proses Cetak / Non-Cetak per Line Item"),
@@ -97,7 +97,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
     ("Akses Menu", "nav.delivery_schedule", "Menu Jadwal Pengiriman"),
     ("Akses Menu", "nav.delivery_reschedule", "Menu Jadwal Pengiriman Ulang"),
-    ("Akses Menu", "nav.driver_route", "Menu Rute Saya"),
+    ("Akses Menu", "nav.driver_route", "Menu Rute Saya (legacy)"),
     ("Akses Menu", "nav.tasks", "Menu Tugas Produksi"),
     ("Akses Menu", "nav.tasks.designer", "Menu Tugas Designer"),
     ("Akses Menu", "nav.tasks.screener", "Menu Tugas Screener"),
@@ -151,7 +151,6 @@ NAV_MENU_ITEMS = (
     ("nav.production_schedule", "Jadwal Produksi", "nav.production"),
     ("nav.delivery_schedule", "Jadwal Pengiriman", "nav.production"),
     ("nav.delivery_reschedule", "Jadwal Pengiriman Ulang", "nav.production"),
-    ("nav.driver_route", "Rute Saya", "nav.production"),
     ("nav.tasks", "Tugas Produksi", "nav.production"),
     ("nav.tasks.designer", "Designer", "nav.tasks"),
     ("nav.tasks.screener", "Screener", "nav.tasks"),
@@ -237,11 +236,9 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.delivery")
-        nav.add("nav.driver_route")
-    if "delivery.schedule.create" in existing or "delivery.route.optimize" in existing:
+    if "delivery.schedule.create" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_schedule")
-        nav.add("nav.driver_route")
     return nav
 
 
@@ -279,10 +276,9 @@ ROLE_DEFAULT_PERMISSIONS = {
         "customer_approval.view", "customer_approval.manage", "customer_approval.settings",
         "delivery.deadline.edit", "delivery.deadline.settings",
         "delivery.reschedule", "delivery.reschedule.set_date", "delivery.schedule.view",
-        "delivery.schedule.create", "delivery.schedule.publish",
+        "delivery.schedule.create",
         "delivery.location.manage",
-        "delivery.route.optimize", "delivery.route.edit", "delivery.route.confirm",
-        "delivery.vehicle.manage", "settings.depot.view", "settings.depot.manage",
+        "delivery.vehicle.manage",
         "production.route.edit",
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
@@ -302,10 +298,9 @@ ROLE_DEFAULT_PERMISSIONS = {
         "work_panel.view", "settings.work_panel.view", "settings.work_panel.manage",
         "delivery.deadline.edit", "delivery.deadline.settings",
         "delivery.reschedule", "delivery.reschedule.set_date", "delivery.schedule.view",
-        "delivery.schedule.create", "delivery.schedule.publish",
+        "delivery.schedule.create",
         "delivery.location.manage",
-        "delivery.route.optimize", "delivery.route.edit", "delivery.route.confirm",
-        "delivery.vehicle.manage", "settings.depot.view", "settings.depot.manage",
+        "delivery.vehicle.manage",
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
         "reports.gaji_operator.view",
@@ -331,7 +326,6 @@ ROLE_DEFAULT_PERMISSIONS = {
         "po.view", "schedule.view", "schedule.work_date.view",
         "delivery_note.view", "loading.update", "delivery.update", "work_panel.view",
         "delivery.reschedule",
-        "delivery.route.optimize",
     ],
     "crm": [
         "po.view", "design.view", "payment.view",

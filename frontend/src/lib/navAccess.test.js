@@ -150,7 +150,6 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.schedule,
       NAV_KEYS.deliverySchedule,
       NAV_KEYS.deliveryReschedule,
-      NAV_KEYS.driverRoute,
       NAV_KEYS.tasks,
       NAV_KEYS.tasksDesigner,
       NAV_KEYS.tasksKepalaProduksi,
@@ -161,6 +160,7 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.tasksSuratJalan,
       NAV_KEYS.tasksDelivery,
     ]));
+    expect(keys).not.toEqual(expect.arrayContaining([NAV_KEYS.driverRoute]));
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.production).label).toBe("Produksi");
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.schedule).parent).toBe(NAV_KEYS.production);
     const parent = NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasks);

@@ -3,18 +3,16 @@ import { Link, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { PRIORITY_OPTIONS, selectAllState, stopLocationOk, toggleSelectAll, outletAddressLabel } from "../lib/deliveryRoute";
+import { selectAllState, stopLocationOk, toggleSelectAll, outletAddressLabel } from "../lib/deliveryRoute";
 import OutletLocationModal from "../components/OutletLocationModal";
 
 export default function CreateDeliverySchedulePage() {
   const { hasPerm, user } = useAuth();
   const navigate = useNavigate();
   const canCreate = hasPerm("delivery.schedule.create");
-  const canPublish = hasPerm("delivery.schedule.publish");
   const canSetLocation = hasPerm("delivery.location.manage") || hasPerm("delivery.schedule.create");
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState([]);
-  const [edits, setEdits] = useState({});
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -42,30 +40,18 @@ export default function CreateDeliverySchedulePage() {
     if (allRef.current) allRef.current.indeterminate = allState.indeterminate;
   }, [allState.indeterminate]);
 
-  const setEdit = (stopId, patch) => {
-    setEdits((prev) => ({ ...prev, [stopId]: { ...(prev[stopId] || {}), ...patch } }));
-  };
-
   const toggle = (row) => {
     if (row.occupied || !stopLocationOk(row)) return;
     setSelected((prev) => prev.includes(row.stop_id) ? prev.filter((id) => id !== row.stop_id) : [...prev, row.stop_id]);
   };
 
-  const submit = async (publish) => {
+  const submit = async () => {
     if (!canCreate) return;
     setBusy(true);
     setErr("");
     try {
-      const stops = selected.map((id) => {
-        const e = edits[id] || {};
-        return { stop_id: id, priority: e.priority, outlet_closing_time: e.closing };
-      });
-      const created = await api.createDeliveryBatch({ delivery_date: date, stop_ids: selected, stops });
-      const id = created.batch?.id;
-      if (publish && canPublish && id) {
-        await api.publishDeliveryBatch(id);
-      }
-      navigate(id ? `/produksi/jadwal-pengiriman/batch/${id}` : "/produksi/jadwal-pengiriman");
+      await api.createDeliveryBatch({ delivery_date: date, stop_ids: selected });
+      navigate("/produksi/jadwal-pengiriman");
     } catch (e) {
       const det = e.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal membuat jadwal"));
@@ -80,7 +66,7 @@ export default function CreateDeliverySchedulePage() {
         <header className="ship-status-heading">
           <p className="eyebrow">Produksi · Jadwal Pengiriman</p>
           <h1>Buat Jadwal Pengiriman</h1>
-          <p className="subhead">Pilih stop SIAP DIKIRIM. Atur lokasi outlet sebelum optimize. Prioritas dan jam tutup terpisah dari koordinat.</p>
+          <p className="subhead">Pilih stop SIAP DIKIRIM. Atur lokasi outlet sebelum menjadwalkan.</p>
         </header>
         <div className="ship-status-toolbar">
           <label className="ship-filter-field">
@@ -113,8 +99,6 @@ export default function CreateDeliverySchedulePage() {
               <th>Customer</th>
               <th>Alamat / Outlet</th>
               <th>Qty</th>
-              <th>Prioritas</th>
-              <th>Jam Tutup</th>
               <th>Status Lokasi</th>
               <th>Status</th>
               <th>Aksi</th>
@@ -122,7 +106,6 @@ export default function CreateDeliverySchedulePage() {
           </thead>
           <tbody>
             {rows.map((r) => {
-              const e = edits[r.stop_id] || {};
               const locOk = stopLocationOk(r);
               const disabled = r.occupied || !locOk;
               return (
@@ -141,24 +124,6 @@ export default function CreateDeliverySchedulePage() {
                   <td>{r.customer}</td>
                   <td data-testid={`cds-outlet-${r.stop_id}`}>{outletAddressLabel(r)}</td>
                   <td className="mono" data-testid={`cds-qty-${r.stop_id}`}>{r.qty ?? "—"}</td>
-                  <td>
-                    <select
-                      value={e.priority || r.priority || "normal"}
-                      onChange={(ev) => setEdit(r.stop_id, { priority: ev.target.value })}
-                      data-testid={`cds-priority-${r.stop_id}`}
-                    >
-                      {PRIORITY_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <input
-                      type="time"
-                      value={e.closing || r.outlet_closing_time || ""}
-                      onChange={(ev) => setEdit(r.stop_id, { closing: ev.target.value })}
-                      data-testid={`cds-closing-${r.stop_id}`}
-                      aria-label="Jam Tutup Outlet"
-                    />
-                  </td>
                   <td>
                     <span
                       className={locOk ? "route-loc-ok" : "route-loc-need"}
@@ -187,18 +152,15 @@ export default function CreateDeliverySchedulePage() {
               );
             })}
             {!rows.length && !busy && (
-              <tr><td colSpan={10} className="empty-state">Tidak ada pengiriman SIAP DIKIRIM.</td></tr>
+              <tr><td colSpan={8} className="empty-state">Tidak ada pengiriman SIAP DIKIRIM.</td></tr>
             )}
           </tbody>
         </table>
       </div>
       <div className="route-page-actions">
         <Link className="ghost" to="/produksi/jadwal-pengiriman">Batal</Link>
-        <button type="button" className="primary" disabled={!canCreate || !selected.length || busy} onClick={() => submit(false)} data-testid="cds-save">
-          Simpan Draf
-        </button>
-        <button type="button" className="primary" disabled={!canPublish || !selected.length || busy} onClick={() => submit(true)} data-testid="cds-publish">
-          Publish ke Driver
+        <button type="button" className="primary" disabled={!canCreate || !selected.length || busy} onClick={submit} data-testid="cds-save">
+          Buat Jadwal
         </button>
         <span className="muted small" data-testid="cds-actor">Penjadwal: {user?.name}</span>
       </div>
