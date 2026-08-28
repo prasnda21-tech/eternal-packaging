@@ -95,6 +95,7 @@ describe("operator work panel models", () => {
     expect(taskPoHref("abc", (p) => p === "operator.update", "operator_work")).toBe("/po/abc/kerja?divisi=operator");
     expect(taskPoHref("abc", (p) => p === "po.view", "operator_work")).toBe("/po/abc");
     expect(taskPoHref("abc", (p) => p === "helper.prepare", "helper")).toBe("/po/abc/kerja?divisi=helper");
+    expect(taskPoHref("abc", (p) => p === "po.view" || p === "design.approve", "design_approve")).toBe("/po/abc");
     expect(taskPoHref("abc", (p) => p === "design.upload", "design_upload")).toBe("/po/abc/kerja?divisi=designer");
     expect(taskPoHref("abc", (p) => p === "schedule.edit", "penjadwalan")).toBe("/po/abc/kerja?divisi=kepala_produksi");
   });
@@ -120,6 +121,13 @@ describe("click PO routes by permitted work submit", () => {
     const has = (p) => p === "helper.prepare" || p === "packing.update";
     expect(schedulePoHref("abc", has)).toBe("/po/abc/kerja?divisi=helper");
     expect(permittedDivisionIds(has)).toEqual(["helper", "packing"]);
+  });
+
+  test("three forms stay distinct by permission not role name", () => {
+    const has = (p) => ["helper.prepare", "packing.update", "loading.update"].includes(p);
+    expect(permittedDivisionIds(has)).toEqual(["helper", "packing", "loading"]);
+    expect(taskPoHref("abc", has, "packing")).toBe("/po/abc/kerja?divisi=packing");
+    expect(taskPoHref("abc", has, "loading")).toBe("/po/abc/kerja?divisi=loading");
   });
 
   test("does not hardcode role names for routing", () => {

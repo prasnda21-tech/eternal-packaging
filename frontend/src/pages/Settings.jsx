@@ -10,6 +10,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK } from "../lib/navAccess";
 import OperatorWageSettings from "./OperatorWageSettings";
+import FormAccessMatrix from "../components/FormAccessMatrix";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -1678,7 +1679,7 @@ function AccurateCreatorSettingsTab({ notify, canEdit }) {
   );
 }
 
-function WorkPanelSettingsTab({ notify, canEdit }) {
+function WorkPanelSettingsTab({ notify, canEdit, canManagePerms, canListRoles }) {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -1725,7 +1726,12 @@ function WorkPanelSettingsTab({ notify, canEdit }) {
 
   return (
     <div className="settings-card" data-testid="work-panel-settings">
-      <h3 style={{ marginTop: 0 }}>Form Pekerjaan Divisi</h3>
+      {canListRoles ? (
+        <FormAccessMatrix notify={notify} canEdit={!!canManagePerms} />
+      ) : (
+        <p className="muted small">Matriks akses form per role membutuhkan permission users.view.</p>
+      )}
+      <h3 style={{ marginTop: 0 }}>Tampilan Form per Divisi</h3>
       <p className="muted small">
         Mengatur tampilan Work Panel per divisi. Tidak dapat menonaktifkan konfirmasi, append-only, audit actor, RBAC, atau validasi server.
       </p>
@@ -1953,7 +1959,9 @@ export default function Settings() {
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
-      {tab === "work-panel" && canViewWorkPanel && <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel}/>}
+      {tab === "work-panel" && canViewWorkPanel && (
+        <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel} canManagePerms={canManagePerms} canListRoles={canViewUsers}/>
+      )}
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}
 

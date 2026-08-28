@@ -15,6 +15,7 @@ import { EmptyState, ErrorState, GhostButton, LoadingState } from "../../src/com
 import { colors, space, typography, ui } from "../../src/theme";
 import { apiErrorMessage, fmtDate, fmtQty } from "../../src/utils/format";
 import {
+  canApproveDesign,
   canViewSchedule,
   defaultWorkDivision,
   permittedWorkDivisions,
@@ -78,21 +79,7 @@ function taskCard(t: DivisionTask): TaskCard {
 }
 
 function mergeTaskCards(tasks: DivisionTask[]): TaskCard[] {
-  const byOrder = new Map<string, TaskCard>();
-  for (const t of tasks) {
-    const row = taskCard(t);
-    const prev = byOrder.get(row.orderId);
-    if (!prev) {
-      byOrder.set(row.orderId, row);
-      continue;
-    }
-    if (row.item && prev.item !== row.item && prev.item !== "—") {
-      prev.item = `${prev.item}, ${row.item}`;
-    } else if (prev.item === "—" && row.item !== "—") {
-      prev.item = row.item;
-    }
-  }
-  return Array.from(byOrder.values());
+  return tasks.map(taskCard);
 }
 
 function scheduleRow(r: ProductionRow): ScheduleRow {
@@ -151,7 +138,7 @@ function BodyCell({
 export default function ScheduleScreen() {
   const { user, hasPerm, logout } = useAuth();
   const divisions = useMemo(() => permittedWorkDivisions(hasPerm), [hasPerm]);
-  const [activeDiv, setActiveDiv] = useState<string | null>(() => defaultWorkDivision(hasPerm));
+  const [activeDiv, setActiveDiv] = useState<string>("all");
   const [taskCards, setTaskCards] = useState<TaskCard[]>([]);
   const [scheduleRows, setScheduleRows] = useState<ScheduleRow[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
@@ -166,18 +153,46 @@ export default function ScheduleScreen() {
   const loadTasks = useCallback(async () => {
     setTaskErr("");
     try {
-      const div = activeDiv || defaultWorkDivision(hasPerm);
-      if (!div || !divisions.length) {
-        setTaskCards([]);
-        return;
+      const cards: TaskCard[] = [];
+      const results = await Promise.all(
+        divisions.map(async (d) => {
+          try {
+            return await eternalApi.divisionTasks(d.id, "mine");
+          } catch {
+            return { tasks: [] as DivisionTask[] };
+          }
+        })
+      );
+      for (const res of results) {
+        cards.push(...mergeTaskCards(res.tasks || []));
       }
-      const res = await eternalApi.divisionTasks(div, "mine");
-      setTaskCards(mergeTaskCards(res.tasks || []));
+      if (canApproveDesign(hasPerm)) {
+        try {
+          const ac = await eternalApi.actionItems();
+          const design = (ac.actions || []).find((a) => a.key === "design_approve");
+          for (const o of design?.items || []) {
+            cards.push({
+              key: `design_approve:${o.id}`,
+              orderId: o.id,
+              po: o.po_number || "—",
+              customer: o.customer || "—",
+              item: o.item || "Approve Design",
+              qtyLabel: o.design_status || "Waiting",
+              status: o.design_status || "Waiting",
+              division: "design_approve",
+              actionLabel: "Approve Design",
+            });
+          }
+        } catch {
+          /* action-items optional; division tasks still shown */
+        }
+      }
+      setTaskCards(cards);
     } catch (e) {
       setTaskCards([]);
       setTaskErr(apiErrorMessage(e, "Gagal memuat tugas"));
     }
-  }, [activeDiv, divisions.length, hasPerm]);
+  }, [divisions, hasPerm]);
 
   const loadSchedule = useCallback(async () => {
     setScheduleErr("");
@@ -221,14 +236,17 @@ export default function ScheduleScreen() {
 
   const filteredTasks = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return taskCards;
-    return taskCards.filter(
-      (r) =>
+    return taskCards.filter((r) => {
+      if (activeDiv && activeDiv !== "all" && r.division !== activeDiv) return false;
+      if (!q) return true;
+      return (
         r.po.toLowerCase().includes(q) ||
         r.customer.toLowerCase().includes(q) ||
-        r.item.toLowerCase().includes(q)
-    );
-  }, [taskCards, query]);
+        r.item.toLowerCase().includes(q) ||
+        (r.division || "").toLowerCase().includes(q)
+      );
+    });
+  }, [taskCards, query, activeDiv]);
 
   const filteredSchedule = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -250,7 +268,7 @@ export default function ScheduleScreen() {
   const openWork = (orderId: string, division?: string) => {
     router.push({
       pathname: "/(app)/po/[id]",
-      params: { id: orderId, divisi: division || activeDiv || "" },
+      params: { id: orderId, divisi: division || defaultWorkDivision(hasPerm) || "" },
     });
   };
 
@@ -291,10 +309,16 @@ export default function ScheduleScreen() {
           <Text style={typography.subtitle}>
             {user?.name || user?.email} · {user?.role}
           </Text>
-          {divisions.length > 1 ? (
+          {(divisions.length > 0 || canApproveDesign(hasPerm)) ? (
             <View style={styles.tabs}>
+              <Pressable
+                onPress={() => setActiveDiv("all")}
+                style={[styles.tab, activeDiv === "all" && styles.tabActive]}
+              >
+                <Text style={[styles.tabText, activeDiv === "all" && styles.tabTextActive]}>Semua</Text>
+              </Pressable>
               {divisions.map((d) => {
-                const active = (activeDiv || divisions[0].id) === d.id;
+                const active = activeDiv === d.id;
                 return (
                   <Pressable
                     key={d.id}
@@ -305,6 +329,16 @@ export default function ScheduleScreen() {
                   </Pressable>
                 );
               })}
+              {canApproveDesign(hasPerm) ? (
+                <Pressable
+                  onPress={() => setActiveDiv("design_approve")}
+                  style={[styles.tab, activeDiv === "design_approve" && styles.tabActive]}
+                >
+                  <Text style={[styles.tabText, activeDiv === "design_approve" && styles.tabTextActive]}>
+                    Approve Design
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
           <TextInput
@@ -329,10 +363,10 @@ export default function ScheduleScreen() {
 
           {loadingTasks ? <LoadingState label="Memuat tugas…" /> : null}
           {!loadingTasks && taskErr ? <ErrorState message={taskErr} onRetry={() => loadAll()} /> : null}
-          {!loadingTasks && !taskErr && !divisions.length ? (
+          {!loadingTasks && !taskErr && !divisions.length && !canApproveDesign(hasPerm) ? (
             <EmptyState message="Tidak ada divisi kerja yang diizinkan untuk akun ini." />
           ) : null}
-          {!loadingTasks && !taskErr && divisions.length > 0 && filteredTasks.length === 0 ? (
+          {!loadingTasks && !taskErr && (divisions.length > 0 || canApproveDesign(hasPerm)) && filteredTasks.length === 0 ? (
             <EmptyState message="Tidak ada tugas untuk Anda saat ini." />
           ) : null}
 
@@ -356,7 +390,8 @@ export default function ScheduleScreen() {
                     {item.customer}
                   </Text>
                   <Text style={[typography.subtitle, { marginTop: 2 }]} numberOfLines={2}>
-                    {item.item}
+                    {item.division === "design_approve" ? "Approve Design" : item.division || ""}
+                    {item.item ? ` · ${item.item}` : ""}
                   </Text>
                   <View style={styles.cardMeta}>
                     <Text style={typography.subtitle}>Tgl {fmtDate(item.workDate)}</Text>

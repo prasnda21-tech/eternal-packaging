@@ -98,6 +98,79 @@ export function helperModel(order: AnyOrder) {
   };
 }
 
+export function packingModel(order: AnyOrder) {
+  const items = order?.line_items || [];
+  const packLines = order?.packing_info?.lines || [];
+  const snapRows = order?.packing_lines || [];
+  const lines = items.map((li: any, idx: number) => {
+    const snap = snapRows.find((r: any) => Number(r.line_idx) === Number(idx));
+    const stored = packLines.find((x: any) => Number(x.line_idx) === Number(idx));
+    const done = Number(snap?.packed != null ? snap.packed : stored?.packed_qty || 0);
+    const target = Number(snap?.available != null ? snap.available : li.quantity || 0);
+    const remaining = Number(snap?.remaining != null ? snap.remaining : Math.max(0, target - done));
+    return {
+      lineIdx: idx,
+      name: li.name || `Line ${idx + 1}`,
+      color: li.color || "",
+      target,
+      done,
+      remaining,
+    };
+  }).filter((l: any) => l.target > 0 || l.done > 0);
+  const headerTarget = lines.reduce((s: number, l: any) => s + l.target, 0);
+  const headerDone = lines.reduce((s: number, l: any) => s + l.done, 0);
+  const waiting = lines.length === 0 || lines.every((l: any) => l.remaining <= 0 && l.done <= 0);
+  return {
+    title: "Pekerjaan Packing",
+    target: headerTarget,
+    done: headerDone,
+    remaining: Math.max(0, headerTarget - headerDone),
+    status: statusLabel(headerDone, headerTarget),
+    gateLocked: waiting,
+    gateMsg: "Qty Packing menunggu qty yang tersedia (Operator/non-cetak).",
+    lines,
+  };
+}
+
+export function loadingModel(order: AnyOrder) {
+  const files = (order?.surat_jalan_files || []).filter((f: any) => f && f.id);
+  const items = order?.line_items || [];
+  const snapRows = order?.shipment_lines || [];
+  const packLines = order?.packing_info?.lines || [];
+  const lines = items.map((li: any, idx: number) => {
+    const snap = snapRows.find((r: any) => Number(r.line_idx) === Number(idx)) || {};
+    const packedRow = packLines.find((x: any) => Number(x.line_idx) === Number(idx));
+    const packed = Number(snap.packed != null ? snap.packed : packedRow?.packed_qty || 0);
+    const loaded = Number(snap.loaded || 0);
+    const qtyPo = Number(li.quantity || snap.qty_po || 0);
+    const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
+    const available = Number(
+      snap.available_loading != null ? snap.available_loading : Math.max(0, cap - loaded)
+    );
+    return {
+      lineIdx: idx,
+      name: li.name || `Line ${idx + 1}`,
+      color: li.color || "",
+      target: cap,
+      done: loaded,
+      remaining: Math.max(0, available),
+    };
+  });
+  const headerTarget = lines.reduce((s: number, l: any) => s + l.target, 0);
+  const headerDone = lines.reduce((s: number, l: any) => s + l.done, 0);
+  return {
+    title: "Pekerjaan Loading",
+    target: headerTarget,
+    done: headerDone,
+    remaining: Math.max(0, headerTarget - headerDone),
+    status: statusLabel(headerDone, headerTarget),
+    gateLocked: files.length === 0,
+    gateMsg: "Qty Loading dapat diisi setelah Surat Jalan dibuat.",
+    files,
+    lines,
+  };
+}
+
 export function operatorMyLines(order: AnyOrder, user: { email?: string; id?: string } | null) {
   const email = (user?.email || "").trim().toLowerCase();
   const uid = String(user?.id || "").trim();

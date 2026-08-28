@@ -581,6 +581,20 @@ def build_loading_tasks(order: dict) -> List[dict]:
     return [row]
 
 
+def po_needs_loading_task(order: dict) -> bool:
+    """Actionable Loading: Surat Jalan ada dan masih ada sisa qty konfirmasi."""
+    if (order.get("delivery_status") or "") == "Terkirim":
+        return False
+    if not has_surat_jalan_file(order) and not order.get("surat_jalan_created") and _sj_file_count(order) <= 0:
+        return False
+    remaining = 0
+    lis = order.get("line_items") or []
+    n = len(lis) if lis else 1
+    for i in range(n):
+        remaining += max(0, available_for_loading_confirm_line(order, i))
+    return remaining > 0
+
+
 def build_delivery_tasks(order: dict) -> List[dict]:
     photos = valid_delivery_proof_count(order)
     confirmed = is_fully_delivered(order) or bool(order.get("delivered_at")) or (

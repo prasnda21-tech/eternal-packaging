@@ -4,8 +4,11 @@ export type PermCheck = (perm: string) => boolean;
 
 export const DIVISION_SUBMIT_PERMS: [string, string, string][] = [
   ["screener", "screen.update", "Screener"],
-  ["helper", "helper.prepare", "Helper"],
+  ["helper", "helper.prepare", "Persiapan Cup"],
+  ["packing", "packing.update", "Packing"],
   ["operator", "operator.update", "Operator"],
+  ["surat_jalan", "delivery_note.manage", "Surat Jalan"],
+  ["loading", "loading.update", "Loading"],
   ["terkirim", "delivery.update", "Driver / Terkirim"],
 ];
 
@@ -29,10 +32,14 @@ export function permittedWorkDivisions(has: PermCheck): { id: string; perm: stri
 export function defaultWorkDivision(has: PermCheck, preferred?: string | null): string | null {
   const ids = permittedWorkDivisions(has);
   if (preferred && ids.some((d) => d.id === preferred)) return preferred;
-  return ids[0]?.id || null;
+  if (preferred === "design_approve" && has("design.approve")) return "design_approve";
+  return ids[0]?.id || (has("design.approve") ? "design_approve" : null);
 }
 
 export function canViewSchedule(has: PermCheck): boolean {
-  // Shared Jadwal Produksi table requires schedule.view (backend-authoritative).
   return has("schedule.view");
+}
+
+export function canApproveDesign(has: PermCheck): boolean {
+  return has("design.approve");
 }
