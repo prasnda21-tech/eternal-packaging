@@ -21,6 +21,7 @@ from services.accurate import (
     _MOCK_SALES_ORDERS,
     _classify_s_false,
     _normalize_accurate_so,
+    clear_accurate_name_cache,
     coerce_accurate_quantity,
     sanitize_accurate_error,
     validate_normalized_so,
@@ -133,6 +134,7 @@ class _FakeHTTP:
 
 
 def _live_so_client(monkeypatch, *, oauth=False):
+    clear_accurate_name_cache()
     _FakeHTTP.created = 0
     _FakeHTTP.gets = []
     _FakeHTTP.posts = []
@@ -512,3 +514,209 @@ def test_single_fetch_raises_typed_error_after_timeout(monkeypatch):
         _await(c.fetch_single_sales_order("SO-X"))
     assert ei.value.category == AccurateErrorCategory.TIMEOUT
     assert "lambat" in str(ei.value).lower()
+
+
+def _branch_resp(branch_id, name):
+    return _FakeResp(200, {"s": True, "d": {"id": int(branch_id), "name": name}})
+
+
+def _live_so_extra():
+    return {
+        "createdBy": 1248273,
+        "printUserName": "Dimas Aji Prasetya",
+        "userPrinted": 488125,
+        "branchId": 50,
+        "shipment": {"id": "150", "name": "OUTLET"},
+        "warehouse": {"id": 9, "name": "Gudang Utama"},
+        "salesman": {"id": 12, "name": "Bukan Creator"},
+        "shipDate": "05/09/2026",
+        "transDate": "28/08/2026",
+        "toAddress": "59G2+JPW Yogyakarta",
+        "charField3": "JS",
+        "description": "SABLON WARNA HITAM",
+        "customer": {
+            "name": "CAKE IN LOVE",
+            "shipAddress": {"picName": "CAKE IN LOVE"},
+        },
+    }
+
+
+def test_branch_id_resolves_to_branch_name(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-BR": [
+            _FakeResp(200, _so_payload("SO-BR", extra_d=_live_so_extra())),
+        ],
+        "GET:branch/detail.do:50": [_branch_resp(50, "Yogyakarta")],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-BR"]))
+    assert rows[0]["success"] is True
+    so = rows[0]["data"]
+    assert so["outlet"] == "Yogyakarta"
+    assert so["expedition"] == "OUTLET"
+    assert so["outlet"] != so["expedition"]
+    assert so["created_by_user"] is None
+    assert so["sales"] == "Bukan Creator"
+    assert so["recipient"] == "CAKE IN LOVE"
+    assert so["delivery_zone"] == "JS"
+    assert so["estimated_ship_date"] == "2026-09-05"
+    assert "_branch_id" not in so
+    assert "_created_by_id" not in so
+    branch_gets = [g for g in _FakeHTTP.gets if "branch/detail.do" in g["url"]]
+    assert len(branch_gets) == 1
+    assert branch_gets[0]["params"] == {"id": "50"} or branch_gets[0]["params"] == {"id": 50}
+    user_gets = [g for g in _FakeHTTP.gets if "/user/" in g["url"] or g["url"].endswith("userinfo.do")]
+    assert user_gets == []
+
+
+def test_printUserName_and_salesman_are_not_creator(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-U": [
+            _FakeResp(200, _so_payload("SO-U", extra_d=_live_so_extra())),
+        ],
+        "GET:branch/detail.do:50": [_branch_resp(50, "Yogyakarta")],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-U"]))
+    so = rows[0]["data"]
+    assert rows[0]["success"] is True
+    assert so["created_by_user"] is None
+    assert so["sales"] == "Bukan Creator"
+    assert so["created_by_user"] != so["sales"]
+    assert so["created_by_user"] != "Dimas Aji Prasetya"
+
+
+def test_user_lookup_absent_does_not_fail_so(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    extra = _live_so_extra()
+    extra.pop("branchId")
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-NF": [
+            _FakeResp(200, _so_payload("SO-NF", extra_d=extra)),
+        ],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-NF"]))
+    assert rows[0]["success"] is True
+    assert rows[0]["data"]["created_by_user"] is None
+    assert rows[0]["data"]["expedition"] == "OUTLET"
+    assert all("/user/" not in g["url"] for g in _FakeHTTP.gets)
+
+
+def test_same_createdBy_does_not_repeat_user_lookup(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    extra = _live_so_extra()
+    extra.pop("branchId")
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-A": [
+            _FakeResp(200, _so_payload("SO-A", extra_d=extra)),
+        ],
+        "GET:sales-order/detail.do:SO-B": [
+            _FakeResp(200, _so_payload("SO-B", extra_d=extra)),
+        ],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-A", "SO-B"]))
+    assert all(r["success"] for r in rows)
+    assert all(r["data"]["created_by_user"] is None for r in rows)
+    assert [g for g in _FakeHTTP.gets if "/user/" in g["url"]] == []
+    assert len(_FakeHTTP.gets) == 2
+
+
+def test_shipment_outlet_not_used_as_outlet(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-SH": [
+            _FakeResp(200, _so_payload("SO-SH", extra_d=_live_so_extra())),
+        ],
+        "GET:branch/detail.do:50": [_branch_resp(50, "Cabang Jogja")],
+    }
+    so = _await(c.fetch_sales_order_results(["SO-SH"]))[0]["data"]
+    assert so["expedition"] == "OUTLET"
+    assert so["outlet"] == "Cabang Jogja"
+    assert so["outlet"] != "OUTLET"
+    assert so["outlet"] != "Gudang Utama"
+
+
+def test_branch_lookup_failure_keeps_so_and_blank_outlet(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-BF": [
+            _FakeResp(200, _so_payload("SO-BF", extra_d=_live_so_extra())),
+        ],
+        "GET:branch/detail.do:50": [_FakeResp(404, {"s": False, "d": ["not found"]})],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-BF"]))
+    assert rows[0]["success"] is True
+    so = rows[0]["data"]
+    assert so["outlet"] in (None, "", "-")
+    assert so["expedition"] == "OUTLET"
+    assert so["created_by_user"] is None
+    assert so["recipient"] == "CAKE IN LOVE"
+    assert "_branch_id" not in so
+
+
+def test_same_branchId_looked_up_once(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    extra = _live_so_extra()
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-1": [
+            _FakeResp(200, _so_payload("SO-1", extra_d=extra)),
+        ],
+        "GET:sales-order/detail.do:SO-2": [
+            _FakeResp(200, _so_payload("SO-2", extra_d=extra)),
+        ],
+        "GET:sales-order/detail.do:SO-3": [
+            _FakeResp(200, _so_payload("SO-3", extra_d=extra)),
+        ],
+        "GET:branch/detail.do:50": [_branch_resp(50, "Yogyakarta")],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-1", "SO-2", "SO-3"]))
+    assert [r["success"] for r in rows] == [True, True, True]
+    assert all(r["data"]["outlet"] == "Yogyakarta" for r in rows)
+    assert all(r["data"]["expedition"] == "OUTLET" for r in rows)
+    branch_gets = [g for g in _FakeHTTP.gets if "branch/detail.do" in g["url"]]
+    assert len(branch_gets) == 1
+
+
+def test_partial_failure_still_resolves_successful_so_branch(monkeypatch):
+    c = _live_so_client(monkeypatch)
+
+    def _act(url, params):
+        number = str((params or {}).get("number") or "")
+        if number == "SO-BAD":
+            return httpx.ConnectError("connection reset")
+        extra = _live_so_extra()
+        extra["customer"] = {"name": "CAKE IN LOVE", "shipAddress": {"picName": "CAKE IN LOVE"}}
+        return _FakeResp(200, _so_payload(number, extra_d=extra))
+
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do": [_act] * 20,
+        "GET:branch/detail.do:50": [_branch_resp(50, "Yogyakarta")],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-OK1", "SO-BAD", "SO-OK2"]))
+    by = {r["so_number"]: r for r in rows}
+    assert by["SO-OK1"]["success"] is True
+    assert by["SO-OK2"]["success"] is True
+    assert by["SO-BAD"]["success"] is False
+    assert by["SO-OK1"]["data"]["outlet"] == "Yogyakarta"
+    assert by["SO-OK1"]["data"]["recipient"] == "CAKE IN LOVE"
+    assert by["SO-OK1"]["data"]["delivery_zone"] == "JS"
+    assert by["SO-OK1"]["data"]["sales"] == "Bukan Creator"
+    assert by["SO-OK1"]["data"]["expedition"] == "OUTLET"
+    assert by["SO-OK1"]["data"]["line_items"][0]["color"] == "HITAM"
+    branch_gets = [g for g in _FakeHTTP.gets if "branch/detail.do" in g["url"]]
+    assert len(branch_gets) == 1
+
+
+def test_branch_400_is_not_retried(monkeypatch):
+    c = _live_so_client(monkeypatch)
+    _FakeHTTP.script = {
+        "GET:sales-order/detail.do:SO-B4": [
+            _FakeResp(200, _so_payload("SO-B4", extra_d=_live_so_extra())),
+        ],
+        "GET:branch/detail.do:50": [_FakeResp(400, {"s": False, "d": ["bad request"]})],
+    }
+    rows = _await(c.fetch_sales_order_results(["SO-B4"]))
+    assert rows[0]["success"] is True
+    assert rows[0]["data"]["outlet"] in (None, "", "-")
+    branch_gets = [g for g in _FakeHTTP.gets if "branch/detail.do" in g["url"]]
+    assert len(branch_gets) == 1

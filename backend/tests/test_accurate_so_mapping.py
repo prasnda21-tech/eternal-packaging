@@ -351,6 +351,48 @@ def test_created_by_ignores_printUserName_and_createdBy_id():
     so = _normalize_accurate_so(raw)
     assert so["created_by_user"] is None
     assert so["sales"] == "Dimas Aji Prasetya"
+    assert so["_created_by_id"] == "1248273"
+    assert so["created_by_user"] != so["sales"]
+
+
+def test_outlet_not_from_warehouse_or_selling_price_branch():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "branchId": 50,
+        "shipment": {"id": "150", "name": "OUTLET"},
+        "warehouse": {"id": 9, "name": "Gudang Utama"},
+        "defaultWarehouse": {"name": "Gudang Default"},
+        "detailItem": [
+            {
+                "quantity": 1,
+                "item": {
+                    "id": 1,
+                    "name": "Item",
+                    "detailSellingPrice": [{"branch": {"id": 3, "name": "SellingPrice Branch"}}],
+                },
+            }
+        ],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["expedition"] == "OUTLET"
+    assert so["outlet"] in (None, "", "-")
+    assert so["_branch_id"] == "50"
+
+
+def test_cake_in_love_keeps_live_ids_without_guessing_names():
+    so = _normalize_accurate_so(CAKE_IN_LOVE_SO_DETAIL)
+    assert so["_created_by_id"] == "1248273"
+    assert so["_branch_id"] == "50"
+    assert so["created_by_user"] is None
+    assert so["outlet"] in (None, "", "-")
+    assert so["expedition"] == "OUTLET"
+    assert so["recipient"] == "CAKE IN LOVE"
+    assert so["delivery_zone"] == "JS"
+    assert so["sales"] == "Dimas Aji Prasetya"
+    assert so["estimated_ship_date"] == "2026-09-05"
+    assert so["line_items"][0]["color"] == "HITAM"
 
 
 def test_payment_term_name_string_and_nested_object():
