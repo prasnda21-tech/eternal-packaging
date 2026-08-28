@@ -30,4 +30,19 @@ describe("deliveryProof helpers", () => {
     expect(canConfirmDelivered([{ id: "a" }, { id: "b" }])).toBe(true);
     expect(canConfirmDelivered([{ id: "a" }, { id: "b" }, { id: "c" }])).toBe(true);
   });
+
+  test("403 role-gate copy is mapped to a permission message", () => {
+    const msg = proofUploadUserError({
+      response: { status: 403, data: { detail: "Aksi ini tidak tersedia untuk role Anda" } },
+    });
+    expect(msg).toBe("Anda tidak punya izin untuk aksi ini.");
+    expect(msg).not.toMatch(/role Anda/);
+  });
+
+  test("403 permission copy is kept", () => {
+    const msg = proofUploadUserError({
+      response: { status: 403, data: { detail: "Permission 'delivery.update' diperlukan" } },
+    });
+    expect(msg).toBe("Permission 'delivery.update' diperlukan");
+  });
 });

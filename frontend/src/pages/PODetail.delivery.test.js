@@ -44,6 +44,15 @@ describe("PO Detail delivery cards", () => {
     expect(proof).toMatch(/Upload foto tidak menandai Terkirim/);
   });
 
+  test("Driver/Terkirim actions use delivery.update not role name", () => {
+    expect(proof).toMatch(/hasPerm\("delivery\.update"\)/);
+    expect(proof).not.toMatch(/role\s*===\s*["']driver["']/);
+    expect(proof).not.toMatch(/role\s*!==\s*["']driver["']/);
+    expect(proof).not.toMatch(/isDriver/);
+    expect(proof).not.toMatch(/Aksi ini tidak tersedia untuk role Anda/);
+    expect(detail).toMatch(/hasPerm\("delivery\.update"\)/);
+  });
+
   test("manual qty input uses dedicated contrast class not global input", () => {
     expect(qtyUi).toMatch(/manual-qty-input/);
     expect(qtyUi).toMatch(/is-manual/);

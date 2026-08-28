@@ -6604,7 +6604,7 @@ async def upload_delivery_proof(
     order_id: str,
     file: UploadFile = File(...),
     note: Optional[str] = Form(None),
-    user=Depends(require("admin", "head_production", "driver")),
+    user=Depends(require_perm("delivery.update")),
 ):
     """Upload a delivery-proof photo (from driver's phone). Stores to object
     storage and references it on the PO document — never as inline binary.
@@ -6685,7 +6685,7 @@ async def upload_delivery_proof(
 
 
 @api_router.delete("/orders/{order_id}/delivery-proof/{proof_id}")
-async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(require("admin", "head_production", "driver"))):
+async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(require_perm("delivery.update"))):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
