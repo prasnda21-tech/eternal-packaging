@@ -11,6 +11,10 @@ frontend/.env
 frontend/.env.*
 !frontend/.env.example
 
+mobile/.env
+mobile/.env.*
+!mobile/.env.example
+
 # ===== PYTHON =====
 .venv/
 **/.venv/
@@ -33,6 +37,19 @@ backups/
 *.archive.gz
 *.tar.gz
 *.zip
+
+# ===== MOBILE / EAS CREDENTIALS AND ARTIFACTS =====
+mobile/.expo/
+*.keystore
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.apk
+*.aab
+*.ipa
+credentials.json
 
 # ===== LOGS / TEMP =====
 *.log

@@ -1,0 +1,42 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "credentialsSource": "remote",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://produksi.eternalpackaging.id"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "credentialsSource": "remote",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://produksi.eternalpackaging.id"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "credentialsSource": "remote",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://produksi.eternalpackaging.id"
+      },
+      "android": {
+        "autoIncrement": "versionCode"
+      },
+      "ios": {
+        "autoIncrement": "buildNumber"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
