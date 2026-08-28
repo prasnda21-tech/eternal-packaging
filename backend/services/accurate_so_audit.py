@@ -44,6 +44,14 @@ INTERESTING_KEY_FRAGMENTS = (
     "shipment",
     "itemno",
     "itemname",
+    "user",
+    "create",
+    "print",
+    "attention",
+    "pic",
+    "recipient",
+    "receiver",
+    "contact",
 )
 
 DEFAULT_TARGET_VALUES = (
