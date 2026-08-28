@@ -6,15 +6,26 @@ export function emptyLoadingLine() {
   return { line_idx: "", qty: "" };
 }
 
+function packedQtyForLine(order, snap, idx) {
+  if (snap?.packed != null && snap.packed !== "") return Number(snap.packed) || 0;
+  const lines = Array.isArray(order?.packing_info?.lines) ? order.packing_info.lines : [];
+  const row = lines.find((r) => Number(r.line_idx) === idx);
+  if (row) return Number(row.packed_qty || 0) || 0;
+  if (Number(idx) === 0) return Number(order?.packing_info?.qty_packed || 0) || 0;
+  return 0;
+}
+
 export function loadingPoLines(order) {
   const lis = Array.isArray(order?.line_items) ? order.line_items : [];
   const snapshot = Array.isArray(order?.shipment_lines) ? order.shipment_lines : [];
   return lis.map((li, idx) => {
     const snap = snapshot.find((r) => Number(r.line_idx) === idx) || {};
     const qtyPo = Number(li.quantity ?? snap.qty_po ?? 0) || 0;
+    const packed = packedQtyForLine(order, snap, idx);
     const loaded = Number(snap.loaded ?? 0) || 0;
+    const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
     const available = Number(
-      snap.available_loading != null ? snap.available_loading : Math.max(0, qtyPo - loaded),
+      snap.available_loading != null ? snap.available_loading : Math.max(0, cap - loaded),
     );
     return {
       line_idx: idx,
@@ -23,6 +34,7 @@ export function loadingPoLines(order) {
       accurate_item_id: li.accurate_item_id || snap.accurate_item_id || "",
       color: li.color || snap.color || "",
       qty_po: qtyPo,
+      packed,
       loaded,
       available: Math.max(0, available),
       label: poLineLabel(li, idx),
@@ -67,7 +79,10 @@ export function validateLoadingDraftLines(rows, poLines) {
     const po = (poLines || []).find((p) => Number(p.line_idx) === idx);
     const avail = po ? Number(po.available) : null;
     if (avail != null && qty > avail) {
-      return { ok: false, error: `Qty melebihi sisa qty PO line (${avail}).`, lines: [] };
+      if (avail <= 0) {
+        return { ok: false, error: "Qty Loading belum bisa diisi. Qty fisik yang sudah diproses belum siap.", lines: [] };
+      }
+      return { ok: false, error: `Qty melebihi qty packing yang siap loading (${avail}).`, lines: [] };
     }
     const payload = { line_idx: idx, qty };
     if (po?.accurate_item_id) payload.accurate_item_id = String(po.accurate_item_id);

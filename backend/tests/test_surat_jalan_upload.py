@@ -119,11 +119,19 @@ def test_loading_requires_linked_sj_and_positive_qty():
     assert validate_loading_confirmation(o, "missing", [{"line_idx": 0, "qty": 10}])
     assert validate_loading_confirmation(o, "f1", [])
     assert validate_loading_confirmation(o, "f1", [{"line_idx": 0, "qty": 0}])
-    assert validate_loading_confirmation(o, "f1", [{"line_idx": 0, "qty": 100}]) is None
+    assert validate_loading_confirmation(o, "f1", [{"line_idx": 0, "qty": 100}])
+    packed = _po(
+        packing_info={"qty_packed": 1000, "lines": [{"line_idx": 0, "packed_qty": 1000}]},
+        surat_jalan_files=[{"id": "f1", "name": "sj.pdf"}],
+    )
+    assert validate_loading_confirmation(packed, "f1", [{"line_idx": 0, "qty": 100}]) is None
 
 
 def test_loading_cumulative_and_over_confirm():
-    o = _po(surat_jalan_files=[{"id": "f1", "name": "a.pdf"}, {"id": "f2", "name": "b.pdf"}])
+    o = _po(
+        packing_info={"qty_packed": 1000, "lines": [{"line_idx": 0, "packed_qty": 1000}]},
+        surat_jalan_files=[{"id": "f1", "name": "a.pdf"}, {"id": "f2", "name": "b.pdf"}],
+    )
     apply_loading_confirmation(o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 400}], actor={"email": "a@x.com", "name": "A"}, confirmation_id="c1", confirmed_at="t1")
     apply_loading_confirmation(o, surat_jalan_id="f2", lines=[{"line_idx": 0, "qty": 300}], actor={"email": "a@x.com", "name": "A"}, confirmation_id="c2", confirmed_at="t2")
     assert eligible_delivery_qty(o) == 700
