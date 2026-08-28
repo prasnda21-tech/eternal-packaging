@@ -1,3 +1,4 @@
+import { STAGES } from "./constants";
 import { trackingStatusClass, trackingStatusLabel } from "./customerTracking";
 
 describe("customer tracking status labels", () => {
@@ -13,5 +14,11 @@ describe("customer tracking status labels", () => {
     expect(trackingStatusClass("completed")).toMatch(/is-done/);
     expect(trackingStatusClass("in_progress")).toMatch(/is-run/);
     expect(trackingStatusClass("waiting")).toMatch(/is-wait/);
+  });
+
+  test("Detail PO STAGES include the customer-facing milestones", () => {
+    expect(STAGES).toEqual(expect.arrayContaining([
+      "Order Masuk", "Approval Payment", "Packing", "Surat Jalan", "Loading", "Terkirim",
+    ]));
   });
 });

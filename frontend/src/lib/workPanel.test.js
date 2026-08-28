@@ -244,6 +244,38 @@ describe("screener / helper / packing / loading aggregates", () => {
     expect(model.lines[1].entries).toHaveLength(0);
   });
 
+  test("Loading stays unlocked by Surat Jalan even when packed qty is 0", () => {
+    const model = loadingWorkModel({
+      surat_jalan_created: true,
+      shipment_lines: [
+        { line_idx: 0, name: "A", packed: 0, qty_po: 800, loaded: 0, loading_cap: 800, available_loading: 800 },
+      ],
+    });
+    expect(model.gateLocked).toBe(false);
+    expect(model.headerTarget).toBe(800);
+    expect(model.lines[0].remaining).toBe(800);
+  });
+
+  test("Loading remaining uses PO qty when packing is empty even if snapshot available_loading is 0", () => {
+    const model = loadingWorkModel({
+      surat_jalan_files: [{ id: "f1", name: "sj.pdf", uploaded_at: "2026-08-28T10:00:00+07:00" }],
+      shipment_lines: [
+        { line_idx: 0, name: "A", packed: 0, qty_po: 800, loaded: 0, loading_cap: 0, available_loading: 0 },
+      ],
+    });
+    expect(model.gateLocked).toBe(false);
+    expect(model.lines[0].remaining).toBe(800);
+  });
+
+  test("cancelled Surat Jalan does not unlock Loading", () => {
+    const model = loadingWorkModel({
+      surat_jalan_created: false,
+      surat_jalan_files: [{ id: "f1", name: "sj.pdf", status: "cancelled" }],
+      shipment_lines: [{ line_idx: 0, name: "A", packed: 0, qty_po: 800, loaded: 0 }],
+    });
+    expect(model.gateLocked).toBe(true);
+  });
+
   test("partial delivery does not mark whole PO 100%", () => {
     expect(deliveryPartialPercent({ qty_delivered: 5000, total_quantity: 10000 })).toBe(50);
     expect(deliveryPartialPercent({ qty_delivered: 5000, total_quantity: 10000 })).not.toBe(100);

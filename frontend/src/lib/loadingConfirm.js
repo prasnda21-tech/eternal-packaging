@@ -2,8 +2,26 @@ import { poLineLabel, parseSjQty } from "./suratJalan";
 
 export const LOADING_UPDATE_PERM = "loading.update";
 
+const INACTIVE_SJ = /^(cancelled|invalid|deleted|void)$/i;
+
+export function isActiveSjFile(f) {
+  if (!f) return false;
+  if (f.is_deleted === true || f.cancelled === true) return false;
+  if (INACTIVE_SJ.test(String(f.status || "").trim())) return false;
+  return !!(f.file_id || f.id);
+}
+
 export function emptyLoadingLine() {
   return { line_idx: "", qty: "" };
+}
+
+export function loadingAvailableForLine({ available_loading, qtyPo, loaded, packed }) {
+  const poAvail = Math.max(0, Number(qtyPo || 0) - Number(loaded || 0));
+  if (Number(packed || 0) <= 0) return poAvail;
+  if (available_loading != null && available_loading !== "") {
+    return Math.max(0, Number(available_loading));
+  }
+  return poAvail;
 }
 
 export function loadingPoLines(order) {
@@ -13,9 +31,13 @@ export function loadingPoLines(order) {
     const snap = snapshot.find((r) => Number(r.line_idx) === idx) || {};
     const qtyPo = Number(li.quantity ?? snap.qty_po ?? 0) || 0;
     const loaded = Number(snap.loaded ?? 0) || 0;
-    const available = Number(
-      snap.available_loading != null ? snap.available_loading : Math.max(0, qtyPo - loaded),
-    );
+    const packed = Number(snap.packed ?? order?.packing_info?.qty_packed ?? 0) || 0;
+    const available = loadingAvailableForLine({
+      available_loading: snap.available_loading,
+      qtyPo,
+      loaded,
+      packed,
+    });
     return {
       line_idx: idx,
       name: li.name || snap.name || `Line #${idx + 1}`,
@@ -35,7 +57,7 @@ export function sjFilesForLoading(order) {
     ? order.sj_files
     : (Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : []);
   return files
-    .filter((f) => f && (f.file_id || f.id))
+    .filter(isActiveSjFile)
     .map((f) => ({
       id: f.file_id || f.id,
       name: f.name || "Surat Jalan",
