@@ -25,7 +25,9 @@ import useAutoRefresh from "../lib/useAutoRefresh";
 import StageDetailDrawer from "../components/StageDetailDrawer";
 import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
+import RollbackModal from "../components/RollbackModal";
 import { newActionId } from "../lib/workflowEntries";
+import { selectiveRollbackBody } from "../lib/rollbackTargets";
 import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../lib/paymentProof";
 import { schedulePoHref } from "../lib/workPanel";
 
@@ -42,6 +44,8 @@ export default function PODetail() {
 
   // Delete PO modal state (Req 5)
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showRollback, setShowRollback] = useState(false);
+  const [rollbackErr, setRollbackErr] = useState("");
   const [deleteImpact, setDeleteImpact] = useState(null);
   const [deleteReason, setDeleteReason] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState("");
@@ -88,7 +92,7 @@ export default function PODetail() {
   // kalau server-side timestamp berubah — draft belum-di-save tetap aman.
   const { lastUpdated: poLastUpdated, isPolling: poIsPolling, refreshNow: refreshPO } = useAutoRefresh(
     () => api.getOrder(id),
-    { intervalMs: 30_000, enabled: !!order, onData: (d) => { if (d?.order) setOrder(d.order); } }
+    { intervalMs: 30_000, enabled: !!order, paused: busy || showRollback, onData: (d) => { if (d?.order) setOrder(d.order); } }
   );
 
   if (!hasPerm("po.view")) {
@@ -286,14 +290,31 @@ export default function PODetail() {
     if (!reason || !reason.trim()) return;
     await run(() => api.bypassPayment(order.id, reason.trim()), "Approval Payment di-bypass");
   };
-  const doRollback = async () => {
-    const to = window.prompt(`Rollback ke tahap apa? Ketik angka 0..${order.current_stage - 1}\n\n${STAGES.map((s, i) => `${i} = ${s}`).join("\n")}`);
-    if (to === null) return;
-    const toStage = parseInt(to, 10);
-    if (!Number.isInteger(toStage) || toStage < 0 || toStage >= order.current_stage) { alert("Stage tujuan tidak valid."); return; }
-    const reason = window.prompt("Alasan rollback (wajib):");
-    if (!reason || !reason.trim()) return;
-    await run(() => api.rollbackStage(order.id, toStage, reason.trim()), `Workflow dikembalikan ke ${STAGES[toStage]}`);
+  const doRollback = () => {
+    setRollbackErr("");
+    setShowRollback(true);
+  };
+  const confirmRollback = async ({ ids, reason, to_stage }) => {
+    setRollbackErr("");
+    setBusy(true);
+    setErr("");
+    try {
+      const body = selectiveRollbackBody(ids, reason, to_stage);
+      await api.rollbackStage(order.id, body);
+      const fresh = await api.getOrder(order.id);
+      if (!fresh?.order) {
+        setRollbackErr("Rollback tersimpan tetapi gagal memuat ulang PO.");
+        return;
+      }
+      setOrder(fresh.order);
+      setShowRollback(false);
+      showToast("Rollback selesai");
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      setRollbackErr(typeof d === "string" ? d : (d?.message || "Gagal rollback"));
+    } finally {
+      setBusy(false);
+    }
   };
   const saveScreener = () => {
     const q = Math.max(0, parseInt(screenerDraft || "0", 10));
@@ -1067,6 +1088,18 @@ export default function PODetail() {
         onCancel={() => { if (!busy) setActionConfirm(null); }}
         onConfirm={executeActionConfirm}
       />
+
+      {showRollback && (
+        <RollbackModal
+          open
+          order={order}
+          busy={busy}
+          error={rollbackErr}
+          hasPermission={canRollback}
+          onCancel={() => { if (!busy) { setShowRollback(false); setRollbackErr(""); } }}
+          onConfirm={confirmRollback}
+        />
+      )}
 
       {toast && (
         <div className="toast" data-testid="detail-toast">

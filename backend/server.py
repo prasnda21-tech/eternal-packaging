@@ -129,6 +129,7 @@ from services.purchase_receipts import (
     purchase_source_from_meta,
     sync_purchase_receipts,
 )
+from services.workflow_rollback import RollbackError, apply_selective_rollback, validate_rollback_to_stage
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -430,8 +431,9 @@ class BypassPayload(BaseModel):
 
 
 class RollbackPayload(BaseModel):
-    to_stage: int
     reason: str
+    to_stage: Optional[int] = None
+    ids: Optional[List[str]] = None
 
 
 class HelperPrepPayload(BaseModel):
@@ -1904,9 +1906,38 @@ async def rollback_stage(order_id: str, payload: RollbackPayload, user=Depends(c
     reason = (payload.reason or "").strip()
     if not reason:
         raise HTTPException(400, "Alasan rollback wajib diisi.")
+    from_stage = order.get("current_stage", 0)
+    ids = list(payload.ids) if payload.ids is not None else None
+    if ids is not None:
+        stage_err = validate_rollback_to_stage(payload.to_stage, from_stage, len(STAGES), selective=True)
+        if stage_err:
+            raise HTTPException(400, stage_err)
+        try:
+            applied = apply_selective_rollback(order, ids, user, now_iso(), int(payload.to_stage))
+        except RollbackError as e:
+            raise HTTPException(400, str(e))
+        entry = {
+            "id": str(uuid.uuid4()),
+            "from_stage": from_stage,
+            "from_stage_label": STAGES[min(from_stage, len(STAGES) - 1)] if STAGES else str(from_stage),
+            "to_stage": int(payload.to_stage),
+            "to_stage_label": STAGES[int(payload.to_stage)],
+            "ids": applied,
+            "by_email": user.get("email"),
+            "by_role": user.get("role"),
+            "by_name": user.get("name"),
+            "at": now_iso(),
+            "reason": reason,
+        }
+        order.setdefault("rollback_history", []).append(entry)
+        add_timeline(order, from_stage, user, note=f"Rollback selektif ({len(applied)} nomor): {reason}")
+        await _persist_order(order)
+        await _audit_po(order, "workflow.rollback", user, before={"stage": from_stage}, after={"ids": applied}, note=reason)
+        return {"order": order}
+    if payload.to_stage is None:
+        raise HTTPException(400, "Pilih minimal satu nomor.")
     if payload.to_stage < 0 or payload.to_stage >= len(STAGES):
         raise HTTPException(400, "Stage tujuan tidak valid.")
-    from_stage = order.get("current_stage", 0)
     if payload.to_stage >= from_stage:
         raise HTTPException(400, "Stage tujuan harus lebih kecil dari stage saat ini.")
     entry = {

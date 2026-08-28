@@ -1349,7 +1349,7 @@
 .ind-table .qty-control-label{display:none}
 .qty-notes{display:flex;flex-direction:column;gap:6px;margin:12px 0 0}
 .qty-notes-label,.qty-field-label{font:10px 'IBM Plex Mono';letter-spacing:.1em;text-transform:uppercase;color:var(--soft)}
-.qty-notes input,.qty-field input[type="date"],.qty-field select{
+.qty-notes input,.qty-notes select,.qty-field input[type="date"],.qty-field select{
   width:100%;min-height:36px;padding:8px 10px;border:1px solid #D9BE7A;background:#FBF4DE;color:var(--ink);font-size:13px;border-radius:4px
 }
 .qty-notes input:focus,.qty-field input[type="date"]:focus,.qty-field select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
@@ -1800,6 +1800,12 @@ html:has(.ship-status-page) #root{
 .append-entries-total{margin-top:2px}
 
 .confirm-action-inner{max-width:420px}
+.confirm-action-body{padding:16px 22px}
+.rollback-nomor-list{list-style:none;margin:10px 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.rollback-nomor-list li{border:1px solid var(--line);border-radius:8px;background:#fafaf7}
+.rollback-nomor-list li.is-selected{border-color:#c9b48a;background:#f7f1e3}
+.rollback-nomor-list label{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;cursor:pointer;font-size:13px}
+.rollback-nomor-list input{margin-top:2px}
 .confirm-action-dl{margin:0;display:grid;gap:10px}
 .confirm-action-dl > div{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:baseline}
 .confirm-action-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}

@@ -36,7 +36,12 @@ export const api = {
   approveSample: (id, approved = true, note = "") => client.post(`/orders/${id}/approve-sample`, { approved, note }).then((r) => r.data),
   bypassDesign: (id, reason) => client.post(`/orders/${id}/design/bypass`, { reason }).then((r) => r.data),
   bypassPayment: (id, reason) => client.post(`/orders/${id}/payment/bypass`, { reason }).then((r) => r.data),
-  rollbackStage: (id, to_stage, reason) => client.post(`/orders/${id}/rollback`, { to_stage, reason }).then((r) => r.data),
+  rollbackStage: (id, to_stageOrPayload, reason) => {
+    const body = (to_stageOrPayload && typeof to_stageOrPayload === "object" && !Array.isArray(to_stageOrPayload))
+      ? to_stageOrPayload
+      : { to_stage: to_stageOrPayload, reason };
+    return client.post(`/orders/${id}/rollback`, body).then((r) => r.data);
+  },
   updateHelperPrep: (id, payload) => client.post(`/orders/${id}/helper-prep`, payload).then((r) => r.data),
   updateHelperPrepItems: (id, items, notes = "") => client.post(`/orders/${id}/helper-prep/items`, { items, notes }).then((r) => r.data),
   updateScreenerInfo: (id, payload) => client.post(`/orders/${id}/screener-info`, payload).then((r) => r.data),
