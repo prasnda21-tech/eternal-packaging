@@ -2105,15 +2105,66 @@ def _accurate_salesman(d: Dict[str, Any], lines_raw: List[Any]) -> Optional[str]
 
 
 def _accurate_created_by(d: Dict[str, Any]) -> Optional[str]:
-    """User yang membuat transaksi — never salesman."""
+    """User yang membuat transaksi — never salesman, printer, or numeric IDs.
+
+    Live GET only sends createdBy as an id (e.g. 1248273). printUserName is the
+    print operator, not the creator. No existing user-lookup API is used.
+    """
     for key in ("userName", "createUserName", "createdByUserName"):
-        name = _accurate_display_name(d.get(key))
+        name = _accurate_person_name(d.get(key))
         if name:
             return name
-    for key in ("user", "createUser", "createdByUser", "createdBy"):
-        name = _accurate_display_name(d.get(key))
+    for key in ("user", "createUser", "createdByUser"):
+        name = _accurate_person_name(d.get(key))
         if name:
             return name
+    created = d.get("createdBy")
+    if isinstance(created, dict):
+        return _accurate_person_name(created)
+    return None
+
+
+def _accurate_person_name(value: Any) -> Optional[str]:
+    """Display name only. Digit-only Accurate ids are not names."""
+    name = _accurate_display_name(value)
+    if not name or name.isdigit():
+        return None
+    return name
+
+
+def _ship_pic_name(obj: Any) -> Optional[str]:
+    if not isinstance(obj, dict):
+        return None
+    return _blank_to_none(obj.get("picName"))
+
+
+def _accurate_recipient(d: Dict[str, Any]) -> Optional[str]:
+    """Live-proven: customer.shipAddress.picName, then matching shipAddressList."""
+    cust = d.get("customer") if isinstance(d.get("customer"), dict) else {}
+    name = _ship_pic_name(cust.get("shipAddress"))
+    if name:
+        return name
+    wanted = d.get("shipAddressId")
+    if wanted in (None, ""):
+        wanted = cust.get("shipAddressId")
+    ship = cust.get("shipAddress")
+    if wanted in (None, "") and isinstance(ship, dict):
+        wanted = ship.get("id")
+    lst = cust.get("shipAddressList")
+    if isinstance(lst, list) and wanted not in (None, ""):
+        for item in lst:
+            if isinstance(item, dict) and str(item.get("id")) == str(wanted):
+                name = _ship_pic_name(item)
+                if name:
+                    return name
+    for ship_key in ("shipToAddress", "shipTo"):
+        nested = d.get(ship_key)
+        if isinstance(nested, dict):
+            recipient = _blank_to_none(nested.get("attention")) or (
+                _blank_to_none(nested.get("name")) if not nested.get("address") else None
+            )
+            if recipient:
+                return recipient
     return None
 
 
@@ -2323,15 +2374,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         or _blank_to_none(d.get("paymentTermName"))
         or _accurate_code_or_name(d.get("paymentTermName"))
     )
-    recipient = None
-    for ship_key in ("shipToAddress", "shipTo"):
-        nested = d.get(ship_key)
-        if isinstance(nested, dict):
-            recipient = _blank_to_none(nested.get("attention")) or (
-                _blank_to_none(nested.get("name")) if not nested.get("address") else None
-            )
-            if recipient:
-                break
+    recipient = _accurate_recipient(d)
     return {
         "accurate_id": str(d.get("id") or d.get("number") or ""),
         "po_number": str(d.get("number") or d.get("orderNumber") or ""),
