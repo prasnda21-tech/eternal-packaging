@@ -311,10 +311,12 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
         testid={`${division.id}-work-header`}
         compactHeader={compactHeader}
       />
-      <MetricRow columns={4} testid={`${division.id}-work-metrics`}>
+      <MetricRow columns={model.hideRemain ? 3 : 4} testid={`${division.id}-work-metrics`}>
         <MetricCell label={model.metricLabels?.target || "Target"} value={model.headerTarget} testid="work-target" />
         <MetricCell label={model.metricLabels?.done || "Sudah Dikerjakan"} value={model.headerDone} testid="work-done" />
-        <MetricCell label={model.metricLabels?.remain || "Sisa"} value={model.headerRemain} testid="work-remain" />
+        {!model.hideRemain && (
+          <MetricCell label={model.metricLabels?.remain || "Sisa"} value={model.headerRemain} testid="work-remain" />
+        )}
         <MetricCell label="Status" value={model.status} format="text" className="is-status" testid="work-status" />
       </MetricRow>
       {model.overPrepared > 0 && (
@@ -335,13 +337,18 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
             <div className="work-line-head">
               <strong>{line.name}{line.color ? ` · ${line.color}` : ""}</strong>
               <span className="muted small">
-                Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)} · Sisa {fmtQty(line.remaining)}
+                Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)}
+                {!model.hideRemain ? ` · Sisa ${fmtQty(line.remaining)}` : ""}
               </span>
             </div>
             <RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />
             <div className="work-line-total muted small">
               TOTAL: <strong className="mono">{fmtQty(total)}</strong> {line.unit}
-              {" · "}SISA: <strong className="mono">{fmtQty(line.remaining)}</strong>
+              {!model.hideRemain ? (
+                <>
+                  {" · "}SISA: <strong className="mono">{fmtQty(line.remaining)}</strong>
+                </>
+              ) : null}
             </div>
             <RoleWorkEntryForm
               label={inputLabel}

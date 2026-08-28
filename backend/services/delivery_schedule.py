@@ -14,6 +14,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.dashboard_today import wib_today
+
 STATUS_PENDING = "pending"
 STATUS_SCHEDULED = "scheduled"
 
@@ -84,10 +86,8 @@ def parse_date_key(raw: Any) -> Optional[str]:
 
 
 def today_key(now: Optional[datetime] = None) -> str:
-    dt = now or datetime.now(timezone.utc)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.date().isoformat()
+    """Business date for Jadwal / Pengiriman Hari Ini — WIB, same as dashboard_today.wib_today."""
+    return wib_today(now).isoformat()
 
 
 def original_deadline(order: dict) -> Optional[str]:

@@ -101,8 +101,9 @@ def test_upload_not_blocked_by_packing_in_attachment_handler():
     assert "tahap Packing belum selesai" not in att
     assert "loaded_qty" not in att
     assert "File-only" in att or "file-only" in att.lower() or "Item/Qty is confirmed later" in att
-    assert "Tanggal pengiriman wajib" in att
+    assert "resolve_sj_operational_date" in att
     assert 'order["delivery_note_created_at"] = op_iso' in att
+    assert "scheduled_delivery_date" in att
     assert "uploaded_at" in att
 
 

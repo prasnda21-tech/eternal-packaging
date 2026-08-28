@@ -154,6 +154,42 @@ def test_parse_operational_date_key():
     assert "+07:00" in iso
 
 
+def test_resolve_sj_operational_date_empty_is_today_wib():
+    from datetime import datetime, timezone
+    from services.dashboard_today import resolve_sj_operational_date
+    now = datetime(2026, 8, 27, 17, 30, tzinfo=timezone.utc)  # 2026-08-28 00:30 WIB
+    assert resolve_sj_operational_date({}, None, now) == "2026-08-28"
+    assert resolve_sj_operational_date({}, "", now) == "2026-08-28"
+
+
+def test_resolve_sj_operational_date_selected_wins():
+    from services.dashboard_today import resolve_sj_operational_date
+    o = {
+        "delivery_note_created_at": "2026-08-28T12:00:00+07:00",
+        "scheduled_delivery_date": "2026-08-28",
+    }
+    assert resolve_sj_operational_date(o, "2026-08-30") == "2026-08-30"
+
+
+def test_resolve_sj_operational_date_keeps_existing_on_empty():
+    from datetime import datetime, timezone
+    from services.dashboard_today import resolve_sj_operational_date
+    now = datetime(2026, 8, 28, 10, 0, tzinfo=timezone.utc)
+    o = {"delivery_note_created_at": "2026-08-30T12:00:00+07:00"}
+    assert resolve_sj_operational_date(o, "", now) == "2026-08-30"
+    o2 = {"scheduled_delivery_date": "2026-08-31"}
+    assert resolve_sj_operational_date(o2, None, now) == "2026-08-31"
+
+
+def test_resolve_sj_operational_date_rejects_invalid():
+    from services.dashboard_today import resolve_sj_operational_date
+    try:
+        resolve_sj_operational_date({}, "2026-02-31")
+        assert False, "expected invalid date"
+    except ValueError as e:
+        assert "tidak valid" in str(e)
+
+
 def test_work_query_not_full_scan():
     q = work_today_mongo_query(date(2026, 8, 25))
     assert q["cancelled"] == {"$ne": True}

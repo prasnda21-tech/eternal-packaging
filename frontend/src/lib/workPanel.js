@@ -239,6 +239,7 @@ export function screenerWorkModel(order) {
     headerTarget: target,
     headerDone: done,
     headerRemain: Math.max(0, target - done),
+    hideRemain: true,
     status: operatorStatusLabel(done, target),
     itemLabel: printItems(order).length === 1 ? printItems(order)[0].li.name : `${printItems(order).length || 0} item`,
     gateLocked: ready.screener !== true,

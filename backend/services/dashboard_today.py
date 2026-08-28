@@ -140,6 +140,30 @@ def operational_iso(date_key_value: str) -> str:
     return datetime(d.year, d.month, d.day, 12, 0, tzinfo=WIB).isoformat()
 
 
+def resolve_sj_operational_date(
+    order: dict,
+    selected_raw: Any = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Surat Jalan operational date: selected YYYY-MM-DD, else existing, else today WIB.
+
+    Empty selected date does not invent a new date when delivery_note_created_at,
+    scheduled_delivery_date, or delivery_deadline_manual already exist.
+    PO deadline is not treated as a Surat Jalan delivery date.
+    """
+    text = str(selected_raw or "").strip()
+    if text:
+        selected = parse_operational_date_key(text)
+        if not selected:
+            raise ValueError("Tanggal pengiriman tidak valid. Gunakan format YYYY-MM-DD.")
+        return selected
+    for key in ("delivery_note_created_at", "scheduled_delivery_date", "delivery_deadline_manual"):
+        existing = parse_operational_date_key(order.get(key) if order else None)
+        if existing:
+            return existing
+    return wib_today(now).isoformat()
+
+
 def iso_in_wib_day(value: Any, day: date) -> bool:
     dt = parse_dt(value)
     if not dt:

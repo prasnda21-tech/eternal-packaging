@@ -141,17 +141,19 @@ export function MetricStrip({
   done,
   remain,
   status,
+  showRemain = true,
 }: {
   target: number | string;
   done: number | string;
   remain: number | string;
   status: string;
+  showRemain?: boolean;
 }) {
   return (
     <View style={styles.metrics} testID="metric-strip">
       <Metric label="Target" value={target} />
       <Metric label="Selesai" value={done} />
-      <Metric label="Sisa" value={remain} />
+      {showRemain ? <Metric label="Sisa" value={remain} /> : null}
       <Metric label="Status" value={status} />
     </View>
   );

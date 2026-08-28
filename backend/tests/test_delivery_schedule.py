@@ -16,6 +16,7 @@ from services.delivery_schedule import (
     reschedule_rows,
     schedule_row,
     schedule_status_code,
+    today_key,
 )
 
 
@@ -197,3 +198,37 @@ def test_public_snippet_hides_reason_and_actors():
     assert snippet == {"scheduled_date": "2026-08-31"}
     assert "reason" not in snippet
     assert "requested_by_id" not in snippet
+
+
+def test_today_key_uses_wib_not_utc_at_0001():
+    from datetime import datetime, timezone
+    # 2026-08-27 17:01 UTC = 2026-08-28 00:01 WIB
+    now = datetime(2026, 8, 27, 17, 1, tzinfo=timezone.utc)
+    assert now.date().isoformat() == "2026-08-27"
+    assert today_key(now) == "2026-08-28"
+
+
+def test_today_key_wib_0659_still_same_business_day():
+    from datetime import datetime, timezone, timedelta
+    wib = timezone(timedelta(hours=7))
+    now = datetime(2026, 8, 28, 6, 59, tzinfo=wib)
+    assert now.astimezone(timezone.utc).date().isoformat() == "2026-08-27"
+    assert today_key(now) == "2026-08-28"
+
+
+def test_today_key_wib_0700_stays_wib_date():
+    from datetime import datetime, timezone, timedelta
+    wib = timezone(timedelta(hours=7))
+    now = datetime(2026, 8, 28, 7, 0, tzinfo=wib)
+    assert now.astimezone(timezone.utc).date().isoformat() == "2026-08-28"
+    assert today_key(now) == "2026-08-28"
+
+
+def test_schedule_hari_ini_follows_wib_today_key():
+    from datetime import datetime, timezone
+    o = _po(deadline="2026-08-20", scheduled_delivery_date="2026-08-28")
+    now = datetime(2026, 8, 27, 17, 1, tzinfo=timezone.utc)  # 00:01 WIB 28 Aug
+    assert schedule_status_code(o, today=today_key(now)) == "hari_ini"
+    # UTC calendar date would have treated 28 Aug as still "terjadwal"
+    assert now.date().isoformat() == "2026-08-27"
+    assert schedule_status_code(o, today=now.date().isoformat()) == "terjadwal"

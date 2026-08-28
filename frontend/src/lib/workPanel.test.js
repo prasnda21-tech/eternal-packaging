@@ -143,6 +143,8 @@ describe("screener / helper / packing / loading aggregates", () => {
       },
     });
     expect(model.headerDone).toBe(7000);
+    expect(model.hideRemain).toBe(true);
+    expect(model.headerRemain).toBe(3000);
     expect(model.lines[0].entries).toHaveLength(2);
     expect(sumEntryQty(model.lines[0].entries)).toBe(7000);
   });
