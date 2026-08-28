@@ -21,8 +21,7 @@ CAKE_IN_LOVE_ADDRESS = (
     "Kec. Kasihan, Kabupaten Bantul, Daerah Istimewa Yogyakarta 55183"
 )
 
-# Live GET sales-order/detail.do for PO/2026/08/28/000004:
-# searchCharField3.name / charField3 = JS, description = SABLON WARNA HITAM.
+# Live GET sales-order/detail.do for PO/2026/08/28/000004.
 CAKE_IN_LOVE_SO_DETAIL = {
     "id": 4004,
     "number": "PO/2026/08/28/000004",
@@ -32,10 +31,19 @@ CAKE_IN_LOVE_SO_DETAIL = {
     "description": "SABLON WARNA HITAM",
     "charField3": "JS",
     "searchCharField3": {"id": "JS", "name": "JS"},
-    "customer": {"id": 88, "name": "CAKE IN LOVE", "customerNo": "CIL-001"},
+    "createdBy": 1248273,
+    "printUserName": "Dimas Aji Prasetya",
+    "userPrinted": 488125,
+    "customer": {
+        "id": 88,
+        "name": "CAKE IN LOVE",
+        "customerNo": "CIL-001",
+        "shipAddressId": 1,
+        "shipAddress": {"id": 1, "picName": "CAKE IN LOVE"},
+        "shipAddressList": [{"id": 1, "picName": "CAKE IN LOVE"}],
+    },
     "paymentTerm": {"id": 3, "name": "TRANSFER BANK"},
     "shipment": {"id": "150", "name": "OUTLET"},
-    "userName": "nabila salsabila",
     "branchId": "50",
     "detailItem": [
         {
@@ -55,8 +63,9 @@ def test_cake_in_love_mapping_from_accurate_detail_shape():
     so = _normalize_accurate_so(CAKE_IN_LOVE_SO_DETAIL)
     line = so["line_items"][0]
     assert so["customer"] == "CAKE IN LOVE"
+    assert so["recipient"] == "CAKE IN LOVE"
     assert so["address"] == CAKE_IN_LOVE_ADDRESS
-    assert so["created_by_user"] == "nabila salsabila"
+    assert so["created_by_user"] is None
     assert so["sales"] == "Dimas Aji Prasetya"
     assert so["created_by_user"] != so["sales"]
     assert so["expedition"] == "OUTLET"
@@ -161,7 +170,8 @@ def test_fixture_key_shape_has_no_secrets():
     shape = "\n".join(summarize_accurate_payload_shape(CAKE_IN_LOVE_SO_DETAIL))
     assert "toAddress: str" in shape
     assert "shipDate: str" in shape
-    assert "userName: str" in shape
+    assert "printUserName: str" in shape
+    assert "picName: str" in shape
     assert "shipment: object" in shape
     assert "salesmanList: list[1]" in shape
     assert "Authorization" not in shape
@@ -275,6 +285,72 @@ def test_outlet_not_from_shipment_or_branchId():
     so = _normalize_accurate_so(raw)
     assert so["expedition"] == "OUTLET"
     assert so["outlet"] in (None, "", "-")
+
+
+def test_recipient_from_shipAddress_picName():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {
+            "name": "OTHER CUSTOMER",
+            "shipAddress": {"picName": "CAKE IN LOVE"},
+        },
+        "salesman": {"name": "Dimas Aji Prasetya"},
+        "printUserName": "Dimas Aji Prasetya",
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["recipient"] == "CAKE IN LOVE"
+    assert so["customer"] == "OTHER CUSTOMER"
+    assert so["recipient"] != so["sales"]
+    assert so["created_by_user"] is None
+
+
+def test_recipient_from_shipAddressList_matching_id():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "shipAddressId": 7,
+        "customer": {
+            "name": "OTHER CUSTOMER",
+            "shipAddressList": [
+                {"id": 2, "picName": "WRONG"},
+                {"id": 7, "picName": "CAKE IN LOVE"},
+            ],
+        },
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["recipient"] == "CAKE IN LOVE"
+
+
+def test_recipient_fallback_shipTo_attention_when_picName_empty():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "OTHER CUSTOMER", "shipAddress": {"picName": ""}},
+        "shipTo": {"attention": "ICANG"},
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["recipient"] == "ICANG"
+    assert so["customer"] == "OTHER CUSTOMER"
+
+
+def test_created_by_ignores_printUserName_and_createdBy_id():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "createdBy": 1248273,
+        "printUserName": "Dimas Aji Prasetya",
+        "userPrinted": 488125,
+        "salesman": {"name": "Dimas Aji Prasetya"},
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["created_by_user"] is None
+    assert so["sales"] == "Dimas Aji Prasetya"
 
 
 def test_payment_term_name_string_and_nested_object():
