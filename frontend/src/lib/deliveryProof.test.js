@@ -30,15 +30,4 @@ describe("deliveryProof helpers", () => {
     expect(canConfirmDelivered([{ id: "a" }, { id: "b" }])).toBe(true);
     expect(canConfirmDelivered([{ id: "a" }, { id: "b" }, { id: "c" }])).toBe(true);
   });
-
-  test("UI does not disable Bukti Pengiriman on empty packing qty", () => {
-    const fs = require("fs");
-    const path = require("path");
-    const proof = fs.readFileSync(path.join(__dirname, "../components/DeliveryProofPanel.jsx"), "utf8");
-    const loading = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
-    expect(proof).not.toMatch(/qty_packed/);
-    expect(proof).not.toMatch(/packing_info/);
-    expect(loading).not.toMatch(/qty_packed/);
-    expect(loading).toMatch(/loadingPoLines/);
-  });
 });

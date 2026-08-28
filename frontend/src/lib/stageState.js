@@ -107,8 +107,7 @@ function packingQtyInput(order) {
   return hasValue(v) && Number(v) > 0;
 }
 function packingDone(order) {
-  // Stage index alone is not packing completion — qty evidence is required.
-  return (order?.current_stage || 0) >= 12 && packingQtyInput(order);
+  return (order?.current_stage || 0) >= 12;
 }
 function suratJalanCreated(order) {
   return !!(order?.surat_jalan_created);

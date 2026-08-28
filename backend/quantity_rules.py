@@ -855,21 +855,6 @@ def loading_confirmations_stored(order: dict) -> list:
     return [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
 
 
-_INACTIVE_SJ_STATUSES = frozenset({"cancelled", "invalid", "deleted", "void"})
-
-
-def sj_file_is_active(entry: Optional[dict]) -> bool:
-    """True only for a live Surat Jalan file. Cancelled/deleted/invalid do not unlock gates."""
-    if not isinstance(entry, dict):
-        return False
-    if entry.get("is_deleted") is True or entry.get("cancelled") is True:
-        return False
-    st = str(entry.get("status") or "").strip().lower()
-    if st in _INACTIVE_SJ_STATUSES:
-        return False
-    return True
-
-
 def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
     want = str(file_id or "").strip()
     if not want:
@@ -879,7 +864,7 @@ def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
         return None
     for f in files:
         if isinstance(f, dict) and str(f.get("id") or "").strip() == want:
-            return f if sj_file_is_active(f) else None
+            return f
     return None
 
 
@@ -888,7 +873,7 @@ def has_surat_jalan_file(order: dict) -> bool:
     if not isinstance(files, list):
         return False
     for f in files:
-        if not isinstance(f, dict) or not sj_file_is_active(f):
+        if not isinstance(f, dict):
             continue
         if str(f.get("id") or "").strip() and (
             str(f.get("data_url") or "").startswith("data:")

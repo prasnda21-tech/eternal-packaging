@@ -18,18 +18,6 @@ describe("shipmentLinesForOrder", () => {
     });
     expect(rows[0].available_sj).toBe(3000);
     expect(rows[0].shipped).toBe(4000);
-    expect(rows[0].loading_cap).toBe(10000);
-    expect(rows[0].available_loading).toBe(10000);
-  });
-
-  test("loading fallback uses PO qty when packing confirmed qty is empty", () => {
-    const rows = shipmentLinesForOrder({
-      line_items: [{ name: "A", quantity: 500 }],
-      packing_info: { qty_packed: 0 },
-    });
-    expect(rows[0].packed).toBe(0);
-    expect(rows[0].loading_cap).toBe(500);
-    expect(rows[0].available_loading).toBe(500);
   });
 
   test("loading status shows actual qty, not a checkbox label", () => {

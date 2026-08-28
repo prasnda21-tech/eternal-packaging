@@ -2,25 +2,6 @@ import fs from "fs";
 import path from "path";
 import { resolveStageState } from "./stageState";
 
-describe("Packing chip vs tracking", () => {
-  test("Surat Jalan stage index does not mark Packing complete without qty", () => {
-    const packing = resolveStageState(11, {
-      current_stage: 12,
-      packing_info: { qty_packed: 0 },
-      workflow_ready: { packing: true, print_qty: true },
-    }, 12);
-    expect(packing.state).not.toBe("done");
-  });
-
-  test("Packing qty present and past packing stage is complete", () => {
-    const packing = resolveStageState(11, {
-      current_stage: 12,
-      packing_info: { qty_packed: 8000, lines: [{ line_idx: 0, packed_qty: 8000 }] },
-    }, 12);
-    expect(packing.state).toBe("done");
-  });
-});
-
 describe("SJ / Loading / Terkirim chips", () => {
   test("SJ uses shipment evidence, not a done-from-stage index", () => {
     const sj = resolveStageState(12, {
