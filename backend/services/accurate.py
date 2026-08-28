@@ -24,7 +24,7 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
@@ -1964,11 +1964,262 @@ def normalize_accurate_item(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     }
 
 
+def _accurate_display_name(value: Any) -> Optional[str]:
+    """Display name from an Accurate string or nested record. Never uses id."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return None
+    if isinstance(value, str):
+        return _blank_to_none(value)
+    if isinstance(value, dict):
+        for key in ("name", "nama", "fullName", "userName", "nickName"):
+            text = _blank_to_none(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _accurate_code_or_name(value: Any) -> Optional[str]:
+    """Code or name from Accurate string/object (shipment, payment term, zone)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return None
+    if isinstance(value, str):
+        return _blank_to_none(value)
+    if isinstance(value, dict):
+        for key in ("name", "nama", "code", "no", "number"):
+            text = _blank_to_none(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _join_address_parts(*parts: Any) -> Optional[str]:
+    bits = []
+    for part in parts:
+        text = _blank_to_none(part) if not isinstance(part, (dict, list, bool)) else None
+        if text:
+            bits.append(text)
+    return ", ".join(bits) if bits else None
+
+
+def _accurate_address_from_customer(cust: Dict[str, Any]) -> Optional[str]:
+    ships = cust.get("detailShipAddress")
+    if isinstance(ships, list) and ships:
+        first = ships[0]
+        if isinstance(first, str):
+            text = _blank_to_none(first)
+            if text:
+                return text
+        if isinstance(first, dict):
+            nested = _join_address_parts(
+                first.get("address") or first.get("street") or first.get("shipStreet") or first.get("toAddress"),
+                first.get("city") or first.get("shipCity"),
+                first.get("province") or first.get("shipProvince"),
+                first.get("zipCode") or first.get("shipZipCode"),
+            )
+            if nested:
+                return nested
+    ship = _join_address_parts(
+        cust.get("shipStreet"), cust.get("shipCity"), cust.get("shipProvince"),
+        cust.get("shipZipCode"), cust.get("shipCountry"),
+    )
+    if ship:
+        return ship
+    return _join_address_parts(
+        cust.get("billStreet"), cust.get("billCity"), cust.get("billProvince"),
+        cust.get("billZipCode"), cust.get("billCountry"),
+    )
+
+
+def _accurate_so_address(d: Dict[str, Any]) -> Optional[str]:
+    """Prefer SO shipping address (OpenAPI `toAddress`), then nested ship-to, then customer."""
+    text = _blank_to_none(d.get("toAddress")) if not isinstance(d.get("toAddress"), (dict, list)) else None
+    if text:
+        return text
+    if isinstance(d.get("toAddress"), dict):
+        nested = _join_address_parts(
+            d["toAddress"].get("address") or d["toAddress"].get("street"),
+            d["toAddress"].get("city"),
+            d["toAddress"].get("province"),
+            d["toAddress"].get("zipCode"),
+        )
+        if nested:
+            return nested
+    for key in ("shipToAddress", "shipTo", "shippingAddress"):
+        nested = d.get(key)
+        if isinstance(nested, str):
+            text = _blank_to_none(nested)
+            if text:
+                return text
+        if isinstance(nested, dict):
+            addr = _join_address_parts(
+                nested.get("address") or nested.get("street") or nested.get("toAddress"),
+                nested.get("city"),
+                nested.get("province") or nested.get("state"),
+                nested.get("zipCode") or nested.get("zip"),
+            )
+            if addr:
+                return addr
+    text = _blank_to_none(d.get("shipAddress")) if not isinstance(d.get("shipAddress"), (dict, list)) else None
+    if text:
+        return text
+    cust = d.get("customer") if isinstance(d.get("customer"), dict) else {}
+    return _accurate_address_from_customer(cust) if cust else None
+
+
+def _first_from_salesman_list(value: Any) -> Optional[str]:
+    """Prefer expanded salesmanList objects. Skip identity numbers without a name."""
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                name = _accurate_display_name(item)
+                if name:
+                    return name
+            elif isinstance(item, str) and " " in item.strip():
+                return item.strip()
+        return None
+    if isinstance(value, dict):
+        return _accurate_display_name(value)
+    if isinstance(value, str) and " " in value.strip():
+        return value.strip()
+    return None
+
+
+def _accurate_salesman(d: Dict[str, Any], lines_raw: List[Any]) -> Optional[str]:
+    """Tenaga penjual. OpenAPI SO save puts salesman on detailItem.salesmanListNumber."""
+    for key in ("salesman", "salesmanName"):
+        name = _accurate_display_name(d.get(key))
+        if name:
+            return name
+    for li in lines_raw:
+        if not isinstance(li, dict):
+            continue
+        for key in ("salesmanList", "salesman", "salesmanListNumber"):
+            name = _first_from_salesman_list(li.get(key))
+            if name:
+                return name
+    return None
+
+
+def _accurate_created_by(d: Dict[str, Any]) -> Optional[str]:
+    """User yang membuat transaksi — never salesman."""
+    for key in ("userName", "createUserName", "createdByUserName"):
+        name = _accurate_display_name(d.get(key))
+        if name:
+            return name
+    for key in ("user", "createUser", "createdByUser", "createdBy"):
+        name = _accurate_display_name(d.get(key))
+        if name:
+            return name
+    return None
+
+
+def _accurate_expedition(d: Dict[str, Any]) -> Optional[str]:
+    """OpenAPI shipmentName: record pengiriman (JNE, DHL, OUTLET, …)."""
+    for key in ("shipment", "shipmentName"):
+        name = _accurate_code_or_name(d.get(key))
+        if name:
+            return name
+    return _accurate_code_or_name(d.get("expedition"))
+
+
+def _classification1_name(obj: Dict[str, Any]) -> Optional[str]:
+    """Only Accurate dataClassification1. Other classification slots are ignored."""
+    name = _accurate_code_or_name(obj.get("dataClassification1"))
+    if name:
+        return name
+    return _blank_to_none(obj.get("dataClassification1Name"))
+
+
+def _accurate_delivery_zone(d: Dict[str, Any], lines_raw: List[Any]) -> Optional[str]:
+    """Zona kirim. Not shipment (ekspedisi). Uses dataClassification1 only when present."""
+    for key in ("shipVia", "deliveryZone", "shippingZone"):
+        name = _accurate_code_or_name(d.get(key))
+        if name:
+            return name
+    name = _classification1_name(d)
+    if name:
+        return name
+    for li in lines_raw:
+        if isinstance(li, dict):
+            name = _classification1_name(li)
+            if name:
+                return name
+    return None
+
+
+def _parse_accurate_date(val: Any) -> Optional[str]:
+    """Return YYYY-MM-DD. Accurate OpenAPI examples use dd/MM/yyyy (31/03/2016)."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, datetime):
+        return val.date().isoformat()
+    if isinstance(val, date):
+        return val.isoformat()
+    s = str(val).strip()
+    if not s:
+        return None
+    s = s.replace("T", " ").split(" ")[0]
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def so_preview_dates(so: Dict[str, Any], *, now: Optional[datetime] = None) -> Tuple[str, str]:
+    """(order_date, estimated_delivery) ISO strings for Import PO preview.
+
+    Uses Accurate transDate / shipDate when present. The +3 day default is only
+    applied when Accurate did not send a shipment date.
+    """
+    clock = now or datetime.now(timezone.utc)
+    offset = int(so.get("order_date_offset_days") or 0)
+    order = _parse_accurate_date(so.get("order_date") or so.get("trans_date"))
+    order_iso = order or (clock + timedelta(days=offset)).isoformat()
+    ship = _parse_accurate_date(
+        so.get("estimated_ship_date") or so.get("estimated_delivery") or so.get("ship_date")
+    )
+    if ship:
+        return order_iso, ship
+    return order_iso, (clock + timedelta(days=offset + 3)).isoformat()
+
+
+def summarize_accurate_payload_shape(obj: Any, prefix: str = "", depth: int = 0) -> List[str]:
+    """Key/type tree for tests. Never includes Authorization/token/secret values."""
+    lines: List[str] = []
+    if depth > 6:
+        return lines
+    if not isinstance(obj, dict):
+        return [f"{prefix or '.'}: {type(obj).__name__}"]
+    secret_parts = ("token", "secret", "authorization", "password", "signature", "bearer")
+    for key, val in obj.items():
+        path = f"{prefix}{key}" if prefix else str(key)
+        if any(p in str(key).lower() for p in secret_parts):
+            lines.append(f"{path}: <redacted>")
+            continue
+        if isinstance(val, dict):
+            lines.append(f"{path}: object")
+            lines.extend(summarize_accurate_payload_shape(val, path + ".", depth + 1))
+        elif isinstance(val, list):
+            lines.append(f"{path}: list[{len(val)}]")
+            if val:
+                lines.extend(summarize_accurate_payload_shape(val[0], path + "[0].", depth + 1))
+        else:
+            lines.append(f"{path}: {type(val).__name__}")
+    return lines
+
+
 def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce Accurate's Sales Order detail payload into our internal shape.
 
-    Accurate's live schema varies by tenant; unknown fields are set to None so
-    the UI shows 'Perlu verifikasi' rather than guessing.
+    Field names follow official OpenAPI `/api/sales-order/save.do` plus GET
+    detail expansions (`*.name`, `userName`, `salesmanList`). Unknown fields
+    stay None so the UI shows 'Perlu verifikasi' rather than guessing.
     """
     so_notes = _extract_so_notes_text(d)
     so_colors = _detect_colors(so_notes)
@@ -1987,7 +2238,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
         desc = li.get("description") or li.get("detailNotes") or li.get("itemDesc") or ""
         item_notes = li.get("notes") or li.get("memo") or ""
-        item_name_text = item.get("name") or li.get("itemName") or ""
+        item_name_text = item.get("name") or li.get("itemName") or li.get("detailName") or ""
 
         color_val: Optional[str] = None
         color_source: Optional[str] = None
@@ -2023,7 +2274,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         line: Dict[str, Any] = {
             "accurate_item_id": _extract_accurate_item_id(li, item),
             "item_code": item.get("no") or li.get("itemNo") or None,
-            "name": item.get("name") or li.get("itemName") or li.get("description") or "-",
+            "name": item.get("name") or li.get("itemName") or li.get("detailName") or li.get("description") or "-",
             "quantity": coerce_accurate_quantity(qty_raw),
             "unit": li.get("itemUnitName") or li.get("unit") or "pcs",
             "color": color_val,
@@ -2036,28 +2287,44 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         if color_source:
             line["color_source"] = color_source
         lines.append(line)
-    cust = d.get("customer") or {}
-    ship = d.get("shipToAddress") or d.get("shipTo") or {}
-    if not isinstance(ship, dict):
-        ship = {}
     branch = d.get("branch") if isinstance(d.get("branch"), dict) else {}
-    salesperson = (d.get("salesman") or {}).get("name") if isinstance(d.get("salesman"), dict) else d.get("salesman")
-    created_by = (d.get("createUser") or d.get("createdByUser") or {})
-    created_by_name = created_by.get("name") if isinstance(created_by, dict) else created_by
+    salesperson = _accurate_salesman(d, lines_raw)
+    created_by_name = _accurate_created_by(d)
+    trans_date = _parse_accurate_date(d.get("transDate") or d.get("trans_date"))
+    ship_date = _parse_accurate_date(d.get("shipDate") or d.get("ship_date"))
+    payment = (
+        _accurate_code_or_name(d.get("paymentTerm"))
+        or _blank_to_none(d.get("paymentTermName"))
+        or _accurate_code_or_name(d.get("paymentTermName"))
+    )
+    recipient = None
+    for ship_key in ("shipToAddress", "shipTo"):
+        nested = d.get(ship_key)
+        if isinstance(nested, dict):
+            recipient = _blank_to_none(nested.get("attention")) or (
+                _blank_to_none(nested.get("name")) if not nested.get("address") else None
+            )
+            if recipient:
+                break
     return {
         "accurate_id": str(d.get("id") or d.get("number") or ""),
         "po_number": str(d.get("number") or d.get("orderNumber") or ""),
-        "customer": cust.get("name") if isinstance(cust, dict) else str(cust) if cust else None,
-        "outlet": d.get("branchName") or branch.get("name"),
-        "recipient": ship.get("attention") or ship.get("name") or None,
-        "address": ship.get("address") or d.get("shipAddress") or None,
-        "payment_terms": (d.get("paymentTerm") or {}).get("name") if isinstance(d.get("paymentTerm"), dict) else d.get("paymentTerm"),
+        "customer": _accurate_display_name(d.get("customer")) or _blank_to_none(d.get("customerName")),
+        "outlet": _blank_to_none(d.get("branchName")) or _accurate_display_name(branch),
+        "recipient": recipient,
+        "address": _accurate_so_address(d),
+        "payment_terms": payment,
         "sales": salesperson,
         "created_by_user": created_by_name,
-        "expedition": d.get("expedition") or None,
-        "delivery_zone": (d.get("shipVia") or {}).get("name") if isinstance(d.get("shipVia"), dict) else d.get("shipVia"),
+        "expedition": _accurate_expedition(d),
+        "delivery_zone": _accurate_delivery_zone(d, lines_raw),
         "seller": salesperson,
         "order_date_offset_days": 0,
+        "order_date": trans_date,
+        "trans_date": trans_date,
+        "ship_date": ship_date,
+        "estimated_ship_date": ship_date,
+        "estimated_delivery": ship_date,
         "line_items": lines,
         "so_notes_raw": so_notes or None,
     }

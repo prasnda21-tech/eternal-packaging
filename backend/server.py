@@ -24,6 +24,7 @@ from services.accurate import (
     log_master_items_sync_failure,
     new_correlation_id,
     sanitize_accurate_error,
+    so_preview_dates,
     sync_sales_orders,
 )
 from services.import_parser import parse_import_file, ImportParseError
@@ -5325,10 +5326,7 @@ def _build_preview(so: Dict[str, Any]) -> Dict[str, Any]:
         for li in so.get("line_items", [])
         if isinstance(li, dict)
     )
-    now = datetime.now(timezone.utc)
-    offset = so.get("order_date_offset_days", 0)
-    order_date = (now + timedelta(days=offset)).isoformat()
-    deadline = (now + timedelta(days=offset + 3)).isoformat()
+    order_date, deadline = so_preview_dates(so)
     return {
         "accurate_id": so.get("accurate_id"),
         "po_number": so.get("po_number"),
