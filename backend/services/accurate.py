@@ -30,8 +30,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import httpx
 
 from services.accurate_creator import (
+    CREATOR_SCAN_LIST_PAGE_SIZE,
+    DEFAULT_CREATOR_SCAN_LIMIT,
+    aggregate_creator_scan,
     apply_creator_to_so,
     load_verified_creator_map,
+    normalize_scan_limit,
     resolve_accurate_creator,
 )
 
@@ -1450,6 +1454,135 @@ class AccurateClient:
         }
         _SO_LIST_CACHE[cache_key] = {"data": payload, "at": _t.time()}
         return {**payload, "cached": False, "fetched_at": _t.time()}
+
+    async def scan_sales_order_creators(
+        self,
+        limit: int = DEFAULT_CREATOR_SCAN_LIMIT,
+    ) -> Dict[str, Any]:
+        """Scan latest Sales Orders for unique createdBy ids.
+
+        One shared DB session + one HTTP client. Bounded detail concurrency.
+        One SO failure does not fail the scan. Does not write mappings.
+        Does not call Accurate user lookup (API has none).
+        """
+        limit = normalize_scan_limit(limit)
+        try:
+            mappings = await load_verified_creator_map()
+        except Exception:
+            mappings = {}
+        if not self.is_live:
+            result = aggregate_creator_scan(
+                [], mappings, scanned=0, failed=0, limit=limit,
+                list_requests=0, detail_requests=0,
+            )
+            result["mode"] = "mock"
+            return result
+
+        cid = new_correlation_id()
+        host, _session = await self._ensure_db_session()
+        list_requests = 0
+        extracted: List[Dict[str, Any]] = []
+        failed = 0
+        scanned = 0
+
+        async with httpx.AsyncClient(
+            timeout=accurate_http_timeout(),
+            follow_redirects=True,
+            limits=ACCURATE_HTTP_LIMITS,
+        ) as http:
+            refs: List[Dict[str, Any]] = []
+            page = 1
+            page_size = min(CREATOR_SCAN_LIST_PAGE_SIZE, limit)
+            while len(refs) < limit:
+                list_requests += 1
+                try:
+                    r = await self._authed_get(
+                        http,
+                        f"{host}/accurate/api/sales-order/list.do",
+                        params={
+                            "sp.pageSize": page_size,
+                            "sp.page": page,
+                            "sp.sort": "transDate|desc",
+                        },
+                        logical_name="sales-order/list.do",
+                        correlation_id=cid,
+                    )
+                    body = r.json() if not r.is_error else {}
+                except Exception:
+                    break
+                if not isinstance(body, dict) or body.get("s") is False:
+                    break
+                rows_raw = body.get("d") or []
+                if not isinstance(rows_raw, list) or not rows_raw:
+                    break
+                for row in rows_raw:
+                    if not isinstance(row, dict) or row.get("id") is None:
+                        continue
+                    refs.append({
+                        "id": row.get("id"),
+                        "number": row.get("number"),
+                        "transDate": row.get("transDate"),
+                    })
+                    if len(refs) >= limit:
+                        break
+                sp = body.get("sp") if isinstance(body.get("sp"), dict) else {}
+                try:
+                    page_count = int(sp.get("pageCount") or 1)
+                except (TypeError, ValueError):
+                    page_count = 1
+                if page >= page_count:
+                    break
+                page += 1
+
+            refs = refs[:limit]
+            sem = asyncio.Semaphore(ACCURATE_SO_FETCH_CONCURRENCY)
+
+            async def _one(ref: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                async with sem:
+                    try:
+                        d = await self._authed_get(
+                            http,
+                            f"{host}/accurate/api/sales-order/detail.do",
+                            params={"id": ref["id"]},
+                            logical_name="sales-order/detail.do",
+                            so_number=str(ref.get("number") or ref["id"] or ""),
+                            correlation_id=cid,
+                        )
+                        if d.is_error:
+                            return None
+                        det_body = d.json()
+                        det = det_body.get("d") if isinstance(det_body, dict) else None
+                        if not isinstance(det, dict):
+                            return None
+                        return {
+                            "accurate_created_by_id": _accurate_created_by_id(det),
+                            "po_number": det.get("number") or ref.get("number"),
+                            "trans_date": _parse_accurate_date(
+                                det.get("transDate") or ref.get("transDate")
+                            ),
+                        }
+                    except Exception:
+                        return None
+
+            parts = await asyncio.gather(*[_one(ref) for ref in refs], return_exceptions=True)
+            for part in parts:
+                if isinstance(part, dict):
+                    scanned += 1
+                    extracted.append(part)
+                else:
+                    failed += 1
+
+        result = aggregate_creator_scan(
+            extracted,
+            mappings,
+            scanned=scanned,
+            failed=failed,
+            limit=limit,
+            list_requests=list_requests,
+            detail_requests=len(refs),
+        )
+        result["mode"] = "live"
+        return result
 
     # --- Item / Barang-Jasa (same client, auth, headers, timeouts as SO) -----
     async def fetch_item_detail(self, item_id: str) -> Optional[Dict[str, Any]]:

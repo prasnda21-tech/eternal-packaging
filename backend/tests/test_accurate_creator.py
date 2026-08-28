@@ -9,15 +9,18 @@ from services.accurate import (
     clear_accurate_name_cache,
 )
 from services.accurate_creator import (
+    aggregate_creator_scan,
     apply_creator_to_so,
     clear_creator_map_cache,
     load_verified_creator_map,
     loader_call_count,
+    normalize_scan_limit,
     parse_verified_map,
     reset_loader_call_count,
     resolve_accurate_creator,
     sanitize_settings,
     set_mapping_loader,
+    upsert_verified_mapping,
     usable_display_name,
 )
 from tests.test_accurate_http import _FakeHTTP, _FakeResp, _await, _live_so_client, _so_payload
@@ -193,3 +196,66 @@ def test_apply_does_not_fail_preview_without_mapping():
     apply_creator_to_so(so, {})
     assert so["created_by_user"] is None
     assert so["customer"] == "CAKE IN LOVE"
+
+
+def test_aggregate_dedupes_createdBy_and_splits_status():
+    rows = [
+        {"accurate_created_by_id": "1248273", "po_number": "SO-1", "trans_date": "2026-08-28"},
+        {"accurate_created_by_id": 1248273, "po_number": "SO-2", "trans_date": "2026-08-27"},
+        {"accurate_created_by_id": "1248273", "po_number": "SO-3", "trans_date": "2026-08-26"},
+        {"accurate_created_by_id": "1248273", "po_number": "SO-4", "trans_date": "2026-08-20"},
+        {"accurate_created_by_id": "999001", "po_number": "SO-5", "trans_date": "2026-08-25"},
+        {"accurate_created_by_id": "999001", "po_number": "SO-6", "trans_date": "2026-08-24"},
+    ]
+    out = aggregate_creator_scan(rows, VERIFIED_NABILA, scanned=6, failed=0, limit=100)
+    assert out["wrote_mappings"] is False
+    assert len(out["verified"]) == 1
+    verified = out["verified"][0]
+    assert verified["accurate_created_by_id"] == "1248273"
+    assert verified["so_count"] == 4
+    assert verified["sample_po_numbers"] == ["SO-1", "SO-2", "SO-3"]
+    assert verified["last_so_date"] == "2026-08-28"
+    assert verified["display_name"] == "nabila salsabila"
+    assert verified["status"] == "verified"
+    assert len(out["unknown"]) == 1
+    unknown = out["unknown"][0]
+    assert unknown["accurate_created_by_id"] == "999001"
+    assert unknown["so_count"] == 2
+    assert unknown["display_name"] is None
+    assert unknown["verified"] is False
+    assert unknown["status"] == "unknown"
+
+
+def test_aggregate_does_not_use_printUserName_or_salesman_fields():
+    rows = [{
+        "accurate_created_by_id": "999001",
+        "po_number": "SO-1",
+        "trans_date": "2026-08-28",
+        "printUserName": "Dimas Aji Prasetya",
+        "salesman": "Dimas Aji Prasetya",
+        "userPrinted": 488125,
+    }]
+    out = aggregate_creator_scan(rows, {}, scanned=1, failed=1, limit=100)
+    assert out["unknown"][0]["display_name"] is None
+    assert out["unknown"][0]["accurate_created_by_id"] != "488125"
+
+
+def test_upsert_does_not_duplicate_existing_id():
+    doc = {"mappings": [
+        {"accurate_created_by_id": "1248273", "display_name": "nabila salsabila", "verified": True},
+    ]}
+    once = upsert_verified_mapping(doc, "1248273", "nabila salsabila")
+    twice = upsert_verified_mapping(once, 1248273, "nabila salsabila")
+    assert [m["accurate_created_by_id"] for m in twice["mappings"]] == ["1248273"]
+    extra = upsert_verified_mapping(twice, "999001", "user baru")
+    assert [m["accurate_created_by_id"] for m in extra["mappings"]] == ["1248273", "999001"]
+    assert all(m["verified"] is True for m in extra["mappings"])
+
+
+def test_normalize_scan_limit_bounded():
+    assert normalize_scan_limit(None) == 100
+    assert normalize_scan_limit(100) == 100
+    assert normalize_scan_limit(250) == 250
+    assert normalize_scan_limit(500) == 500
+    assert normalize_scan_limit(9999) == 100
+    assert normalize_scan_limit("nope") == 100
