@@ -21,10 +21,11 @@ import hashlib
 import hmac
 import logging
 import os
+import random
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -41,9 +42,334 @@ _ITEM_LIST_MAX_PAGES = 200
 _ITEM_LIST_RETRYABLE = (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError)
 _ITEM_DETAIL_CONCURRENCY = 4
 
+# Shared Accurate HTTP policy (Sales Order + session). Item list keeps its own
+# bounded retry so existing master-item tests stay stable.
+ACCURATE_CONNECT_TIMEOUT_S = 5.0
+ACCURATE_READ_TIMEOUT_S = 20.0
+ACCURATE_WRITE_TIMEOUT_S = 10.0
+ACCURATE_POOL_TIMEOUT_S = 5.0
+ACCURATE_MAX_TRANSIENT_ATTEMPTS = 3  # initial try + 2 retries
+ACCURATE_BACKOFF_BASE_S = 0.5
+ACCURATE_BACKOFF_MAX_S = 4.0
+ACCURATE_SESSION_TTL_S = 240
+ACCURATE_SO_FETCH_CONCURRENCY = 3
+ACCURATE_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+ACCURATE_HTTP_LIMITS = httpx.Limits(
+    max_keepalive_connections=8,
+    max_connections=16,
+    keepalive_expiry=30.0,
+)
+_HTTP_RETRYABLE_EXC = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class AccurateErrorCategory:
+    TIMEOUT = "TIMEOUT"
+    RATE_LIMITED = "RATE_LIMITED"
+    TOKEN_EXPIRED = "TOKEN_EXPIRED"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    NOT_FOUND = "NOT_FOUND"
+    ACCURATE_SERVER_ERROR = "ACCURATE_SERVER_ERROR"
+    CONNECTION_ERROR = "CONNECTION_ERROR"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+_USER_MESSAGE = {
+    AccurateErrorCategory.TIMEOUT: "Accurate sedang lambat. Silakan coba lagi.",
+    AccurateErrorCategory.RATE_LIMITED: "Batas request Accurate sedang tercapai. Sistem akan mencoba kembali.",
+    AccurateErrorCategory.TOKEN_EXPIRED: "Sesi Accurate perlu diperbarui.",
+    AccurateErrorCategory.UNAUTHORIZED: "Akses ke Accurate ditolak.",
+    AccurateErrorCategory.NOT_FOUND: "Sales Order tidak ditemukan di Accurate.",
+    AccurateErrorCategory.ACCURATE_SERVER_ERROR: "Accurate sedang bermasalah. Silakan coba lagi.",
+    AccurateErrorCategory.CONNECTION_ERROR: "Koneksi ke Accurate terputus. Silakan coba lagi.",
+    AccurateErrorCategory.INVALID_RESPONSE: "Data dari Accurate tidak lengkap.",
+    AccurateErrorCategory.INTERNAL_ERROR: "Terjadi kesalahan saat memproses Sales Order.",
+}
+
+_RETRYABLE_CATEGORIES = frozenset({
+    AccurateErrorCategory.TIMEOUT,
+    AccurateErrorCategory.RATE_LIMITED,
+    AccurateErrorCategory.ACCURATE_SERVER_ERROR,
+    AccurateErrorCategory.CONNECTION_ERROR,
+    AccurateErrorCategory.TOKEN_EXPIRED,
+})
+
+
+def user_message_for(category: str) -> str:
+    return _USER_MESSAGE.get(category, _USER_MESSAGE[AccurateErrorCategory.INTERNAL_ERROR])
+
+
+class AccurateRequestError(Exception):
+    """Typed Accurate failure. str() is always the safe user-facing message."""
+
+    def __init__(
+        self,
+        category: str,
+        *,
+        technical_message: str = "",
+        http_status: Optional[int] = None,
+        retryable: Optional[bool] = None,
+        user_message: Optional[str] = None,
+    ) -> None:
+        self.category = category or AccurateErrorCategory.INTERNAL_ERROR
+        self.technical_message = str(technical_message or "")[:180]
+        self.http_status = http_status
+        self.retryable = (self.category in _RETRYABLE_CATEGORIES) if retryable is None else bool(retryable)
+        self.user_message = user_message or user_message_for(self.category)
+        self.stale_session = False
+        super().__init__(self.user_message)
+
+    def to_result(self, so_number: str) -> Dict[str, Any]:
+        return so_fetch_result(
+            so_number,
+            success=False,
+            error_code=self.category,
+            user_message=self.user_message,
+            retryable=self.retryable,
+            technical_message=self.technical_message,
+        )
+
+
+def so_fetch_result(
+    so_number: str,
+    *,
+    success: bool,
+    data: Optional[Dict[str, Any]] = None,
+    error_code: Optional[str] = None,
+    user_message: Optional[str] = None,
+    retryable: bool = False,
+    technical_message: str = "",
+) -> Dict[str, Any]:
+    return {
+        "success": bool(success),
+        "sales_order_number": so_number,
+        "so_number": so_number,
+        "data": data,
+        "error_code": error_code,
+        "user_message": user_message,
+        "retryable": bool(retryable),
+        "technical_message": technical_message[:180] if technical_message else "",
+    }
+
+
+def new_correlation_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def accurate_http_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=ACCURATE_CONNECT_TIMEOUT_S,
+        read=ACCURATE_READ_TIMEOUT_S,
+        write=ACCURATE_WRITE_TIMEOUT_S,
+        pool=ACCURATE_POOL_TIMEOUT_S,
+    )
+
+
+def _backoff_seconds(attempt: int, retry_after: Optional[float] = None) -> float:
+    if retry_after is not None:
+        return min(max(0.0, retry_after), ACCURATE_BACKOFF_MAX_S * 2)
+    exp = ACCURATE_BACKOFF_BASE_S * (2 ** max(0, attempt - 1))
+    jitter = random.uniform(0.0, exp * 0.25)
+    return min(exp + jitter, ACCURATE_BACKOFF_MAX_S)
+
+
+def _parse_retry_after(response: httpx.Response) -> Optional[float]:
+    raw = response.headers.get("Retry-After") or response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_http_status(status: int) -> str:
+    if status in (401,):
+        return AccurateErrorCategory.TOKEN_EXPIRED
+    if status in (403,):
+        return AccurateErrorCategory.UNAUTHORIZED
+    if status == 404:
+        return AccurateErrorCategory.NOT_FOUND
+    if status == 429:
+        return AccurateErrorCategory.RATE_LIMITED
+    if status in (500, 502, 503, 504):
+        return AccurateErrorCategory.ACCURATE_SERVER_ERROR
+    if status >= 400:
+        return AccurateErrorCategory.INVALID_RESPONSE
+    return AccurateErrorCategory.INTERNAL_ERROR
+
+
+def _classify_exception(exc: BaseException) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return AccurateErrorCategory.TIMEOUT
+    if isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError, ConnectionResetError, ConnectionAbortedError)):
+        return AccurateErrorCategory.CONNECTION_ERROR
+    return AccurateErrorCategory.INTERNAL_ERROR
+
+
+# Phrase lists for Accurate {s:false} bodies. Do not match bare "auth" / "session".
+_TOKEN_EXPIRED_PHRASES = (
+    "token expired", "invalid token", "access token", "unauthenticated",
+    "not logged", "login required", "token tidak valid", "token habis",
+)
+_SESSION_STALE_PHRASES = (
+    "session expired", "invalid session", "no session", "x-session",
+    "session id", "sesi habis", "sesi telah habis", "sesi tidak valid",
+    "sesi anda", "session tidak",
+)
+_FORBIDDEN_PHRASES = (
+    "forbidden", "unauthorized", "unauthorised", "access denied",
+    "permission denied", "tidak berhak", "tidak punya hak",
+    "tidak diizinkan", "permission", "not authorized", "not authorised",
+)
+
+
+def _text_has_phrase(text: str, phrases: Tuple[str, ...]) -> bool:
+    low = (text or "").lower()
+    return any(p in low for p in phrases)
+
+
+def _is_session_stale_text(text: str) -> bool:
+    return _text_has_phrase(text, _SESSION_STALE_PHRASES)
+
+
+def _classify_s_false(payload: Any) -> str:
+    """Classify Accurate {s:false} without treating permission errors as token expiry.
+
+    Bare substrings like 'auth' or 'session' are intentionally not used — they
+    match permanent forbidden messages such as 'not authorized'.
+    """
+    low = _safe_s_false_detail(payload).lower()
+    if _is_session_stale_text(low):
+        return AccurateErrorCategory.TOKEN_EXPIRED
+    if _text_has_phrase(low, _TOKEN_EXPIRED_PHRASES) or (
+        "token" in low and any(k in low for k in ("expired", "invalid", "habis"))
+    ):
+        return AccurateErrorCategory.TOKEN_EXPIRED
+    if _text_has_phrase(low, _FORBIDDEN_PHRASES):
+        return AccurateErrorCategory.UNAUTHORIZED
+    if any(k in low for k in ("not found", "tidak ditemukan", "no data")):
+        return AccurateErrorCategory.NOT_FOUND
+    return AccurateErrorCategory.INVALID_RESPONSE
+
+
+def _safe_s_false_detail(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    d = payload.get("d")
+    if isinstance(d, list) and d:
+        return str(d[0])[:180]
+    if isinstance(d, str):
+        return d[:180]
+    return str(payload.get("message") or "")[:180]
+
+
+def coerce_accurate_quantity(val: Any) -> int:
+    """Parse Accurate qty without crashing. Unparseable / negative → 0."""
+    if val is None or val is False or val is True:
+        return 0
+    if isinstance(val, int):
+        return val if val > 0 else 0
+    if isinstance(val, float):
+        if val != val or val <= 0:  # NaN
+            return 0
+        return int(val)
+    s = str(val).strip().replace(",", "")
+    if not s:
+        return 0
+    try:
+        n = float(s)
+    except (TypeError, ValueError):
+        return 0
+    if n != n or n <= 0:
+        return 0
+    return int(n)
+
+
+def validate_normalized_so(so: Optional[Dict[str, Any]]) -> None:
+    """Raise AccurateRequestError(INVALID_RESPONSE) when required import fields are missing."""
+    if not isinstance(so, dict):
+        raise AccurateRequestError(
+            AccurateErrorCategory.INVALID_RESPONSE,
+            technical_message="normalized SO is not an object",
+            retryable=False,
+        )
+    if not str(so.get("po_number") or "").strip():
+        raise AccurateRequestError(
+            AccurateErrorCategory.INVALID_RESPONSE,
+            technical_message="missing po_number",
+            retryable=False,
+        )
+    if not str(so.get("customer") or "").strip():
+        raise AccurateRequestError(
+            AccurateErrorCategory.INVALID_RESPONSE,
+            technical_message="missing customer",
+            retryable=False,
+        )
+    lines = so.get("line_items") or []
+    if not isinstance(lines, list) or not lines:
+        raise AccurateRequestError(
+            AccurateErrorCategory.INVALID_RESPONSE,
+            technical_message="missing detail items",
+            retryable=False,
+        )
+    for i, li in enumerate(lines):
+        if not isinstance(li, dict):
+            raise AccurateRequestError(
+                AccurateErrorCategory.INVALID_RESPONSE,
+                technical_message=f"line {i} is not an object",
+                retryable=False,
+            )
+        if not str(li.get("accurate_item_id") or "").strip():
+            raise AccurateRequestError(
+                AccurateErrorCategory.INVALID_RESPONSE,
+                technical_message=f"line {i} missing item identifier",
+                retryable=False,
+            )
+        if coerce_accurate_quantity(li.get("quantity")) <= 0:
+            raise AccurateRequestError(
+                AccurateErrorCategory.INVALID_RESPONSE,
+                technical_message=f"line {i} missing/invalid quantity",
+                retryable=False,
+            )
+
+
+def _log_accurate_request(
+    *,
+    correlation_id: str,
+    endpoint: str,
+    so_number: str = "",
+    http_status: Optional[int] = None,
+    duration_ms: int = 0,
+    retry_count: int = 0,
+    error_category: str = "",
+) -> None:
+    line = (
+        "accurate_request correlation_id=%s endpoint=%s so_number=%s http_status=%s duration_ms=%s retry_count=%s error_category=%s"
+    )
+    args = (
+        correlation_id or "-",
+        endpoint or "-",
+        so_number or "-",
+        "-" if http_status is None else http_status,
+        duration_ms,
+        retry_count,
+        error_category or "ok",
+    )
+    if error_category:
+        logger.warning(line, *args)
+    else:
+        logger.info(line, *args)
 
 
 class AccurateClient:
@@ -77,6 +403,19 @@ class AccurateClient:
         self.db_id = os.environ.get("ACCURATE_DB_ID") or ""
         self.account_base_url = (os.environ.get("ACCURATE_ACCOUNT_BASE_URL") or "https://account.accurate.id").rstrip("/")
         self.host = os.environ.get("ACCURATE_HOST") or self.account_base_url
+        # In-memory token/session (never persisted). Locks prevent stampede refresh.
+        self._token_lock = asyncio.Lock()
+        self._session_lock = asyncio.Lock()
+        self._cached_access_token = self.access_token
+        self._token_version = 0
+        self._cached_host: Optional[str] = None
+        self._cached_db_session: Optional[str] = None
+        self._session_cached_at = 0.0
+
+    def _invalidate_db_session(self) -> None:
+        self._cached_host = None
+        self._cached_db_session = None
+        self._session_cached_at = 0.0
 
     @property
     def auth_mode(self) -> str:
@@ -103,24 +442,310 @@ class AccurateClient:
         }
 
     # --- Live-mode helpers ------------------------------------------------
-    async def _obtain_token(self) -> str:
+    async def _obtain_token(self, *, force_refresh: bool = False) -> str:
         # API Token: long-lived bearer, no refresh flow.
         if self.api_token:
             return self.api_token
-        if self.access_token:
-            return self.access_token
-        if not self.refresh_token:
-            raise RuntimeError("No Accurate access/refresh token configured")
+        async with self._token_lock:
+            if not force_refresh and self._cached_access_token:
+                return self._cached_access_token
+            if not force_refresh and self.access_token:
+                self._cached_access_token = self.access_token
+                return self._cached_access_token
+            if not self.refresh_token:
+                raise AccurateRequestError(
+                    AccurateErrorCategory.UNAUTHORIZED,
+                    technical_message="no refresh token configured",
+                    retryable=False,
+                )
+            token = await self._refresh_oauth_unlocked()
+            return token
+
+    async def _refresh_oauth_if_stale(self, failed_version: int) -> str:
+        """Single-flight OAuth refresh. Concurrent 401s share one refresh."""
+        async with self._token_lock:
+            if self._token_version > failed_version and self._cached_access_token:
+                return self._cached_access_token
+            if not self.refresh_token:
+                raise AccurateRequestError(
+                    AccurateErrorCategory.UNAUTHORIZED,
+                    technical_message="refresh token missing",
+                    retryable=False,
+                )
+            return await self._refresh_oauth_unlocked()
+
+    async def _refresh_oauth_unlocked(self) -> str:
+        """Caller must hold `_token_lock`. Never logs token values."""
         basic = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            r = await client.post(
-                f"{self.account_base_url}/oauth/token",
-                headers={"Authorization": f"Basic {basic}"},
-                data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
+        url = f"{self.account_base_url}/oauth/token"
+        last_err: Optional[AccurateRequestError] = None
+        async with httpx.AsyncClient(
+            timeout=accurate_http_timeout(),
+            follow_redirects=True,
+            limits=ACCURATE_HTTP_LIMITS,
+        ) as client:
+            for attempt in range(1, ACCURATE_MAX_TRANSIENT_ATTEMPTS + 1):
+                t0 = time.perf_counter()
+                try:
+                    r = await client.post(
+                        url,
+                        headers={"Authorization": f"Basic {basic}"},
+                        data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
+                    )
+                except _HTTP_RETRYABLE_EXC as e:
+                    cat = _classify_exception(e)
+                    last_err = AccurateRequestError(cat, technical_message=type(e).__name__)
+                    _log_accurate_request(
+                        correlation_id="-",
+                        endpoint="oauth/token",
+                        http_status=None,
+                        duration_ms=int((time.perf_counter() - t0) * 1000),
+                        retry_count=attempt - 1,
+                        error_category=cat,
+                    )
+                    if attempt < ACCURATE_MAX_TRANSIENT_ATTEMPTS:
+                        await asyncio.sleep(_backoff_seconds(attempt))
+                        continue
+                    raise last_err from e
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                if r.status_code in ACCURATE_TRANSIENT_STATUS:
+                    cat = _classify_http_status(r.status_code)
+                    last_err = AccurateRequestError(cat, http_status=r.status_code, technical_message=f"oauth HTTP {r.status_code}")
+                    _log_accurate_request(
+                        correlation_id="-",
+                        endpoint="oauth/token",
+                        http_status=r.status_code,
+                        duration_ms=duration_ms,
+                        retry_count=attempt - 1,
+                        error_category=cat,
+                    )
+                    if attempt < ACCURATE_MAX_TRANSIENT_ATTEMPTS:
+                        wait = _parse_retry_after(r) if r.status_code == 429 else None
+                        await asyncio.sleep(_backoff_seconds(attempt, wait))
+                        continue
+                    raise last_err
+                _log_accurate_request(
+                    correlation_id="-",
+                    endpoint="oauth/token",
+                    http_status=r.status_code,
+                    duration_ms=duration_ms,
+                    retry_count=attempt - 1,
+                    error_category="" if not r.is_error else AccurateErrorCategory.TOKEN_EXPIRED,
+                )
+                if r.is_error:
+                    raise AccurateRequestError(
+                        AccurateErrorCategory.TOKEN_EXPIRED,
+                        http_status=r.status_code,
+                        technical_message="token refresh failed",
+                        retryable=False,
+                    )
+                try:
+                    body = r.json()
+                except Exception as e:
+                    raise AccurateRequestError(
+                        AccurateErrorCategory.INVALID_RESPONSE,
+                        technical_message="token refresh invalid JSON",
+                        retryable=False,
+                    ) from e
+                token = (body or {}).get("access_token") if isinstance(body, dict) else None
+                if not token:
+                    raise AccurateRequestError(
+                        AccurateErrorCategory.UNAUTHORIZED,
+                        technical_message="token refresh missing access_token",
+                        retryable=False,
+                    )
+                self._cached_access_token = str(token)
+                self.access_token = self._cached_access_token
+                rotated = (body or {}).get("refresh_token") if isinstance(body, dict) else None
+                if rotated:
+                    self.refresh_token = str(rotated)
+                self._token_version += 1
+                self._invalidate_db_session()
+                return self._cached_access_token
+        raise last_err or AccurateRequestError(
+            AccurateErrorCategory.UNAUTHORIZED,
+            technical_message="token refresh failed",
+            retryable=False,
+        )
+
+    async def _http_get_retries(
+        self,
+        http: httpx.AsyncClient,
+        url: str,
+        *,
+        headers_fn: Callable[[], Dict[str, str]],
+        params: Optional[Dict[str, Any]] = None,
+        logical_name: str,
+        so_number: str = "",
+        correlation_id: str = "",
+        max_attempts: int = ACCURATE_MAX_TRANSIENT_ATTEMPTS,
+    ) -> httpx.Response:
+        """GET with transient retry. Regenerates signed headers every attempt.
+
+        Does not retry permanent 4xx (except 429). 401/403 abort the loop so
+        the caller can refresh OAuth at most once.
+        """
+        last_err: Optional[AccurateRequestError] = None
+        attempts = max(1, int(max_attempts or 1))
+        for attempt in range(1, attempts + 1):
+            t0 = time.perf_counter()
+            headers = headers_fn()
+            try:
+                r = await http.get(url, headers=headers, params=params)
+            except _HTTP_RETRYABLE_EXC as e:
+                cat = _classify_exception(e)
+                last_err = AccurateRequestError(cat, technical_message=type(e).__name__)
+                _log_accurate_request(
+                    correlation_id=correlation_id,
+                    endpoint=logical_name,
+                    so_number=so_number,
+                    http_status=None,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    retry_count=attempt - 1,
+                    error_category=cat,
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(_backoff_seconds(attempt))
+                    continue
+                raise last_err from e
+            except httpx.HTTPError as e:
+                cat = AccurateErrorCategory.CONNECTION_ERROR
+                _log_accurate_request(
+                    correlation_id=correlation_id,
+                    endpoint=logical_name,
+                    so_number=so_number,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    retry_count=attempt - 1,
+                    error_category=cat,
+                )
+                raise AccurateRequestError(cat, technical_message=type(e).__name__, retryable=False) from e
+
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            status = r.status_code
+
+            if status in ACCURATE_TRANSIENT_STATUS:
+                cat = _classify_http_status(status)
+                last_err = AccurateRequestError(cat, http_status=status, technical_message=f"HTTP {status}")
+                _log_accurate_request(
+                    correlation_id=correlation_id,
+                    endpoint=logical_name,
+                    so_number=so_number,
+                    http_status=status,
+                    duration_ms=duration_ms,
+                    retry_count=attempt - 1,
+                    error_category=cat,
+                )
+                if attempt < attempts:
+                    wait = _parse_retry_after(r) if status == 429 else None
+                    await asyncio.sleep(_backoff_seconds(attempt, wait))
+                    continue
+                raise last_err
+
+            if status in (401, 403):
+                # api_token: a stale HMAC timestamp can 401; retry with a fresh signature.
+                # HTTP 403 is permission/forbidden — never retried, never treated as expiry.
+                if self.auth_mode == "api_token" and status == 401 and attempt < attempts:
+                    _log_accurate_request(
+                        correlation_id=correlation_id,
+                        endpoint=logical_name,
+                        so_number=so_number,
+                        http_status=status,
+                        duration_ms=duration_ms,
+                        retry_count=attempt - 1,
+                        error_category=AccurateErrorCategory.TOKEN_EXPIRED,
+                    )
+                    await asyncio.sleep(_backoff_seconds(attempt))
+                    continue
+                cat = _classify_http_status(status)
+                _log_accurate_request(
+                    correlation_id=correlation_id,
+                    endpoint=logical_name,
+                    so_number=so_number,
+                    http_status=status,
+                    duration_ms=duration_ms,
+                    retry_count=attempt - 1,
+                    error_category=cat,
+                )
+                raise AccurateRequestError(cat, http_status=status, technical_message=f"HTTP {status}", retryable=False)
+
+            _log_accurate_request(
+                correlation_id=correlation_id,
+                endpoint=logical_name,
+                so_number=so_number,
+                http_status=status,
+                duration_ms=duration_ms,
+                retry_count=attempt - 1,
+                error_category="" if not r.is_error else _classify_http_status(status),
             )
-        if r.is_error:
-            raise RuntimeError("Accurate token refresh failed")
-        return r.json()["access_token"]
+            if status == 404:
+                raise AccurateRequestError(
+                    AccurateErrorCategory.NOT_FOUND,
+                    http_status=404,
+                    technical_message="HTTP 404",
+                    retryable=False,
+                )
+            if r.is_error:
+                raise AccurateRequestError(
+                    _classify_http_status(status),
+                    http_status=status,
+                    technical_message=f"HTTP {status}",
+                    retryable=False,
+                )
+            return r
+        raise last_err or AccurateRequestError(
+            AccurateErrorCategory.INTERNAL_ERROR,
+            technical_message="request failed",
+        )
+
+    def _rebase_accurate_url(self, url: str, host: str) -> str:
+        """Keep the Accurate API path when the database host changes after reopen."""
+        host = (host or "").rstrip("/")
+        marker = "/accurate/api/"
+        if host and marker in url:
+            return host + marker + url.split(marker, 1)[1]
+        return url
+
+    async def _authed_get(
+        self,
+        http: httpx.AsyncClient,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        logical_name: str,
+        so_number: str = "",
+        correlation_id: str = "",
+        allow_token_refresh: bool = True,
+        max_attempts: int = ACCURATE_MAX_TRANSIENT_ATTEMPTS,
+    ) -> httpx.Response:
+        token_version = self._token_version
+
+        def _headers() -> Dict[str, str]:
+            # Headers rebuilt every attempt so HMAC timestamps stay fresh.
+            token = self.api_token or self._cached_access_token or self.access_token
+            return self._request_headers(token, self._cached_db_session or "")
+
+        try:
+            return await self._http_get_retries(
+                http, url, headers_fn=_headers, params=params,
+                logical_name=logical_name, so_number=so_number, correlation_id=correlation_id,
+                max_attempts=max_attempts,
+            )
+        except AccurateRequestError as e:
+            # HTTP 403 / UNAUTHORIZED is permanent forbidden — do not refresh.
+            if (
+                allow_token_refresh
+                and e.category == AccurateErrorCategory.TOKEN_EXPIRED
+                and self.auth_mode == "oauth"
+            ):
+                await self._refresh_oauth_if_stale(token_version)
+                new_host, _ = await self._ensure_db_session()
+                url = self._rebase_accurate_url(url, new_host)
+                return await self._http_get_retries(
+                    http, url, headers_fn=_headers, params=params,
+                    logical_name=logical_name, so_number=so_number, correlation_id=correlation_id,
+                    max_attempts=1,
+                )
+            raise
 
     async def _open_db(self, token: str) -> Tuple[str, str]:
         """Return (host, session) for the configured database.
@@ -130,43 +755,79 @@ class AccurateClient:
           string and downstream requests won't send X-Session-ID.
         - oauth mode: legacy open-db.do flow returns host + session.
         """
-        if self.auth_mode == "api_token":
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-                r = await client.get(
+        async with httpx.AsyncClient(
+            timeout=accurate_http_timeout(),
+            follow_redirects=True,
+            limits=ACCURATE_HTTP_LIMITS,
+        ) as http:
+            if self.auth_mode == "api_token":
+                r = await self._http_get_retries(
+                    http,
                     f"{self.account_base_url}/api/api-token.do",
-                    headers=self._signed_headers(token),
+                    headers_fn=lambda: self._signed_headers(token),
+                    logical_name="api-token.do",
                 )
-            if r.is_error:
-                raise RuntimeError(f"Accurate api-token.do failed ({r.status_code})")
-            body = r.json()
-            if body.get("s") is False:
-                raise RuntimeError("Accurate api-token.do returned auth error")
-            d = body.get("d") if isinstance(body.get("d"), dict) else {}
-            database = d.get("database") if isinstance(d.get("database"), dict) else {}
-            host = database.get("host") or ""
-            if not host:
-                raise RuntimeError("Accurate returned no database host for API Token")
-            return host.rstrip("/"), ""
+                try:
+                    body = r.json()
+                except Exception as e:
+                    raise AccurateRequestError(
+                        AccurateErrorCategory.INVALID_RESPONSE,
+                        technical_message="api-token.do invalid JSON",
+                    ) from e
+                if not isinstance(body, dict):
+                    raise AccurateRequestError(
+                        AccurateErrorCategory.INVALID_RESPONSE,
+                        technical_message="api-token.do not an object",
+                    )
+                if body.get("s") is False:
+                    raise AccurateRequestError(
+                        _classify_s_false(body),
+                        technical_message=_safe_s_false_detail(body) or "api-token.do s:false",
+                        retryable=False,
+                    )
+                d = body.get("d") if isinstance(body.get("d"), dict) else {}
+                database = d.get("database") if isinstance(d.get("database"), dict) else {}
+                host = database.get("host") or ""
+                if not host:
+                    raise AccurateRequestError(
+                        AccurateErrorCategory.INVALID_RESPONSE,
+                        technical_message="api-token.do missing host",
+                        retryable=False,
+                    )
+                return host.rstrip("/"), ""
 
-        # oauth mode
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            r = await client.get(
+            r = await self._http_get_retries(
+                http,
                 f"{self.account_base_url}/api/open-db.do",
-                headers={"Authorization": f"Bearer {token}"},
+                headers_fn=lambda: {"Authorization": f"Bearer {token}"},
                 params={"id": self.db_id},
+                logical_name="open-db.do",
             )
-        if r.is_error:
-            raise RuntimeError(f"Accurate open-db failed ({r.status_code})")
-        body = r.json()
-        host = body.get("host") or ""
-        session = body.get("session") or ""
-        if not host or not session:
-            nested = body.get("data") if isinstance(body.get("data"), dict) else {}
-            host = host or nested.get("host") or ""
-            session = session or nested.get("session") or ""
-        if not host or not session:
-            raise RuntimeError("Accurate returned no database host/session")
-        return host.rstrip("/"), session
+            try:
+                body = r.json()
+            except Exception as e:
+                raise AccurateRequestError(
+                    AccurateErrorCategory.INVALID_RESPONSE,
+                    technical_message="open-db.do invalid JSON",
+                ) from e
+            if not isinstance(body, dict):
+                raise AccurateRequestError(
+                    AccurateErrorCategory.INVALID_RESPONSE,
+                    technical_message="open-db.do not an object",
+                )
+            host = body.get("host") or ""
+            session = body.get("session") or ""
+            if not host or not session:
+                nested = body.get("data") if isinstance(body.get("data"), dict) else {}
+                host = host or nested.get("host") or ""
+                session = session or nested.get("session") or ""
+            if not host or not session:
+                raise AccurateRequestError(
+                    AccurateErrorCategory.INVALID_RESPONSE,
+                    technical_message="open-db missing host/session",
+                    retryable=False,
+                )
+            return host.rstrip("/"), session
 
     def _request_headers(self, token: str, session: str = "") -> Dict[str, str]:
         """Same Authorization / signature / session headers used by Import PO."""
@@ -174,36 +835,146 @@ class AccurateClient:
             return self._signed_headers(token)
         return {"Authorization": f"Bearer {token}", "X-Session-ID": session}
 
+    async def _ensure_db_session(self, *, force: bool = False) -> Tuple[str, str]:
+        """Cached (host, session). Concurrent callers share one open-db/api-token.do."""
+        async with self._session_lock:
+            now = time.monotonic()
+            if (
+                not force
+                and self._cached_host
+                and (now - self._session_cached_at) < ACCURATE_SESSION_TTL_S
+            ):
+                return self._cached_host, self._cached_db_session or ""
+            token_version = self._token_version
+            token = await self._obtain_token()
+            try:
+                host, session = await self._open_db(token)
+            except AccurateRequestError as e:
+                if e.category == AccurateErrorCategory.TOKEN_EXPIRED and self.auth_mode == "oauth":
+                    token = await self._refresh_oauth_if_stale(token_version)
+                    host, session = await self._open_db(token)
+                else:
+                    raise
+            self._cached_host = host
+            self._cached_db_session = session
+            self._session_cached_at = time.monotonic()
+            self.host = host or self.host
+            return host, session
+
     async def _live_session(self) -> Tuple[str, Dict[str, str]]:
         """Return (host, headers) for Accurate API calls. Reused by SO + item."""
+        host, session = await self._ensure_db_session()
         token = await self._obtain_token()
-        host, session = await self._open_db(token)
         return host, self._request_headers(token, session)
 
-    async def _live_fetch_so(self, so_number: str) -> Optional[Dict[str, Any]]:
-        host, headers = await self._live_session()
-        params = {"id": so_number} if so_number.isdigit() else {"number": so_number}
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-            r = await client.get(
-                f"{host}/accurate/api/sales-order/detail.do",
-                headers=headers, params=params,
-            )
-        if r.status_code == 404:
+    def _so_detail_params(self, so_number: str) -> Dict[str, str]:
+        return {"id": so_number} if so_number.isdigit() else {"number": so_number}
+
+    def _extract_so_body(self, payload: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
             return None
-        if r.is_error:
-            raise RuntimeError(f"Accurate SO fetch failed ({r.status_code})")
-        payload = r.json()
         if payload.get("s") is False:
-            # Auth or business error — bubble a generic message (no credential info)
-            raise RuntimeError("Accurate SO fetch returned failure")
+            detail = _safe_s_false_detail(payload) or "sales-order/detail.do s:false"
+            err = AccurateRequestError(
+                _classify_s_false(payload),
+                technical_message=detail,
+                retryable=False,
+            )
+            err.stale_session = _is_session_stale_text(detail)
+            raise err
         d = payload.get("d") if isinstance(payload.get("d"), dict) else None
         if d is None:
             d = payload.get("data") if isinstance(payload.get("data"), dict) else None
         if d is None:
             d = payload.get("r") if isinstance(payload.get("r"), dict) else None
+        return d if isinstance(d, dict) else None
+
+    async def _fetch_so_on_http(
+        self,
+        http: httpx.AsyncClient,
+        so_number: str,
+        host: str,
+        *,
+        correlation_id: str,
+        session_retry: bool = True,
+    ) -> Dict[str, Any]:
+        url = f"{host.rstrip('/')}/accurate/api/sales-order/detail.do"
+        try:
+            r = await self._authed_get(
+                http, url,
+                params=self._so_detail_params(so_number),
+                logical_name="sales-order/detail.do",
+                so_number=so_number,
+                correlation_id=correlation_id,
+                allow_token_refresh=session_retry,
+                max_attempts=ACCURATE_MAX_TRANSIENT_ATTEMPTS if session_retry else 1,
+            )
+        except AccurateRequestError as e:
+            return e.to_result(so_number)
+        except Exception as e:
+            err = AccurateRequestError(
+                AccurateErrorCategory.INTERNAL_ERROR,
+                technical_message=type(e).__name__,
+            )
+            logger.warning(
+                "accurate_request correlation_id=%s endpoint=sales-order/detail.do so_number=%s error_category=%s exception=%s",
+                correlation_id or "-", so_number, err.category, type(e).__name__,
+            )
+            return err.to_result(so_number)
+        try:
+            payload = r.json()
+        except Exception:
+            return AccurateRequestError(
+                AccurateErrorCategory.INVALID_RESPONSE,
+                technical_message="detail.do invalid JSON",
+                retryable=False,
+            ).to_result(so_number)
+        try:
+            d = self._extract_so_body(payload)
+        except AccurateRequestError as e:
+            if session_retry and e.stale_session:
+                self._invalidate_db_session()
+                new_host, _ = await self._ensure_db_session(force=True)
+                return await self._fetch_so_on_http(
+                    http, so_number, new_host, correlation_id=correlation_id, session_retry=False,
+                )
+            return e.to_result(so_number)
         if d is None:
+            return AccurateRequestError(
+                AccurateErrorCategory.NOT_FOUND,
+                technical_message="detail.do empty body",
+                retryable=False,
+            ).to_result(so_number)
+        try:
+            so = _normalize_accurate_so(d)
+            validate_normalized_so(so)
+        except AccurateRequestError as e:
+            return e.to_result(so_number)
+        except Exception as e:
+            return AccurateRequestError(
+                AccurateErrorCategory.INVALID_RESPONSE,
+                technical_message=type(e).__name__,
+                retryable=False,
+            ).to_result(so_number)
+        return so_fetch_result(so_number, success=True, data=so)
+
+    async def _live_fetch_so(self, so_number: str) -> Optional[Dict[str, Any]]:
+        rows = await self.fetch_sales_order_results([so_number])
+        row = rows[0] if rows else so_fetch_result(
+            so_number, success=False,
+            error_code=AccurateErrorCategory.INTERNAL_ERROR,
+            user_message=user_message_for(AccurateErrorCategory.INTERNAL_ERROR),
+        )
+        if row.get("success"):
+            return row.get("data")
+        if row.get("error_code") == AccurateErrorCategory.NOT_FOUND:
             return None
-        return _normalize_accurate_so(d)
+        raise AccurateRequestError(
+            row.get("error_code") or AccurateErrorCategory.INTERNAL_ERROR,
+            technical_message=row.get("technical_message") or "",
+            retryable=bool(row.get("retryable")),
+            user_message=row.get("user_message") or user_message_for(AccurateErrorCategory.INTERNAL_ERROR),
+        )
 
     # --- Public API -------------------------------------------------------
     async def fetch_sales_orders(self) -> List[Dict[str, Any]]:
@@ -222,8 +993,84 @@ class AccurateClient:
         key = so_number.upper()
         for so in _MOCK_SALES_ORDERS:
             if so.get("po_number", "").upper() == key or so.get("accurate_id", "").upper() == key:
-                return dict(so)
+                found = dict(so)
+                validate_normalized_so(found)
+                return found
         return None
+
+    async def fetch_sales_order_results(
+        self,
+        so_numbers: List[str],
+        *,
+        correlation_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch many Sales Orders with bounded concurrency. Never fails the batch.
+
+        One SO error is isolated. Live mode opens the Accurate DB session once
+        and reuses a pooled HTTP client.
+        """
+        cid = correlation_id or new_correlation_id()
+        numbers = [str(n).strip() for n in (so_numbers or []) if str(n).strip()]
+        if not numbers:
+            return []
+        if not self.is_live:
+            out: List[Dict[str, Any]] = []
+            for sn in numbers:
+                try:
+                    so = await self.fetch_single_sales_order(sn)
+                except AccurateRequestError as e:
+                    out.append(e.to_result(sn))
+                    continue
+                except Exception as e:
+                    out.append(AccurateRequestError(
+                        AccurateErrorCategory.INTERNAL_ERROR,
+                        technical_message=type(e).__name__,
+                    ).to_result(sn))
+                    continue
+                if not so:
+                    out.append(AccurateRequestError(
+                        AccurateErrorCategory.NOT_FOUND,
+                        retryable=False,
+                    ).to_result(sn))
+                else:
+                    out.append(so_fetch_result(sn, success=True, data=so))
+            return out
+
+        try:
+            host, _session = await self._ensure_db_session()
+        except AccurateRequestError as e:
+            return [e.to_result(sn) for sn in numbers]
+        except Exception as e:
+            err = AccurateRequestError(
+                AccurateErrorCategory.INTERNAL_ERROR,
+                technical_message=type(e).__name__,
+            )
+            return [err.to_result(sn) for sn in numbers]
+
+        sem = asyncio.Semaphore(ACCURATE_SO_FETCH_CONCURRENCY)
+
+        async def _one(sn: str) -> Dict[str, Any]:
+            async with sem:
+                return await self._fetch_so_on_http(http, sn, host, correlation_id=cid)
+
+        async with httpx.AsyncClient(
+            timeout=accurate_http_timeout(),
+            follow_redirects=True,
+            limits=ACCURATE_HTTP_LIMITS,
+        ) as http:
+            parts = await asyncio.gather(*[_one(n) for n in numbers], return_exceptions=True)
+        out = []
+        for sn, part in zip(numbers, parts):
+            if isinstance(part, AccurateRequestError):
+                out.append(part.to_result(sn))
+            elif isinstance(part, Exception):
+                out.append(AccurateRequestError(
+                    AccurateErrorCategory.INTERNAL_ERROR,
+                    technical_message=type(part).__name__,
+                ).to_result(sn))
+            else:
+                out.append(part)
+        return out
 
     async def list_recent_sales_orders(
         self,
@@ -284,9 +1131,13 @@ class AccurateClient:
             _SO_LIST_CACHE[cache_key] = {"data": payload, "at": _t.time()}
             return {**payload, "cached": False, "fetched_at": _t.time()}
 
-        import asyncio as _aio
-        token = await self._obtain_token()
-        host, session = await self._open_db(token)
+        cid = new_correlation_id()
+        try:
+            host, _session = await self._ensure_db_session()
+        except AccurateRequestError:
+            if entry:
+                return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
+            raise
 
         # Step 1: list — MINIMAL params (no `fields`, sort uses pipe syntax)
         list_params: Dict[str, Any] = {
@@ -299,73 +1150,95 @@ class AccurateClient:
             # most list endpoints; fall back to filter.number if it fails.
             list_params["keywords"] = keyword
 
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-            r = await client.get(
-                f"{host}/accurate/api/sales-order/list.do",
-                headers=self._signed_headers(token) if self.auth_mode == "api_token"
-                        else {"Authorization": f"Bearer {token}", "X-Session-ID": session},
-                params=list_params,
-            )
-        if r.is_error:
-            if entry:
-                return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
-            raise RuntimeError(f"Accurate list HTTP {r.status_code}")
-        body = r.json()
-        if body.get("s") is False:
-            # Log the tenant-side error message (safe — no credential in payload) for diagnosis
-            err_msg = ""
-            d = body.get("d")
-            if isinstance(d, list) and d:
-                err_msg = str(d[0])[:180]
-            _last_list_error["message"] = err_msg
-            _last_list_error["at"] = _t.time()
-            _last_list_error["operation"] = "sales-order/list.do"
-            if entry:
-                return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
-            raise RuntimeError(f"Accurate list rejected: {err_msg or 'unknown tenant error'}")
-        rows_raw = body.get("d") or []
-        sp = body.get("sp") or {}
-        total = sp.get("rowCount") or len(rows_raw)
-        page_count = sp.get("pageCount") or 1
+        async with httpx.AsyncClient(
+            timeout=accurate_http_timeout(),
+            follow_redirects=True,
+            limits=ACCURATE_HTTP_LIMITS,
+        ) as http:
+            try:
+                r = await self._authed_get(
+                    http,
+                    f"{host}/accurate/api/sales-order/list.do",
+                    params=list_params,
+                    logical_name="sales-order/list.do",
+                    correlation_id=cid,
+                )
+            except AccurateRequestError:
+                if entry:
+                    return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
+                raise
+            try:
+                body = r.json()
+            except Exception as e:
+                if entry:
+                    return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
+                raise AccurateRequestError(
+                    AccurateErrorCategory.INVALID_RESPONSE,
+                    technical_message="list.do invalid JSON",
+                ) from e
+            if not isinstance(body, dict) or body.get("s") is False:
+                err_msg = _safe_s_false_detail(body) if isinstance(body, dict) else "invalid list body"
+                _last_list_error["message"] = err_msg
+                _last_list_error["at"] = _t.time()
+                _last_list_error["operation"] = "sales-order/list.do"
+                if entry:
+                    return {**entry["data"], "cached": True, "stale": True, "fetched_at": entry["at"]}
+                raise AccurateRequestError(
+                    AccurateErrorCategory.INVALID_RESPONSE,
+                    technical_message=err_msg or "list rejected",
+                    retryable=False,
+                )
+            rows_raw = body.get("d") or []
+            if not isinstance(rows_raw, list):
+                rows_raw = []
+            sp = body.get("sp") or {}
+            total = sp.get("rowCount") or len(rows_raw)
+            page_count = sp.get("pageCount") or 1
 
-        # Step 2: enrich each row with detail (customer/total/status) — parallel best-effort
-        sem = _aio.Semaphore(4)
+            # Step 2: enrich each row with detail — bounded concurrency, shared client
+            sem = asyncio.Semaphore(ACCURATE_SO_FETCH_CONCURRENCY)
 
-        async def _enrich(row):
-            oid = row.get("id")
-            async with sem:
-                try:
-                    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                        d = await client.get(
+            async def _enrich(row):
+                oid = row.get("id") if isinstance(row, dict) else None
+                fallback = {
+                    "accurate_id": str(oid) if oid is not None else None,
+                    "number": row.get("number") if isinstance(row, dict) else None,
+                    "transDate": row.get("transDate") if isinstance(row, dict) else None,
+                    "customer": None,
+                    "totalAmount": None,
+                    "statusName": None,
+                }
+                async with sem:
+                    try:
+                        d = await self._authed_get(
+                            http,
                             f"{host}/accurate/api/sales-order/detail.do",
-                            headers=self._signed_headers(token) if self.auth_mode == "api_token"
-                                    else {"Authorization": f"Bearer {token}", "X-Session-ID": session},
                             params={"id": oid},
+                            logical_name="sales-order/detail.do",
+                            so_number=str(row.get("number") or oid or ""),
+                            correlation_id=cid,
                         )
-                    det_body = d.json() if not d.is_error else {}
-                    det = det_body.get("d") if isinstance(det_body.get("d"), dict) else {}
-                    cust = det.get("customer") if isinstance(det.get("customer"), dict) else {}
-                    return {
-                        "accurate_id": str(oid) if oid is not None else None,
-                        "number": det.get("number") or row.get("number"),
-                        "transDate": det.get("transDate") or row.get("transDate"),
-                        "customer": (cust or {}).get("name") or "-",
-                        "totalAmount": det.get("totalAmount"),
-                        "statusName": det.get("statusName") or det.get("orderStatus") or None,
-                    }
-                except Exception:
-                    return {
-                        "accurate_id": str(oid) if oid is not None else None,
-                        "number": row.get("number"),
-                        "transDate": row.get("transDate"),
-                        "customer": None,
-                        "totalAmount": None,
-                        "statusName": None,
-                    }
+                        det_body = d.json() if not d.is_error else {}
+                        det = det_body.get("d") if isinstance(det_body.get("d"), dict) else {}
+                        cust = det.get("customer") if isinstance(det.get("customer"), dict) else {}
+                        return {
+                            "accurate_id": str(oid) if oid is not None else None,
+                            "number": det.get("number") or (row.get("number") if isinstance(row, dict) else None),
+                            "transDate": det.get("transDate") or (row.get("transDate") if isinstance(row, dict) else None),
+                            "customer": (cust or {}).get("name") or "-",
+                            "totalAmount": det.get("totalAmount"),
+                            "statusName": det.get("statusName") or det.get("orderStatus") or None,
+                        }
+                    except Exception:
+                        return fallback
 
-        enriched = await _aio.gather(*[_enrich(r) for r in rows_raw])
+            enriched = await asyncio.gather(*[_enrich(r) for r in rows_raw], return_exceptions=True)
+            rows_out = [x if isinstance(x, dict) else {
+                "accurate_id": None, "number": None, "transDate": None,
+                "customer": None, "totalAmount": None, "statusName": None,
+            } for x in enriched]
         payload = {
-            "rows": enriched, "total": total, "page": page, "pageSize": limit,
+            "rows": rows_out, "total": total, "page": page, "pageSize": limit,
             "pageCount": page_count, "host": host, "mode": "live",
         }
         _SO_LIST_CACHE[cache_key] = {"data": payload, "at": _t.time()}
@@ -1100,9 +1973,13 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
     so_notes = _extract_so_notes_text(d)
     so_colors = _detect_colors(so_notes)
     lines_raw = d.get("detailItem") or d.get("detailItems") or d.get("items") or []
+    if not isinstance(lines_raw, list):
+        lines_raw = []
     lines: List[Dict[str, Any]] = []
     multi_line = len(lines_raw) > 1
     for li in lines_raw:
+        if not isinstance(li, dict):
+            continue
         item = li.get("item") or {}
         if not isinstance(item, dict):
             item = {}
@@ -1142,11 +2019,12 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
                     color_source = "so.notes"
 
         line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
+        qty_raw = li.get("quantity") if li.get("quantity") not in (None, "") else li.get("qty")
         line: Dict[str, Any] = {
             "accurate_item_id": _extract_accurate_item_id(li, item),
             "item_code": item.get("no") or li.get("itemNo") or None,
             "name": item.get("name") or li.get("itemName") or li.get("description") or "-",
-            "quantity": int(li.get("quantity") or li.get("qty") or 0),
+            "quantity": coerce_accurate_quantity(qty_raw),
             "unit": li.get("itemUnitName") or li.get("unit") or "pcs",
             "color": color_val,
             "notes": line_notes,
@@ -1160,6 +2038,9 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         lines.append(line)
     cust = d.get("customer") or {}
     ship = d.get("shipToAddress") or d.get("shipTo") or {}
+    if not isinstance(ship, dict):
+        ship = {}
+    branch = d.get("branch") if isinstance(d.get("branch"), dict) else {}
     salesperson = (d.get("salesman") or {}).get("name") if isinstance(d.get("salesman"), dict) else d.get("salesman")
     created_by = (d.get("createUser") or d.get("createdByUser") or {})
     created_by_name = created_by.get("name") if isinstance(created_by, dict) else created_by
@@ -1167,7 +2048,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         "accurate_id": str(d.get("id") or d.get("number") or ""),
         "po_number": str(d.get("number") or d.get("orderNumber") or ""),
         "customer": cust.get("name") if isinstance(cust, dict) else str(cust) if cust else None,
-        "outlet": d.get("branchName") or (d.get("branch") or {}).get("name"),
+        "outlet": d.get("branchName") or branch.get("name"),
         "recipient": ship.get("attention") or ship.get("name") or None,
         "address": ship.get("address") or d.get("shipAddress") or None,
         "payment_terms": (d.get("paymentTerm") or {}).get("name") if isinstance(d.get("paymentTerm"), dict) else d.get("paymentTerm"),

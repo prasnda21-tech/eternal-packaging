@@ -11,6 +11,22 @@ const statusMeta = {
   failed: { label: "Gagal", cls: "log-failed", icon: AlertCircle },
 };
 
+function bulkPreviewSummary(items) {
+  const list = items || [];
+  const ready = list.filter((i) => i.ok && !i.duplicate);
+  const dupes = list.filter((i) => i.ok && i.duplicate);
+  const errs = list.filter((i) => !i.ok);
+  return {
+    total: list.length,
+    ready: ready.length,
+    duplicates: dupes.length,
+    errors: errs.length,
+    total_qty: ready.reduce((s, i) => s + Number((i.preview || {}).total_quantity || 0), 0),
+    total_items: ready.reduce((s, i) => s + Number((i.preview || {}).item_count || 0), 0),
+    needs_verify: ready.filter((i) => i.has_verify).map((i) => i.so_number),
+  };
+}
+
 const TEMPLATE_HEADERS = [
   "po_number", "order_date", "customer", "outlet", "recipient", "address",
   "payment_terms", "sales", "created_by_user", "expedition", "delivery_zone",
@@ -216,6 +232,29 @@ export default function ImportPO() {
     }
   };
   const closeBulk = () => { setBulkPreview(null); setBulkResult(null); };
+  const doRetryFailed = async () => {
+    if (!bulkPreview) return;
+    const failed = (bulkPreview.items || []).filter((i) => !i.ok).map((i) => i.so_number).filter(Boolean);
+    if (failed.length === 0) return;
+    setBulkBusy(true);
+    setErr("");
+    try {
+      const d = await api.accurateImportPreviewBulk(failed);
+      const incoming = new Map((d.items || []).map((i) => [i.so_number, i]));
+      const merged = (bulkPreview.items || []).map((row) => incoming.get(row.so_number) || row);
+      setBulkPreview({
+        ...bulkPreview,
+        ...d,
+        items: merged,
+        summary: bulkPreviewSummary(merged),
+      });
+    } catch (ex) {
+      const detail = ex.response?.data?.detail;
+      setErr(typeof detail === "string" ? detail : (detail?.message || "Gagal mengulang Sales Order yang gagal"));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   // ---------- File ----------
   const pickFile = (f) => {
@@ -902,7 +941,11 @@ export default function ImportPO() {
                       <span className="mono">{p.item_count || 0}</span>
                       <span className="mono small">{colorSummary}</span>
                       <span>
-                        {!it.ok && <span className="muted small">Gagal: {it.error}</span>}
+                        {!it.ok && (
+                          <span className="muted small" data-testid={`bulk-preview-error-${it.so_number}`}>
+                            {it.user_message || it.error || "Gagal mengambil data Accurate"}
+                          </span>
+                        )}
                         {it.ok && it.duplicate && (
                           <>Duplikat{it.existing_po_id && <> · <Link to={`/po/${it.existing_po_id}`} data-testid={`bulk-preview-existing-${it.so_number}`}>Lihat PO</Link></>}</>
                         )}
@@ -915,17 +958,28 @@ export default function ImportPO() {
 
               <p className="muted small">Sales, User/Pembuat PO, dan Imported By disimpan sebagai field terpisah. Duplicate protection aktif — SO yang sudah pernah diimport tidak akan dibuat ulang.</p>
             </div>
-            <footer style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderTop:"1px solid var(--border,#e5e7eb)"}}>
+            <footer style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderTop:"1px solid var(--border,#e5e7eb)",gap:8,flexWrap:"wrap"}}>
               <button className="ghost" onClick={closeBulk} data-testid="bulk-preview-cancel" disabled={bulkBusy}>
                 <X size={13}/> Batal
               </button>
-              <button
-                className="primary"
-                onClick={doConfirmSelected}
-                disabled={bulkBusy || bulkPreview.summary.ready === 0}
-                data-testid="bulk-preview-confirm">
-                <Download size={13}/> Import {bulkPreview.summary.ready} PO
-              </button>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {bulkPreview.summary.errors > 0 && (
+                  <button
+                    className="ghost"
+                    onClick={doRetryFailed}
+                    disabled={bulkBusy}
+                    data-testid="bulk-preview-retry-failed">
+                    <RefreshCw size={13} className={bulkBusy ? "spin" : ""}/> Retry Gagal ({bulkPreview.summary.errors})
+                  </button>
+                )}
+                <button
+                  className="primary"
+                  onClick={doConfirmSelected}
+                  disabled={bulkBusy || bulkPreview.summary.ready === 0}
+                  data-testid="bulk-preview-confirm">
+                  <Download size={13}/> Import {bulkPreview.summary.ready} PO
+                </button>
+              </div>
             </footer>
           </div>
         </div>
