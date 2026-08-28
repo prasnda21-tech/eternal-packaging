@@ -93,9 +93,10 @@ export function parseOperationalDate(raw) {
   return text;
 }
 
-export function defaultSjOperationalDate(order, now = new Date()) {
-  const existing = parseOperationalDate(order?.delivery_note_created_at);
-  return existing || wibDateKey(now);
+export function defaultSjOperationalDate(order, _now = new Date()) {
+  const existing = parseOperationalDate(order?.delivery_note_created_at)
+    || parseOperationalDate(order?.scheduled_delivery_date);
+  return existing || "";
 }
 
 export function parseSjQty(raw) {

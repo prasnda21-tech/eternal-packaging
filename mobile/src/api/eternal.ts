@@ -112,6 +112,15 @@ export const eternalApi = {
       }
     ),
 
+  addAttachment: (
+    id: string,
+    payload: { name: string; data_url: string; kind: string }
+  ) =>
+    apiRequest<{ order: Record<string, unknown> }>(
+      `/orders/${encodeURIComponent(id)}/attachment`,
+      { method: "POST", body: payload }
+    ),
+
   uploadDeliveryProof: async (id: string, uri: string, fileName: string, mime: string, note?: string) => {
     const form = new FormData();
     form.append("file", {

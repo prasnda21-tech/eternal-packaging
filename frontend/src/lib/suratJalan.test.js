@@ -9,7 +9,6 @@ import {
   sjHistory,
   sjPoLines,
   validateSjDraftLines,
-  wibDateKey,
 } from "./suratJalan";
 
 describe("Surat Jalan item/qty helpers", () => {
@@ -57,6 +56,7 @@ describe("Surat Jalan item/qty helpers", () => {
     expect(parseOperationalDate("")).toBe("");
     expect(parseOperationalDate("not-a-date")).toBe("");
     expect(defaultSjOperationalDate({ delivery_note_created_at: "2026-08-30T12:00:00+07:00" })).toBe("2026-08-30");
-    expect(defaultSjOperationalDate({}, new Date("2026-08-28T10:00:00+07:00"))).toBe(wibDateKey(new Date("2026-08-28T10:00:00+07:00")));
+    expect(defaultSjOperationalDate({ scheduled_delivery_date: "2026-08-31" })).toBe("2026-08-31");
+    expect(defaultSjOperationalDate({}, new Date("2026-08-28T10:00:00+07:00"))).toBe("");
   });
 });

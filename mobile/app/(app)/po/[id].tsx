@@ -10,10 +10,15 @@ import {
 } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useFocusEffect } from "expo-router";
-import * as ImagePicker from "expo-image-picker";
 import * as WebBrowser from "expo-web-browser";
 import { useAuth } from "../../../src/auth/AuthContext";
 import { eternalApi } from "../../../src/api/eternal";
+import { uriToDataUrl } from "../../../src/utils/dataUrl";
+import {
+  assetFileMeta,
+  pickFromCamera,
+  pickFromGallery,
+} from "../../../src/utils/mediaPicker";
 import {
   EmptyState,
   ErrorState,
@@ -117,47 +122,24 @@ export default function PoWorkScreen() {
     }
   };
 
-  const onPickProof = async () => {
-    if (!order || busy) return;
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted && !lib.granted) {
-      setActionErr("Izin kamera/galeri diperlukan untuk bukti pengiriman.");
-      return;
+  const pickAsset = async (source: "camera" | "gallery") => {
+    const result = source === "camera" ? await pickFromCamera() : await pickFromGallery();
+    if (result.status === "cancel") return null;
+    if (result.status === "denied") {
+      setActionErr(result.message);
+      return null;
     }
-    Alert.alert("Bukti Pengiriman", "Pilih sumber foto", [
-      {
-        text: "Kamera",
-        onPress: async () => {
-          const shot = await ImagePicker.launchCameraAsync({
-            quality: 0.7,
-            allowsEditing: false,
-          });
-          if (!shot.canceled && shot.assets[0]) await uploadProof(shot.assets[0]);
-        },
-      },
-      {
-        text: "Galeri",
-        onPress: async () => {
-          const pick = await ImagePicker.launchImageLibraryAsync({
-            quality: 0.7,
-            allowsMultipleSelection: false,
-            mediaTypes: ["images"],
-          });
-          if (!pick.canceled && pick.assets[0]) await uploadProof(pick.assets[0]);
-        },
-      },
-      { text: "Batal", style: "cancel" },
-    ]);
+    return result.asset;
   };
 
-  const uploadProof = async (asset: ImagePicker.ImagePickerAsset) => {
-    if (!order) return;
+  const onPickProof = async (source: "camera" | "gallery") => {
+    if (!order || busy) return;
     setBusy(true);
     setActionErr("");
     try {
-      const name = asset.fileName || `bukti-${Date.now()}.jpg`;
-      const mime = asset.mimeType || "image/jpeg";
+      const asset = await pickAsset(source);
+      if (!asset) return;
+      const { name, mime } = assetFileMeta(asset, "bukti");
       const res = await eternalApi.uploadDeliveryProof(order.id, asset.uri, name, mime);
       setOrder(res.order);
       Alert.alert(
@@ -166,6 +148,33 @@ export default function PoWorkScreen() {
       );
     } catch (e) {
       setActionErr(apiErrorMessage(e, "Gagal mengunggah foto"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onPickSample = async (source: "camera" | "gallery") => {
+    if (!order || busy) return;
+    if (!hasPerm("operator.sample_upload")) {
+      setActionErr("Tidak punya izin upload sampel cetak.");
+      return;
+    }
+    setBusy(true);
+    setActionErr("");
+    try {
+      const asset = await pickAsset(source);
+      if (!asset) return;
+      const { name, mime } = assetFileMeta(asset, "sampel");
+      const dataUrl = await uriToDataUrl(asset.uri, mime);
+      const res = await eternalApi.addAttachment(String(order.id), {
+        name,
+        data_url: dataUrl,
+        kind: "sample",
+      });
+      setOrder(res.order);
+      Alert.alert("Tersimpan", "Sampel cetak berhasil diunggah.");
+    } catch (e) {
+      setActionErr(apiErrorMessage(e, "Gagal mengunggah sampel cetak"));
     } finally {
       setBusy(false);
     }
@@ -273,10 +282,12 @@ export default function PoWorkScreen() {
         <OperatorPanel
           order={order}
           user={user}
+          hasPerm={hasPerm}
           drafts={drafts}
           setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
           busy={busy}
           onConfirm={(splitId, qty) => onConfirmQty({ kind: "operator", qty, splitId })}
+          onPickSample={onPickSample}
         />
       ) : null}
 
@@ -320,6 +331,7 @@ function ScreenerPanel({
         done={fmtQty(model.done)}
         remain={fmtQty(model.remaining)}
         status={model.status}
+        showRemain={false}
       />
       {model.gateLocked ? (
         <Text style={[typography.subtitle, { color: colors.warn }]}>{model.gateMsg}</Text>
@@ -364,7 +376,7 @@ function HelperPanel({
       {model.gateLocked ? (
         <Text style={[typography.subtitle, { color: colors.warn }]}>{model.gateMsg}</Text>
       ) : null}
-      {model.lines.map((line) => (
+      {model.lines.map((line: any) => (
         <View key={line.lineIdx} style={styles.lineBlock}>
           <Text style={typography.body}>
             {line.name}
@@ -399,23 +411,32 @@ function HelperPanel({
 function OperatorPanel({
   order,
   user,
+  hasPerm,
   drafts,
   setDraft,
   busy,
   onConfirm,
+  onPickSample,
 }: {
   order: any;
   user: any;
+  hasPerm: (p: string) => boolean;
   drafts: Record<string, string>;
   setDraft: (key: string, v: string) => void;
   busy: boolean;
   onConfirm: (splitId: string, qty: number) => void;
+  onPickSample: (source: "camera" | "gallery") => void;
 }) {
   const lines = operatorMyLines(order, user);
   const target = lines.reduce((s, l) => s + l.target, 0);
   const done = lines.reduce((s, l) => s + l.done, 0);
   const remain = Math.max(0, target - done);
   const gate = operatorCanSubmit(order);
+  const canUploadSample = hasPerm("operator.sample_upload");
+  const sampleReady = order?.workflow_ready?.sample_upload === true;
+  const sampleLock =
+    order?.screener_gate_reason || "Qty Screener harus diisi sebelum Cetak Sample.";
+  const samples = Array.isArray(order?.sample_files) ? order.sample_files : [];
   return (
     <View style={ui.card} testID="operator-panel">
       <Text style={typography.title}>Pekerjaan Operator</Text>
@@ -461,6 +482,47 @@ function OperatorPanel({
           ) : null}
         </View>
       ))}
+
+      {canUploadSample ? (
+        <View style={styles.lineBlock} testID="sample-upload-panel">
+          <Text style={typography.label}>Sampel Cetak</Text>
+          <Text style={typography.subtitle}>Foto sample cetak — terpisah dari File Design.</Text>
+          <View style={styles.proofGrid}>
+            {samples.map((f: any, i: number) => {
+              const uri = f.data_url || f.url || null;
+              return (
+                <View key={f.id || i} style={styles.proofThumb}>
+                  {uri ? (
+                    <Image source={{ uri }} style={styles.proofImg} />
+                  ) : (
+                    <Text style={typography.subtitle}>{f.name || `Sampel ${i + 1}`}</Text>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+          {!sampleReady ? (
+            <Text style={[typography.subtitle, { color: colors.warn }]}>{sampleLock}</Text>
+          ) : (
+            <>
+              <PrimaryButton
+                title="Ambil Foto Sampel"
+                onPress={() => onPickSample("camera")}
+                busy={busy}
+                testID="sample-camera"
+                style={{ marginTop: space.sm }}
+              />
+              <GhostButton
+                title="Pilih dari Galeri"
+                onPress={() => onPickSample("gallery")}
+                disabled={busy}
+                testID="sample-gallery"
+                style={{ marginTop: 8 }}
+              />
+            </>
+          )}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -478,7 +540,7 @@ function DriverPanel({
   token: string | null;
   hasPerm: (p: string) => boolean;
   busy: boolean;
-  onPickProof: () => void;
+  onPickProof: (source: "camera" | "gallery") => void;
   onConfirmDelivered: () => void;
   onOpenSj: (fileId: string) => void;
 }) {
@@ -531,12 +593,22 @@ function DriverPanel({
           })}
         </View>
         {!delivered ? (
-          <PrimaryButton
-            title="Upload Foto Bukti"
-            onPress={onPickProof}
-            busy={busy}
-            style={{ marginTop: space.sm }}
-          />
+          <>
+            <PrimaryButton
+              title="Ambil Foto"
+              onPress={() => onPickProof("camera")}
+              busy={busy}
+              testID="proof-camera"
+              style={{ marginTop: space.sm }}
+            />
+            <GhostButton
+              title="Pilih dari Galeri"
+              onPress={() => onPickProof("gallery")}
+              disabled={busy}
+              testID="proof-gallery"
+              style={{ marginTop: 8 }}
+            />
+          </>
         ) : null}
       </View>
 

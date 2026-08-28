@@ -68,19 +68,19 @@ export default function SuratJalanPanel({
   const openConfirm = () => {
     if (!file || uploading) return;
     const date = parseOperationalDate(deliveryDate);
-    if (!date) {
-      setErr("Tanggal pengiriman wajib diisi dan harus valid.");
+    if (deliveryDate && !date) {
+      setErr("Tanggal pengiriman tidak valid.");
       return;
     }
     setErr("");
-    setConfirm({ file, time: formatDisplayDateTime(new Date().toISOString()), deliveryDate: date });
+    setConfirm({ file, time: formatDisplayDateTime(new Date().toISOString()), deliveryDate: date || "" });
   };
 
   const executeUpload = async () => {
     if (!confirm?.file || uploading) return;
     const date = parseOperationalDate(confirm.deliveryDate || deliveryDate);
-    if (!date) {
-      setErr("Tanggal pengiriman wajib diisi dan harus valid.");
+    if ((confirm.deliveryDate || deliveryDate) && !date) {
+      setErr("Tanggal pengiriman tidak valid.");
       return;
     }
     setBusy(true);
@@ -96,7 +96,7 @@ export default function SuratJalanPanel({
         kind: "surat_jalan",
         name: confirm.file.name,
         data_url: dataUrl,
-        delivery_date: date,
+        ...(date ? { delivery_date: date } : {}),
       });
       onUpdated?.(result?.order || result);
       setConfirm(null);
@@ -141,12 +141,12 @@ export default function SuratJalanPanel({
               <span>Tanggal pengiriman</span>
               <input
                 type="date"
-                required
                 value={deliveryDate}
                 onChange={(e) => { setDeliveryDate(e.target.value); setErr(""); }}
                 disabled={uploading}
                 data-testid="surat-jalan-delivery-date"
               />
+              <span className="muted small">Kosong = pengiriman hari ini.</span>
             </label>
             <div className="sj-upload-file-row">
               <button

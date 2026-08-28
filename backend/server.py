@@ -102,6 +102,7 @@ from services.dashboard_today import (
     build_work_today,
     operational_iso,
     parse_operational_date_key,
+    resolve_sj_operational_date,
     shipments_today_mongo_query,
     wib_today,
     work_today_mongo_query,
@@ -3061,9 +3062,11 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
         # File-only. Independent of packing / Loading / previous production stage.
         # Item/Qty is confirmed later on the Loading card, linked to this file id.
         stamp = now_iso()
-        op_key = parse_operational_date_key(payload.delivery_date)
-        if not op_key:
-            raise HTTPException(400, "Tanggal pengiriman wajib diisi dan harus format YYYY-MM-DD yang valid.")
+        selected_raw = str(payload.delivery_date or "").strip()
+        try:
+            op_key = resolve_sj_operational_date(order, payload.delivery_date)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         op_iso = operational_iso(op_key)
         try:
             raw_bytes, decoded_ct = _sj_decode_data_url(payload.data_url)
@@ -3099,6 +3102,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
             )
         # Operational date for Pengiriman Hari Ini — not file uploaded_at.
         order["delivery_note_created_at"] = op_iso
+        if selected_raw or not parse_operational_date_key(order.get("scheduled_delivery_date")):
+            order["scheduled_delivery_date"] = op_key
         if not order.get("delivery_note_created_by"):
             order["delivery_note_created_by"] = user.get("email")
             order["delivery_note_created_by_name"] = user.get("name")

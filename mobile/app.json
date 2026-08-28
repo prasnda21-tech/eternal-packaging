@@ -15,7 +15,12 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.eternalpackaging.mobile"
+      "bundleIdentifier": "com.eternalpackaging.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Eternal membutuhkan kamera untuk sampel cetak dan bukti pengiriman.",
+        "NSPhotoLibraryUsageDescription": "Eternal membutuhkan akses foto untuk sampel cetak dan bukti pengiriman.",
+        "NSPhotoLibraryAddUsageDescription": "Eternal membutuhkan akses foto untuk sampel cetak dan bukti pengiriman."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -25,7 +30,13 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.eternalpackaging.mobile",
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -38,8 +49,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Eternal membutuhkan akses foto untuk bukti pengiriman.",
-          "cameraPermission": "Eternal membutuhkan kamera untuk bukti pengiriman."
+          "photosPermission": "Eternal membutuhkan akses foto untuk sampel cetak dan bukti pengiriman.",
+          "cameraPermission": "Eternal membutuhkan kamera untuk sampel cetak dan bukti pengiriman."
         }
       ]
     ],
