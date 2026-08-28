@@ -8,6 +8,9 @@ $script:ExpectedWorktree = 'C:\Projects\eternal-packaging-mobile-build'
 $script:ForbiddenMainRepo = 'C:\Projects\eternal-packaging'
 $script:ProductionApiUrl = 'https://produksi.eternalpackaging.id'
 $script:RequiredExpoSdkMajor = '54'
+$script:ExpectedEasSlug = 'prasetya17'
+$script:ExpectedEasOwner = 'eternal-packaging'
+$script:ExpectedEasProjectId = '22d68768-64c1-4f3e-ab6a-a217157fabb5'
 
 function Write-Fail {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -163,6 +166,36 @@ function Assert-ExpoSdk54 {
     Write-Host "Expo SDK OK: $expo"
 }
 
+function Assert-EasProjectLink {
+    param([Parameter(Mandatory = $true)][string]$MobileDir)
+
+    $appPath = Join-Path $MobileDir 'app.json'
+    if (-not (Test-Path $appPath)) {
+        Write-Fail "Missing $appPath"
+    }
+
+    $app = Get-Content -Raw -Path $appPath | ConvertFrom-Json
+    $slug = [string]$app.expo.slug
+    $owner = [string]$app.expo.owner
+    $projectId = ''
+    try { $projectId = [string]$app.expo.extra.eas.projectId } catch { $projectId = '' }
+
+    if ($slug -eq 'eternal-packaging-mobile') {
+        Write-Fail "EAS slug eternal-packaging-mobile does not match the existing remote project. Use $($script:ExpectedEasSlug)."
+    }
+    if ($slug -ne $script:ExpectedEasSlug) {
+        Write-Fail "EAS slug must be $($script:ExpectedEasSlug). Got: $slug"
+    }
+    if ($owner -ne $script:ExpectedEasOwner) {
+        Write-Fail "EAS owner must be $($script:ExpectedEasOwner). Got: $owner"
+    }
+    if ($projectId -ne $script:ExpectedEasProjectId) {
+        Write-Fail "EAS projectId must be $($script:ExpectedEasProjectId). Got: $projectId"
+    }
+
+    Write-Host "EAS project OK: @$owner/$slug ($projectId)"
+}
+
 function Install-MobileDependencies {
     param([Parameter(Mandatory = $true)][string]$MobileDir)
 
@@ -244,6 +277,7 @@ function Invoke-EternalMobileEasPreviewBuild {
     }
 
     Assert-ExpoSdk54 -MobileDir $mobileDir
+    Assert-EasProjectLink -MobileDir $mobileDir
     Assert-PreviewApiUrl -MobileDir $mobileDir
     Install-MobileDependencies -MobileDir $mobileDir
     Invoke-ExpoDoctor -MobileDir $mobileDir

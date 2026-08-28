@@ -6,7 +6,7 @@ Dedicated build worktree:
 
 `C:\Projects\eternal-packaging-mobile-build`
 
-The app is linked to the existing EAS project `22d68768-64c1-4f3e-ab6a-a217157fabb5` on account `eternal-packaging`. Do not create a new Expo/EAS project.
+The app is linked to the existing EAS project `22d68768-64c1-4f3e-ab6a-a217157fabb5` on account `eternal-packaging`, slug `prasetya17`. Do not create a new Expo/EAS project. The on-device app name stays Eternal Packaging.
 
 Preview and production binaries use:
 
