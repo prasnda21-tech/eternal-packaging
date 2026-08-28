@@ -3,6 +3,7 @@ import path from "path";
 
 describe("Status PO header filters", () => {
   const src = fs.readFileSync(path.join(__dirname, "StatusPO.jsx"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
 
   test("reuses Status Pengiriman toolbar fields plus status and date range", () => {
     expect(src).toMatch(/ship-status-toolbar/);
@@ -38,5 +39,34 @@ describe("Status PO header filters", () => {
   test("empty state preserved", () => {
     expect(src).toMatch(/Tidak ada PO/);
     expect(src).toMatch(/!visible\.length/);
+  });
+
+  test("row checkboxes and select-all are scoped to visible filtered rows", () => {
+    expect(src).toMatch(/status-po-select-all/);
+    expect(src).toMatch(/status-po-check-\$\{r\.po_number\}/);
+    expect(src).toMatch(/Pilih Semua hanya untuk baris yang sedang tampil/);
+    expect(src).toMatch(/selectAllVisible\(visibleIds/);
+    expect(src).toMatch(/pruneSelection/);
+    expect(src).toMatch(/status-po-selected-count/);
+  });
+
+  test("bulk cancel and permanent delete reuse existing APIs and permissions", () => {
+    expect(src).toMatch(/hasPerm\("po.cancel"\)/);
+    expect(src).toMatch(/hasPerm\("po.delete"\)/);
+    expect(src).toMatch(/api\.bulkCancel/);
+    expect(src).toMatch(/api\.bulkDelete/);
+    expect(src).toMatch(/Batalkan Terpilih/);
+    expect(src).toMatch(/Hapus Permanen Terpilih/);
+    expect(src).toMatch(/status-po-bulk-count/);
+    expect(src).toMatch(/inFlight\.current/);
+    expect(src).toMatch(/removeSucceeded/);
+  });
+
+  test("pengiriman hari ini page reuses Status PO without duplicating the table", () => {
+    expect(src).toMatch(/\/produksi\/pengiriman-hari-ini/);
+    expect(src).toMatch(/delivery_today/);
+    expect(src).toMatch(/Pengiriman Hari Ini/);
+    expect(app).toMatch(/path="\/produksi\/pengiriman-hari-ini"/);
+    expect(app).toMatch(/<StatusPO \/>/);
   });
 });

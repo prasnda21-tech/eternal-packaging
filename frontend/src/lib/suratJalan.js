@@ -74,6 +74,30 @@ export function emptySjLine() {
   return { line_idx: "", qty: "" };
 }
 
+/** WIB (UTC+7) calendar date, same convention as Pengiriman Hari Ini. */
+export function wibDateKey(now = new Date()) {
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+  const wib = new Date(utcMs + 7 * 3600000);
+  const y = wib.getUTCFullYear();
+  const m = String(wib.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(wib.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+export function parseOperationalDate(raw) {
+  const text = String(raw || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const [y, m, d] = text.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return "";
+  return text;
+}
+
+export function defaultSjOperationalDate(order, now = new Date()) {
+  const existing = parseOperationalDate(order?.delivery_note_created_at);
+  return existing || wibDateKey(now);
+}
+
 export function parseSjQty(raw) {
   if (raw === "" || raw == null) return null;
   const n = parseInt(String(raw), 10);

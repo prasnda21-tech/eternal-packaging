@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { clampPercent, formatShipDate, matchesShipFilters, terkirimTone } from "../lib/shipmentStatus";
+import {
+  headerCheckState,
+  pruneSelection,
+  selectAllVisible,
+  toggleId,
+  visibleRowIds,
+} from "../lib/rowSelection";
 
 function ProgressCell({ pct, tone, testid, title }) {
   const p = clampPercent(pct);
@@ -21,6 +28,8 @@ export default function StatusPengiriman() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [selected, setSelected] = useState(new Set());
+  const headerRef = useRef(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -42,6 +51,18 @@ export default function StatusPengiriman() {
     () => (rows || []).filter((r) => matchesShipFilters(r, filters)),
     [rows, filters],
   );
+  const visibleIds = useMemo(() => visibleRowIds(visible), [visible]);
+  const visibleIdKey = visibleIds.join(",");
+
+  useEffect(() => {
+    setSelected((prev) => pruneSelection(prev, visibleIds));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleIdKey]);
+
+  const headerState = headerCheckState(selected, visibleIds);
+  useEffect(() => {
+    if (headerRef.current) headerRef.current.indeterminate = headerState.indeterminate;
+  }, [headerState.indeterminate]);
 
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
 
@@ -103,12 +124,34 @@ export default function StatusPengiriman() {
             Perlu Pesan
           </button>
         </div>
+        <p className="muted small" data-testid="ship-select-scope">
+          Pilih Semua hanya untuk baris yang sedang tampil (filter aktif).
+        </p>
+        {selected.size > 0 && (
+          <div className="bulk-bar" data-testid="ship-select-bar">
+            <span data-testid="ship-selected-count"><b>{selected.size}</b> pengiriman dipilih</span>
+            <button type="button" className="ghost sm" onClick={() => setSelected(new Set())} data-testid="ship-select-clear">
+              Batal pilih
+            </button>
+          </div>
+        )}
         {err && <div className="error" data-testid="ship-error">{err}</div>}
       </div>
       <div className="ship-status-grid" data-testid="ship-table">
         <table className="ship-table">
           <thead>
             <tr>
+              <th className="ship-check">
+                <input
+                  ref={headerRef}
+                  type="checkbox"
+                  checked={headerState.checked}
+                  disabled={!visibleIds.length}
+                  onChange={() => setSelected(selectAllVisible(visibleIds, selected))}
+                  aria-label="Pilih Semua (baris tampil)"
+                  data-testid="ship-select-all"
+                />
+              </th>
               <th>Pelanggan</th>
               <th>No Pesanan #</th>
               <th>Tanggal</th>
@@ -119,7 +162,16 @@ export default function StatusPengiriman() {
           </thead>
           <tbody>
             {visible.map((r) => (
-              <tr key={r.id} data-testid={`ship-row-${r.order_number}`}>
+              <tr key={r.id} data-testid={`ship-row-${r.order_number}`} className={selected.has(r.id) ? "is-selected" : ""}>
+                <td className="ship-check">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(r.id)}
+                    onChange={() => setSelected(toggleId(selected, r.id))}
+                    aria-label={`Pilih ${r.order_number}`}
+                    data-testid={`ship-check-${r.order_number}`}
+                  />
+                </td>
                 <td className="ship-cust">{r.customer_name || "-"}</td>
                 <td className="mono">
                   {r.id ? (
@@ -147,7 +199,7 @@ export default function StatusPengiriman() {
               </tr>
             ))}
             {!visible.length && !busy && (
-              <tr><td colSpan={6} className="empty-state">Tidak ada data pengiriman.</td></tr>
+              <tr><td colSpan={7} className="empty-state">Tidak ada data pengiriman.</td></tr>
             )}
           </tbody>
         </table>

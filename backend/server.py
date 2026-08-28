@@ -100,6 +100,8 @@ from services.dashboard_today import (
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
     build_shipments_today,
     build_work_today,
+    operational_iso,
+    parse_operational_date_key,
     shipments_today_mongo_query,
     wib_today,
     work_today_mongo_query,
@@ -497,6 +499,7 @@ class AttachmentInput(BaseModel):
     name: str
     data_url: str  # base64 encoded
     kind: str  # "design" | "sample" | "payment" | "surat_jalan"
+    delivery_date: Optional[str] = None  # YYYY-MM-DD operational date for surat_jalan
 
 
 class NotePayload(BaseModel):
@@ -2040,10 +2043,24 @@ async def bulk_cancel(payload: BulkPayload, user=Depends(current_user)):
         raise HTTPException(400, "Alasan pembatalan wajib diisi.")
     if not payload.ids:
         raise HTTPException(400, "Pilih minimal 1 PO.")
-    cursor = db.orders.find({"id": {"$in": payload.ids}, "cancelled": {"$ne": True}}, {"_id": 0})
-    cancelled = []
+    unique_ids = list(dict.fromkeys(payload.ids))
+    found = await db.orders.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    by_id = {o.get("id"): o for o in found}
+    succeeded = []
+    failed = []
     now = now_iso()
-    async for order in cursor:
+    for oid in unique_ids:
+        order = by_id.get(oid)
+        if not order:
+            failed.append({"id": oid, "reason": "PO tidak ditemukan"})
+            continue
+        if order.get("cancelled"):
+            failed.append({
+                "id": oid,
+                "po_number": order.get("po_number"),
+                "reason": "PO sudah dalam status Cancelled.",
+            })
+            continue
         order["cancelled"] = True
         order["cancelled_by"] = user.get("email")
         order["cancelled_by_name"] = user.get("name")
@@ -2052,10 +2069,17 @@ async def bulk_cancel(payload: BulkPayload, user=Depends(current_user)):
         order["status_label"] = "Cancelled"
         add_timeline(order, order.get("current_stage", 0), user, note=f"Bulk cancel: {reason}")
         await _persist_order(order)
-        cancelled.append(order.get("po_number"))
-    await _write_audit(action="po.bulk_cancel", actor=user, target_email=f"po:{len(cancelled)} PO",
-                       after={"po_numbers": cancelled, "count": len(cancelled)}, note=reason)
-    return {"cancelled_count": len(cancelled), "po_numbers": cancelled, "reason": reason}
+        succeeded.append({"id": oid, "po_number": order.get("po_number")})
+    cancelled = [s.get("po_number") for s in succeeded]
+    await _write_audit(action="po.bulk_cancel", actor=user, target_email=f"po:{len(succeeded)} PO",
+                       after={"po_numbers": cancelled, "count": len(succeeded), "failed": failed}, note=reason)
+    return {
+        "cancelled_count": len(succeeded),
+        "po_numbers": cancelled,
+        "reason": reason,
+        "succeeded": succeeded,
+        "failed": failed,
+    }
 
 
 @api_router.post("/orders-bulk/delete")
@@ -2071,18 +2095,41 @@ async def bulk_delete(payload: BulkPayload, user=Depends(current_user)):
             "message": "Konfirmasi tidak cocok. Ketik 'HAPUS' untuk konfirmasi.",
             "expected": "HAPUS",
         })
-    orders = await db.orders.find({"id": {"$in": payload.ids}}, {"_id": 0}).to_list(500)
-    po_numbers = [o.get("po_number") for o in orders]
-    for o in orders:
+    unique_ids = list(dict.fromkeys(payload.ids))
+    orders = await db.orders.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    by_id = {o.get("id"): o for o in orders}
+    succeeded = []
+    failed = []
+    to_delete = []
+    for oid in unique_ids:
+        order = by_id.get(oid)
+        if not order:
+            failed.append({"id": oid, "reason": "PO tidak ditemukan"})
+            continue
+        to_delete.append(order)
+    delete_ids = [o["id"] for o in to_delete]
+    for o in to_delete:
         await _audit_po(o, "po.delete", user, before={
             "po_number": o.get("po_number"), "customer": o.get("customer"),
             "current_stage": o.get("current_stage"), "impact": _describe_po_impact(o),
         }, note=f"Bulk: {reason}")
-    await db.files.update_many({"order_id": {"$in": payload.ids}}, {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_by": user.get("email"), "deleted_reason": reason}})
-    result = await db.orders.delete_many({"id": {"$in": payload.ids}})
-    await _write_audit(action="po.bulk_delete", actor=user, target_email=f"po:{result.deleted_count} PO",
-                       before={"po_numbers": po_numbers}, after={"deleted_count": result.deleted_count}, note=reason)
-    return {"deleted_count": result.deleted_count, "po_numbers": po_numbers, "reason": reason}
+        succeeded.append({"id": o.get("id"), "po_number": o.get("po_number")})
+    if delete_ids:
+        await db.files.update_many({"order_id": {"$in": delete_ids}}, {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_by": user.get("email"), "deleted_reason": reason}})
+        result = await db.orders.delete_many({"id": {"$in": delete_ids}})
+        deleted_count = result.deleted_count
+    else:
+        deleted_count = 0
+    po_numbers = [s.get("po_number") for s in succeeded]
+    await _write_audit(action="po.bulk_delete", actor=user, target_email=f"po:{deleted_count} PO",
+                       before={"po_numbers": po_numbers}, after={"deleted_count": deleted_count, "failed": failed}, note=reason)
+    return {
+        "deleted_count": deleted_count,
+        "po_numbers": po_numbers,
+        "reason": reason,
+        "succeeded": succeeded,
+        "failed": failed,
+    }
 
 
 # ---- Helper qty (Requirement 9) ----
@@ -3014,6 +3061,10 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
         # File-only. Independent of packing / Loading / previous production stage.
         # Item/Qty is confirmed later on the Loading card, linked to this file id.
         stamp = now_iso()
+        op_key = parse_operational_date_key(payload.delivery_date)
+        if not op_key:
+            raise HTTPException(400, "Tanggal pengiriman wajib diisi dan harus format YYYY-MM-DD yang valid.")
+        op_iso = operational_iso(op_key)
         try:
             raw_bytes, decoded_ct = _sj_decode_data_url(payload.data_url)
         except ValueError as e:
@@ -3046,8 +3097,9 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
             order["delivery_note_number"] = (
                 f"SJ-{str(order.get('po_number') or '').replace('PO-', '').replace('PO.', '')}"
             )
-        if not order.get("delivery_note_created_at"):
-            order["delivery_note_created_at"] = stamp
+        # Operational date for Pengiriman Hari Ini — not file uploaded_at.
+        order["delivery_note_created_at"] = op_iso
+        if not order.get("delivery_note_created_by"):
             order["delivery_note_created_by"] = user.get("email")
             order["delivery_note_created_by_name"] = user.get("name")
         _sync_workflow_stage(order)

@@ -1,12 +1,15 @@
 import fs from "fs";
 import path from "path";
 import {
+  defaultSjOperationalDate,
   emptySjLine,
+  parseOperationalDate,
   parseSjQty,
   poLineLabel,
   sjHistory,
   sjPoLines,
   validateSjDraftLines,
+  wibDateKey,
 } from "./suratJalan";
 
 describe("Surat Jalan item/qty helpers", () => {
@@ -46,5 +49,14 @@ describe("Surat Jalan item/qty helpers", () => {
 
   test("empty row helper", () => {
     expect(emptySjLine()).toEqual({ line_idx: "", qty: "" });
+  });
+
+  test("operational date validation and default", () => {
+    expect(parseOperationalDate("2026-08-30")).toBe("2026-08-30");
+    expect(parseOperationalDate("2026-02-31")).toBe("");
+    expect(parseOperationalDate("")).toBe("");
+    expect(parseOperationalDate("not-a-date")).toBe("");
+    expect(defaultSjOperationalDate({ delivery_note_created_at: "2026-08-30T12:00:00+07:00" })).toBe("2026-08-30");
+    expect(defaultSjOperationalDate({}, new Date("2026-08-28T10:00:00+07:00"))).toBe(wibDateKey(new Date("2026-08-28T10:00:00+07:00")));
   });
 });

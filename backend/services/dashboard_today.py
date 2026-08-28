@@ -120,6 +120,26 @@ def date_key(value: Any) -> Optional[str]:
     return dt.astimezone(WIB).date().isoformat()
 
 
+def parse_operational_date_key(raw: Any) -> Optional[str]:
+    """Validate YYYY-MM-DD. Rejects impossible calendar dates (e.g. 2026-02-31)."""
+    text = str(raw or "").strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        text = text[:10]
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        return None
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return None
+    return text
+
+
+def operational_iso(date_key_value: str) -> str:
+    """Noon WIB on the chosen business date — not uploaded_at / UTC now."""
+    d = date.fromisoformat(date_key_value)
+    return datetime(d.year, d.month, d.day, 12, 0, tzinfo=WIB).isoformat()
+
+
 def iso_in_wib_day(value: Any, day: date) -> bool:
     dt = parse_dt(value)
     if not dt:
@@ -239,11 +259,15 @@ def build_work_today(orders: Iterable[dict], today: Optional[date] = None, *, li
 
 def _shipment_events_today(order: dict, today: date) -> List[dict]:
     events = []
-    for sh in shipments_stored(order):
-        if iso_in_wib_day(sh.get("created_at"), today):
-            events.append({"kind": "surat_jalan", "at": sh.get("created_at"), "shipment": sh})
-    if iso_in_wib_day(order.get("delivery_note_created_at"), today) and not events:
-        events.append({"kind": "surat_jalan", "at": order.get("delivery_note_created_at"), "shipment": None})
+    # Canonical SJ operational date is delivery_note_created_at (set at upload),
+    # not file uploaded_at and not shipment created_at when the operational date exists.
+    sj_at = order.get("delivery_note_created_at")
+    if iso_in_wib_day(sj_at, today):
+        events.append({"kind": "surat_jalan", "at": sj_at, "shipment": None})
+    elif not sj_at:
+        for sh in shipments_stored(order):
+            if iso_in_wib_day(sh.get("created_at"), today):
+                events.append({"kind": "surat_jalan", "at": sh.get("created_at"), "shipment": sh})
     if iso_in_wib_day(order.get("loading_completed_at"), today):
         events.append({"kind": "loading", "at": order.get("loading_completed_at")})
     for ev in ((order.get("loading_info") or {}).get("events") or []):

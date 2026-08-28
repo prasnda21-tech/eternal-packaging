@@ -46,6 +46,8 @@ describe("sidebar flyout interaction", () => {
   test("menu names routes and permission helpers stay the same", () => {
     expect(shell).toMatch(/Produksi/);
     expect(shell).toMatch(/Jadwal Produksi/);
+    expect(shell).toMatch(/Pengiriman Hari Ini/);
+    expect(shell).toMatch(/to="\/produksi\/pengiriman-hari-ini"/);
     expect(shell).toMatch(/Jadwal Pengiriman/);
     expect(shell).toMatch(/Jadwal Pengiriman Ulang/);
     expect(shell).not.toMatch(/Rute Saya/);
@@ -66,5 +68,9 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/hasPerm\(NAV_KEYS\.dashboard\)/);
     expect(shell).toMatch(/TASK_NAV_ORDER\.map/);
     expect(shell).not.toMatch(/Tugas per Divisi/);
+    expect(shell).toMatch(/productionNav\.deliveryToday/);
+    const reportsFlyout = shell.slice(shell.indexOf('id="sidebar-flyout-reports"'));
+    expect(reportsFlyout).not.toMatch(/Pengiriman Hari Ini/);
+    expect(shell).toMatch(/id="sidebar-flyout-produksi"[\s\S]*Pengiriman Hari Ini[\s\S]*id="sidebar-flyout-sales"/);
   });
 });

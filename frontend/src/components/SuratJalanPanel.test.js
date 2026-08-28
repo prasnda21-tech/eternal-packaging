@@ -16,6 +16,8 @@ describe("Surat Jalan card upload + preview", () => {
     expect(src).toMatch(/Pilih File|Upload Surat Jalan/);
     expect(src).toMatch(/surat-jalan-upload-button/);
     expect(src).toMatch(/kind: "surat_jalan"/);
+    expect(src).toMatch(/surat-jalan-delivery-date/);
+    expect(src).toMatch(/delivery_date: date/);
     expect(src).not.toMatch(/sj-qty-input/);
     expect(src).not.toMatch(/sj-item-select/);
     expect(src).not.toMatch(/ITEM SURAT JALAN/);

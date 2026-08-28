@@ -288,6 +288,11 @@ export default function AppShell() {
                 Jadwal Produksi
               </NavLink>
             )}
+            {productionNav.deliveryToday && (
+              <NavLink to="/produksi/pengiriman-hari-ini" className={navClass} data-testid="top-nav-pengiriman-hari-ini" onClick={closeFlyout}>
+                Pengiriman Hari Ini
+              </NavLink>
+            )}
             {productionNav.deliverySchedule && (
               <NavLink to="/produksi/jadwal-pengiriman" className={navClass} data-testid="top-nav-jadwal-pengiriman" onClick={closeFlyout}>
                 Jadwal Pengiriman
