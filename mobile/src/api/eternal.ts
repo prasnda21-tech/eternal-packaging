@@ -39,6 +39,23 @@ export type DivisionTasksResponse = {
   count: number;
 };
 
+export type ActionItem = {
+  id: string;
+  po_number?: string;
+  customer?: string;
+  outlet?: string;
+  item?: string;
+  design_status?: string;
+};
+
+export type ActionGroup = {
+  key: string;
+  label: string;
+  permission?: string;
+  count: number;
+  items: ActionItem[];
+};
+
 export type ProductionRow = {
   id: string;
   po_number?: string;
@@ -76,6 +93,8 @@ export const eternalApi = {
       `/work/division-tasks?division=${encodeURIComponent(division)}&scope=${encodeURIComponent(scope)}`
     ),
 
+  actionItems: () => apiRequest<{ actions: ActionGroup[] }>("/dashboard/action-items"),
+
   getOrder: (id: string) =>
     apiRequest<{ order: Record<string, unknown> }>(`/orders/${encodeURIComponent(id)}`),
 
@@ -96,6 +115,31 @@ export const eternalApi = {
     apiRequest<{ order: Record<string, unknown> }>(
       `/orders/${encodeURIComponent(id)}/helper-prep/items`,
       { method: "POST", body: { items, notes } }
+    ),
+
+  savePackingInfo: (
+    id: string,
+    lines: { line_idx: number; qty: number; action_id: string }[],
+    notes = ""
+  ) =>
+    apiRequest<{ order: Record<string, unknown> }>(
+      `/orders/${encodeURIComponent(id)}/packing-info`,
+      { method: "POST", body: { lines, notes } }
+    ),
+
+  confirmLoading: (
+    id: string,
+    payload: { surat_jalan_id: string; lines: { line_idx: number; qty: number }[]; action_id?: string }
+  ) =>
+    apiRequest<{ order: Record<string, unknown> }>(
+      `/orders/${encodeURIComponent(id)}/loading-confirm`,
+      { method: "POST", body: payload }
+    ),
+
+  approveDesign: (id: string, approved = true, note = "") =>
+    apiRequest<{ order: Record<string, unknown> }>(
+      `/orders/${encodeURIComponent(id)}/approve-design`,
+      { method: "POST", body: { approved, note } }
     ),
 
   updateOperatorProgress: (

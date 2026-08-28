@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Image,
@@ -10,15 +10,10 @@ import {
 } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useFocusEffect } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import * as WebBrowser from "expo-web-browser";
 import { useAuth } from "../../../src/auth/AuthContext";
 import { eternalApi } from "../../../src/api/eternal";
-import { uriToDataUrl } from "../../../src/utils/dataUrl";
-import {
-  assetFileMeta,
-  pickFromCamera,
-  pickFromGallery,
-} from "../../../src/utils/mediaPicker";
 import {
   EmptyState,
   ErrorState,
@@ -31,24 +26,38 @@ import {
 import { colors, space, typography, ui } from "../../../src/theme";
 import { apiErrorMessage, fmtQty, newActionId } from "../../../src/utils/format";
 import {
+  canApproveDesign,
   defaultWorkDivision,
   permittedWorkDivisions,
 } from "../../../src/utils/permissions";
 import {
   canConfirmDelivered,
   helperModel,
+  loadingModel,
   MIN_DELIVERY_PROOFS,
   operatorCanSubmit,
   operatorMyLines,
+  packingModel,
   screenerModel,
 } from "../../../src/utils/workModels";
+
+const WORK_PANEL_IDS = [
+  "screener",
+  "helper",
+  "packing",
+  "operator",
+  "loading",
+  "terkirim",
+  "design_approve",
+] as const;
 
 export default function PoWorkScreen() {
   const { id, divisi } = useLocalSearchParams<{ id: string; divisi?: string }>();
   const { user, hasPerm, token } = useAuth();
+  const preferredDiv = Array.isArray(divisi) ? divisi[0] : divisi || null;
   const divisions = useMemo(() => permittedWorkDivisions(hasPerm), [hasPerm]);
   const [activeDiv, setActiveDiv] = useState<string | null>(
-    () => defaultWorkDivision(hasPerm, divisi || null)
+    () => defaultWorkDivision(hasPerm, preferredDiv)
   );
   const [order, setOrder] = useState<Record<string, any> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,10 +88,23 @@ export default function PoWorkScreen() {
     }, [load])
   );
 
-  const division = activeDiv || defaultWorkDivision(hasPerm, divisi || null);
+  useEffect(() => {
+    setActiveDiv(defaultWorkDivision(hasPerm, preferredDiv));
+  }, [id, preferredDiv, hasPerm]);
+
+  const visiblePanelIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const d of divisions) {
+      if ((WORK_PANEL_IDS as readonly string[]).includes(d.id)) ids.push(d.id);
+    }
+    if (canApproveDesign(hasPerm)) ids.push("design_approve");
+    const focus = activeDiv && ids.includes(activeDiv) ? activeDiv : ids[0] || null;
+    if (!focus) return ids;
+    return [focus, ...ids.filter((x) => x !== focus)];
+  }, [divisions, activeDiv, hasPerm]);
 
   const onConfirmQty = async (payload: {
-    kind: "screener" | "helper" | "operator";
+    kind: "screener" | "helper" | "operator" | "packing";
     qty: number;
     lineIdx?: number;
     splitId?: string;
@@ -101,6 +123,10 @@ export default function PoWorkScreen() {
         res = await eternalApi.updateScreenerInfo(order.id, { qty: payload.qty, action_id: actionId });
       } else if (payload.kind === "helper") {
         res = await eternalApi.updateHelperPrepItems(order.id, [
+          { line_idx: Number(payload.lineIdx), qty: payload.qty, action_id: actionId },
+        ]);
+      } else if (payload.kind === "packing") {
+        res = await eternalApi.savePackingInfo(order.id, [
           { line_idx: Number(payload.lineIdx), qty: payload.qty, action_id: actionId },
         ]);
       } else {
@@ -122,24 +148,47 @@ export default function PoWorkScreen() {
     }
   };
 
-  const pickAsset = async (source: "camera" | "gallery") => {
-    const result = source === "camera" ? await pickFromCamera() : await pickFromGallery();
-    if (result.status === "cancel") return null;
-    if (result.status === "denied") {
-      setActionErr(result.message);
-      return null;
+  const onPickProof = async () => {
+    if (!order || busy) return;
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted && !lib.granted) {
+      setActionErr("Izin kamera/galeri diperlukan untuk bukti pengiriman.");
+      return;
     }
-    return result.asset;
+    Alert.alert("Bukti Pengiriman", "Pilih sumber foto", [
+      {
+        text: "Kamera",
+        onPress: async () => {
+          const shot = await ImagePicker.launchCameraAsync({
+            quality: 0.7,
+            allowsEditing: false,
+          });
+          if (!shot.canceled && shot.assets[0]) await uploadProof(shot.assets[0]);
+        },
+      },
+      {
+        text: "Galeri",
+        onPress: async () => {
+          const pick = await ImagePicker.launchImageLibraryAsync({
+            quality: 0.7,
+            allowsMultipleSelection: false,
+            mediaTypes: ["images"],
+          });
+          if (!pick.canceled && pick.assets[0]) await uploadProof(pick.assets[0]);
+        },
+      },
+      { text: "Batal", style: "cancel" },
+    ]);
   };
 
-  const onPickProof = async (source: "camera" | "gallery") => {
-    if (!order || busy) return;
+  const uploadProof = async (asset: ImagePicker.ImagePickerAsset) => {
+    if (!order) return;
     setBusy(true);
     setActionErr("");
     try {
-      const asset = await pickAsset(source);
-      if (!asset) return;
-      const { name, mime } = assetFileMeta(asset, "bukti");
+      const name = asset.fileName || `bukti-${Date.now()}.jpg`;
+      const mime = asset.mimeType || "image/jpeg";
       const res = await eternalApi.uploadDeliveryProof(order.id, asset.uri, name, mime);
       setOrder(res.order);
       Alert.alert(
@@ -148,33 +197,6 @@ export default function PoWorkScreen() {
       );
     } catch (e) {
       setActionErr(apiErrorMessage(e, "Gagal mengunggah foto"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onPickSample = async (source: "camera" | "gallery") => {
-    if (!order || busy) return;
-    if (!hasPerm("operator.sample_upload")) {
-      setActionErr("Tidak punya izin upload sampel cetak.");
-      return;
-    }
-    setBusy(true);
-    setActionErr("");
-    try {
-      const asset = await pickAsset(source);
-      if (!asset) return;
-      const { name, mime } = assetFileMeta(asset, "sampel");
-      const dataUrl = await uriToDataUrl(asset.uri, mime);
-      const res = await eternalApi.addAttachment(String(order.id), {
-        name,
-        data_url: dataUrl,
-        kind: "sample",
-      });
-      setOrder(res.order);
-      Alert.alert("Tersimpan", "Sampel cetak berhasil diunggah.");
-    } catch (e) {
-      setActionErr(apiErrorMessage(e, "Gagal mengunggah sampel cetak"));
     } finally {
       setBusy(false);
     }
@@ -209,14 +231,139 @@ export default function PoWorkScreen() {
     await WebBrowser.openBrowserAsync(url);
   };
 
+  const onConfirmLoading = async (suratJalanId: string, lines: { line_idx: number; qty: number }[]) => {
+    if (!order || busy) return;
+    if (!suratJalanId) {
+      setActionErr("Pilih Surat Jalan yang dikonfirmasi.");
+      return;
+    }
+    if (!lines.length) {
+      setActionErr("Qty Loading wajib diisi.");
+      return;
+    }
+    setBusy(true);
+    setActionErr("");
+    try {
+      const res = await eternalApi.confirmLoading(order.id, {
+        surat_jalan_id: suratJalanId,
+        lines,
+        action_id: newActionId(),
+      });
+      setOrder(res.order);
+      setDrafts({});
+      Alert.alert("Tersimpan", "Konfirmasi Loading berhasil.");
+    } catch (e) {
+      setActionErr(apiErrorMessage(e, "Gagal konfirmasi loading"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onApproveDesign = async (approved: boolean) => {
+    if (!order || busy) return;
+    setBusy(true);
+    setActionErr("");
+    try {
+      const res = await eternalApi.approveDesign(order.id, approved);
+      setOrder(res.order);
+      Alert.alert(approved ? "Design di-approve" : "Approval dibatalkan", "Status design diperbarui.");
+    } catch (e) {
+      setActionErr(apiErrorMessage(e, "Gagal approve design"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (loading) return <LoadingState label="Memuat pekerjaan…" />;
   if (err) return <ErrorState message={err} onRetry={load} />;
   if (!order) return <EmptyState message="PO tidak ditemukan." />;
-  if (!division) {
+  if (!visiblePanelIds.length && !hasPerm("po.view")) {
     return (
-      <EmptyState message="Akun ini tidak punya permission pekerjaan divisi pada mobile v1." />
+      <EmptyState message="Akun ini tidak punya permission pekerjaan pada PO ini." />
     );
   }
+
+  const renderWorkPanel = (panelId: string) => {
+    if (panelId === "screener" && hasPerm("screen.update")) {
+      return (
+        <ScreenerPanel
+          key="screener"
+          order={order}
+          draft={drafts.screener || ""}
+          setDraft={(v) => setDrafts((p) => ({ ...p, screener: v }))}
+          busy={busy}
+          onConfirm={(qty) => onConfirmQty({ kind: "screener", qty })}
+        />
+      );
+    }
+    if (panelId === "helper" && hasPerm("helper.prepare")) {
+      return (
+        <HelperPanel
+          key="helper"
+          order={order}
+          drafts={drafts}
+          setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
+          busy={busy}
+          onConfirm={(lineIdx, qty) => onConfirmQty({ kind: "helper", qty, lineIdx })}
+        />
+      );
+    }
+    if (panelId === "packing" && hasPerm("packing.update")) {
+      return (
+        <PackingPanel
+          key="packing"
+          order={order}
+          drafts={drafts}
+          setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
+          busy={busy}
+          onConfirm={(lineIdx, qty) => onConfirmQty({ kind: "packing", qty, lineIdx })}
+        />
+      );
+    }
+    if (panelId === "loading" && hasPerm("loading.update")) {
+      return (
+        <LoadingPanel
+          key="loading"
+          order={order}
+          drafts={drafts}
+          setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
+          busy={busy}
+          onConfirm={onConfirmLoading}
+        />
+      );
+    }
+    if (panelId === "design_approve" && canApproveDesign(hasPerm)) {
+      return <DesignApprovePanel key="design_approve" order={order} busy={busy} onApprove={onApproveDesign} />;
+    }
+    if (panelId === "operator" && hasPerm("operator.update")) {
+      return (
+        <OperatorPanel
+          key="operator"
+          order={order}
+          user={user}
+          drafts={drafts}
+          setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
+          busy={busy}
+          onConfirm={(splitId, qty) => onConfirmQty({ kind: "operator", qty, splitId })}
+        />
+      );
+    }
+    if (panelId === "terkirim" && hasPerm("delivery.update")) {
+      return (
+        <DriverPanel
+          key="terkirim"
+          order={order}
+          token={token}
+          hasPerm={hasPerm}
+          busy={busy}
+          onPickProof={onPickProof}
+          onConfirmDelivered={onConfirmDelivered}
+          onOpenSj={openSuratJalan}
+        />
+      );
+    }
+    return null;
+  };
 
   return (
     <ScrollView style={ui.screen} contentContainerStyle={{ padding: space.md, paddingBottom: 48 }}>
@@ -235,10 +382,10 @@ export default function PoWorkScreen() {
         ) : null}
       </View>
 
-      {divisions.length > 1 ? (
+      {visiblePanelIds.length > 1 ? (
         <View style={styles.tabs}>
-          {divisions.map((d) => {
-            const active = division === d.id;
+          {divisions.filter((d) => (WORK_PANEL_IDS as readonly string[]).includes(d.id)).map((d) => {
+            const active = activeDiv === d.id;
             return (
               <Pressable
                 key={d.id}
@@ -249,6 +396,16 @@ export default function PoWorkScreen() {
               </Pressable>
             );
           })}
+          {canApproveDesign(hasPerm) ? (
+            <Pressable
+              onPress={() => setActiveDiv("design_approve")}
+              style={[styles.tab, activeDiv === "design_approve" && styles.tabActive]}
+            >
+              <Text style={[styles.tabText, activeDiv === "design_approve" && styles.tabTextActive]}>
+                Approve Design
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
@@ -258,50 +415,7 @@ export default function PoWorkScreen() {
         </View>
       ) : null}
 
-      {division === "screener" && hasPerm("screen.update") ? (
-        <ScreenerPanel
-          order={order}
-          draft={drafts.screener || ""}
-          setDraft={(v) => setDrafts({ screener: v })}
-          busy={busy}
-          onConfirm={(qty) => onConfirmQty({ kind: "screener", qty })}
-        />
-      ) : null}
-
-      {division === "helper" && hasPerm("helper.prepare") ? (
-        <HelperPanel
-          order={order}
-          drafts={drafts}
-          setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
-          busy={busy}
-          onConfirm={(lineIdx, qty) => onConfirmQty({ kind: "helper", qty, lineIdx })}
-        />
-      ) : null}
-
-      {division === "operator" && hasPerm("operator.update") ? (
-        <OperatorPanel
-          order={order}
-          user={user}
-          hasPerm={hasPerm}
-          drafts={drafts}
-          setDraft={(key, v) => setDrafts((p) => ({ ...p, [key]: v }))}
-          busy={busy}
-          onConfirm={(splitId, qty) => onConfirmQty({ kind: "operator", qty, splitId })}
-          onPickSample={onPickSample}
-        />
-      ) : null}
-
-      {division === "terkirim" && hasPerm("delivery.update") ? (
-        <DriverPanel
-          order={order}
-          token={token}
-          hasPerm={hasPerm}
-          busy={busy}
-          onPickProof={onPickProof}
-          onConfirmDelivered={onConfirmDelivered}
-          onOpenSj={openSuratJalan}
-        />
-      ) : null}
+      {visiblePanelIds.map((panelId) => renderWorkPanel(panelId))}
 
       <GhostButton title="Muat ulang" onPress={load} style={{ marginTop: space.md }} />
     </ScrollView>
@@ -408,35 +522,186 @@ function HelperPanel({
   );
 }
 
-function OperatorPanel({
+function PackingPanel({
   order,
-  user,
-  hasPerm,
   drafts,
   setDraft,
   busy,
   onConfirm,
-  onPickSample,
+}: {
+  order: any;
+  drafts: Record<string, string>;
+  setDraft: (key: string, v: string) => void;
+  busy: boolean;
+  onConfirm: (lineIdx: number, qty: number) => void;
+}) {
+  const model = packingModel(order);
+  return (
+    <View style={ui.card} testID="packing-panel">
+      <Text style={typography.title}>{model.title}</Text>
+      <MetricStrip
+        target={fmtQty(model.target)}
+        done={fmtQty(model.done)}
+        remain={fmtQty(model.remaining)}
+        status={model.status}
+      />
+      {model.gateLocked ? (
+        <Text style={[typography.subtitle, { color: colors.warn }]}>{model.gateMsg}</Text>
+      ) : null}
+      {model.lines.map((line: any) => (
+        <View key={line.lineIdx} style={styles.lineBlock}>
+          <Text style={typography.body}>
+            {line.name}
+            {line.color ? ` · ${line.color}` : ""}
+          </Text>
+          <Text style={typography.subtitle}>
+            Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)} · Sisa {fmtQty(line.remaining)}
+          </Text>
+          {!model.gateLocked ? (
+            <>
+              <QtyField
+                label="Qty Packing"
+                value={drafts[`p-${line.lineIdx}`] || ""}
+                onChange={(v) => setDraft(`p-${line.lineIdx}`, v)}
+              />
+              <PrimaryButton
+                title="Konfirmasi Packing"
+                busy={busy}
+                disabled={line.remaining <= 0}
+                onPress={() => onConfirm(line.lineIdx, Number(drafts[`p-${line.lineIdx}`] || 0))}
+                style={{ marginTop: space.sm }}
+              />
+            </>
+          ) : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function LoadingPanel({
+  order,
+  drafts,
+  setDraft,
+  busy,
+  onConfirm,
+}: {
+  order: any;
+  drafts: Record<string, string>;
+  setDraft: (key: string, v: string) => void;
+  busy: boolean;
+  onConfirm: (suratJalanId: string, lines: { line_idx: number; qty: number }[]) => void;
+}) {
+  const model = loadingModel(order);
+  const sjId = model.files[0]?.id || "";
+  return (
+    <View style={ui.card} testID="loading-panel">
+      <Text style={typography.title}>{model.title}</Text>
+      <Text style={typography.subtitle}>Konfirmasi item & qty berdasarkan Surat Jalan</Text>
+      <MetricStrip
+        target={fmtQty(model.target)}
+        done={fmtQty(model.done)}
+        remain={fmtQty(model.remaining)}
+        status={model.status}
+      />
+      {model.gateLocked ? (
+        <Text style={[typography.subtitle, { color: colors.warn }]}>{model.gateMsg}</Text>
+      ) : (
+        <Text style={typography.subtitle}>SJ: {model.files[0]?.name || model.files[0]?.id}</Text>
+      )}
+      {model.lines.map((line: any) => (
+        <View key={line.lineIdx} style={styles.lineBlock}>
+          <Text style={typography.body}>
+            {line.name}
+            {line.color ? ` · ${line.color}` : ""}
+          </Text>
+          <Text style={typography.subtitle}>
+            Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)} · Sisa {fmtQty(line.remaining)}
+          </Text>
+          {!model.gateLocked && line.remaining > 0 ? (
+            <QtyField
+              label="Qty Loading"
+              value={drafts[`l-${line.lineIdx}`] || ""}
+              onChange={(v) => setDraft(`l-${line.lineIdx}`, v)}
+            />
+          ) : null}
+        </View>
+      ))}
+      {!model.gateLocked ? (
+        <PrimaryButton
+          title="Konfirmasi Loading"
+          busy={busy}
+          disabled={model.remaining <= 0}
+          onPress={() => {
+            const lines = model.lines
+              .map((line: any) => ({
+                line_idx: line.lineIdx,
+                qty: Number(drafts[`l-${line.lineIdx}`] || 0),
+              }))
+              .filter((l: any) => l.qty > 0);
+            onConfirm(sjId, lines);
+          }}
+          style={{ marginTop: space.md }}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function DesignApprovePanel({
+  order,
+  busy,
+  onApprove,
+}: {
+  order: any;
+  busy: boolean;
+  onApprove: (approved: boolean) => void;
+}) {
+  const files = order?.design_files || [];
+  const approved = order?.design_status === "Approved" || order?.design_bypassed;
+  const waiting = files.length > 0 && !approved;
+  return (
+    <View style={ui.card} testID="design-approve-panel">
+      <Text style={typography.title}>Approve Design</Text>
+      <Text style={typography.subtitle}>
+        Status: {order?.design_status || "Waiting"} · File: {files.length}
+      </Text>
+      {waiting ? (
+        <PrimaryButton
+          title="Approve Design"
+          busy={busy}
+          onPress={() => onApprove(true)}
+          style={{ marginTop: space.md }}
+        />
+      ) : (
+        <Text style={typography.subtitle}>
+          {approved ? "Design sudah di-approve." : "Upload design diperlukan sebelum approval."}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function OperatorPanel({
+  order,
+  user,
+  drafts,
+  setDraft,
+  busy,
+  onConfirm,
 }: {
   order: any;
   user: any;
-  hasPerm: (p: string) => boolean;
   drafts: Record<string, string>;
   setDraft: (key: string, v: string) => void;
   busy: boolean;
   onConfirm: (splitId: string, qty: number) => void;
-  onPickSample: (source: "camera" | "gallery") => void;
 }) {
   const lines = operatorMyLines(order, user);
   const target = lines.reduce((s, l) => s + l.target, 0);
   const done = lines.reduce((s, l) => s + l.done, 0);
   const remain = Math.max(0, target - done);
   const gate = operatorCanSubmit(order);
-  const canUploadSample = hasPerm("operator.sample_upload");
-  const sampleReady = order?.workflow_ready?.sample_upload === true;
-  const sampleLock =
-    order?.screener_gate_reason || "Qty Screener harus diisi sebelum Cetak Sample.";
-  const samples = Array.isArray(order?.sample_files) ? order.sample_files : [];
   return (
     <View style={ui.card} testID="operator-panel">
       <Text style={typography.title}>Pekerjaan Operator</Text>
@@ -482,47 +747,6 @@ function OperatorPanel({
           ) : null}
         </View>
       ))}
-
-      {canUploadSample ? (
-        <View style={styles.lineBlock} testID="sample-upload-panel">
-          <Text style={typography.label}>Sampel Cetak</Text>
-          <Text style={typography.subtitle}>Foto sample cetak — terpisah dari File Design.</Text>
-          <View style={styles.proofGrid}>
-            {samples.map((f: any, i: number) => {
-              const uri = f.data_url || f.url || null;
-              return (
-                <View key={f.id || i} style={styles.proofThumb}>
-                  {uri ? (
-                    <Image source={{ uri }} style={styles.proofImg} />
-                  ) : (
-                    <Text style={typography.subtitle}>{f.name || `Sampel ${i + 1}`}</Text>
-                  )}
-                </View>
-              );
-            })}
-          </View>
-          {!sampleReady ? (
-            <Text style={[typography.subtitle, { color: colors.warn }]}>{sampleLock}</Text>
-          ) : (
-            <>
-              <PrimaryButton
-                title="Ambil Foto Sampel"
-                onPress={() => onPickSample("camera")}
-                busy={busy}
-                testID="sample-camera"
-                style={{ marginTop: space.sm }}
-              />
-              <GhostButton
-                title="Pilih dari Galeri"
-                onPress={() => onPickSample("gallery")}
-                disabled={busy}
-                testID="sample-gallery"
-                style={{ marginTop: 8 }}
-              />
-            </>
-          )}
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -540,7 +764,7 @@ function DriverPanel({
   token: string | null;
   hasPerm: (p: string) => boolean;
   busy: boolean;
-  onPickProof: (source: "camera" | "gallery") => void;
+  onPickProof: () => void;
   onConfirmDelivered: () => void;
   onOpenSj: (fileId: string) => void;
 }) {
@@ -593,22 +817,12 @@ function DriverPanel({
           })}
         </View>
         {!delivered ? (
-          <>
-            <PrimaryButton
-              title="Ambil Foto"
-              onPress={() => onPickProof("camera")}
-              busy={busy}
-              testID="proof-camera"
-              style={{ marginTop: space.sm }}
-            />
-            <GhostButton
-              title="Pilih dari Galeri"
-              onPress={() => onPickProof("gallery")}
-              disabled={busy}
-              testID="proof-gallery"
-              style={{ marginTop: 8 }}
-            />
-          </>
+          <PrimaryButton
+            title="Upload Foto Bukti"
+            onPress={onPickProof}
+            busy={busy}
+            style={{ marginTop: space.sm }}
+          />
         ) : null}
       </View>
 

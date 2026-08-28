@@ -139,6 +139,7 @@ from services.division_tasks import (
     TASK_PROJECTION as _DIVISION_TASK_PROJECTION,
     build_division_tasks as _build_division_tasks,
     can_view_all_division as _can_view_all_division,
+    po_needs_loading_task as _po_needs_loading_task,
     resolve_division as _resolve_division,
 )
 from operator_analytics import (
@@ -2431,8 +2432,10 @@ def _po_needs_surat_jalan(o: dict) -> bool:
 
 
 def _po_needs_loading(o: dict) -> bool:
-    """Loading is no longer an active workflow."""
-    return False
+    """Loading confirm is optional work: SJ exists and remaining qty > 0."""
+    if o.get("delivery_status") == "Terkirim" or _terkirim_confirmed(o):
+        return False
+    return _po_needs_loading_task(o)
 
 
 def _po_needs_terkirim(o: dict) -> bool:
@@ -2469,16 +2472,25 @@ _ACTION_DEFS = [
     ("cetak_qty", "Input Qty Cetak", "operator.update", _po_needs_cetak_qty),
     ("packing", "Packing", "packing.update", _po_needs_packing),
     ("surat_jalan", "Buat Surat Jalan", "delivery_note.manage", _po_needs_surat_jalan),
+    ("loading", "Konfirmasi Loading", "loading.update", _po_needs_loading),
     ("terkirim", "Tandai Terkirim", "delivery.update", _po_needs_terkirim),
 ]
 
 
 def _slim_action(o: dict) -> dict:
+    lis = o.get("line_items") or []
+    item = ""
+    names = [li.get("name") for li in lis if isinstance(li, dict) and li.get("name")]
+    if len(names) == 1:
+        item = names[0]
+    elif names:
+        item = f"{len(names)} item"
     return {
         "id": o.get("id"),
         "po_number": o.get("po_number"),
         "outlet": o.get("outlet"),
         "customer": o.get("customer"),
+        "item": item or o.get("outlet") or "",
         "work_date": o.get("work_date"),
         "current_stage": o.get("current_stage"),
         "total_quantity": o.get("total_quantity"),
@@ -2486,6 +2498,7 @@ def _slim_action(o: dict) -> dict:
         "delivery_deadline_status": o.get("delivery_deadline_status"),
         "delivery_deadline_source": o.get("delivery_deadline_source"),
         "requires_printing": o.get("requires_printing"),
+        "design_status": o.get("design_status"),
     }
 
 

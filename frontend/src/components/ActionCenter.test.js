@@ -13,6 +13,11 @@ describe("Tugas Saya routing", () => {
     expect(src).toMatch(/actionKeyToTaskPath/);
     expect(src).toMatch(/navigate\(href\)/);
   });
+
+  test("design approve status uses existing field", () => {
+    expect(src).toMatch(/design_status/);
+    expect(src).toMatch(/design_approve/);
+  });
 });
 
 describe("Action Center maps design and scheduling to division tasks", () => {

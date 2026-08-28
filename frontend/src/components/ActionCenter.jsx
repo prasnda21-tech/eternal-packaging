@@ -124,8 +124,13 @@ export default function ActionCenter() {
                 >
                   <span className="mono">{o.po_number}</span>
                   <span>
-                    <strong>{o.outlet || "-"}</strong>
+                    <strong>{o.outlet || o.item || "-"}</strong>
                     <span className="muted small" style={{ marginLeft: 6 }}>{o.customer || "Customer belum tersedia"}</span>
+                    {selected.key === "design_approve" && o.design_status && (
+                      <span className="muted small" style={{ display: "block" }} data-testid={`ac-design-status-${o.po_number}`}>
+                        Status design: {o.design_status}
+                      </span>
+                    )}
                     {selected.key === "operator_work" && o.my_operator_splits && (
                       <span className="muted small" style={{ display: "block" }}>
                         {o.my_operator_splits.map((s, i) => (

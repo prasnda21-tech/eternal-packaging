@@ -205,6 +205,11 @@ export function actionKeyToTaskPath(actionKey) {
     surat_jalan: TASK_NAV_PATHS.surat_jalan,
     loading: TASK_NAV_PATHS.loading,
     terkirim: TASK_NAV_PATHS.terkirim,
+    design_approve: null,
+    payment_approve: null,
+    sample_upload: null,
+    sample_approve: null,
   };
-  return map[actionKey] || "/tasks";
+  if (Object.prototype.hasOwnProperty.call(map, actionKey)) return map[actionKey];
+  return "/tasks";
 }
