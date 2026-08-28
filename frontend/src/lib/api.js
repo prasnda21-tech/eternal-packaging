@@ -185,6 +185,8 @@ export const api = {
   updateDeliveryDeadlineSettings: (payload) => client.put(`/delivery-deadline/settings`, payload).then((r) => r.data),
   workPanelSettings: () => client.get(`/work-panel/settings`).then((r) => r.data),
   updateWorkPanelSettings: (payload) => client.put(`/work-panel/settings`, payload).then((r) => r.data),
+  accurateCreatorSettings: () => client.get(`/settings/accurate-creators`).then((r) => r.data),
+  updateAccurateCreatorSettings: (payload) => client.put(`/settings/accurate-creators`, payload).then((r) => r.data),
   setDeliveryDeadlineManual: (id, deadlineAt, reason = "") => client.post(`/orders/${id}/delivery-deadline`, { deadline_at: deadlineAt, reason }).then((r) => r.data),
   resetDeliveryDeadlineManual: (id) => client.post(`/orders/${id}/delivery-deadline/reset`).then((r) => r.data),
   // ---- Customer Design Approval ----

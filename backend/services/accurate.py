@@ -29,6 +29,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
+from services.accurate_creator import (
+    apply_creator_to_so,
+    load_verified_creator_map,
+    resolve_accurate_creator,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -1014,7 +1020,11 @@ class AccurateClient:
         *,
         correlation_id: str,
     ) -> None:
-        """Resolve unique branchId via branch/detail.do. Creator has no official user-by-id API."""
+        """Resolve unique branchId via branch/detail.do. Creator uses internal verified map."""
+        try:
+            verified = await load_verified_creator_map()
+        except Exception:
+            verified = {}
         need_branch: Dict[str, List[Dict[str, Any]]] = {}
         for row in results:
             if not row.get("success"):
@@ -1022,6 +1032,7 @@ class AccurateClient:
             so = row.get("data")
             if not isinstance(so, dict):
                 continue
+            apply_creator_to_so(so, verified)
             if not so.get("outlet"):
                 bid = str(so.get(_SO_INTERNAL_BRANCH_ID) or "").strip()
                 if bid:
@@ -1208,6 +1219,14 @@ class AccurateClient:
                     ).to_result(sn))
                 else:
                     out.append(so_fetch_result(sn, success=True, data=so))
+            try:
+                verified = await load_verified_creator_map()
+            except Exception:
+                verified = {}
+            for row in out:
+                so = row.get("data") if row.get("success") else None
+                if isinstance(so, dict):
+                    apply_creator_to_so(so, verified)
             return out
 
         try:
@@ -2295,10 +2314,10 @@ def _accurate_salesman(d: Dict[str, Any], lines_raw: List[Any]) -> Optional[str]
 def _accurate_created_by(d: Dict[str, Any]) -> Optional[str]:
     """User yang membuat transaksi — never salesman, printer, or numeric IDs.
 
-    Live GET only sends createdBy as an id (e.g. 1248273). printUserName is the
-    print operator, not the creator. Official OpenAPI has no user-by-id lookup
-    (/api/userinfo.do is the current token user only), so an id without a name
-    stays unresolved (UI: Perlu verifikasi).
+    Live GET only sends createdBy as an id. printUserName is the printer, not
+    the creator. Official OpenAPI has no user-by-id lookup. A numeric id is
+    resolved later via verified internal app_settings mapping, else stays
+    unresolved (UI: Perlu verifikasi).
     """
     for key in ("userName", "createUserName", "createdByUserName"):
         name = _accurate_person_name(d.get(key))
@@ -2529,7 +2548,11 @@ def summarize_accurate_payload_shape(obj: Any, prefix: str = "", depth: int = 0)
     return lines
 
 
-def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_accurate_so(
+    d: Dict[str, Any],
+    *,
+    creator_mappings: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Coerce Accurate's Sales Order detail payload into our internal shape.
 
     Field names follow official OpenAPI `/api/sales-order/save.do` plus GET
@@ -2602,7 +2625,11 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
             line["color_source"] = color_source
         lines.append(line)
     salesperson = _accurate_salesman(d, lines_raw)
-    created_by_name = _accurate_created_by(d)
+    created_by_name = resolve_accurate_creator(
+        _accurate_created_by_id(d),
+        live_name=_accurate_created_by(d),
+        mappings=creator_mappings,
+    )
     trans_date = _parse_accurate_date(d.get("transDate") or d.get("trans_date"))
     ship_date = _parse_accurate_date(d.get("shipDate") or d.get("ship_date"))
     payment = (

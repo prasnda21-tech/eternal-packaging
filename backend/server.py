@@ -94,6 +94,7 @@ from services.customer_tracking import strip_tracking_secret as _strip_tracking_
 from services import delivery_route_api as _delivery_route_api
 from services.work_panel_settings import SETTINGS_KEY as WORK_PANEL_SETTINGS_KEY
 from services import work_panel_settings as work_panel_cfg
+from services import accurate_creator as accurate_creator_cfg
 from services.dashboard_today import (
     SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
@@ -244,6 +245,13 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+
+async def _load_accurate_creator_settings():
+    return await db.app_settings.find_one({"key": accurate_creator_cfg.SETTINGS_KEY}, {"_id": 0})
+
+
+accurate_creator_cfg.set_mapping_loader(_load_accurate_creator_settings)
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -3986,6 +3994,51 @@ async def put_work_panel_settings(payload: WorkPanelSettingsPayload, user=Depend
         after={"divisions": [{"id": d["id"], "active": d["active"], "input_label": d["input_label"]} for d in merged["divisions"]]},
     )
     return {"settings": work_panel_cfg.merge_settings(doc)}
+
+
+class AccurateCreatorMappingsPayload(BaseModel):
+    mappings: Optional[List[Any]] = None
+
+
+async def _can_manage_accurate_creators(user: dict) -> bool:
+    if user.get("role") == "admin":
+        return True
+    eff = await user_permissions(user)
+    return bool({"users.manage", "accurate.import", "permissions.manage"} & eff)
+
+
+@api_router.get("/settings/accurate-creators")
+async def get_accurate_creator_mappings(user=Depends(current_user)):
+    if user.get("role") != "admin":
+        eff = await user_permissions(user)
+        if not ({"users.view", "users.manage", "accurate.import", "permissions.manage"} & eff):
+            raise HTTPException(403, "Permission untuk melihat mapping Pembuat PO Accurate diperlukan")
+    doc = await db.app_settings.find_one({"key": accurate_creator_cfg.SETTINGS_KEY}, {"_id": 0}) or {}
+    sanitized = accurate_creator_cfg.sanitize_settings(doc)
+    return {"settings": sanitized, "can_edit": await _can_manage_accurate_creators(user)}
+
+
+@api_router.put("/settings/accurate-creators")
+async def put_accurate_creator_mappings(payload: AccurateCreatorMappingsPayload, user=Depends(current_user)):
+    if not await _can_manage_accurate_creators(user):
+        raise HTTPException(403, "Permission untuk mengubah mapping Pembuat PO Accurate diperlukan")
+    sanitized = accurate_creator_cfg.sanitize_settings(payload.model_dump(), updated_at=now_iso())
+    doc = {
+        "key": accurate_creator_cfg.SETTINGS_KEY,
+        "mappings": sanitized["mappings"],
+        "updated_at": sanitized["updated_at"],
+        "updated_by": user.get("email"),
+        "updated_by_name": user.get("name"),
+    }
+    await db.app_settings.update_one({"key": accurate_creator_cfg.SETTINGS_KEY}, {"$set": doc}, upsert=True)
+    accurate_creator_cfg.clear_creator_map_cache()
+    await _write_audit(
+        action="settings.accurate_creator.update",
+        actor=user,
+        target_email="-",
+        after={"count": len(sanitized["mappings"])},
+    )
+    return {"settings": sanitized}
 
 
 @api_router.post("/orders/{order_id}/delivery-deadline")

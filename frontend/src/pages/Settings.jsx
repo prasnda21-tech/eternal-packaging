@@ -1473,6 +1473,87 @@ function OperatorTargetSettingsTab({ notify, canEdit }) {
   );
 }
 
+function AccurateCreatorSettingsTab({ notify, canEdit }) {
+  const [rows, setRows] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.accurateCreatorSettings().then((d) => {
+      setRows((d.settings?.mappings || []).map((m) => ({ ...m })));
+    }).catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat mapping"));
+  }, []);
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    try {
+      const r = await api.updateAccurateCreatorSettings({
+        mappings: rows.map((m) => ({
+          accurate_created_by_id: String(m.accurate_created_by_id || "").trim(),
+          display_name: String(m.display_name || "").trim(),
+          verified: m.verified !== false,
+        })),
+      });
+      setRows(r.settings?.mappings || []);
+      notify?.("Mapping Pembuat PO Accurate disimpan");
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div data-testid="accurate-creator-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 720 }}>
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
+        <h3 style={{ marginTop: 0 }}>Pembuat PO Accurate</h3>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          Accurate hanya mengirim ID user (<code>createdBy</code>). Isi nama yang sudah diverifikasi dari UI Accurate.
+          Tanpa mapping, preview tetap sukses dan menampilkan <b>Perlu verifikasi</b>.
+        </p>
+        <div style={{ display: "grid", gap: 8 }}>
+          {rows.map((row, idx) => (
+            <div key={idx} style={{ display: "grid", gridTemplateColumns: "140px 1fr auto auto", gap: 8, alignItems: "center" }}>
+              <input
+                value={row.accurate_created_by_id || ""}
+                onChange={(e) => setRows((prev) => prev.map((r, i) => i === idx ? { ...r, accurate_created_by_id: e.target.value } : r))}
+                placeholder="createdBy ID"
+                disabled={!canEdit}
+                data-testid={`accurate-creator-id-${idx}`}
+              />
+              <input
+                value={row.display_name || ""}
+                onChange={(e) => setRows((prev) => prev.map((r, i) => i === idx ? { ...r, display_name: e.target.value } : r))}
+                placeholder="Nama pembuat PO"
+                disabled={!canEdit}
+                data-testid={`accurate-creator-name-${idx}`}
+              />
+              <label className="muted small" style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={row.verified !== false}
+                  onChange={(e) => setRows((prev) => prev.map((r, i) => i === idx ? { ...r, verified: e.target.checked } : r))}
+                  disabled={!canEdit}
+                />
+                verified
+              </label>
+              {canEdit && (
+                <button type="button" className="ghost sm" onClick={() => setRows((prev) => prev.filter((_, i) => i !== idx))}>Hapus</button>
+              )}
+            </div>
+          ))}
+        </div>
+        {canEdit && (
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button type="button" className="ghost sm" onClick={() => setRows((prev) => [...prev, { accurate_created_by_id: "", display_name: "", verified: true }])}>Tambah</button>
+            <button type="button" className="primary sm" onClick={save} disabled={saving} data-testid="accurate-creator-save">Simpan</button>
+          </div>
+        )}
+        {err && <p style={{ color: "#8f1f1f", marginTop: 8 }}>{err}</p>}
+        {!canEdit && <p className="muted small" style={{ marginTop: 8 }}>Butuh permission <code>users.manage</code> atau <code>accurate.import</code>.</p>}
+      </div>
+    </div>
+  );
+}
+
 function WorkPanelSettingsTab({ notify, canEdit }) {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -1657,6 +1738,8 @@ export default function Settings() {
   const canEditOpTarget = hasPerm("schedule.edit");
   const canViewWorkPanel = hasPerm("settings.work_panel.view") || hasPerm("settings.work_panel.manage") || hasPerm("permissions.manage");
   const canEditWorkPanel = hasPerm("settings.work_panel.manage");
+  const canViewAccurateCreators = canViewUsers || hasPerm("accurate.import") || hasPerm("permissions.manage");
+  const canEditAccurateCreators = canManageUsers || hasPerm("accurate.import") || hasPerm("permissions.manage");
   const canViewSidebarAccess = canManagePerms;
   const canViewWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm("reports.gaji_operator.view");
   const canEditWage = hasPerm("settings.operator_wage.manage");
@@ -1714,6 +1797,9 @@ export default function Settings() {
         {canViewWorkPanel && (
           <button role="tab" className={tab === "work-panel" ? "active" : ""} onClick={() => setTab("work-panel")} data-testid="settings-tab-work-panel"><ClipboardList size={14}/> Form Pekerjaan Divisi</button>
         )}
+        {canViewAccurateCreators && (
+          <button role="tab" className={tab === "accurate-creators" ? "active" : ""} onClick={() => setTab("accurate-creators")} data-testid="settings-tab-accurate-creators"><Users size={14}/> Pembuat PO Accurate</button>
+        )}
         {canViewAudit && (
           <button role="tab" className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")} data-testid="settings-tab-audit"><ScrollText size={14}/> Audit Log</button>
         )}
@@ -1744,6 +1830,7 @@ export default function Settings() {
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
       {tab === "work-panel" && canViewWorkPanel && <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel}/>}
+      {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}
 
       <Toast msg={toast}/>
