@@ -77,4 +77,11 @@ describe("Customer tracking public page", () => {
     expect(page).not.toMatch(/storage_path/);
     expect(page).not.toMatch(/user_id/);
   });
+
+  test("Penjadwalan panel keeps sequential Set without wiping via operator_splits identity", () => {
+    const split = fs.readFileSync(path.join(__dirname, "../components/OperatorSplitPanel.jsx"), "utf8");
+    expect(split).toMatch(/shouldApplyRemoteSplits/);
+    expect(split).toMatch(/dirtyRef/);
+    expect(split).toMatch(/patchScheduleRow/);
+  });
 });

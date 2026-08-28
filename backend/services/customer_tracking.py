@@ -18,11 +18,13 @@ from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
     is_fully_delivered,
+    loading_status_semantic,
     packing_status_semantic,
     print_status,
     qty_delivered,
+    qty_packed,
     requires_printing,
-    shipments_stored,
+    surat_jalan_created,
     surat_jalan_status_semantic,
     valid_delivery_proofs,
     MAX_PUBLIC_DELIVERY_PROOFS,
@@ -129,14 +131,17 @@ def _has_design_upload(order: dict) -> bool:
     return False
 
 
-def _surat_jalan_created(order: dict) -> bool:
-    if shipments_stored(order):
+def _order_masuk_status(order: dict) -> str:
+    if int(order.get("current_stage") or 0) > 0:
+        return STATUS_COMPLETED
+    return STATUS_IN_PROGRESS
+
+
+def _loading_done(order: dict) -> bool:
+    if loading_status_semantic(order) == "completed":
         return True
-    return bool(
-        order.get("delivery_note_number")
-        and order.get("delivery_note_created_at")
-        and order.get("delivery_note_created_by")
-    )
+    lc = order.get("loading_checklist") or {}
+    return bool(lc.get("items_loaded")) and bool(lc.get("seal_ok"))
 
 
 def _status(completed: bool, in_progress: bool) -> str:
@@ -162,6 +167,12 @@ def _approval_design_status(order: dict) -> str:
 
 
 def _payment_status(order: dict) -> str:
+    if order.get("payment_bypassed") or order.get("payment_files"):
+        return STATUS_COMPLETED
+    return STATUS_WAITING
+
+
+def _approval_payment_status(order: dict) -> str:
     if payment_ok(order):
         return STATUS_COMPLETED
     if order.get("payment_files"):
@@ -209,21 +220,31 @@ def _cetak_status(order: dict, ready: dict) -> str:
 
 
 def _packing_status(order: dict, ready: dict) -> str:
+    packed = qty_packed(order)
     semantic = packing_status_semantic(order)
-    if semantic == "Sudah":
+    if semantic == "Sudah" and packed > 0:
         return STATUS_COMPLETED
-    if semantic == "Berjalan" or packing_unlocked(order) or ready.get("packing"):
+    if packed > 0 or packing_unlocked(order) or ready.get("packing"):
         return STATUS_IN_PROGRESS
     return STATUS_WAITING
 
 
 def _surat_jalan_status(order: dict) -> str:
-    created = _surat_jalan_created(order)
+    created = surat_jalan_created(order)
     sj = surat_jalan_status_semantic(order)
     pack = packing_status_semantic(order)
     if created and sj == "completed":
         return STATUS_COMPLETED
-    if created or pack == "Sudah":
+    if created or (pack == "Sudah" and qty_packed(order) > 0):
+        return STATUS_IN_PROGRESS
+    return STATUS_WAITING
+
+
+def _loading_status(order: dict) -> str:
+    qty_st = loading_status_semantic(order)
+    if _loading_done(order):
+        return STATUS_COMPLETED
+    if qty_st == "partial" or surat_jalan_created(order):
         return STATUS_IN_PROGRESS
     return STATUS_WAITING
 
@@ -234,19 +255,19 @@ def _terkirim_status(order: dict) -> str:
     delivered = qty_delivered(order)
     if order.get("delivery_status") == "Sebagian Terkirim" or delivered > 0:
         return STATUS_IN_PROGRESS
-    if _surat_jalan_created(order):
-        return STATUS_IN_PROGRESS
     return STATUS_WAITING
 
 
 def customer_workflow(order: dict) -> List[Dict[str, str]]:
-    """Evidence-based customer stages. Hides print-only rows when not applicable."""
+    """Evidence-based customer stages aligned with Detail PO STAGES."""
     ready = workflow_ready(order)
     req_print = requires_printing(order)
     rows: List[Tuple[str, str]] = [
+        ("Order Masuk", _order_masuk_status(order)),
         ("Design", _design_status(order)),
         ("Approval Design", _approval_design_status(order)),
         ("Payment", _payment_status(order)),
+        ("Approval Payment", _approval_payment_status(order)),
         ("Penjadwalan", _penjadwalan_status(order, ready)),
         ("Screener", _screener_status(order, ready)),
         ("Persiapan Helper", _helper_status(order, ready)),
@@ -255,6 +276,7 @@ def customer_workflow(order: dict) -> List[Dict[str, str]]:
         ("Cetak", _cetak_status(order, ready)),
         ("Packing", _packing_status(order, ready)),
         ("Surat Jalan", _surat_jalan_status(order)),
+        ("Loading", _loading_status(order)),
         ("Terkirim", _terkirim_status(order)),
     ]
     out: List[Dict[str, str]] = []

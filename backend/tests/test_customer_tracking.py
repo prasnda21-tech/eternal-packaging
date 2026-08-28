@@ -196,6 +196,7 @@ class TestPartialWorkflow:
         payload = public_payload(_print_po(design_bypassed=True, payment_bypassed=True))
         assert _stage(payload, "Design")["status"] == "completed"
         assert _stage(payload, "Payment")["status"] == "completed"
+        assert _stage(payload, "Approval Payment")["status"] == "completed"
         blob = json.dumps(payload)
         assert "BYPASS" not in blob
         assert "bypass" not in blob.lower()
@@ -208,7 +209,10 @@ class TestPartialWorkflow:
         assert "Screener" not in names
         assert "Cetak" not in names
         assert "Konfirmasi Sample" not in names
+        assert "Order Masuk" in names
+        assert "Approval Payment" in names
         assert "Packing" in names
+        assert "Loading" in names
         assert "Terkirim" in names
 
 
@@ -266,3 +270,67 @@ def test_workflow_never_uses_generic_stage_index_alone():
     src = Path(__file__).resolve().parents[1] / "services" / "customer_tracking.py"
     text = src.read_text(encoding="utf-8")
     assert "idx < current_stage" not in text
+
+
+class TestCanonicalAlignment:
+    def test_stage_order_matches_detail_po_names(self):
+        names = [r["stage"] for r in public_payload(_print_po())["workflow"]]
+        assert names == [
+            "Order Masuk", "Design", "Approval Design", "Payment", "Approval Payment",
+            "Penjadwalan", "Screener", "Persiapan Helper", "Operator", "Konfirmasi Sample",
+            "Cetak", "Packing", "Surat Jalan", "Loading", "Terkirim",
+        ]
+
+    def test_packing_without_qty_is_not_completed_even_if_later_stage_index(self):
+        payload = public_payload(_print_po(
+            current_stage=12,
+            packing_info={"qty_packed": 0},
+        ))
+        assert _stage(payload, "Packing")["status"] != "completed"
+        assert _stage(payload, "Surat Jalan")["status"] == "waiting"
+        assert _stage(payload, "Loading")["status"] == "waiting"
+        assert _stage(payload, "Terkirim")["status"] == "waiting"
+
+    def test_packing_done_sj_pending_when_no_sj(self):
+        payload = public_payload(_print_po(
+            packing_info={"qty_packed": 8000, "lines": [{"line_idx": 0, "packed_qty": 8000}]},
+            current_stage=12,
+        ))
+        assert _stage(payload, "Packing")["status"] in ("completed", "in_progress")
+        assert _stage(payload, "Surat Jalan")["status"] != "completed"
+        assert _stage(payload, "Terkirim")["status"] != "completed"
+
+    def test_valid_sj_file_is_a_tracking_milestone_and_opens_loading(self):
+        payload = public_payload(_print_po(
+            packing_info={"qty_packed": 0},
+            surat_jalan_files=[{"id": "f1", "name": "sj.pdf", "uploaded_at": "2026-08-28T10:00:00+07:00"}],
+            delivery_note_number="SJ-1",
+            delivery_note_created_at="2026-08-28T10:00:00+07:00",
+            delivery_note_created_by="admin@x.com",
+        ))
+        assert _stage(payload, "Packing")["status"] != "completed"
+        assert _stage(payload, "Surat Jalan")["status"] in ("completed", "in_progress")
+        assert _stage(payload, "Loading")["status"] == "in_progress"
+        assert _stage(payload, "Terkirim")["status"] != "completed"
+
+    def test_delivered_marks_prior_milestones_consistently(self):
+        payload = public_payload(_print_po(
+            packing_info={"qty_packed": 8000, "lines": [{"line_idx": 0, "packed_qty": 8000}]},
+            surat_jalan_files=[{"id": "f1", "name": "sj.pdf", "uploaded_at": "2026-08-28T10:00:00+07:00"}],
+            shipments=[{"id": "s1", "number": "SJ-1", "lines": [{"line_idx": 0, "qty": 8000}]}],
+            delivery_note_number="SJ-1",
+            delivery_note_created_at="2026-08-28T10:00:00+07:00",
+            delivery_note_created_by="admin@x.com",
+            loading_confirmations=[{"id": "c1", "surat_jalan_id": "f1", "lines": [{"line_idx": 0, "qty": 8000}]}],
+            qty_delivered=8000,
+            delivery_status="Terkirim",
+            current_stage=14,
+            total_quantity=8000,
+        ))
+        assert _stage(payload, "Surat Jalan")["status"] == "completed"
+        assert _stage(payload, "Loading")["status"] == "completed"
+        assert _stage(payload, "Terkirim")["status"] == "completed"
+
+    def test_cancelled_public_lookup_is_not_active_workflow(self):
+        from services.customer_tracking import PUBLIC_NOT_FOUND
+        assert PUBLIC_NOT_FOUND == "Tidak ditemukan"
