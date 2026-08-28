@@ -21,27 +21,31 @@ CAKE_IN_LOVE_ADDRESS = (
     "Kec. Kasihan, Kabupaten Bantul, Daerah Istimewa Yogyakarta 55183"
 )
 
-# Shape taken from Accurate OpenAPI /api/sales-order/save.do plus GET detail
-# expansions (nested *.name, userName, salesmanList, dataClassification1Name).
+# Live GET sales-order/detail.do for PO/2026/08/28/000004:
+# searchCharField3.name / charField3 = JS, description = SABLON WARNA HITAM.
 CAKE_IN_LOVE_SO_DETAIL = {
     "id": 4004,
     "number": "PO/2026/08/28/000004",
     "transDate": "28/08/2026",
     "shipDate": "05/09/2026",
     "toAddress": CAKE_IN_LOVE_ADDRESS,
+    "description": "SABLON WARNA HITAM",
+    "charField3": "JS",
+    "searchCharField3": {"id": "JS", "name": "JS"},
     "customer": {"id": 88, "name": "CAKE IN LOVE", "customerNo": "CIL-001"},
     "paymentTerm": {"id": 3, "name": "TRANSFER BANK"},
-    "shipment": {"id": 7, "name": "OUTLET"},
+    "shipment": {"id": "150", "name": "OUTLET"},
     "userName": "nabila salsabila",
+    "branchId": "50",
     "detailItem": [
         {
             "id": 91,
             "quantity": 10000,
             "itemUnitName": "PCS",
             "detailNotes": "SABLON WARNA HITAM",
+            "branchId": "50",
             "item": {"id": 418, "no": "100418", "name": "Plastik PE 15"},
             "salesmanList": [{"id": 12, "name": "Dimas Aji Prasetya", "number": "S-12"}],
-            "dataClassification1Name": "JS",
         }
     ],
 }
@@ -181,6 +185,96 @@ def test_zone_uses_dataClassification1_only():
     }
     so = _normalize_accurate_so(raw)
     assert so["delivery_zone"] is None
+
+
+def test_zone_from_searchCharField3_name():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "searchCharField3": {"id": "JS", "name": "JS"},
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["delivery_zone"] == "JS"
+
+
+def test_zone_from_charField3_when_search_missing():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "charField3": "JT",
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["delivery_zone"] == "JT"
+
+
+def test_zone_searchCharField3_beats_charField3_and_classification():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "searchCharField3": {"name": "JS"},
+        "charField3": "JT",
+        "dataClassification1Name": "OTHER",
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["delivery_zone"] == "JS"
+
+
+def test_color_from_header_description():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "description": "SABLON WARNA PUTIH",
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["line_items"][0]["color"] == "PUTIH"
+
+
+def test_header_description_does_not_overwrite_line_color():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "description": "SABLON WARNA PUTIH",
+        "detailItem": [
+            {
+                "quantity": 1,
+                "item": {"id": 1, "name": "Item A"},
+                "detailNotes": "SABLON WARNA HITAM",
+            },
+            {
+                "quantity": 1,
+                "item": {"id": 2, "name": "Item B"},
+                "color": "MERAH",
+            },
+        ],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["line_items"][0]["color"] == "HITAM"
+    assert so["line_items"][1]["color"] == "MERAH"
+
+
+def test_outlet_not_from_shipment_or_branchId():
+    raw = {
+        "id": 1,
+        "number": "SO-1",
+        "customer": {"name": "A"},
+        "branchId": "50",
+        "shipment": {"id": "150", "name": "OUTLET"},
+        "detailItem": [
+            {"quantity": 1, "item": {"id": 1, "name": "Item"}, "branchId": "50"}
+        ],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["expedition"] == "OUTLET"
+    assert so["outlet"] in (None, "", "-")
 
 
 def test_payment_term_name_string_and_nested_object():
