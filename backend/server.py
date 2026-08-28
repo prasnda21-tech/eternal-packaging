@@ -4018,11 +4018,16 @@ async def get_accurate_creator_mappings(user=Depends(current_user)):
     return {"settings": sanitized, "can_edit": await _can_manage_accurate_creators(user)}
 
 
-@api_router.put("/settings/accurate-creators")
-async def put_accurate_creator_mappings(payload: AccurateCreatorMappingsPayload, user=Depends(current_user)):
-    if not await _can_manage_accurate_creators(user):
-        raise HTTPException(403, "Permission untuk mengubah mapping Pembuat PO Accurate diperlukan")
-    sanitized = accurate_creator_cfg.sanitize_settings(payload.model_dump(), updated_at=now_iso())
+class AccurateCreatorScanPayload(BaseModel):
+    limit: Optional[int] = 100
+
+
+class AccurateCreatorVerifyPayload(BaseModel):
+    accurate_created_by_id: str
+    display_name: str
+
+
+async def _persist_accurate_creator_mappings(sanitized: dict, user: dict) -> dict:
     doc = {
         "key": accurate_creator_cfg.SETTINGS_KEY,
         "mappings": sanitized["mappings"],
@@ -4038,6 +4043,46 @@ async def put_accurate_creator_mappings(payload: AccurateCreatorMappingsPayload,
         target_email="-",
         after={"count": len(sanitized["mappings"])},
     )
+    return sanitized
+
+
+@api_router.put("/settings/accurate-creators")
+async def put_accurate_creator_mappings(payload: AccurateCreatorMappingsPayload, user=Depends(current_user)):
+    if not await _can_manage_accurate_creators(user):
+        raise HTTPException(403, "Permission untuk mengubah mapping Pembuat PO Accurate diperlukan")
+    sanitized = accurate_creator_cfg.sanitize_settings(payload.model_dump(), updated_at=now_iso())
+    await _persist_accurate_creator_mappings(sanitized, user)
+    return {"settings": sanitized}
+
+
+@api_router.post("/settings/accurate-creators/scan")
+async def scan_accurate_creators(payload: AccurateCreatorScanPayload, user=Depends(current_user)):
+    if not await _can_manage_accurate_creators(user):
+        raise HTTPException(403, "Permission untuk scan Pembuat PO Accurate diperlukan")
+    limit = accurate_creator_cfg.normalize_scan_limit(payload.limit)
+    try:
+        result = await _accurate_client.scan_sales_order_creators(limit)
+    except AccurateRequestError as e:
+        raise _accurate_http_error(e)
+    result["wrote_mappings"] = False
+    return result
+
+
+@api_router.post("/settings/accurate-creators/verify")
+async def verify_accurate_creator(payload: AccurateCreatorVerifyPayload, user=Depends(current_user)):
+    if not await _can_manage_accurate_creators(user):
+        raise HTTPException(403, "Permission untuk mengubah mapping Pembuat PO Accurate diperlukan")
+    existing = await db.app_settings.find_one({"key": accurate_creator_cfg.SETTINGS_KEY}, {"_id": 0}) or {}
+    try:
+        sanitized = accurate_creator_cfg.upsert_verified_mapping(
+            existing,
+            payload.accurate_created_by_id,
+            payload.display_name,
+            updated_at=now_iso(),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await _persist_accurate_creator_mappings(sanitized, user)
     return {"settings": sanitized}
 
 

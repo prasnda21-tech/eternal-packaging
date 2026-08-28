@@ -1474,81 +1474,205 @@ function OperatorTargetSettingsTab({ notify, canEdit }) {
 }
 
 function AccurateCreatorSettingsTab({ notify, canEdit }) {
-  const [rows, setRows] = useState([]);
-  const [saving, setSaving] = useState(false);
+  const [mappings, setMappings] = useState([]);
+  const [scan, setScan] = useState(null);
+  const [scanLimit, setScanLimit] = useState(100);
+  const [nameDraft, setNameDraft] = useState({});
+  const [scanning, setScanning] = useState(false);
+  const [verifying, setVerifying] = useState("");
   const [err, setErr] = useState("");
+  const [manualId, setManualId] = useState("");
+  const [manualName, setManualName] = useState("");
 
-  useEffect(() => {
-    api.accurateCreatorSettings().then((d) => {
-      setRows((d.settings?.mappings || []).map((m) => ({ ...m })));
-    }).catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat mapping"));
-  }, []);
-
-  const save = async () => {
-    setSaving(true); setErr("");
-    try {
-      const r = await api.updateAccurateCreatorSettings({
-        mappings: rows.map((m) => ({
-          accurate_created_by_id: String(m.accurate_created_by_id || "").trim(),
-          display_name: String(m.display_name || "").trim(),
-          verified: m.verified !== false,
-        })),
-      });
-      setRows(r.settings?.mappings || []);
-      notify?.("Mapping Pembuat PO Accurate disimpan");
-    } catch (e) {
-      setErr(e?.response?.data?.detail || "Gagal menyimpan");
-    } finally { setSaving(false); }
+  const loadMappings = async () => {
+    const d = await api.accurateCreatorSettings();
+    setMappings((d.settings?.mappings || []).map((m) => ({ ...m })));
   };
 
+  useEffect(() => {
+    loadMappings().catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat mapping"));
+  }, []);
+
+  const scanNow = async () => {
+    setScanning(true); setErr("");
+    try {
+      const r = await api.scanAccurateCreators(scanLimit);
+      setScan(r);
+      notify?.(`Scan ${r.scanned || 0} SO Accurate selesai`);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Scan gagal");
+    } finally { setScanning(false); }
+  };
+
+  const verifyOne = async (cid, name) => {
+    const display = String(name || "").trim();
+    if (!display) { setErr("Nama pembuat PO wajib diisi"); return; }
+    setVerifying(String(cid)); setErr("");
+    try {
+      const r = await api.verifyAccurateCreator({
+        accurate_created_by_id: String(cid),
+        display_name: display,
+      });
+      setMappings(r.settings?.mappings || []);
+      setScan((prev) => {
+        if (!prev) return prev;
+        const moved = (prev.unknown || []).find((x) => String(x.accurate_created_by_id) === String(cid));
+        return {
+          ...prev,
+          unknown: (prev.unknown || []).filter((x) => String(x.accurate_created_by_id) !== String(cid)),
+          verified: [
+            {
+              ...(moved || { accurate_created_by_id: String(cid), so_count: 0, sample_po_numbers: [] }),
+              display_name: display,
+              verified: true,
+              status: "verified",
+            },
+            ...(prev.verified || []).filter((x) => String(x.accurate_created_by_id) !== String(cid)),
+          ],
+        };
+      });
+      setNameDraft((d) => {
+        const next = { ...d };
+        delete next[String(cid)];
+        return next;
+      });
+      setManualId("");
+      setManualName("");
+      notify?.("Pembuat PO diverifikasi");
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal verify");
+    } finally { setVerifying(""); }
+  };
+
+  const unknown = scan?.unknown || [];
+  const verified = scan?.verified || mappings.filter((m) => m.verified !== false);
+
   return (
-    <div data-testid="accurate-creator-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 720 }}>
+    <div data-testid="accurate-creator-settings-tab" style={{ display: "grid", gap: 16, maxWidth: 960 }}>
       <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
         <h3 style={{ marginTop: 0 }}>Pembuat PO Accurate</h3>
         <p className="muted small" style={{ marginTop: 0 }}>
-          Accurate hanya mengirim ID user (<code>createdBy</code>). Isi nama yang sudah diverifikasi dari UI Accurate.
-          Tanpa mapping, preview tetap sukses dan menampilkan <b>Perlu verifikasi</b>.
+          Accurate hanya mengirim ID user (<code>createdBy</code>). Scan SO terbaru untuk mengumpulkan ID unik.
+          Hasil scan tidak otomatis verified — isi nama dari UI Accurate lalu klik Verify.
         </p>
-        <div style={{ display: "grid", gap: 8 }}>
-          {rows.map((row, idx) => (
-            <div key={idx} style={{ display: "grid", gridTemplateColumns: "140px 1fr auto auto", gap: 8, alignItems: "center" }}>
-              <input
-                value={row.accurate_created_by_id || ""}
-                onChange={(e) => setRows((prev) => prev.map((r, i) => i === idx ? { ...r, accurate_created_by_id: e.target.value } : r))}
-                placeholder="createdBy ID"
-                disabled={!canEdit}
-                data-testid={`accurate-creator-id-${idx}`}
-              />
-              <input
-                value={row.display_name || ""}
-                onChange={(e) => setRows((prev) => prev.map((r, i) => i === idx ? { ...r, display_name: e.target.value } : r))}
-                placeholder="Nama pembuat PO"
-                disabled={!canEdit}
-                data-testid={`accurate-creator-name-${idx}`}
-              />
-              <label className="muted small" style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                <input
-                  type="checkbox"
-                  checked={row.verified !== false}
-                  onChange={(e) => setRows((prev) => prev.map((r, i) => i === idx ? { ...r, verified: e.target.checked } : r))}
-                  disabled={!canEdit}
-                />
-                verified
-              </label>
-              {canEdit && (
-                <button type="button" className="ghost sm" onClick={() => setRows((prev) => prev.filter((_, i) => i !== idx))}>Hapus</button>
-              )}
-            </div>
-          ))}
-        </div>
         {canEdit && (
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button type="button" className="ghost sm" onClick={() => setRows((prev) => [...prev, { accurate_created_by_id: "", display_name: "", verified: true }])}>Tambah</button>
-            <button type="button" className="primary sm" onClick={save} disabled={saving} data-testid="accurate-creator-save">Simpan</button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select
+              value={scanLimit}
+              onChange={(e) => setScanLimit(Number(e.target.value))}
+              disabled={scanning}
+              data-testid="accurate-creator-scan-limit"
+            >
+              <option value={100}>100 SO terbaru</option>
+              <option value={250}>250 SO terbaru</option>
+              <option value={500}>500 SO terbaru</option>
+            </select>
+            <button type="button" className="primary sm" onClick={scanNow} disabled={scanning} data-testid="accurate-creator-scan">
+              {scanning ? "Memindai…" : "Scan Pembuat PO dari Accurate"}
+            </button>
           </div>
         )}
-        {err && <p style={{ color: "#8f1f1f", marginTop: 8 }}>{err}</p>}
-        {!canEdit && <p className="muted small" style={{ marginTop: 8 }}>Butuh permission <code>users.manage</code> atau <code>accurate.import</code>.</p>}
+        {scan && (
+          <p className="muted small" style={{ marginBottom: 0 }}>
+            Dipindai {scan.scanned || 0} SO, gagal {scan.failed || 0}, limit {scan.limit}. Mapping tidak ditulis oleh scan.
+          </p>
+        )}
+        {err && <p style={{ color: "#8f1f1f", marginBottom: 0 }}>{err}</p>}
+        {!canEdit && <p className="muted small" style={{ marginBottom: 0 }}>Butuh permission <code>users.manage</code> atau <code>accurate.import</code>.</p>}
+      </div>
+
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }} data-testid="accurate-creator-unknown">
+        <h3 style={{ marginTop: 0 }}>Belum dikenal</h3>
+        {!scan && <p className="muted small">Klik scan untuk menemukan createdBy dari Sales Order terbaru.</p>}
+        {scan && unknown.length === 0 && <p className="muted small">Tidak ada createdBy baru pada scan ini.</p>}
+        {unknown.length > 0 && (
+          <div className="table-wrap">
+            <table className="ship-table">
+              <thead>
+                <tr>
+                  <th>createdBy</th>
+                  <th>Jumlah PO</th>
+                  <th>Contoh PO</th>
+                  <th>SO terakhir</th>
+                  <th>Nama</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {unknown.map((row) => (
+                  <tr key={row.accurate_created_by_id} data-testid={`accurate-creator-unknown-${row.accurate_created_by_id}`}>
+                    <td><code>{row.accurate_created_by_id}</code></td>
+                    <td>{row.so_count}</td>
+                    <td className="muted small">{(row.sample_po_numbers || []).join(", ") || "—"}</td>
+                    <td className="muted small">{row.last_so_date || "—"}</td>
+                    <td>
+                      <input
+                        value={nameDraft[row.accurate_created_by_id] || ""}
+                        onChange={(e) => setNameDraft((d) => ({ ...d, [row.accurate_created_by_id]: e.target.value }))}
+                        placeholder="Nama pembuat PO"
+                        disabled={!canEdit || verifying === String(row.accurate_created_by_id)}
+                        data-testid={`accurate-creator-unknown-name-${row.accurate_created_by_id}`}
+                      />
+                    </td>
+                    <td>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          className="primary sm"
+                          disabled={verifying === String(row.accurate_created_by_id)}
+                          onClick={() => verifyOne(row.accurate_created_by_id, nameDraft[row.accurate_created_by_id])}
+                          data-testid={`accurate-creator-verify-${row.accurate_created_by_id}`}
+                        >
+                          Verify
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }} data-testid="accurate-creator-verified">
+        <h3 style={{ marginTop: 0 }}>Sudah diverifikasi</h3>
+        {verified.length === 0 && <p className="muted small">Belum ada mapping verified.</p>}
+        {verified.length > 0 && (
+          <div className="table-wrap">
+            <table className="ship-table">
+              <thead>
+                <tr>
+                  <th>createdBy</th>
+                  <th>Jumlah PO</th>
+                  <th>Contoh PO</th>
+                  <th>SO terakhir</th>
+                  <th>Nama</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verified.map((row) => (
+                  <tr key={row.accurate_created_by_id} data-testid={`accurate-creator-verified-${row.accurate_created_by_id}`}>
+                    <td><code>{row.accurate_created_by_id}</code></td>
+                    <td>{row.so_count ?? "—"}</td>
+                    <td className="muted small">{(row.sample_po_numbers || []).join(", ") || "—"}</td>
+                    <td className="muted small">{row.last_so_date || "—"}</td>
+                    <td>{row.display_name}</td>
+                    <td>Verified</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {canEdit && (
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 8, marginTop: 12, alignItems: "center" }}>
+            <input value={manualId} onChange={(e) => setManualId(e.target.value)} placeholder="createdBy ID" data-testid="accurate-creator-manual-id"/>
+            <input value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="Nama pembuat PO" data-testid="accurate-creator-manual-name"/>
+            <button type="button" className="ghost sm" onClick={() => verifyOne(manualId, manualName)} data-testid="accurate-creator-save">Verify</button>
+          </div>
+        )}
       </div>
     </div>
   );
