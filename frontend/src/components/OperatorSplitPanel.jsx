@@ -1,16 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CalendarClock, Info, Plus, Trash2, Users } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDateTime } from "../lib/constants";
 import { newActionId } from "../lib/workflowEntries";
 import { getWorkflowReady } from "../lib/stageState";
-import {
-  mapPersistedSplits,
-  patchScheduleRow,
-  shouldApplyRemoteSplits,
-  splitsFingerprint,
-} from "../lib/scheduleSplits";
 import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
 import AppendQtyEntries from "./AppendQtyEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
@@ -25,9 +19,6 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const [err, setErr] = useState("");
   const [qtyDrafts, setQtyDrafts] = useState({});
   const [confirm, setConfirm] = useState(null);
-  const dirtyRef = useRef(false);
-  const savedFpRef = useRef(splitsFingerprint(order?.operator_splits));
-  const savedAtRef = useRef(order?.updated_at || "");
 
   const requiresPrinting = order?.requires_printing !== false;
   const lineItems = order?.line_items || [];
@@ -50,28 +41,20 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   );
 
   useEffect(() => {
-    dirtyRef.current = false;
-    const incoming = order?.operator_splits || [];
-    setSplits(mapPersistedSplits(incoming));
-    savedFpRef.current = splitsFingerprint(incoming);
-    savedAtRef.current = order?.updated_at || "";
-  }, [order?.id]);
-
-  useEffect(() => {
-    const incoming = order?.operator_splits || [];
-    const incomingFp = splitsFingerprint(incoming);
-    if (!shouldApplyRemoteSplits({
-      dirty: dirtyRef.current,
-      incomingFingerprint: incomingFp,
-      savedFingerprint: savedFpRef.current,
-      incomingUpdatedAt: order?.updated_at,
-      savedUpdatedAt: savedAtRef.current,
-    })) {
-      return;
-    }
-    setSplits(mapPersistedSplits(incoming));
-    savedFpRef.current = incomingFp;
-  }, [order.operator_splits, order?.updated_at]);
+    setSplits(
+      (order.operator_splits || []).map((s) => ({
+        operator_email: s.operator_email,
+        operator_name: s.operator_name,
+        quantity: s.quantity,
+        id: s.id,
+        stage: s.stage,
+        line_idx: s.line_idx ?? "",
+        work_date: s.work_date || "",
+        qty_completed: Number(s.qty_completed || 0),
+        qty_cancelled: Number(s.qty_cancelled || 0),
+      }))
+    );
+  }, [order.operator_splits]);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -122,17 +105,15 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     return m;
   }, [splits]);
 
-  const markDirty = () => { dirtyRef.current = true; };
-
   const addRow = () => {
     const defaultLine = focusedIdx != null ? focusedIdx : (visiblePrintLines[0]?.idx ?? printLines[0]?.idx ?? "");
-    markDirty();
     setSplits([...splits, { operator_email: "", operator_name: "", quantity: 0, line_idx: defaultLine, work_date: "" }]);
   };
 
   const updateRow = (i, patch) => {
-    markDirty();
-    setSplits((prev) => patchScheduleRow(prev, i, patch));
+    const next = [...splits];
+    next[i] = { ...next[i], ...patch };
+    setSplits(next);
   };
 
   const removeRow = (i) => {
@@ -142,7 +123,6 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
       updateRow(i, { quantity: done });
       return;
     }
-    markDirty();
     setSplits(splits.filter((_, idx) => idx !== i));
   };
 
@@ -201,11 +181,6 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         line_idx: Number(s.line_idx),
         work_date: s.work_date ? s.work_date : null,
       })));
-      dirtyRef.current = false;
-      const remote = res?.order?.operator_splits || [];
-      savedFpRef.current = splitsFingerprint(remote);
-      savedAtRef.current = res?.order?.updated_at || savedAtRef.current;
-      setSplits(mapPersistedSplits(remote));
       onUpdated(res.order);
     } catch (e) {
       const d = e.response?.data?.detail;

@@ -1,5 +1,4 @@
 import { packingLinesForOrder } from "./packingCard";
-import { isActiveSjFile, loadingAvailableForLine } from "./loadingConfirm";
 import { shipmentLinesForOrder, storedShipments } from "./shipmentLines";
 import { getWorkflowReady } from "./stageState";
 import { entriesForLine, sumEntryQty, validEntries, visibleEntries } from "./workflowEntries";
@@ -374,13 +373,7 @@ export function loadingWorkModel(order) {
       order?.loading_checklist?.updated_by_name,
     );
     const done = Number(row.loaded || 0);
-    const target = Number(row.loading_cap || row.qty_po || 0);
-    const remaining = loadingAvailableForLine({
-      available_loading: row.available_loading,
-      qtyPo: row.qty_po || target,
-      loaded: done,
-      packed: row.packed,
-    });
+    const target = Number(row.loading_cap || row.packed || 0);
     return {
       lineIdx: row.line_idx,
       itemId: `load-${row.line_idx}`,
@@ -389,14 +382,13 @@ export function loadingWorkModel(order) {
       unit: "pcs",
       target,
       done,
-      remaining: Math.max(0, remaining),
+      remaining: Math.max(0, Number(row.available_loading != null ? row.available_loading : target - done)),
       entries: vis,
     };
   });
   const headerTarget = lines.reduce((s, l) => s + l.target, 0);
   const headerDone = lines.reduce((s, l) => s + l.done, 0);
-  const sjFiles = [...(order?.surat_jalan_files || []), ...(order?.sj_files || [])];
-  const sjReady = !!order?.surat_jalan_created || sjFiles.some(isActiveSjFile);
+  const sjReady = !!order?.surat_jalan_created;
   return {
     title: "Pekerjaan Loading",
     stage: "Loading",

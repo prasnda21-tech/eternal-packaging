@@ -36,13 +36,12 @@ export function shipmentLinesForOrder(order) {
     const packed = packedOf(idx);
     const shipped = shippedOf(idx);
     const loaded = loadedOf(idx);
-    const qtyPo = safeInt(li.quantity ?? packing[idx]?.qty_po);
-    const cap = qtyPo;
+    const cap = Math.min(packed, shipped || packed);
     rows.push({
       line_idx: idx,
       name: li.name || packing[idx]?.name || `Line #${idx + 1}`,
       color: li.color || packing[idx]?.color,
-      qty_po: qtyPo,
+      qty_po: safeInt(li.quantity ?? packing[idx]?.qty_po),
       packed,
       shipped,
       available_sj: Math.max(0, packed - shipped),

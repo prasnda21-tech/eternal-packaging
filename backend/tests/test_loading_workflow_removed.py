@@ -173,9 +173,9 @@ def test_nav_loading_in_user_facing_catalog():
     assert "nav.tasks.loading" in derived
 
 
-def test_public_tracking_includes_loading_aligned_with_detail_po():
+def test_public_tracking_has_no_loading_milestone():
     names = [r["stage"] for r in customer_workflow(_new_po())]
-    assert "Loading" in names
+    assert "Loading" not in names
     assert "Surat Jalan" in names
     assert "Terkirim" in names
     payload = public_payload(_new_po(customer="PT Contoh"))
