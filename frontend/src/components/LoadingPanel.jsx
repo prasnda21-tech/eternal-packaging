@@ -43,6 +43,8 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const activeSj = files.find((f) => f.id === sjId) || files[0] || null;
   const hasSj = files.length > 0;
   const remaining = poLines.reduce((s, r) => s + Number(r.available || 0), 0);
+  const physicalReady = remaining > 0;
+  const waitingPhysical = hasSj && !physicalReady && confirmations.length === 0 && !hasLegacyLoading(order);
 
   const setRow = (i, patch) => {
     setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
@@ -52,6 +54,10 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
 
   const openConfirm = () => {
     if (!canManage || busy) return;
+    if (!physicalReady) {
+      setErr("Qty Loading belum bisa diisi. Qty fisik yang sudah diproses belum siap.");
+      return;
+    }
     if (!activeSj?.id) {
       setErr("Pilih Surat Jalan yang dikonfirmasi.");
       return;
@@ -143,6 +149,11 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
         {canManage && hasSj && (
           <div className="sj-item-block" data-testid="loading-item-block">
             <h4 className="sj-item-heading">KONFIRMASI ITEM & QTY</h4>
+            {waitingPhysical && (
+              <p className="muted small" data-testid="loading-physical-gate">
+                Qty Loading dapat diisi setelah qty fisik (packing) siap.
+              </p>
+            )}
             {rows.map((row, i) => (
               <div key={i} className="sj-item-row" data-testid={`loading-item-row-${i}`}>
                 <label>
@@ -150,6 +161,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                   <select
                     value={row.line_idx}
                     onChange={(e) => setRow(i, { line_idx: e.target.value })}
+                    disabled={!physicalReady}
                     data-testid={`loading-item-select-${i}`}
                   >
                     <option value="">Pilih item</option>
@@ -166,9 +178,10 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                     type="number"
                     min="1"
                     inputMode="numeric"
-                    className="manual-qty-input is-manual"
+                    className={`manual-qty-input is-manual${!physicalReady ? " is-disabled" : ""}`}
                     value={row.qty}
                     onChange={(e) => setRow(i, { qty: e.target.value })}
+                    disabled={!physicalReady}
                     data-testid={`loading-qty-input-${i}`}
                   />
                 </label>
@@ -191,7 +204,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
               type="button"
               className="primary"
               onClick={openConfirm}
-              disabled={busy}
+              disabled={busy || !physicalReady}
               data-testid="loading-confirm-button"
             >
               KONFIRMASI LOADING

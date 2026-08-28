@@ -21,6 +21,7 @@ describe("Loading restored as SJ qty confirmation", () => {
     const panel = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
     expect(panel).toMatch(/KONFIRMASI ITEM & QTY/);
     expect(panel).toMatch(/loading-qty-input/);
+    expect(panel).toMatch(/loading-physical-gate/);
     expect(panel).toMatch(/confirmLoading/);
     expect(panel).toMatch(/KONFIRMASI LOADING/);
     expect(panel).toMatch(/surat_jalan_id/);

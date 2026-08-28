@@ -935,12 +935,21 @@ def surat_jalan_created(order: dict) -> bool:
 def loading_cap_for_line(order: dict, line_idx: int) -> int:
     """Historical increment cap = min(packed, shipped-if-SJ-lines). Never > packed.
 
-    New SJ-linked confirmations use `available_for_loading_confirm_line` (PO qty).
+    New SJ-linked confirmations use `available_for_loading_confirm_line` (packed qty).
     """
     packed = packed_qty_for_line(order, line_idx)
     if has_shipment_line_quantities(order):
         shipped = qty_shipped_for_line(order, line_idx)
         return max(0, min(packed, shipped))
+    return max(0, packed)
+
+
+def loading_confirm_cap_for_line(order: dict, line_idx: int) -> int:
+    """Physical cap for SJ-linked Loading confirm: packed qty, never above PO qty."""
+    packed = packed_qty_for_line(order, line_idx)
+    po = po_qty_for_line(order, line_idx)
+    if po > 0:
+        return max(0, min(packed, po))
     return max(0, packed)
 
 
@@ -961,7 +970,8 @@ def eligible_delivery_qty(order: dict) -> int:
 
 
 def available_for_loading_confirm_line(order: dict, line_idx: int) -> int:
-    return max(0, po_qty_for_line(order, line_idx) - qty_loaded_for_line(order, line_idx))
+    """Remaining Loading confirm qty = packed physical qty minus already loaded."""
+    return max(0, loading_confirm_cap_for_line(order, line_idx) - qty_loaded_for_line(order, line_idx))
 
 
 def available_for_loading_line(order: dict, line_idx: int) -> int:
@@ -969,7 +979,7 @@ def available_for_loading_line(order: dict, line_idx: int) -> int:
 
 
 def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list) -> Optional[str]:
-    """Manual Item/Qty against a specific Surat Jalan file. Cap = remaining PO line qty."""
+    """Manual Item/Qty against a specific Surat Jalan file. Cap = remaining packed qty."""
     entry = find_sj_file(order, surat_jalan_id)
     if not entry:
         return "Surat Jalan tidak ditemukan. Loading harus terhubung ke file Surat Jalan."
@@ -996,7 +1006,14 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
         avail = available_for_loading_confirm_line(order, idx)
         name = _line_name(order, idx)
         if qty > avail:
-            return f"Qty Loading '{name}' ({qty}) melebihi sisa qty PO yang belum dikonfirmasi ({avail})."
+            if avail <= 0:
+                return (
+                    f"Qty Loading '{name}' belum bisa diisi. "
+                    "Qty fisik yang sudah diproses belum siap."
+                )
+            return (
+                f"Qty Loading '{name}' ({qty}) melebihi qty packing yang siap loading ({avail})."
+            )
     return None
 
 
@@ -1386,7 +1403,7 @@ def shipment_line_breakdown(order: dict) -> list:
         shipped = qty_shipped_for_line(order, idx)
         loaded = qty_loaded_for_line(order, idx)
         avail_sj = available_for_delivery_note_line(order, idx)
-        cap_load = po_qty_for_line(order, idx)
+        cap_load = loading_confirm_cap_for_line(order, idx)
         avail_load = available_for_loading_confirm_line(order, idx)
         mismatch = shipped > packed
         out.append({

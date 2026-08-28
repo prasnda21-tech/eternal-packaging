@@ -568,6 +568,10 @@ def build_loading_tasks(order: dict) -> List[dict]:
         row["status"] = "sebagian"
         row["required_input"] = "Konfirmasi Item & Qty"
         row["action_label"] = "Kerjakan"
+    elif remaining <= 0:
+        row["status"] = "belum"
+        row["required_input"] = "Konfirmasi Item & Qty"
+        row["action_label"] = "Kerjakan"
     else:
         row["status"] = "siap"
         row["required_input"] = "Konfirmasi Item & Qty"
