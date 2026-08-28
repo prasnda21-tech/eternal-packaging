@@ -223,8 +223,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
       onUpdated(res.order);
       setConfirmDeliver(null);
     } catch (ex) {
-      const d = ex.response?.data?.detail;
-      setErr(typeof d === "string" ? d : (d?.message || proofUploadUserError(ex)));
+      setErr(proofUploadUserError(ex));
     } finally {
       setConfirming(false);
     }

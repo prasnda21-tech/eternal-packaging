@@ -20,5 +20,11 @@ export function proofUploadUserError(ex) {
   if (status === 502 || /EMERGENT_LLM_KEY|object storage|tidak terkonfigurasi|S3_BUCKET/i.test(text)) {
     return "Gagal mengunggah foto. Silakan coba lagi.";
   }
+  if (status === 403) {
+    if (/role Anda/i.test(text)) {
+      return "Anda tidak punya izin untuk aksi ini.";
+    }
+    return text || "Anda tidak punya izin untuk aksi ini.";
+  }
   return text || "Gagal mengunggah foto. Silakan coba lagi.";
 }
