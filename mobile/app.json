@@ -2,6 +2,7 @@
   "expo": {
     "name": "Eternal Packaging",
     "slug": "eternal-packaging-mobile",
+    "owner": "eternal-packaging",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -56,6 +57,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "22d68768-64c1-4f3e-ab6a-a217157fabb5"
+      }
     }
   }
 }
