@@ -2134,8 +2134,35 @@ def _classification1_name(obj: Dict[str, Any]) -> Optional[str]:
     return _blank_to_none(obj.get("dataClassification1Name"))
 
 
+def _accurate_char_field3(obj: Dict[str, Any]) -> Optional[str]:
+    """Live-proven zona: searchCharField3.name then charField3."""
+    nested = obj.get("searchCharField3")
+    if isinstance(nested, dict):
+        name = _blank_to_none(nested.get("name"))
+        if name:
+            return name
+    else:
+        name = _accurate_code_or_name(nested)
+        if name:
+            return name
+    raw = obj.get("charField3")
+    if isinstance(raw, dict):
+        return _accurate_code_or_name(raw)
+    if isinstance(raw, (list, bool)):
+        return None
+    return _blank_to_none(raw)
+
+
 def _accurate_delivery_zone(d: Dict[str, Any], lines_raw: List[Any]) -> Optional[str]:
-    """Zona kirim. Not shipment (ekspedisi). Uses dataClassification1 only when present."""
+    """Zona kirim. Not shipment (ekspedisi). Live Custom Character Field 3 first."""
+    name = _accurate_char_field3(d)
+    if name:
+        return name
+    for li in lines_raw:
+        if isinstance(li, dict):
+            name = _accurate_char_field3(li)
+            if name:
+                return name
     for key in ("shipVia", "deliveryZone", "shippingZone"):
         name = _accurate_code_or_name(d.get(key))
         if name:
@@ -2227,18 +2254,19 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(lines_raw, list):
         lines_raw = []
     lines: List[Dict[str, Any]] = []
-    multi_line = len(lines_raw) > 1
     for li in lines_raw:
         if not isinstance(li, dict):
             continue
         item = li.get("item") or {}
         if not isinstance(item, dict):
             item = {}
-        # Fields to scan for color, in priority order
+        # Color: structured line field, then line notes, then header description.
         explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
-        desc = li.get("description") or li.get("detailNotes") or li.get("itemDesc") or ""
-        item_notes = li.get("notes") or li.get("memo") or ""
-        item_name_text = item.get("name") or li.get("itemName") or li.get("detailName") or ""
+        line_note_text = " ".join(
+            str(li.get(k) or "").strip()
+            for k in ("detailNotes", "notes", "memo", "description", "itemDesc")
+            if li.get(k)
+        ).strip()
 
         color_val: Optional[str] = None
         color_source: Optional[str] = None
@@ -2249,9 +2277,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
             color_val = str(explicit_color).strip()
             color_source = "item.color"
         else:
-            # scan item-level free text (desc + notes + item name)
-            item_text = " ".join([desc or "", item_notes or "", item_name_text or ""]).strip()
-            colors_in_item = _detect_colors(item_text)
+            colors_in_item = _detect_colors(line_note_text)
             if len(colors_in_item) == 1:
                 color_val = colors_in_item[0]
                 color_source = "item.description"
@@ -2259,15 +2285,15 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
                 color_candidates = colors_in_item
                 needs_verify = True
                 color_source = "item.description"
-            else:
-                # Fallback to SO-level memo
-                if len(so_colors) == 1 and not multi_line:
+            elif so_colors:
+                # Header description fallback. Never overwrites a line-level color.
+                if len(so_colors) == 1:
                     color_val = so_colors[0]
-                    color_source = "so.notes"
-                elif so_colors:
+                    color_source = "so.description"
+                else:
                     color_candidates = so_colors
                     needs_verify = True
-                    color_source = "so.notes"
+                    color_source = "so.description"
 
         line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
         qty_raw = li.get("quantity") if li.get("quantity") not in (None, "") else li.get("qty")
