@@ -129,6 +129,31 @@ def test_shipment_empty():
     assert out["total"] == 0
 
 
+def test_shipment_today_uses_operational_date_not_uploaded_at():
+    today = date(2026, 8, 28)
+    later = date(2026, 8, 30)
+    o = {
+        "id": "s3", "po_number": "PO-DATE", "cancelled": False,
+        "current_stage": 12,
+        "delivery_note_created_at": "2026-08-30T12:00:00+07:00",
+        "surat_jalan_files": [{"id": "f1", "uploaded_at": "2026-08-28T09:00:00+07:00"}],
+        "shipments": [{"created_at": "2026-08-28T09:00:00+07:00", "number": "SJ-1"}],
+    }
+    assert not is_shipment_today(o, today)
+    assert is_shipment_today(o, later)
+
+
+def test_parse_operational_date_key():
+    from services.dashboard_today import operational_iso, parse_operational_date_key
+    assert parse_operational_date_key("2026-08-30") == "2026-08-30"
+    assert parse_operational_date_key("2026-02-31") is None
+    assert parse_operational_date_key("") is None
+    assert parse_operational_date_key("30/08/2026") is None
+    iso = operational_iso("2026-08-30")
+    assert iso.startswith("2026-08-30T12:00:00")
+    assert "+07:00" in iso
+
+
 def test_work_query_not_full_scan():
     q = work_today_mongo_query(date(2026, 8, 25))
     assert q["cancelled"] == {"$ne": True}

@@ -207,4 +207,15 @@ describe("productionNavVisible", () => {
     expect(v.tasks.operator).toBe(true);
     expect(v.schedule).toBe(false);
   });
+
+  test("pengiriman hari ini follows status po perm and does not open produksi alone", () => {
+    const onlyStatus = productionNavVisible(has(NAV_KEYS.statusPo));
+    expect(onlyStatus.parent).toBe(false);
+    expect(onlyStatus.deliveryToday).toBe(true);
+    const both = productionNavVisible(has(NAV_KEYS.schedule, NAV_KEYS.statusPo));
+    expect(both.parent).toBe(true);
+    expect(both.deliveryToday).toBe(true);
+    const prodOnly = productionNavVisible(has(NAV_KEYS.schedule));
+    expect(prodOnly.deliveryToday).toBe(false);
+  });
 });

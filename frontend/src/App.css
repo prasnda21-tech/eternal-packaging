@@ -1752,6 +1752,12 @@ html:has(.ship-status-page) #root{
   letter-spacing:.04em;text-transform:uppercase;padding:7px 10px;text-align:left;white-space:nowrap;border-bottom:1px solid #5a7388;
 }
 .ship-table thead th.num{text-align:center}
+.ship-table thead th.ship-check,.ship-table tbody td.ship-check{width:36px;text-align:center;padding-left:8px;padding-right:8px}
+.ship-table tbody td.ship-check input,.ship-table thead th.ship-check input{width:15px;height:15px;accent-color:var(--ep-primary)}
+.ship-table tbody tr.is-selected td{background:#e8f1f8}
+.status-po-bulk-fields{display:grid;gap:8px;margin-top:8px}
+.status-po-bulk-fields label{display:grid;gap:4px;font-size:13px}
+.status-po-bulk-fields textarea,.status-po-bulk-fields input{width:100%}
 .ship-table tbody td{
   padding:5px 10px;border-bottom:1px solid #e4e8ec;vertical-align:middle;background:#fff;line-height:1.25;
 }

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileText, Upload } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
@@ -8,7 +8,9 @@ import SuratJalanPreviewModal from "./SuratJalanPreviewModal";
 import api from "../lib/api";
 import {
   SJ_VIEW_FILE_PERM,
+  defaultSjOperationalDate,
   downloadSuratJalanFile,
+  parseOperationalDate,
   sjHistory,
 } from "../lib/suratJalan";
 
@@ -29,11 +31,18 @@ export default function SuratJalanPanel({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [file, setFile] = useState(null);
+  const [deliveryDate, setDeliveryDate] = useState(() => defaultSjOperationalDate(order));
   const [confirm, setConfirm] = useState(null);
   const [preview, setPreview] = useState(null);
   const uploading = busyProp || busy;
   const created = !!order.surat_jalan_created;
   const files = sjHistory(order);
+  const sjOrderId = order?.id;
+  const sjStoredDate = order?.delivery_note_created_at;
+
+  useEffect(() => {
+    setDeliveryDate(defaultSjOperationalDate({ delivery_note_created_at: sjStoredDate }));
+  }, [sjOrderId, sjStoredDate]);
 
   const pickFile = () => {
     setErr("");
@@ -58,12 +67,22 @@ export default function SuratJalanPanel({
 
   const openConfirm = () => {
     if (!file || uploading) return;
+    const date = parseOperationalDate(deliveryDate);
+    if (!date) {
+      setErr("Tanggal pengiriman wajib diisi dan harus valid.");
+      return;
+    }
     setErr("");
-    setConfirm({ file, time: formatDisplayDateTime(new Date().toISOString()) });
+    setConfirm({ file, time: formatDisplayDateTime(new Date().toISOString()), deliveryDate: date });
   };
 
   const executeUpload = async () => {
     if (!confirm?.file || uploading) return;
+    const date = parseOperationalDate(confirm.deliveryDate || deliveryDate);
+    if (!date) {
+      setErr("Tanggal pengiriman wajib diisi dan harus valid.");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -77,6 +96,7 @@ export default function SuratJalanPanel({
         kind: "surat_jalan",
         name: confirm.file.name,
         data_url: dataUrl,
+        delivery_date: date,
       });
       onUpdated?.(result?.order || result);
       setConfirm(null);
@@ -117,6 +137,17 @@ export default function SuratJalanPanel({
         ) : (
           <>
             <p className="muted small" data-testid="sj-file-only-note">File Surat Jalan</p>
+            <label className="ship-filter-field" data-testid="surat-jalan-date-field">
+              <span>Tanggal pengiriman</span>
+              <input
+                type="date"
+                required
+                value={deliveryDate}
+                onChange={(e) => { setDeliveryDate(e.target.value); setErr(""); }}
+                disabled={uploading}
+                data-testid="surat-jalan-delivery-date"
+              />
+            </label>
             <div className="sj-upload-file-row">
               <button
                 type="button"
@@ -188,6 +219,9 @@ export default function SuratJalanPanel({
         error={err}
         confirmLabel="Konfirmasi"
         onCancel={() => { if (!uploading) { setConfirm(null); setErr(""); } }}
+        extra={confirm?.deliveryDate ? (
+          <p className="muted small" data-testid="sj-confirm-date">Tanggal pengiriman: {confirm.deliveryDate}</p>
+        ) : null}
         onConfirm={executeUpload}
       />
       <SuratJalanPreviewModal

@@ -24,7 +24,6 @@ const CARD_VIEWS = {
   hold: "hold",
   completed: "completed",
   work_today: "work_today",
-  delivery_today: "delivery_today",
 };
 
 const KpiCard = ({ icon: Icon, label, value, tone = "default", testid, extraTestid, onClick }) => {
@@ -60,6 +59,11 @@ export default function HoPDashboard() {
   const openStatusPo = (view) => {
     if (!canStatusPo) return;
     navigate(`/laporan/status-po?view=${view}`);
+  };
+
+  const openDeliveryToday = () => {
+    if (!canStatusPo) return;
+    navigate("/produksi/pengiriman-hari-ini");
   };
 
   const load = async () => {
@@ -147,7 +151,7 @@ export default function HoPDashboard() {
           value={data.shipments_today?.total || 0}
           testid="kpi-delivery-today"
           extraTestid="today-ship"
-          onClick={click("delivery_today")}
+          onClick={canStatusPo ? openDeliveryToday : undefined}
         />
         <KpiCard icon={Flame} label="PO Urgent" value={kpi.total_urgent} tone="urgent" testid="kpi-urgent" onClick={click("urgent")} />
         <KpiCard icon={CalendarClock} label="Deadline Hari Ini" value={kpi.due_today} tone="warn" testid="kpi-today" onClick={click("today")} />

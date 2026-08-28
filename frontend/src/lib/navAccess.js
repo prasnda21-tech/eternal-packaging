@@ -173,12 +173,14 @@ export function productionNavVisible(hasPerm) {
   const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
   const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
   const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
+  const deliveryToday = canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const tasks = tasksNavVisible(hasPerm);
   return {
     parent: !!(schedule || deliverySchedule || deliveryReschedule || tasks.parent),
     schedule,
     deliverySchedule,
     deliveryReschedule,
+    deliveryToday,
     tasks,
   };
 }
