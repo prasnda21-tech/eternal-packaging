@@ -53,7 +53,12 @@ ACCURATE_BACKOFF_BASE_S = 0.5
 ACCURATE_BACKOFF_MAX_S = 4.0
 ACCURATE_SESSION_TTL_S = 240
 ACCURATE_SO_FETCH_CONCURRENCY = 3
+ACCURATE_LOOKUP_CONCURRENCY = 3
+ACCURATE_NAME_CACHE_TTL_S = 600.0  # 10 minutes
 ACCURATE_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+ACCURATE_BRANCH_DETAIL_PATH = "/accurate/api/branch/detail.do"
+# Official OpenAPI (account.accurate.id/open-api/json.do) has no user-by-id
+# endpoint. /api/userinfo.do is the current OAuth user only. Do not guess.
 ACCURATE_HTTP_LIMITS = httpx.Limits(
     max_keepalive_connections=8,
     max_connections=16,
@@ -66,6 +71,19 @@ _HTTP_RETRYABLE_EXC = (
     ConnectionResetError,
     ConnectionAbortedError,
 )
+
+# In-memory TTL cache + single-flight for branch (and any future) id→name lookups.
+_NAME_CACHE: Dict[str, Tuple[float, Optional[str]]] = {}
+_NAME_INFLIGHT: Dict[str, "asyncio.Future[Optional[str]]"] = {}
+_NAME_GUARD = asyncio.Lock()
+_SO_INTERNAL_CREATED_BY_ID = "_created_by_id"
+_SO_INTERNAL_BRANCH_ID = "_branch_id"
+
+
+def clear_accurate_name_cache() -> None:
+    """Tests only. Drops TTL cache and in-flight lookups."""
+    _NAME_CACHE.clear()
+    _NAME_INFLIGHT.clear()
 
 
 def now_iso() -> str:
@@ -889,6 +907,162 @@ class AccurateClient:
             d = payload.get("r") if isinstance(payload.get("r"), dict) else None
         return d if isinstance(d, dict) else None
 
+    async def _lookup_cached_name(
+        self,
+        cache_key: str,
+        fetcher: Callable[[], Any],
+    ) -> Optional[str]:
+        """Return cached name or run fetcher once (single-flight). Never raises."""
+        now = time.monotonic()
+        hit = _NAME_CACHE.get(cache_key)
+        if hit and hit[0] > now:
+            return hit[1]
+        async with _NAME_GUARD:
+            hit = _NAME_CACHE.get(cache_key)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+            existing = _NAME_INFLIGHT.get(cache_key)
+            if existing is not None:
+                wait_fut = existing
+                starter = False
+            else:
+                wait_fut = asyncio.get_running_loop().create_future()
+                _NAME_INFLIGHT[cache_key] = wait_fut
+                starter = True
+        if not starter:
+            try:
+                return await wait_fut
+            except Exception:
+                return None
+        try:
+            name, store = await fetcher()
+            if store:
+                _NAME_CACHE[cache_key] = (time.monotonic() + ACCURATE_NAME_CACHE_TTL_S, name)
+            if not wait_fut.done():
+                wait_fut.set_result(name)
+            return name
+        except Exception as exc:
+            logger.warning(
+                "accurate_request endpoint=%s error_category=%s exception=%s",
+                cache_key.split(":", 1)[0] or "-",
+                AccurateErrorCategory.INTERNAL_ERROR,
+                type(exc).__name__,
+            )
+            if not wait_fut.done():
+                wait_fut.set_result(None)
+            return None
+        finally:
+            _NAME_INFLIGHT.pop(cache_key, None)
+
+    async def _fetch_branch_name(
+        self,
+        http: httpx.AsyncClient,
+        host: str,
+        branch_id: str,
+        *,
+        correlation_id: str,
+    ) -> Tuple[Optional[str], bool]:
+        """GET official /accurate/api/branch/detail.do?id=. Returns (name, cache?)."""
+        url = f"{host.rstrip('/')}{ACCURATE_BRANCH_DETAIL_PATH}"
+        try:
+            r = await self._authed_get(
+                http, url,
+                params={"id": branch_id},
+                logical_name="branch/detail.do",
+                correlation_id=correlation_id,
+            )
+        except AccurateRequestError as e:
+            logger.warning(
+                "accurate_request correlation_id=%s endpoint=branch/detail.do so_number=- http_status=%s duration_ms=0 retry_count=0 error_category=%s",
+                correlation_id or "-",
+                "-" if e.http_status is None else e.http_status,
+                e.category,
+            )
+            return None, (not e.retryable)
+        try:
+            payload = r.json()
+        except Exception:
+            logger.warning(
+                "accurate_request correlation_id=%s endpoint=branch/detail.do so_number=- http_status=%s duration_ms=0 retry_count=0 error_category=%s",
+                correlation_id or "-",
+                r.status_code,
+                AccurateErrorCategory.INVALID_RESPONSE,
+            )
+            return None, True
+        if not isinstance(payload, dict):
+            return None, True
+        if payload.get("s") is False:
+            cat = _classify_s_false(payload)
+            logger.warning(
+                "accurate_request correlation_id=%s endpoint=branch/detail.do so_number=- http_status=%s duration_ms=0 retry_count=0 error_category=%s",
+                correlation_id or "-",
+                r.status_code,
+                cat,
+            )
+            return None, (cat not in _RETRYABLE_CATEGORIES)
+        body = _item_detail_body(payload)
+        if not isinstance(body, dict):
+            return None, True
+        name = _accurate_display_name(body) or _blank_to_none(body.get("branchName"))
+        return name, True
+
+    async def _enrich_creator_and_outlet(
+        self,
+        http: httpx.AsyncClient,
+        host: str,
+        results: List[Dict[str, Any]],
+        *,
+        correlation_id: str,
+    ) -> None:
+        """Resolve unique branchId via branch/detail.do. Creator has no official user-by-id API."""
+        need_branch: Dict[str, List[Dict[str, Any]]] = {}
+        for row in results:
+            if not row.get("success"):
+                continue
+            so = row.get("data")
+            if not isinstance(so, dict):
+                continue
+            if not so.get("outlet"):
+                bid = str(so.get(_SO_INTERNAL_BRANCH_ID) or "").strip()
+                if bid:
+                    need_branch.setdefault(bid, []).append(so)
+
+        sem = asyncio.Semaphore(ACCURATE_LOOKUP_CONCURRENCY)
+
+        async def _one_branch(bid: str) -> Tuple[str, Optional[str]]:
+            async with sem:
+                name = await self._lookup_cached_name(
+                    f"branch:{bid}",
+                    lambda: self._fetch_branch_name(http, host, bid, correlation_id=correlation_id),
+                )
+                return bid, name
+
+        if need_branch:
+            pairs = await asyncio.gather(
+                *[_one_branch(bid) for bid in need_branch],
+                return_exceptions=True,
+            )
+            for item in pairs:
+                if isinstance(item, Exception):
+                    logger.warning(
+                        "accurate_request correlation_id=%s endpoint=branch/detail.do so_number=- error_category=%s exception=%s",
+                        correlation_id or "-",
+                        AccurateErrorCategory.INTERNAL_ERROR,
+                        type(item).__name__,
+                    )
+                    continue
+                bid, name = item
+                if name:
+                    for so in need_branch.get(bid, []):
+                        if not so.get("outlet"):
+                            so["outlet"] = name
+
+        for row in results:
+            so = row.get("data") if row.get("success") else None
+            if isinstance(so, dict):
+                so.pop(_SO_INTERNAL_CREATED_BY_ID, None)
+                so.pop(_SO_INTERNAL_BRANCH_ID, None)
+
     async def _fetch_so_on_http(
         self,
         http: httpx.AsyncClient,
@@ -1059,18 +1233,32 @@ class AccurateClient:
             limits=ACCURATE_HTTP_LIMITS,
         ) as http:
             parts = await asyncio.gather(*[_one(n) for n in numbers], return_exceptions=True)
-        out = []
-        for sn, part in zip(numbers, parts):
-            if isinstance(part, AccurateRequestError):
-                out.append(part.to_result(sn))
-            elif isinstance(part, Exception):
-                out.append(AccurateRequestError(
+            out = []
+            for sn, part in zip(numbers, parts):
+                if isinstance(part, AccurateRequestError):
+                    out.append(part.to_result(sn))
+                elif isinstance(part, Exception):
+                    out.append(AccurateRequestError(
+                        AccurateErrorCategory.INTERNAL_ERROR,
+                        technical_message=type(part).__name__,
+                    ).to_result(sn))
+                else:
+                    out.append(part)
+            try:
+                await self._enrich_creator_and_outlet(http, host, out, correlation_id=cid)
+            except Exception as e:
+                logger.warning(
+                    "accurate_request correlation_id=%s endpoint=branch/detail.do so_number=- error_category=%s exception=%s",
+                    cid,
                     AccurateErrorCategory.INTERNAL_ERROR,
-                    technical_message=type(part).__name__,
-                ).to_result(sn))
-            else:
-                out.append(part)
-        return out
+                    type(e).__name__,
+                )
+                for row in out:
+                    so = row.get("data") if isinstance(row, dict) else None
+                    if isinstance(so, dict):
+                        so.pop(_SO_INTERNAL_CREATED_BY_ID, None)
+                        so.pop(_SO_INTERNAL_BRANCH_ID, None)
+            return out
 
     async def list_recent_sales_orders(
         self,
@@ -2108,7 +2296,9 @@ def _accurate_created_by(d: Dict[str, Any]) -> Optional[str]:
     """User yang membuat transaksi — never salesman, printer, or numeric IDs.
 
     Live GET only sends createdBy as an id (e.g. 1248273). printUserName is the
-    print operator, not the creator. No existing user-lookup API is used.
+    print operator, not the creator. Official OpenAPI has no user-by-id lookup
+    (/api/userinfo.do is the current token user only), so an id without a name
+    stays unresolved (UI: Perlu verifikasi).
     """
     for key in ("userName", "createUserName", "createdByUserName"):
         name = _accurate_person_name(d.get(key))
@@ -2130,6 +2320,53 @@ def _accurate_person_name(value: Any) -> Optional[str]:
     if not name or name.isdigit():
         return None
     return name
+
+
+def _accurate_record_id(value: Any) -> Optional[str]:
+    """Numeric Accurate record id as string. Never treats a name as an id."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        value = value.get("id")
+        if value is None or isinstance(value, bool):
+            return None
+    if isinstance(value, float):
+        if value != value or value != int(value):
+            return None
+        value = int(value)
+    if isinstance(value, int):
+        return str(value) if value >= 0 else None
+    s = str(value).strip()
+    if not s or not s.isdigit():
+        return None
+    return s
+
+
+def _accurate_created_by_id(d: Dict[str, Any]) -> Optional[str]:
+    """createdBy user id only. Never userPrinted / salesman."""
+    for key in ("createdBy", "user", "createUser", "createdByUser"):
+        rid = _accurate_record_id(d.get(key))
+        if rid:
+            return rid
+    return None
+
+
+def _accurate_outlet_name(d: Dict[str, Any]) -> Optional[str]:
+    """SO branch name if Accurate already expanded it. Never shipment/warehouse."""
+    name = _blank_to_none(d.get("branchName"))
+    if name:
+        return name
+    branch = d.get("branch") if isinstance(d.get("branch"), dict) else {}
+    return _accurate_display_name(branch)
+
+
+def _accurate_branch_id(d: Dict[str, Any]) -> Optional[str]:
+    """Transaction branchId. Header only — not warehouse or line selling-price."""
+    rid = _accurate_record_id(d.get("branchId"))
+    if rid:
+        return rid
+    branch = d.get("branch") if isinstance(d.get("branch"), dict) else {}
+    return _accurate_record_id(branch)
 
 
 def _ship_pic_name(obj: Any) -> Optional[str]:
@@ -2364,7 +2601,6 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         if color_source:
             line["color_source"] = color_source
         lines.append(line)
-    branch = d.get("branch") if isinstance(d.get("branch"), dict) else {}
     salesperson = _accurate_salesman(d, lines_raw)
     created_by_name = _accurate_created_by(d)
     trans_date = _parse_accurate_date(d.get("transDate") or d.get("trans_date"))
@@ -2379,7 +2615,7 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         "accurate_id": str(d.get("id") or d.get("number") or ""),
         "po_number": str(d.get("number") or d.get("orderNumber") or ""),
         "customer": _accurate_display_name(d.get("customer")) or _blank_to_none(d.get("customerName")),
-        "outlet": _blank_to_none(d.get("branchName")) or _accurate_display_name(branch),
+        "outlet": _accurate_outlet_name(d),
         "recipient": recipient,
         "address": _accurate_so_address(d),
         "payment_terms": payment,
@@ -2396,6 +2632,8 @@ def _normalize_accurate_so(d: Dict[str, Any]) -> Dict[str, Any]:
         "estimated_delivery": ship_date,
         "line_items": lines,
         "so_notes_raw": so_notes or None,
+        _SO_INTERNAL_CREATED_BY_ID: _accurate_created_by_id(d),
+        _SO_INTERNAL_BRANCH_ID: _accurate_branch_id(d),
     }
 
 
