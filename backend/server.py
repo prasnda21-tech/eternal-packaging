@@ -10,14 +10,19 @@ from typing import List, Optional, Any, Dict, Tuple
 from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
+from pymongo.errors import DuplicateKeyError
 from services.accurate import (
     AccurateClient,
+    AccurateErrorCategory,
+    AccurateRequestError,
     ACCURATE_DELIVERY_ENDPOINT_AVAILABLE,
     ACCURATE_DELIVERY_ENDPOINT_REASON,
+    coerce_accurate_quantity,
     fetch_delivery_notes,
     get_last_list_error,
     get_mock_delivery_note,
     log_master_items_sync_failure,
+    new_correlation_id,
     sanitize_accurate_error,
     sync_sales_orders,
 )
@@ -5315,7 +5320,11 @@ def _build_preview(so: Dict[str, Any]) -> Dict[str, Any]:
     are SEPARATE fields. If Accurate does not provide one, leave it as None
     so the UI can render 'Perlu verifikasi' rather than guessing.
     """
-    total_qty = sum(int(li.get("quantity", 0)) for li in so.get("line_items", []))
+    total_qty = sum(
+        coerce_accurate_quantity(li.get("quantity"))
+        for li in so.get("line_items", [])
+        if isinstance(li, dict)
+    )
     now = datetime.now(timezone.utc)
     offset = so.get("order_date_offset_days", 0)
     order_date = (now + timedelta(days=offset)).isoformat()
@@ -5470,11 +5479,30 @@ async def accurate_status(user=Depends(require_perm("po.import.view"))):
     }
 
 
+def _accurate_http_error(exc: AccurateRequestError) -> HTTPException:
+    """Map a typed Accurate failure to a safe HTTP error. Never includes stack traces."""
+    status = 502
+    if exc.category == AccurateErrorCategory.NOT_FOUND:
+        status = 404
+    elif exc.category == AccurateErrorCategory.RATE_LIMITED:
+        status = 429
+    elif exc.category == AccurateErrorCategory.TIMEOUT:
+        status = 504
+    elif exc.category == AccurateErrorCategory.TOKEN_EXPIRED:
+        status = 401
+    elif exc.category == AccurateErrorCategory.UNAUTHORIZED:
+        status = 403
+    return HTTPException(status, exc.user_message)
+
+
 @api_router.post("/accurate/import/preview")
 async def accurate_import_preview(payload: ImportPreviewRequest, user=Depends(require_perm("accurate.import"))):
     """Fetch ONE Sales Order from Accurate (or mock) and return a preview. Never
     writes to `orders`. Reports whether this SO has already been imported."""
-    so = await _accurate_client.fetch_single_sales_order(payload.so_number)
+    try:
+        so = await _accurate_client.fetch_single_sales_order(payload.so_number)
+    except AccurateRequestError as e:
+        raise _accurate_http_error(e)
     if not so:
         raise HTTPException(404, f"Sales Order '{payload.so_number}' tidak ditemukan di Accurate")
     existing = await _find_existing_import(so)
@@ -5491,18 +5519,24 @@ async def accurate_import_preview(payload: ImportPreviewRequest, user=Depends(re
 async def accurate_import_confirm(payload: ImportPreviewRequest, user=Depends(require_perm("accurate.import"))):
     """Confirm import of a single Accurate SO into `orders`. Idempotent by
     (accurate_id, po_number). Writes an entry to `import_logs`."""
-    so = await _accurate_client.fetch_single_sales_order(payload.so_number)
     log_base = {
         "id": str(uuid.uuid4()),
         "so_number": payload.so_number,
-        "accurate_id": (so or {}).get("accurate_id"),
-        "po_number": (so or {}).get("po_number"),
+        "accurate_id": None,
+        "po_number": None,
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
         "imported_at": now_iso(),
         "mode": "live" if _accurate_client.is_live else "mock",
         "read_only_source": True,
     }
+    try:
+        so = await _accurate_client.fetch_single_sales_order(payload.so_number)
+    except AccurateRequestError as e:
+        await db.import_logs.insert_one({**log_base, "status": "failed", "message": e.user_message})
+        raise _accurate_http_error(e)
+    log_base["accurate_id"] = (so or {}).get("accurate_id")
+    log_base["po_number"] = (so or {}).get("po_number")
     if not so:
         await db.import_logs.insert_one({**log_base, "status": "failed", "message": "SO tidak ditemukan"})
         raise HTTPException(404, f"Sales Order '{payload.so_number}' tidak ditemukan di Accurate")
@@ -5524,10 +5558,18 @@ async def accurate_import_confirm(payload: ImportPreviewRequest, user=Depends(re
     except MasterItemUnresolvedError as e:
         await db.import_logs.insert_one({**log_base, "status": "failed", "message": str(e)})
         raise HTTPException(400, str(e))
+    except DuplicateKeyError:
+        existing = await _find_existing_import(so)
+        await db.import_logs.insert_one({**log_base, "status": "duplicate", "message": "PO ini sudah pernah diimport", "existing_po_id": (existing or {}).get("id")})
+        raise HTTPException(409, {
+            "message": "PO ini sudah pernah diimport",
+            "existing_po_id": (existing or {}).get("id"),
+            "existing_po_number": (existing or {}).get("po_number"),
+        })
     except HTTPException:
         raise
-    except Exception as e:
-        await db.import_logs.insert_one({**log_base, "status": "failed", "message": f"Insert gagal: {e}"})
+    except Exception:
+        await db.import_logs.insert_one({**log_base, "status": "failed", "message": "Insert gagal"})
         raise HTTPException(500, "Gagal menyimpan PO baru")
     await db.import_logs.insert_one({**log_base, "status": "success", "message": "PO baru berhasil diimport", "created_po_id": new["id"]})
     saved = await db.orders.find_one({"id": new["id"]}, {"_id": 0})
@@ -5540,46 +5582,61 @@ class BulkImportRequest(BaseModel):
 
 @api_router.post("/accurate/import/preview-bulk")
 async def accurate_import_preview_bulk(payload: BulkImportRequest, user=Depends(require_perm("accurate.import.bulk"))):
-    """Fetch MULTIPLE Sales Orders from Accurate (or mock) in parallel and return
-    per-SO previews with duplicate flags. NEVER writes to Mongo.
-    Returns {items:[{so_number, ok, preview?, duplicate, existing_po_id,
-    existing_po_number, error?, has_verify?}], summary:{total, ready, duplicates,
-    errors, total_qty, total_items, needs_verify}}"""
-    import asyncio as _aio
+    """Fetch MULTIPLE Sales Orders from Accurate (or mock) with bounded concurrency.
+
+    Per-SO result: success/ok, preview, duplicate flags, error_code, user_message,
+    retryable. NEVER writes to Mongo. One SO failure does not fail the batch.
+    """
     numbers = [n.strip() for n in (payload.so_numbers or []) if n and n.strip()]
     if not numbers:
         raise HTTPException(400, "Minimal pilih 1 Sales Order")
     if len(numbers) > 25:
         raise HTTPException(400, "Maksimal 25 Sales Order per batch")
 
-    sem = _aio.Semaphore(4)
-    async def _one(sn: str) -> Dict[str, Any]:
-        async with sem:
-            try:
-                so = await _accurate_client.fetch_single_sales_order(sn)
-                if not so:
-                    return {"so_number": sn, "ok": False, "error": "SO tidak ditemukan"}
-                existing = await _find_existing_import(so)
-                prev = _build_preview(so)
-                needs_verify = any(li.get("color_needs_verify") for li in prev.get("line_items", []))
-                return {
-                    "so_number": sn,
-                    "ok": True,
-                    "preview": prev,
-                    "duplicate": bool(existing),
-                    "existing_po_id": existing.get("id") if existing else None,
-                    "existing_po_number": existing.get("po_number") if existing else None,
-                    "has_verify": needs_verify,
-                }
-            except Exception as e:
-                msg = str(e)
-                if _accurate_client.api_token and _accurate_client.api_token in msg:
-                    msg = "Accurate error"
-                if _accurate_client.api_signature_secret and _accurate_client.api_signature_secret in msg:
-                    msg = "Accurate error"
-                return {"so_number": sn, "ok": False, "error": msg[:180]}
-
-    items = await _aio.gather(*[_one(n) for n in numbers])
+    cid = new_correlation_id()
+    fetched = await _accurate_client.fetch_sales_order_results(numbers, correlation_id=cid)
+    items: List[Dict[str, Any]] = []
+    for row in fetched:
+        sn = row.get("so_number") or row.get("sales_order_number") or ""
+        if not row.get("success"):
+            user_msg = row.get("user_message") or "Terjadi kesalahan saat memproses Sales Order."
+            items.append({
+                "so_number": sn,
+                "sales_order_number": sn,
+                "success": False,
+                "ok": False,
+                "data": None,
+                "preview": None,
+                "duplicate": False,
+                "existing_po_id": None,
+                "existing_po_number": None,
+                "has_verify": False,
+                "error_code": row.get("error_code") or AccurateErrorCategory.INTERNAL_ERROR,
+                "user_message": user_msg,
+                "retryable": bool(row.get("retryable")),
+                "error": user_msg,
+            })
+            continue
+        so = row.get("data") or {}
+        existing = await _find_existing_import(so)
+        prev = _build_preview(so)
+        needs_verify = any(li.get("color_needs_verify") for li in prev.get("line_items", []))
+        items.append({
+            "so_number": sn,
+            "sales_order_number": sn,
+            "success": True,
+            "ok": True,
+            "data": prev,
+            "preview": prev,
+            "duplicate": bool(existing),
+            "existing_po_id": existing.get("id") if existing else None,
+            "existing_po_number": existing.get("po_number") if existing else None,
+            "has_verify": needs_verify,
+            "error_code": None,
+            "user_message": None,
+            "retryable": False,
+            "error": None,
+        })
     ready = [i for i in items if i.get("ok") and not i.get("duplicate")]
     dupes = [i for i in items if i.get("ok") and i.get("duplicate")]
     errs = [i for i in items if not i.get("ok")]
@@ -5598,6 +5655,7 @@ async def accurate_import_preview_bulk(payload: BulkImportRequest, user=Depends(
             "needs_verify": needs_verify,
         },
         "mode": "live" if _accurate_client.is_live else "mock",
+        "correlation_id": cid,
     }
 
 
@@ -5626,12 +5684,25 @@ async def accurate_import_confirm_bulk(payload: BulkImportRequest, user=Depends(
         }
         try:
             so = await _accurate_client.fetch_single_sales_order(sn)
-        except Exception as e:
-            msg = str(e)
-            if _accurate_client.api_token and _accurate_client.api_token in msg:
-                msg = "Accurate error"
-            await db.import_logs.insert_one({**log_base, "status": "failed", "message": f"Fetch gagal: {msg[:120]}"})
-            results.append({"so_number": sn, "status": "failed", "message": msg[:180]})
+        except AccurateRequestError as e:
+            await db.import_logs.insert_one({**log_base, "status": "failed", "message": e.user_message})
+            results.append({
+                "so_number": sn,
+                "status": "failed",
+                "message": e.user_message,
+                "error_code": e.category,
+                "retryable": e.retryable,
+            })
+            continue
+        except Exception:
+            await db.import_logs.insert_one({**log_base, "status": "failed", "message": "Fetch gagal"})
+            results.append({
+                "so_number": sn,
+                "status": "failed",
+                "message": "Terjadi kesalahan saat memproses Sales Order.",
+                "error_code": AccurateErrorCategory.INTERNAL_ERROR,
+                "retryable": False,
+            })
             continue
         if not so:
             await db.import_logs.insert_one({**log_base, "status": "failed", "message": "SO tidak ditemukan"})
@@ -5659,10 +5730,19 @@ async def accurate_import_confirm_bulk(payload: BulkImportRequest, user=Depends(
             await db.import_logs.insert_one({**log_base, "status": "failed", "message": str(e)})
             results.append({"so_number": sn, "status": "failed", "message": str(e)})
             continue
+        except DuplicateKeyError:
+            existing = await _find_existing_import(so)
+            await db.import_logs.insert_one({**log_base, "status": "duplicate", "message": "PO ini sudah pernah diimport", "existing_po_id": (existing or {}).get("id")})
+            results.append({
+                "so_number": sn, "status": "duplicate",
+                "existing_po_id": (existing or {}).get("id"),
+                "existing_po_number": (existing or {}).get("po_number"),
+            })
+            continue
         except HTTPException:
             raise
-        except Exception as e:
-            await db.import_logs.insert_one({**log_base, "status": "failed", "message": f"Insert gagal: {e}"})
+        except Exception:
+            await db.import_logs.insert_one({**log_base, "status": "failed", "message": "Insert gagal"})
             results.append({"so_number": sn, "status": "failed", "message": "Gagal menyimpan PO baru"})
             continue
         await db.import_logs.insert_one({**log_base, "status": "success", "message": "PO baru berhasil diimport", "created_po_id": new["id"]})
