@@ -1853,6 +1853,14 @@ html:has(.ship-status-page) #root{
   .content:has(.ship-status-page){padding:4px 6px 0}
 }
 
+.prediksi-kpi{margin:8px 0 10px}
+.prediksi-tabs{display:flex;gap:6px;margin:0 0 8px}
+.prediksi-tabs button{ min-height:28px;padding:3px 12px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer; }
+.prediksi-tabs button.is-active{background:#2c3e50;color:#fff;border-color:#2c3e50}
+.prediksi-row{cursor:pointer}
+.prediksi-order-page .ship-table tbody td{white-space:nowrap}
+.prediksi-order-page .ship-table tbody td:last-child{white-space:normal;min-width:180px}
+
 .workflow-table-wrap{overflow:auto;border:1px solid var(--line)}
 .workflow-table{width:100%;min-width:560px;border-collapse:collapse;font-size:12.5px}
 .workflow-table th,.workflow-table td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}

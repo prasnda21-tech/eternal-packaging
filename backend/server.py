@@ -91,6 +91,13 @@ from services.surat_jalan_files import (
     strip_sj_bytes_from_order as _strip_sj_bytes,
 )
 from services.status_po import build_status_po
+from services.order_prediction import (
+    ORDER_PREDICTION_PROJECTION,
+    PERM_VIEW as ORDER_PREDICTION_PERM,
+    build_order_prediction,
+    build_order_prediction_detail,
+    can_view_order_prediction,
+)
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
 from services import delivery_route_api as _delivery_route_api
@@ -7286,6 +7293,52 @@ async def _require_gaji_view(user: dict):
     eff = await user_permissions(user)
     if "reports.gaji_operator.view" not in eff and "schedule.view" not in eff:
         raise HTTPException(403, "Permission 'reports.gaji_operator.view' diperlukan")
+
+
+async def _require_order_prediction_view(user: dict):
+    if user.get("role") == "admin":
+        return
+    eff = await user_permissions(user)
+    if not can_view_order_prediction(eff):
+        raise HTTPException(403, f"Permission '{ORDER_PREDICTION_PERM}' diperlukan")
+
+
+@api_router.get("/reports/order-prediction")
+async def order_prediction_report(
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    pattern: Optional[str] = None,
+    confidence: Optional[str] = None,
+    sales: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 500,
+    user=Depends(current_user),
+):
+    await _require_order_prediction_view(user)
+    raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
+    data = build_order_prediction(
+        raw,
+        search=search or "",
+        status=status or "",
+        pattern=pattern or "",
+        confidence=confidence or "",
+        sales=sales or "",
+        skip=skip,
+        limit=limit,
+    )
+    data["generated_at"] = now_iso()
+    return data
+
+
+@api_router.get("/reports/order-prediction/{customer_key}")
+async def order_prediction_detail(customer_key: str, user=Depends(current_user)):
+    await _require_order_prediction_view(user)
+    raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
+    data = build_order_prediction_detail(raw, customer_key)
+    if not data:
+        raise HTTPException(404, "Customer/outlet tidak ditemukan pada Order Masuk yang valid")
+    data["generated_at"] = now_iso()
+    return data
 
 
 @api_router.get("/reports/gaji-operator")
