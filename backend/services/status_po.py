@@ -19,7 +19,7 @@ from services.shipment_status import shipment_status_row, status_percent, status
 STAGES = (
     "Order Masuk", "Design", "Approval Design", "Payment", "Approval Payment",
     "Penjadwalan", "Screener", "Persiapan Helper", "Operator", "Konfirmasi Sample",
-    "Cetak", "Packing", "Surat Jalan", "Loading", "Terkirim",
+    "Cetak", "Packing", "Surat Jalan", "Loading", "Pengiriman",
 )
 
 STATUS_PO_VIEWS = (

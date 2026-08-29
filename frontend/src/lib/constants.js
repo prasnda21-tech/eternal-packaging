@@ -15,7 +15,7 @@ export const STAGES = [
   "Packing",             // 11
   "Surat Jalan",         // 12
   "Loading",             // 13
-  "Terkirim",            // 14  (Driver dihapus sebagai stage produksi)
+  "Pengiriman",          // 14  (label tahap; internal key/status tetap delivery/terkirim)
 ];
 
 export const ROLES = {

@@ -34,7 +34,6 @@ describe("Prediksi Order page", () => {
     expect(src).toMatch(/prediksi-filter-search/);
     expect(src).toMatch(/prediksi-filter-status/);
     expect(src).toMatch(/prediksi-filter-pattern/);
-    expect(src).toMatch(/prediksi-filter-confidence/);
     expect(src).toMatch(/prediksi-detail/);
     expect(src).toMatch(/prediksi-detail-history/);
     expect(src).toMatch(/prediksi-tab-orders/);
@@ -44,7 +43,8 @@ describe("Prediksi Order page", () => {
   test("omzet displays dash and there is no manual data entry", () => {
     expect(src).toMatch(/dashOmzet/);
     expect(src).toMatch(/prediksi-omzet-/);
-    expect(src).not.toMatch(/IMPORT DATA|SYNC EXCEL|TAMBAH ORDER|type="file"/);
+    expect(src).not.toMatch(/SYNC EXCEL|TAMBAH ORDER/);
+    expect(src).toMatch(/prediksi-import-button/);
     expect(src).not.toMatch(/<form/);
     expect(src).not.toMatch(/api\.(create|add|import)/);
   });

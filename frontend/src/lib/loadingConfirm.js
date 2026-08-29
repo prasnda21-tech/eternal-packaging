@@ -57,8 +57,34 @@ export function sjFilesForLoading(order) {
 }
 
 export function loadingConfirmations(order) {
-  return Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [];
+  return (Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [])
+    .filter((c) => c && !c.cancelled && !c.deleted);
 }
+
+export function deliveredQtyForLoadingConfirmation(order, confirmationId) {
+  let leftover = Math.max(0, Number(order?.qty_delivered || order?.delivered_qty || 0));
+  const list = loadingConfirmations(order);
+  for (const conf of list) {
+    const cap = (conf.lines || []).reduce((s, ln) => s + Math.max(0, Number(ln.qty || ln.quantity || 0)), 0);
+    const allocated = Math.min(cap, leftover);
+    leftover -= allocated;
+    if (String(conf.id) === String(confirmationId)) return allocated;
+  }
+  return 0;
+}
+
+export function canDeleteLoadingConfirmation(order, confirmation) {
+  if (!confirmation?.id) return false;
+  if (confirmation.cancelled || confirmation.deleted) return false;
+  if (order?.delivery_status === "Terkirim") return false;
+  const delivered = Number(order?.qty_delivered || order?.delivered_qty || 0);
+  const required = Number(order?.total_quantity || 0);
+  if (required > 0 && delivered >= required) return false;
+  if (deliveredQtyForLoadingConfirmation(order, confirmation.id) > 0) return false;
+  return true;
+}
+
+export const LOADING_DELETE_PERM = "loading.delete";
 
 export function validateLoadingDraftLines(rows, poLines) {
   const used = new Set();

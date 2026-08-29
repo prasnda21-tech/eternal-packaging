@@ -379,6 +379,10 @@ def annotate_history(orders: Sequence[dict]) -> List[dict]:
     for order in orders:
         d = order_date_of(order)
         gap = (d - prev_date).days if d and prev_date else None
+        omzet = order.get("omzet")
+        if omzet is not None and str(omzet).strip() == "":
+            omzet = None
+        source = str(order.get("history_source") or order.get("source") or "ORDER MASUK").strip() or "ORDER MASUK"
         rows.append({
             "id": order.get("id"),
             "po_number": order.get("po_number") or "",
@@ -388,8 +392,9 @@ def annotate_history(orders: Sequence[dict]) -> List[dict]:
             "previous_order_date": prev_date.isoformat() if prev_date else None,
             "gap_days": gap,
             "sales": _sales_name(order) or None,
-            "omzet": None,
+            "omzet": omzet,
             "notes": str(order.get("notes") or "").strip() or None,
+            "source": source,
         })
         if d:
             prev_date = d
@@ -629,9 +634,20 @@ def build_order_prediction(
     sales: str = "",
     skip: int = 0,
     limit: int = 500,
+    supplemental: Optional[Sequence[dict]] = None,
 ) -> dict:
     today = wib_today(now)
-    valid = [o for o in orders if is_valid_business_order(o)]
+    from services.order_prediction_import import merge_prediction_orders
+
+    if supplemental is not None:
+        combined = merge_prediction_orders(orders, supplemental)
+    else:
+        combined = [o for o in orders if is_valid_business_order(o)]
+        for o in combined:
+            o.setdefault("history_source", "ORDER MASUK")
+            o.setdefault("source", "ORDER MASUK")
+
+    valid = [o for o in combined if is_valid_business_order(o)]
     groups: Dict[str, List[dict]] = {}
     for o in valid:
         groups.setdefault(customer_group_key(o), []).append(o)
@@ -672,7 +688,7 @@ def build_order_prediction(
         "sales_options": sales_options,
         "order_rows": order_rows[:2000],
         "order_total": len(order_rows),
-        "source": "orders",
+        "source": "orders+import" if supplemental is not None else "orders",
     }
 
 
@@ -681,11 +697,22 @@ def build_order_prediction_detail(
     customer_key: str,
     *,
     now: Optional[datetime] = None,
+    supplemental: Optional[Sequence[dict]] = None,
 ) -> Optional[dict]:
     today = wib_today(now)
+    from services.order_prediction_import import merge_prediction_orders
+
+    if supplemental is not None:
+        combined = merge_prediction_orders(orders, supplemental)
+    else:
+        combined = [o for o in orders if is_valid_business_order(o)]
+        for o in combined:
+            o.setdefault("history_source", "ORDER MASUK")
+            o.setdefault("source", "ORDER MASUK")
+
     key = decode_customer_key(customer_key)
     grouped: List[dict] = []
-    for o in orders:
+    for o in combined:
         if not is_valid_business_order(o):
             continue
         if customer_group_key(o) == key:
@@ -698,5 +725,5 @@ def build_order_prediction_detail(
         "parameters": report_parameters(),
         "analysis": public_row(row, include_history=False),
         "history": row.get("history") or [],
-        "source": "orders",
+        "source": "orders+import" if supplemental is not None else "orders",
     }

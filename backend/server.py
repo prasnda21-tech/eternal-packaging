@@ -125,6 +125,17 @@ from services.current_stock import (
     parse_manual_qty,
     public_manual as public_stock_manual,
 )
+from services.current_stock_import import (
+    PERM_IMPORT as STOCK_IMPORT_PERM,
+    build_stock_import_preview,
+    validate_apply_rows as validate_stock_import_apply,
+)
+from services.order_prediction_import import (
+    COLLECTION as ORDER_PREDICTION_HISTORY_COLLECTION,
+    PERM_IMPORT as ORDER_PREDICTION_IMPORT_PERM,
+    build_history_import_preview,
+    validate_history_apply_rows,
+)
 from services.purchase_receipts import (
     COLLECTION as RECEIPT_COLLECTION,
     PURCHASE_SOURCE_ACCURATE as STOCK_PURCHASE_ACCURATE,
@@ -194,6 +205,7 @@ from quantity_rules import (
     valid_delivery_proof_count as _qr_valid_delivery_proof_count,
     apply_loading_increments as _qr_apply_loading_increments,
     apply_loading_confirmation as _qr_apply_loading_confirmation,
+    cancel_loading_confirmation as _qr_cancel_loading_confirmation,
     effective_loaded_qty as _qr_effective_loaded_qty,
     eligible_delivery_qty as _qr_eligible_delivery_qty,
     loading_status_semantic as _qr_loading_status_semantic,
@@ -223,6 +235,7 @@ from quantity_rules import (
     validate_helper_prepared_qty as _qr_validate_helper_prepared_qty,
     validate_loading_increments as _qr_validate_loading_increments,
     validate_loading_confirmation as _qr_validate_loading_confirmation,
+    validate_cancel_loading_confirmation as _qr_validate_cancel_loading_confirmation,
     validate_loading_lines as _qr_validate_loading_lines,
     validate_operator_assignment_total as _qr_validate_operator_assignment_total,
     validate_packing_lines as _qr_validate_packing_lines,
@@ -288,7 +301,7 @@ STAGES = [
     "Packing",             # 11
     "Surat Jalan",         # 12
     "Loading",             # 13
-    "Terkirim",            # 14  (Driver dihapus sebagai stage — hanya metadata)
+    "Pengiriman",          # 14  (label tahap; internal key/status tetap delivery/terkirim)
 ]
 
 # Task 13 workflow-15 bugfix: Driver dihapus sebagai stage produksi.
@@ -3297,6 +3310,36 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
     order = await _with_quantity_lock(order_id, _mutate)
     await _audit_po(order, "loading.confirm", user, note=payload.surat_jalan_id)
     return {"order": _strip_sj_bytes(order)}
+
+
+@api_router.delete("/orders/{order_id}/loading-confirm/{confirmation_id}")
+async def delete_loading_confirmation(order_id: str, confirmation_id: str, user=Depends(current_user)):
+    """Soft-cancel one Loading confirmation when eligible (not fully delivered, no delivered qty)."""
+    await _require_perm(user, "loading.delete")
+
+    def _mutate(order):
+        _ensure_not_cancelled(order)
+        err = _qr_validate_cancel_loading_confirmation(order, confirmation_id)
+        if err:
+            raise HTTPException(400, err)
+        stamp = now_iso()
+        try:
+            record = _qr_cancel_loading_confirmation(
+                order, confirmation_id, actor=user, cancelled_at=stamp,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not record:
+            raise HTTPException(404, "Konfirmasi Loading tidak ditemukan")
+        add_timeline(
+            order, 13, user,
+            note=f"Hapus Loading ({record.get('surat_jalan_name') or record.get('surat_jalan_id')}): {record.get('id')}",
+        )
+        _sync_workflow_stage(order)
+
+    order = await _with_quantity_lock(order_id, _mutate)
+    await _audit_po(order, "loading.delete", user, note=confirmation_id)
+    return {"order": _strip_sj_bytes(order), "cancelled_id": confirmation_id}
 
 
 @api_router.post("/orders/{order_id}/approve-sample")
@@ -6469,6 +6512,112 @@ async def current_stock_update(
     return {"item": row, "purchase_source": source}
 
 
+class CurrentStockImportApply(BaseModel):
+    rows: List[dict]
+
+
+@api_router.post("/current-stock/import/preview")
+async def current_stock_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(require_perm(STOCK_IMPORT_PERM)),
+):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File kosong")
+    rows, _source, _last = await _load_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(5000)
+    try:
+        preview = build_stock_import_preview(
+            data, file.filename or "upload.csv", stock_rows=rows, masters=masters,
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return preview
+
+
+@api_router.post("/current-stock/import/apply")
+async def current_stock_import_apply(
+    payload: CurrentStockImportApply,
+    user=Depends(require_perm(STOCK_IMPORT_PERM)),
+):
+    rows, source, _last = await _load_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(5000)
+    accepted, rejected = validate_stock_import_apply(
+        payload.rows or [], stock_rows=rows, masters=masters,
+    )
+    if not accepted:
+        raise HTTPException(400, {
+            "message": "Tidak ada baris valid yang dipilih",
+            "rejected": rejected,
+        })
+    applied = []
+    now = now_iso()
+    for item in accepted:
+        master_id = item["master_item_id"]
+        accurate_id = item.get("accurate_item_id")
+        existing = await db[STOCK_MANUAL_COLLECTION].find_one(
+            {"$or": [
+                {"master_item_id": master_id},
+                {"accurate_item_id": accurate_id} if accurate_id else {"master_item_id": master_id},
+            ]},
+            {"_id": 0},
+        )
+        before = {
+            "stock_before": item["stock_before"],
+            "manual": public_stock_manual(existing),
+        }
+        fields = {
+            "manual_current_qty": item["manual_current_qty"],
+            "updated_at": now,
+            "updated_by": user.get("email"),
+            "updated_by_name": user.get("name") or user.get("email"),
+        }
+        if existing:
+            await db[STOCK_MANUAL_COLLECTION].update_one({"id": existing["id"]}, {"$set": fields})
+            doc_id = existing["id"]
+        else:
+            doc_id = str(uuid.uuid4())
+            await db[STOCK_MANUAL_COLLECTION].insert_one({
+                "id": doc_id,
+                "master_item_id": master_id,
+                "accurate_item_id": accurate_id,
+                "manual_current_qty": item["manual_current_qty"],
+                "manual_purchase_qty": 0,
+                **{k: v for k, v in fields.items() if k != "manual_current_qty"},
+            })
+        fresh = await db[STOCK_MANUAL_COLLECTION].find_one({"id": doc_id}, {"_id": 0})
+        await _write_audit(
+            "current_stock.import", user,
+            target_email=f"item:{accurate_id or master_id}",
+            before=before,
+            after={
+                "stock_after": item["stock_after"],
+                "delta": item["delta"],
+                "stock_file": item["stock_file"],
+                "manual": public_stock_manual(fresh),
+            },
+            note="Impor sesuaikan Stock Saat Ini",
+        )
+        applied.append({
+            "master_item_id": master_id,
+            "accurate_item_id": accurate_id,
+            "item_code": item.get("item_code"),
+            "stock_before": item["stock_before"],
+            "stock_after": item["stock_after"],
+            "delta": item["delta"],
+        })
+    fresh_rows, source, last_sync = await _load_stock_context()
+    return {
+        "applied": applied,
+        "applied_count": len(applied),
+        "rejected": rejected,
+        "rejected_count": len(rejected),
+        "purchase_source": source,
+        "last_receipt_sync_at": last_sync,
+        "items": fresh_rows,
+    }
+
+
 async def _masters_by_accurate_id():
     masters = await db.master_items.find(
         {}, {"_id": 0, "id": 1, "accurate_item_id": 1, "item_code": 1, "item_name": 1, "unit": 1},
@@ -7303,6 +7452,20 @@ async def _require_order_prediction_view(user: dict):
         raise HTTPException(403, f"Permission '{ORDER_PREDICTION_PERM}' diperlukan")
 
 
+async def _require_order_prediction_import(user: dict):
+    if user.get("role") == "admin":
+        return
+    eff = await user_permissions(user)
+    if ORDER_PREDICTION_IMPORT_PERM not in eff:
+        raise HTTPException(403, f"Permission '{ORDER_PREDICTION_IMPORT_PERM}' diperlukan")
+
+
+async def _load_prediction_history():
+    return await db[ORDER_PREDICTION_HISTORY_COLLECTION].find(
+        {"cancelled": {"$ne": True}}, {"_id": 0},
+    ).to_list(10000)
+
+
 @api_router.get("/reports/order-prediction")
 async def order_prediction_report(
     search: Optional[str] = None,
@@ -7316,6 +7479,7 @@ async def order_prediction_report(
 ):
     await _require_order_prediction_view(user)
     raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
+    supplemental = await _load_prediction_history()
     data = build_order_prediction(
         raw,
         search=search or "",
@@ -7325,16 +7489,89 @@ async def order_prediction_report(
         sales=sales or "",
         skip=skip,
         limit=limit,
+        supplemental=supplemental,
     )
     data["generated_at"] = now_iso()
     return data
+
+
+class OrderPredictionImportApply(BaseModel):
+    rows: List[dict]
+
+
+@api_router.post("/reports/order-prediction/import/preview")
+async def order_prediction_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    await _require_order_prediction_import(user)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File kosong")
+    live = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
+    existing = await _load_prediction_history()
+    try:
+        preview = build_history_import_preview(
+            data, file.filename or "upload.csv",
+            live_orders=live, existing_imports=existing,
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return preview
+
+
+@api_router.post("/reports/order-prediction/import/apply")
+async def order_prediction_import_apply(
+    payload: OrderPredictionImportApply,
+    user=Depends(current_user),
+):
+    await _require_order_prediction_import(user)
+    live = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
+    existing = await _load_prediction_history()
+    accepted, rejected = validate_history_apply_rows(
+        payload.rows or [], live_orders=live, existing_imports=existing,
+    )
+    if not accepted:
+        raise HTTPException(400, {
+            "message": "Tidak ada baris valid yang dipilih",
+            "rejected": rejected,
+        })
+    now = now_iso()
+    docs = []
+    for row in accepted:
+        doc = {
+            **row,
+            "imported_at": now,
+            "imported_by": user.get("email"),
+            "imported_by_name": user.get("name") or user.get("email"),
+            "cancelled": False,
+        }
+        docs.append(doc)
+    if docs:
+        await db[ORDER_PREDICTION_HISTORY_COLLECTION].insert_many(docs)
+    await _write_audit(
+        "reports.order_prediction.import", user, target_email=None,
+        before=None,
+        after={"imported_count": len(docs), "rejected_count": len(rejected)},
+        note="Impor histori Prediksi Order",
+    )
+    supplemental = await _load_prediction_history()
+    data = build_order_prediction(live, supplemental=supplemental)
+    data["generated_at"] = now
+    return {
+        "imported_count": len(docs),
+        "rejected": rejected,
+        "rejected_count": len(rejected),
+        "prediction": data,
+    }
 
 
 @api_router.get("/reports/order-prediction/{customer_key}")
 async def order_prediction_detail(customer_key: str, user=Depends(current_user)):
     await _require_order_prediction_view(user)
     raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
-    data = build_order_prediction_detail(raw, customer_key)
+    supplemental = await _load_prediction_history()
+    data = build_order_prediction_detail(raw, customer_key, supplemental=supplemental)
     if not data:
         raise HTTPException(404, "Customer/outlet tidak ditemukan pada Order Masuk yang valid")
     data["generated_at"] = now_iso()
@@ -7783,6 +8020,9 @@ async def seed():
     await db[STOCK_MANUAL_COLLECTION].create_index("id", unique=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("accurate_item_id", unique=True, sparse=True)
     await db[STOCK_MANUAL_COLLECTION].create_index("master_item_id", unique=True, sparse=True)
+    await db[ORDER_PREDICTION_HISTORY_COLLECTION].create_index("id", unique=True)
+    await db[ORDER_PREDICTION_HISTORY_COLLECTION].create_index("fingerprint", unique=True, sparse=True)
+    await db[ORDER_PREDICTION_HISTORY_COLLECTION].create_index("order_date")
     await db[RECEIPT_COLLECTION].create_index("accurate_receipt_id", unique=True)
     await db[RECEIPT_SYNC_META_COLLECTION].create_index("id", unique=True)
     await db.files.create_index("id", unique=True)
@@ -7938,7 +8178,7 @@ async def seed():
             "production.route.edit",
             # Buffer Stock (CRM workflow)
             "buffer_stock.manage",
-            "current_stock.view", "current_stock.update", "current_stock.export",
+            "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",
@@ -7952,7 +8192,7 @@ async def seed():
             # Batch 3: Production routing (Cetak/Non-Cetak)
             "production.route.edit",
             "buffer_stock.manage",
-            "current_stock.view", "current_stock.update", "current_stock.export",
+            "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",
@@ -7964,7 +8204,7 @@ async def seed():
             "po.import.pdf", "po.import.spreadsheet",
             "master_items.view", "master_items.sync",
             "nav.inventory.master_items",
-            "current_stock.view", "current_stock.update", "current_stock.export",
+            "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",

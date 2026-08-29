@@ -24,7 +24,7 @@ PREVIEW_LIMIT = 8
 STAGES = (
     "Order Masuk", "Design", "Approval Design", "Payment", "Approval Payment",
     "Penjadwalan", "Screener", "Persiapan Helper", "Operator", "Konfirmasi Sample",
-    "Cetak", "Packing", "Surat Jalan", "Loading", "Terkirim",
+    "Cetak", "Packing", "Surat Jalan", "Loading", "Pengiriman",
 )
 
 WORK_PROJECTION = {

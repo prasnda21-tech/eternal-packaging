@@ -48,6 +48,8 @@ export const api = {
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
   confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
+  deleteLoadingConfirm: (id, confirmationId) =>
+    client.delete(`/orders/${id}/loading-confirm/${encodeURIComponent(confirmationId)}`).then((r) => r.data),
   updateLoading: (id, payload) => client.post(`/orders/${id}/loading`, payload).then((r) => r.data),
   markPacked: (id) => client.post(`/orders/${id}/packed`).then((r) => r.data),
   savePackingInfo: (id, linesOrQty, notes = "") => {
@@ -102,6 +104,15 @@ export const api = {
   orderPrediction: (params = {}) => client.get(`/reports/order-prediction`, { params }).then((r) => r.data),
   orderPredictionDetail: (customerKey) =>
     client.get(`/reports/order-prediction/${encodeURIComponent(customerKey)}`).then((r) => r.data),
+  orderPredictionImportPreview: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/reports/order-prediction/import/preview`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
+  orderPredictionImportApply: (rows) =>
+    client.post(`/reports/order-prediction/import/apply`, { rows }).then((r) => r.data),
   operatorWageSettings: () => client.get(`/settings/operator-wage`).then((r) => r.data),
   updateOperatorWageSettings: (payload) => client.put(`/settings/operator-wage`, payload).then((r) => r.data),
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),
@@ -128,6 +139,15 @@ export const api = {
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
     client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
+  currentStockImportPreview: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/current-stock/import/preview`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
+  currentStockImportApply: (rows) =>
+    client.post(`/current-stock/import/apply`, { rows }).then((r) => r.data),
   purchaseReceipts: (params = {}) => client.get(`/purchase-receipts`, { params }).then((r) => r.data),
   purchaseReceiptsSync: () => client.post(`/purchase-receipts/sync`).then((r) => r.data),
   purchaseReceiptsExport: (params = {}) =>

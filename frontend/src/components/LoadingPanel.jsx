@@ -15,6 +15,7 @@ import {
   loadingPoLines,
   sjFilesForLoading,
   validateLoadingDraftLines,
+  canDeleteLoadingConfirmation,
 } from "../lib/loadingConfirm";
 
 function fmt(n) {
@@ -30,15 +31,17 @@ function hasLegacyLoading(order) {
 }
 
 export default function LoadingPanel({ order, canManage = false, onUpdated }) {
-  const { user } = useAuth();
+  const { user, hasPerm } = useAuth();
   const files = sjFilesForLoading(order);
   const poLines = loadingPoLines(order);
   const confirmations = loadingConfirmations(order);
+  const canDelete = hasPerm("loading.delete");
   const [sjId, setSjId] = useState(files[0]?.id || "");
   const [rows, setRows] = useState([emptyLoadingLine()]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const activeSj = files.find((f) => f.id === sjId) || files[0] || null;
   const hasSj = files.length > 0;
@@ -92,6 +95,23 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
     } catch (e) {
       const d = e?.response?.data?.detail;
       setErr(typeof d === "string" ? d : (d?.message || "Konfirmasi Loading gagal."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const executeDelete = async () => {
+    if (!deleteTarget || busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await api.deleteLoadingConfirm(order.id, deleteTarget.id);
+      onUpdated?.(result?.order || result);
+      setDeleteTarget(null);
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Hapus Loading gagal."));
+      setDeleteTarget(null);
     } finally {
       setBusy(false);
     }
@@ -216,20 +236,38 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
 
         {confirmations.length > 0 && (
           <ul className="sj-file-list" data-testid="loading-confirm-history" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
-            {confirmations.map((c) => (
-              <li key={c.id} data-testid={`loading-confirm-${c.id}`}>
-                <strong>{c.surat_jalan_name || "Surat Jalan"}</strong>
-                {(c.lines || []).map((ln, i) => (
-                  <div key={`${c.id}-${i}`} className="muted small">
-                    {loadingLineLabel(ln, order)} — Qty {fmt(ln.qty)}
+            {confirmations.map((c) => {
+              const deletable = canDelete && canDeleteLoadingConfirmation(order, c);
+              return (
+                <li key={c.id} data-testid={`loading-confirm-${c.id}`}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                    <div>
+                      <strong>{c.surat_jalan_name || "Surat Jalan"}</strong>
+                      {(c.lines || []).map((ln, i) => (
+                        <div key={`${c.id}-${i}`} className="muted small">
+                          {loadingLineLabel(ln, order)} — Qty {fmt(ln.qty)}
+                        </div>
+                      ))}
+                      <span className="muted small">
+                        {c.confirmed_by_name || c.confirmed_by}
+                        {c.confirmed_at ? ` · ${formatDate(c.confirmed_at)}` : ""}
+                      </span>
+                    </div>
+                    {deletable && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        disabled={busy}
+                        onClick={() => setDeleteTarget(c)}
+                        data-testid={`loading-delete-${c.id}`}
+                      >
+                        Hapus
+                      </button>
+                    )}
                   </div>
-                ))}
-                <span className="muted small">
-                  {c.confirmed_by_name || c.confirmed_by}
-                  {c.confirmed_at ? ` · ${formatDate(c.confirmed_at)}` : ""}
-                </span>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
 
@@ -298,6 +336,23 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
         ) : null}
         onCancel={() => { if (!busy) { setConfirm(null); setErr(""); } }}
         onConfirm={execute}
+      />
+
+      <ConfirmActionModal
+        open={!!deleteTarget}
+        title="HAPUS LOADING"
+        stage="Loading"
+        poNumber={order.po_number}
+        customer={order.customer_name || order.customer}
+        action={deleteTarget ? `Hapus konfirmasi ${deleteTarget.id}` : "Hapus data Loading"}
+        name={user?.name || user?.email}
+        time={formatDisplayDateTime(new Date().toISOString())}
+        busy={busy}
+        error={err}
+        confirmLabel="Hapus"
+        extra={<p data-testid="loading-delete-confirm-text">Hapus data Loading ini?</p>}
+        onCancel={() => { if (!busy) { setDeleteTarget(null); setErr(""); } }}
+        onConfirm={executeDelete}
       />
     </section>
   );

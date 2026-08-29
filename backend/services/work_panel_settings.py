@@ -109,7 +109,7 @@ _DEFAULTS: List[dict] = [
     },
     {
         "id": "terkirim",
-        "label": "Terkirim",
+        "label": "Pengiriman",
         "active": True,
         "implemented": True,
         "submit_perm": "delivery.update",
