@@ -26,7 +26,7 @@ export default function Login() {
   return (
     <main className="login-page">
       <section className="login-card login-panel">
-        <div className="login-mark">
+        <div className="login-mark" data-testid="login-brand">
           <BrandMark stacked />
         </div>
         <p className="eyebrow">SISTEM PRODUKSI</p>
