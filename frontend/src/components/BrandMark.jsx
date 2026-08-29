@@ -1,4 +1,4 @@
-import logoFull from "../assets/branding/eternal-logo-full.png";
+import logoFull from "../assets/branding/eternal-logo-full-white.png";
 import logoSymbol from "../assets/branding/eternal-logo-symbol.png";
 
 export default function BrandMark({ compact = false, stacked = false, onDark = false }) {

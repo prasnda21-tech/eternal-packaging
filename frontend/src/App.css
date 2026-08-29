@@ -50,7 +50,7 @@
 .brand-mark img{display:block;flex-shrink:0;object-fit:contain;object-position:center}
 .brand-logo-symbol{width:36px;height:36px;aspect-ratio:1 / 1;background:#fff;border-radius:8px}
 .brand-mark.is-compact .brand-logo-symbol{width:40px;height:40px}
-.brand-logo-full{width:min(100%,300px);height:auto;max-width:100%}
+.brand-logo-full{width:min(100%,300px);height:auto;max-width:100%;background:#FFFFFF}
 .brand-copy{display:flex;flex-direction:column;min-width:0;line-height:1.15}
 .brand-copy strong{font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;font-weight:700}
 .brand-copy em{font-style:normal;font-size:10.5px;color:var(--soft);margin-top:2px}

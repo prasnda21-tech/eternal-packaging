@@ -12,7 +12,7 @@ describe("Eternal web branding", () => {
   test("login uses the full Eternal logo, not a letter placeholder", () => {
     expect(login).toMatch(/BrandMark stacked/);
     expect(login).toMatch(/login-brand/);
-    expect(mark).toMatch(/eternal-logo-full/);
+    expect(mark).toMatch(/eternal-logo-full-white/);
     expect(mark).toMatch(/login-brand-logo/);
     expect(mark).not.toMatch(/eternal-mark\.svg/);
     expect(login).not.toMatch(/>P</);
@@ -31,6 +31,7 @@ describe("Eternal web branding", () => {
     expect(css).toMatch(/\.brand-mark img\{[^}]*object-fit:contain/);
     expect(css).toMatch(/\.brand-logo-symbol\{[^}]*aspect-ratio:1 \/ 1/);
     expect(css).toMatch(/\.brand-logo-full\{[^}]*height:auto/);
+    expect(css).toMatch(/\.brand-logo-full\{[^}]*background:#FFFFFF/);
     expect(css).toMatch(/\.app-sidebar \.brand-logo-symbol\{[^}]*width:40px/);
   });
 
@@ -42,6 +43,7 @@ describe("Eternal web branding", () => {
 
   test("web branding assets exist and are not imported from mobile at runtime", () => {
     expect(fs.existsSync(path.join(brandingDir, "eternal-logo-full.png"))).toBe(true);
+    expect(fs.existsSync(path.join(brandingDir, "eternal-logo-full-white.png"))).toBe(true);
     expect(fs.existsSync(path.join(brandingDir, "eternal-logo-symbol.png"))).toBe(true);
     expect(mark).not.toMatch(/mobile\/assets/);
     expect(login).not.toMatch(/mobile\/assets/);
