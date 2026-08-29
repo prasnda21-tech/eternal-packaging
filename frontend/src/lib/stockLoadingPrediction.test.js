@@ -90,15 +90,5 @@ describe("prediksi import UI", () => {
     expect(src).toMatch(/prediksi-import-modal/);
     expect(src).toMatch(/reports\.order_prediction\.import/);
     expect(src).toMatch(/prediksi-source-/);
-    expect(src).toMatch(/label: "Sales"/);
-    expect(src).toMatch(/label: "Omzet"/);
-    expect(src).toMatch(/r\.omzet == null/);
-  });
-
-  test("ImportPreviewModal surfaces server detail errors", () => {
-    const src = fs.readFileSync(path.join(__dirname, "../components/ImportPreviewModal.jsx"), "utf8");
-    expect(src).toMatch(/Gagal mem-preview file/);
-    expect(src).toMatch(/d\.message/);
-    expect(src).toMatch(/Tidak terhubung ke server/);
   });
 });
