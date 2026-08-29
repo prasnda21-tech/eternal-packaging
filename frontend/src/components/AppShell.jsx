@@ -169,7 +169,7 @@ export default function AppShell() {
     <div className="app-shell">
       <div className="app-sidebar-slot">
       <aside className="app-sidebar" ref={sidebarRef}>
-        <Link to="/" className="brand" title="Eternal Packaging" onClick={closeFlyout}>
+        <Link to="/" className="brand" title="Eternal Packaging" data-testid="sidebar-brand" onClick={closeFlyout}>
           <BrandMark compact onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">

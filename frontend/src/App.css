@@ -2,8 +2,9 @@
 .app-shell{--sidebar-rail:64px;min-height:100vh;display:grid;grid-template-columns:var(--sidebar-rail) 1fr;background:var(--paper)}
 .app-sidebar-slot{position:relative;z-index:56;width:var(--sidebar-rail);min-width:var(--sidebar-rail);max-width:var(--sidebar-rail);overflow:visible}
 .app-sidebar{background:var(--ep-dark);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;width:100%;overflow:visible;z-index:2;border-right:1px solid #0b2d22;box-sizing:border-box}
-.app-sidebar .brand{padding:12px 8px;border-bottom:1px solid rgba(255,255,255,.08);color:#fff;gap:0;justify-content:center}
+.app-sidebar .brand{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.08);color:#fff;gap:0;justify-content:center}
 .app-sidebar .brand-copy{display:none}
+.app-sidebar .brand-logo-symbol{width:40px;height:40px}
 .app-sidebar-nav{display:flex;flex-direction:column;gap:4px;padding:10px 8px;flex:1;align-items:center;overflow-y:auto;overflow-x:visible}
 .rail-btn{position:relative;width:44px;height:44px;display:grid;place-items:center;border:0;background:transparent;color:#C5D9CF;border-radius:8px;cursor:pointer;text-decoration:none;flex-shrink:0}
 .rail-btn:hover,.rail-btn:focus-visible{background:rgba(255,255,255,.1);color:#fff;outline:none}
@@ -46,7 +47,10 @@
 .topbar{height:48px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:16px;position:sticky;top:0;z-index:30}
 .brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit}
 .brand-mark{display:inline-flex;align-items:center;gap:10px;min-width:0}
-.brand-mark img{display:block;border-radius:7px;flex-shrink:0}
+.brand-mark img{display:block;flex-shrink:0;object-fit:contain;object-position:center}
+.brand-logo-symbol{width:36px;height:36px;aspect-ratio:1 / 1;background:#fff;border-radius:8px}
+.brand-mark.is-compact .brand-logo-symbol{width:40px;height:40px}
+.brand-logo-full{width:min(100%,300px);height:auto;max-width:100%}
 .brand-copy{display:flex;flex-direction:column;min-width:0;line-height:1.15}
 .brand-copy strong{font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;font-weight:700}
 .brand-copy em{font-style:normal;font-size:10.5px;color:var(--soft);margin-top:2px}
@@ -55,7 +59,7 @@
 .brand-mark.is-stacked{flex-direction:column;text-align:center;gap:12px}
 .brand-mark.is-stacked .brand-copy{align-items:center}
 .brand-mark.is-compact .brand-copy em{display:none}
-.brand span,.login-mark span:not(.brand-mark):not(.brand-copy){background:var(--ink);color:#f6f3eb;font-family:'IBM Plex Mono';font-weight:600;padding:9px 7px;font-size:14px}
+.brand span:not(.brand-mark):not(.brand-copy),.login-mark span:not(.brand-mark):not(.brand-copy){background:var(--ink);color:#f6f3eb;font-family:'IBM Plex Mono';font-weight:600;padding:9px 7px;font-size:14px}
 .brand strong{font-size:14px;letter-spacing:.08em;text-transform:uppercase}
 .topbar-date{font:11px 'IBM Plex Mono';color:var(--soft);letter-spacing:.04em;text-transform:uppercase}
 .sync{font-family:'IBM Plex Mono';font-size:11px;color:var(--soft);margin-left:auto}
@@ -149,9 +153,9 @@
 
 /* -------- Login -------- */
 .login-page{min-height:100vh;background:linear-gradient(180deg,#EEF7F2 0%,#F7FBF8 100%);color:var(--ink);display:grid;place-items:center;padding:32px 16px}
-.login-mark{padding:0;margin-bottom:8px;display:flex;justify-content:center}
-.login-mark .brand-copy strong{font-size:15px;color:var(--ep-dark)}
-.login-mark .brand-copy em{color:var(--soft)}
+.login-mark{padding:0;margin:0 0 16px;display:flex;justify-content:center;align-items:center}
+.login-mark .brand-mark{width:100%;justify-content:center}
+.login-mark .brand-logo-full{width:min(100%,280px)}
 .login-card,.login-panel{background:var(--surface);color:var(--ink);padding:36px 32px 28px;max-width:440px;width:100%;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
 .login-panel h1{font-size:clamp(22px,3vw,28px);line-height:1.2;letter-spacing:-.03em;margin:8px 0 10px;text-align:center}
 .login-panel h1 em{color:var(--ep-primary);font-style:normal}
@@ -589,7 +593,8 @@
   .bottom-nav button{flex:1;border:0;background:transparent;color:var(--soft);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:11px;cursor:pointer}
   .bottom-nav button.active{color:var(--blue);font-weight:600}
   .login-page{display:grid;place-items:center;padding:20px 14px}
-  .login-mark{padding:0;height:auto;margin-bottom:8px}
+  .login-mark{padding:0;height:auto;margin:0 0 12px}
+  .login-mark .brand-logo-full{width:min(100%,220px)}
   .login-panel{min-height:0;padding:28px 20px 22px}
   .login-panel h1{font-size:22px}
   .login-copy{font-size:13px;margin-bottom:18px}
@@ -1473,14 +1478,16 @@
   .dash-kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ind-metrics.cols-5{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prod-filter-kicker{flex:1 1 100%}
+  .login-mark .brand-logo-full{width:min(100%,240px)}
 }
 
 @media (max-width:640px){
   .app-shell{grid-template-columns:1fr}
   .app-sidebar-slot{width:100%;min-width:0;max-width:none}
   .app-sidebar{position:sticky;top:0;height:auto;width:100%;flex-direction:row;align-items:stretch;overflow:auto;z-index:2}
-  .app-sidebar .brand{border-bottom:0;border-right:1px solid rgba(255,255,255,.08);padding:8px 12px;flex-shrink:0}
+  .app-sidebar .brand{border-bottom:0;border-right:1px solid rgba(255,255,255,.08);padding:8px 10px;flex-shrink:0}
   .app-sidebar .brand-copy{display:none}
+  .app-sidebar .brand-logo-symbol{width:36px;height:36px}
   .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px;align-items:center}
   .app-sidebar .nav-group{flex-shrink:0}
   .rail-tooltip{display:none}
