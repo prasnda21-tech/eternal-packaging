@@ -5,14 +5,14 @@
     "owner": "eternal-packaging",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/branding/eternal-app-icon-1024.png",
     "userInterfaceStyle": "light",
     "scheme": "eternal",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/branding/eternal-splash-login-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0F172A"
+      "backgroundColor": "#FFFFFF"
     },
     "ios": {
       "supportsTablet": true,
@@ -25,9 +25,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#0F172A",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/branding/eternal-adaptive-foreground-1024.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.eternalpackaging.mobile",
