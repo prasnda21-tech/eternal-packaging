@@ -29,11 +29,17 @@ export function permittedWorkDivisions(has: PermCheck): { id: string; perm: stri
   }));
 }
 
+export const SAMPLE_UPLOAD_PERM = "operator.sample_upload";
+
 export function defaultWorkDivision(has: PermCheck, preferred?: string | null): string | null {
   const ids = permittedWorkDivisions(has);
   if (preferred && ids.some((d) => d.id === preferred)) return preferred;
   if (preferred === "design_approve" && has("design.approve")) return "design_approve";
-  return ids[0]?.id || (has("design.approve") ? "design_approve" : null);
+  if (preferred === "sample_upload" && has(SAMPLE_UPLOAD_PERM)) return "sample_upload";
+  return (
+    ids[0]?.id ||
+    (has("design.approve") ? "design_approve" : has(SAMPLE_UPLOAD_PERM) ? "sample_upload" : null)
+  );
 }
 
 export function canViewSchedule(has: PermCheck): boolean {
@@ -42,4 +48,8 @@ export function canViewSchedule(has: PermCheck): boolean {
 
 export function canApproveDesign(has: PermCheck): boolean {
   return has("design.approve");
+}
+
+export function canUploadSample(has: PermCheck): boolean {
+  return has(SAMPLE_UPLOAD_PERM);
 }
