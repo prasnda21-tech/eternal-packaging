@@ -29,6 +29,7 @@ export const NAV_KEYS = {
   shipmentStatus: "nav.reports.shipment_status",
   statusPo: "nav.reports.status_po",
   gajiOperator: "nav.reports.gaji_operator",
+  orderPrediction: "nav.reports.order_prediction",
   settings: "nav.settings",
 };
 
@@ -60,6 +61,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.shipmentStatus, label: "Status Pengiriman", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.orderPrediction, label: "Prediksi Order", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
@@ -185,6 +187,7 @@ export const REPORTS_NAV_ROUTES = {
   [NAV_KEYS.statusPo]: "/laporan/status-po",
   [NAV_KEYS.shipmentStatus]: "/laporan/status-pengiriman",
   [NAV_KEYS.gajiOperator]: "/laporan/gaji-operator",
+  [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
 };
 
 const REPORTS_VIS_FIELD = {
@@ -192,6 +195,7 @@ const REPORTS_VIS_FIELD = {
   [NAV_KEYS.statusPo]: "statusPo",
   [NAV_KEYS.shipmentStatus]: "shipmentStatus",
   [NAV_KEYS.gajiOperator]: "gajiOperator",
+  [NAV_KEYS.orderPrediction]: "orderPrediction",
 };
 
 export const REPORTS_TILE_TONES = {
@@ -199,6 +203,7 @@ export const REPORTS_TILE_TONES = {
   [NAV_KEYS.statusPo]: "blue",
   [NAV_KEYS.shipmentStatus]: "orange",
   [NAV_KEYS.gajiOperator]: "purple",
+  [NAV_KEYS.orderPrediction]: "green",
 };
 
 export const REPORTS_TILE_TESTIDS = {
@@ -206,6 +211,7 @@ export const REPORTS_TILE_TESTIDS = {
   [NAV_KEYS.statusPo]: "top-nav-status-po",
   [NAV_KEYS.shipmentStatus]: "top-nav-status-pengiriman",
   [NAV_KEYS.gajiOperator]: "top-nav-gaji-operator",
+  [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
 };
 
 export function reportsMenuItems(hasPerm) {
@@ -281,7 +287,8 @@ export function reportsNavVisible(hasPerm) {
   const statusPo = parent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const shipmentStatus = parent && canSeeNav(hasPerm, NAV_KEYS.shipmentStatus);
   const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
-  return { parent: !!(analytics || statusPo || shipmentStatus || gajiOperator), analytics, statusPo, shipmentStatus, gajiOperator };
+  const orderPrediction = parent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
+  return { parent: !!(analytics || statusPo || shipmentStatus || gajiOperator || orderPrediction), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
 }
 
 export function purchasingNavVisible(hasPerm) {

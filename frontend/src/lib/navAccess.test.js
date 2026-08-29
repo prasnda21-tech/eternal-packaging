@@ -176,6 +176,15 @@ describe("reportsNavVisible", () => {
     expect(v.parent).toBe(true);
     expect(v.gajiOperator).toBe(true);
     expect(v.shipmentStatus).toBe(false);
+    expect(v.orderPrediction).toBe(false);
+  });
+
+  test("shows parent for prediksi order only", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.orderPrediction));
+    expect(v.parent).toBe(true);
+    expect(v.orderPrediction).toBe(true);
+    expect(v.gajiOperator).toBe(false);
+    expect(v.statusPo).toBe(false);
   });
 });
 
@@ -280,6 +289,14 @@ describe("reportsMenuItems", () => {
     const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.gajiOperator));
     expect(items.map((item) => item.label)).toEqual(["Status PO", "Gaji Operator"]);
     expect(reportsMenuItems(has(NAV_KEYS.reports))).toEqual([]);
+  });
+
+  test("shows Prediksi Order when granted and hides it otherwise", () => {
+    const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.orderPrediction));
+    expect(items.map((item) => [item.label, item.to, item.testid])).toEqual([
+      ["Prediksi Order", "/laporan/prediksi-order", "top-nav-prediksi-order"],
+    ]);
+    expect(reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo)).map((item) => item.label)).not.toContain("Prediksi Order");
   });
 });
 

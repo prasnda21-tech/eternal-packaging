@@ -99,6 +99,9 @@ export const api = {
   gajiOperator: (params = {}) => client.get(`/reports/gaji-operator`, { params }).then((r) => r.data),
   gajiOperatorExport: (params = {}) =>
     client.get(`/reports/gaji-operator/export`, { params, responseType: "blob" }).then((r) => r.data),
+  orderPrediction: (params = {}) => client.get(`/reports/order-prediction`, { params }).then((r) => r.data),
+  orderPredictionDetail: (customerKey) =>
+    client.get(`/reports/order-prediction/${encodeURIComponent(customerKey)}`).then((r) => r.data),
   operatorWageSettings: () => client.get(`/settings/operator-wage`).then((r) => r.data),
   updateOperatorWageSettings: (payload) => client.put(`/settings/operator-wage`, payload).then((r) => r.data),
   listOperators: () => client.get(`/users/operators`).then((r) => r.data),

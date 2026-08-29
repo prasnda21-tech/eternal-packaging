@@ -53,6 +53,7 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.work_panel.view", "Lihat pengaturan Form Pekerjaan Divisi"),
     ("Pengaturan", "settings.work_panel.manage", "Ubah pengaturan Form Pekerjaan Divisi"),
     ("Laporan", "reports.gaji_operator.view", "Lihat Gaji Operator"),
+    ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
     ("Pengaturan", "settings.operator_wage.manage", "Ubah Upah Operator"),
     ("Packing", "packing.update", "Packing"),
@@ -120,6 +121,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.reports.shipment_status", "Menu Status Pengiriman"),
     ("Akses Menu", "nav.reports.status_po", "Menu Status PO"),
     ("Akses Menu", "nav.reports.gaji_operator", "Menu Gaji Operator"),
+    ("Akses Menu", "nav.reports.order_prediction", "Menu Prediksi Order"),
     ("Akses Menu", "nav.settings", "Menu Pengaturan"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
@@ -174,6 +176,7 @@ NAV_MENU_ITEMS = (
     ("nav.reports.status_po", "Status PO", "nav.reports"),
     ("nav.reports.shipment_status", "Status Pengiriman", "nav.reports"),
     ("nav.reports.gaji_operator", "Gaji Operator", "nav.reports"),
+    ("nav.reports.order_prediction", "Prediksi Order", "nav.reports"),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -194,6 +197,9 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.reports.shipment_status")
         nav.add("nav.reports.status_po")
         nav.add("nav.reports.gaji_operator")
+    if "reports.order_prediction.view" in existing:
+        nav.add("nav.reports")
+        nav.add("nav.reports.order_prediction")
     if "delivery.schedule.view" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_schedule")
@@ -285,6 +291,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
         "reports.gaji_operator.view",
+        "reports.order_prediction.view",
         "settings.operator_wage.view", "settings.operator_wage.manage",
     ],
     "head_operations": [
@@ -305,6 +312,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "current_stock.view", "current_stock.update", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
         "reports.gaji_operator.view",
+        "reports.order_prediction.view",
         "settings.operator_wage.view", "settings.operator_wage.manage",
     ],
     "designer": [
@@ -333,6 +341,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "schedule.view", "schedule.work_date.view", "delivery_note.view", "delivery_note.manage",
         "customer_approval.view",
         "buffer_stock.manage",
+        "reports.order_prediction.view",
     ],
 }
 

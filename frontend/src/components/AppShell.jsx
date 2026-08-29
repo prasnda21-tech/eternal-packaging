@@ -1,4 +1,4 @@
-import { BarChart3, Boxes, CalendarClock, ClipboardList, Download, FileBarChart, FileText, Image as ImageIcon, LayoutDashboard, LogOut, Package, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, CalendarClock, ClipboardList, Download, FileBarChart, FileText, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
@@ -20,6 +20,7 @@ const TILE_ICONS = {
   [NAV_KEYS.statusPo]: TableIcon,
   [NAV_KEYS.shipmentStatus]: Truck,
   [NAV_KEYS.gajiOperator]: FileBarChart,
+  [NAV_KEYS.orderPrediction]: LineChart,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,

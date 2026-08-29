@@ -17,6 +17,7 @@ import AnalitikOutput from "./pages/AnalitikOutput";
 import StatusPengiriman from "./pages/StatusPengiriman";
 import StatusPO from "./pages/StatusPO";
 import GajiOperator from "./pages/GajiOperator";
+import PrediksiOrder from "./pages/PrediksiOrder";
 import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
@@ -73,6 +74,7 @@ function LaporanIndex() {
   if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
   if (r.shipmentStatus) return <Navigate to="/laporan/status-pengiriman" replace />;
   if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
+  if (r.orderPrediction) return <Navigate to="/laporan/prediksi-order" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -116,6 +118,7 @@ export default function App() {
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
             <Route path="/laporan/gaji-operator" element={<PermGate anyOf={[NAV_KEYS.gajiOperator]} alsoAnyOf={["reports.gaji_operator.view", "schedule.view"]}><GajiOperator /></PermGate>} />
+            <Route path="/laporan/prediksi-order" element={<PermGate anyOf={[NAV_KEYS.orderPrediction]} alsoAnyOf={["reports.order_prediction.view"]}><PrediksiOrder /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id/kerja" element={<PermGate anyOf={["work_panel.view", "operator.update", "po.view"]}><PoWorkView /></PermGate>} />

@@ -31,6 +31,7 @@ def test_catalog_includes_nav_keys():
         "nav.reports.shipment_status",
         "nav.reports.status_po",
         "nav.reports.gaji_operator",
+        "nav.reports.order_prediction",
         "nav.settings",
         "nav.tasks",
         "nav.tasks.designer",
@@ -62,6 +63,7 @@ def test_catalog_includes_nav_keys():
         "settings.work_panel.view",
         "settings.work_panel.manage",
         "reports.gaji_operator.view",
+        "reports.order_prediction.view",
         "settings.operator_wage.view",
         "settings.operator_wage.manage",
     ):
