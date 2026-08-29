@@ -97,7 +97,7 @@ export function fallbackDivision(id) {
     packing: { id: "packing", label: "Packing", active: true, implemented: true, submit_perm: "packing.update", input_label: "Qty Packing", target_source: "packing_cap", input_kind: "qty" },
     surat_jalan: { id: "surat_jalan", label: "Surat Jalan", active: true, implemented: true, submit_perm: "delivery_note.manage", input_label: "Surat Jalan", target_source: "packed_qty", input_kind: "evidence" },
     loading: { id: "loading", label: "Loading", active: true, implemented: true, submit_perm: "loading.update", input_label: "Qty Loading", target_source: "confirmed_loading", input_kind: "qty" },
-    terkirim: { id: "terkirim", label: "Terkirim", active: true, implemented: true, submit_perm: "delivery.update", input_label: "Bukti Pengiriman", target_source: "delivered_qty", input_kind: "evidence" },
+    terkirim: { id: "terkirim", label: "Pengiriman", active: true, implemented: true, submit_perm: "delivery.update", input_label: "Bukti Pengiriman", target_source: "delivered_qty", input_kind: "evidence" },
   };
   return map[id] || map.operator;
 }

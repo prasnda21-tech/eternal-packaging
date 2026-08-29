@@ -11,7 +11,7 @@ describe("Live Tracking shares Alur Pekerjaan stages", () => {
     expect(rows[2].stage).toBe("Approval Design");
     expect(rows[12].stage).toBe("Surat Jalan");
     expect(rows[13].stage).toBe("Loading");
-    expect(rows[14].stage).toBe("Terkirim");
+    expect(rows[14].stage).toBe("Pengiriman");
   });
 
   test("each stage status matches Timeline chip", () => {

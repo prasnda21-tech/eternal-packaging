@@ -210,7 +210,7 @@ class TestPartialWorkflow:
         assert names[0] == "Order Masuk"
         assert names[12] == "Surat Jalan"
         assert names[13] == "Loading"
-        assert names[14] == "Terkirim"
+        assert names[14] == "Pengiriman"
 
     def test_print_stages_kept_for_non_print(self):
         payload = public_payload(_print_po(
@@ -239,8 +239,8 @@ class TestDelivery:
             current_stage=13,
             total_quantity=8000,
         ))
-        assert _stage(payload, "Terkirim")["status"] == "in_progress"
-        assert _stage(payload, "Terkirim")["status"] != "completed"
+        assert _stage(payload, "Pengiriman")["status"] == "in_progress"
+        assert _stage(payload, "Pengiriman")["status"] != "completed"
 
     def test_f_full_delivery_terkirim_completed(self):
         payload = public_payload(_print_po(
@@ -250,7 +250,7 @@ class TestDelivery:
             current_stage=14,
             total_quantity=8000,
         ))
-        assert _stage(payload, "Terkirim")["status"] == "completed"
+        assert _stage(payload, "Pengiriman")["status"] == "completed"
 
 
 # ---------- G: token uniqueness ----------

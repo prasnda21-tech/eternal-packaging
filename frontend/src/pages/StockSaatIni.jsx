@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Download, Search, X } from "lucide-react";
+import { AlertCircle, Download, Search, Upload, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { isAccuratePurchaseSource, purchaseSourceLabel } from "../lib/currentStock";
+import ImportPreviewModal from "../components/ImportPreviewModal";
 
 function parseInputQty(raw, { allowNegative = false } = {}) {
   const t = String(raw ?? "").trim();
@@ -69,6 +70,7 @@ export default function StockSaatIni() {
   const { hasPerm } = useAuth();
   const canUpdate = hasPerm("current_stock.update");
   const canExport = hasPerm("current_stock.export");
+  const canImport = hasPerm("current_stock.import");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -80,6 +82,7 @@ export default function StockSaatIni() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -174,6 +177,11 @@ export default function StockSaatIni() {
           <p className="subhead">(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator</p>
         </div>
         <div className="stock-heading-actions">
+          {canImport && (
+            <button type="button" className="ghost" onClick={() => setImportOpen(true)} data-testid="stock-import-button">
+              <Upload size={14} /> Impor Stock
+            </button>
+          )}
           {canExport && (
             <button className="primary" onClick={download} disabled={exporting} data-testid="stock-export-button">
               <Download size={14} /> Export
@@ -324,6 +332,29 @@ export default function StockSaatIni() {
           <button className="ghost sm" disabled={page >= pageCount || loading} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
+
+      <ImportPreviewModal
+        open={importOpen}
+        title="Impor Stock Saat Ini"
+        testid="stock-import-modal"
+        applyLabel="Sesuaikan Stock Terpilih"
+        confirmText="Sesuaikan stock untuk baris terpilih? Nilai file menjadi Stock Saat Ini (bukan +/-)."
+        columns={[
+          { key: "item_name", label: "Item" },
+          { key: "item_code", label: "Kode" },
+          { key: "stock_system", label: "Stock System", num: true, render: (r) => (r.stock_system == null ? "—" : fmtQty(r.stock_system)) },
+          { key: "stock_file", label: "Stock File", num: true, render: (r) => (r.stock_file == null ? "—" : fmtQty(r.stock_file)) },
+          { key: "delta", label: "Selisih", num: true, render: (r) => (r.delta == null ? "—" : fmtQty(r.delta)) },
+          { key: "status", label: "Status", render: (r) => r.status + (r.reason ? ` — ${r.reason}` : "") },
+        ]}
+        onClose={() => setImportOpen(false)}
+        onPreviewFile={(file) => api.currentStockImportPreview(file)}
+        onApply={async (selected) => {
+          const result = await api.currentStockImportApply(selected);
+          await load();
+          return result;
+        }}
+      />
     </div>
   );
 }

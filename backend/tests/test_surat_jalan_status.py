@@ -127,7 +127,7 @@ def test_live_tracking_fifteen_stages_match_alur():
     assert _stage(wf, "Surat Jalan")["label"] == resolve_stage_chip(12, o)["label"]
     assert _stage(wf, "Loading")["label"] == resolve_stage_chip(13, o)["label"]
     assert _stage(wf, "Packing")["label"] == "Selesai"
-    terkirim = _stage(wf, "Terkirim")
+    terkirim = _stage(wf, "Pengiriman")
     assert terkirim["label"] == "Menunggu bukti pengiriman"
 
 

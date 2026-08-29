@@ -851,8 +851,96 @@ def _legacy_loaded_qty_for_line(order: dict, line_idx: int) -> int:
 
 
 def loading_confirmations_stored(order: dict) -> list:
+    """Active (non-cancelled) SJ-linked Loading confirmations."""
+    raw = order.get("loading_confirmations")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for x in raw:
+        if not isinstance(x, dict):
+            continue
+        if x.get("cancelled") or x.get("deleted"):
+            continue
+        out.append(x)
+    return out
+
+
+def loading_confirmations_all(order: dict) -> list:
+    """All Loading confirmations including cancelled (audit / history)."""
     raw = order.get("loading_confirmations")
     return [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+
+
+def find_loading_confirmation(order: dict, confirmation_id: str, *, include_cancelled: bool = False) -> Optional[dict]:
+    want = str(confirmation_id or "").strip()
+    if not want:
+        return None
+    source = loading_confirmations_all(order) if include_cancelled else loading_confirmations_stored(order)
+    for c in source:
+        if str(c.get("id") or "").strip() == want:
+            return c
+    return None
+
+
+def confirmation_qty_total(conf: Optional[dict]) -> int:
+    if not isinstance(conf, dict):
+        return 0
+    total = 0
+    for ln in conf.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+    return total
+
+
+def delivered_qty_for_loading_confirmation(order: dict, confirmation_id: str) -> int:
+    """FIFO allocate persisted qty_delivered onto active Loading confirmations."""
+    want = str(confirmation_id or "").strip()
+    leftover = max(0, qty_delivered(order))
+    for conf in loading_confirmations_stored(order):
+        cap = confirmation_qty_total(conf)
+        allocated = min(cap, leftover)
+        leftover -= allocated
+        if str(conf.get("id") or "").strip() == want:
+            return allocated
+    return 0
+
+
+def validate_cancel_loading_confirmation(order: dict, confirmation_id: str) -> Optional[str]:
+    if is_fully_delivered(order):
+        return "Pengiriman PO sudah selesai seluruhnya — Loading tidak bisa dihapus."
+    conf = find_loading_confirmation(order, confirmation_id, include_cancelled=False)
+    if not conf:
+        return "Konfirmasi Loading tidak ditemukan."
+    if delivered_qty_for_loading_confirmation(order, confirmation_id) > 0:
+        return "Loading ini sudah mempunyai qty terkirim — tidak bisa dihapus."
+    return None
+
+
+def cancel_loading_confirmation(
+    order: dict,
+    confirmation_id: str,
+    *,
+    actor: Optional[dict] = None,
+    cancelled_at: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Optional[dict]:
+    """Soft-cancel one Loading confirmation. Preserves SJ files and delivery history."""
+    err = validate_cancel_loading_confirmation(order, confirmation_id)
+    if err:
+        raise ValueError(err)
+    actor = actor or {}
+    want = str(confirmation_id or "").strip()
+    for conf in loading_confirmations_all(order):
+        if str(conf.get("id") or "").strip() != want:
+            continue
+        conf["cancelled"] = True
+        conf["cancelled_by"] = actor.get("email")
+        conf["cancelled_by_name"] = actor.get("name") or actor.get("email")
+        conf["cancelled_at"] = cancelled_at
+        conf["cancelled_reason"] = reason or "Hapus data Loading"
+        return conf
+    return None
 
 
 def find_sj_file(order: dict, file_id: str) -> Optional[dict]:

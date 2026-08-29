@@ -346,4 +346,4 @@ def test_13_dashboard_15_stages_no_driver(admin_tok):
     assert len(sb) == 15, f"expected 15 stages, got {len(sb)}"
     labels = [s.get("label") for s in sb]
     assert "Driver" not in labels, labels
-    assert "Terkirim" in labels
+    assert "Pengiriman" in labels

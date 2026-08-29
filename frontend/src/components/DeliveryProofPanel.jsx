@@ -474,7 +474,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
       )}
       <ConfirmActionModal
         open={!!confirmUpload}
-        stage="Terkirim"
+        stage="Pengiriman"
         poNumber={order.po_number}
         action={confirmUpload ? `Upload ${confirmUpload.count} foto bukti pengiriman` : "Upload bukti pengiriman"}
         name={user?.name || user?.email}
@@ -488,7 +488,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
       <ConfirmActionModal
         open={!!confirmDeliver}
         title="KONFIRMASI PENGIRIMAN"
-        stage="Terkirim"
+        stage="Pengiriman"
         poNumber={order.po_number}
         customer={order.customer_name || order.customer}
         name={user?.name || user?.email}

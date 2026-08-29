@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { RefreshCw, Upload, X } from "lucide-react";
 import api from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import ImportPreviewModal from "../components/ImportPreviewModal";
 import {
   CONFIDENCE_FILTERS,
   EMPTY_PREDIKSI_FILTERS,
@@ -38,6 +40,8 @@ function Field({ label, children }) {
 }
 
 export default function PrediksiOrder() {
+  const { hasPerm } = useAuth();
+  const canImport = hasPerm("reports.order_prediction.import");
   const [tab, setTab] = useState("analisis");
   const [filters, setFilters] = useState(EMPTY_PREDIKSI_FILTERS);
   const [data, setData] = useState(null);
@@ -45,6 +49,7 @@ export default function PrediksiOrder() {
   const [err, setErr] = useState("");
   const [detail, setDetail] = useState(null);
   const [detailBusy, setDetailBusy] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const params = useMemo(() => ({
     search: filters.search || undefined,
@@ -107,6 +112,11 @@ export default function PrediksiOrder() {
           <p className="muted small" data-testid="prediksi-disclaimer">
             Prediksi bersifat estimasi berdasarkan pola histori order.
           </p>
+          {canImport && (
+            <button type="button" className="primary" onClick={() => setImportOpen(true)} data-testid="prediksi-import-button">
+              <Upload size={14} /> Impor Histori Order
+            </button>
+          )}
         </header>
 
         <section className="kpi-grid prediksi-kpi" data-testid="prediksi-kpi">
@@ -237,6 +247,7 @@ export default function PrediksiOrder() {
                 <th>Tanggal Order</th>
                 <th>Nomor PO</th>
                 <th>Sales</th>
+                <th>Sumber</th>
                 <th>Tanggal Order Sebelumnya</th>
                 <th>Jarak Order (Hari)</th>
                 <th>Omzet</th>
@@ -251,6 +262,7 @@ export default function PrediksiOrder() {
                   <td className="mono">{formatDisplayDate(r.order_date)}</td>
                   <td className="mono">{r.po_number || "-"}</td>
                   <td>{r.sales || "-"}</td>
+                  <td data-testid={`prediksi-source-${r.po_number || r.id}`}>{r.source || "ORDER MASUK"}</td>
                   <td className="mono">{formatDisplayDate(r.previous_order_date)}</td>
                   <td className="num mono" data-testid={`prediksi-gap-${r.po_number}`}>{dashGap(r.gap_days)}</td>
                   <td className="mono" data-testid={`prediksi-omzet-${r.po_number}`}>{dashOmzet(r.omzet)}</td>
@@ -258,7 +270,7 @@ export default function PrediksiOrder() {
                 </tr>
               ))}
               {!orderRows.length && (
-                <tr><td colSpan={9} className="muted">Tidak ada Data Order dari Order Masuk.</td></tr>
+                <tr><td colSpan={10} className="muted">Tidak ada Data Order dari Order Masuk.</td></tr>
               )}
             </tbody>
           </table>
@@ -318,6 +330,7 @@ export default function PrediksiOrder() {
                       <th>Nomor PO</th>
                       <th>Jarak</th>
                       <th>Sales</th>
+                      <th>Sumber</th>
                       <th>Omzet</th>
                     </tr>
                   </thead>
@@ -328,6 +341,7 @@ export default function PrediksiOrder() {
                         <td>{h.po_number || "-"}</td>
                         <td>{dashGap(h.gap_days)}</td>
                         <td>{h.sales || "-"}</td>
+                        <td data-testid={`prediksi-detail-source-${h.po_number || h.id}`}>{h.source || "ORDER MASUK"}</td>
                         <td data-testid={`prediksi-detail-omzet-${h.po_number}`}>{dashOmzet(h.omzet)}</td>
                       </tr>
                     ))}
@@ -339,6 +353,30 @@ export default function PrediksiOrder() {
         </div>
       )}
       {detailBusy && <div className="muted small" data-testid="prediksi-detail-loading">Memuat detail...</div>}
+
+      <ImportPreviewModal
+        open={importOpen}
+        title="Impor Histori Order"
+        testid="prediksi-import-modal"
+        applyLabel="Impor Histori Terpilih"
+        confirmText="Impor baris histori terpilih ke Prediksi Order? Ini bukan PO produksi."
+        columns={[
+          { key: "customer", label: "Customer" },
+          { key: "outlet", label: "Outlet" },
+          { key: "order_date", label: "Tanggal" },
+          { key: "po_number", label: "No Order" },
+          { key: "omzet", label: "Omzet", render: (r) => (r.omzet == null || r.omzet === "" ? "-" : r.omzet) },
+          { key: "status", label: "Status", render: (r) => r.status + (r.reason ? ` — ${r.reason}` : "") },
+        ]}
+        onClose={() => setImportOpen(false)}
+        onPreviewFile={(file) => api.orderPredictionImportPreview(file)}
+        onApply={async (selected) => {
+          const result = await api.orderPredictionImportApply(selected);
+          if (result?.prediction) setData(result.prediction);
+          else await load();
+          return result;
+        }}
+      />
     </div>
   );
 }
