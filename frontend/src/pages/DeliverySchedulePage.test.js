@@ -5,6 +5,7 @@ describe("delivery reschedule UI", () => {
   const proof = fs.readFileSync(path.join(__dirname, "../components/DeliveryProofPanel.jsx"), "utf8");
   const modal = fs.readFileSync(path.join(__dirname, "../components/RescheduleDeliveryModal.jsx"), "utf8");
   const shell = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
+  const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const schedule = fs.readFileSync(path.join(__dirname, "DeliverySchedulePage.jsx"), "utf8");
   const reschedule = fs.readFileSync(path.join(__dirname, "DeliveryReschedulePage.jsx"), "utf8");
@@ -29,13 +30,13 @@ describe("delivery reschedule UI", () => {
   });
 
   test("sidebar Produksi hierarchy without old labels", () => {
-    expect(shell).toMatch(/<h2>Produksi<\/h2>/);
-    expect(shell).toMatch(/Jadwal Produksi/);
-    expect(shell).toMatch(/Jadwal Pengiriman Ulang/);
+    expect(shell).toMatch(/title="Produksi"/);
+    expect(nav).toMatch(/Jadwal Produksi/);
+    expect(nav).toMatch(/Jadwal Pengiriman Ulang/);
     expect(shell).toMatch(/Tugas Produksi/);
     expect(shell).not.toMatch(/Tugas per Divisi/);
-    expect(shell).toMatch(/to="\/produksi"/);
-    expect(shell).toMatch(/jadwal-pengiriman-ulang/);
+    expect(nav).toMatch(/"\/produksi"/);
+    expect(nav).toMatch(/jadwal-pengiriman-ulang/);
   });
 
   test("routes preserve jadwal produksi and add schedule pages", () => {

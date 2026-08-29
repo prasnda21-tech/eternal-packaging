@@ -1,4 +1,4 @@
-import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesMenuItems, salesNavVisible, tasksNavVisible, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
+import { inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -252,5 +252,66 @@ describe("productionNavVisible", () => {
     expect(both.deliveryToday).toBe(true);
     const prodOnly = productionNavVisible(has(NAV_KEYS.schedule));
     expect(prodOnly.deliveryToday).toBe(false);
+  });
+});
+
+describe("purchasingMenuItems", () => {
+  test("builds tiles from existing Pembelian children only", () => {
+    expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts))).toEqual([
+      { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "blue", testid: "top-nav-penerimaan-barang" },
+    ]);
+    expect(purchasingMenuItems(has(NAV_KEYS.purchasing))).toEqual([]);
+  });
+});
+
+describe("inventoryMenuItems", () => {
+  test("shows authorized Barang/Jasa only", () => {
+    const items = inventoryMenuItems(has(NAV_KEYS.inventory, NAV_KEYS.masterItems));
+    expect(items).toEqual([
+      { key: NAV_KEYS.masterItems, label: "Barang/Jasa", to: "/persediaan/master-barang-jasa", tone: "green", testid: "top-nav-master-barang-jasa" },
+    ]);
+    expect(items.map((item) => item.label)).not.toContain("Stock Saat Ini");
+    expect(inventoryMenuItems(has(NAV_KEYS.inventory))).toEqual([]);
+  });
+});
+
+describe("reportsMenuItems", () => {
+  test("shows authorized report children and hides the rest", () => {
+    const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.gajiOperator));
+    expect(items.map((item) => item.label)).toEqual(["Status PO", "Gaji Operator"]);
+    expect(reportsMenuItems(has(NAV_KEYS.reports))).toEqual([]);
+  });
+});
+
+describe("productionMenuItems", () => {
+  test("keeps existing Produksi children including Pengiriman Hari Ini", () => {
+    const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.deliverySchedule, NAV_KEYS.deliveryReschedule, NAV_KEYS.statusPo));
+    expect(items.map((item) => [item.label, item.to])).toEqual([
+      ["Jadwal Produksi", "/produksi"],
+      ["Pengiriman Hari Ini", "/produksi/pengiriman-hari-ini"],
+      ["Jadwal Pengiriman", "/produksi/jadwal-pengiriman"],
+      ["Jadwal Pengiriman Ulang", "/produksi/jadwal-pengiriman-ulang"],
+    ]);
+  });
+
+  test("omits Pengiriman Hari Ini without status po and does not invent Tugas Produksi tile", () => {
+    const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.tasksOperator));
+    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi"]);
+    expect(items.some((item) => item.label === "Tugas Produksi")).toBe(false);
+    expect(productionMenuItems(has(NAV_KEYS.statusPo))).toEqual([]);
+  });
+});
+
+describe("taskMenuItems", () => {
+  test("shows authorized Tugas Produksi children in TASK_NAV_ORDER", () => {
+    const items = taskMenuItems(has(NAV_KEYS.tasksDesigner, NAV_KEYS.tasksOperator, "operator.update", "design.upload"));
+    expect(items.map((item) => item.key)).toEqual(["designer", "operator"]);
+    expect(items[1]).toEqual({
+      key: "operator",
+      label: "Operator",
+      to: "/tasks/operator",
+      tone: "green",
+      testid: "top-nav-tasks-operator",
+    });
   });
 });

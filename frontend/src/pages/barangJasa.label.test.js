@@ -11,7 +11,7 @@ describe("Barang/Jasa display label", () => {
   test("sidebar and page title use Barang/Jasa not Master Barang/Jasa", () => {
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.masterItems).label).toBe("Barang/Jasa");
     expect(NAV_MENU_FALLBACK.some((m) => m.label === "Master Barang/Jasa")).toBe(false);
-    expect(shell).toMatch(/> Barang\/Jasa/);
+    expect(nav).toMatch(/Barang\/Jasa/);
     expect(shell).not.toMatch(/Master Barang\/Jasa/);
     expect(page).toMatch(/<h1 data-testid="master-items-title">Barang\/Jasa<\/h1>/);
     expect(page).not.toMatch(/Master Barang\/Jasa/);
@@ -20,7 +20,7 @@ describe("Barang/Jasa display label", () => {
   test("route and nav permission key stay unchanged", () => {
     expect(NAV_KEYS.masterItems).toBe("nav.inventory.master_items");
     expect(app).toMatch(/path="\/persediaan\/master-barang-jasa"/);
-    expect(shell).toMatch(/to="\/persediaan\/master-barang-jasa"/);
+    expect(nav).toMatch(/\/persediaan\/master-barang-jasa/);
     expect(nav).toMatch(/masterItems:\s*"nav\.inventory\.master_items"/);
   });
 });

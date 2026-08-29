@@ -92,20 +92,187 @@ export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.importPo]: "top-nav-import",
 };
 
-/** Child tiles from NAV_MENU_FALLBACK, filtered by salesNavVisible + known routes. */
-export function salesMenuItems(hasPerm) {
-  const visible = salesNavVisible(hasPerm);
+function menuItemsFromFallback(hasPerm, parentKey, visible, fieldMap, routes, tones, testids, extras = {}) {
   return NAV_MENU_FALLBACK.filter((item) => {
-    if (item.parent !== NAV_KEYS.sales) return false;
-    const field = SALES_VIS_FIELD[item.key];
-    return !!(field && visible[field] && SALES_NAV_ROUTES[item.key]);
+    if (item.parent !== parentKey) return false;
+    const field = fieldMap[item.key];
+    return !!(field && visible[field] && routes[item.key]);
   }).map((item) => ({
     key: item.key,
     label: item.label,
-    to: SALES_NAV_ROUTES[item.key],
-    tone: SALES_TILE_TONES[item.key] || "green",
-    testid: SALES_TILE_TESTIDS[item.key] || `top-nav-sales-${item.key}`,
+    to: routes[item.key],
+    tone: tones[item.key] || "green",
+    testid: testids[item.key] || `top-nav-${item.key}`,
+    ...(extras[item.key] || {}),
   }));
+}
+
+/** Child tiles from NAV_MENU_FALLBACK, filtered by salesNavVisible + known routes. */
+export function salesMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.sales,
+    salesNavVisible(hasPerm),
+    SALES_VIS_FIELD,
+    SALES_NAV_ROUTES,
+    SALES_TILE_TONES,
+    SALES_TILE_TESTIDS,
+  );
+}
+
+export const PURCHASING_NAV_ROUTES = {
+  [NAV_KEYS.purchaseReceipts]: "/pembelian/penerimaan-barang",
+};
+
+const PURCHASING_VIS_FIELD = {
+  [NAV_KEYS.purchaseReceipts]: "receipts",
+};
+
+export const PURCHASING_TILE_TONES = {
+  [NAV_KEYS.purchaseReceipts]: "blue",
+};
+
+export const PURCHASING_TILE_TESTIDS = {
+  [NAV_KEYS.purchaseReceipts]: "top-nav-penerimaan-barang",
+};
+
+export function purchasingMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.purchasing,
+    purchasingNavVisible(hasPerm),
+    PURCHASING_VIS_FIELD,
+    PURCHASING_NAV_ROUTES,
+    PURCHASING_TILE_TONES,
+    PURCHASING_TILE_TESTIDS,
+  );
+}
+
+export const INVENTORY_NAV_ROUTES = {
+  [NAV_KEYS.masterItems]: "/persediaan/master-barang-jasa",
+  [NAV_KEYS.currentStock]: "/persediaan/stock-saat-ini",
+};
+
+const INVENTORY_VIS_FIELD = {
+  [NAV_KEYS.masterItems]: "masterItems",
+  [NAV_KEYS.currentStock]: "currentStock",
+};
+
+export const INVENTORY_TILE_TONES = {
+  [NAV_KEYS.masterItems]: "green",
+  [NAV_KEYS.currentStock]: "blue",
+};
+
+export const INVENTORY_TILE_TESTIDS = {
+  [NAV_KEYS.masterItems]: "top-nav-master-barang-jasa",
+  [NAV_KEYS.currentStock]: "top-nav-stock-saat-ini",
+};
+
+export function inventoryMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.inventory,
+    inventoryNavVisible(hasPerm),
+    INVENTORY_VIS_FIELD,
+    INVENTORY_NAV_ROUTES,
+    INVENTORY_TILE_TONES,
+    INVENTORY_TILE_TESTIDS,
+  );
+}
+
+export const REPORTS_NAV_ROUTES = {
+  [NAV_KEYS.analytics]: "/laporan/analitik-output",
+  [NAV_KEYS.statusPo]: "/laporan/status-po",
+  [NAV_KEYS.shipmentStatus]: "/laporan/status-pengiriman",
+  [NAV_KEYS.gajiOperator]: "/laporan/gaji-operator",
+};
+
+const REPORTS_VIS_FIELD = {
+  [NAV_KEYS.analytics]: "analytics",
+  [NAV_KEYS.statusPo]: "statusPo",
+  [NAV_KEYS.shipmentStatus]: "shipmentStatus",
+  [NAV_KEYS.gajiOperator]: "gajiOperator",
+};
+
+export const REPORTS_TILE_TONES = {
+  [NAV_KEYS.analytics]: "green",
+  [NAV_KEYS.statusPo]: "blue",
+  [NAV_KEYS.shipmentStatus]: "orange",
+  [NAV_KEYS.gajiOperator]: "purple",
+};
+
+export const REPORTS_TILE_TESTIDS = {
+  [NAV_KEYS.analytics]: "top-nav-analitik-output",
+  [NAV_KEYS.statusPo]: "top-nav-status-po",
+  [NAV_KEYS.shipmentStatus]: "top-nav-status-pengiriman",
+  [NAV_KEYS.gajiOperator]: "top-nav-gaji-operator",
+};
+
+export function reportsMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.reports,
+    reportsNavVisible(hasPerm),
+    REPORTS_VIS_FIELD,
+    REPORTS_NAV_ROUTES,
+    REPORTS_TILE_TONES,
+    REPORTS_TILE_TESTIDS,
+  );
+}
+
+export const PRODUCTION_NAV_ROUTES = {
+  [NAV_KEYS.schedule]: "/produksi",
+  [NAV_KEYS.deliverySchedule]: "/produksi/jadwal-pengiriman",
+  [NAV_KEYS.deliveryReschedule]: "/produksi/jadwal-pengiriman-ulang",
+};
+
+const PRODUCTION_VIS_FIELD = {
+  [NAV_KEYS.schedule]: "schedule",
+  [NAV_KEYS.deliverySchedule]: "deliverySchedule",
+  [NAV_KEYS.deliveryReschedule]: "deliveryReschedule",
+};
+
+export const PRODUCTION_TILE_TONES = {
+  [NAV_KEYS.schedule]: "green",
+  [NAV_KEYS.deliverySchedule]: "blue",
+  [NAV_KEYS.deliveryReschedule]: "orange",
+};
+
+export const PRODUCTION_TILE_TESTIDS = {
+  [NAV_KEYS.schedule]: "top-nav-jadwal-produksi",
+  [NAV_KEYS.deliverySchedule]: "top-nav-jadwal-pengiriman",
+  [NAV_KEYS.deliveryReschedule]: "top-nav-jadwal-pengiriman-ulang",
+};
+
+/** Existing Produksi child that reuses status PO perm — not a new nav key. */
+export const PRODUCTION_TODAY_ITEM = {
+  key: "deliveryToday",
+  label: "Pengiriman Hari Ini",
+  to: "/produksi/pengiriman-hari-ini",
+  tone: "purple",
+  testid: "top-nav-pengiriman-hari-ini",
+};
+
+export function productionMenuItems(hasPerm) {
+  const visible = productionNavVisible(hasPerm);
+  const items = menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.production,
+    visible,
+    PRODUCTION_VIS_FIELD,
+    PRODUCTION_NAV_ROUTES,
+    PRODUCTION_TILE_TONES,
+    PRODUCTION_TILE_TESTIDS,
+    {
+      [NAV_KEYS.schedule]: { end: true },
+      [NAV_KEYS.deliverySchedule]: { end: true },
+    },
+  );
+  if (visible.deliveryToday && visible.parent) {
+    const afterSchedule = items.findIndex((item) => item.key === NAV_KEYS.schedule);
+    items.splice(afterSchedule >= 0 ? afterSchedule + 1 : 0, 0, { ...PRODUCTION_TODAY_ITEM });
+  }
+  return items;
 }
 
 export function reportsNavVisible(hasPerm) {
@@ -201,6 +368,30 @@ export function tasksNavVisible(hasPerm) {
     if (on) any = true;
   }
   return { parent: any, ...children };
+}
+
+export const TASK_TILE_TONES = {
+  designer: "green",
+  screener: "blue",
+  kepala_produksi: "orange",
+  helper: "purple",
+  operator: "green",
+  packing: "blue",
+  surat_jalan: "orange",
+  loading: "purple",
+  terkirim: "green",
+};
+
+/** Existing Tugas Produksi children only — TASK_NAV_ORDER.map keeps current order. */
+export function taskMenuItems(hasPerm) {
+  const visible = tasksNavVisible(hasPerm);
+  return TASK_NAV_ORDER.filter((id) => visible[id]).map((id) => ({
+    key: id,
+    label: TASK_NAV_LABELS[id],
+    to: TASK_NAV_PATHS[id],
+    tone: TASK_TILE_TONES[id] || "green",
+    testid: `top-nav-tasks-${id}`,
+  }));
 }
 
 export function productionNavVisible(hasPerm) {

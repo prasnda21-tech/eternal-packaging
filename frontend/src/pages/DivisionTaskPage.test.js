@@ -4,6 +4,7 @@ import path from "path";
 describe("Division task UI", () => {
   const page = fs.readFileSync(path.join(__dirname, "DivisionTaskPage.jsx"), "utf8");
   const shell = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
+  const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const lib = fs.readFileSync(path.join(__dirname, "../lib/divisionTasks.js"), "utf8");
   const packing = fs.readFileSync(path.join(__dirname, "../components/PackingPanel.jsx"), "utf8");
@@ -12,7 +13,8 @@ describe("Division task UI", () => {
   test("sidebar Tugas Produksi and all submenus", () => {
     expect(shell).toMatch(/Tugas Produksi/);
     expect(shell).not.toMatch(/Tugas per Divisi/);
-    expect(shell).toMatch(/top-nav-tasks-\$\{id\}/);
+    expect(nav).toMatch(/top-nav-tasks-\$\{id\}/);
+    expect(nav).toMatch(/TASK_NAV_ORDER/);
     expect(shell).toMatch(/TASK_NAV_ORDER/);
   });
 
