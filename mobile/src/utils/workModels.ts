@@ -10,15 +10,54 @@ function sumEntryQty(entries: any[]): number {
     .reduce((s, e) => s + Number(e.qty || 0), 0);
 }
 
-function splitDone(split: any): number {
-  const entries = split?.progress_entries || [];
-  const valid = entries.filter((e: any) => e && !e.cancelled && !e.replaced);
-  if (valid.length) return sumEntryQty(valid);
-  return Number(split?.qty_completed || 0);
+function isVoidedEntry(e: any): boolean {
+  return !!(e?.cancelled || e?.replaced);
+}
+
+/** Persisted Operator completion for one exact split. Never target / helper / stage. */
+export function operatorSplitDone(split: any): number {
+  if (split?.qty_completed != null && split.qty_completed !== "") {
+    const n = Number(split.qty_completed);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  const entries = Array.isArray(split?.progress_entries) ? split.progress_entries : [];
+  const valid = entries.filter((e: any) => e && !isVoidedEntry(e));
+  if (!valid.length) return 0;
+  return Math.max(0, sumEntryQty(valid));
+}
+
+export function operatorAssignmentKey(split: any): string {
+  const id = String(split?.id || "").trim();
+  if (id) return id;
+  return [
+    String(split?.operator_email || "").trim().toLowerCase(),
+    String(split?.line_idx ?? ""),
+    String(split?.work_date || ""),
+  ].join(":");
+}
+
+export function operatorConfirmEnabled(opts: {
+  hasOperatorUpdate: boolean;
+  workflowEligible: boolean;
+  remaining: number;
+  inputQty: number;
+  submitting: boolean;
+}): boolean {
+  if (!opts.hasOperatorUpdate || !opts.workflowEligible || opts.submitting) return false;
+  if (opts.remaining <= 0) return false;
+  if (!(opts.inputQty > 0)) return false;
+  if (opts.inputQty > opts.remaining) return false;
+  return true;
 }
 
 export function statusLabel(done: number, target: number): string {
   if (done <= 0) return "Belum";
+  if (target > 0 && done >= target) return "Selesai";
+  return "Proses";
+}
+
+export function operatorStatusLabel(done: number, target: number): string {
+  if (done <= 0) return "Belum Mulai";
   if (target > 0 && done >= target) return "Selesai";
   return "Proses";
 }
@@ -184,10 +223,12 @@ export function operatorMyLines(order: AnyOrder, user: { email?: string; id?: st
     const mine = (email && se && se === email) || (uid && su && su === uid);
     if (!mine) continue;
     const idx = Number(s.line_idx);
-    const li = items[idx] || {};
-    const done = splitDone(s);
+    const li = Number.isFinite(idx) ? items[idx] || {} : {};
+    const done = operatorSplitDone(s);
+    const splitId = operatorAssignmentKey(s);
     out.push({
       lineIdx: idx,
+      splitId,
       name: li.name || `Line ${idx + 1}`,
       color: li.color || "",
       target: qty,
@@ -197,6 +238,21 @@ export function operatorMyLines(order: AnyOrder, user: { email?: string; id?: st
     });
   }
   return out;
+}
+
+export function operatorPanelModel(order: AnyOrder, user: { email?: string; id?: string } | null) {
+  const lines = operatorMyLines(order, user);
+  const target = lines.reduce((s, l) => s + l.target, 0);
+  const done = lines.reduce((s, l) => s + l.done, 0);
+  const remaining = Math.max(0, target - done);
+  return {
+    title: "Pekerjaan Operator",
+    target,
+    done,
+    remaining,
+    status: operatorStatusLabel(done, target),
+    lines,
+  };
 }
 
 export function operatorCanSubmit(order: AnyOrder): { ok: boolean; reason?: string } {

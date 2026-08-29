@@ -36,7 +36,8 @@ import {
   loadingModel,
   MIN_DELIVERY_PROOFS,
   operatorCanSubmit,
-  operatorMyLines,
+  operatorConfirmEnabled,
+  operatorPanelModel,
   packingModel,
   screenerModel,
 } from "../../../src/utils/workModels";
@@ -697,56 +698,66 @@ function OperatorPanel({
   busy: boolean;
   onConfirm: (splitId: string, qty: number) => void;
 }) {
-  const lines = operatorMyLines(order, user);
-  const target = lines.reduce((s, l) => s + l.target, 0);
-  const done = lines.reduce((s, l) => s + l.done, 0);
-  const remain = Math.max(0, target - done);
+  const model = operatorPanelModel(order, user);
   const gate = operatorCanSubmit(order);
   return (
     <View style={ui.card} testID="operator-panel">
-      <Text style={typography.title}>Pekerjaan Operator</Text>
+      <Text style={typography.title}>{model.title}</Text>
       <Text style={typography.subtitle}>Assignment pribadi Anda</Text>
       <MetricStrip
-        target={fmtQty(target)}
-        done={fmtQty(done)}
-        remain={fmtQty(remain)}
-        status={done <= 0 ? "Belum" : remain <= 0 ? "Selesai" : "Proses"}
+        target={fmtQty(model.target)}
+        done={fmtQty(model.done)}
+        remain={fmtQty(model.remaining)}
+        status={model.status}
       />
       {!gate.ok ? (
         <Text style={[typography.subtitle, { color: colors.warn }]}>{gate.reason}</Text>
       ) : null}
-      {!lines.length ? (
+      {!model.lines.length ? (
         <Text style={typography.subtitle}>Tidak ada assignment operator untuk akun ini pada PO ini.</Text>
       ) : null}
-      {lines.map((line) => (
-        <View key={line.split.id} style={styles.lineBlock}>
-          <Text style={typography.body}>
-            {line.name}
-            {line.color ? ` · ${line.color}` : ""}
-          </Text>
-          <Text style={typography.subtitle}>
-            Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)} · Sisa {fmtQty(line.remaining)}
-          </Text>
-          {gate.ok ? (
-            <>
-              <QtyField
-                label="Qty Cetak"
-                value={drafts[`o-${line.split.id}`] || ""}
-                onChange={(v) => setDraft(`o-${line.split.id}`, v)}
-              />
-              <PrimaryButton
-                title="Konfirmasi Operator"
-                busy={busy}
-                disabled={line.remaining <= 0}
-                onPress={() =>
-                  onConfirm(line.split.id, Number(drafts[`o-${line.split.id}`] || 0))
-                }
-                style={{ marginTop: space.sm }}
-              />
-            </>
-          ) : null}
-        </View>
-      ))}
+      {model.lines.map((line) => {
+        const draftKey = `o-${line.splitId}`;
+        const draft = drafts[draftKey] || "";
+        const inputQty = Number(draft || 0);
+        const canConfirm = operatorConfirmEnabled({
+          hasOperatorUpdate: true,
+          workflowEligible: gate.ok,
+          remaining: line.remaining,
+          inputQty,
+          submitting: busy,
+        });
+        return (
+          <View key={line.splitId} style={styles.lineBlock}>
+            <Text style={typography.body}>
+              {line.name}
+              {line.color ? ` · ${line.color}` : ""}
+            </Text>
+            <Text style={typography.subtitle}>
+              Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)} · Sisa {fmtQty(line.remaining)}
+            </Text>
+            {gate.ok ? (
+              <>
+                <QtyField
+                  label="Qty Cetak"
+                  value={draft}
+                  placeholder={`Sisa ${fmtQty(line.remaining)}`}
+                  onChange={(v) => setDraft(draftKey, v)}
+                  testID={`operator-qty-${line.splitId}`}
+                />
+                <PrimaryButton
+                  title="Konfirmasi Operator"
+                  busy={busy}
+                  disabled={!canConfirm}
+                  onPress={() => onConfirm(String(line.split?.id || line.splitId), inputQty)}
+                  style={{ marginTop: space.sm }}
+                  testID={`operator-confirm-${line.splitId}`}
+                />
+              </>
+            ) : null}
+          </View>
+        );
+      })}
     </View>
   );
 }

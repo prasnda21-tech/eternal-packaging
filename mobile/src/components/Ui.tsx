@@ -107,6 +107,7 @@ export function QtyField({
   onChange,
   unit = "pcs",
   editable = true,
+  placeholder = "0",
   testID,
 }: {
   label: string;
@@ -114,6 +115,7 @@ export function QtyField({
   onChange: (v: string) => void;
   unit?: string;
   editable?: boolean;
+  placeholder?: string;
   testID?: string;
 }) {
   return (
@@ -127,7 +129,7 @@ export function QtyField({
           keyboardType="number-pad"
           editable={editable}
           style={[ui.input, { flex: 1 }, !editable && { opacity: 0.6 }]}
-          placeholder="0"
+          placeholder={placeholder}
           placeholderTextColor={colors.muted}
         />
         <Text style={[typography.mono, { marginLeft: space.sm }]}>{unit}</Text>
