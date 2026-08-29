@@ -56,7 +56,12 @@ export default function ImportPreviewModal({
       setPreview(data);
     } catch (e) {
       const d = e?.response?.data?.detail;
-      setErr(typeof d === "string" ? d : (d?.message || "Gagal mem-preview file"));
+      let msg = "Gagal mem-preview file";
+      if (typeof d === "string" && d.trim()) msg = d;
+      else if (d && typeof d === "object" && typeof d.message === "string" && d.message.trim()) msg = d.message;
+      else if (e?.code === "ECONNABORTED") msg = "Preview timeout — file terlalu besar atau server lambat.";
+      else if (!e?.response) msg = "Tidak terhubung ke server. Cek backend lokal lalu coba lagi.";
+      setErr(msg);
       setPreview(null);
     } finally {
       setBusy(false);
