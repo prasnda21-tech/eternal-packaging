@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import api, { publicApiUrl } from "../lib/api";
 import BrandMark from "../components/BrandMark";
-import { trackingStatusClass, trackingStatusLabel } from "../lib/customerTracking";
+import { trackingDisplayLabel, trackingStatusClass } from "../lib/customerTracking";
 import { displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 
 export default function CustomerTrackingPage() {
@@ -79,7 +79,7 @@ export default function CustomerTrackingPage() {
                       <td>{row.stage}</td>
                       <td>
                         <span className={trackingStatusClass(row.status)}>
-                          {trackingStatusLabel(row.status)}
+                          {trackingDisplayLabel(row)}
                         </span>
                       </td>
                     </tr>

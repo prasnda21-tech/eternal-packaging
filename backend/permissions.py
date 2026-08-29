@@ -59,6 +59,7 @@ PERMISSION_CATALOG = [
     ("Surat Jalan", "delivery_note.view", "Lihat Surat Jalan"),
     ("Surat Jalan", "delivery_note.view_file", "Lihat File Surat Jalan"),
     ("Surat Jalan", "delivery_note.manage", "Kelola Surat Jalan"),
+    ("Surat Jalan", "delivery_note.delete_file", "Hapus File Surat Jalan"),
     ("Loading", "loading.update", "Konfirmasi Loading"),
     ("Pengiriman", "delivery.update", "Update status kirim"),
     ("Pengiriman", "delivery.reschedule", "Ajukan penjadwalan ulang pengiriman"),

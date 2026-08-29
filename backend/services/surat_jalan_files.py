@@ -20,6 +20,7 @@ from quantity_rules import (
 
 PERM_VIEW_FILE = "delivery_note.view_file"
 PERM_MANAGE = "delivery_note.manage"
+PERM_DELETE_FILE = "delivery_note.delete_file"
 
 _PUBLIC_FILE_KEYS = (
     "id",
@@ -271,3 +272,32 @@ def history_entries(order: dict) -> List[dict]:
             "schedule_ready": bool(file_has_blob(f) and has_qty),
         })
     return out
+
+
+def remove_file_from_order(order: dict, file_id: str) -> Optional[dict]:
+    """Remove the exact Surat Jalan file. Does not touch Loading or delivery history.
+
+    If that was the last file and there are no shipment records, clear derived
+    delivery_note_* stamps so workflow status is no longer Selesai.
+    """
+    want = _safe_str(file_id)
+    if not want:
+        return None
+    files = file_entries(order)
+    removed = None
+    kept: List[dict] = []
+    for f in files:
+        if removed is None and _safe_str(f.get("id")) == want:
+            removed = f
+            continue
+        kept.append(f)
+    if removed is None:
+        return None
+    order["surat_jalan_files"] = kept
+    if not kept and not shipments_stored(order):
+        order["delivery_note_number"] = None
+        order["delivery_note_created_at"] = None
+        order["delivery_note_created_by"] = None
+        order["delivery_note_created_by_name"] = None
+    return removed
+

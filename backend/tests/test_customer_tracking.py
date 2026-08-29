@@ -64,7 +64,8 @@ class TestPublicPayload:
         assert isinstance(payload["workflow"], list)
         assert payload["workflow"]
         for row in payload["workflow"]:
-            assert set(row.keys()) == {"stage", "status"}
+            assert set(row.keys()) <= {"stage", "status", "label"}
+            assert "stage" in row and "status" in row
             assert row["status"] in ALLOWED_STATUSES
 
     def test_reschedule_snippet_is_date_only(self):
@@ -173,7 +174,8 @@ class TestPartialWorkflow:
         ))
         assert _stage(payload, "Design")["status"] == "completed"
         assert _stage(payload, "Approval Design")["status"] == "completed"
-        assert _stage(payload, "Payment")["status"] == "waiting"
+        assert _stage(payload, "Payment")["status"] == "in_progress"
+        assert _stage(payload, "Payment")["label"] == "Belum dikerjakan"
         assert _stage(payload, "Persiapan Helper")["status"] == "waiting"
         assert _stage(payload, "Screener")["status"] == "waiting"
 
@@ -192,24 +194,34 @@ class TestPartialWorkflow:
         assert _stage(payload, "Persiapan Helper")["status"] == "in_progress"
         assert _stage(payload, "Operator")["status"] == "in_progress"
 
-    def test_d_bypass_maps_to_completed_not_debug_label(self):
+    def test_d_bypass_maps_to_completed_matching_alur(self):
         payload = public_payload(_print_po(design_bypassed=True, payment_bypassed=True))
         assert _stage(payload, "Design")["status"] == "completed"
         assert _stage(payload, "Payment")["status"] == "completed"
-        blob = json.dumps(payload)
-        assert "BYPASS" not in blob
-        assert "bypass" not in blob.lower()
+        assert _stage(payload, "Design")["label"] == "BYPASS"
+        assert _stage(payload, "Payment")["label"] == "BYPASS"
 
-    def test_print_stages_hidden_for_non_print(self):
+    def test_live_tracking_is_exactly_15_alur_stages(self):
+        from services.status_po import STAGES
+        payload = public_payload(_print_po())
+        names = [r["stage"] for r in payload["workflow"]]
+        assert names == list(STAGES)
+        assert len(names) == 15
+        assert names[0] == "Order Masuk"
+        assert names[12] == "Surat Jalan"
+        assert names[13] == "Loading"
+        assert names[14] == "Terkirim"
+
+    def test_print_stages_kept_for_non_print(self):
         payload = public_payload(_print_po(
             line_items=[{"name": "Box", "quantity": 10, "production_process": "non_print"}],
         ))
         names = [r["stage"] for r in payload["workflow"]]
-        assert "Screener" not in names
-        assert "Cetak" not in names
-        assert "Konfirmasi Sample" not in names
-        assert "Packing" in names
-        assert "Terkirim" in names
+        assert names[6] == "Screener"
+        assert "Cetak" in names
+        assert "Konfirmasi Sample" in names
+        assert "Loading" in names
+        assert len(names) == 15
 
 
 # ---------- E / F: partial vs full delivery ----------
@@ -262,7 +274,8 @@ class TestToken:
         assert order["po_number"] == "PO-1"
 
 
-def test_workflow_never_uses_generic_stage_index_alone():
+def test_workflow_uses_shared_stage_rows():
     src = Path(__file__).resolve().parents[1] / "services" / "customer_tracking.py"
     text = src.read_text(encoding="utf-8")
+    assert "workflow_stage_rows" in text
     assert "idx < current_stage" not in text

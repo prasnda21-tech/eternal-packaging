@@ -64,6 +64,8 @@ export const api = {
       notes,
       ...(Array.isArray(lines) ? { lines } : {}),
     }).then((r) => r.data),
+  deleteSuratJalanFile: (id, fileId) =>
+    client.delete(`/orders/${id}/surat-jalan/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
   confirmDelivered: (id, payload = {}) => client.post(`/orders/${id}/confirm-delivered`, payload).then((r) => r.data),
   syncAccurate: () => client.post(`/accurate/sync`).then((r) => r.data),
   accurateStatus: () => client.get(`/accurate/status`).then((r) => r.data),

@@ -8,6 +8,7 @@ import SuratJalanPreviewModal from "./SuratJalanPreviewModal";
 import api from "../lib/api";
 import {
   SJ_VIEW_FILE_PERM,
+  SJ_DELETE_FILE_PERM,
   defaultSjOperationalDate,
   downloadSuratJalanFile,
   parseOperationalDate,
@@ -21,18 +22,21 @@ export default function SuratJalanPanel({
   order,
   canManage,
   canViewFile: canViewFileProp,
+  canDeleteFile: canDeleteFileProp,
   busy: busyProp,
   onUpdated,
   footerActions = null,
 }) {
   const { user, hasPerm } = useAuth();
   const canViewFile = canViewFileProp ?? hasPerm(SJ_VIEW_FILE_PERM);
+  const canDeleteFile = canDeleteFileProp ?? hasPerm(SJ_DELETE_FILE_PERM);
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [file, setFile] = useState(null);
   const [deliveryDate, setDeliveryDate] = useState(() => defaultSjOperationalDate(order));
   const [confirm, setConfirm] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [preview, setPreview] = useState(null);
   const uploading = busyProp || busy;
   const created = !!order.surat_jalan_created;
@@ -104,6 +108,30 @@ export default function SuratJalanPanel({
     } catch (e) {
       const d = e?.response?.data?.detail;
       setErr(typeof d === "string" ? d : (d?.message || "Upload Surat Jalan gagal. Silakan coba kembali."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const executeDelete = async () => {
+    const fileId = deleteTarget?.file_id || deleteTarget?.id;
+    if (!fileId || uploading) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await api.deleteSuratJalanFile(order.id, fileId);
+      onUpdated?.(result?.order || result, "delete");
+      setDeleteTarget(null);
+    } catch (e) {
+      const status = e?.response?.status;
+      const d = e?.response?.data?.detail;
+      if (status === 403) {
+        setErr("Anda tidak punya permission untuk menghapus file Surat Jalan.");
+      } else if (status === 404) {
+        setErr("File Surat Jalan tidak ditemukan.");
+      } else {
+        setErr(typeof d === "string" ? d : (d?.message || "Gagal menghapus file Surat Jalan."));
+      }
     } finally {
       setBusy(false);
     }
@@ -198,6 +226,30 @@ export default function SuratJalanPanel({
                       >
                         Download
                       </button>
+                      {canDeleteFile && (
+                        <button
+                          type="button"
+                          className="ghost sm"
+                          onClick={() => { setErr(""); setDeleteTarget(f); }}
+                          disabled={uploading}
+                          data-testid={`sj-hapus-${fileId}`}
+                        >
+                          Hapus File Surat Jalan
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!canViewFile && canDeleteFile && fileId && (
+                    <div className="sj-file-actions">
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        onClick={() => { setErr(""); setDeleteTarget(f); }}
+                        disabled={uploading}
+                        data-testid={`sj-hapus-${fileId}`}
+                      >
+                        Hapus File Surat Jalan
+                      </button>
                     </div>
                   )}
                 </li>
@@ -223,6 +275,19 @@ export default function SuratJalanPanel({
           <p className="muted small" data-testid="sj-confirm-date">Tanggal pengiriman: {confirm.deliveryDate}</p>
         ) : null}
         onConfirm={executeUpload}
+      />
+      <ConfirmActionModal
+        open={!!deleteTarget}
+        stage="Surat Jalan"
+        poNumber={order.po_number}
+        action="Hapus file Surat Jalan ini?"
+        name={user?.name || user?.email}
+        time={deleteTarget ? formatDisplayDateTime(new Date().toISOString()) : undefined}
+        busy={uploading}
+        error={err}
+        confirmLabel="Hapus File"
+        onCancel={() => { if (!uploading) { setDeleteTarget(null); setErr(""); } }}
+        onConfirm={executeDelete}
       />
       <SuratJalanPreviewModal
         open={!!preview}

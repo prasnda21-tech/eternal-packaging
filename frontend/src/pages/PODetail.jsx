@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDateTime } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
+import { liveTrackingRows } from "../lib/liveTracking";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
 import PackingPanel from "../components/PackingPanel";
@@ -679,6 +680,26 @@ export default function PODetail() {
             {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
           </div>
         )}
+        <table className="tracking-table" data-testid="live-tracking-workflow">
+          <thead>
+            <tr>
+              <th>Tahap</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {liveTrackingRows(order).map((row) => (
+              <tr key={row.idx} data-testid={`live-tracking-stage-${row.idx}`}>
+                <td>{row.stage}</td>
+                <td>
+                  <span className={`chip chip-${row.state}`} data-testid={`live-tracking-stage-${row.idx}-chip`}>
+                    {row.label}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </section>
       </div>
 
@@ -985,11 +1006,12 @@ export default function PODetail() {
         order={order}
         canManage={canManageSuratJalan}
         canViewFile={canViewSjFile}
+        canDeleteFile={hasPerm("delivery_note.delete_file")}
         busy={busy}
-        onUpdated={(next) => {
+        onUpdated={(next, action) => {
           if (next) {
             setOrder(next);
-            showToast("Surat Jalan diupload");
+            showToast(action === "delete" ? "File Surat Jalan dihapus" : "Surat Jalan diupload");
           }
         }}
       />

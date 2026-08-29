@@ -1,4 +1,4 @@
-import { trackingStatusClass, trackingStatusLabel } from "./customerTracking";
+import { trackingDisplayLabel, trackingStatusClass, trackingStatusLabel } from "./customerTracking";
 
 describe("customer tracking status labels", () => {
   test("maps the three public statuses only", () => {
@@ -7,6 +7,12 @@ describe("customer tracking status labels", () => {
     expect(trackingStatusLabel("waiting")).toBe("Menunggu");
     expect(trackingStatusLabel("bypass")).toBe("Menunggu");
     expect(trackingStatusLabel("error")).toBe("Menunggu");
+  });
+
+  test("prefers Alur Pekerjaan label from payload", () => {
+    expect(trackingDisplayLabel({ status: "in_progress", label: "Menunggu bukti pengiriman" }))
+      .toBe("Menunggu bukti pengiriman");
+    expect(trackingDisplayLabel({ status: "completed" })).toBe("Selesai");
   });
 
   test("badge classes stay compact", () => {

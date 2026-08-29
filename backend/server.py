@@ -81,10 +81,12 @@ from services.payment_files import (
 )
 from services.surat_jalan_files import (
     PERM_VIEW_FILE as _SJ_VIEW_FILE,
+    PERM_DELETE_FILE as _SJ_DELETE_FILE,
     content_disposition as _sj_content_disposition,
     decode_data_url as _sj_decode_data_url,
     find_file as _sj_find_file,
     history_entries as _sj_history_entries,
+    remove_file_from_order as _sj_remove_file,
     sniffer_content_type as _sj_sniff_ct,
     strip_sj_bytes_from_order as _strip_sj_bytes,
 )
@@ -3194,6 +3196,37 @@ async def download_surat_jalan_file(
         "Cache-Control": "private, no-store",
     }
     return FastAPIResponse(content=data, media_type=ct, headers=headers)
+
+
+@api_router.delete("/orders/{order_id}/surat-jalan/files/{file_id}")
+async def delete_surat_jalan_file(
+    order_id: str,
+    file_id: str,
+    user=Depends(require_perm(_SJ_DELETE_FILE)),
+):
+    """Delete one Surat Jalan file. Permission-gated. No cascade to Loading/delivery."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    removed = _sj_remove_file(order, file_id)
+    if not removed:
+        raise HTTPException(404, "File Surat Jalan tidak ditemukan")
+    await db.files.update_one(
+        {"id": file_id, "kind": "surat_jalan", "order_id": order["id"]},
+        {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_by": user.get("email")}},
+    )
+    add_timeline(
+        order, 12, user,
+        note=f"Hapus file Surat Jalan: {removed.get('name') or file_id}",
+    )
+    _sync_workflow_stage(order)
+    await _persist_order(order)
+    await _audit_po(
+        order, "delivery_note.delete_file", user,
+        note=str(removed.get("name") or file_id),
+    )
+    return {"order": _strip_sj_bytes(order)}
 
 
 @api_router.post("/orders/{order_id}/note")

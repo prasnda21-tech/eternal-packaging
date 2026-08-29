@@ -42,6 +42,14 @@ describe("Surat Jalan card upload + preview", () => {
     expect(settings).toMatch(/Role \& Hak Akses|settings-tab-roles/);
   });
 
+  test("Hapus File is permission-gated with confirmation", () => {
+    expect(src).toMatch(/SJ_DELETE_FILE_PERM|delivery_note.delete_file/);
+    expect(src).toMatch(/Hapus File Surat Jalan/);
+    expect(src).toMatch(/Hapus file Surat Jalan ini\?/);
+    expect(src).toMatch(/deleteSuratJalanFile/);
+    expect(src).toMatch(/sj-hapus-/);
+  });
+
   test("file preview on schedule, loading, driver, and PO detail", () => {
     expect(schedule).toMatch(/SuratJalanViewButton/);
     expect(loading).toMatch(/loading-sj-lihat/);
