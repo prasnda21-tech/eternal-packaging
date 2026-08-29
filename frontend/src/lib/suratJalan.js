@@ -5,6 +5,7 @@ const API = `${resolveBackendOrigin(process.env.REACT_APP_BACKEND_URL, pageHost)
 
 export const SJ_VIEW_FILE_PERM = "delivery_note.view_file";
 export const SJ_MANAGE_PERM = "delivery_note.manage";
+export const SJ_DELETE_FILE_PERM = "delivery_note.delete_file";
 
 export function poLineLabel(li, idx) {
   const name = (li && li.name) || `Line #${Number(idx) + 1}`;

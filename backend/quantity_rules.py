@@ -1425,13 +1425,39 @@ def shipment_line_breakdown(order: dict) -> list:
     return out
 
 
+def loading_fulfills_all_required_lines(order: dict) -> bool:
+    """True only when every required PO line is fully loaded.
+
+    Uses existing Loading caps (SJ-linked confirmations, cumulative, stable
+    line_idx). Never treats a grand-total match as complete if one line is short.
+    """
+    if loading_status_semantic(order) != SJ_STATUS_COMPLETED:
+        return False
+    n = _line_count(order)
+    use_confirm = bool(loading_confirmations_stored(order))
+    for i in range(n):
+        remaining = (
+            available_for_loading_confirm_line(order, i)
+            if use_confirm
+            else available_for_loading_line(order, i)
+        )
+        if remaining > 0:
+            return False
+        cap = loading_confirm_cap_for_line(order, i) if use_confirm else loading_cap_for_line(order, i)
+        if cap > 0 and qty_loaded_for_line(order, i) < cap:
+            return False
+    return True
+
+
 def surat_jalan_status_semantic(order: dict) -> str:
     """pending / partial / completed from quantity evidence.
 
-    Completion = all currently packed qty has been allocated to SJ,
-    NOT full original PO qty. Presence of one partial SJ does not
-    complete the whole PO.
+    Selesai only when a valid Surat Jalan exists AND Loading fulfills every
+    required line. Allocation of packed qty to SJ is not enough.
     """
+    created = surat_jalan_created(order)
+    if created and loading_fulfills_all_required_lines(order):
+        return SJ_STATUS_COMPLETED
     packed = qty_packed(order)
     shipped = qty_shipped(order)
     if shipped <= 0:
@@ -1441,7 +1467,7 @@ def surat_jalan_status_semantic(order: dict) -> str:
             return SJ_STATUS_COMPLETED if packed <= 0 else SJ_STATUS_PARTIAL
         return SJ_STATUS_PENDING
     if packed > 0 and shipped >= packed:
-        return SJ_STATUS_COMPLETED
+        return SJ_STATUS_PARTIAL
     if shipped > 0:
         return SJ_STATUS_PARTIAL
     return SJ_STATUS_PENDING

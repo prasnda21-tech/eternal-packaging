@@ -207,14 +207,14 @@ export function resolveStageState(idx, order, currentStage) {
   if (idx === STAGE_SURAT_JALAN) {
     const sjStatus = order?.surat_jalan_status_semantic;
     if (suratJalanCreated(order)) {
-      if (sjStatus === "partial") {
-        return currentStage > idx
-          ? { state: "done", label: "Parsial" }
-          : { state: "current", label: "SJ parsial — siap Loading" };
+      const loadingDone = order?.loading_qty_status === "completed";
+      if (sjStatus === "completed" || loadingDone) {
+        return { state: "done", label: "Selesai" };
       }
-      return currentStage > idx
-        ? { state: "done", label: "Selesai" }
-        : { state: "current", label: "SJ dibuat — siap Loading" };
+      if (sjStatus === "partial") {
+        return { state: "current", label: "SJ parsial — siap Loading" };
+      }
+      return { state: "current", label: "SJ dibuat — siap Loading" };
     }
     if (currentStage >= idx) return { state: "current", label: "Menunggu pembuatan Surat Jalan" };
     return { state: "pending", label: "Menunggu" };

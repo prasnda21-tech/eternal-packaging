@@ -1,10 +1,14 @@
 import { STAGES, formatDisplayDateTime } from "../lib/constants";
 import { ROLES } from "../lib/constants";
 import { resolveTimelineChip } from "../lib/timelineChip.js";
+import { approvalDesignAssignEvent } from "../lib/approvalDesignHistory";
 
 export { resolveTimelineChip };
 
 function stageActor(idx, last, order) {
+  if (idx === 2) {
+    return approvalDesignAssignEvent(order).name || "";
+  }
   if (last?.by_name || last?.by_email) return last.by_name || last.by_email;
   if (idx === 6) return order?.screener_info?.updated_by_name || order?.screener_info?.updated_by || "";
   if (idx === 7) return order?.helper_prep?.updated_by_name || order?.helper_prep?.updated_by || "";
@@ -20,6 +24,9 @@ function stageActor(idx, last, order) {
 }
 
 function stageAssignAt(idx, last, order) {
+  if (idx === 2) {
+    return approvalDesignAssignEvent(order).at || "";
+  }
   if (last?.at) return last.at;
   if (idx === 6) return order?.screener_info?.updated_at || "";
   if (idx === 7) return order?.helper_prep?.updated_at || "";
@@ -32,6 +39,7 @@ function stageAssignAt(idx, last, order) {
 }
 
 export default function Timeline({ timeline = [], currentStage = 0, order = null }) {
+  const source = { ...(order || {}), timeline };
   const byStage = STAGES.map((label, idx) => {
     const events = timeline.filter((t) => t.stage === idx);
     const last = events[events.length - 1] || null;
@@ -53,9 +61,10 @@ export default function Timeline({ timeline = [], currentStage = 0, order = null
           </thead>
           <tbody>
             {byStage.map(({ idx, label, last }) => {
-              const { state, label: stateLabel } = resolveTimelineChip(idx, order, currentStage);
-              const at = stageAssignAt(idx, last, order);
-              const name = stageActor(idx, last, order);
+              const { state, label: stateLabel } = resolveTimelineChip(idx, source, currentStage);
+              const at = stageAssignAt(idx, last, source);
+              const name = stageActor(idx, last, source);
+              const assignMethod = idx === 2 ? approvalDesignAssignEvent(source).method : null;
               return (
                 <tr key={idx} className={`timeline-${state}`} data-testid={`timeline-stage-${idx}`}>
                   <td>{label}</td>
@@ -64,8 +73,11 @@ export default function Timeline({ timeline = [], currentStage = 0, order = null
                       {stateLabel}
                     </span>
                   </td>
-                  <td className="mono small">{at ? formatDisplayDateTime(at) : "-"}</td>
-                  <td>{name || "-"}</td>
+                  <td className="mono small" data-testid={`timeline-stage-${idx}-assign`}>
+                    {at ? formatDisplayDateTime(at) : "-"}
+                    {assignMethod ? <span className="muted"> · {assignMethod}</span> : null}
+                  </td>
+                  <td data-testid={`timeline-stage-${idx}-actor`}>{name || "-"}</td>
                 </tr>
               );
             })}

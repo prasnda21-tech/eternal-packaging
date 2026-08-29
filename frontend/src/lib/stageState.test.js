@@ -13,6 +13,28 @@ describe("SJ / Loading / Terkirim chips", () => {
     expect(sj.state).toBe("current");
   });
 
+  test("SJ + full Loading is Selesai on Alur Pekerjaan", () => {
+    const sj = resolveStageState(12, {
+      surat_jalan_created: true,
+      surat_jalan_status_semantic: "completed",
+      loading_qty_status: "completed",
+      current_stage: 13,
+    }, 13);
+    expect(sj.label).toBe("Selesai");
+    expect(sj.state).toBe("done");
+  });
+
+  test("SJ stays partial when Loading is short", () => {
+    const sj = resolveStageState(12, {
+      surat_jalan_created: true,
+      surat_jalan_status_semantic: "partial",
+      loading_qty_status: "partial",
+      current_stage: 13,
+    }, 13);
+    expect(sj.label).toMatch(/parsial/i);
+    expect(sj.state).not.toBe("done");
+  });
+
   test("Loading is current after Surat Jalan file", () => {
     const loading = resolveStageState(13, {
       surat_jalan_created: true,

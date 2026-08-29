@@ -35,6 +35,7 @@ def test_catalog_has_view_file_permission():
     assert PERM_VIEW_FILE == "delivery_note.view_file"
     assert "delivery_note.manage" in ALL_PERMISSIONS
     assert PERM_VIEW_FILE != "delivery_note.manage"
+    assert "delivery_note.delete_file" in ALL_PERMISSIONS
     assert "loading.update" in ALL_PERMISSIONS
     assert "delivery.schedule.create" not in ALL_PERMISSIONS
 

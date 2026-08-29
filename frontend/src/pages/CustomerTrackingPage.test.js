@@ -24,6 +24,7 @@ describe("Customer tracking public page", () => {
   test("page has no internal shell, login redirect, or sensitive fields", () => {
     expect(page).toMatch(/customer-tracking-page/);
     expect(page).toMatch(/Alur Kerja/);
+    expect(page).toMatch(/trackingDisplayLabel/);
     expect(page).toMatch(/No PO/);
     expect(page).not.toMatch(/Navigate to="\/login"/);
     expect(page).not.toMatch(/AppShell/);
@@ -44,11 +45,13 @@ describe("Customer tracking public page", () => {
     expect(fn).not.toMatch(/credentials:\s*['"]include['"]/);
   });
 
-  test("internal detail has compact copy-link action", () => {
+  test("internal detail has compact copy-link action and 15-stage preview", () => {
     expect(detail).toMatch(/Live Tracking Customer/);
     expect(detail).toMatch(/Salin Link Tracking/);
     expect(detail).toMatch(/copy-tracking-link/);
     expect(detail).toMatch(/orderTrackingLink/);
+    expect(detail).toMatch(/liveTrackingRows/);
+    expect(detail).toMatch(/live-tracking-workflow/);
     const routeIdx = detail.indexOf("Proses Produksi");
     const trackIdx = detail.indexOf("tracking-customer-panel");
     expect(trackIdx).toBeGreaterThan(detail.indexOf("ProductionRoutePanel"));
