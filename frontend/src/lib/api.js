@@ -107,8 +107,9 @@ export const api = {
   orderPredictionImportPreview: (file) => {
     const form = new FormData();
     form.append("file", file);
+    // Let the browser set multipart boundary (do not set headers manually).
     return client.post(`/reports/order-prediction/import/preview`, form, {
-      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 90000,
     }).then((r) => r.data);
   },
   orderPredictionImportApply: (rows) =>

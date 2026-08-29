@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Upload, X } from "lucide-react";
 import { importCounts, selectedImportRows, toggleRowSelected, toggleSelectAll } from "../lib/importPreview";
+import { formatApiError } from "../lib/errors";
 
 /**
  * Generic import preview modal: file pick → preview table with checkboxes → confirm apply.
@@ -55,8 +56,13 @@ export default function ImportPreviewModal({
       const data = await onPreviewFile(file);
       setPreview(data);
     } catch (e) {
-      const d = e?.response?.data?.detail;
-      setErr(typeof d === "string" ? d : (d?.message || "Gagal mem-preview file"));
+      let msg = formatApiError(e, "Gagal mem-preview file");
+      if (e?.code === "ECONNABORTED") {
+        msg = "Preview timeout — file terlalu besar atau server lambat.";
+      } else if (!e?.response) {
+        msg = "Tidak terhubung ke server. Cek backend lokal lalu coba lagi.";
+      }
+      setErr(msg);
       setPreview(null);
     } finally {
       setBusy(false);
@@ -81,8 +87,7 @@ export default function ImportPreviewModal({
       setSummary(result);
       setConfirming(false);
     } catch (e) {
-      const d = e?.response?.data?.detail;
-      setErr(typeof d === "string" ? d : (d?.message || "Gagal menerapkan import"));
+      setErr(formatApiError(e, "Gagal menerapkan import"));
       setConfirming(false);
     } finally {
       setBusy(false);

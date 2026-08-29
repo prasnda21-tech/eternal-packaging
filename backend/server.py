@@ -7515,8 +7515,10 @@ async def order_prediction_import_preview(
             data, file.filename or "upload.csv",
             live_orders=live, existing_imports=existing,
         )
-    except Exception as e:
+    except ImportParseError as e:
         raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(400, "File Excel tidak dapat dibaca.")
     return preview
 
 

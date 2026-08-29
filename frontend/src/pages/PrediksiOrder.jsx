@@ -363,8 +363,9 @@ export default function PrediksiOrder() {
         columns={[
           { key: "customer", label: "Customer" },
           { key: "outlet", label: "Outlet" },
-          { key: "order_date", label: "Tanggal" },
+          { key: "order_date", label: "Tanggal Order" },
           { key: "po_number", label: "No Order" },
+          { key: "sales", label: "Sales" },
           { key: "omzet", label: "Omzet", render: (r) => (r.omzet == null || r.omzet === "" ? "-" : r.omzet) },
           { key: "status", label: "Status", render: (r) => r.status + (r.reason ? ` — ${r.reason}` : "") },
         ]}
