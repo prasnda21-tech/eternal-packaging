@@ -27,9 +27,23 @@ import { colors, space, typography, ui } from "../../../src/theme";
 import { apiErrorMessage, fmtQty, newActionId } from "../../../src/utils/format";
 import {
   canApproveDesign,
+  canUploadSample,
   defaultWorkDivision,
   permittedWorkDivisions,
 } from "../../../src/utils/permissions";
+import { assetFileMeta, pickFromCamera, pickFromGallery } from "../../../src/utils/mediaPicker";
+import { uriToDataUrl } from "../../../src/utils/dataUrl";
+import {
+  canShowSamplePanel,
+  canShowSampleUploadActions,
+  pickerUserMessage,
+  sampleAttachmentPayload,
+  sampleFilePreviewUri,
+  sampleFiles,
+  sampleGateMessage,
+  sampleUploadErrorMessage,
+  shouldUploadPicked,
+} from "../../../src/utils/sampleUpload";
 import {
   canConfirmDelivered,
   helperModel,
@@ -99,10 +113,11 @@ export default function PoWorkScreen() {
       if ((WORK_PANEL_IDS as readonly string[]).includes(d.id)) ids.push(d.id);
     }
     if (canApproveDesign(hasPerm)) ids.push("design_approve");
+    if (canShowSamplePanel(hasPerm, order)) ids.push("sample_upload");
     const focus = activeDiv && ids.includes(activeDiv) ? activeDiv : ids[0] || null;
     if (!focus) return ids;
     return [focus, ...ids.filter((x) => x !== focus)];
-  }, [divisions, activeDiv, hasPerm]);
+  }, [divisions, activeDiv, hasPerm, order]);
 
   const onConfirmQty = async (payload: {
     kind: "screener" | "helper" | "operator" | "packing";
@@ -275,6 +290,39 @@ export default function PoWorkScreen() {
     }
   };
 
+  const onPickSample = async (source: "camera" | "gallery") => {
+    if (!order || busy) return;
+    if (!canUploadSample(hasPerm)) {
+      setActionErr("Tidak punya izin upload sampel.");
+      return;
+    }
+    if (!canShowSampleUploadActions(hasPerm, order)) {
+      setActionErr(sampleGateMessage(order));
+      return;
+    }
+    setBusy(true);
+    setActionErr("");
+    try {
+      const picked = source === "camera" ? await pickFromCamera() : await pickFromGallery();
+      if (!shouldUploadPicked(picked)) {
+        const msg = pickerUserMessage(picked);
+        if (msg) setActionErr(msg);
+        return;
+      }
+      if (picked.status !== "ok") return;
+      const { name, mime } = assetFileMeta(picked.asset, "sampel");
+      const dataUrl = await uriToDataUrl(picked.asset.uri, mime);
+      await eternalApi.addAttachment(String(order.id), sampleAttachmentPayload(name, dataUrl));
+      const res = await eternalApi.getOrder(String(order.id));
+      setOrder(res.order);
+      Alert.alert("Tersimpan", "Sampel cetak berhasil diunggah.");
+    } catch (e) {
+      setActionErr(sampleUploadErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (loading) return <LoadingState label="Memuat pekerjaan…" />;
   if (err) return <ErrorState message={err} onRetry={load} />;
   if (!order) return <EmptyState message="PO tidak ditemukan." />;
@@ -349,6 +397,18 @@ export default function PoWorkScreen() {
         />
       );
     }
+    if (panelId === "sample_upload" && canShowSamplePanel(hasPerm, order)) {
+      return (
+        <SamplePanel
+          key="sample_upload"
+          order={order}
+          busy={busy}
+          canUpload={canShowSampleUploadActions(hasPerm, order)}
+          onPickCamera={() => onPickSample("camera")}
+          onPickGallery={() => onPickSample("gallery")}
+        />
+      );
+    }
     if (panelId === "terkirim" && hasPerm("delivery.update")) {
       return (
         <DriverPanel
@@ -404,6 +464,16 @@ export default function PoWorkScreen() {
             >
               <Text style={[styles.tabText, activeDiv === "design_approve" && styles.tabTextActive]}>
                 Approve Design
+              </Text>
+            </Pressable>
+          ) : null}
+          {canShowSamplePanel(hasPerm, order) ? (
+            <Pressable
+              onPress={() => setActiveDiv("sample_upload")}
+              style={[styles.tab, activeDiv === "sample_upload" && styles.tabActive]}
+            >
+              <Text style={[styles.tabText, activeDiv === "sample_upload" && styles.tabTextActive]}>
+                Sampel Cetak
               </Text>
             </Pressable>
           ) : null}
@@ -677,6 +747,65 @@ function DesignApprovePanel({
       ) : (
         <Text style={typography.subtitle}>
           {approved ? "Design sudah di-approve." : "Upload design diperlukan sebelum approval."}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function SamplePanel({
+  order,
+  busy,
+  canUpload,
+  onPickCamera,
+  onPickGallery,
+}: {
+  order: any;
+  busy: boolean;
+  canUpload: boolean;
+  onPickCamera: () => void;
+  onPickGallery: () => void;
+}) {
+  const files = sampleFiles(order);
+  return (
+    <View style={ui.card} testID="sample-panel">
+      <Text style={typography.title}>Sampel Cetak</Text>
+      <Text style={typography.subtitle}>Foto sampel cetak Operator — terpisah dari File Design.</Text>
+      <View style={styles.proofGrid}>
+        {files.map((f: any, i: number) => {
+          const uri = sampleFilePreviewUri(f);
+          return (
+            <View key={f.id || i} style={styles.proofThumb} testID={`sample-file-${f.id || i}`}>
+              {uri ? (
+                <Image source={{ uri }} style={styles.proofImg} />
+              ) : (
+                <Text style={typography.subtitle}>{f.name || `Foto ${i + 1}`}</Text>
+              )}
+            </View>
+          );
+        })}
+      </View>
+      {!files.length ? <Text style={typography.subtitle}>Belum ada file sampel.</Text> : null}
+      {canUpload ? (
+        <>
+          <PrimaryButton
+            title="Ambil Foto Sampel"
+            busy={busy}
+            onPress={onPickCamera}
+            style={{ marginTop: space.md }}
+            testID="sample-camera-button"
+          />
+          <GhostButton
+            title="Pilih dari Galeri"
+            onPress={onPickGallery}
+            disabled={busy}
+            style={{ marginTop: space.sm }}
+            testID="sample-gallery-button"
+          />
+        </>
+      ) : (
+        <Text style={[typography.subtitle, { color: colors.warn, marginTop: space.md }]} testID="sample-gate-note">
+          {sampleGateMessage(order)}
         </Text>
       )}
     </View>
