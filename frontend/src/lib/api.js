@@ -109,6 +109,7 @@ export const api = {
     form.append("file", file);
     return client.post(`/reports/order-prediction/import/preview`, form, {
       headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
     }).then((r) => r.data);
   },
   orderPredictionImportApply: (rows) =>
