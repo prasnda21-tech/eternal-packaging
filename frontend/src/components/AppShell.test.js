@@ -73,4 +73,31 @@ describe("sidebar flyout interaction", () => {
     expect(reportsFlyout).not.toMatch(/Pengiriman Hari Ini/);
     expect(shell).toMatch(/id="sidebar-flyout-produksi"[\s\S]*Pengiriman Hari Ini[\s\S]*id="sidebar-flyout-sales"/);
   });
+
+  test("Penjualan flyout is a permission-filtered tile grid that still toggles closed", () => {
+    expect(shell).toMatch(/testid="top-nav-sales"/);
+    expect(shell).toMatch(/label="Penjualan"/);
+    expect(shell).toMatch(/toggleMenu\("sales"\)/);
+    expect(shell).toMatch(/salesMenuItems\(hasPerm\)/);
+    expect(shell).toMatch(/salesOpen && salesItems\.length > 0/);
+    expect(shell).toMatch(/<h2>Penjualan<\/h2>/);
+    expect(shell).toMatch(/className="sidebar-flyout is-sales-grid"/);
+    expect(shell).toMatch(/sales-menu-grid/);
+    expect(shell).toMatch(/sales-menu-tile/);
+    expect(shell).toMatch(/to=\{item\.to\}/);
+    expect(shell).toMatch(/data-testid=\{item\.testid\}/);
+    expect(shell).toMatch(/className=\{\(\{ isActive \}\) => "sales-menu-tile" \+ \(isActive \? " is-active" : ""\)\}/);
+    expect(shell).toMatch(/aria-label=\{item\.label\}/);
+    expect(shell).toMatch(/salesItems\.map/);
+    expect(shell).toMatch(/className="sidebar-flyout"[\s\S]*id="sidebar-flyout-produksi"/);
+    expect(shell).toMatch(/className="sidebar-flyout is-sales-grid"[\s\S]*id="sidebar-flyout-sales"/);
+    expect(shell).toMatch(/className="sidebar-flyout"[\s\S]*id="sidebar-flyout-reports"/);
+    expect(shell).not.toMatch(/Penawaran/);
+    expect(shell).not.toMatch(/Faktur/);
+    expect(shell).not.toMatch(/Komisi/);
+    expect(css).toMatch(/\.sidebar-flyout\.is-sales-grid\{/);
+    expect(css).toMatch(/grid-template-columns:repeat\(auto-fill,minmax\(132px,1fr\)\)/);
+    expect(css).toMatch(/\.sales-menu-tile:focus-visible\{/);
+    expect(css).toMatch(/\.sales-menu-tile\.is-active\{/);
+  });
 });

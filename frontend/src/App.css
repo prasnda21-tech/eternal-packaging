@@ -27,6 +27,54 @@
 .sidebar-flyout .nav-group-toggle.parent-open{font-weight:600}
 .sidebar-flyout .nav-sub-sub{display:flex;flex-direction:column;gap:1px}
 .sidebar-flyout .nav-sub-sub .top-nav-link{padding-left:22px;font-size:13px}
+.sidebar-flyout.is-sales-grid{
+  width:min(640px,calc(100vw - var(--sidebar-rail) - 16px));
+  min-width:min(520px,calc(100vw - var(--sidebar-rail) - 16px));
+  max-width:min(760px,calc(100vw - var(--sidebar-rail) - 16px));
+  padding:16px 18px 18px;
+}
+.sidebar-flyout.is-sales-grid .sidebar-flyout-head{padding:2px 4px 14px;margin-bottom:16px}
+.sidebar-flyout.is-sales-grid .sidebar-flyout-head h2{
+  font:700 24px/1.2 'IBM Plex Sans',sans-serif;
+  letter-spacing:-.02em;
+  text-transform:none;
+  color:var(--ink);
+}
+.sales-menu-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:12px}
+.sales-menu-tile{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  min-height:112px;padding:16px 10px 14px;box-sizing:border-box;
+  border:1px solid var(--line);border-radius:10px;background:var(--paper);
+  color:var(--ink);text-decoration:none;cursor:pointer;
+  transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease;
+}
+.sales-menu-tile[data-tone="green"]{background:#EEF7F2}
+.sales-menu-tile[data-tone="blue"]{background:#EEF4F8}
+.sales-menu-tile[data-tone="orange"]{background:#F8F3EE}
+.sales-menu-tile[data-tone="purple"]{background:#F4F0F7}
+.sales-menu-tile-icon{
+  width:40px;height:40px;display:grid;place-items:center;border-radius:8px;color:var(--ep-primary);
+}
+.sales-menu-tile[data-tone="blue"] .sales-menu-tile-icon{color:#2A5F7A}
+.sales-menu-tile[data-tone="orange"] .sales-menu-tile-icon{color:#8A5A28}
+.sales-menu-tile[data-tone="purple"] .sales-menu-tile-icon{color:#5E4A78}
+.sales-menu-tile-label{font:600 13px/1.25 'IBM Plex Sans',sans-serif;text-align:center}
+.sales-menu-tile:hover{
+  transform:translateY(-2px);
+  box-shadow:0 6px 16px rgba(15,61,46,.08);
+  border-color:#9BB5A6;
+}
+.sales-menu-tile.is-active{
+  border-color:var(--ep-primary);
+  box-shadow:0 0 0 2px rgba(23,107,77,.18);
+  background:#E4F0EA;
+  font-weight:600;
+}
+.sales-menu-tile:focus{outline:none}
+.sales-menu-tile:focus-visible{
+  outline:2px solid var(--ep-primary);
+  outline-offset:2px;
+}
 .app-sidebar .top-nav-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;color:#C5D9CF;font:500 13.5px 'IBM Plex Sans',sans-serif;letter-spacing:0;text-transform:none;border-bottom:0;text-decoration:none}
 .app-sidebar .top-nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
 .app-sidebar .top-nav-link.active{background:var(--ep-primary);color:#fff;font-weight:600;border-bottom-color:transparent}
@@ -1492,6 +1540,12 @@
   .app-sidebar .nav-group{flex-shrink:0}
   .rail-tooltip{display:none}
   .sidebar-flyout{width:min(280px,calc(100vw - 16px));max-width:calc(100vw - 16px)}
+  .sidebar-flyout.is-sales-grid{
+    width:min(calc(100vw - 16px),520px);
+    min-width:0;
+    max-width:calc(100vw - 16px);
+  }
+  .sales-menu-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
   .dash-kpi-row{grid-template-columns:1fr 1fr}
   .jobs-section{display:flex;flex-direction:column}
   .po-kpi-strip .ind-metrics.cols-5{grid-template-columns:1fr 1fr}

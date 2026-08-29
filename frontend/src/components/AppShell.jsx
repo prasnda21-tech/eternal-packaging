@@ -4,7 +4,7 @@ import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react"
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryNavVisible, productionNavVisible, purchasingNavVisible, reportsNavVisible, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_ORDER, TASK_NAV_PATHS } from "../lib/navAccess";
+import { NAV_KEYS, inventoryNavVisible, productionNavVisible, purchasingNavVisible, reportsNavVisible, salesMenuItems, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_ORDER, TASK_NAV_PATHS } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import BrandMark from "./BrandMark";
 
@@ -150,6 +150,7 @@ export default function AppShell() {
   });
 
   const salesNav = salesNavVisible(hasPerm);
+  const salesItems = salesMenuItems(hasPerm);
   const reportsNav = reportsNavVisible(hasPerm);
   const inventoryNav = inventoryNavVisible(hasPerm);
   const purchasingNav = purchasingNavVisible(hasPerm);
@@ -332,10 +333,10 @@ export default function AppShell() {
         </div>
       )}
 
-      {salesOpen && salesNav.importPo && (
+      {salesOpen && salesItems.length > 0 && (
         <div
           ref={flyoutRef}
-          className="sidebar-flyout"
+          className="sidebar-flyout is-sales-grid"
           id="sidebar-flyout-sales"
           data-testid="sidebar-flyout-sales"
           data-placement={flyoutPos.placement}
@@ -344,11 +345,27 @@ export default function AppShell() {
           style={{ left: flyoutPos.left, top: flyoutPos.top }}
         >
           <header className="sidebar-flyout-head"><h2>Penjualan</h2></header>
-          <div className="nav-sub">
-            <NavLink to="/admin/import" className={navClass} data-testid="top-nav-import" onClick={closeFlyout}>
-              <Download size={16} /> Import PO
-            </NavLink>
-          </div>
+          <nav className="sales-menu-grid" aria-label="Menu Penjualan">
+            {salesItems.map((item) => {
+              const Icon = item.key === NAV_KEYS.importPo ? Download : ShoppingCart;
+              return (
+                <NavLink
+                  key={item.key}
+                  to={item.to}
+                  className={({ isActive }) => "sales-menu-tile" + (isActive ? " is-active" : "")}
+                  data-tone={item.tone}
+                  data-testid={item.testid}
+                  aria-label={item.label}
+                  onClick={closeFlyout}
+                >
+                  <span className="sales-menu-tile-icon" aria-hidden="true">
+                    <Icon size={28} strokeWidth={1.6} />
+                  </span>
+                  <span className="sales-menu-tile-label">{item.label}</span>
+                </NavLink>
+              );
+            })}
+          </nav>
         </div>
       )}
 
