@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+  Image,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -46,7 +47,12 @@ export default function LoginScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={styles.hero}>
-        <Text style={styles.brand}>ETERNAL</Text>
+        <Image
+          source={require("../assets/branding/eternal-splash-login-logo.png")}
+          style={styles.logo}
+          resizeMode="contain"
+          accessibilityLabel="Eternal Packaging"
+        />
         <Text style={styles.tag}>Packaging · Kerja Produksi</Text>
       </View>
 
@@ -102,11 +108,10 @@ const styles = StyleSheet.create({
     paddingBottom: 36,
     paddingHorizontal: space.lg,
   },
-  brand: {
-    fontSize: 36,
-    fontWeight: "800",
-    color: "#fff",
-    letterSpacing: 2,
+  logo: {
+    width: "100%",
+    maxWidth: 280,
+    height: 94,
   },
   tag: {
     marginTop: 8,
