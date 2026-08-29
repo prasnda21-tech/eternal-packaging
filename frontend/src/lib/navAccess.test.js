@@ -1,4 +1,4 @@
-import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, tasksNavVisible, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
+import { inventoryNavVisible, purchasingNavVisible, reportsNavVisible, salesMenuItems, salesNavVisible, tasksNavVisible, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -63,6 +63,41 @@ describe("tasksNavVisible", () => {
     expect(v.parent).toBe(true);
     expect(v.kepala_produksi).toBe(true);
     expect(v.designer).toBe(false);
+  });
+});
+
+describe("salesNavVisible", () => {
+  test("hides parent when sales granted without Import PO", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales));
+    expect(v.parent).toBe(false);
+    expect(v.importPo).toBe(false);
+  });
+
+  test("shows parent only when Import PO is granted", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.importPo));
+    expect(v.parent).toBe(true);
+    expect(v.importPo).toBe(true);
+  });
+});
+
+describe("salesMenuItems", () => {
+  test("builds tiles from existing Penjualan children only", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.importPo));
+    expect(items).toEqual([
+      { key: NAV_KEYS.importPo, label: "Import PO", to: "/admin/import", tone: "green", testid: "top-nav-import" },
+    ]);
+    expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual(["Import PO"]);
+  });
+
+  test("filters out unauthorized Import PO", () => {
+    expect(salesMenuItems(has(NAV_KEYS.sales))).toEqual([]);
+    expect(salesMenuItems(has(NAV_KEYS.importPo))).toEqual([]);
+  });
+
+  test("does not invent Accurate-style sales menus", () => {
+    const labels = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.importPo)).map((item) => item.label);
+    expect(labels).not.toEqual(expect.arrayContaining(["Penawaran", "Faktur", "Retur", "Komisi"]));
+    expect(NAV_MENU_FALLBACK.some((m) => ["Penawaran", "Faktur", "Retur", "Komisi"].includes(m.label))).toBe(false);
   });
 });
 

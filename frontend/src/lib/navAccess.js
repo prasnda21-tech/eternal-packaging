@@ -74,6 +74,40 @@ export function salesNavVisible(hasPerm) {
   return { parent: importPo, importPo };
 }
 
+/** Existing Penjualan child routes only — no invented sales pages. */
+export const SALES_NAV_ROUTES = {
+  [NAV_KEYS.importPo]: "/admin/import",
+};
+
+const SALES_VIS_FIELD = {
+  [NAV_KEYS.importPo]: "importPo",
+};
+
+/** Stable tile tones keyed by existing nav.* — not randomized per render. */
+export const SALES_TILE_TONES = {
+  [NAV_KEYS.importPo]: "green",
+};
+
+export const SALES_TILE_TESTIDS = {
+  [NAV_KEYS.importPo]: "top-nav-import",
+};
+
+/** Child tiles from NAV_MENU_FALLBACK, filtered by salesNavVisible + known routes. */
+export function salesMenuItems(hasPerm) {
+  const visible = salesNavVisible(hasPerm);
+  return NAV_MENU_FALLBACK.filter((item) => {
+    if (item.parent !== NAV_KEYS.sales) return false;
+    const field = SALES_VIS_FIELD[item.key];
+    return !!(field && visible[field] && SALES_NAV_ROUTES[item.key]);
+  }).map((item) => ({
+    key: item.key,
+    label: item.label,
+    to: SALES_NAV_ROUTES[item.key],
+    tone: SALES_TILE_TONES[item.key] || "green",
+    testid: SALES_TILE_TESTIDS[item.key] || `top-nav-sales-${item.key}`,
+  }));
+}
+
 export function reportsNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
   const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
