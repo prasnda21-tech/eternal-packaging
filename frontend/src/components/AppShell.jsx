@@ -1,15 +1,39 @@
-import { BarChart3, Boxes, ChevronDown, Download, FileBarChart, LayoutDashboard, LogOut, Package, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, CalendarClock, ClipboardList, Download, FileBarChart, FileText, Image as ImageIcon, LayoutDashboard, LogOut, Package, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryNavVisible, productionNavVisible, purchasingNavVisible, reportsNavVisible, salesMenuItems, salesNavVisible, TASK_NAV_LABELS, TASK_NAV_ORDER, TASK_NAV_PATHS } from "../lib/navAccess";
+import { NAV_KEYS, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import BrandMark from "./BrandMark";
+import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
 
-const navClass = ({ isActive }) => "top-nav-link" + (isActive ? " active" : "");
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
+
+const TILE_ICONS = {
+  [NAV_KEYS.importPo]: Download,
+  [NAV_KEYS.purchaseReceipts]: Package,
+  [NAV_KEYS.masterItems]: Package,
+  [NAV_KEYS.currentStock]: Boxes,
+  [NAV_KEYS.analytics]: FileBarChart,
+  [NAV_KEYS.statusPo]: TableIcon,
+  [NAV_KEYS.shipmentStatus]: Truck,
+  [NAV_KEYS.gajiOperator]: FileBarChart,
+  [NAV_KEYS.schedule]: TableIcon,
+  deliveryToday: ClipboardList,
+  [NAV_KEYS.deliverySchedule]: Truck,
+  [NAV_KEYS.deliveryReschedule]: RotateCcw,
+  designer: ImageIcon,
+  screener: ScanLine,
+  kepala_produksi: CalendarClock,
+  helper: Users,
+  operator: Users,
+  packing: Package,
+  surat_jalan: FileText,
+  loading: Boxes,
+  terkirim: Truck,
+};
 
 const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, expanded, controls, active, open, onClick }, ref) {
   return (
@@ -58,7 +82,6 @@ export default function AppShell() {
   const tasksActive = location.pathname.startsWith("/tasks");
   const produksiActive = location.pathname.startsWith("/produksi") || tasksActive;
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
-  const [tasksOpen, setTasksOpen] = useState(true);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
@@ -118,7 +141,7 @@ export default function AppShell() {
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
     };
-  }, [activeSidebarMenu, tasksOpen]);
+  }, [activeSidebarMenu]);
 
   const doLogout = async () => {
     await logout();
@@ -152,10 +175,15 @@ export default function AppShell() {
   const salesNav = salesNavVisible(hasPerm);
   const salesItems = salesMenuItems(hasPerm);
   const reportsNav = reportsNavVisible(hasPerm);
+  const reportsItems = reportsMenuItems(hasPerm);
   const inventoryNav = inventoryNavVisible(hasPerm);
+  const inventoryItems = inventoryMenuItems(hasPerm);
   const purchasingNav = purchasingNavVisible(hasPerm);
+  const purchasingItems = purchasingMenuItems(hasPerm);
   const productionNav = productionNavVisible(hasPerm);
-  const tasksNav = productionNav.tasks;
+  const productionItems = productionMenuItems(hasPerm);
+  const taskItems = taskMenuItems(hasPerm);
+  void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showSettings = hasPerm(NAV_KEYS.settings);
 
@@ -165,6 +193,7 @@ export default function AppShell() {
   const purchasingOpen = activeSidebarMenu === "purchasing";
   const inventoryOpen = activeSidebarMenu === "inventory";
   const reportsOpen = activeSidebarMenu === "reports";
+  const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
   return (
     <div className="app-shell">
@@ -271,186 +300,87 @@ export default function AppShell() {
         </nav>
       </aside>
 
-      {produksiOpen && (
-        <div
-          ref={flyoutRef}
-          className="sidebar-flyout"
+      {produksiOpen && (productionItems.length + taskItems.length) > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
           id="sidebar-flyout-produksi"
-          data-testid="sidebar-flyout-produksi"
-          data-placement={flyoutPos.placement}
-          role="dialog"
-          aria-label="Produksi"
-          style={{ left: flyoutPos.left, top: flyoutPos.top }}
-        >
-          <header className="sidebar-flyout-head"><h2>Produksi</h2></header>
-          <div className="nav-sub">
-            {productionNav.schedule && (
-              <NavLink to="/produksi" end className={navClass} data-testid="top-nav-jadwal-produksi" onClick={closeFlyout}>
-                Jadwal Produksi
-              </NavLink>
-            )}
-            {productionNav.deliveryToday && (
-              <NavLink to="/produksi/pengiriman-hari-ini" className={navClass} data-testid="top-nav-pengiriman-hari-ini" onClick={closeFlyout}>
-                Pengiriman Hari Ini
-              </NavLink>
-            )}
-            {productionNav.deliverySchedule && (
-              <NavLink to="/produksi/jadwal-pengiriman" className={navClass} data-testid="top-nav-jadwal-pengiriman" onClick={closeFlyout}>
-                Jadwal Pengiriman
-              </NavLink>
-            )}
-            {productionNav.deliveryReschedule && (
-              <NavLink to="/produksi/jadwal-pengiriman-ulang" className={navClass} data-testid="top-nav-jadwal-pengiriman-ulang" onClick={closeFlyout}>
-                Jadwal Pengiriman Ulang
-              </NavLink>
-            )}
-            {tasksNav.parent && (
-              <div className="nav-nested" data-testid="top-nav-tasks-group">
-                <button
-                  type="button"
-                  className={"top-nav-link nav-group-toggle" + (tasksActive ? " parent-open" : "")}
-                  aria-expanded={tasksOpen}
-                  onClick={() => setTasksOpen((open) => !open)}
-                  data-testid="top-nav-tasks"
-                >
-                  Tugas Produksi
-                  <ChevronDown size={14} className="nav-chevron" />
-                </button>
-                {tasksOpen && (
-                  <div className="nav-sub-sub">
-                    {TASK_NAV_ORDER.map((id) => (
-                      tasksNav[id] ? (
-                        <NavLink key={id} to={TASK_NAV_PATHS[id]} className={navClass} data-testid={`top-nav-tasks-${id}`} onClick={closeFlyout}>
-                          {TASK_NAV_LABELS[id]}
-                        </NavLink>
-                      ) : null
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
+          testid="sidebar-flyout-produksi"
+          title="Produksi"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+          sections={[
+            { ariaLabel: "Menu Produksi", items: productionItems },
+            {
+              heading: "Tugas Produksi",
+              headingTestid: "top-nav-tasks-group",
+              ariaLabel: "Tugas Produksi",
+              items: taskItems,
+            },
+          ]}
+        />
       )}
+      {/* Pengiriman Hari Ini + TASK_NAV_ORDER.map stay in productionMenuItems / taskMenuItems */}
 
       {salesOpen && salesItems.length > 0 && (
-        <div
-          ref={flyoutRef}
-          className="sidebar-flyout is-sales-grid"
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
           id="sidebar-flyout-sales"
-          data-testid="sidebar-flyout-sales"
-          data-placement={flyoutPos.placement}
-          role="dialog"
-          aria-label="Penjualan"
-          style={{ left: flyoutPos.left, top: flyoutPos.top }}
-        >
-          <header className="sidebar-flyout-head"><h2>Penjualan</h2></header>
-          <nav className="sales-menu-grid" aria-label="Menu Penjualan">
-            {salesItems.map((item) => {
-              const Icon = item.key === NAV_KEYS.importPo ? Download : ShoppingCart;
-              return (
-                <NavLink
-                  key={item.key}
-                  to={item.to}
-                  className={({ isActive }) => "sales-menu-tile" + (isActive ? " is-active" : "")}
-                  data-tone={item.tone}
-                  data-testid={item.testid}
-                  aria-label={item.label}
-                  onClick={closeFlyout}
-                >
-                  <span className="sales-menu-tile-icon" aria-hidden="true">
-                    <Icon size={28} strokeWidth={1.6} />
-                  </span>
-                  <span className="sales-menu-tile-label">{item.label}</span>
-                </NavLink>
-              );
-            })}
-          </nav>
-        </div>
+          testid="sidebar-flyout-sales"
+          title="Penjualan"
+          ariaLabel="Menu Penjualan"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={salesItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
       )}
 
-      {purchasingOpen && purchasingNav.receipts && (
-        <div
-          ref={flyoutRef}
-          className="sidebar-flyout"
+      {purchasingOpen && purchasingItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
           id="sidebar-flyout-purchasing"
-          data-testid="sidebar-flyout-purchasing"
-          data-placement={flyoutPos.placement}
-          role="dialog"
-          aria-label="Pembelian"
-          style={{ left: flyoutPos.left, top: flyoutPos.top }}
-        >
-          <header className="sidebar-flyout-head"><h2>Pembelian</h2></header>
-          <div className="nav-sub">
-            <NavLink to="/pembelian/penerimaan-barang" className={navClass} data-testid="top-nav-penerimaan-barang" onClick={closeFlyout}>
-              <Package size={16} /> Penerimaan Barang
-            </NavLink>
-          </div>
-        </div>
+          testid="sidebar-flyout-purchasing"
+          title="Pembelian"
+          ariaLabel="Menu Pembelian"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={purchasingItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
       )}
 
-      {inventoryOpen && (
-        <div
-          ref={flyoutRef}
-          className="sidebar-flyout"
+      {inventoryOpen && inventoryItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
           id="sidebar-flyout-inventory"
-          data-testid="sidebar-flyout-inventory"
-          data-placement={flyoutPos.placement}
-          role="dialog"
-          aria-label="Persediaan"
-          style={{ left: flyoutPos.left, top: flyoutPos.top }}
-        >
-          <header className="sidebar-flyout-head"><h2>Persediaan</h2></header>
-          <div className="nav-sub">
-            {inventoryNav.masterItems && (
-              <NavLink to="/persediaan/master-barang-jasa" className={navClass} data-testid="top-nav-master-barang-jasa" onClick={closeFlyout}>
-                <Package size={16} /> Barang/Jasa
-              </NavLink>
-            )}
-            {inventoryNav.currentStock && (
-              <NavLink to="/persediaan/stock-saat-ini" className={navClass} data-testid="top-nav-stock-saat-ini" onClick={closeFlyout}>
-                <Boxes size={16} /> Stock Saat Ini
-              </NavLink>
-            )}
-          </div>
-        </div>
+          testid="sidebar-flyout-inventory"
+          title="Persediaan"
+          ariaLabel="Menu Persediaan"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={inventoryItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
       )}
 
-      {reportsOpen && (
-        <div
-          ref={flyoutRef}
-          className="sidebar-flyout"
+      {reportsOpen && reportsItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
           id="sidebar-flyout-reports"
-          data-testid="sidebar-flyout-reports"
-          data-placement={flyoutPos.placement}
-          role="dialog"
-          aria-label="Laporan"
-          style={{ left: flyoutPos.left, top: flyoutPos.top }}
-        >
-          <header className="sidebar-flyout-head"><h2>Laporan</h2></header>
-          <div className="nav-sub">
-            {reportsNav.analytics && (
-              <NavLink to="/laporan/analitik-output" className={navClass} data-testid="top-nav-analitik-output" onClick={closeFlyout}>
-                <FileBarChart size={16} /> Analitik Output
-              </NavLink>
-            )}
-            {reportsNav.statusPo && (
-              <NavLink to="/laporan/status-po" className={navClass} data-testid="top-nav-status-po" onClick={closeFlyout}>
-                <TableIcon size={16} /> Status PO
-              </NavLink>
-            )}
-            {reportsNav.shipmentStatus && (
-              <NavLink to="/laporan/status-pengiriman" className={navClass} data-testid="top-nav-status-pengiriman" onClick={closeFlyout}>
-                <Truck size={16} /> Status Pengiriman
-              </NavLink>
-            )}
-            {reportsNav.gajiOperator && (
-              <NavLink to="/laporan/gaji-operator" className={navClass} data-testid="top-nav-gaji-operator" onClick={closeFlyout}>
-                <FileBarChart size={16} /> Gaji Operator
-              </NavLink>
-            )}
-          </div>
-        </div>
+          testid="sidebar-flyout-reports"
+          title="Laporan"
+          ariaLabel="Menu Laporan"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={reportsItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
       )}
       </div>
 
