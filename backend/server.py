@@ -913,6 +913,8 @@ async def get_order(order_id: str, user=Depends(current_user)):
     _dd_settings = await _get_delivery_deadline_settings()
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
     attach_schedule_snapshot(order)
+    # Sales Delivery summary (Pengiriman Pesanan)
+    order["sales_delivery_summary"] = await _get_po_delivery_summary(db, order)
     _strip_tracking_secret(order)
     return {"order": _strip_sj_bytes(order)}
 
@@ -6101,6 +6103,14 @@ async def import_file_confirm(payload: FileConfirmRequest, user=Depends(current_
     return {"order": saved, "message": f"PO berhasil diimport dari {src}"}
 
 
+from services.sales_deliveries import (
+    get_po_delivery_summary as _get_po_delivery_summary,
+    create_sales_delivery as _create_sales_delivery,
+    list_sales_deliveries as _list_sales_deliveries,
+    get_sales_delivery_detail as _get_sales_delivery_detail,
+    generate_sales_delivery_pdf_bytes as _generate_sales_delivery_pdf_bytes,
+)
+
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
 class SalesOrderLineItemInput(BaseModel):
     item_code: Optional[str] = None
@@ -6130,6 +6140,27 @@ class SalesOrderCreatePayload(BaseModel):
     deadline: Optional[str] = None
     notes: Optional[str] = ""
     line_items: List[SalesOrderLineItemInput]
+
+
+# ---------- Sales Delivery (Pengiriman Pesanan) ----------
+class SalesDeliveryLineItemInput(BaseModel):
+    line_idx: int = 0
+    line_id: Optional[str] = None
+    qty: int
+    notes: Optional[str] = ""
+
+
+class SalesDeliveryCreatePayload(BaseModel):
+    po_id: str
+    delivery_date: Optional[str] = None
+    recipient: Optional[str] = None
+    address: Optional[str] = None
+    delivery_zone: Optional[str] = None
+    outlet: Optional[str] = None
+    sales: Optional[str] = None
+    expedition: Optional[str] = None
+    notes: Optional[str] = ""
+    line_items: List[SalesDeliveryLineItemInput]
 
 
 async def _next_suggested_po_number(database) -> str:
@@ -6401,10 +6432,41 @@ async def list_sales_orders(
     
     orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     dd_settings = await _get_delivery_deadline_settings()
+    
+    # Batch calculate delivery status summary for all returned orders
+    po_ids = [o["id"] for o in orders if o.get("id")]
+    shipped_aggregates: Dict[str, dict] = {}
+    if po_ids:
+        pipe = [
+            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
+            {"$group": {"_id": "$po_id", "total_shipped": {"$sum": "$total_qty"}, "count": {"$sum": 1}}}
+        ]
+        shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
+
     for o in orders:
         _apply_hold_snapshot(o)
         _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
         _strip_tracking_secret(o)
+        
+        agg = shipped_aggregates.get(o.get("id"), {})
+        tot_shipped = int(agg.get("total_shipped", 0))
+        tot_ordered = int(o.get("total_quantity", 0))
+        tot_remain = max(0, tot_ordered - tot_shipped)
+        if o.get("cancelled"):
+            deliv_st = "DIBATALKAN"
+        elif tot_shipped == 0:
+            deliv_st = "BELUM DIKIRIM"
+        elif tot_remain > 0:
+            deliv_st = "SEBAGIAN DIKIRIM"
+        else:
+            deliv_st = "SELESAI PENGIRIMAN"
+        o["delivery_summary"] = {
+            "total_ordered": tot_ordered,
+            "total_shipped": tot_shipped,
+            "total_remaining": tot_remain,
+            "status": deliv_st,
+            "shipment_count": int(agg.get("count", 0)),
+        }
     
     if st == "hold":
         orders = [o for o in orders if o.get("hold")]
@@ -6412,6 +6474,67 @@ async def list_sales_orders(
         orders = [o for o in orders if not o.get("hold")]
     
     return {"orders": orders, "count": len(orders)}
+
+
+# ==================================================
+# SALES DELIVERY (PENGIRIMAN PESANAN) ENDPOINTS
+# ==================================================
+@api_router.get("/sales-deliveries")
+async def list_sales_deliveries_endpoint(
+    q: Optional[str] = None,
+    po_id: Optional[str] = None,
+    status: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """List sales deliveries (Pengiriman Pesanan) with search and status filtering."""
+    await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
+    deliveries = await _list_sales_deliveries(db, q=q, po_id=po_id, status=status)
+    return {"deliveries": deliveries, "count": len(deliveries)}
+
+
+@api_router.get("/sales-deliveries/po/{po_id}/summary")
+async def get_po_delivery_summary_endpoint(po_id: str, user=Depends(current_user)):
+    """Get delivery summary, remaining line item quantities, and past shipments for a PO."""
+    await _require_any_perm(user, "sales.delivery.view", "sales.delivery.create", "sales_order.view", "sales_order.create", "po.view")
+    summary = await _get_po_delivery_summary(db, po_id)
+    return summary
+
+
+@api_router.post("/sales-deliveries")
+async def create_sales_delivery_endpoint(payload: SalesDeliveryCreatePayload, user=Depends(current_user)):
+    """Create a new Sales Delivery (Pengiriman Pesanan) backend-authoritatively."""
+    await _require_any_perm(user, "sales.delivery.create", "sales_order.create", "po.edit")
+    delivery = await _create_sales_delivery(db, payload.model_dump(), user)
+    await _audit_po(
+        {"id": delivery.get("po_id"), "po_number": delivery.get("po_number")},
+        "sales.delivery.create",
+        user,
+        note=f"Buat Pengiriman Pesanan #{delivery.get('shipment_index')} {delivery.get('sj_number')} (Total {delivery.get('total_qty')} pcs)"
+    )
+    return {"delivery": delivery, "message": f"Pengiriman Pesanan {delivery.get('sj_number')} berhasil dibuat"}
+
+
+@api_router.get("/sales-deliveries/{id}")
+async def get_sales_delivery_endpoint(id: str, user=Depends(current_user)):
+    """Get detail of a single sales delivery including PO summary and shipment history."""
+    await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
+    detail = await _get_sales_delivery_detail(db, id)
+    return detail
+
+
+@api_router.get("/sales-deliveries/{id}/pdf")
+async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
+    """Generate and return official PDF for Sales Delivery / Surat Jalan."""
+    await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
+    detail = await _get_sales_delivery_detail(db, id)
+    pdf_bytes = _generate_sales_delivery_pdf_bytes(detail["delivery"], detail.get("po_summary"))
+    sj_num = str(detail["delivery"].get("sj_number", "SJ")).replace("/", "_").replace("\\", "_")
+    filename = f"Pengiriman_Pesanan_{sj_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
 
 
 # ---------- PDF PO import ----------
@@ -8362,6 +8485,12 @@ async def seed():
     await db.delivery_route_plans.create_index("status")
     await db.delivery_route_plans.create_index("routes.driver_user_id")
     await db.delivery_vehicles.create_index("id", unique=True)
+    # Sales Deliveries (Pengiriman Pesanan) indexes
+    await db.sales_deliveries.create_index("id", unique=True)
+    await db.sales_deliveries.create_index("sj_number", unique=True)
+    await db.sales_deliveries.create_index([("po_id", 1), ("shipment_index", 1)], unique=True)
+    await db.sales_deliveries.create_index("po_id")
+    await db.sales_deliveries.create_index("created_at")
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
