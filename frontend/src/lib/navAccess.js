@@ -18,6 +18,7 @@ export const NAV_KEYS = {
   tasksLoading: "nav.tasks.loading",
   tasksDelivery: "nav.tasks.delivery",
   sales: "nav.sales",
+  salesOrder: "nav.sales.sales_order",
   importPo: "nav.sales.import_po",
   purchasing: "nav.purchasing",
   purchaseReceipts: "nav.purchasing.receipts",
@@ -50,6 +51,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.tasksLoading, label: "Loading", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksDelivery, label: "Driver / Terkirim", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
+  { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", parent: NAV_KEYS.purchasing },
@@ -72,25 +74,30 @@ export function canSeeNav(hasPerm, key) {
 /** Parent that is not a page itself is hidden when no child is visible. */
 export function salesNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
-  const importPo = parent && canSeeNav(hasPerm, NAV_KEYS.importPo);
-  return { parent: importPo, importPo };
+  const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create"));
+  const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
+  return { parent: Boolean(salesOrder || importPo), salesOrder: Boolean(salesOrder), importPo: Boolean(importPo) };
 }
 
 /** Existing Penjualan child routes only — no invented sales pages. */
 export const SALES_NAV_ROUTES = {
+  [NAV_KEYS.salesOrder]: "/penjualan/pesanan-penjualan",
   [NAV_KEYS.importPo]: "/admin/import",
 };
 
 const SALES_VIS_FIELD = {
+  [NAV_KEYS.salesOrder]: "salesOrder",
   [NAV_KEYS.importPo]: "importPo",
 };
 
 /** Stable tile tones keyed by existing nav.* — not randomized per render. */
 export const SALES_TILE_TONES = {
+  [NAV_KEYS.salesOrder]: "blue",
   [NAV_KEYS.importPo]: "green",
 };
 
 export const SALES_TILE_TESTIDS = {
+  [NAV_KEYS.salesOrder]: "top-nav-sales-order",
   [NAV_KEYS.importPo]: "top-nav-import",
 };
 

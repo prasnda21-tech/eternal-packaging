@@ -12,6 +12,7 @@ import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
 
 const TILE_ICONS = {
+  [NAV_KEYS.salesOrder]: ShoppingCart,
   [NAV_KEYS.importPo]: Download,
   [NAV_KEYS.purchaseReceipts]: Package,
   [NAV_KEYS.masterItems]: Package,
@@ -75,8 +76,7 @@ function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate }) {
 export default function AppShell() {
   const { user, hasPerm, logout } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const importActive = location.pathname.startsWith("/admin/import");
+  const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
@@ -238,7 +238,7 @@ export default function AppShell() {
                 icon={ShoppingCart}
                 expanded={salesOpen}
                 controls="sidebar-flyout-sales"
-                active={importActive}
+                active={salesActive}
                 open={salesOpen}
                 onClick={() => toggleMenu("sales")}
               />

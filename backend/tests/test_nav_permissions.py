@@ -19,6 +19,7 @@ def test_catalog_includes_nav_keys():
     for key in (
         "nav.dashboard",
         "nav.sales",
+        "nav.sales.sales_order",
         "nav.sales.import_po",
         "nav.production_schedule",
         "nav.production",

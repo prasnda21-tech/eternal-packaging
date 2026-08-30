@@ -6101,6 +6101,319 @@ async def import_file_confirm(payload: FileConfirmRequest, user=Depends(current_
     return {"order": saved, "message": f"PO berhasil diimport dari {src}"}
 
 
+# ---------- Manual Sales Order (Pesanan Penjualan) ----------
+class SalesOrderLineItemInput(BaseModel):
+    item_code: Optional[str] = None
+    name: str
+    quantity: int
+    unit: Optional[str] = "pcs"
+    color: Optional[str] = ""
+    production_process: Optional[str] = "print"  # "print" | "non_print"
+    notes: Optional[str] = ""
+    accurate_item_id: Optional[str] = None
+    master_item_id: Optional[str] = None
+
+
+class SalesOrderCreatePayload(BaseModel):
+    po_number: Optional[str] = None
+    order_date: Optional[str] = None
+    customer: str
+    outlet: Optional[str] = None
+    recipient: Optional[str] = None
+    address: Optional[str] = None
+    delivery_zone: Optional[str] = None
+    payment_terms: Optional[str] = None
+    sales: Optional[str] = None
+    created_by_user: Optional[str] = None
+    expedition: Optional[str] = None
+    estimated_delivery: Optional[str] = None
+    deadline: Optional[str] = None
+    notes: Optional[str] = ""
+    line_items: List[SalesOrderLineItemInput]
+
+
+async def _next_suggested_po_number(database) -> str:
+    today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    prefix = f"PO-{today_str}-"
+    regex = f"^{prefix}\\d+"
+    cursor = database.orders.find({"po_number": {"$regex": regex}}, {"po_number": 1, "_id": 0})
+    existing = await cursor.to_list(1000)
+    max_seq = 0
+    for doc in existing:
+        pn = str(doc.get("po_number") or "")
+        suffix = pn[len(prefix):]
+        try:
+            seq = int(suffix)
+            if seq > max_seq:
+                max_seq = seq
+        except ValueError:
+            pass
+    return f"{prefix}{max_seq + 1:03d}"
+
+
+def _parse_order_date_iso(raw: Optional[str], default_days_ahead: int = 0) -> str:
+    now = datetime.now(timezone.utc)
+    if not raw or not str(raw).strip():
+        dt = now + timedelta(days=default_days_ahead)
+        return dt.isoformat()
+    s = str(raw).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            clean = s[:19] if "T" in s else s[:10]
+            dt = datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except Exception:
+        raise HTTPException(400, f"Format tanggal tidak valid: {raw}")
+
+
+@api_router.get("/sales-orders/options")
+async def get_sales_order_options(user=Depends(current_user)):
+    """Fetch autocomplete suggestions for Customer, Outlet, Sales, Master Items, and next No PO."""
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit", "po.import.view")
+    customers = await db.orders.distinct("customer", {"cancelled": {"$ne": True}})
+    outlet_custs = await db.delivery_outlets.distinct("customer_name")
+    all_customers = sorted({c.strip() for c in (customers + outlet_custs) if c and str(c).strip()})
+
+    raw_outlets = await db.delivery_outlets.find({}, {"_id": 0}).to_list(1000)
+    recent_orders = await db.orders.find(
+        {"cancelled": {"$ne": True}},
+        {"_id": 0, "customer": 1, "outlet": 1, "recipient": 1, "address": 1, "delivery_zone": 1, "sales": 1, "payment_terms": 1}
+    ).sort("created_at", -1).limit(500).to_list(500)
+
+    outlets_by_customer: Dict[str, List[dict]] = {}
+    for o in raw_outlets:
+        cname = (o.get("customer_name") or "").strip()
+        if cname:
+            outlets_by_customer.setdefault(cname, []).append({
+                "outlet": o.get("name") or "",
+                "address": o.get("formatted_address") or "",
+                "recipient": "",
+                "delivery_zone": "",
+            })
+    for ro in recent_orders:
+        cname = (ro.get("customer") or "").strip()
+        out_name = (ro.get("outlet") or "").strip()
+        if cname:
+            existing_list = outlets_by_customer.setdefault(cname, [])
+            if not any(x.get("outlet") == out_name for x in existing_list):
+                existing_list.append({
+                    "outlet": out_name,
+                    "address": ro.get("address") or "",
+                    "recipient": ro.get("recipient") or "",
+                    "delivery_zone": ro.get("delivery_zone") or "",
+                    "sales": ro.get("sales") or "",
+                    "payment_terms": ro.get("payment_terms") or "",
+                })
+
+    sales_from_orders = await db.orders.distinct("sales", {"cancelled": {"$ne": True}})
+    sales_users = await db.users.find(
+        {"role": {"$in": ["admin", "crm", "head_production", "head_operations"]}, "status": {"$ne": "inactive"}},
+        {"_id": 0, "name": 1, "email": 1}
+    ).to_list(200)
+    all_sales = sorted({s.strip() for s in sales_from_orders if s and str(s).strip()} | {u["name"] for u in sales_users if u.get("name")})
+
+    master_items = await db.master_items.find(
+        {"is_active": True},
+        {"_id": 0, "id": 1, "accurate_item_id": 1, "item_code": 1, "item_name": 1, "unit": 1, "item_type": 1}
+    ).sort("item_name", 1).to_list(1000)
+
+    suggested_po = await _next_suggested_po_number(db)
+    return {
+        "customers": all_customers,
+        "outlets_by_customer": outlets_by_customer,
+        "sales_options": all_sales,
+        "master_items": master_items,
+        "suggested_po_number": suggested_po,
+    }
+
+
+@api_router.post("/sales-orders")
+async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(current_user)):
+    """Create a new Sales Order (Pesanan Penjualan) manually.
+    
+    Generates a normal PO document with stage 0 (Order Masuk), fully compatible with
+    imported POs and downstream production workflows.
+    """
+    await _require_any_perm(user, "sales_order.create", "po.edit", "po.import.view")
+    
+    cust = (payload.customer or "").strip()
+    if not cust:
+        raise HTTPException(400, "Customer wajib diisi.")
+    
+    if not payload.line_items:
+        raise HTTPException(400, "Minimal 1 line item.")
+    
+    normalized_lines = []
+    for i, li in enumerate(payload.line_items):
+        name = (li.name or "").strip()
+        if not name:
+            raise HTTPException(400, f"Line item #{i+1}: Nama barang/jasa wajib diisi.")
+        try:
+            q = int(li.quantity)
+        except (TypeError, ValueError):
+            q = 0
+        if q <= 0:
+            raise HTTPException(400, f"Line item #{i+1}: Quantity harus > 0.")
+        
+        proc = (li.production_process or "").strip().lower()
+        if proc not in ("print", "non_print"):
+            proc = "print"
+        
+        normalized_lines.append({
+            "item_code": (li.item_code or "").strip() or None,
+            "name": name,
+            "quantity": q,
+            "unit": (li.unit or "pcs").strip() or "pcs",
+            "color": (li.color or "").strip() or None,
+            "production_process": proc,
+            "notes": (li.notes or "").strip() or None,
+            "accurate_item_id": (li.accurate_item_id or "").strip() or None,
+            "master_item_id": (li.master_item_id or "").strip() or None,
+        })
+    
+    po_num = (payload.po_number or "").strip()
+    if not po_num:
+        po_num = await _next_suggested_po_number(db)
+    
+    # Duplicate check
+    existing = await db.orders.find_one({"po_number": po_num}, {"_id": 0, "id": 1, "po_number": 1})
+    if existing:
+        raise HTTPException(409, {
+            "message": f"Nomor PO '{po_num}' sudah pernah digunakan.",
+            "existing_po_number": po_num,
+            "existing_po_id": existing.get("id"),
+        })
+    
+    order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
+    deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)
+    estimated_delivery = _parse_order_date_iso(payload.estimated_delivery or payload.deadline, default_days_ahead=3)
+    
+    now = now_iso()
+    total_qty = sum(li["quantity"] for li in normalized_lines)
+    item_cnt = len(normalized_lines)
+    
+    new_order = {
+        "id": str(uuid.uuid4()),
+        "po_number": po_num,
+        "accurate_id": None,
+        "accurate_synced_at": None,
+        "accurate_source": "manual",
+        "import_source": "sales_order_manual",
+        "import_filename": None,
+        "source_pdf": None,
+        "order_date": order_date,
+        "estimated_delivery": estimated_delivery,
+        "deadline": deadline,
+        "priority": "normal",
+        "urgency_approved_by": None,
+        "customer": cust,
+        "outlet": (payload.outlet or "").strip() or None,
+        "recipient": (payload.recipient or "").strip() or None,
+        "address": (payload.address or "").strip() or None,
+        "payment_terms": (payload.payment_terms or "").strip() or None,
+        "payment_status": "Waiting",
+        "design_status": "Waiting",
+        "sales": (payload.sales or "").strip() or None,
+        "created_by_user": (payload.created_by_user or "").strip() or user.get("name") or user.get("email"),
+        "imported_by": user.get("email"),
+        "imported_by_name": user.get("name"),
+        "imported_at": now,
+        "expedition": (payload.expedition or "").strip() or None,
+        "delivery_zone": (payload.delivery_zone or "").strip() or None,
+        "seller": (payload.sales or "").strip() or None,
+        "line_items": normalized_lines,
+        "total_quantity": total_qty,
+        "item_count": item_cnt,
+        "operator_splits": [],
+        "design_files": [],
+        "sample_files": [],
+        "delivery_proofs": [],
+        "notes": (payload.notes or "").strip(),
+        "current_stage": 0,
+        "status_label": STAGES[0],
+        "packing_status": "Belum",
+        "delivery_status": "Belum Terkirim",
+        "delivery_note_number": "",
+        "loading_checklist": None,
+        "timeline": [{
+            "stage": 0,
+            "stage_label": STAGES[0],
+            "at": now,
+            "by_email": user.get("email"),
+            "by_role": user.get("role"),
+            "by_name": user.get("name"),
+            "note": "Pesanan Penjualan dibuat manual",
+        }],
+        "created_at": now,
+        "updated_at": now,
+    }
+    
+    try:
+        await db.orders.insert_one(new_order)
+    except DuplicateKeyError:
+        raise HTTPException(409, {
+            "message": f"Nomor PO '{po_num}' sudah pernah digunakan.",
+            "existing_po_number": po_num,
+        })
+    
+    new_order.pop("_id", None)
+    await _audit_po(new_order, "sales_order.create", user, note=f"Buat Pesanan Penjualan {po_num}")
+    return {"order": new_order, "message": "Pesanan Penjualan berhasil dibuat"}
+
+
+@api_router.get("/sales-orders")
+async def list_sales_orders(
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """List sales orders with search and status filtering for Pesanan Penjualan page."""
+    await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
+    
+    query: dict = {}
+    st = (status or "all").lower()
+    if st == "cancelled":
+        query["cancelled"] = True
+    elif st == "aktif":
+        query["cancelled"] = {"$ne": True}
+        query["current_stage"] = {"$lt": 14}
+    elif st == "selesai":
+        query["cancelled"] = {"$ne": True}
+        query["current_stage"] = {"$gte": 14}
+    elif st == "hold":
+        query["cancelled"] = {"$ne": True}
+    
+    if q and q.strip():
+        needle = re.escape(q.strip())
+        query["$or"] = [
+            {"po_number": {"$regex": needle, "$options": "i"}},
+            {"customer": {"$regex": needle, "$options": "i"}},
+            {"outlet": {"$regex": needle, "$options": "i"}},
+            {"sales": {"$regex": needle, "$options": "i"}},
+        ]
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    dd_settings = await _get_delivery_deadline_settings()
+    for o in orders:
+        _apply_hold_snapshot(o)
+        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
+        _strip_tracking_secret(o)
+    
+    if st == "hold":
+        orders = [o for o in orders if o.get("hold")]
+    elif st == "aktif":
+        orders = [o for o in orders if not o.get("hold")]
+    
+    return {"orders": orders, "count": len(orders)}
+
+
 # ---------- PDF PO import ----------
 @api_router.post("/import/pdf/preview")
 async def import_pdf_preview(file: UploadFile = File(...), user=Depends(require_perm("po.import.pdf"))):
@@ -8184,6 +8497,7 @@ async def seed():
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",
+            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
         ],
         "head_operations": [
             "dashboard.production.view", "dashboard.production.export", "po.cancel",
@@ -8198,12 +8512,14 @@ async def seed():
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",
+            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
         ],
         # Import PO permissions: admin gets all (idempotent top-up if a custom
         # admin override was persisted before these keys existed).
         "admin": [
             "po.import.view", "accurate.import", "accurate.import.bulk",
             "po.import.pdf", "po.import.spreadsheet",
+            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
             "master_items.view", "master_items.sync",
             "nav.inventory.master_items",
             "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
@@ -8229,6 +8545,7 @@ async def seed():
         "crm": [
             "customer_approval.view",
             "buffer_stock.manage",
+            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
         ],
     }
     for role_slug, need in PHASE_B_ROLE_TOP_UPS.items():
