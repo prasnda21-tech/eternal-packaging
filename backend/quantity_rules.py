@@ -220,6 +220,26 @@ def qty_packed_for_line(order: dict, line_idx: int) -> int:
     return 0
 
 
+def packed_qty_for_line(order: dict, line_idx: int) -> int:
+    lines = packing_lines_stored(order)
+    if lines is not None:
+        return qty_packed_for_line(order, line_idx)
+    pi = (order.get("packing_info") or {}).get("qty_packed")
+    if pi is not None and str(pi).strip() != "":
+        total_p = max(0, _safe_int(pi))
+        if int(line_idx) == 0 and len(order.get("line_items") or []) <= 1:
+            return total_p
+    if not order.get("packing_info"):
+        lis = order.get("line_items") or []
+        if 0 <= int(line_idx) < len(lis):
+            return max(0, _safe_int(lis[line_idx].get("quantity")))
+    if _safe_int(order.get("current_stage")) >= 11:
+        lis = order.get("line_items") or []
+        if 0 <= int(line_idx) < len(lis):
+            return max(0, _safe_int(lis[line_idx].get("quantity")))
+    return 0
+
+
 def qty_packed(order: dict) -> int:
     """Total packed = SUM(line packed) bila ada packing_info.lines, else qty_packed lama."""
     lines = packing_lines_stored(order)
@@ -948,29 +968,99 @@ def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
     if not want:
         return None
     files = order.get("surat_jalan_files")
-    if not isinstance(files, list):
-        return None
-    for f in files:
-        if isinstance(f, dict) and str(f.get("id") or "").strip() == want:
-            return f
+    if isinstance(files, list):
+        for f in files:
+            if isinstance(f, dict) and (
+                str(f.get("id") or "").strip() == want
+                or str(f.get("shipment_id") or "").strip() == want
+                or str(f.get("sj_number") or "").strip() == want
+            ):
+                return f
+    for sh in shipments_stored(order):
+        if isinstance(sh, dict) and (
+            str(sh.get("id") or "").strip() == want
+            or str(sh.get("number") or "").strip() == want
+            or str(sh.get("sales_delivery_id") or "").strip() == want
+        ):
+            return sh
     return None
 
 
 def has_surat_jalan_file(order: dict) -> bool:
     files = order.get("surat_jalan_files")
-    if not isinstance(files, list):
-        return False
-    for f in files:
-        if not isinstance(f, dict):
-            continue
-        if str(f.get("id") or "").strip() and (
-            str(f.get("data_url") or "").startswith("data:")
-            or str(f.get("storage_path") or "").strip()
-            or str(f.get("name") or "").strip()
-            or f.get("uploaded_at")
-        ):
-            return True
+    if isinstance(files, list) and files:
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            if str(f.get("id") or "").strip() and (
+                str(f.get("data_url") or "").startswith("data:")
+                or str(f.get("storage_path") or "").strip()
+                or str(f.get("name") or "").strip()
+                or f.get("uploaded_at")
+            ):
+                return True
+    if shipments_stored(order):
+        return True
     return False
+
+
+def sj_lines_stored(order: dict, surat_jalan_id: str) -> list:
+    """Get exact item lines from a specific Surat Jalan."""
+    entry = find_sj_file(order, surat_jalan_id)
+    if not entry or not isinstance(entry, dict):
+        return []
+    lines = entry.get("lines")
+    if isinstance(lines, list) and lines:
+        return [l for l in lines if isinstance(l, dict)]
+    want = str(surat_jalan_id or "").strip()
+    for sh in shipments_stored(order):
+        if not isinstance(sh, dict):
+            continue
+        if str(sh.get("id") or "").strip() == want or str(sh.get("number") or "").strip() == want or str(sh.get("sales_delivery_id") or "").strip() == want:
+            sh_lines = sh.get("lines")
+            if isinstance(sh_lines, list) and sh_lines:
+                return [l for l in sh_lines if isinstance(l, dict)]
+    return []
+
+
+def sj_qty_for_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
+    """Exact target qty for this line in this specific Surat Jalan."""
+    lines = sj_lines_stored(order, surat_jalan_id)
+    for ln in lines:
+        if _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
+            return max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+    if not lines and int(line_idx) == 0:
+        entry = find_sj_file(order, surat_jalan_id)
+        if entry:
+            return max(0, _safe_int(entry.get("total_qty") or entry.get("qty") or 0))
+    return 0
+
+
+def loaded_qty_for_sj_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
+    """Cumulative confirmed loaded qty for this exact Surat Jalan and line."""
+    want = str(surat_jalan_id or "").strip()
+    entry = find_sj_file(order, surat_jalan_id)
+    target_ids = {want}
+    if entry:
+        for k in ("id", "number", "shipment_id", "sales_delivery_id", "sj_number"):
+            v = str(entry.get(k) or "").strip()
+            if v:
+                target_ids.add(v)
+    total = 0
+    for conf in loading_confirmations_stored(order):
+        conf_sj = str(conf.get("surat_jalan_id") or "").strip()
+        if conf_sj in target_ids:
+            for ln in conf.get("lines") or []:
+                if isinstance(ln, dict) and _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
+                    total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+    return total
+
+
+def available_for_sj_loading_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
+    """Available loading for this exact line on this exact Surat Jalan."""
+    sj_qty = sj_qty_for_line(order, surat_jalan_id, line_idx)
+    loaded_qty = loaded_qty_for_sj_line(order, surat_jalan_id, line_idx)
+    return max(0, sj_qty - loaded_qty)
 
 
 def qty_confirmed_loading_for_line(order: dict, line_idx: int) -> int:
@@ -1067,12 +1157,10 @@ def available_for_loading_line(order: dict, line_idx: int) -> int:
 
 
 def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list) -> Optional[str]:
-    """Manual Item/Qty against a specific Surat Jalan file. Cap = remaining packed qty."""
+    """Manual Item/Qty against a specific Surat Jalan. Cap = remaining exact SJ line qty."""
     entry = find_sj_file(order, surat_jalan_id)
     if not entry:
         return "Surat Jalan tidak ditemukan. Loading harus terhubung ke file Surat Jalan."
-    if not (str(entry.get("data_url") or "").startswith("data:") or str(entry.get("storage_path") or "").strip() or str(entry.get("id") or "").strip()):
-        return "File Surat Jalan tidak valid."
     if not lines:
         return "Item dan Qty Loading wajib diisi sesuai isi Surat Jalan."
     seen = set()
@@ -1091,16 +1179,23 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
         qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
         if qty <= 0:
             return "Qty Loading harus angka lebih dari 0."
-        avail = available_for_loading_confirm_line(order, idx)
+
+        # If Surat Jalan has specific line quantities, enforce exact SJ availability
+        sj_lines = sj_lines_stored(order, surat_jalan_id)
+        if sj_lines or (int(idx) == 0 and (entry.get("total_qty") or entry.get("qty"))):
+            avail = available_for_sj_loading_line(order, surat_jalan_id, idx)
+        else:
+            avail = available_for_loading_confirm_line(order, idx)
+
         name = _line_name(order, idx)
         if qty > avail:
             if avail <= 0:
                 return (
                     f"Qty Loading '{name}' belum bisa diisi. "
-                    "Qty fisik yang sudah diproses belum siap."
+                    "Seluruh kuantitas Surat Jalan untuk item ini sudah selesai di-loading."
                 )
             return (
-                f"Qty Loading '{name}' ({qty}) melebihi qty packing yang siap loading ({avail})."
+                f"Qty Loading '{name}' ({qty}) melebihi sisa Surat Jalan yang siap loading ({avail})."
             )
     return None
 
