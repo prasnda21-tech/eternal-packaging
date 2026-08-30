@@ -21,6 +21,7 @@ from quantity_rules import requires_printing, qty_packed
 SCREENER_GATE_SAMPLE_MSG = "Qty Screener harus diisi sebelum Cetak Sample."
 SCREENER_GATE_OPERATOR_MSG = "Qty Screener harus diisi sebelum pekerjaan Operator."
 SCREENER_GATE_SCREEN_MSG = "Qty Screen belum diinput."
+HELPER_GATE_OPERATOR_MSG = "Persiapan Helper harus diisi sebelum pekerjaan Operator."
 SAMPLE_GATE_PRINT_QTY_MSG = "Cetak Sample harus disetujui sebelum Qty Selesai Cetak dapat diisi."
 
 
@@ -41,10 +42,18 @@ def group2_complete(order: dict) -> bool:
     return design_ok(order) and payment_ok(order)
 
 
+def penjadwalan_unlocked(order: dict) -> bool:
+    return group2_complete(order)
+
+
 def penjadwalan_done(order: dict) -> bool:
     if not requires_printing(order):
         return True
-    return bool(order.get("operator_splits"))
+    return penjadwalan_unlocked(order) and bool(order.get("operator_splits"))
+
+
+def screener_unlocked(order: dict) -> bool:
+    return group2_complete(order) and penjadwalan_done(order)
 
 
 def screener_done(order: dict) -> bool:
@@ -52,6 +61,10 @@ def screener_done(order: dict) -> bool:
         return True
     si = order.get("screener_info") or {}
     return _has_value(si.get("screen_qty"))
+
+
+def helper_unlocked(order: dict) -> bool:
+    return group2_complete(order) and penjadwalan_done(order)
 
 
 def helper_done(order: dict) -> bool:
@@ -65,8 +78,29 @@ def sample_uploaded(order: dict) -> bool:
     return bool(order.get("sample_files"))
 
 
+def operator_unlocked(order: dict) -> bool:
+    """Workflow gate: Operator work requires Persiapan Helper (and Penjadwalan)."""
+    if not requires_printing(order):
+        return penjadwalan_done(order)
+    return penjadwalan_done(order) and helper_done(order)
+
+
+def sample_upload_unlocked(order: dict) -> bool:
+    if not requires_printing(order):
+        return False
+    return operator_unlocked(order)
+
+
+def sample_approval_unlocked(order: dict) -> bool:
+    if not requires_printing(order):
+        return False
+    return operator_unlocked(order) and sample_uploaded(order)
+
+
 def sample_ok(order: dict) -> bool:
-    return bool(order.get("sample_approved"))
+    if not requires_printing(order):
+        return True
+    return operator_unlocked(order) and bool(order.get("sample_approved"))
 
 
 def print_qty_input(order: dict) -> bool:
@@ -81,30 +115,19 @@ def packing_qty_input(order: dict) -> bool:
     return qty_packed(order) > 0
 
 
-def operator_unlocked(order: dict) -> bool:
-    """Workflow gate: Operator / Cetak Sample need Penjadwalan + Screener.
-
-    Helper prepared qty is a quantity cap, not this unlock.
-    Qty Selesai Cetak uses print_qty_unlocked (sample approved).
-    """
-    if not requires_printing(order):
-        return penjadwalan_done(order)
-    return penjadwalan_done(order) and screener_done(order)
-
-
 def print_qty_unlocked(order: dict) -> bool:
-    """Qty Selesai Cetak hanya setelah Screener valid DAN sample APPROVED."""
+    """Qty Selesai Cetak hanya setelah Helper valid DAN sample APPROVED."""
     if not requires_printing(order):
         return False
-    return operator_unlocked(order) and sample_ok(order)
+    return sample_ok(order)
 
 
 def print_qty_gate_reason(order: dict) -> str | None:
     if not requires_printing(order):
         return None
-    screener_reason = screener_gate_reason(order, for_sample=False)
-    if screener_reason:
-        return screener_reason
+    helper_reason = helper_gate_reason(order)
+    if helper_reason:
+        return helper_reason
     if not sample_ok(order):
         return SAMPLE_GATE_PRINT_QTY_MSG
     return None
@@ -122,13 +145,25 @@ def packing_unlocked(order: dict) -> bool:
 def screener_gate_reason(order: dict, *, for_sample: bool = False) -> str | None:
     if not requires_printing(order):
         return None
+    if not penjadwalan_done(order):
+        return "Penjadwalan harus selesai terlebih dahulu."
     if screener_done(order):
         return None
     return SCREENER_GATE_SAMPLE_MSG if for_sample else SCREENER_GATE_OPERATOR_MSG
 
 
+def helper_gate_reason(order: dict) -> str | None:
+    if not requires_printing(order):
+        return None
+    if not penjadwalan_done(order):
+        return "Penjadwalan harus selesai terlebih dahulu."
+    if not helper_done(order):
+        return HELPER_GATE_OPERATOR_MSG
+    return None
+
+
 def compute_compatible_stage(order: dict) -> int:
-    """Furthest unlocked stage (0..11) from evidence. Never infers sibling done.
+    """Furthest unlocked stage (0..11) from evidence. Never skips prerequisites.
 
     Does not advance past Packing (11); SJ/Loading/Terkirim stay action-driven.
     """
@@ -137,10 +172,14 @@ def compute_compatible_stage(order: dict) -> int:
         target = 5
     if penjadwalan_done(order) and group2_complete(order):
         target = max(target, 6)
-    if operator_unlocked(order) and group2_complete(order):
+    if screener_done(order):
+        target = max(target, 7)
+    if helper_done(order):
         target = max(target, 8)
     if sample_uploaded(order) and operator_unlocked(order):
         target = max(target, 9)
+    if sample_ok(order):
+        target = max(target, 10)
     if packing_unlocked(order):
         target = max(target, 11)
     return target
@@ -171,22 +210,24 @@ def sync_workflow_stage(order: dict, *, force: bool = False) -> bool:
 def workflow_ready(order: dict) -> dict:
     """UI/API flags: which cards may accept their real action (Simpan/Upload/Approve)."""
     g2 = group2_complete(order)
-    scheduled = penjadwalan_done(order)
-    screen = screener_done(order)
     req_print = requires_printing(order)
-    op = operator_unlocked(order)
+    scheduled = penjadwalan_done(order)
+    screen_ok = screener_done(order)
+    help_ok = helper_done(order)
+    op_unlocked = operator_unlocked(order)
     uploaded = sample_uploaded(order)
+    s_ok = sample_ok(order)
     return {
         "design": True,
         "approval_design": bool(order.get("design_files")) or bool(order.get("design_bypassed")),
         "payment": True,
         "approval_payment": bool(order.get("payment_files")) or bool(order.get("payment_bypassed")),
         "penjadwalan": g2,
-        "screener": g2 and scheduled,
-        "helper": g2 and scheduled,
-        "operator": op,
-        "sample_upload": op if req_print else False,
-        "sample_approval": uploaded and op if req_print else False,
+        "screener": screener_unlocked(order),
+        "helper": helper_unlocked(order),
+        "operator": op_unlocked,
+        "sample_upload": op_unlocked if req_print else False,
+        "sample_approval": uploaded and op_unlocked if req_print else False,
         "print_qty": print_qty_unlocked(order),
         "packing": packing_unlocked(order),
     }

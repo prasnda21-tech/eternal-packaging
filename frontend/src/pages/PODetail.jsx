@@ -3,7 +3,7 @@ import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, FileCheck2, FileText, MapPin, MessageSquare, Package, Printer, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDateTime } from "../lib/constants";
+import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
 import { liveTrackingRows } from "../lib/liveTracking";
 import Timeline from "../components/Timeline";
@@ -28,6 +28,7 @@ import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
 import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../lib/paymentProof";
+import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
 
 export default function PODetail() {
@@ -215,8 +216,7 @@ export default function PODetail() {
       }
       setActionConfirm(null);
     } catch (e) {
-      const d = e.response?.data?.detail;
-      const msg = typeof d === "string" ? d : (d?.message || "Aksi gagal");
+      const msg = formatApiError(e, "Gagal mencatat aktivitas Screener");
       setActionConfirm((prev) => prev ? { ...prev, error: msg } : prev);
     } finally {
       setBusy(false);

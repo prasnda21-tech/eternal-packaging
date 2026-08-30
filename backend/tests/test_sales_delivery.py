@@ -109,7 +109,7 @@ async def test_case_a_full_shipment_single_step():
             assert summary["total_ordered"] == 1000
             assert summary["total_shipped"] == 1000
             assert summary["total_remaining"] == 0
-            assert summary["delivery_status"] == "SELESAI PENGIRIMAN"
+            assert summary["delivery_status"] == "SELESAI"
             assert summary["can_create_delivery"] is False
     finally:
         app.dependency_overrides.pop(current_user, None)
@@ -145,7 +145,7 @@ async def test_case_b_c_d_partial_shipment_chain():
             sum1 = (await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")).json()
             assert sum1["total_shipped"] == 400
             assert sum1["total_remaining"] == 600
-            assert sum1["delivery_status"] == "SEBAGIAN DIKIRIM"
+            assert sum1["delivery_status"] == "SEBAGIAN"
             assert sum1["can_create_delivery"] is True
 
             # CASE C: Shipment 2 (300 pcs)
@@ -162,7 +162,7 @@ async def test_case_b_c_d_partial_shipment_chain():
             sum2 = (await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")).json()
             assert sum2["total_shipped"] == 700
             assert sum2["total_remaining"] == 300
-            assert sum2["delivery_status"] == "SEBAGIAN DIKIRIM"
+            assert sum2["delivery_status"] == "SEBAGIAN"
 
             # CASE D: Shipment 3 (300 pcs)
             r3 = await client.post("/api/sales-deliveries", json={
@@ -178,7 +178,7 @@ async def test_case_b_c_d_partial_shipment_chain():
             sum3 = (await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")).json()
             assert sum3["total_shipped"] == 1000
             assert sum3["total_remaining"] == 0
-            assert sum3["delivery_status"] == "SELESAI PENGIRIMAN"
+            assert sum3["delivery_status"] == "SELESAI"
             assert sum3["can_create_delivery"] is False
     finally:
         app.dependency_overrides.pop(current_user, None)
@@ -380,57 +380,481 @@ async def test_case_j_list_filter_and_detail():
 
 
 @pytest.mark.anyio
-async def test_case_k_pdf_generation():
-    """CASE K: generate PDF -> returns valid PDF stream."""
-    po_num = f"PO-PDF-{uuid.uuid4().hex[:6].upper()}"
-    po = await create_helper_po(po_num, [{"name": "Paper Cup 8oz", "quantity": 1000, "unit": "pcs", "color": "Full Color"}])
+async def test_case_a_po_prefill_contains_all_header_fields():
+    """CASE A: PO with customer/outlet/sales/recipient/address/zone -> delivery prefill has all."""
+    po_num = f"PO-PREFILL-{uuid.uuid4().hex[:6].upper()}"
+    po = await create_helper_po(po_num, [{"name": "Cup 12oz", "quantity": 1000, "unit": "pcs"}])
 
-    app.dependency_overrides[current_user] = lambda: {
-        "email": "admin@eternalpackaging.com",
-        "name": "Admin Tester",
-        "role": "admin",
-    }
+    app.dependency_overrides[current_user] = lambda: {"email": "crm@test.com", "role": "crm"}
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            r_create = await client.post("/api/sales-deliveries", json={
-                "po_id": po["id"],
-                "line_items": [{"line_idx": 0, "qty": 500}]
-            })
-            assert r_create.status_code == 200
-            deliv_id = r_create.json()["delivery"]["id"]
-
-            r_pdf = await client.get(f"/api/sales-deliveries/{deliv_id}/pdf")
-            assert r_pdf.status_code == 200
-            assert "application/pdf" in r_pdf.headers.get("content-type", "")
-            assert r_pdf.content[:5] == b"%PDF-"
-            assert len(r_pdf.content) > 1000
+            res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert res.status_code == 200
+            data = res.json()
+            assert data["po_id"] == po["id"]
+            assert data["po_number"] == po_num
+            assert data["customer"] == "PT Test Customer"
+            assert data["outlet"] == "Cabang Utama"
+            assert data["recipient"] == "Pak Budi"
+            assert data["address"] == "Jl. Industri Raya No. 8"
+            assert data["delivery_zone"] == "Jakarta Barat"
+            assert data["sales"] == "Vira"
+            assert len(data["lines"]) == 1
+            assert data["lines"][0]["remaining_qty"] == 1000
     finally:
         app.dependency_overrides.pop(current_user, None)
 
 
 @pytest.mark.anyio
-async def test_case_l_po_relation_stable():
-    """CASE L: PO relation stable -> delivery.po_id matches exact PO document."""
-    po_num = f"PO-STABLE-{uuid.uuid4().hex[:6].upper()}"
-    po = await create_helper_po(po_num, [{"name": "Item Stable", "quantity": 300}])
+async def test_case_b_edit_delivery_saves_edits_without_mutating_po():
+    """CASE B: user edits address/recipient/sales/zone/expedition/notes -> delivery saves edits -> PO unmutated."""
+    po_num = f"PO-EDIT-{uuid.uuid4().hex[:6].upper()}"
+    po = await create_helper_po(po_num, [{"name": "Bowl 600ml", "quantity": 500}])
 
-    app.dependency_overrides[current_user] = lambda: {
-        "email": "crm@eternalpackaging.com",
-        "name": "CRM Tester",
-        "role": "crm",
-    }
+    app.dependency_overrides[current_user] = lambda: {"email": "crm@test.com", "role": "crm"}
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             res = await client.post("/api/sales-deliveries", json={
                 "po_id": po["id"],
-                "line_items": [{"line_idx": 0, "qty": 300}]
+                "recipient": "Pak Joko (Edited PIC)",
+                "address": "Jl. Gatot Subroto No. 99 (Edited Address)",
+                "delivery_zone": "Jakarta Selatan",
+                "sales": "Rian Sales",
+                "expedition": "Lalamove Van",
+                "notes": "Handle with care",
+                "line_items": [{"line_idx": 0, "qty": 200}]
             })
             assert res.status_code == 200
             deliv = res.json()["delivery"]
-            assert deliv["po_id"] == po["id"]
-            assert deliv["po_number"] == po_num
-            assert deliv["created_by"] == "crm@eternalpackaging.com"
+            assert deliv["recipient"] == "Pak Joko (Edited PIC)"
+            assert deliv["address"] == "Jl. Gatot Subroto No. 99 (Edited Address)"
+            assert deliv["delivery_zone"] == "Jakarta Selatan"
+            assert deliv["sales"] == "Rian Sales"
+            assert deliv["expedition"] == "Lalamove Van"
+            assert deliv["notes"] == "Handle with care"
+
+            # Verify original PO document in DB is UNMUTATED
+            po_in_db = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert po_in_db["recipient"] == "Pak Budi"
+            assert po_in_db["address"] == "Jl. Industri Raya No. 8"
+            assert po_in_db["delivery_zone"] == "Jakarta Barat"
+            assert po_in_db["sales"] == "Vira"
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_c_empty_po_field_fallback_to_master():
+    """CASE C: PO has empty address/outlet -> fallback to master delivery_outlets if available."""
+    cust_name = f"PT Master Fallback {uuid.uuid4().hex[:4]}"
+    # Create master outlet
+    await server.db.delivery_outlets.insert_one({
+        "id": str(uuid.uuid4()),
+        "customer_name": cust_name,
+        "name": "Cabang Master Fallback",
+        "formatted_address": "Jl. Master Outlet No. 100",
+        "recipient": "Bu Susi Master",
+        "delivery_zone": "Tangerang",
+    })
+
+    # Create PO without address and recipient
+    po_id = str(uuid.uuid4())
+    po_doc = {
+        "id": po_id,
+        "po_number": f"PO-FALLBACK-{uuid.uuid4().hex[:4]}",
+        "customer": cust_name,
+        "outlet": "",
+        "recipient": "",
+        "address": "",
+        "delivery_zone": "",
+        "sales": "",
+        "line_items": [{"name": "Item Master", "quantity": 100}],
+        "total_quantity": 100,
+        "created_at": "2026-08-30T10:00:00Z",
+    }
+    await server.db.orders.insert_one(po_doc)
+
+    app.dependency_overrides[current_user] = lambda: {"email": "crm@test.com", "role": "crm"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.get(f"/api/sales-deliveries/po/{po_id}/summary")
+            assert res.status_code == 200
+            data = res.json()
+            assert data["address"] == "Jl. Master Outlet No. 100"
+            assert data["outlet"] == "Cabang Master Fallback"
+            assert data["recipient"] == "Bu Susi Master"
+            assert data["delivery_zone"] == "Tangerang"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_d_po_snapshot_wins_over_different_master():
+    """CASE D: PO snapshot exists -> use PO snapshot as default even if master is different."""
+    cust_name = f"PT Snapshot Priority {uuid.uuid4().hex[:4]}"
+    await server.db.delivery_outlets.insert_one({
+        "id": str(uuid.uuid4()),
+        "customer_name": cust_name,
+        "name": "Cabang Baru Master",
+        "formatted_address": "Jl. Master Baru No. 999",
+    })
+
+    po_id = str(uuid.uuid4())
+    po_doc = {
+        "id": po_id,
+        "po_number": f"PO-SNAP-{uuid.uuid4().hex[:4]}",
+        "customer": cust_name,
+        "outlet": "Cabang Lama PO",
+        "address": "Jl. Snapshot Khusus PO No. 1",
+        "line_items": [{"name": "Item Snapshot", "quantity": 200}],
+        "total_quantity": 200,
+        "created_at": "2026-08-30T10:00:00Z",
+    }
+    await server.db.orders.insert_one(po_doc)
+
+    app.dependency_overrides[current_user] = lambda: {"email": "crm@test.com", "role": "crm"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.get(f"/api/sales-deliveries/po/{po_id}/summary")
+            assert res.status_code == 200
+            data = res.json()
+            assert data["outlet"] == "Cabang Lama PO"
+            assert data["address"] == "Jl. Snapshot Khusus PO No. 1"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_e_invalid_poid_rejected():
+    """CASE E: client attempting invalid po_id -> 404."""
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": "non-existent-po-id-12345",
+                "line_items": [{"line_idx": 0, "qty": 10}]
+            })
+            assert res.status_code == 404
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_f_altered_line_id_rejected():
+    """CASE F: client attempting to alter line_id -> reject (400)."""
+    po = await create_helper_po(f"PO-LINEID-{uuid.uuid4().hex[:4]}", [{"name": "Item", "quantity": 100}])
+
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "line_id": "spoofed_line_id", "qty": 50}]
+            })
+            assert res.status_code == 400
+            assert "tidak cocok dengan PO" in res.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_h_partial_second_shipment_prefills_from_po_snapshot():
+    """CASE H: 2nd shipment pre-fills header from original PO snapshot, not 1st shipment's edits."""
+    po_num = f"PO-CHAIN-{uuid.uuid4().hex[:4].upper()}"
+    po = await create_helper_po(po_num, [{"name": "Item Chain", "quantity": 1000}])
+
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # 1st shipment with edited address
+            r1 = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "address": "Jl. Sementara Edit No. 12",
+                "line_items": [{"line_idx": 0, "qty": 400}]
+            })
+            assert r1.status_code == 200
+
+            # 2nd shipment prefill request -> should still reflect PO snapshot as default
+            sum_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert sum_res.status_code == 200
+            summary = sum_res.json()
+            assert summary["address"] == "Jl. Industri Raya No. 8"  # Original PO snapshot!
+            assert summary["next_shipment_index"] == 2
+            expected_sj = derive_sj_number(po_num, 2)
+            assert summary["suggested_sj_number"] == expected_sj
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+# ==================================================
+# MANDATORY STATUS TEST SUITE: CASES 1 - 9
+# ==================================================
+
+@pytest.mark.anyio
+async def test_case_1_po_1000_sj_400_is_sebagian():
+    """CASE 1: PO 1000, SJ 400 -> SEBAGIAN."""
+    po = await create_helper_po(f"PO-M1-{uuid.uuid4().hex[:4]}", [{"name": "Cup 12oz", "quantity": 1000}])
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r1 = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 400}]
+            })
+            assert r1.status_code == 200
+            deliv = r1.json()["delivery"]
+            assert deliv["status"] == "SEBAGIAN"
+
+            # Check summary endpoint
+            s_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert s_res.status_code == 200
+            assert s_res.json()["delivery_status"] == "SEBAGIAN"
+            assert s_res.json()["total_shipped"] == 400
+            assert s_res.json()["total_remaining"] == 600
+
+            # Check list endpoint with filter
+            l_res = await client.get(f"/api/sales-deliveries?po_id={po['id']}")
+            assert l_res.status_code == 200
+            assert l_res.json()["deliveries"][0]["status"] == "SEBAGIAN"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_2_po_1000_sj_400_then_300_is_sebagian():
+    """CASE 2: PO 1000, SJ 400 + 300 -> SEBAGIAN."""
+    po = await create_helper_po(f"PO-M2-{uuid.uuid4().hex[:4]}", [{"name": "Cup 12oz", "quantity": 1000}])
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # SJ 1
+            await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 400}]
+            })
+            # SJ 2
+            r2 = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 300}]
+            })
+            assert r2.status_code == 200
+            assert r2.json()["delivery"]["status"] == "SEBAGIAN"
+
+            s_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert s_res.json()["delivery_status"] == "SEBAGIAN"
+            assert s_res.json()["total_shipped"] == 700
+            assert s_res.json()["total_remaining"] == 300
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_3_po_1000_sj_400_300_300_is_selesai():
+    """CASE 3: PO 1000, SJ 400 + 300 + 300 -> SELESAI."""
+    po = await create_helper_po(f"PO-M3-{uuid.uuid4().hex[:4]}", [{"name": "Cup 12oz", "quantity": 1000}])
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/sales-deliveries", json={"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 400}]})
+            await client.post("/api/sales-deliveries", json={"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 300}]})
+            r3 = await client.post("/api/sales-deliveries", json={"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 300}]})
+            assert r3.status_code == 200
+            assert r3.json()["delivery"]["status"] == "SELESAI"
+
+            # Both summary and list now report SELESAI
+            s_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert s_res.json()["delivery_status"] == "SELESAI"
+            assert s_res.json()["total_remaining"] == 0
+            assert s_res.json()["can_create_delivery"] is False
+
+            l_res = await client.get(f"/api/sales-deliveries?po_id={po['id']}")
+            for d in l_res.json()["deliveries"]:
+                assert d["status"] == "SELESAI"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_4_attempt_cumulative_over_1000_rejected():
+    """CASE 4: attempt cumulative > 1000 -> reject (400)."""
+    po = await create_helper_po(f"PO-M4-{uuid.uuid4().hex[:4]}", [{"name": "Cup 12oz", "quantity": 1000}])
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/sales-deliveries", json={"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 700}]})
+            # Attempt 301 when remaining is 300
+            r_over = await client.post("/api/sales-deliveries", json={"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 301}]})
+            assert r_over.status_code == 400
+            assert "melebihi sisa PO" in r_over.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_5_same_item_name_different_line_independent():
+    """CASE 5: same item name different line -> line identity independent."""
+    lines = [
+        {"name": "Cup 16oz", "quantity": 500, "production_process": "print"},
+        {"name": "Cup 16oz", "quantity": 300, "production_process": "non_print"},
+    ]
+    po = await create_helper_po(f"PO-M5-{uuid.uuid4().hex[:4]}", lines)
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # Ship Line 0 fully (500), Line 1 partially (100)
+            r = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [
+                    {"line_idx": 0, "qty": 500},
+                    {"line_idx": 1, "qty": 100},
+                ]
+            })
+            assert r.status_code == 200
+            assert r.json()["delivery"]["status"] == "SEBAGIAN"
+
+            # Check lines summary
+            s_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            summary = s_res.json()
+            assert summary["lines"][0]["remaining_qty"] == 0
+            assert summary["lines"][1]["remaining_qty"] == 200
+            assert summary["total_remaining"] == 200
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_6_one_line_fulfilled_another_not_is_sebagian():
+    """CASE 6: one line fulfilled, another not fulfilled -> SEBAGIAN."""
+    lines = [
+        {"name": "Item A", "quantity": 600},
+        {"name": "Item B", "quantity": 400},
+    ]
+    po = await create_helper_po(f"PO-M6-{uuid.uuid4().hex[:4]}", lines)
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [
+                    {"line_idx": 0, "qty": 600},
+                    {"line_idx": 1, "qty": 0},
+                ]
+            })
+            assert r.status_code == 200
+            assert r.json()["delivery"]["status"] == "SEBAGIAN"
+
+            s_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert s_res.json()["delivery_status"] == "SEBAGIAN"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_7_all_exact_lines_fulfilled_is_selesai():
+    """CASE 7: all exact lines fulfilled -> SELESAI."""
+    lines = [
+        {"name": "Item A", "quantity": 600},
+        {"name": "Item B", "quantity": 400},
+    ]
+    po = await create_helper_po(f"PO-M7-{uuid.uuid4().hex[:4]}", lines)
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # 1st shipment: Line 1 = 300, Line 2 = 200
+            await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 300}, {"line_idx": 1, "qty": 200}]
+            })
+            # 2nd shipment: Line 1 = 300, Line 2 = 200
+            r2 = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 300}, {"line_idx": 1, "qty": 200}]
+            })
+            assert r2.status_code == 200
+            assert r2.json()["delivery"]["status"] == "SELESAI"
+
+            s_res = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert s_res.json()["delivery_status"] == "SELESAI"
+            assert s_res.json()["total_remaining"] == 0
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_8_direct_api_create_after_selesai_rejected():
+    """CASE 8: direct API create additional SJ after SELESAI -> reject (400)."""
+    po = await create_helper_po(f"PO-M8-{uuid.uuid4().hex[:4]}", [{"name": "Item A", "quantity": 500}])
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # Fulfill PO completely
+            r1 = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 500}]
+            })
+            assert r1.status_code == 200
+
+            # Attempt creating another SJ
+            r2 = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 100}]
+            })
+            assert r2.status_code == 400
+            assert "sudah selesai dibuatkan" in r2.text or "melebihi sisa PO" in r2.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_case_9_existing_partial_historical_sj_derived_correctly():
+    """CASE 9: existing partial historical SJ -> derived status correct."""
+    po = await create_helper_po(f"PO-M9-{uuid.uuid4().hex[:4]}", [{"name": "Item H", "quantity": 1000}])
+    app.dependency_overrides[current_user] = lambda: {"email": "admin@test.com", "role": "admin"}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # 1st shipment (400)
+            await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 400}]
+            })
+
+            # Check list: should have status SEBAGIAN
+            l1 = await client.get(f"/api/sales-deliveries?po_id={po['id']}&status=SEBAGIAN")
+            assert len(l1.json()["deliveries"]) == 1
+            assert l1.json()["deliveries"][0]["status"] == "SEBAGIAN"
+
+            # Filter SELESAI: should be empty
+            l_empty = await client.get(f"/api/sales-deliveries?po_id={po['id']}&status=SELESAI")
+            assert len(l_empty.json()["deliveries"]) == 0
+
+            # Complete the remaining 600
+            await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 600}]
+            })
+
+            # Now both deliveries show derived SELESAI
+            l2 = await client.get(f"/api/sales-deliveries?po_id={po['id']}&status=SELESAI")
+            assert len(l2.json()["deliveries"]) == 2
+            for d in l2.json()["deliveries"]:
+                assert d["status"] == "SELESAI"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+

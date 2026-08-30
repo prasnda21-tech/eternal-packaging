@@ -972,8 +972,8 @@ export default function PesananPenjualan() {
                               borderRadius: 12,
                               fontSize: "0.75rem",
                               fontWeight: 600,
-                              background: delivStatus === "SELESAI PENGIRIMAN" ? "#dcfce7" : delivStatus === "SEBAGIAN DIKIRIM" ? "#fef3c7" : "#f1f5f9",
-                              color: delivStatus === "SELESAI PENGIRIMAN" ? "#166534" : delivStatus === "SEBAGIAN DIKIRIM" ? "#92400e" : "#475569",
+                              background: (delivStatus === "SELESAI" || delivStatus === "SELESAI PENGIRIMAN") ? "#dcfce7" : (delivStatus === "SEBAGIAN" || delivStatus === "SEBAGIAN DIKIRIM") ? "#e0f2fe" : "#f1f5f9",
+                              color: (delivStatus === "SELESAI" || delivStatus === "SELESAI PENGIRIMAN") ? "#166534" : (delivStatus === "SEBAGIAN" || delivStatus === "SEBAGIAN DIKIRIM") ? "#0369a1" : "#475569",
                             }}
                           >
                             {delivStatus}

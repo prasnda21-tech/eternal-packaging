@@ -39,11 +39,13 @@ export function getWorkflowReady(order) {
     return ready;
   }
   const g2 = group2Complete(order);
+  const reqPrint = order?.requires_printing !== false;
   const scheduled = penjadwalanDone(order);
   const screen = screenerDone(order);
-  const reqPrint = order?.requires_printing !== false;
-  const op = reqPrint ? scheduled && screen : scheduled;
+  const helper = helperDone(order);
+  const op = reqPrint ? helper : scheduled;
   const uploaded = sampleUploaded(order);
+  const sampleOk = reqPrint ? (op && sampleApproved(order)) : true;
   return {
     design: true,
     approval_design: (order?.design_files || []).length > 0 || !!order?.design_bypassed,
@@ -56,27 +58,29 @@ export function getWorkflowReady(order) {
     sample_upload: reqPrint && op,
     sample_approval: reqPrint && uploaded && op,
     print_qty: reqPrint && op && sampleApproved(order),
-    packing: reqPrint ? sampleApproved(order) : g2 && scheduled,
+    packing: reqPrint ? sampleOk : g2 && scheduled,
   };
 }
 
 function penjadwalanDone(order) {
   if (order?.requires_printing === false) return true;
-  return (order?.operator_splits || []).length > 0;
+  return group2Complete(order) && (order?.operator_splits || []).length > 0;
 }
 function screenerDone(order) {
   if (order?.requires_printing === false) return true;
-  return hasValue(order?.screener_info?.screen_qty);
+  return penjadwalanDone(order) && hasValue(order?.screener_info?.screen_qty);
 }
 function helperDone(order) {
   if (order?.requires_printing === false) return true;
-  return hasValue(order?.helper_prep?.qty_prepared);
+  return penjadwalanDone(order) && hasValue(order?.helper_prep?.qty_prepared);
 }
 function sampleUploaded(order) {
   return (order?.sample_files || []).length > 0;
 }
 function sampleApproved(order) {
-  return !!order?.sample_approved;
+  const reqPrint = order?.requires_printing !== false;
+  if (!reqPrint) return true;
+  return helperDone(order) && !!order?.sample_approved;
 }
 function printCompletedQty(order) {
   if (typeof order?.print_completed_qty === "number") return Number(order.print_completed_qty);
@@ -156,6 +160,7 @@ export function resolveStageState(idx, order, currentStage) {
       if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
+    if (!penjadwalanDone(order)) return { state: "pending", label: "Menunggu" };
     if (screenerDone(order)) return { state: "done", label: "Selesai" };
     if (ready.screener) return { state: "current", label: "Menunggu input" };
     return { state: "pending", label: "Menunggu" };
@@ -165,6 +170,7 @@ export function resolveStageState(idx, order, currentStage) {
       if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
+    if (!penjadwalanDone(order)) return { state: "pending", label: "Menunggu" };
     if (helperDone(order)) return { state: "done", label: "Selesai" };
     if (ready.helper) return { state: "current", label: "Menunggu input" };
     return { state: "pending", label: "Menunggu" };
@@ -174,6 +180,7 @@ export function resolveStageState(idx, order, currentStage) {
       if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
+    if (!helperDone(order)) return { state: "pending", label: "Menunggu" };
     if (sampleUploaded(order)) return { state: "done", label: "Selesai" };
     if (ready.operator) return { state: "current", label: "Menunggu upload sampel" };
     return { state: "pending", label: "Menunggu" };
@@ -183,6 +190,7 @@ export function resolveStageState(idx, order, currentStage) {
       if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
+    if (!helperDone(order)) return { state: "pending", label: "Menunggu" };
     if (sampleApproved(order)) return { state: "done", label: "Selesai" };
     if (sampleUploaded(order)) return { state: "current", label: "Menunggu approval sampel" };
     return { state: "pending", label: "Menunggu" };
@@ -192,6 +200,7 @@ export function resolveStageState(idx, order, currentStage) {
       if (_nonPrintPenjDone || group2Complete(order)) return { state: "done", label: "Selesai" };
       return { state: "pending", label: "Menunggu" };
     }
+    if (!sampleApproved(order)) return { state: "pending", label: "Menunggu" };
     const status = printStatusOf(order);
     if (status === "SELESAI CETAK") return { state: "done", label: "SELESAI CETAK" };
     if (!ready.print_qty) return { state: "pending", label: "Menunggu" };
@@ -199,6 +208,8 @@ export function resolveStageState(idx, order, currentStage) {
     return { state: "current", label: "BELUM MULAI CETAK" };
   }
   if (idx === STAGE_PACKING) {
+    if (_reqPrint && !sampleApproved(order)) return { state: "pending", label: "Menunggu" };
+    if (!_reqPrint && !(group2Complete(order) && penjadwalanDone(order))) return { state: "pending", label: "Menunggu" };
     if (packingDone(order)) return { state: "done", label: "Selesai" };
     if (packingQtyInput(order) && currentStage === idx) return { state: "current", label: "Berjalan" };
     if (ready.packing || currentStage >= idx) return { state: "current", label: "Menunggu input qty packing" };
@@ -215,6 +226,9 @@ export function resolveStageState(idx, order, currentStage) {
         return { state: "current", label: "SJ parsial — siap Loading" };
       }
       return { state: "current", label: "SJ dibuat — siap Loading" };
+    }
+    if (!packingQtyInput(order) && (currentStage || 0) < STAGE_SURAT_JALAN) {
+      return { state: "pending", label: "Menunggu" };
     }
     if (currentStage >= idx) return { state: "current", label: "Menunggu pembuatan Surat Jalan" };
     return { state: "pending", label: "Menunggu" };

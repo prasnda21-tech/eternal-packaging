@@ -73,7 +73,13 @@ def derive_sj_number(po_number: str, shipment_index: int) -> str:
 
 
 async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
-    """Calculate delivered & remaining quantities per line item for a PO."""
+    """Calculate delivered & remaining quantities per line item for a PO.
+    
+    Priority for header fields:
+    1. Value snapshot from exact PO
+    2. Fallback to master customer/outlet if PO field is empty
+    3. Empty string if not found anywhere (allows manual entry)
+    """
     if isinstance(po_id_or_doc, dict):
         order = po_id_or_doc
     else:
@@ -86,6 +92,64 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
 
     po_id = order.get("id")
     po_number = order.get("po_number")
+
+    # 1. Base snapshot values from PO
+    customer_val = (order.get("customer") or order.get("customer_name") or "").strip()
+    outlet_val = (order.get("outlet") or order.get("outlet_name") or "").strip()
+    recipient_val = (order.get("recipient") or order.get("pic") or order.get("recipient_name") or "").strip()
+    address_val = (order.get("address") or order.get("shipping_address") or order.get("delivery_address") or "").strip()
+    zone_val = (order.get("delivery_zone") or order.get("zona_kirim") or order.get("zona") or order.get("shipping_zone") or "").strip()
+    sales_val = (order.get("sales") or order.get("seller") or order.get("sales_rep") or order.get("sales_name") or "").strip()
+    expedition_val = (order.get("expedition") or order.get("ekspedisi") or order.get("expedition_or_vehicle") or "Internal fleet").strip()
+    notes_val = (order.get("notes") or order.get("delivery_note") or "").strip()
+
+    # 2. Fallback to master delivery_outlets or recent orders if fields are empty
+    if customer_val and (not address_val or not outlet_val or not recipient_val or not zone_val):
+        master_outlet = None
+        if outlet_val:
+            master_outlet = await db.delivery_outlets.find_one({
+                "customer_name": {"$regex": f"^{re.escape(customer_val)}$", "$options": "i"},
+                "name": {"$regex": f"^{re.escape(outlet_val)}$", "$options": "i"}
+            }, {"_id": 0})
+        if not master_outlet:
+            master_outlet = await db.delivery_outlets.find_one({
+                "customer_name": {"$regex": f"^{re.escape(customer_val)}$", "$options": "i"}
+            }, {"_id": 0})
+
+        if master_outlet:
+            if not address_val:
+                address_val = (master_outlet.get("formatted_address") or master_outlet.get("address") or "").strip()
+            if not outlet_val:
+                outlet_val = (master_outlet.get("name") or "").strip()
+            if not recipient_val:
+                recipient_val = (master_outlet.get("recipient") or "").strip()
+            if not zone_val:
+                zone_val = (master_outlet.get("delivery_zone") or "").strip()
+
+        # Secondary fallback: check recent order history for this customer
+        if not address_val or not recipient_val or not zone_val or not sales_val:
+            try:
+                recent_cust_po = await db.orders.find_one(
+                    {
+                        "customer": {"$regex": f"^{re.escape(customer_val)}$", "$options": "i"},
+                        "cancelled": {"$ne": True},
+                        "id": {"$ne": po_id}
+                    },
+                    {"_id": 0},
+                    sort=[("created_at", -1)]
+                )
+            except Exception:
+                recent_cust_po = None
+            
+            if recent_cust_po:
+                if not address_val:
+                    address_val = (recent_cust_po.get("address") or "").strip()
+                if not recipient_val:
+                    recipient_val = (recent_cust_po.get("recipient") or "").strip()
+                if not zone_val:
+                    zone_val = (recent_cust_po.get("delivery_zone") or "").strip()
+                if not sales_val:
+                    sales_val = (recent_cust_po.get("sales") or recent_cust_po.get("seller") or "").strip()
 
     # Fetch all existing sales deliveries for this exact PO sorted by shipment_index
     deliveries_cursor = db.sales_deliveries.find({"po_id": po_id, "is_cancelled": {"$ne": True}}, {"_id": 0}).sort("shipment_index", 1)
@@ -131,14 +195,17 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
     total_remaining = max(0, total_ordered - total_shipped)
     is_cancelled = bool(order.get("cancelled"))
 
+    all_lines_fulfilled = len(raw_lines) > 0 and all(
+        shipped_by_line_idx.get(idx, 0) >= int(li.get("quantity") or 0)
+        for idx, li in enumerate(raw_lines)
+    )
+
     if is_cancelled:
         delivery_status = "DIBATALKAN"
-    elif total_shipped == 0:
-        delivery_status = "BELUM DIKIRIM"
-    elif total_remaining > 0:
-        delivery_status = "SEBAGIAN DIKIRIM"
+    elif all_lines_fulfilled or (total_ordered > 0 and total_shipped >= total_ordered):
+        delivery_status = "SELESAI"
     else:
-        delivery_status = "SELESAI PENGIRIMAN"
+        delivery_status = "SEBAGIAN"
 
     next_shipment_index = len(existing_deliveries) + 1
     suggested_sj = derive_sj_number(po_number, next_shipment_index)
@@ -147,14 +214,22 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
         "po_id": po_id,
         "po_number": po_number,
         "order_date": order.get("order_date"),
-        "customer": order.get("customer") or "",
-        "outlet": order.get("outlet") or "",
-        "recipient": order.get("recipient") or "",
-        "address": order.get("address") or "",
-        "delivery_zone": order.get("delivery_zone") or "",
-        "sales": order.get("sales") or order.get("seller") or "",
-        "expedition": order.get("expedition") or "Internal fleet",
-        "notes": order.get("notes") or "",
+        "customer": customer_val,
+        "customer_name": customer_val,
+        "outlet": outlet_val,
+        "outlet_name": outlet_val,
+        "recipient": recipient_val,
+        "recipient_name": recipient_val,
+        "address": address_val,
+        "shipping_address": address_val,
+        "delivery_zone": zone_val,
+        "shipping_zone": zone_val,
+        "sales": sales_val,
+        "sales_name": sales_val,
+        "expedition": expedition_val,
+        "expedition_or_vehicle": expedition_val,
+        "notes": notes_val,
+        "delivery_note": notes_val,
         "created_by_user": order.get("created_by_user") or order.get("imported_by_name") or "",
         "lines": lines_summary,
         "total_ordered": total_ordered,
@@ -176,6 +251,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
     - Concurrency and duplicate safety
     - Strict over-shipment prevention per exact PO line
     - Exact SJ numbering formula (SJ base, SJ base-2, SJ base-3...)
+    - Preserves original PO unchanged
+    - Saves final edited snapshot values
     """
     po_id = str(payload.get("po_id") or "").strip()
     if not po_id:
@@ -217,6 +294,11 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
             if not target_line:
                 raise HTTPException(400, f"Line item #{line_idx + 1} tidak ditemukan pada Pesanan Penjualan.")
 
+            # Reject client attempt to spoof or alter exact line identity
+            client_line_id = str(item.get("line_id") or "").strip()
+            if client_line_id and client_line_id != str(target_line["line_id"]):
+                raise HTTPException(400, f"Identitas line item #{line_idx + 1} tidak cocok dengan PO.")
+
             try:
                 qty_to_ship = int(item.get("qty") if item.get("qty") is not None else item.get("quantity", 0))
             except (ValueError, TypeError):
@@ -255,6 +337,16 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
         delivery_date = str(payload.get("delivery_date") or now[:10]).strip()
         po_number = order.get("po_number")
 
+        # Resolve edited snapshot values with fallback to PO snapshot
+        final_customer = summary["customer"]
+        final_outlet = str(payload.get("outlet") if payload.get("outlet") is not None else summary["outlet"]).strip()
+        final_recipient = str(payload.get("recipient") if payload.get("recipient") is not None else summary["recipient"]).strip()
+        final_address = str(payload.get("address") if payload.get("address") is not None else summary["address"]).strip()
+        final_zone = str(payload.get("delivery_zone") if payload.get("delivery_zone") is not None else summary["delivery_zone"]).strip()
+        final_sales = str(payload.get("sales") if payload.get("sales") is not None else summary["sales"]).strip()
+        final_expedition = str(payload.get("expedition") if payload.get("expedition") is not None else summary["expedition"]).strip()
+        final_notes = str(payload.get("notes") if payload.get("notes") is not None else "").strip()
+
         # Retry loop in case of race condition / concurrent submission
         max_retries = 3
         for attempt in range(max_retries):
@@ -275,14 +367,22 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "sj_number": authoritative_sj,
                 "shipment_index": shipment_index,
                 "delivery_date": delivery_date,
-                "customer": summary["customer"],
-                "outlet": (payload.get("outlet") or summary["outlet"] or "").strip(),
-                "recipient": (payload.get("recipient") or summary["recipient"] or "").strip(),
-                "address": (payload.get("address") or summary["address"] or "").strip(),
-                "delivery_zone": (payload.get("delivery_zone") or summary["delivery_zone"] or "").strip(),
-                "sales": (payload.get("sales") or summary["sales"] or "").strip(),
-                "expedition": (payload.get("expedition") or summary["expedition"] or "").strip(),
-                "notes": (payload.get("notes") or "").strip(),
+                "customer": final_customer,
+                "customer_name": final_customer,
+                "outlet": final_outlet,
+                "outlet_name": final_outlet,
+                "recipient": final_recipient,
+                "recipient_name": final_recipient,
+                "address": final_address,
+                "shipping_address": final_address,
+                "delivery_zone": final_zone,
+                "shipping_zone": final_zone,
+                "sales": final_sales,
+                "sales_name": final_sales,
+                "expedition": final_expedition,
+                "expedition_or_vehicle": final_expedition,
+                "notes": final_notes,
+                "delivery_note": final_notes,
                 "created_by": user.get("email") or "",
                 "created_by_name": user.get("name") or user.get("email") or "",
                 "created_by_role": user.get("role") or "",
@@ -291,7 +391,7 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "line_items": validated_lines,
                 "total_qty": total_delivery_qty,
                 "item_count": len(validated_lines),
-                "status": "Terkirim" if (summary["total_remaining"] - total_delivery_qty <= 0 and shipment_index == 1) else "Dikirim",
+                "status": "SELESAI" if (summary["total_remaining"] - total_delivery_qty <= 0) else "SEBAGIAN",
                 "is_cancelled": False,
             }
 
@@ -322,9 +422,6 @@ async def list_sales_deliveries(
     if po_id and po_id.strip():
         query["po_id"] = po_id.strip()
 
-    if status and status.strip() and status.lower() != "all":
-        query["status"] = {"$regex": f"^{re.escape(status.strip())}$", "$options": "i"}
-
     if q and q.strip():
         needle = re.escape(q.strip())
         query["$or"] = [
@@ -337,7 +434,58 @@ async def list_sales_deliveries(
         ]
 
     deliveries = await db.sales_deliveries.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return deliveries
+
+    # Derive authoritative status from parent PO
+    po_ids = list({d["po_id"] for d in deliveries if d.get("po_id")})
+    po_statuses: Dict[str, str] = {}
+    if po_ids:
+        orders_cursor = db.orders.find({"id": {"$in": po_ids}}, {"_id": 0})
+        orders_map = {o["id"]: o async for o in orders_cursor}
+
+        pipe = [
+            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
+            {"$unwind": "$line_items"},
+            {"$group": {
+                "_id": {"po_id": "$po_id", "line_idx": "$line_items.line_idx"},
+                "total_qty": {"$sum": {"$ifNull": ["$line_items.qty", "$line_items.quantity"]}}
+            }}
+        ]
+        line_shipped_agg: Dict[str, Dict[int, int]] = {}
+        async for doc in db.sales_deliveries.aggregate(pipe):
+            pid = doc["_id"]["po_id"]
+            l_idx = int(doc["_id"]["line_idx"])
+            if pid not in line_shipped_agg:
+                line_shipped_agg[pid] = {}
+            line_shipped_agg[pid][l_idx] = int(doc["total_qty"] or 0)
+
+        for pid, ord_doc in orders_map.items():
+            raw_lines = ord_doc.get("line_items") or []
+            tot_ord = sum(int(l.get("quantity") or 0) for l in raw_lines)
+            shipped_map = line_shipped_agg.get(pid, {})
+            tot_ship = sum(shipped_map.values())
+            all_fulfilled = len(raw_lines) > 0 and all(
+                shipped_map.get(idx, 0) >= int(l.get("quantity") or 0)
+                for idx, l in enumerate(raw_lines)
+            )
+            if all_fulfilled or (tot_ord > 0 and tot_ship >= tot_ord):
+                po_statuses[pid] = "SELESAI"
+            else:
+                po_statuses[pid] = "SEBAGIAN"
+
+    enriched_deliveries = []
+    filter_norm = (status or "").strip().upper()
+    for d in deliveries:
+        derived = po_statuses.get(d.get("po_id")) or d.get("status") or "SELESAI"
+        if derived not in ("SELESAI", "SEBAGIAN"):
+            derived = "SELESAI" if derived == "Terkirim" else "SEBAGIAN"
+        d["status"] = derived
+
+        if filter_norm and filter_norm not in ("ALL", "SEMUA", "SEMUA STATUS"):
+            if derived != filter_norm:
+                continue
+        enriched_deliveries.append(d)
+
+    return enriched_deliveries
 
 
 async def get_sales_delivery_detail(db, delivery_id: str) -> Dict[str, Any]:
@@ -351,6 +499,7 @@ async def get_sales_delivery_detail(db, delivery_id: str) -> Dict[str, Any]:
 
     po_id = delivery.get("po_id")
     po_summary = await get_po_delivery_summary(db, po_id)
+    delivery["status"] = po_summary.get("delivery_status") or "SELESAI"
 
     # All deliveries for this PO to display complete multi-shipment history
     all_deliveries = await db.sales_deliveries.find(

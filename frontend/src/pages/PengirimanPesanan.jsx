@@ -33,7 +33,8 @@ export default function PengirimanPesanan() {
   const canPrint = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
 
   // Navigation mode: 'list' | 'create' | 'detail'
-  const initialMode = searchParams.get("action") === "create" ? "create" : "list";
+  const queryPoId = searchParams.get("po_id") || "";
+  const initialMode = (searchParams.get("action") === "create" || !!queryPoId) ? "create" : "list";
   const [viewMode, setViewMode] = useState(initialMode);
   
   // List state
@@ -44,7 +45,6 @@ export default function PengirimanPesanan() {
   const [statusFilter, setStatusFilter] = useState("all");
 
   // Selected PO for Create Delivery Form
-  const queryPoId = searchParams.get("po_id") || "";
   const [selectedPoId, setSelectedPoId] = useState(queryPoId);
   const [poSummary, setPoSummary] = useState(null);
   const [poSummaryLoading, setPoSummaryLoading] = useState(false);
@@ -432,34 +432,45 @@ export default function PengirimanPesanan() {
           <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
             <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
               <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>1. Data Pesanan Penjualan (PO Asal)</h3>
+              <p style={{ margin: "4px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
+                Data diisi otomatis dari Pesanan Penjualan dan dapat disesuaikan untuk pengiriman ini.
+              </p>
             </header>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
               {/* Select PO */}
               <div>
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Pilih Nomor PO <span style={{ color: "#ef4444" }}>*</span>
+                  Nomor PO <span style={{ color: "#ef4444" }}>*</span>
                 </label>
-                <select
-                  value={selectedPoId}
-                  onChange={(e) => handleSelectPO(e.target.value)}
-                  disabled={!!queryPoId || formBusy}
-                  data-testid="select-po-for-delivery"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", background: queryPoId ? "#f8fafc" : "#fff" }}
-                  required
-                >
-                  <option value="">-- Pilih Pesanan Penjualan --</option>
-                  {availablePOs.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.po_number} - {p.customer} {p.outlet ? `(${p.outlet})` : ""} [Sisa: {p.delivery_summary?.total_remaining ?? p.total_quantity} pcs]
-                    </option>
-                  ))}
-                </select>
-                {queryPoId && (
-                  <p style={{ margin: "4px 0 0 0", fontSize: "0.75rem", color: "#0369a1" }}>
-                    Terkunci otomatis dari detail PO terpilih.
-                  </p>
+                {queryPoId ? (
+                  <input
+                    type="text"
+                    readOnly
+                    value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
+                    data-testid="display-po-number"
+                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#0f172a", fontWeight: 600, boxSizing: "border-box" }}
+                  />
+                ) : (
+                  <select
+                    value={selectedPoId}
+                    onChange={(e) => handleSelectPO(e.target.value)}
+                    disabled={formBusy}
+                    data-testid="select-po-for-delivery"
+                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", background: "#fff" }}
+                    required
+                  >
+                    <option value="">-- Pilih Pesanan Penjualan --</option>
+                    {availablePOs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.po_number} - {p.customer} {p.outlet ? `(${p.outlet})` : ""} [Sisa: {p.delivery_summary?.total_remaining ?? p.total_quantity} pcs]
+                      </option>
+                    ))}
+                  </select>
                 )}
+                <p style={{ margin: "4px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
+                  Terkunci berdasarkan PO dan urutan pengiriman.
+                </p>
               </div>
 
               {/* SJ Number Read-Only Indicator */}
@@ -474,6 +485,9 @@ export default function PengirimanPesanan() {
                   data-testid="display-suggested-sj"
                   style={{ width: "100%", padding: "8px 12px", border: "1px solid #e2e8f0", borderRadius: 6, fontSize: "0.95rem", background: "#f1f5f9", color: "#0369a1", fontWeight: 600, boxSizing: "border-box" }}
                 />
+                <p style={{ margin: "4px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
+                  Terkunci berdasarkan PO dan urutan pengiriman.
+                </p>
               </div>
 
               {/* Tanggal Pengiriman */}
@@ -834,8 +848,8 @@ export default function PengirimanPesanan() {
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {[
                 { id: "all", label: "Semua Status" },
-                { id: "Dikirim", label: "Dikirim" },
-                { id: "Terkirim", label: "Terkirim" },
+                { id: "SEBAGIAN", label: "Sebagian" },
+                { id: "SELESAI", label: "Selesai" },
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -926,8 +940,19 @@ export default function PengirimanPesanan() {
                         {Number(d.total_qty || 0).toLocaleString("id-ID")} pcs
                       </td>
                       <td style={{ padding: "10px 12px" }}>
-                        <span style={{ display: "inline-block", padding: "2px 8px", background: d.status === "Terkirim" ? "#dcfce7" : "#e0f2fe", color: d.status === "Terkirim" ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600 }}>
-                          {d.status || "Dikirim"}
+                        <span
+                          data-testid={`delivery-status-${d.id}`}
+                          style={{
+                            display: "inline-block",
+                            padding: "2px 8px",
+                            background: String(d.status).toUpperCase() === "SELESAI" ? "#dcfce7" : "#e0f2fe",
+                            color: String(d.status).toUpperCase() === "SELESAI" ? "#166534" : "#075985",
+                            borderRadius: 12,
+                            fontSize: "0.75rem",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {String(d.status).toUpperCase() === "SELESAI" ? "SELESAI" : "SEBAGIAN"}
                         </span>
                       </td>
                       <td style={{ padding: "10px 12px", color: "#64748b", fontSize: "0.85rem" }}>
@@ -1006,6 +1031,68 @@ export default function PengirimanPesanan() {
                 <X size={20} />
               </button>
             </div>
+
+            {/* PO Progress Summary Box */}
+            {detailData.po_summary && (
+              <div
+                style={{
+                  background: "#f0f9ff",
+                  border: "1px solid #bae6fd",
+                  borderRadius: 8,
+                  padding: "14px 16px",
+                  marginBottom: 16,
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                  gap: 12,
+                }}
+                data-testid="delivery-po-progress-summary"
+              >
+                <div>
+                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
+                    TOTAL QTY PO
+                  </span>
+                  <strong style={{ fontSize: "1.1rem", color: "#0c4a6e" }} data-testid="detail-total-po-qty">
+                    {Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
+                    SUDAH DIBUAT SURAT JALAN
+                  </span>
+                  <strong style={{ fontSize: "1.1rem", color: "#0284c7" }} data-testid="detail-cumulative-sj-qty">
+                    {Number(detailData.po_summary.total_shipped || 0).toLocaleString("id-ID")} pcs
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
+                    SISA
+                  </span>
+                  <strong style={{ fontSize: "1.1rem", color: Number(detailData.po_summary.total_remaining || 0) === 0 ? "#16a34a" : "#ea580c" }} data-testid="detail-remaining-po-qty">
+                    {Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
+                    STATUS
+                  </span>
+                  <span
+                    data-testid="detail-delivery-status"
+                    style={{
+                      display: "inline-block",
+                      marginTop: 2,
+                      padding: "3px 10px",
+                      background: (detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "#dcfce7" : "#e0f2fe",
+                      color: (detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "#166534" : "#075985",
+                      borderRadius: 12,
+                      fontSize: "0.8rem",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {(detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "SELESAI" : "SEBAGIAN"}
+                  </span>
+                </div>
+              </div>
+            )}
 
             {/* Delivery Meta Grid */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, background: "#f8fafc", padding: 16, borderRadius: 8, marginBottom: 16, fontSize: "0.85rem" }}>
