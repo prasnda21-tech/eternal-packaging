@@ -247,10 +247,13 @@ from quantity_rules import (
     apply_packing_increments as _qr_apply_packing_increments,
 )
 from workflow_gates import (
+    HELPER_GATE_OPERATOR_MSG,
     SCREENER_GATE_OPERATOR_MSG,
     SCREENER_GATE_SAMPLE_MSG,
     design_ok as _wg_design_ok,
+    group2_complete as _wg_group2_complete,
     helper_done as _wg_helper_done,
+    helper_gate_reason as _wg_helper_gate_reason,
     packing_qty_input as _wg_packing_qty_input,
     payment_ok as _wg_payment_ok,
     penjadwalan_done as _wg_penjadwalan_done,
@@ -263,6 +266,10 @@ from workflow_gates import (
     sync_workflow_stage as _wg_sync_workflow_stage,
     workflow_ready as _wg_workflow_ready,
 )
+
+
+def _group2_complete(order: dict) -> bool:
+    return _wg_group2_complete(order)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -1103,6 +1110,12 @@ def _ensure_screener_for_operator_work(order: dict, *, for_sample: bool = False)
         raise HTTPException(400, reason)
 
 
+def _ensure_helper_for_operator_work(order: dict):
+    reason = _wg_helper_gate_reason(order)
+    if reason:
+        raise HTTPException(400, reason)
+
+
 def _ensure_print_qty_allowed(order: dict):
     reason = _wg_print_qty_gate_reason(order)
     if reason:
@@ -1554,23 +1567,24 @@ def _prereq_reasons_for_advance(order: dict, from_stage: int) -> list:
     to `from_stage+1`. Empty list = OK to advance."""
     reasons = []
     req_print = _requires_printing(order)
-    # 5 Penjadwalan -> 6 Screener (Helper paralel, bukan gate)
+    # 5 Penjadwalan -> 6 Screener
     if from_stage == 5:
         if not _stage_penjadwalan_done(order):
             reasons.append("Belum ada operator yang di-assign pada Penjadwalan.")
     # 6 Screener -> 7 Persiapan Helper: PARALLEL — jangan blok Helper dengan Screener
     elif from_stage == 6:
         pass
-    # 7 Persiapan Helper -> 8 Operator: gate adalah SCREENER, bukan Helper
+    # 7 Persiapan Helper -> 8 Operator
     elif from_stage == 7:
-        if not _stage_screener_done(order):
-            reasons.append(SCREENER_GATE_OPERATOR_MSG)
+        if req_print and not _stage_helper_done(order):
+            reasons.append("Qty persiapan Helper belum diinput.")
     # 8 Operator -> 9 Konfirmasi Sample (SKIP kalau non-print)
     elif from_stage == 8:
-        if req_print and not _stage_screener_done(order):
-            reasons.append(SCREENER_GATE_SAMPLE_MSG)
-        elif req_print and not _sample_uploaded(order):
-            reasons.append("Operator harus upload sampel cetak terlebih dahulu.")
+        if req_print:
+            if not _stage_helper_done(order):
+                reasons.append("Selesaikan Persiapan Helper terlebih dahulu.")
+            elif not _sample_uploaded(order):
+                reasons.append("Operator harus upload sampel cetak terlebih dahulu.")
     # 9 Konfirmasi Sample -> 10 Cetak (SKIP kalau non-print)
     elif from_stage == 9:
         if req_print:
@@ -1632,7 +1646,7 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
         # If operator, must match their own record
         if user.get("role") == "operator" and found["operator_email"] != user.get("email"):
             raise HTTPException(403, "Anda hanya dapat memperbarui progres Anda sendiri")
-        _ensure_screener_for_operator_work(order)
+        _ensure_helper_for_operator_work(order)
         # Advance operator stage from 8 (Operator) up to 11 (Packing) — after that, PO-level flow takes over
         new_stage = min(found["stage"] + 1, 11)
         found["stage"] = new_stage
@@ -2166,6 +2180,8 @@ async def update_helper_prep(order_id: str, payload: HelperPrepPayload, user=Dep
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "helper.prepare")
+    if _requires_printing(order) and not _stage_penjadwalan_done(order):
+        raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     if payload.qty_required < 0 or payload.qty_prepared < 0:
         raise HTTPException(400, "Qty tidak boleh negatif")
     print_cap = _print_qty_total(order)
@@ -2213,6 +2229,8 @@ async def update_helper_prep_items(order_id: str, payload: HelperPrepItemsPayloa
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "helper.prepare")
+    if _requires_printing(order) and not _stage_penjadwalan_done(order):
+        raise HTTPException(400, "Tahap Persiapan Helper belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     line_items = order.get("line_items") or []
     if not line_items:
         raise HTTPException(400, "PO tidak memiliki line item")
@@ -2663,6 +2681,8 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
     await _require_perm(user, "screen.update")
+    if _requires_printing(order) and not _stage_penjadwalan_done(order):
+        raise HTTPException(400, "Tahap Screener belum dapat diproses. Selesaikan Penjadwalan terlebih dahulu.")
     screener_err = _qr_validate_screener_qty(
         payload.qty if payload.qty is not None else payload.screen_qty, order
     )
@@ -2678,6 +2698,8 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, user
         raise HTTPException(409, "Entry Screener sudah dikonfirmasi. Kirim pekerjaan tambahan sebagai qty baru.")
     if increment is None:
         raise HTTPException(400, "Qty Screener wajib diisi.")
+    if int(increment) <= 0:
+        raise HTTPException(400, "Qty Screener harus lebih besar dari 0.")
     if find_by_action_id(entries, payload.action_id):
         return {"order": order}
     entries = seed_legacy(
@@ -3357,6 +3379,8 @@ async def approve_sample(order_id: str, payload: ApprovalPayload, user=Depends(c
         eff = await user_permissions(user)
         if "operator.sample_approve" not in eff and "schedule.edit" not in eff:
             raise HTTPException(403, "Anda tidak punya permission untuk approval sampel cetak")
+    if _requires_printing(order) and not _stage_helper_done(order):
+        raise HTTPException(400, "Tahap Operator belum selesai. Selesaikan Persiapan Helper terlebih dahulu.")
     if not order.get("sample_files"):
         raise HTTPException(400, "Belum ada file sampel yang diupload — tidak dapat approve.")
     before = {"sample_approved": bool(order.get("sample_approved")), "sample_approved_by": order.get("sample_approved_by")}
@@ -6457,9 +6481,9 @@ async def list_sales_orders(
         elif tot_shipped == 0:
             deliv_st = "BELUM DIKIRIM"
         elif tot_remain > 0:
-            deliv_st = "SEBAGIAN DIKIRIM"
+            deliv_st = "SEBAGIAN"
         else:
-            deliv_st = "SELESAI PENGIRIMAN"
+            deliv_st = "SELESAI"
         o["delivery_summary"] = {
             "total_ordered": tot_ordered,
             "total_shipped": tot_shipped,

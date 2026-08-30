@@ -67,4 +67,9 @@ describe("PO Detail delivery cards", () => {
     expect(css).toMatch(/\.wage-settings\{[^}]*max-width:100%/);
     expect(css).toMatch(/\.wage-table-wrap\{[^}]*overflow-x:auto/);
   });
+
+  test("imports formatDisplayDate and renders sales delivery history dates safely", () => {
+    expect(detail).toMatch(/import\s*\{[^}]*formatDisplayDate[^}]*\}\s*from\s*["']\.\.\/lib\/constants["']/);
+    expect(detail).toMatch(/formatDisplayDate\(deliv\.delivery_date\)/);
+  });
 });

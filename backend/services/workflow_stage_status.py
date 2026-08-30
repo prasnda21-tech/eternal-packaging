@@ -169,6 +169,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
             if non_print_penj_done or group2_complete(order):
                 return {"state": "done", "label": "Selesai"}
             return {"state": "pending", "label": "Menunggu"}
+        if not penjadwalan_done(order):
+            return {"state": "pending", "label": "Menunggu"}
         if screener_done(order):
             return {"state": "done", "label": "Selesai"}
         if ready.get("screener"):
@@ -179,6 +181,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
         if not req_print:
             if non_print_penj_done or group2_complete(order):
                 return {"state": "done", "label": "Selesai"}
+            return {"state": "pending", "label": "Menunggu"}
+        if not penjadwalan_done(order):
             return {"state": "pending", "label": "Menunggu"}
         if helper_done(order):
             return {"state": "done", "label": "Selesai"}
@@ -191,6 +195,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
             if non_print_penj_done or group2_complete(order):
                 return {"state": "done", "label": "Selesai"}
             return {"state": "pending", "label": "Menunggu"}
+        if not helper_done(order):
+            return {"state": "pending", "label": "Menunggu"}
         if sample_uploaded(order):
             return {"state": "done", "label": "Selesai"}
         if ready.get("operator"):
@@ -201,6 +207,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
         if not req_print:
             if non_print_penj_done or group2_complete(order):
                 return {"state": "done", "label": "Selesai"}
+            return {"state": "pending", "label": "Menunggu"}
+        if not helper_done(order):
             return {"state": "pending", "label": "Menunggu"}
         if sample_ok(order):
             return {"state": "done", "label": "Selesai"}
@@ -213,6 +221,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
             if non_print_penj_done or group2_complete(order):
                 return {"state": "done", "label": "Selesai"}
             return {"state": "pending", "label": "Menunggu"}
+        if not sample_ok(order):
+            return {"state": "pending", "label": "Menunggu"}
         st = print_status(order)
         if st == PRINT_STATUS_DONE:
             return {"state": "done", "label": "SELESAI CETAK"}
@@ -223,6 +233,10 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
         return {"state": "current", "label": "BELUM MULAI CETAK"}
 
     if idx == STAGE_PACKING:
+        if req_print and not sample_ok(order):
+            return {"state": "pending", "label": "Menunggu"}
+        if not req_print and not (group2_complete(order) and penjadwalan_done(order)):
+            return {"state": "pending", "label": "Menunggu"}
         if cs >= 12:
             return {"state": "done", "label": "Selesai"}
         if _packing_qty_input(order) and cs == idx:
@@ -241,6 +255,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
             if sj_status == "partial":
                 return {"state": "current", "label": "SJ parsial — siap Loading"}
             return {"state": "current", "label": "SJ dibuat — siap Loading"}
+        if not _packing_qty_input(order) and cs < STAGE_SURAT_JALAN:
+            return {"state": "pending", "label": "Menunggu"}
         if cs >= idx:
             return {"state": "current", "label": "Menunggu pembuatan Surat Jalan"}
         return {"state": "pending", "label": "Menunggu"}

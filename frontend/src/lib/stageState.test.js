@@ -106,3 +106,53 @@ describe("PODetail / SuratJalan source: no generic next or checkboxes", () => {
     expect(sjPanel).not.toMatch(/Lanjut Loading/);
   });
 });
+
+describe("Parallel Screener & Helper + Strict Downstream Gating", () => {
+  test("Penjadwalan Selesai: Screener & Helper are both ready in parallel, Operator is LOCKED", () => {
+    const order = {
+      current_stage: 6,
+      design_bypassed: true,
+      payment_bypassed: true,
+      operator_splits: [{ id: "s1", quantity: 1000 }],
+      screener_info: null,
+      helper_prep: null,
+      sample_files: [],
+      sample_approved: false,
+    };
+
+    // Stage 5: Penjadwalan -> Selesai
+    expect(resolveStageState(5, order, 6).state).toBe("done");
+
+    // Stage 6: Screener -> Ready / Menunggu input
+    const screener = resolveStageState(6, order, 6);
+    expect(screener.state).toBe("current");
+    expect(screener.label).toBe("Menunggu input");
+
+    // Stage 7: Persiapan Helper -> Ready / Menunggu input (PARALEL!)
+    const helper = resolveStageState(7, order, 6);
+    expect(helper.state).toBe("current");
+    expect(helper.label).toBe("Menunggu input");
+
+    // Stage 8: Operator -> LOCKED / Menunggu
+    const op = resolveStageState(8, order, 6);
+    expect(op.state).toBe("pending");
+    expect(op.label).toBe("Menunggu");
+  });
+
+  test("Helper done without Screener: Operator unlocked", () => {
+    const order = {
+      current_stage: 6,
+      design_bypassed: true,
+      payment_bypassed: true,
+      operator_splits: [{ id: "s1", quantity: 1000 }],
+      screener_info: null,
+      helper_prep: { qty_prepared: 1000 },
+      sample_files: [],
+      sample_approved: false,
+    };
+
+    expect(resolveStageState(6, order, 6).state).toBe("current");
+    expect(resolveStageState(7, order, 6).state).toBe("done");
+    expect(resolveStageState(8, order, 6).state).toBe("current");
+  });
+});

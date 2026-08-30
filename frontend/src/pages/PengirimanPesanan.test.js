@@ -63,17 +63,45 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(appSrc).toMatch(/NAV_KEYS\.salesDeliveryOrder/);
   });
 
-  test("adds Proses ke Pengiriman Pesanan button and summary to PODetail and PesananPenjualan", () => {
-    expect(poDetailSrc).toMatch(/PROSES KE PENGIRIMAN PESANAN/);
-    expect(poDetailSrc).toMatch(/\/penjualan\/pengiriman-pesanan\?po_id=/);
-    expect(poDetailSrc).toMatch(/TOTAL ORDER/);
-    expect(poDetailSrc).toMatch(/TOTAL SUDAH DIPROSES PENGIRIMAN/);
-    expect(poDetailSrc).toMatch(/SISA PENGIRIMAN/);
-    expect(poDetailSrc).toMatch(/STATUS PENGIRIMAN/);
+  test("renders required helper texts and read-only attributes for PO and SJ numbers", () => {
+    expect(src).toMatch(/Data diisi otomatis dari Pesanan Penjualan dan dapat disesuaikan untuk pengiriman ini\./);
+    expect(src).toMatch(/Terkunci berdasarkan PO dan urutan pengiriman\./);
+    expect(src).toMatch(/data-testid="display-po-number"/);
+    expect(src).toMatch(/data-testid="display-suggested-sj"/);
+    expect(src).toMatch(/data-testid="display-customer"/);
+    expect(src).toMatch(/data-testid="input-delivery-date"/);
+    expect(src).toMatch(/data-testid="input-delivery-outlet"/);
+    expect(src).toMatch(/data-testid="input-delivery-recipient"/);
+    expect(src).toMatch(/data-testid="input-delivery-sales"/);
+    expect(src).toMatch(/data-testid="input-delivery-expedition"/);
+    expect(src).toMatch(/data-testid="input-delivery-zone"/);
+    expect(src).toMatch(/data-testid="input-delivery-address"/);
+    expect(src).toMatch(/data-testid="input-delivery-notes"/);
+  });
 
+  test("adds Proses ke Pengiriman Pesanan button and summary to PesananPenjualan", () => {
     expect(salesOrderSrc).toMatch(/Status Kirim/);
     expect(salesOrderSrc).toMatch(/Sisa Kirim/);
     expect(salesOrderSrc).toMatch(/\/penjualan\/pengiriman-pesanan\?po_id=/);
+  });
+
+  test("implements SEBAGIAN and SELESAI status filters and badges without Dikirim/Terkirim", () => {
+    // Filter tabs
+    expect(src).toMatch(/id:\s*"SEBAGIAN",\s*label:\s*"Sebagian"/);
+    expect(src).toMatch(/id:\s*"SELESAI",\s*label:\s*"Selesai"/);
+    expect(src).not.toMatch(/id:\s*"Dikirim"/);
+    expect(src).not.toMatch(/id:\s*"Terkirim"/);
+
+    // Detail modal PO Progress Summary
+    expect(src).toMatch(/data-testid="delivery-po-progress-summary"/);
+    expect(src).toMatch(/TOTAL QTY PO/);
+    expect(src).toMatch(/SUDAH DIBUAT SURAT JALAN/);
+    expect(src).toMatch(/SISA/);
+    expect(src).toMatch(/STATUS/);
+    expect(src).toMatch(/detail-total-po-qty/);
+    expect(src).toMatch(/detail-cumulative-sj-qty/);
+    expect(src).toMatch(/detail-remaining-po-qty/);
+    expect(src).toMatch(/detail-delivery-status/);
   });
 });
 

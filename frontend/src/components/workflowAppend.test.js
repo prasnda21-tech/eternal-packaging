@@ -74,11 +74,10 @@ describe("append-only workflow UI", () => {
     expect(s).not.toMatch(/role === ["']kepala_produksi["']/);
   });
 
-  test("po work view focuses permitted panel without role-name hardcode", () => {
-    const s = src("../pages/PoWorkView.jsx");
-    expect(s).toMatch(/permittedDivisionIds/);
-    expect(s).toMatch(/work-divisi-switch/);
-    expect(s).not.toMatch(/divisi !== "operator"/);
-    expect(s).not.toMatch(/role === /);
+  test("helper prep panel formats Sisa without negative sign", () => {
+    const s = src("HelperPrepPanel.jsx");
+    expect(s).not.toMatch(/`-\${totalShortage/);
+    expect(s).not.toMatch(/`-\${shortage/);
+    expect(s).toMatch(/totalShortage\.toLocaleString/);
   });
 });

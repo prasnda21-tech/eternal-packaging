@@ -148,7 +148,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
         <div className="ind-metric" data-testid="helper-total-shortage">
           <span className="ind-metric-label">Sisa</span>
           <strong>
-            {totalShortage > 0 ? `-${totalShortage.toLocaleString("id-ID")}` : "0"}
+            {totalShortage.toLocaleString("id-ID")}
             <span className="ind-metric-unit">pcs</span>
           </strong>
         </div>
@@ -191,7 +191,7 @@ export default function HelperPrepPanel({ order, canEdit, onUpdated, footerActio
               <td className="num" data-testid={`helper-required-${idx}`}>{req.toLocaleString("id-ID")}</td>
               <td className="num">{prep.toLocaleString("id-ID")}</td>
               <td className="num" data-testid={`helper-shortage-${idx}`}>
-                {shortage > 0 ? `-${shortage.toLocaleString("id-ID")}` : extra > 0 ? `+${extra.toLocaleString("id-ID")}` : "0"}
+                {shortage > 0 ? shortage.toLocaleString("id-ID") : extra > 0 ? `0 (+${extra.toLocaleString("id-ID")})` : "0"}
               </td>
               <td>
                 <AppendQtyEntries
