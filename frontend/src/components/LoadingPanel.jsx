@@ -33,9 +33,6 @@ function hasLegacyLoading(order) {
 export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const { user, hasPerm } = useAuth();
   const files = sjFilesForLoading(order);
-  const poLines = loadingPoLines(order);
-  const confirmations = loadingConfirmations(order);
-  const canDelete = hasPerm("loading.delete");
   const [sjId, setSjId] = useState(files[0]?.id || "");
   const [rows, setRows] = useState([emptyLoadingLine()]);
   const [busy, setBusy] = useState(false);
@@ -44,7 +41,13 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
 
   const activeSj = files.find((f) => f.id === sjId) || files[0] || null;
+  const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
+  const confirmations = loadingConfirmations(order);
+  const canDelete = hasPerm("loading.delete");
+
   const hasSj = files.length > 0;
+  const totalSjQty = poLines.reduce((s, r) => s + Number(r.qty_sj || 0), 0);
+  const totalLoaded = poLines.reduce((s, r) => s + Number(r.loaded || 0), 0);
   const remaining = poLines.reduce((s, r) => s + Number(r.available || 0), 0);
   const physicalReady = remaining > 0;
   const waitingPhysical = hasSj && !physicalReady && confirmations.length === 0 && !hasLegacyLoading(order);
@@ -162,6 +165,37 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
           </label>
         ) : (
           <p className="muted small" data-testid="loading-no-sj">Belum ada file Surat Jalan.</p>
+        )}
+
+        {hasSj && activeSj && totalSjQty > 0 && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+              gap: 8,
+              background: "#f8fafc",
+              padding: "10px 12px",
+              borderRadius: 6,
+              fontSize: "0.85rem",
+              border: "1px solid #e2e8f0",
+            }}
+            data-testid="loading-sj-progress-summary"
+          >
+            <div>
+              <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>TOTAL QTY SJ</span>
+              <strong data-testid="loading-total-sj-qty">{fmt(totalSjQty)} pcs</strong>
+            </div>
+            <div>
+              <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>SUDAH LOADING</span>
+              <strong style={{ color: "#0284c7" }} data-testid="loading-cumulative-loaded-qty">{fmt(totalLoaded)} pcs</strong>
+            </div>
+            <div>
+              <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>AVAILABLE / SISA</span>
+              <strong style={{ color: remaining === 0 ? "#16a34a" : "#ea580c" }} data-testid="loading-available-qty">
+                {fmt(remaining)} pcs
+              </strong>
+            </div>
+          </div>
         )}
 
         <SuratJalanViewButton order={order} testid="loading-sj-lihat" />

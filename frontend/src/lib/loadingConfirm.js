@@ -15,18 +15,73 @@ function packedQtyForLine(order, snap, idx) {
   return 0;
 }
 
-export function loadingPoLines(order) {
+export function loadingPoLines(order, selectedSjId = null) {
   const lis = Array.isArray(order?.line_items) ? order.line_items : [];
   const snapshot = Array.isArray(order?.shipment_lines) ? order.shipment_lines : [];
+  const files = sjFilesForLoading(order);
+  const targetSjId = selectedSjId || files[0]?.id || "";
+
+  // Find matching SJ record from order.shipments or order.surat_jalan_files or order.sj_files
+  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
+  const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  const matchingSj = shipments.find((s) => String(s?.id) === String(targetSjId) || String(s?.number) === String(targetSjId) || String(s?.sales_delivery_id) === String(targetSjId))
+    || sjFiles.find((f) => String(f?.id) === String(targetSjId) || String(f?.shipment_id) === String(targetSjId) || String(f?.sj_number) === String(targetSjId))
+    || null;
+
+  const targetIds = new Set([String(targetSjId)]);
+  if (matchingSj) {
+    if (matchingSj.id) targetIds.add(String(matchingSj.id));
+    if (matchingSj.number) targetIds.add(String(matchingSj.number));
+    if (matchingSj.shipment_id) targetIds.add(String(matchingSj.shipment_id));
+    if (matchingSj.sales_delivery_id) targetIds.add(String(matchingSj.sales_delivery_id));
+    if (matchingSj.sj_number) targetIds.add(String(matchingSj.sj_number));
+  }
+
+  const confirmations = loadingConfirmations(order);
+
   return lis.map((li, idx) => {
     const snap = snapshot.find((r) => Number(r.line_idx) === idx) || {};
     const qtyPo = Number(li.quantity ?? snap.qty_po ?? 0) || 0;
     const packed = packedQtyForLine(order, snap, idx);
-    const loaded = Number(snap.loaded ?? 0) || 0;
-    const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
-    const available = Number(
-      snap.available_loading != null ? snap.available_loading : Math.max(0, cap - loaded),
-    );
+
+    let sjLineQty = 0;
+    if (matchingSj && Array.isArray(matchingSj.lines) && matchingSj.lines.length) {
+      const ln = matchingSj.lines.find((l) => Number(l.line_idx) === idx);
+      sjLineQty = Number(ln?.qty ?? ln?.quantity ?? 0) || 0;
+    } else if (matchingSj && idx === 0) {
+      sjLineQty = Number(matchingSj.total_qty ?? matchingSj.qty ?? 0) || 0;
+    } else if (!matchingSj && !files.length) {
+      const loadedSnap = Number(snap.loaded ?? 0) || 0;
+      const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
+      const availSnap = snap.available_loading != null ? Number(snap.available_loading) : Math.max(0, cap - loadedSnap);
+      return {
+        line_idx: idx,
+        name: li.name || snap.name || `Line #${idx + 1}`,
+        item_code: li.item_code || snap.item_code || "",
+        accurate_item_id: li.accurate_item_id || snap.accurate_item_id || "",
+        color: li.color || snap.color || "",
+        qty_po: qtyPo,
+        qty_sj: packed,
+        packed,
+        loaded: loadedSnap,
+        available: Math.max(0, availSnap),
+        label: poLineLabel(li, idx),
+      };
+    }
+
+    let loadedForSj = 0;
+    for (const conf of confirmations) {
+      if (targetIds.has(String(conf.surat_jalan_id))) {
+        for (const ln of conf.lines || []) {
+          if (Number(ln.line_idx) === idx) {
+            loadedForSj += Number(ln.qty ?? ln.quantity ?? 0) || 0;
+          }
+        }
+      }
+    }
+
+    const available = Math.max(0, sjLineQty - loadedForSj);
+
     return {
       line_idx: idx,
       name: li.name || snap.name || `Line #${idx + 1}`,
@@ -34,26 +89,52 @@ export function loadingPoLines(order) {
       accurate_item_id: li.accurate_item_id || snap.accurate_item_id || "",
       color: li.color || snap.color || "",
       qty_po: qtyPo,
+      qty_sj: sjLineQty,
       packed,
-      loaded,
-      available: Math.max(0, available),
+      loaded: loadedForSj,
+      available,
       label: poLineLabel(li, idx),
     };
   });
 }
 
 export function sjFilesForLoading(order) {
-  const files = Array.isArray(order?.sj_files) && order.sj_files.length
-    ? order.sj_files
-    : (Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : []);
-  return files
-    .filter((f) => f && (f.file_id || f.id))
-    .map((f) => ({
-      id: f.file_id || f.id,
-      name: f.name || "Surat Jalan",
-      uploaded_by_name: f.uploaded_by_name || f.uploaded_by,
-      uploaded_at: f.uploaded_at,
-    }));
+  const list = [];
+  const seen = new Set();
+
+  const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  for (const f of files) {
+    const id = f?.id || f?.file_id;
+    if (id && !seen.has(String(id))) {
+      seen.add(String(id));
+      list.push({
+        id: String(id),
+        name: f.name || (f.sj_number ? `Surat Jalan - ${f.sj_number}` : "Surat Jalan"),
+        uploaded_by_name: f.uploaded_by_name || f.uploaded_by,
+        uploaded_at: f.uploaded_at,
+        lines: f.lines || [],
+        total_qty: f.total_qty || 0,
+      });
+    }
+  }
+
+  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
+  for (const sh of shipments) {
+    const id = sh?.id || sh?.sales_delivery_id || sh?.number;
+    if (id && !seen.has(String(id))) {
+      seen.add(String(id));
+      list.push({
+        id: String(id),
+        name: sh.number ? `Surat Jalan - ${sh.number}` : (sh.name || "Surat Jalan"),
+        uploaded_by_name: sh.created_by_name || sh.created_by,
+        uploaded_at: sh.created_at,
+        lines: sh.lines || [],
+        total_qty: sh.total_qty || 0,
+      });
+    }
+  }
+
+  return list;
 }
 
 export function loadingConfirmations(order) {
@@ -108,7 +189,7 @@ export function validateLoadingDraftLines(rows, poLines) {
       if (avail <= 0) {
         return { ok: false, error: "Qty Loading belum bisa diisi. Qty fisik yang sudah diproses belum siap.", lines: [] };
       }
-      return { ok: false, error: `Qty melebihi qty packing yang siap loading (${avail}).`, lines: [] };
+      return { ok: false, error: `Qty melebihi sisa Surat Jalan yang siap loading (${avail}).`, lines: [] };
     }
     const payload = { line_idx: idx, qty };
     if (po?.accurate_item_id) payload.accurate_item_id = String(po.accurate_item_id);

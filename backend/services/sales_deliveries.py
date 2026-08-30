@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
+from quantity_rules import packing_lines_stored, qty_packed_for_line, qty_shipped_for_line
+
 _delivery_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
 
@@ -315,6 +317,18 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     f"melebihi sisa PO yang tersedia ({remain} {target_line['unit']})."
                 )
 
+            # Workflow gate: if packing lines are tracked on this PO, ensure quantity has passed Packing
+            if packing_lines_stored(order) is not None:
+                packed = qty_packed_for_line(order, line_idx)
+                shipped = qty_shipped_for_line(order, line_idx)
+                avail_packing = max(0, packed - shipped)
+                if qty_to_ship > avail_packing:
+                    raise HTTPException(
+                        400,
+                        f"Kuantitas pengiriman untuk '{target_line['name']}' ({qty_to_ship} {target_line['unit']}) "
+                        f"melebihi kuantitas packing yang siap dibuatkan Surat Jalan ({avail_packing} {target_line['unit']})."
+                    )
+
             total_delivery_qty += qty_to_ship
             validated_lines.append({
                 "line_idx": line_idx,
@@ -398,6 +412,54 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
             try:
                 await db.sales_deliveries.insert_one(delivery_doc)
                 delivery_doc.pop("_id", None)
+
+                # Auto-register corresponding Surat Jalan into PO records
+                shipment_entry = {
+                    "id": delivery_id,
+                    "number": authoritative_sj,
+                    "shipment_index": shipment_index,
+                    "delivery_date": delivery_date,
+                    "customer": final_customer,
+                    "outlet": final_outlet,
+                    "sales": final_sales,
+                    "recipient": final_recipient,
+                    "address": final_address,
+                    "delivery_zone": final_zone,
+                    "expedition": final_expedition,
+                    "notes": final_notes,
+                    "lines": [
+                        {
+                            "line_idx": ln["line_idx"],
+                            "line_id": ln["line_id"],
+                            "qty": ln["qty"],
+                            "name": ln["name"],
+                            "unit": ln.get("unit") or "pcs",
+                            "color": ln.get("color"),
+                            "production_process": ln.get("production_process"),
+                        }
+                        for ln in validated_lines
+                    ],
+                    "total_qty": total_delivery_qty,
+                    "created_at": now,
+                    "created_by": user.get("email") or "",
+                    "sales_delivery_id": delivery_id,
+                }
+
+                await db.orders.update_one(
+                    {"id": summary["po_id"], "shipments.id": {"$ne": delivery_id}},
+                    {
+                        "$push": {
+                            "shipments": shipment_entry,
+                        },
+                        "$set": {
+                            "delivery_note_number": authoritative_sj,
+                            "delivery_note_created_at": now,
+                            "delivery_note_created_by": user.get("email") or "",
+                            "delivery_note_created_by_name": user.get("name") or user.get("email") or "",
+                        }
+                    }
+                )
+
                 return delivery_doc
             except DuplicateKeyError:
                 # Concurrent submit detected: re-fetch summary and retry
