@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, FileCheck2, FileText, MapPin, MessageSquare, Package, Printer, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDateTime } from "../lib/constants";
@@ -249,6 +249,8 @@ export default function PODetail() {
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
+  const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
+  const canPrintDelivery = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -256,7 +258,7 @@ export default function PODetail() {
     canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
     canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
-    canManageSuratJalan
+    canManageSuratJalan || canCreateDelivery
   );
 
   const copyTrackingLink = async () => {
@@ -449,6 +451,173 @@ export default function PODetail() {
           </div>
         </div>
       )}
+
+      {/* Pengiriman Pesanan (Surat Jalan Penjualan) Panel */}
+      {(() => {
+        const sd = order.sales_delivery_summary || {};
+        const totalOrdered = order.total_quantity || 0;
+        const totalShipped = sd.total_shipped || 0;
+        const totalRemaining = sd.total_remaining !== undefined ? sd.total_remaining : Math.max(0, totalOrdered - totalShipped);
+        const delivStatus = sd.delivery_status || (order.cancelled ? "DIBATALKAN" : totalShipped === 0 ? "BELUM DIKIRIM" : totalRemaining > 0 ? "SEBAGIAN DIKIRIM" : "SELESAI PENGIRIMAN");
+        const canProcess = !order.cancelled && totalRemaining > 0 && canCreateDelivery;
+        const deliveries = sd.deliveries || [];
+
+        return (
+          <section className="panel" data-testid="sales-delivery-summary-panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: "#fef3c7", color: "#d97706", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Truck size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Pengiriman Pesanan (Surat Jalan Penjualan)</h3>
+                  <span style={{ fontSize: "0.8rem", color: "#64748b" }}>Tahap lanjutan Penjualan untuk menerbitkan Surat Jalan pengiriman bertahap</span>
+                </div>
+              </div>
+              <div>
+                {canProcess ? (
+                  <Link
+                    to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
+                    data-testid="btn-proses-pengiriman-pesanan"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 16px",
+                      background: "#0284c7",
+                      color: "#fff",
+                      borderRadius: 8,
+                      textDecoration: "none",
+                      fontWeight: 600,
+                      fontSize: "0.875rem",
+                    }}
+                  >
+                    <Truck size={16} /> PROSES KE PENGIRIMAN PESANAN
+                  </Link>
+                ) : totalRemaining <= 0 && totalOrdered > 0 ? (
+                  <span
+                    data-testid="badge-pengiriman-selesai"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "6px 12px",
+                      background: "#dcfce7",
+                      color: "#166534",
+                      borderRadius: 20,
+                      fontSize: "0.8rem",
+                      fontWeight: 600,
+                    }}
+                  >
+                    <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
+                  </span>
+                ) : null}
+              </div>
+            </header>
+
+            {/* Summary KPIs */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 }}>
+              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>TOTAL ORDER</span>
+                <strong data-testid="kpi-delivery-total-order" style={{ fontSize: "1.1rem", color: "#0f172a" }}>
+                  {totalOrdered.toLocaleString("id-ID")} pcs
+                </strong>
+              </div>
+              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>TOTAL SUDAH DIPROSES PENGIRIMAN</span>
+                <strong data-testid="kpi-delivery-total-shipped" style={{ fontSize: "1.1rem", color: "#0284c7" }}>
+                  {totalShipped.toLocaleString("id-ID")} pcs
+                </strong>
+              </div>
+              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>SISA PENGIRIMAN</span>
+                <strong data-testid="kpi-delivery-total-remaining" style={{ fontSize: "1.1rem", color: totalRemaining > 0 ? "#d97706" : "#16a34a" }}>
+                  {totalRemaining.toLocaleString("id-ID")} pcs
+                </strong>
+              </div>
+              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>STATUS PENGIRIMAN</span>
+                <strong
+                  data-testid="kpi-delivery-status"
+                  style={{
+                    display: "inline-block",
+                    marginTop: 2,
+                    fontSize: "0.85rem",
+                    padding: "2px 8px",
+                    borderRadius: 12,
+                    background: delivStatus === "SELESAI PENGIRIMAN" ? "#dcfce7" : delivStatus === "SEBAGIAN DIKIRIM" ? "#fef3c7" : "#f1f5f9",
+                    color: delivStatus === "SELESAI PENGIRIMAN" ? "#166534" : delivStatus === "SEBAGIAN DIKIRIM" ? "#92400e" : "#475569",
+                  }}
+                >
+                  {delivStatus}
+                </strong>
+              </div>
+            </div>
+
+            {/* List of generated SJs for this PO */}
+            {deliveries.length > 0 && (
+              <div>
+                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#334155" }}>Dokumen Surat Jalan Terbit ({deliveries.length}):</h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {deliveries.map((deliv) => (
+                    <div
+                      key={deliv.id}
+                      data-testid={`po-delivery-item-${deliv.id}`}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "8px 12px",
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 8,
+                        fontSize: "0.85rem",
+                        flexWrap: "wrap",
+                        gap: 8,
+                      }}
+                    >
+                      <div>
+                        <span style={{ fontWeight: 700, color: "#0369a1", marginRight: 8 }}>{deliv.sj_number}</span>
+                        <span style={{ color: "#64748b" }}>
+                          (Kirim #{deliv.shipment_index}) · {formatDisplayDate(deliv.delivery_date)} · {deliv.created_by_name || deliv.created_by}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontWeight: 700, color: "#0f172a" }}>
+                          {Number(deliv.total_qty || 0).toLocaleString("id-ID")} pcs
+                        </span>
+                        {canPrintDelivery && (
+                          <a
+                            href={api.salesDeliveryPdfUrl(deliv.id)}
+                            target="_blank"
+                            rel="noreferrer"
+                            data-testid={`btn-print-po-delivery-${deliv.id}`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              padding: "4px 8px",
+                              background: "#fff",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: 6,
+                              color: "#0284c7",
+                              textDecoration: "none",
+                              fontWeight: 600,
+                              fontSize: "0.75rem",
+                            }}
+                          >
+                            <Printer size={12} /> Cetak PDF
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        );
+      })()}
 
       {/* Aksi PO — Cancel / Delete / Rollback (admin, bukan stage production) */}
       {(canCancel || canDelete || canRollback) && (

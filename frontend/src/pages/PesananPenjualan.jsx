@@ -899,6 +899,8 @@ export default function PesananPenjualan() {
                   <th style={{ padding: "10px 12px" }}>Customer</th>
                   <th style={{ padding: "10px 12px" }}>Outlet</th>
                   <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Qty</th>
+                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Sisa Kirim</th>
+                  <th style={{ padding: "10px 12px" }}>Status Kirim</th>
                   <th style={{ padding: "10px 12px" }}>Sales</th>
                   <th style={{ padding: "10px 12px" }}>Status / Stage</th>
                   <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
@@ -907,13 +909,13 @@ export default function PesananPenjualan() {
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={8} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
+                    <td colSpan={10} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
                       Memuat daftar Pesanan Penjualan...
                     </td>
                   </tr>
                 ) : orders.length === 0 ? (
                   <tr>
-                    <td colSpan={8} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
+                    <td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
                       <FileText size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
                       <p style={{ margin: 0, fontWeight: 500 }}>Belum ada Pesanan Penjualan yang sesuai filter.</p>
                       {canCreate && (
@@ -935,6 +937,11 @@ export default function PesananPenjualan() {
                     const isCancelled = !!o.cancelled;
                     const isHold = !!o.hold;
                     const stageLabel = o.status_label || `Tahap ${o.current_stage}`;
+                    const delivSummary = o.delivery_summary;
+                    const remainQty = delivSummary ? delivSummary.total_remaining : Number(o.total_quantity || 0);
+                    const delivStatus = delivSummary?.status || (isCancelled ? "DIBATALKAN" : "BELUM DIKIRIM");
+                    const canProcessDelivery = !isCancelled && remainQty > 0;
+
                     return (
                       <tr key={o.id} data-testid={`order-row-${o.id}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
                         <td style={{ padding: "10px 12px", fontWeight: 600 }}>
@@ -953,6 +960,24 @@ export default function PesananPenjualan() {
                         </td>
                         <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
                           {Number(o.total_quantity || 0).toLocaleString("id-ID")} pcs
+                        </td>
+                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: remainQty > 0 ? "#0284c7" : "#16a34a" }}>
+                          {remainQty.toLocaleString("id-ID")} pcs
+                        </td>
+                        <td style={{ padding: "10px 12px" }}>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "2px 8px",
+                              borderRadius: 12,
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              background: delivStatus === "SELESAI PENGIRIMAN" ? "#dcfce7" : delivStatus === "SEBAGIAN DIKIRIM" ? "#fef3c7" : "#f1f5f9",
+                              color: delivStatus === "SELESAI PENGIRIMAN" ? "#166534" : delivStatus === "SEBAGIAN DIKIRIM" ? "#92400e" : "#475569",
+                            }}
+                          >
+                            {delivStatus}
+                          </span>
                         </td>
                         <td style={{ padding: "10px 12px", color: "#475569" }}>
                           {o.sales || o.sales_user || "-"}
@@ -973,13 +998,25 @@ export default function PesananPenjualan() {
                           )}
                         </td>
                         <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                          <Link
-                            to={`/po/${o.id}`}
-                            data-testid={`btn-view-po-${o.id}`}
-                            style={{ display: "inline-block", padding: "4px 10px", background: "#f1f5f9", color: "#334155", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600 }}
-                          >
-                            Lihat PO
-                          </Link>
+                          <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
+                            <Link
+                              to={`/po/${o.id}`}
+                              data-testid={`btn-view-po-${o.id}`}
+                              style={{ display: "inline-block", padding: "4px 8px", background: "#f1f5f9", color: "#334155", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600 }}
+                            >
+                              Lihat PO
+                            </Link>
+                            {canProcessDelivery && (
+                              <Link
+                                to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
+                                data-testid={`btn-process-delivery-${o.id}`}
+                                title="Proses ke Pengiriman Pesanan"
+                                style={{ display: "inline-block", padding: "4px 8px", background: "#e0f2fe", color: "#0369a1", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600, whiteSpace: "nowrap" }}
+                              >
+                                + Kirim
+                              </Link>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
