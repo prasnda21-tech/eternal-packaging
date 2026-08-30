@@ -18,6 +18,8 @@ PERMISSION_CATALOG = [
     ("PO", "po.edit", "Ubah PO"),
     ("PO", "po.cancel", "Batalkan PO"),
     ("PO", "po.delete", "Hapus permanen PO"),
+    ("Penjualan", "sales_order.view", "Lihat Pesanan Penjualan"),
+    ("Penjualan", "sales_order.create", "Buat Pesanan Penjualan"),
     ("Import PO", "po.import.view", "Buka halaman Import PO"),
     ("Import PO", "accurate.import", "Preview & Import Single PO dari Accurate"),
     ("Import PO", "accurate.import.bulk", "Preview & Import beberapa Sales Order Accurate sekaligus"),
@@ -113,6 +115,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.tasks.loading", "Menu Tugas Loading"),
     ("Akses Menu", "nav.tasks.delivery", "Menu Tugas Driver / Terkirim"),
     ("Akses Menu", "nav.sales", "Menu Penjualan"),
+    ("Akses Menu", "nav.sales.sales_order", "Menu Pesanan Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
@@ -142,6 +145,7 @@ NAV_CONFIGURED = "nav.configured"
 # defaults for roles that have not stored any nav.* keys yet.
 NAV_ALWAYS_VISIBLE = (
     "nav.sales",
+    "nav.sales.sales_order",
     "nav.sales.import_po",
     "nav.purchasing",
     "nav.inventory",
@@ -168,6 +172,7 @@ NAV_MENU_ITEMS = (
     ("nav.tasks.loading", "Loading", "nav.tasks"),
     ("nav.tasks.delivery", "Driver / Terkirim", "nav.tasks"),
     ("nav.sales", "Penjualan", None),
+    ("nav.sales.sales_order", "Pesanan Penjualan", "nav.sales"),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
     ("nav.purchasing", "Pembelian", None),
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
@@ -269,7 +274,7 @@ def with_nav_defaults(perms: set) -> set:
 ROLE_DEFAULT_PERMISSIONS = {
     "admin": list(ALL_PERMISSIONS),
     "head_production": [
-        "po.view", "po.edit",
+        "po.view", "po.edit", "sales_order.view", "sales_order.create",
         "design.view", "design.approve", "design.bypass_approval",
         "payment.view", "payment.approve", "payment.bypass_approval",
         "schedule.view", "schedule.edit",
@@ -298,7 +303,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "settings.operator_wage.view", "settings.operator_wage.manage",
     ],
     "head_operations": [
-        "po.view", "po.edit", "po.cancel",
+        "po.view", "po.edit", "po.cancel", "sales_order.view", "sales_order.create",
         "schedule.view", "schedule.edit",
         "schedule.work_date.view", "schedule.work_date.edit",
         "delivery_note.view", "delivery_note.view_file", "delivery_note.manage",
@@ -340,7 +345,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "delivery.reschedule",
     ],
     "crm": [
-        "po.view", "design.view", "payment.view",
+        "po.view", "sales_order.view", "sales_order.create", "design.view", "payment.view",
         "schedule.view", "schedule.work_date.view", "delivery_note.view", "delivery_note.manage",
         "customer_approval.view",
         "buffer_stock.manage",
