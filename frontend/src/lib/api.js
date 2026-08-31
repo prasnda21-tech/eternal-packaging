@@ -269,6 +269,12 @@ export const api = {
   getPoDeliverySummary: (poId) => client.get(`/sales-deliveries/po/${encodeURIComponent(poId)}/summary`).then((r) => r.data),
   createSalesDelivery: (payload) => client.post(`/sales-deliveries`, payload).then((r) => r.data),
   salesDeliveryPdfUrl: (id) => `${API}/sales-deliveries/${encodeURIComponent(id)}/pdf`,
+  // ---- Sales Invoice (Faktur Penjualan) ----
+  listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
+  getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
+  getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
+  createSalesInvoice: (payload) => client.post(`/sales-invoices`, payload).then((r) => r.data),
+  updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
 };
 
 export default api;

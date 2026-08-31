@@ -474,7 +474,7 @@ export default function PODetail() {
                   <span style={{ fontSize: "0.8rem", color: "#64748b" }}>Tahap lanjutan Penjualan untuk menerbitkan Surat Jalan pengiriman bertahap</span>
                 </div>
               </div>
-              <div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                 {canProcess ? (
                   <Link
                     to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
@@ -512,6 +512,24 @@ export default function PODetail() {
                     <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
                   </span>
                 ) : null}
+                <Link
+                  to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`}
+                  data-testid="btn-buat-faktur-penjualan"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 16px",
+                    background: "#7c3aed",
+                    color: "#fff",
+                    borderRadius: 8,
+                    textDecoration: "none",
+                    fontWeight: 600,
+                    fontSize: "0.875rem",
+                  }}
+                >
+                  <FileText size={16} /> BUAT FAKTUR
+                </Link>
               </div>
             </header>
 

@@ -11,6 +11,7 @@ import AnalyticsOperators from "./pages/AnalyticsOperators";
 import ImportPO from "./pages/ImportPO";
 import PesananPenjualan from "./pages/PesananPenjualan";
 import PengirimanPesanan from "./pages/PengirimanPesanan";
+import FakturPenjualan from "./pages/FakturPenjualan";
 import Settings from "./pages/Settings";
 import MasterBarangJasa from "./pages/MasterBarangJasa";
 import StockSaatIni from "./pages/StockSaatIni";
@@ -113,6 +114,7 @@ export default function App() {
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
             <Route path="/penjualan/pesanan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesOrder, NAV_KEYS.sales, "sales_order.view", "sales_order.create", "po.view"]}><PesananPenjualan /></PermGate>} />
             <Route path="/penjualan/pengiriman-pesanan" element={<PermGate anyOf={[NAV_KEYS.salesDeliveryOrder, NAV_KEYS.sales, "sales.delivery.view", "sales.delivery.create", "sales_order.view", "po.view"]}><PengirimanPesanan /></PermGate>} />
+            <Route path="/penjualan/faktur-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesInvoice, NAV_KEYS.sales, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "po.view"]}><FakturPenjualan /></PermGate>} />
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
             <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
             <Route path="/pembelian" element={<PembelianIndex />} />
