@@ -45,6 +45,7 @@ export default function PesananPenjualan() {
   const { user, hasPerm } = useAuth();
 
   const canCreate = hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
+  const canDelete = hasPerm("po.delete") || user?.role === "admin";
   const [viewMode, setViewMode] = useState("list"); // 'list' | 'create'
   
   // List state
@@ -53,6 +54,10 @@ export default function PesananPenjualan() {
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
 
   // Options & Auto-fill masters
   const [options, setOptions] = useState({
@@ -114,6 +119,7 @@ export default function PesananPenjualan() {
       if (statusFilter !== "all") params.status = statusFilter;
       const res = await api.listSalesOrders(params);
       setOrders(res.orders || []);
+      setSelectedIds(new Set());
     } catch (e) {
       const det = e.response?.data?.detail;
       setListErr(typeof det === "object" ? det.message : (det || "Gagal memuat daftar Pesanan Penjualan"));
@@ -227,6 +233,43 @@ export default function PesananPenjualan() {
     return formData.line_items.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
   }, [formData.line_items]);
 
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    if (selectedIds.size === orders.length && orders.length > 0) setSelectedIds(new Set());
+    else setSelectedIds(new Set(orders.map((o) => o.id)));
+  };
+  const formatDeleteError = (det) => {
+    if (typeof det === "object" && det) {
+      const blockers = det.blockers || [];
+      if (blockers.length) {
+        return `${det.message || "Tidak dapat menghapus."} ${blockers.map((b) => `${b.po_number || b.number || b.id}: ${b.reason}`).join(" ")}`.trim();
+      }
+      return det.message || JSON.stringify(det);
+    }
+    return det || "Gagal menghapus.";
+  };
+  const handleBulkDelete = async () => {
+    setDeleteLoading(true);
+    setDeleteErr("");
+    try {
+      await api.bulkDelete(Array.from(selectedIds), "Hapus dari daftar Pesanan Penjualan", "HAPUS");
+      setDeleteConfirm(null);
+      setSelectedIds(new Set());
+      loadOrders();
+    } catch (e) {
+      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   const resetForm = () => {
     setFormData({
       po_number: options.suggested_po_number || "",
@@ -339,6 +382,22 @@ export default function PesananPenjualan() {
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           {viewMode === "list" ? (
             <>
+              {canDelete && selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  data-testid="btn-hapus-terpilih"
+                  onClick={() => {
+                    setDeleteErr("");
+                    setDeleteConfirm({
+                      ids: Array.from(selectedIds),
+                      numbers: orders.filter((o) => selectedIds.has(o.id)).map((o) => o.po_number),
+                    });
+                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, background: "#fee2e2", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer", fontWeight: 600 }}
+                >
+                  <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
+                </button>
+              )}
               <button
                 className="icon-button"
                 onClick={loadOrders}
@@ -894,6 +953,11 @@ export default function PesananPenjualan() {
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
               <thead>
                 <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                  {canDelete && (
+                    <th style={{ padding: "10px 8px", width: 36 }}>
+                      <input type="checkbox" data-testid="select-all-orders" checked={orders.length > 0 && selectedIds.size === orders.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                    </th>
+                  )}
                   <th style={{ padding: "10px 12px" }}>No PO</th>
                   <th style={{ padding: "10px 12px" }}>Tanggal PO</th>
                   <th style={{ padding: "10px 12px" }}>Customer</th>
@@ -909,13 +973,13 @@ export default function PesananPenjualan() {
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={10} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
+                    <td colSpan={canDelete ? 11 : 10} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
                       Memuat daftar Pesanan Penjualan...
                     </td>
                   </tr>
                 ) : orders.length === 0 ? (
                   <tr>
-                    <td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
+                    <td colSpan={canDelete ? 11 : 10} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
                       <FileText size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
                       <p style={{ margin: 0, fontWeight: 500 }}>Belum ada Pesanan Penjualan yang sesuai filter.</p>
                       {canCreate && (
@@ -944,6 +1008,11 @@ export default function PesananPenjualan() {
 
                     return (
                       <tr key={o.id} data-testid={`order-row-${o.id}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        {canDelete && (
+                          <td style={{ padding: "10px 8px" }}>
+                            <input type="checkbox" data-testid={`order-checkbox-${o.id}`} checked={selectedIds.has(o.id)} onChange={() => toggleSelect(o.id)} aria-label={`Pilih ${o.po_number}`} />
+                          </td>
+                        )}
                         <td style={{ padding: "10px 12px", fontWeight: 600 }}>
                           <Link to={`/po/${o.id}`} style={{ color: "#0284c7", textDecoration: "none" }} data-testid={`po-link-${o.po_number}`}>
                             {o.po_number}
@@ -1026,6 +1095,25 @@ export default function PesananPenjualan() {
             </table>
           </div>
         </section>
+      )}
+
+      {deleteConfirm && (
+        <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Hapus Pesanan Penjualan?</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
+            <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#0284c7" }}>
+              {(deleteConfirm.numbers || []).map((n) => <li key={n}>{n}</li>)}
+            </ul>
+            {deleteErr && <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>{deleteErr}</div>}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>Batal</button>
+              <button type="button" data-testid="btn-confirm-delete" onClick={handleBulkDelete} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}>
+                {deleteLoading ? "Menghapus..." : "Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

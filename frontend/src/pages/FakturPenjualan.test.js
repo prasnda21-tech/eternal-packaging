@@ -17,31 +17,38 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/btn-create-invoice/);
   });
 
-  test("FakturPenjualan create form contains PO snapshot preview and price inputs", () => {
+  test("FakturPenjualan create form contains PO snapshot preview, partial qty and financial inputs", () => {
     expect(pageSrc).toMatch(/po-selector/);
     expect(pageSrc).toMatch(/po-snapshot-card/);
     expect(pageSrc).toMatch(/snapshot-po-number/);
     expect(pageSrc).toMatch(/snapshot-customer/);
-    expect(pageSrc).toMatch(/invoice-items-table/);
+    expect(pageSrc).toMatch(/invoice-date-input/);
+    expect(pageSrc).toMatch(/invoice-term-input/);
+    expect(pageSrc).toMatch(/invoice-discount-input/);
+    expect(pageSrc).toMatch(/invoice-ppn-input/);
+    expect(pageSrc).toMatch(/qty-input/);
     expect(pageSrc).toMatch(/unit-price-input/);
-    expect(pageSrc).toMatch(/grand-total-summary/);
     expect(pageSrc).toMatch(/save-invoice-btn/);
   });
 
-  test("FakturPenjualan detail/edit form contains editable unit price and live calculations", () => {
-    expect(pageSrc).toMatch(/detail-snapshot-card/);
-    expect(pageSrc).toMatch(/detail-invoice-number/);
-    expect(pageSrc).toMatch(/detail-items-table/);
-    expect(pageSrc).toMatch(/detail-unit-price-input/);
-    expect(pageSrc).toMatch(/detail-grand-total/);
-    expect(pageSrc).toMatch(/save-detail-invoice-btn/);
+  test("PODetail -> Faktur Penjualan passes exact po_id and bypasses redundant PO chooser", () => {
+    expect(poDetailSrc).toMatch(/btn-buat-faktur-penjualan/);
+    expect(poDetailSrc).toMatch(/\/penjualan\/faktur-penjualan\?po_id=\$\{order\.id\}&action=create/);
+    expect(pageSrc).toMatch(/!queryPoId/);
+    expect(pageSrc).toMatch(/queryPoId/);
+    expect(pageSrc).toMatch(/loadPoPreview\(selectedPoId\)/);
   });
 
-  test("FakturPenjualan computes line total and grand total authoritatively without mutation", () => {
+  test("FakturPenjualan computes line total, discount, PPN, grand total, and remaining qty", () => {
     expect(pageSrc).toMatch(/createCalculations/);
     expect(pageSrc).toMatch(/detailCalculations/);
-    expect(pageSrc).toMatch(/lineTotal/);
+    expect(pageSrc).toMatch(/subtotal/);
+    expect(pageSrc).toMatch(/discount/);
+    expect(pageSrc).toMatch(/afterDiscount/);
+    expect(pageSrc).toMatch(/ppn/);
     expect(pageSrc).toMatch(/grandTotal/);
+    expect(pageSrc).toMatch(/totalRemaining/);
+    expect(pageSrc).toMatch(/fully-invoiced-banner/);
   });
 
   test("navAccess includes Faktur Penjualan under Penjualan parent", () => {
@@ -67,10 +74,18 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(apiSrc).toMatch(/getPoInvoicePreview:/);
     expect(apiSrc).toMatch(/createSalesInvoice:/);
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
+    expect(apiSrc).toMatch(/deleteSalesInvoice:/);
+    expect(apiSrc).toMatch(/bulkDeleteSalesInvoices:/);
   });
 
-  test("PODetail includes direct link button to Buat Faktur Penjualan", () => {
-    expect(poDetailSrc).toMatch(/btn-buat-faktur-penjualan/);
-    expect(poDetailSrc).toMatch(/\/penjualan\/faktur-penjualan\?po_id=/);
+  test("Faktur list has checkbox, visible-only select all, Hapus Terpilih, and business-number confirm", () => {
+    expect(pageSrc).toMatch(/select-all-invoices/);
+    expect(pageSrc).toMatch(/invoice-checkbox-/);
+    expect(pageSrc).toMatch(/btn-hapus-terpilih/);
+    expect(pageSrc).toMatch(/Hapus Terpilih/);
+    expect(pageSrc).toMatch(/delete-confirm-modal/);
+    expect(pageSrc).toMatch(/delete-confirm-numbers/);
+    expect(pageSrc).toMatch(/invoice_number/);
+    expect(pageSrc).toMatch(/selectedIds\.size === invoices\.length/);
   });
 });

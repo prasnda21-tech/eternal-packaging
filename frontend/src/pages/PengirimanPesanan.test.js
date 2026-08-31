@@ -63,6 +63,26 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(appSrc).toMatch(/NAV_KEYS\.salesDeliveryOrder/);
   });
 
+  test("SJ list has checkbox, visible-only select all, Hapus Terpilih, and SJ number confirm", () => {
+    expect(src).toMatch(/select-all-deliveries/);
+    expect(src).toMatch(/delivery-checkbox-/);
+    expect(src).toMatch(/btn-hapus-terpilih/);
+    expect(src).toMatch(/Hapus Terpilih/);
+    expect(src).toMatch(/delete-confirm-modal/);
+    expect(src).toMatch(/sj_number/);
+    expect(src).toMatch(/selectedIds\.size === deliveries\.length/);
+  });
+
+  test("Pengiriman row has Hapus button with SJ business number confirmation and safe-delete wiring", () => {
+    expect(src).toMatch(/btn-delete-delivery-/);
+    expect(src).toMatch(/number: d\.sj_number/);
+    expect(src).toMatch(/numbers: \[d\.sj_number\]/);
+    expect(src).toMatch(/api\.deleteSalesDelivery/);
+    expect(src).toMatch(/handleBulkDelete\(\) : handleDelete\(deleteConfirm\.id\)/);
+    expect(src).toMatch(/delete-error/);
+    expect(src).toMatch(/loadDeliveries\(\)/);
+  });
+
   test("renders required helper texts and read-only attributes for PO and SJ numbers", () => {
     expect(src).toMatch(/Data diisi otomatis dari Pesanan Penjualan dan dapat disesuaikan untuk pengiriman ini\./);
     expect(src).toMatch(/Terkunci berdasarkan PO dan urutan pengiriman\./);
