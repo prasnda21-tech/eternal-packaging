@@ -45,6 +45,17 @@ PERMISSION_CATALOG = [
     ("Pembelian", "purchase_receipts.view", "Lihat Penerimaan Barang"),
     ("Pembelian", "purchase_receipts.sync", "Sinkronkan Penerimaan Barang dari Accurate"),
     ("Pembelian", "purchase_receipts.export", "Export Penerimaan Barang"),
+    ("Pembelian", "purchase_receipts.receive", "Catat penerimaan terhadap Pesanan Pembelian"),
+    ("Pembelian", "purchase_requests.view", "Lihat Permintaan"),
+    ("Pembelian", "purchase_requests.create", "Buat Permintaan"),
+    ("Pembelian", "purchase_orders.view", "Lihat Pesanan Pembelian"),
+    ("Pembelian", "purchase_orders.create", "Buat Pesanan Pembelian"),
+    ("Pembelian", "purchase_invoices.view", "Lihat Faktur Pembelian"),
+    ("Pembelian", "purchase_invoices.create", "Buat Faktur Pembelian"),
+    ("Pembelian", "purchase_payments.view", "Lihat Pembayaran Pembelian"),
+    ("Pembelian", "purchase_payments.create", "Buat Pembayaran Pembelian"),
+    ("Pengaturan", "settings.hpp.view", "Lihat Pengaturan HPP"),
+    ("Pengaturan", "settings.hpp.manage", "Ubah Pengaturan HPP / hitung ulang"),
     ("Design", "design.view", "Lihat desain"),
     ("Design", "design.upload", "Upload desain"),
     ("Design", "design.approve", "Approve desain"),
@@ -131,6 +142,10 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.sales.sales_invoice", "Menu Faktur Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
+    ("Akses Menu", "nav.purchasing.requests", "Menu Permintaan"),
+    ("Akses Menu", "nav.purchasing.orders", "Menu Pesanan Pembelian"),
+    ("Akses Menu", "nav.purchasing.invoices", "Menu Faktur Pembelian"),
+    ("Akses Menu", "nav.purchasing.payments", "Menu Pembayaran Pembelian"),
     ("Akses Menu", "nav.purchasing.receipts", "Menu Penerimaan Barang"),
     ("Akses Menu", "nav.inventory", "Menu Persediaan"),
     ("Akses Menu", "nav.inventory.master_items", "Menu Barang/Jasa"),
@@ -193,6 +208,10 @@ NAV_MENU_ITEMS = (
     ("nav.sales.sales_receipt", "Penerimaan Penjualan", "nav.sales"),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
     ("nav.purchasing", "Pembelian", None),
+    ("nav.purchasing.requests", "Permintaan", "nav.purchasing"),
+    ("nav.purchasing.orders", "Pesanan Pembelian", "nav.purchasing"),
+    ("nav.purchasing.invoices", "Faktur Pembelian", "nav.purchasing"),
+    ("nav.purchasing.payments", "Pembayaran Pembelian", "nav.purchasing"),
     ("nav.purchasing.receipts", "Penerimaan Barang", "nav.purchasing"),
     ("nav.inventory", "Persediaan", None),
     ("nav.inventory.master_items", "Barang/Jasa", "nav.inventory"),
@@ -238,6 +257,18 @@ def derived_nav_permissions(existing: set) -> set:
     if "purchase_receipts.view" in existing:
         nav.add("nav.purchasing")
         nav.add("nav.purchasing.receipts")
+    if "purchase_requests.view" in existing or "purchase_requests.create" in existing:
+        nav.add("nav.purchasing")
+        nav.add("nav.purchasing.requests")
+    if "purchase_orders.view" in existing or "purchase_orders.create" in existing:
+        nav.add("nav.purchasing")
+        nav.add("nav.purchasing.orders")
+    if "purchase_invoices.view" in existing or "purchase_invoices.create" in existing:
+        nav.add("nav.purchasing")
+        nav.add("nav.purchasing.invoices")
+    if "purchase_payments.view" in existing or "purchase_payments.create" in existing:
+        nav.add("nav.purchasing")
+        nav.add("nav.purchasing.payments")
     if "design.upload" in existing:
         nav.add("nav.production")
         nav.add("nav.tasks")
@@ -319,6 +350,12 @@ ROLE_DEFAULT_PERMISSIONS = {
         "production.route.edit",
         "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
+        "purchase_receipts.receive",
+        "purchase_requests.view", "purchase_requests.create",
+        "purchase_orders.view", "purchase_orders.create",
+        "purchase_invoices.view", "purchase_invoices.create",
+        "purchase_payments.view", "purchase_payments.create",
+        "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
         "reports.order_prediction.view", "reports.order_prediction.import",
         "settings.operator_wage.view", "settings.operator_wage.manage",
@@ -343,6 +380,12 @@ ROLE_DEFAULT_PERMISSIONS = {
         "delivery.vehicle.manage",
         "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
         "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
+        "purchase_receipts.receive",
+        "purchase_requests.view", "purchase_requests.create",
+        "purchase_orders.view", "purchase_orders.create",
+        "purchase_invoices.view", "purchase_invoices.create",
+        "purchase_payments.view", "purchase_payments.create",
+        "settings.hpp.view", "settings.hpp.manage",
         "reports.gaji_operator.view",
         "reports.order_prediction.view", "reports.order_prediction.import",
         "settings.operator_wage.view", "settings.operator_wage.manage",

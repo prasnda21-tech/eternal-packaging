@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertCircle, ChevronDown, ChevronRight, Download, RefreshCw, Search, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
+import { errDetail, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
 
 export default function PenerimaanBarang() {
   const { hasPerm } = useAuth();
+  const [searchParams] = useSearchParams();
   const canSync = hasPerm("purchase_receipts.sync");
   const canExport = hasPerm("purchase_receipts.export");
+  const canReceive = hasPerm("purchase_receipts.receive") || hasPerm("purchase_receipts.sync");
+  const queryPoId = searchParams.get("purchase_order_id") || "";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -21,6 +26,15 @@ export default function PenerimaanBarang() {
   const [pageSize, setPageSize] = useState(50);
   const [openId, setOpenId] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [poReceipts, setPoReceipts] = useState([]);
+  const [eligiblePos, setEligiblePos] = useState([]);
+  const [recvPoId, setRecvPoId] = useState(queryPoId);
+  const [recvPreview, setRecvPreview] = useState(null);
+  const [recvQty, setRecvQty] = useState({});
+  const [recvDate, setRecvDate] = useState(todayYmd());
+  const [recvBusy, setRecvBusy] = useState(false);
+  const [recvErr, setRecvErr] = useState("");
+  const [recvMsg, setRecvMsg] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -37,6 +51,23 @@ export default function PenerimaanBarang() {
   }, [q, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    api.listPurchaseGoodsReceipts({}).then((r) => setPoReceipts(r.receipts || [])).catch(() => setPoReceipts([]));
+    if (canReceive) {
+      api.listPurchaseOrders({ eligible_for_receipt: true }).then((r) => setEligiblePos(r.orders || [])).catch(() => setEligiblePos([]));
+    }
+  }, [canReceive, recvMsg]);
+
+  useEffect(() => {
+    if (!recvPoId) { setRecvPreview(null); return; }
+    api.purchaseGoodsReceiptPreview(recvPoId).then((p) => {
+      setRecvPreview(p);
+      const map = {};
+      (p.lines || []).forEach((l) => { map[l.purchase_order_line_id] = l.remaining_receivable_qty; });
+      setRecvQty(map);
+    }).catch((ex) => setRecvErr(errDetail(ex)));
+  }, [recvPoId]);
 
   const doSearch = (e) => {
     e?.preventDefault?.();
@@ -211,6 +242,83 @@ export default function PenerimaanBarang() {
           <button className="ghost sm" disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
+
+      <div className="card" data-testid="po-linked-receipts" style={{ marginTop: 24 }}>
+        <h2>Penerimaan terhadap Pesanan Pembelian</h2>
+        <p className="muted small">Mencatat qty diterima per exact line PO. Tidak mengubah stok fisik Accurate/Stock Saat Ini. Over-receipt ditolak.</p>
+        {recvErr && <div className="signal-strip" role="alert"><AlertCircle size={16} /><span>{recvErr}</span></div>}
+        {recvMsg && <p className="muted small">{recvMsg}</p>}
+        {canReceive && (
+          <div data-testid="po-receive-form">
+            <label>Pesanan Pembelian
+              <select value={recvPoId} onChange={(e) => setRecvPoId(e.target.value)} data-testid="receive-po-selector">
+                <option value="">Pilih PO</option>
+                {eligiblePos.map((o) => <option key={o.id} value={o.id}>{o.po_number} · {o.supplier}</option>)}
+              </select>
+            </label>
+            {recvPreview && (
+              <>
+                <label>Tanggal diterima<input type="date" value={recvDate} onChange={(e) => setRecvDate(e.target.value)} /></label>
+                <table className="prod-table">
+                  <thead><tr><th>Item</th><th>Dipesan</th><th>Sudah diterima</th><th>Sisa</th><th>Qty terima</th></tr></thead>
+                  <tbody>
+                    {(recvPreview.lines || []).map((l) => (
+                      <tr key={l.purchase_order_line_id}>
+                        <td>{l.item_name}</td>
+                        <td className="num">{fmtQty(l.ordered_qty)}</td>
+                        <td className="num">{fmtQty(l.cumulative_received_qty)}</td>
+                        <td className="num">{fmtQty(l.remaining_receivable_qty)}</td>
+                        <td>
+                          <input type="number" min="0" value={recvQty[l.purchase_order_line_id] ?? ""} onChange={(e) => setRecvQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))} data-testid="receive-qty-input" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button
+                  className="primary"
+                  disabled={recvBusy}
+                  data-testid="save-po-receipt"
+                  onClick={async () => {
+                    setRecvBusy(true); setRecvErr(""); setRecvMsg("");
+                    try {
+                      const lines = (recvPreview.lines || []).map((l) => ({
+                        purchase_order_line_id: l.purchase_order_line_id,
+                        received_qty: recvQty[l.purchase_order_line_id],
+                      })).filter((l) => Number(l.received_qty) > 0);
+                      const res = await api.createPurchaseGoodsReceipt({
+                        purchase_order_id: recvPreview.purchase_order_id,
+                        receipt_date: recvDate,
+                        lines,
+                        idempotency_key: newIdempotencyKey(),
+                      });
+                      setRecvMsg(`Tercatat ${res.receipt.receipt_number}`);
+                      setRecvPoId(recvPreview.purchase_order_id);
+                    } catch (ex) { setRecvErr(errDetail(ex)); }
+                    finally { setRecvBusy(false); }
+                  }}
+                >
+                  {recvBusy ? "Menyimpan…" : "Catat penerimaan"}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        <table className="prod-table" data-testid="po-receipts-table">
+          <thead><tr><th>No</th><th>PO</th><th>Supplier</th><th>Tanggal</th></tr></thead>
+          <tbody>
+            {poReceipts.length === 0 && <tr><td colSpan={4} className="muted small">Belum ada penerimaan terhadap PO.</td></tr>}
+            {poReceipts.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{r.receipt_number}</td>
+                <td className="mono">{r.po_number}</td>
+                <td>{r.supplier}</td>
+                <td>{r.receipt_date}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -3,13 +3,14 @@ import { useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft, ClipboardList, Coins,
+  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK } from "../lib/navAccess";
 import OperatorWageSettings from "./OperatorWageSettings";
+import HppSettings from "./HppSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 
 const ROLE_LABELS = {
@@ -1873,8 +1874,10 @@ export default function Settings() {
   const canViewSidebarAccess = canManagePerms;
   const canViewWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm("reports.gaji_operator.view");
   const canEditWage = hasPerm("settings.operator_wage.manage");
+  const canViewHpp = hasPerm("settings.hpp.view") || hasPerm("settings.hpp.manage") || hasPerm("permissions.manage");
+  const canEditHpp = hasPerm("settings.hpp.manage");
 
-  const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
+  const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
   const [catalog, setCatalog] = useState(null);
   const [toast, setToast] = useState("");
@@ -1914,6 +1917,9 @@ export default function Settings() {
         )}
         {canViewWage && (
           <button role="tab" className={tab === "operator-wage" ? "active" : ""} onClick={() => setTab("operator-wage")} data-testid="settings-tab-operator-wage"><Coins size={14}/> Sistem Upah Operator</button>
+        )}
+        {canViewHpp && (
+          <button role="tab" className={tab === "hpp" ? "active" : ""} onClick={() => setTab("hpp")} data-testid="settings-tab-hpp"><Scale size={14}/> Pengaturan HPP</button>
         )}
         {canViewCaSettings && (
           <button role="tab" className={tab === "customer-approval" ? "active" : ""} onClick={() => setTab("customer-approval")} data-testid="settings-tab-customer-approval"><ClipboardCheck size={14}/> Customer Approval</button>
@@ -1956,6 +1962,7 @@ export default function Settings() {
         <SidebarAccessTab permissionCatalog={catalog} canManagePerms={canManagePerms} notify={notify}/>
       )}
       {tab === "operator-wage" && canViewWage && <OperatorWageTab notify={notify} canEdit={canEditWage}/>}
+      {tab === "hpp" && canViewHpp && <HppSettings notify={notify} canEdit={canEditHpp}/>}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
