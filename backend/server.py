@@ -6141,6 +6141,11 @@ from services.sales_invoices import (
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
 )
+from services.sales_receipts import (
+    list_sales_receipts as _list_sales_receipts,
+    get_sales_receipt_detail as _get_sales_receipt_detail,
+    create_sales_receipt as _create_sales_receipt,
+)
 
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
 class SalesOrderLineItemInput(BaseModel):
@@ -6198,12 +6203,17 @@ class SalesDeliveryCreatePayload(BaseModel):
 class SalesInvoiceLineItemInput(BaseModel):
     line_idx: int = 0
     line_id: Optional[str] = None
+    quantity: Optional[Union[int, float, str]] = None
+    invoice_qty: Optional[Union[int, float, str]] = None
     unit_price: Union[int, float, str, None] = 0
 
 
 class SalesInvoiceCreatePayload(BaseModel):
     po_id: str
     invoice_date: Optional[str] = None
+    payment_term_days: Optional[Union[int, str]] = 0
+    discount_amount: Optional[Union[int, float, str]] = 0
+    ppn_percent: Optional[Union[int, float, str]] = 0
     notes: Optional[str] = ""
     idempotency_key: Optional[str] = None
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
@@ -6212,9 +6222,21 @@ class SalesInvoiceCreatePayload(BaseModel):
 
 class SalesInvoiceUpdatePayload(BaseModel):
     invoice_date: Optional[str] = None
+    payment_term_days: Optional[Union[int, str]] = None
+    discount_amount: Optional[Union[int, float, str]] = None
+    ppn_percent: Optional[Union[int, float, str]] = None
     notes: Optional[str] = ""
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+
+
+# ---------- Sales Receipt (Penerimaan Penjualan) ----------
+class SalesReceiptCreatePayload(BaseModel):
+    invoice_id: str
+    receipt_date: Optional[str] = None
+    amount: Union[int, float, str]
+    notes: Optional[str] = ""
+    idempotency_key: Optional[str] = None
 
 
 async def _next_suggested_po_number(database) -> str:
@@ -6636,6 +6658,39 @@ async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayl
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
+
+
+# ==================================================
+# SALES RECEIPT (PENERIMAAN PENJUALAN) ENDPOINTS
+# ==================================================
+@api_router.get("/sales-receipts")
+async def list_sales_receipts_endpoint(
+    q: Optional[str] = None,
+    invoice_id: Optional[str] = None,
+    po_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """List sales receipts (Penerimaan Penjualan) with search and filters."""
+    await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
+    receipts = await _list_sales_receipts(db, q=q, invoice_id=invoice_id, po_id=po_id)
+    return {"receipts": receipts, "count": len(receipts)}
+
+
+@api_router.get("/sales-receipts/{id}")
+async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
+    """Get detail of a single sales receipt."""
+    await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
+    receipt = await _get_sales_receipt_detail(db, id)
+    return {"receipt": receipt}
+
+
+@api_router.post("/sales-receipts")
+async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user=Depends(current_user)):
+    """Create a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively."""
+    await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
+    receipt = await _create_sales_receipt(db, payload.model_dump(), user)
+    return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
+
 
 
 # ---------- PDF PO import ----------
@@ -8596,6 +8651,13 @@ async def seed():
     await db.sales_invoices.create_index("id", unique=True)
     await db.sales_invoices.create_index("po_id")
     await db.sales_invoices.create_index("created_at")
+    # DO NOT create unique index on invoice_number yet, due to existing historical duplicates (INV/2026/08/20/000019)
+    # as per strict user instruction: "STOP hardening untuk document type tersebut dan LAPORKAN."
+    
+    await db.sales_receipts.create_index("id", unique=True)
+    await db.sales_receipts.create_index("receipt_number", unique=True)
+    await db.sales_receipts.create_index("invoice_id")
+    await db.sales_receipts.create_index("created_at")
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
