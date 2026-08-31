@@ -26,6 +26,25 @@ def bind_motor():
     server.client = AsyncIOMotorClient(os.environ['MONGO_URL'])
     server.db = server.client[os.environ['DB_NAME']]
 
+
+async def _ensure_business_number_indexes():
+    from pymongo.errors import DuplicateKeyError, OperationFailure
+    for coll, field in (
+        (server.db.orders, "po_number"),
+        (server.db.sales_deliveries, "sj_number"),
+        (server.db.sales_invoices, "invoice_number"),
+        (server.db.sales_receipts, "receipt_number"),
+    ):
+        try:
+            await coll.create_index(field, unique=True)
+        except (DuplicateKeyError, OperationFailure):
+            pass
+
+
+@pytest.fixture(autouse=True)
+async def ensure_unique_indexes(bind_motor):
+    await _ensure_business_number_indexes()
+
 def admin_token():
     import jwt
     from datetime import datetime, timedelta, timezone

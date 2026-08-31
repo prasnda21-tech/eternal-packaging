@@ -62,6 +62,16 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(appSrc).toMatch(/<PesananPenjualan \/>/);
     expect(appSrc).toMatch(/path="\/penjualan"/);
   });
+
+  test("PO list has checkbox, visible-only select all, Hapus Terpilih, and PO number confirm", () => {
+    expect(src).toMatch(/select-all-orders/);
+    expect(src).toMatch(/order-checkbox-/);
+    expect(src).toMatch(/btn-hapus-terpilih/);
+    expect(src).toMatch(/Hapus Terpilih/);
+    expect(src).toMatch(/delete-confirm-modal/);
+    expect(src).toMatch(/po_number/);
+    expect(src).toMatch(/selectedIds\.size === orders\.length/);
+  });
 });
 
 describe("Pesanan Penjualan Nav Integration", () => {

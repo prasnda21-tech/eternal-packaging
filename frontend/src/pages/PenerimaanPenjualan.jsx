@@ -1,0 +1,970 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import {
+  AlertCircle,
+  CheckCircle2,
+  CreditCard,
+  FileText,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+  ArrowRight,
+} from "lucide-react";
+import api from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { formatDisplayDate } from "../lib/constants";
+
+function getTodayString() {
+  const d = new Date();
+  return d.toISOString().split("T")[0];
+}
+
+function formatRupiah(num) {
+  const n = Number(num) || 0;
+  return "Rp " + n.toLocaleString("id-ID");
+}
+
+export default function PenerimaanPenjualan() {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user, hasPerm } = useAuth();
+
+  const canCreate =
+    hasPerm("sales.receipt.create") ||
+    hasPerm("sales.invoice.create") ||
+    hasPerm("sales_order.create") ||
+    hasPerm("po.edit") ||
+    user?.role === "admin";
+  const canDelete =
+    hasPerm("sales.receipt.delete") ||
+    hasPerm("sales.receipt.create") ||
+    hasPerm("po.edit") ||
+    user?.role === "admin";
+
+  const queryInvoiceId = searchParams.get("invoice_id") || "";
+
+  // List State
+  const [receipts, setReceipts] = useState([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [listErr, setListErr] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
+
+  // Modal / Create State
+  const [isModalOpen, setIsModalOpen] = useState(Boolean(queryInvoiceId) || searchParams.get("action") === "create");
+  const [invoicesWithBalance, setInvoicesWithBalance] = useState([]);
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState(queryInvoiceId);
+  const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [receiptAmount, setReceiptAmount] = useState("");
+  const [receiptDate, setReceiptDate] = useState(getTodayString());
+  const [receiptNotes, setReceiptNotes] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createErr, setCreateErr] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+
+  // Detail Modal State
+  const [detailReceipt, setDetailReceipt] = useState(null);
+
+  // Load receipts list
+  const loadReceipts = useCallback(async () => {
+    setListLoading(true);
+    setListErr("");
+    try {
+      const params = {};
+      if (searchQuery.trim()) params.q = searchQuery.trim();
+      const res = await api.listSalesReceipts(params);
+      setReceipts(res.receipts || []);
+      setSelectedIds(new Set());
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setListErr(typeof det === "object" ? det.message : det || "Gagal memuat daftar Penerimaan Penjualan");
+    } finally {
+      setListLoading(false);
+    }
+  }, [searchQuery]);
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    if (selectedIds.size === receipts.length && receipts.length > 0) setSelectedIds(new Set());
+    else setSelectedIds(new Set(receipts.map((r) => r.id)));
+  };
+  const formatDeleteError = (det) => {
+    if (typeof det === "object" && det) {
+      const blockers = det.blockers || [];
+      if (blockers.length) {
+        return `${det.message || "Tidak dapat menghapus."} ${blockers.map((b) => `${b.number || b.id}: ${b.reason}`).join(" ")}`.trim();
+      }
+      return det.message || JSON.stringify(det);
+    }
+    return det || "Gagal menghapus.";
+  };
+  const handleDelete = async (id) => {
+    setDeleteLoading(true);
+    setDeleteErr("");
+    try {
+      await api.deleteSalesReceipt(id);
+      setDeleteConfirm(null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      loadReceipts();
+    } catch (e) {
+      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    setDeleteLoading(true);
+    setDeleteErr("");
+    try {
+      const ids = deleteConfirm?.ids || Array.from(selectedIds);
+      await api.bulkDeleteSalesReceipts(ids);
+      setDeleteConfirm(null);
+      setSelectedIds(new Set());
+      loadReceipts();
+    } catch (e) {
+      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  // Load unpaid / partially paid invoices for the dropdown
+  const loadInvoicesForReceipt = useCallback(async () => {
+    if (!canCreate) return;
+    setInvoicesLoading(true);
+    try {
+      const res = await api.listSalesInvoices({});
+      const allInvoices = res.invoices || [];
+      // Filter invoices that have outstanding_amount > 0 or matching queryInvoiceId
+      const eligible = allInvoices.filter((inv) => (inv.outstanding_amount > 0) || inv.id === queryInvoiceId);
+      setInvoicesWithBalance(eligible);
+    } catch {
+      // Best effort
+    } finally {
+      setInvoicesLoading(false);
+    }
+  }, [canCreate, queryInvoiceId]);
+
+  useEffect(() => {
+    loadReceipts();
+  }, [loadReceipts]);
+
+  useEffect(() => {
+    if (isModalOpen) {
+      loadInvoicesForReceipt();
+    }
+  }, [isModalOpen, loadInvoicesForReceipt]);
+
+  // When selected invoice changes, fetch its full detail
+  useEffect(() => {
+    if (!selectedInvoiceId) {
+      setSelectedInvoice(null);
+      return;
+    }
+    let isMounted = true;
+    (async () => {
+      try {
+        const res = await api.getSalesInvoice(selectedInvoiceId);
+        if (isMounted) {
+          const inv = res.invoice || res;
+          setSelectedInvoice(inv);
+          if (!receiptAmount && inv.outstanding_amount > 0) {
+            setReceiptAmount(String(inv.outstanding_amount));
+          }
+        }
+      } catch {
+        // Handled
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedInvoiceId]);
+
+  // Live preview calculation for receipt modal
+  const previewCalc = useMemo(() => {
+    if (!selectedInvoice) return null;
+    const grandTotal = Number(selectedInvoice.grand_total) || 0;
+    const paidBefore = Number(selectedInvoice.paid_total) || 0;
+    const outstandingBefore = Math.max(0, Number(selectedInvoice.outstanding_amount) || (grandTotal - paidBefore));
+
+    const numAmount = Math.max(0, Number(receiptAmount) || 0);
+    const newPaid = Math.min(grandTotal, paidBefore + numAmount);
+    const newOutstanding = Math.max(0, outstandingBefore - numAmount);
+    const newState = newPaid >= grandTotal ? "LUNAS" : "DP";
+    const isOverpayment = numAmount > outstandingBefore;
+
+    return {
+      grandTotal,
+      paidBefore,
+      outstandingBefore,
+      amount: numAmount,
+      newPaid,
+      newOutstanding,
+      newState,
+      isOverpayment,
+    };
+  }, [selectedInvoice, receiptAmount]);
+
+  const handleOpenCreateModal = (invId = "") => {
+    setSelectedInvoiceId(invId || "");
+    setReceiptAmount("");
+    setReceiptDate(getTodayString());
+    setReceiptNotes("");
+    setCreateErr("");
+    setIsModalOpen(true);
+  };
+
+  const handleCloseCreateModal = () => {
+    setIsModalOpen(false);
+    setSelectedInvoiceId("");
+    setSelectedInvoice(null);
+    setReceiptAmount("");
+    setReceiptNotes("");
+    setCreateErr("");
+    setSearchParams({});
+  };
+
+  const handlePayFull = () => {
+    if (selectedInvoice && selectedInvoice.outstanding_amount > 0) {
+      setReceiptAmount(String(selectedInvoice.outstanding_amount));
+    }
+  };
+
+  const handleSaveReceipt = async (e) => {
+    e.preventDefault();
+    if (!selectedInvoiceId) {
+      setCreateErr("Silakan pilih Faktur Penjualan terlebih dahulu.");
+      return;
+    }
+    const numAmount = Number(receiptAmount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      setCreateErr("Jumlah penerimaan harus lebih besar dari 0.");
+      return;
+    }
+    if (previewCalc?.isOverpayment) {
+      setCreateErr(`Jumlah penerimaan (${formatRupiah(numAmount)}) melebihi sisa tagihan (${formatRupiah(previewCalc.outstandingBefore)}).`);
+      return;
+    }
+
+    setCreateBusy(true);
+    setCreateErr("");
+    setSuccessMsg("");
+
+    try {
+      const payload = {
+        invoice_id: selectedInvoiceId,
+        receipt_date: receiptDate || getTodayString(),
+        amount: numAmount,
+        notes: receiptNotes.trim(),
+      };
+      const res = await api.createSalesReceipt(payload);
+      setSuccessMsg(res.message || "Penerimaan Penjualan berhasil disimpan!");
+      setTimeout(() => {
+        setSuccessMsg("");
+        handleCloseCreateModal();
+        loadReceipts();
+      }, 900);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      setCreateErr(typeof det === "object" ? det.message : det || err.message || "Gagal menyimpan Penerimaan Penjualan");
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="page-container"
+      data-testid="penerimaan-penjualan-page"
+      style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
+    >
+      {/* HEADER SECTION */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 24,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 10,
+              backgroundColor: "#d1fae5",
+              color: "#059669",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <CreditCard size={24} />
+          </div>
+          <div>
+            <h1
+              style={{
+                fontSize: 22,
+                fontWeight: 700,
+                color: "#111827",
+                margin: 0,
+              }}
+            >
+              Penerimaan Penjualan
+            </h1>
+            <p style={{ fontSize: 13, color: "#6b7280", margin: "2px 0 0" }}>
+              Pencatatan pembayaran tagihan Faktur Penjualan (DP &amp; Pelunasan)
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          {canDelete && selectedIds.size > 0 && (
+            <button
+              type="button"
+              data-testid="btn-hapus-terpilih"
+              onClick={() => {
+                setDeleteErr("");
+                setDeleteConfirm({
+                  ids: Array.from(selectedIds),
+                  numbers: receipts.filter((r) => selectedIds.has(r.id)).map((r) => r.receipt_number),
+                });
+              }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 14px",
+                fontSize: 13,
+                fontWeight: 600,
+                backgroundColor: "#fee2e2",
+                color: "#b91c1c",
+                border: "1px solid #fecaca",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >
+              <Trash2 size={15} /> Hapus Terpilih ({selectedIds.size})
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={loadReceipts}
+            disabled={listLoading}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "8px 14px",
+              fontSize: 13,
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
+          >
+            <RefreshCw size={15} className={listLoading ? "animate-spin" : ""} />
+            Segarkan
+          </button>
+
+          {canCreate && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-testid="btn-create-receipt"
+              onClick={() => handleOpenCreateModal()}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 16px",
+                fontSize: 13,
+                fontWeight: 600,
+                backgroundColor: "#059669",
+                borderColor: "#059669",
+                color: "#fff",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >
+              <Plus size={16} />
+              + Buat Penerimaan
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* FILTER & SEARCH BAR */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          marginBottom: 18,
+          backgroundColor: "#fff",
+          padding: 12,
+          borderRadius: 8,
+          border: "1px solid #e5e7eb",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ position: "relative", flex: 1 }}>
+          <Search
+            size={16}
+            style={{
+              position: "absolute",
+              left: 12,
+              top: "50%",
+              transform: "translateY(-50%)",
+              color: "#9ca3af",
+            }}
+          />
+          <input
+            type="text"
+            className="form-input"
+            data-testid="search-receipt-input"
+            placeholder="Cari nomor penerimaan, no faktur, no PO, customer..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              paddingLeft: 36,
+              width: "100%",
+              height: 38,
+              fontSize: 13,
+              borderRadius: 6,
+              border: "1px solid #d1d5db",
+            }}
+          />
+        </div>
+      </div>
+
+      {listErr && (
+        <div
+          style={{
+            padding: "10px 14px",
+            backgroundColor: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#b91c1c",
+            borderRadius: 6,
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+          }}
+        >
+          <AlertCircle size={16} />
+          <span>{listErr}</span>
+        </div>
+      )}
+
+      {/* TABLE DATA */}
+      <div
+        style={{
+          backgroundColor: "#fff",
+          borderRadius: 8,
+          border: "1px solid #e5e7eb",
+          overflow: "hidden",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+        }}
+      >
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
+            <thead>
+              <tr style={{ backgroundColor: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#4b5563" }}>
+                {canDelete && (
+                  <th style={{ padding: "12px 8px", width: 36 }}>
+                    <input type="checkbox" data-testid="select-all-receipts" checked={receipts.length > 0 && selectedIds.size === receipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                  </th>
+                )}
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Penerimaan</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Tgl Penerimaan</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Faktur</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Customer</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. PO</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "right" }}>Jumlah Penerimaan</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Status Faktur</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Catatan</th>
+                {canDelete && (
+                  <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Aksi</th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {listLoading ? (
+                <tr>
+                  <td colSpan={canDelete ? 10 : 8} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
+                    Memuat data penerimaan penjualan...
+                  </td>
+                </tr>
+              ) : receipts.length === 0 ? (
+                <tr>
+                  <td colSpan={canDelete ? 10 : 8} style={{ padding: 48, textAlign: "center" }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                      <FileText size={36} color="#9ca3af" />
+                      <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
+                      <span style={{ fontSize: 12, color: "#6b7280" }}>
+                        Penerimaan pembayaran dari Faktur Penjualan akan tercatat di sini.
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                receipts.map((r, idx) => (
+                  <tr
+                    key={r.id || idx}
+                    style={{
+                      borderBottom: "1px solid #f3f4f6",
+                      backgroundColor: idx % 2 === 0 ? "#fff" : "#fafafa",
+                    }}
+                  >
+                    {canDelete && (
+                      <td style={{ padding: "12px 8px" }}>
+                        <input type="checkbox" data-testid={`receipt-checkbox-${r.id}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} aria-label={`Pilih ${r.receipt_number}`} />
+                      </td>
+                    )}
+                    <td style={{ padding: "12px 16px" }}>
+                      <span style={{ fontFamily: "monospace", color: "#059669", fontWeight: 700 }} data-testid={`receipt-number-${r.id}`}>
+                        {r.receipt_number || "-"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px", fontWeight: 500, color: "#111827" }}>
+                      {formatDisplayDate(r.receipt_date)}
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <span style={{ fontFamily: "monospace", color: "#9333ea", fontWeight: 600 }}>
+                        {r.invoice_number || "-"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px", fontWeight: 500, color: "#374151" }}>
+                      {r.customer || "-"}
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <span style={{ fontFamily: "monospace", color: "#4b5563" }}>
+                        {r.po_number || "-"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px", textAlign: "right", fontWeight: 700, color: "#059669" }}>
+                      {formatRupiah(r.amount)}
+                    </td>
+                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
+                      <span
+                        style={{
+                          display: "inline-block",
+                          padding: "3px 10px",
+                          borderRadius: 9999,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          backgroundColor: r.payment_state === "LUNAS" ? "#d1fae5" : "#e0e7ff",
+                          color: r.payment_state === "LUNAS" ? "#065f46" : "#3730a3",
+                          border: `1px solid ${r.payment_state === "LUNAS" ? "#a7f3d0" : "#c7d2fe"}`,
+                        }}
+                      >
+                        {r.payment_state || "DP"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px", color: "#6b7280", maxWidth: 220 }}>
+                      {r.notes || "-"}
+                    </td>
+                    {canDelete && (
+                      <td style={{ padding: "12px 16px", textAlign: "center" }}>
+                        <button
+                          type="button"
+                          data-testid={`btn-delete-receipt-${r.id}`}
+                          onClick={() => {
+                            setDeleteErr("");
+                            setDeleteConfirm({
+                              id: r.id,
+                              number: r.receipt_number,
+                              numbers: [r.receipt_number],
+                            });
+                          }}
+                          style={{
+                            padding: "5px 10px",
+                            fontSize: "0.8rem",
+                            borderRadius: 6,
+                            border: "1px solid #fecaca",
+                            background: "#fef2f2",
+                            color: "#b91c1c",
+                            cursor: "pointer",
+                            fontWeight: 600,
+                          }}
+                        >
+                          Hapus
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* CREATE RECEIPT MODAL */}
+      {isModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: "#fff",
+              borderRadius: 10,
+              width: "100%",
+              maxWidth: 580,
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              overflow: "hidden",
+            }}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                padding: "16px 20px",
+                borderBottom: "1px solid #e5e7eb",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                backgroundColor: "#f9fafb",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <CreditCard size={20} color="#059669" />
+                <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#111827" }}>
+                  Catat Penerimaan Penjualan
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseCreateModal}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleSaveReceipt} style={{ padding: 20 }}>
+              {createErr && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    backgroundColor: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    color: "#b91c1c",
+                    borderRadius: 6,
+                    marginBottom: 16,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 13,
+                  }}
+                >
+                  <AlertCircle size={16} />
+                  <span>{createErr}</span>
+                </div>
+              )}
+
+              {successMsg && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    backgroundColor: "#ecfdf5",
+                    border: "1px solid #a7f3d0",
+                    color: "#065f46",
+                    borderRadius: 6,
+                    marginBottom: 16,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 13,
+                  }}
+                >
+                  <CheckCircle2 size={16} />
+                  <span>{successMsg}</span>
+                </div>
+              )}
+
+              {/* 1. Pilih Faktur Penjualan */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                  Pilih Faktur Penjualan *
+                </label>
+                <select
+                  className="form-select"
+                  data-testid="select-receipt-invoice"
+                  value={selectedInvoiceId}
+                  onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                  disabled={createBusy || invoicesLoading}
+                  style={{
+                    width: "100%",
+                    height: 38,
+                    borderRadius: 6,
+                    border: "1px solid #d1d5db",
+                    fontSize: 13,
+                    padding: "0 10px",
+                  }}
+                >
+                  <option value="">-- Pilih Faktur Penjualan --</option>
+                  {invoicesWithBalance.map((inv) => (
+                    <option key={inv.id} value={inv.id}>
+                      {inv.customer} — PO {inv.po_number} (Sisa: {formatRupiah(inv.outstanding_amount || inv.grand_total)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Summary Card Faktur */}
+              {selectedInvoice && (
+                <div
+                  style={{
+                    backgroundColor: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 8,
+                    padding: 14,
+                    marginBottom: 16,
+                  }}
+                >
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Customer:</span>
+                      <div style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.customer}</div>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b" }}>No. PO:</span>
+                      <div style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Total Faktur:</span>
+                      <div style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(selectedInvoice.grand_total)}</div>
+                    </div>
+                    <div>
+                      <span style={{ color: "#64748b" }}>Sisa Tagihan Saat Ini:</span>
+                      <div style={{ fontWeight: 700, color: "#dc2626" }}>
+                        {formatRupiah(selectedInvoice.outstanding_amount)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 2. Jumlah Penerimaan */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
+                    Jumlah Penerimaan (Rp) *
+                  </label>
+                  {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
+                    <button
+                      type="button"
+                      onClick={handlePayFull}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#059669",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                      }}
+                    >
+                      Bayar Sisa Tagihan (Lunas)
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  className="form-input"
+                  data-testid="input-receipt-amount"
+                  placeholder="0"
+                  min="1"
+                  max={selectedInvoice?.outstanding_amount || undefined}
+                  value={receiptAmount}
+                  onChange={(e) => setReceiptAmount(e.target.value)}
+                  disabled={createBusy || !selectedInvoice}
+                  style={{
+                    width: "100%",
+                    height: 38,
+                    borderRadius: 6,
+                    border: "1px solid #d1d5db",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    padding: "0 10px",
+                  }}
+                />
+              </div>
+
+              {/* 3. Tanggal Penerimaan */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                  Tanggal Penerimaan *
+                </label>
+                <input
+                  type="date"
+                  className="form-input"
+                  data-testid="input-receipt-date"
+                  value={receiptDate}
+                  onChange={(e) => setReceiptDate(e.target.value)}
+                  disabled={createBusy}
+                  style={{
+                    width: "100%",
+                    height: 38,
+                    borderRadius: 6,
+                    border: "1px solid #d1d5db",
+                    fontSize: 13,
+                    padding: "0 10px",
+                  }}
+                />
+              </div>
+
+              {/* 4. Catatan */}
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                  Catatan Pembayaran
+                </label>
+                <input
+                  type="text"
+                  className="form-input"
+                  data-testid="input-receipt-notes"
+                  placeholder="Contoh: DP 50% via BCA / Pelunasan cash"
+                  value={receiptNotes}
+                  onChange={(e) => setReceiptNotes(e.target.value)}
+                  disabled={createBusy}
+                  style={{
+                    width: "100%",
+                    height: 38,
+                    borderRadius: 6,
+                    border: "1px solid #d1d5db",
+                    fontSize: 13,
+                    padding: "0 10px",
+                  }}
+                />
+              </div>
+
+              {/* Live Preview Bar */}
+              {previewCalc && previewCalc.amount > 0 && !previewCalc.isOverpayment && (
+                <div
+                  style={{
+                    backgroundColor: "#ecfdf5",
+                    border: "1px solid #a7f3d0",
+                    borderRadius: 6,
+                    padding: 12,
+                    marginBottom: 18,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 11, color: "#065f46" }}>Status Baru Setelah Penerimaan:</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
+                      {previewCalc.newState === "LUNAS" ? "LUNAS (100% Terbayar)" : `DP (Sisa: ${formatRupiah(previewCalc.newOutstanding)})`}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 11, color: "#065f46" }}>Total Terbayar:</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
+                      {formatRupiah(previewCalc.newPaid)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleCloseCreateModal}
+                  disabled={createBusy}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 6,
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  data-testid="btn-submit-receipt"
+                  disabled={createBusy || !selectedInvoice || previewCalc?.isOverpayment}
+                  style={{
+                    padding: "8px 18px",
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    backgroundColor: "#059669",
+                    borderColor: "#059669",
+                    color: "#fff",
+                    cursor: createBusy || !selectedInvoice ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {createBusy ? "Menyimpan..." : "Simpan Penerimaan"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Hapus Penerimaan Penjualan?</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
+            <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#059669" }}>
+              {(deleteConfirm.numbers || [deleteConfirm.number]).filter(Boolean).map((n) => <li key={n}>{n}</li>)}
+            </ul>
+            {deleteErr && <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>{deleteErr}</div>}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>Batal</button>
+              <button
+                type="button"
+                data-testid="btn-confirm-delete"
+                onClick={() => (deleteConfirm.ids ? handleBulkDelete() : handleDelete(deleteConfirm.id))}
+                disabled={deleteLoading}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}
+              >
+                {deleteLoading ? "Menghapus..." : "Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

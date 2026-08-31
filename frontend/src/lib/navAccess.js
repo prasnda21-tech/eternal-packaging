@@ -21,6 +21,7 @@ export const NAV_KEYS = {
   salesOrder: "nav.sales.sales_order",
   salesDeliveryOrder: "nav.sales.delivery_order",
   salesInvoice: "nav.sales.sales_invoice",
+  salesReceipt: "nav.sales.sales_receipt",
   importPo: "nav.sales.import_po",
   purchasing: "nav.purchasing",
   purchaseReceipts: "nav.purchasing.receipts",
@@ -56,6 +57,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesDeliveryOrder, label: "Pengiriman Pesanan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", parent: NAV_KEYS.purchasing },
@@ -81,12 +83,14 @@ export function salesNavVisible(hasPerm) {
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
+  const salesReceipt = parent && (canSeeNav(hasPerm, NAV_KEYS.salesReceipt) || canSeeNav(hasPerm, "sales.receipt.view") || canSeeNav(hasPerm, "sales.receipt.create") || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
   return {
-    parent: Boolean(salesOrder || salesDeliveryOrder || salesInvoice || importPo),
+    parent: Boolean(salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo),
     salesOrder: Boolean(salesOrder),
     salesDeliveryOrder: Boolean(salesDeliveryOrder),
     salesInvoice: Boolean(salesInvoice),
+    salesReceipt: Boolean(salesReceipt),
     importPo: Boolean(importPo),
   };
 }
@@ -96,6 +100,7 @@ export const SALES_NAV_ROUTES = {
   [NAV_KEYS.salesOrder]: "/penjualan/pesanan-penjualan",
   [NAV_KEYS.salesDeliveryOrder]: "/penjualan/pengiriman-pesanan",
   [NAV_KEYS.salesInvoice]: "/penjualan/faktur-penjualan",
+  [NAV_KEYS.salesReceipt]: "/penjualan/penerimaan-penjualan",
   [NAV_KEYS.importPo]: "/admin/import",
 };
 
@@ -103,6 +108,7 @@ const SALES_VIS_FIELD = {
   [NAV_KEYS.salesOrder]: "salesOrder",
   [NAV_KEYS.salesDeliveryOrder]: "salesDeliveryOrder",
   [NAV_KEYS.salesInvoice]: "salesInvoice",
+  [NAV_KEYS.salesReceipt]: "salesReceipt",
   [NAV_KEYS.importPo]: "importPo",
 };
 
@@ -111,6 +117,7 @@ export const SALES_TILE_TONES = {
   [NAV_KEYS.salesOrder]: "blue",
   [NAV_KEYS.salesDeliveryOrder]: "amber",
   [NAV_KEYS.salesInvoice]: "purple",
+  [NAV_KEYS.salesReceipt]: "emerald",
   [NAV_KEYS.importPo]: "green",
 };
 
@@ -118,6 +125,7 @@ export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.salesOrder]: "top-nav-sales-order",
   [NAV_KEYS.salesDeliveryOrder]: "top-nav-sales-delivery-order",
   [NAV_KEYS.salesInvoice]: "top-nav-sales-invoice",
+  [NAV_KEYS.salesReceipt]: "top-nav-sales-receipt",
   [NAV_KEYS.importPo]: "top-nav-import",
 };
 

@@ -99,9 +99,22 @@ describe("salesNavVisible", () => {
     expect(v.salesInvoice).toBe(true);
   });
 
-  test("hides Faktur Penjualan without sales invoice perm or general sales perms", () => {
+  test("shows parent when Penerimaan Penjualan is granted", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt));
+    expect(v.parent).toBe(true);
+    expect(v.salesReceipt).toBe(true);
+  });
+
+  test("shows parent when sales.receipt.view permission is granted", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales, "sales.receipt.view"));
+    expect(v.parent).toBe(true);
+    expect(v.salesReceipt).toBe(true);
+  });
+
+  test("hides Faktur Penjualan and Penerimaan Penjualan without permissions", () => {
     const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.importPo));
     expect(v.salesInvoice).toBe(false);
+    expect(v.salesReceipt).toBe(false);
   });
 });
 
@@ -121,11 +134,19 @@ describe("salesMenuItems", () => {
     ]);
   });
 
+  test("builds Penerimaan Penjualan tile when granted", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt));
+    expect(items).toEqual([
+      { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", to: "/penjualan/penerimaan-penjualan", tone: "emerald", testid: "top-nav-sales-receipt" },
+    ]);
+  });
+
   test("NAV_MENU_FALLBACK includes Penjualan children", () => {
     expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual([
       "Pesanan Penjualan",
       "Pengiriman Pesanan",
       "Faktur Penjualan",
+      "Penerimaan Penjualan",
       "Import PO",
     ]);
   });

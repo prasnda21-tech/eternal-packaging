@@ -10,7 +10,7 @@ from typing import List, Optional, Any, Dict, Tuple, Union
 from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, OperationFailure
 from services.accurate import (
     AccurateClient,
     AccurateErrorCategory,
@@ -2061,6 +2061,21 @@ async def delete_po(order_id: str, payload: DeletePayload, user=Depends(current_
             "message": "Konfirmasi tidak cocok. Ketik nomor PO atau 'HAPUS' untuk melanjutkan.",
             "expected": po_num,
         })
+    # === DEPENDENCY CHECKS ===
+    pay_count = await db.sales_receipts.count_documents({"po_id": order["id"]})
+    if pay_count > 0:
+        raise HTTPException(400, "Hapus Penerimaan Penjualan terlebih dahulu.")
+    inv_count = await db.sales_invoices.count_documents({"po_id": order["id"]})
+    if inv_count > 0:
+        raise HTTPException(400, "Hapus Faktur Penjualan terlebih dahulu.")
+    sj_count = await db.sales_deliveries.count_documents({"po_id": order["id"]})
+    if sj_count > 0:
+        raise HTTPException(400, "Hapus Pengiriman Pesanan (Surat Jalan) terlebih dahulu.")
+    # Check production activity (stage > 1 means some process started)
+    current_stage = order.get("current_stage", 0)
+    if current_stage > 1:
+        raise HTTPException(400, "PO tidak dapat dihapus karena sudah memiliki aktivitas proses.")
+    # === END DEPENDENCY CHECKS ===
     impact = _describe_po_impact(order)
     # Audit BEFORE delete so we retain the snapshot even after the row is gone
     await _audit_po(order, "po.delete", user, before={
@@ -2146,7 +2161,26 @@ async def bulk_delete(payload: BulkPayload, user=Depends(current_user)):
         if not order:
             failed.append({"id": oid, "reason": "PO tidak ditemukan"})
             continue
+        # Dependency checks
+        pay_c = await db.sales_receipts.count_documents({"po_id": order["id"]})
+        if pay_c > 0:
+            failed.append({"id": oid, "po_number": order.get("po_number"), "reason": "Hapus Penerimaan Penjualan terlebih dahulu."})
+            continue
+        inv_c = await db.sales_invoices.count_documents({"po_id": order["id"]})
+        if inv_c > 0:
+            failed.append({"id": oid, "po_number": order.get("po_number"), "reason": "Hapus Faktur Penjualan terlebih dahulu."})
+            continue
+        sj_c = await db.sales_deliveries.count_documents({"po_id": order["id"]})
+        if sj_c > 0:
+            failed.append({"id": oid, "po_number": order.get("po_number"), "reason": "Hapus Pengiriman Pesanan terlebih dahulu."})
+            continue
+        if order.get("current_stage", 0) > 1:
+            failed.append({"id": oid, "po_number": order.get("po_number"), "reason": "PO sudah memiliki aktivitas proses."})
+            continue
         to_delete.append(order)
+    # ALL-OR-NOTHING: if any blocked, delete none
+    if failed:
+        raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa PO memiliki dependensi.", "blockers": failed})
     delete_ids = [o["id"] for o in to_delete]
     for o in to_delete:
         await _audit_po(o, "po.delete", user, before={
@@ -6140,11 +6174,15 @@ from services.sales_invoices import (
     list_sales_invoices as _list_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
+    delete_sales_invoice as _delete_sales_invoice,
+    bulk_delete_sales_invoices as _bulk_delete_sales_invoices,
 )
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
     create_sales_receipt as _create_sales_receipt,
+    delete_sales_receipt as _delete_sales_receipt,
+    bulk_delete_sales_receipts as _bulk_delete_sales_receipts,
 )
 
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
@@ -6691,6 +6729,160 @@ async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user
     receipt = await _create_sales_receipt(db, payload.model_dump(), user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
 
+
+
+# ==================================================
+# DELETE ENDPOINTS — SAFE DELETE WITH DEPENDENCY CHECKS
+# ==================================================
+
+async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
+    """Return a human-friendly reject reason, or None if the business SJ may be deleted."""
+    po_id = delivery.get("po_id")
+    sj_number = delivery.get("sj_number")
+    delivery_id = delivery.get("id")
+    if po_id:
+        pay_count = await db.sales_receipts.count_documents({"po_id": po_id})
+        if pay_count > 0:
+            return "Hapus Penerimaan Penjualan terlebih dahulu."
+    order = await db.orders.find_one({"id": po_id}, {"_id": 0}) if po_id else None
+    if not order:
+        return None
+
+    for lc in (order.get("loading_confirmations") or []):
+        if lc.get("sj_number") == sj_number or lc.get("sales_delivery_id") == delivery_id:
+            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
+
+    for sh in (order.get("shipments") or []):
+        same = (
+            sh.get("sj_number") == sj_number
+            or sh.get("number") == sj_number
+            or sh.get("sales_delivery_id") == delivery_id
+            or sh.get("id") == delivery_id
+        )
+        if not same:
+            continue
+        if (sh.get("loaded_qty") or 0) > 0:
+            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
+        if (sh.get("delivered_qty") or 0) > 0 or sh.get("delivered") or sh.get("status") in ("Terkirim", "DELIVERED"):
+            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+
+    proofs = [p for p in (order.get("delivery_proofs") or []) if not p.get("is_deleted")]
+    if proofs:
+        return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+    if (order.get("delivery_status") or "") == "Terkirim":
+        return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+
+    for f in (order.get("surat_jalan_files") or []):
+        if f.get("is_deleted"):
+            continue
+        if f.get("sj_number") == sj_number or f.get("delivery_note_number") == sj_number:
+            return "Surat Jalan tidak dapat dihapus karena memiliki file lampiran."
+    return None
+
+
+async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> None:
+    """Remove the exact business SJ shipment row only (not Loading/Pengiriman/files)."""
+    if not po_id:
+        return
+    delivery_id = delivery.get("id")
+    if delivery_id:
+        await db.orders.update_one({"id": po_id}, {"$pull": {"shipments": {"sales_delivery_id": delivery_id}}})
+        await db.orders.update_one({"id": po_id}, {"$pull": {"shipments": {"id": delivery_id}}})
+
+
+@api_router.delete("/sales-receipts/{id}")
+async def delete_sales_receipt_endpoint(id: str, user=Depends(current_user)):
+    """Delete a single sales receipt (Penerimaan Penjualan) with dependency safety."""
+    await _require_any_perm(user, "sales.receipt.delete", "sales.receipt.create", "po.edit")
+    result = await _delete_sales_receipt(db, id, user)
+    await _write_audit(action="sales.receipt.delete", actor=user, target_email=f"receipt:{result.get('receipt_number')}",
+                       before={"receipt_number": result.get("receipt_number"), "id": result.get("id")}, after={"deleted": True})
+    return result
+
+
+@api_router.post("/sales-receipts-bulk/delete")
+async def bulk_delete_sales_receipts_endpoint(payload: BulkPayload, user=Depends(current_user)):
+    """Bulk delete sales receipts — ALL OR NOTHING."""
+    await _require_any_perm(user, "sales.receipt.delete", "sales.receipt.create", "po.edit")
+    if not payload.ids:
+        raise HTTPException(400, "Pilih minimal 1 Penerimaan.")
+    result = await _bulk_delete_sales_receipts(db, payload.ids, user)
+    await _write_audit(action="sales.receipt.bulk_delete", actor=user, target_email=f"receipts:{result['deleted_count']}",
+                       before={"ids": payload.ids}, after=result)
+    return result
+
+
+@api_router.delete("/sales-invoices/{id}")
+async def delete_sales_invoice_endpoint(id: str, user=Depends(current_user)):
+    """Delete a single sales invoice (Faktur Penjualan) with dependency safety."""
+    await _require_any_perm(user, "sales.invoice.delete", "sales.invoice.create", "po.edit")
+    result = await _delete_sales_invoice(db, id, user)
+    await _write_audit(action="sales.invoice.delete", actor=user, target_email=f"invoice:{result.get('invoice_number')}",
+                       before={"invoice_number": result.get("invoice_number"), "id": result.get("id")}, after={"deleted": True})
+    return result
+
+
+@api_router.post("/sales-invoices-bulk/delete")
+async def bulk_delete_sales_invoices_endpoint(payload: BulkPayload, user=Depends(current_user)):
+    """Bulk delete sales invoices — ALL OR NOTHING."""
+    await _require_any_perm(user, "sales.invoice.delete", "sales.invoice.create", "po.edit")
+    if not payload.ids:
+        raise HTTPException(400, "Pilih minimal 1 Faktur.")
+    result = await _bulk_delete_sales_invoices(db, payload.ids, user)
+    await _write_audit(action="sales.invoice.bulk_delete", actor=user, target_email=f"invoices:{result['deleted_count']}",
+                       before={"ids": payload.ids}, after=result)
+    return result
+
+
+@api_router.delete("/sales-deliveries/{id}")
+async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
+    """Delete a single sales delivery (Surat Jalan) with dependency safety."""
+    await _require_any_perm(user, "sales.delivery.delete", "sales.delivery.create", "po.edit")
+    delivery = await db.sales_deliveries.find_one({"id": str(id)}, {"_id": 0})
+    if not delivery:
+        raise HTTPException(404, "Pengiriman Pesanan tidak ditemukan.")
+    blocker = await _sales_delivery_delete_blocker(delivery)
+    if blocker:
+        raise HTTPException(400, blocker)
+    sj_number = delivery.get("sj_number", delivery["id"])
+    await db.sales_deliveries.delete_one({"id": delivery["id"]})
+    await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
+    await _write_audit(action="sales.delivery.delete", actor=user, target_email=f"delivery:{sj_number}",
+                       before={"sj_number": sj_number, "id": delivery["id"]}, after={"deleted": True})
+    return {"deleted": True, "sj_number": sj_number, "id": delivery["id"]}
+
+
+@api_router.post("/sales-deliveries-bulk/delete")
+async def bulk_delete_sales_deliveries_endpoint(payload: BulkPayload, user=Depends(current_user)):
+    """Bulk delete sales deliveries — ALL OR NOTHING."""
+    await _require_any_perm(user, "sales.delivery.delete", "sales.delivery.create", "po.edit")
+    if not payload.ids:
+        raise HTTPException(400, "Pilih minimal 1 Pengiriman.")
+    unique_ids = list(dict.fromkeys(payload.ids))
+    deliveries = await db.sales_deliveries.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    by_id = {d["id"]: d for d in deliveries}
+    blockers = []
+    to_delete = []
+    for did in unique_ids:
+        delivery = by_id.get(did)
+        if not delivery:
+            blockers.append({"id": did, "number": did, "reason": "Pengiriman tidak ditemukan."})
+            continue
+        reason = await _sales_delivery_delete_blocker(delivery)
+        if reason:
+            blockers.append({"id": did, "number": delivery.get("sj_number", did), "reason": reason})
+            continue
+        to_delete.append(delivery)
+    if blockers:
+        raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa pengiriman memiliki dependensi.", "blockers": blockers})
+    if to_delete:
+        delete_ids = [d["id"] for d in to_delete]
+        await db.sales_deliveries.delete_many({"id": {"$in": delete_ids}})
+        for d in to_delete:
+            await _remove_matching_business_sj_shipment(d.get("po_id"), d)
+    await _write_audit(action="sales.delivery.bulk_delete", actor=user, target_email=f"deliveries:{len(to_delete)}",
+                       before={"ids": payload.ids}, after={"deleted_count": len(to_delete)})
+    return {"deleted_count": len(to_delete), "deleted": [{"id": d["id"], "sj_number": d.get("sj_number", "")} for d in to_delete]}
 
 
 # ---------- PDF PO import ----------
@@ -8590,6 +8782,33 @@ logger = logging.getLogger(__name__)
 _ct_mod.install_access_log_mask()
 
 
+async def _ensure_unique_business_number_index(collection, field: str) -> None:
+    """Additive unique index for PO/SJ/INV/PAY business numbers.
+
+    Idempotent. If historical duplicates exist, skip without crashing startup.
+    """
+    try:
+        await collection.create_index(field, unique=True)
+    except DuplicateKeyError as exc:
+        logger.warning(
+            "Unique index skipped (duplicates exist): %s.%s — %s",
+            getattr(collection, "name", collection),
+            field,
+            exc,
+        )
+    except OperationFailure as exc:
+        msg = str(exc)
+        if getattr(exc, "code", None) == 11000 or "E11000" in msg or "duplicate key" in msg.lower():
+            logger.warning(
+                "Unique index skipped (duplicates exist): %s.%s — %s",
+                getattr(collection, "name", collection),
+                field,
+                exc,
+            )
+            return
+        raise
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
@@ -8601,7 +8820,7 @@ async def seed():
     await db.users.create_index("id", unique=True, sparse=True)
     await db.users.create_index("employee_id", sparse=True)
     await db.orders.create_index("id", unique=True)
-    await db.orders.create_index("po_number", unique=True)
+    await _ensure_unique_business_number_index(db.orders, "po_number")
     await db.orders.create_index("accurate_id", sparse=True)
     await db.orders.create_index(
         [("tracking_token", 1)],
@@ -8643,19 +8862,18 @@ async def seed():
     await db.delivery_vehicles.create_index("id", unique=True)
     # Sales Deliveries (Pengiriman Pesanan) indexes
     await db.sales_deliveries.create_index("id", unique=True)
-    await db.sales_deliveries.create_index("sj_number", unique=True)
+    await _ensure_unique_business_number_index(db.sales_deliveries, "sj_number")
     await db.sales_deliveries.create_index([("po_id", 1), ("shipment_index", 1)], unique=True)
     await db.sales_deliveries.create_index("po_id")
     await db.sales_deliveries.create_index("created_at")
     # Sales Invoices (Faktur Penjualan) indexes
     await db.sales_invoices.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.sales_invoices, "invoice_number")
     await db.sales_invoices.create_index("po_id")
     await db.sales_invoices.create_index("created_at")
-    # DO NOT create unique index on invoice_number yet, due to existing historical duplicates (INV/2026/08/20/000019)
-    # as per strict user instruction: "STOP hardening untuk document type tersebut dan LAPORKAN."
     
     await db.sales_receipts.create_index("id", unique=True)
-    await db.sales_receipts.create_index("receipt_number", unique=True)
+    await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
     await db.sales_receipts.create_index("invoice_id")
     await db.sales_receipts.create_index("created_at")
     # Object storage init (idempotent) — do not crash the app if unavailable

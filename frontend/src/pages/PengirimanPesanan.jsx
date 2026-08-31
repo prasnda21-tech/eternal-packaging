@@ -12,6 +12,7 @@ import {
   Printer,
   RefreshCw,
   Search,
+  Trash2,
   Truck,
   X,
 } from "lucide-react";
@@ -31,6 +32,7 @@ export default function PengirimanPesanan() {
 
   const canCreate = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const canPrint = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
+  const canDelete = hasPerm("sales.delivery.delete") || hasPerm("sales.delivery.create") || hasPerm("po.edit") || user?.role === "admin";
 
   // Navigation mode: 'list' | 'create' | 'detail'
   const queryPoId = searchParams.get("po_id") || "";
@@ -43,6 +45,10 @@ export default function PengirimanPesanan() {
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
 
   // Selected PO for Create Delivery Form
   const [selectedPoId, setSelectedPoId] = useState(queryPoId);
@@ -87,6 +93,7 @@ export default function PengirimanPesanan() {
       if (statusFilter !== "all") params.status = statusFilter;
       const res = await api.listSalesDeliveries(params);
       setDeliveries(res.deliveries || []);
+      setSelectedIds(new Set());
     } catch (e) {
       const det = e.response?.data?.detail;
       setListErr(typeof det === "object" ? det.message : (det || "Gagal memuat daftar Pengiriman Pesanan"));
@@ -345,6 +352,63 @@ export default function PengirimanPesanan() {
     window.open(url, "_blank");
   };
 
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    if (selectedIds.size === deliveries.length && deliveries.length > 0) setSelectedIds(new Set());
+    else setSelectedIds(new Set(deliveries.map((d) => d.id)));
+  };
+  const formatDeleteError = (det) => {
+    if (typeof det === "object" && det) {
+      const blockers = det.blockers || [];
+      if (blockers.length) {
+        return `${det.message || "Tidak dapat menghapus."} ${blockers.map((b) => `${b.number || b.id}: ${b.reason}`).join(" ")}`.trim();
+      }
+      return det.message || JSON.stringify(det);
+    }
+    return det || "Gagal menghapus.";
+  };
+  const handleDelete = async (id) => {
+    setDeleteLoading(true);
+    setDeleteErr("");
+    try {
+      await api.deleteSalesDelivery(id);
+      setDeleteConfirm(null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      loadDeliveries();
+    } catch (e) {
+      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    setDeleteLoading(true);
+    setDeleteErr("");
+    try {
+      const ids = deleteConfirm?.ids || Array.from(selectedIds);
+      await api.bulkDeleteSalesDeliveries(ids);
+      setDeleteConfirm(null);
+      setSelectedIds(new Set());
+      loadDeliveries();
+    } catch (e) {
+      setDeleteErr(formatDeleteError(e.response?.data?.detail));
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   return (
     <div className="page-container" style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       {/* HEADER SECTION */}
@@ -380,7 +444,25 @@ export default function PengirimanPesanan() {
           </div>
         </div>
 
-        {viewMode === "list" && canCreate && (
+        {viewMode === "list" && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {canDelete && selectedIds.size > 0 && (
+              <button
+                type="button"
+                data-testid="btn-hapus-terpilih"
+                onClick={() => {
+                  setDeleteErr("");
+                  setDeleteConfirm({
+                    ids: Array.from(selectedIds),
+                    numbers: deliveries.filter((d) => selectedIds.has(d.id)).map((d) => d.sj_number),
+                  });
+                }}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, background: "#fee2e2", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer", fontWeight: 600 }}
+              >
+                <Trash2 size={16} /> Hapus Terpilih ({selectedIds.size})
+              </button>
+            )}
+            {canCreate && (
           <button
             type="button"
             className="primary"
@@ -394,6 +476,8 @@ export default function PengirimanPesanan() {
           >
             <Plus size={16} /> + Buat Pengiriman Pesanan
           </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -879,6 +963,11 @@ export default function PengirimanPesanan() {
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
               <thead>
                 <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                  {canDelete && (
+                    <th style={{ padding: "10px 8px", width: 36 }}>
+                      <input type="checkbox" data-testid="select-all-deliveries" checked={deliveries.length > 0 && selectedIds.size === deliveries.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                    </th>
+                  )}
                   <th style={{ padding: "10px 12px" }}>No SJ</th>
                   <th style={{ padding: "10px 12px" }}>No PO</th>
                   <th style={{ padding: "10px 12px" }}>Tanggal Kirim</th>
@@ -893,13 +982,13 @@ export default function PengirimanPesanan() {
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={9} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
+                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
                       Memuat daftar Pengiriman Pesanan...
                     </td>
                   </tr>
                 ) : deliveries.length === 0 ? (
                   <tr>
-                    <td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-deliveries">
+                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-deliveries">
                       <Truck size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
                       <p style={{ margin: 0, fontWeight: 500 }}>Belum ada data Pengiriman Pesanan yang sesuai.</p>
                       {canCreate && (
@@ -919,6 +1008,11 @@ export default function PengirimanPesanan() {
                 ) : (
                   deliveries.map((d) => (
                     <tr key={d.id} data-testid={`delivery-row-${d.id}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      {canDelete && (
+                        <td style={{ padding: "10px 8px" }}>
+                          <input type="checkbox" data-testid={`delivery-checkbox-${d.id}`} checked={selectedIds.has(d.id)} onChange={() => toggleSelect(d.id)} aria-label={`Pilih ${d.sj_number}`} />
+                        </td>
+                      )}
                       <td style={{ padding: "10px 12px", fontWeight: 700, color: "#0369a1" }}>
                         <span data-testid={`sj-number-${d.sj_number}`}>{d.sj_number}</span>
                       </td>
@@ -980,6 +1074,32 @@ export default function PengirimanPesanan() {
                               style={{ padding: "4px 8px", background: "#f8fafc", color: "#0284c7", border: "1px solid #cbd5e1", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem", fontWeight: 600 }}
                             >
                               <Printer size={14} /> PDF
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              type="button"
+                              data-testid={`btn-delete-delivery-${d.id}`}
+                              onClick={() => {
+                                setDeleteErr("");
+                                setDeleteConfirm({
+                                  id: d.id,
+                                  number: d.sj_number,
+                                  numbers: [d.sj_number],
+                                });
+                              }}
+                              style={{
+                                padding: "4px 10px",
+                                fontSize: "0.8rem",
+                                borderRadius: 6,
+                                border: "1px solid #fecaca",
+                                background: "#fef2f2",
+                                color: "#b91c1c",
+                                cursor: "pointer",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Hapus
                             </button>
                           )}
                         </div>
@@ -1242,6 +1362,31 @@ export default function PengirimanPesanan() {
                 style={{ padding: "8px 16px", background: "#f1f5f9", color: "#334155", border: "1px solid #cbd5e1", borderRadius: 6, fontWeight: 600, cursor: "pointer" }}
               >
                 Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Hapus Surat Jalan?</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>Dokumen berikut akan dihapus:</p>
+            <ul data-testid="delete-confirm-numbers" style={{ margin: "0 0 16px", paddingLeft: 18, fontWeight: 700, color: "#0369a1" }}>
+              {(deleteConfirm.numbers || [deleteConfirm.number]).filter(Boolean).map((n) => <li key={n}>{n}</li>)}
+            </ul>
+            {deleteErr && <div data-testid="delete-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>{deleteErr}</div>}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>Batal</button>
+              <button
+                type="button"
+                data-testid="btn-confirm-delete"
+                onClick={() => (deleteConfirm.ids ? handleBulkDelete() : handleDelete(deleteConfirm.id))}
+                disabled={deleteLoading}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}
+              >
+                {deleteLoading ? "Menghapus..." : "Hapus"}
               </button>
             </div>
           </div>

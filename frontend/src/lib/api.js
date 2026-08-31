@@ -275,6 +275,17 @@ export const api = {
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   createSalesInvoice: (payload) => client.post(`/sales-invoices`, payload).then((r) => r.data),
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  // ---- Sales Receipt (Penerimaan Penjualan) ----
+  listSalesReceipts: (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
+  getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
+  createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
+  // ---- Delete (Safe) ----
+  deleteSalesDelivery: (id) => client.delete(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
+  bulkDeleteSalesDeliveries: (ids, reason = "bulk") => client.post(`/sales-deliveries-bulk/delete`, { ids, reason }).then((r) => r.data),
+  deleteSalesInvoice: (id) => client.delete(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
+  bulkDeleteSalesInvoices: (ids, reason = "bulk") => client.post(`/sales-invoices-bulk/delete`, { ids, reason }).then((r) => r.data),
+  deleteSalesReceipt: (id) => client.delete(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
+  bulkDeleteSalesReceipts: (ids, reason = "bulk") => client.post(`/sales-receipts-bulk/delete`, { ids, reason }).then((r) => r.data),
 };
 
 export default api;
