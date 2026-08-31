@@ -14,6 +14,7 @@ const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : 
 const TILE_ICONS = {
   [NAV_KEYS.salesOrder]: ShoppingCart,
   [NAV_KEYS.salesDeliveryOrder]: Truck,
+  [NAV_KEYS.salesInvoice]: FileText,
   [NAV_KEYS.importPo]: Download,
   [NAV_KEYS.purchaseReceipts]: Package,
   [NAV_KEYS.masterItems]: Package,

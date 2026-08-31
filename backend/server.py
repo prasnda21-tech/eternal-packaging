@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os, logging, uuid, base64, re, secrets, hashlib
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Any, Dict, Tuple
+from typing import List, Optional, Any, Dict, Tuple, Union
 from datetime import date, datetime, timezone, timedelta
 import bcrypt
 import jwt
@@ -6134,6 +6134,13 @@ from services.sales_deliveries import (
     get_sales_delivery_detail as _get_sales_delivery_detail,
     generate_sales_delivery_pdf_bytes as _generate_sales_delivery_pdf_bytes,
 )
+from services.sales_invoices import (
+    get_po_invoice_preview as _get_po_invoice_preview,
+    create_sales_invoice as _create_sales_invoice,
+    list_sales_invoices as _list_sales_invoices,
+    get_sales_invoice_detail as _get_sales_invoice_detail,
+    update_sales_invoice as _update_sales_invoice,
+)
 
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
 class SalesOrderLineItemInput(BaseModel):
@@ -6185,6 +6192,29 @@ class SalesDeliveryCreatePayload(BaseModel):
     expedition: Optional[str] = None
     notes: Optional[str] = ""
     line_items: List[SalesDeliveryLineItemInput]
+
+
+# ---------- Sales Invoice (Faktur Penjualan) ----------
+class SalesInvoiceLineItemInput(BaseModel):
+    line_idx: int = 0
+    line_id: Optional[str] = None
+    unit_price: Union[int, float, str, None] = 0
+
+
+class SalesInvoiceCreatePayload(BaseModel):
+    po_id: str
+    invoice_date: Optional[str] = None
+    notes: Optional[str] = ""
+    idempotency_key: Optional[str] = None
+    lines: Optional[List[SalesInvoiceLineItemInput]] = None
+    line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+
+
+class SalesInvoiceUpdatePayload(BaseModel):
+    invoice_date: Optional[str] = None
+    notes: Optional[str] = ""
+    lines: Optional[List[SalesInvoiceLineItemInput]] = None
+    line_items: Optional[List[SalesInvoiceLineItemInput]] = None
 
 
 async def _next_suggested_po_number(database) -> str:
@@ -6559,6 +6589,53 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'}
     )
+
+
+# ==================================================
+# SALES INVOICE (FAKTUR PENJUALAN) ENDPOINTS
+# ==================================================
+@api_router.get("/sales-invoices")
+async def list_sales_invoices_endpoint(
+    q: Optional[str] = None,
+    po_id: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """List sales invoices (Faktur Penjualan) with search and po_id filtering."""
+    await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
+    invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
+    return {"invoices": invoices, "count": len(invoices)}
+
+
+@api_router.get("/sales-invoices/po/{po_id}/preview")
+async def get_po_invoice_preview_endpoint(po_id: str, user=Depends(current_user)):
+    """Preview exact PO snapshot fields and line items for sales invoice creation."""
+    await _require_any_perm(user, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "sales_order.create", "po.view")
+    preview = await _get_po_invoice_preview(db, po_id)
+    return preview
+
+
+@api_router.post("/sales-invoices")
+async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user=Depends(current_user)):
+    """Create a new Sales Invoice (Faktur Penjualan) backend-authoritatively."""
+    await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    inv = await _create_sales_invoice(db, payload.model_dump(), user)
+    return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
+
+
+@api_router.get("/sales-invoices/{id}")
+async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
+    """Get detail of a single sales invoice."""
+    await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
+    inv = await _get_sales_invoice_detail(db, id)
+    return {"invoice": inv}
+
+
+@api_router.put("/sales-invoices/{id}")
+async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
+    """Update unit prices or notes on an existing sales invoice."""
+    await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
+    inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
+    return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
 
 
 # ---------- PDF PO import ----------
@@ -8515,6 +8592,10 @@ async def seed():
     await db.sales_deliveries.create_index([("po_id", 1), ("shipment_index", 1)], unique=True)
     await db.sales_deliveries.create_index("po_id")
     await db.sales_deliveries.create_index("created_at")
+    # Sales Invoices (Faktur Penjualan) indexes
+    await db.sales_invoices.create_index("id", unique=True)
+    await db.sales_invoices.create_index("po_id")
+    await db.sales_invoices.create_index("created_at")
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()

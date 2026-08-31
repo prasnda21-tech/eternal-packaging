@@ -72,6 +72,7 @@ describe("salesNavVisible", () => {
     expect(v.parent).toBe(false);
     expect(v.salesOrder).toBe(false);
     expect(v.importPo).toBe(false);
+    expect(v.salesInvoice).toBe(false);
   });
 
   test("shows parent when Import PO is granted", () => {
@@ -85,6 +86,23 @@ describe("salesNavVisible", () => {
     expect(v.parent).toBe(true);
     expect(v.salesOrder).toBe(true);
   });
+
+  test("shows parent when Faktur Penjualan is granted", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice));
+    expect(v.parent).toBe(true);
+    expect(v.salesInvoice).toBe(true);
+  });
+
+  test("shows parent when sales.invoice.view permission is granted", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales, "sales.invoice.view"));
+    expect(v.parent).toBe(true);
+    expect(v.salesInvoice).toBe(true);
+  });
+
+  test("hides Faktur Penjualan without sales invoice perm or general sales perms", () => {
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.importPo));
+    expect(v.salesInvoice).toBe(false);
+  });
 });
 
 describe("salesMenuItems", () => {
@@ -94,7 +112,22 @@ describe("salesMenuItems", () => {
       { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", to: "/penjualan/pesanan-penjualan", tone: "blue", testid: "top-nav-sales-order" },
       { key: NAV_KEYS.importPo, label: "Import PO", to: "/admin/import", tone: "green", testid: "top-nav-import" },
     ]);
-    expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual(["Pesanan Penjualan", "Import PO"]);
+  });
+
+  test("builds Faktur Penjualan tile when granted", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice));
+    expect(items).toEqual([
+      { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", to: "/penjualan/faktur-penjualan", tone: "purple", testid: "top-nav-sales-invoice" },
+    ]);
+  });
+
+  test("NAV_MENU_FALLBACK includes Penjualan children", () => {
+    expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual([
+      "Pesanan Penjualan",
+      "Pengiriman Pesanan",
+      "Faktur Penjualan",
+      "Import PO",
+    ]);
   });
 
   test("filters out unauthorized children", () => {
