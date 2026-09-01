@@ -151,6 +151,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.employee_admin_http import register_employee_admin_routes
+from services.hr_payroll_http import register_hr_payroll_routes
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -7548,6 +7549,15 @@ register_employee_admin_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_hr_payroll_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    require_any_perm=_require_any_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
 
 
 @api_router.post("/accurate/sync")
@@ -7571,6 +7581,8 @@ async def download_file(path: str, user=Depends(current_user)):
         await _require_perm(user, _SJ_VIEW_FILE)
     if rec.get("kind") == "employee_admin":
         raise HTTPException(403, "File Administrasi Karyawan hanya dapat diakses lewat rute modul.")
+    if rec.get("kind") == "hr_payroll":
+        raise HTTPException(403, "File HR & Payroll hanya dapat diakses lewat rute modul.")
     try:
         data, ct = obj_storage.get_object(path)
     except FileNotFoundError:
@@ -8931,6 +8943,8 @@ async def seed():
     await db.employee_requests.create_index("status")
     await db.employee_requests.create_index("type_id")
     await db.employee_requests.create_index("submitted_at")
+    from services.hr_payroll import ensure_indexes as _hr_payroll_ensure_indexes
+    await _hr_payroll_ensure_indexes(db)
     for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
         try:
             await coll.drop_index("idempotency_key_1")

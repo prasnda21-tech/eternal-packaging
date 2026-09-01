@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard,
+  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -13,6 +13,7 @@ import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
+import HrPayrollSettings from "../components/HrPayrollSettings";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -1879,8 +1880,9 @@ export default function Settings() {
   const canEditHpp = hasPerm("settings.hpp.manage");
   const canViewEmployeeAdmin = hasPerm("employee_admin.settings");
   const canEditEmployeeAdmin = hasPerm("employee_admin.settings");
+  const canViewHrPayroll = hasPerm("payroll.settings");
 
-  const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
+  const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
   const [catalog, setCatalog] = useState(null);
   const [toast, setToast] = useState("");
@@ -1939,6 +1941,9 @@ export default function Settings() {
         {canViewEmployeeAdmin && (
           <button role="tab" className={tab === "employee-admin" ? "active" : ""} onClick={() => setTab("employee-admin")} data-testid="settings-tab-employee-admin"><IdCard size={14}/> Administrasi Karyawan</button>
         )}
+        {canViewHrPayroll && (
+          <button role="tab" className={tab === "hr-payroll" ? "active" : ""} onClick={() => setTab("hr-payroll")} data-testid="settings-tab-hr-payroll"><Wallet size={14}/> HR &amp; Payroll</button>
+        )}
         {canViewAccurateCreators && (
           <button role="tab" className={tab === "accurate-creators" ? "active" : ""} onClick={() => setTab("accurate-creators")} data-testid="settings-tab-accurate-creators"><Users size={14}/> Pembuat PO Accurate</button>
         )}
@@ -1977,6 +1982,9 @@ export default function Settings() {
       )}
       {tab === "employee-admin" && canViewEmployeeAdmin && (
         <EmployeeAdminSettings notify={notify} canEdit={canEditEmployeeAdmin}/>
+      )}
+      {tab === "hr-payroll" && canViewHrPayroll && (
+        <HrPayrollSettings notify={notify} canEdit={canViewHrPayroll}/>
       )}
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}

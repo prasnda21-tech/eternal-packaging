@@ -121,6 +121,18 @@ PERMISSION_CATALOG = [
     ("Administrasi Karyawan", "employee_admin.view_all", "Lihat semua pengajuan karyawan"),
     ("Administrasi Karyawan", "employee_admin.settings", "Atur Administrasi Karyawan"),
     ("Administrasi Karyawan", "employee_admin.document_view", "Lihat dokumen resmi pengajuan"),
+    ("HR & Payroll", "hr.employee.view", "Lihat daftar karyawan HR"),
+    ("HR & Payroll", "hr.employee.manage", "Kelola data karyawan & kepegawaian"),
+    ("HR & Payroll", "payroll.view", "Lihat penggajian"),
+    ("HR & Payroll", "payroll.calculate", "Hitung / kelola Draft penggajian"),
+    ("HR & Payroll", "payroll.review", "Review penggajian"),
+    ("HR & Payroll", "payroll.approve", "Approve penggajian"),
+    ("HR & Payroll", "payroll.finalize", "Finalisasi penggajian"),
+    ("HR & Payroll", "payroll.reopen", "Buka ulang penggajian Final"),
+    ("HR & Payroll", "payroll.settings", "Atur HR & Payroll"),
+    ("HR & Payroll", "payroll.payslip.view_own", "Lihat slip gaji sendiri"),
+    ("HR & Payroll", "payroll.payslip.view_all", "Lihat semua slip gaji"),
+    ("HR & Payroll", "payroll.adjustment", "Penyesuaian manual penggajian"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -169,6 +181,13 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.employee_administration.create", "Menu Buat Pengajuan"),
     ("Akses Menu", "nav.employee_administration.approve", "Menu Persetujuan"),
     ("Akses Menu", "nav.employee_administration.archive", "Menu Arsip Dokumen"),
+    ("Akses Menu", "nav.hr_payroll", "Menu HR & Payroll"),
+    ("Akses Menu", "nav.hr_payroll.employees", "Menu Daftar Karyawan"),
+    ("Akses Menu", "nav.hr_payroll.employment", "Menu Data Kepegawaian"),
+    ("Akses Menu", "nav.hr_payroll.payroll", "Menu Penggajian"),
+    ("Akses Menu", "nav.hr_payroll.payslips", "Menu Slip Gaji"),
+    ("Akses Menu", "nav.hr_payroll.components", "Menu Komponen Gaji"),
+    ("Akses Menu", "nav.hr_payroll.history", "Menu Riwayat Penggajian"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -239,6 +258,13 @@ NAV_MENU_ITEMS = (
     ("nav.employee_administration.create", "Buat Pengajuan", "nav.employee_administration"),
     ("nav.employee_administration.approve", "Persetujuan", "nav.employee_administration"),
     ("nav.employee_administration.archive", "Arsip Dokumen", "nav.employee_administration"),
+    ("nav.hr_payroll", "HR & Payroll", None),
+    ("nav.hr_payroll.employees", "Daftar Karyawan", "nav.hr_payroll"),
+    ("nav.hr_payroll.employment", "Data Kepegawaian", "nav.hr_payroll"),
+    ("nav.hr_payroll.payroll", "Penggajian", "nav.hr_payroll"),
+    ("nav.hr_payroll.payslips", "Slip Gaji", "nav.hr_payroll"),
+    ("nav.hr_payroll.components", "Komponen Gaji", "nav.hr_payroll"),
+    ("nav.hr_payroll.history", "Riwayat Penggajian", "nav.hr_payroll"),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -336,6 +362,24 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.employee_administration.archive")
     if "employee_admin.settings" in existing:
         nav.add("nav.employee_administration")
+    if "hr.employee.view" in existing or "hr.employee.manage" in existing:
+        nav.add("nav.hr_payroll")
+        nav.add("nav.hr_payroll.employees")
+        nav.add("nav.hr_payroll.employment")
+    if "payroll.view" in existing or "payroll.calculate" in existing or "payroll.review" in existing or "payroll.approve" in existing or "payroll.finalize" in existing:
+        nav.add("nav.hr_payroll")
+        nav.add("nav.hr_payroll.payroll")
+    if "payroll.payslip.view_own" in existing or "payroll.payslip.view_all" in existing:
+        nav.add("nav.hr_payroll")
+        nav.add("nav.hr_payroll.payslips")
+    if "payroll.settings" in existing or "payroll.view" in existing:
+        nav.add("nav.hr_payroll")
+        nav.add("nav.hr_payroll.components")
+    if "payroll.view" in existing or "payroll.payslip.view_all" in existing:
+        nav.add("nav.hr_payroll")
+        nav.add("nav.hr_payroll.history")
+    if "payroll.settings" in existing:
+        nav.add("nav.hr_payroll")
     return nav
 
 

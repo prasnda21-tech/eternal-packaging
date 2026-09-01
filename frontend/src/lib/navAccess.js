@@ -43,6 +43,13 @@ export const NAV_KEYS = {
   employeeAdminCreate: "nav.employee_administration.create",
   employeeAdminApprove: "nav.employee_administration.approve",
   employeeAdminArchive: "nav.employee_administration.archive",
+  hrPayroll: "nav.hr_payroll",
+  hrPayrollEmployees: "nav.hr_payroll.employees",
+  hrPayrollEmployment: "nav.hr_payroll.employment",
+  hrPayrollPayroll: "nav.hr_payroll.payroll",
+  hrPayrollPayslips: "nav.hr_payroll.payslips",
+  hrPayrollComponents: "nav.hr_payroll.components",
+  hrPayrollHistory: "nav.hr_payroll.history",
   settings: "nav.settings",
 };
 
@@ -88,6 +95,13 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.employeeAdminCreate, label: "Buat Pengajuan", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.employeeAdminApprove, label: "Persetujuan", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.employeeAdminArchive, label: "Arsip Dokumen", parent: NAV_KEYS.employeeAdmin },
+  { key: NAV_KEYS.hrPayroll, label: "HR & Payroll", parent: null },
+  { key: NAV_KEYS.hrPayrollEmployees, label: "Daftar Karyawan", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.hrPayrollEmployment, label: "Data Kepegawaian", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.hrPayrollPayroll, label: "Penggajian", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.hrPayrollPayslips, label: "Slip Gaji", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.hrPayrollComponents, label: "Komponen Gaji", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.hrPayrollHistory, label: "Riwayat Payroll", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
@@ -577,5 +591,77 @@ export function employeeAdminMenuItems(hasPerm) {
     EMPLOYEE_ADMIN_NAV_ROUTES,
     EMPLOYEE_ADMIN_TILE_TONES,
     EMPLOYEE_ADMIN_TILE_TESTIDS,
+  );
+}
+
+export const HR_PAYROLL_NAV_ROUTES = {
+  [NAV_KEYS.hrPayrollEmployees]: "/hr-payroll/daftar-karyawan",
+  [NAV_KEYS.hrPayrollEmployment]: "/hr-payroll/data-kepegawaian",
+  [NAV_KEYS.hrPayrollPayroll]: "/hr-payroll/penggajian",
+  [NAV_KEYS.hrPayrollPayslips]: "/hr-payroll/slip-gaji",
+  [NAV_KEYS.hrPayrollComponents]: "/hr-payroll/komponen-gaji",
+  [NAV_KEYS.hrPayrollHistory]: "/hr-payroll/riwayat",
+};
+
+const HR_PAYROLL_VIS_FIELD = {
+  [NAV_KEYS.hrPayrollEmployees]: "employees",
+  [NAV_KEYS.hrPayrollEmployment]: "employment",
+  [NAV_KEYS.hrPayrollPayroll]: "payroll",
+  [NAV_KEYS.hrPayrollPayslips]: "payslips",
+  [NAV_KEYS.hrPayrollComponents]: "components",
+  [NAV_KEYS.hrPayrollHistory]: "history",
+};
+
+export const HR_PAYROLL_TILE_TONES = {
+  [NAV_KEYS.hrPayrollEmployees]: "blue",
+  [NAV_KEYS.hrPayrollEmployment]: "green",
+  [NAV_KEYS.hrPayrollPayroll]: "amber",
+  [NAV_KEYS.hrPayrollPayslips]: "emerald",
+  [NAV_KEYS.hrPayrollComponents]: "purple",
+  [NAV_KEYS.hrPayrollHistory]: "orange",
+};
+
+export const HR_PAYROLL_TILE_TESTIDS = {
+  [NAV_KEYS.hrPayrollEmployees]: "top-nav-hr-employees",
+  [NAV_KEYS.hrPayrollEmployment]: "top-nav-hr-employment",
+  [NAV_KEYS.hrPayrollPayroll]: "top-nav-hr-payroll",
+  [NAV_KEYS.hrPayrollPayslips]: "top-nav-hr-payslips",
+  [NAV_KEYS.hrPayrollComponents]: "top-nav-hr-components",
+  [NAV_KEYS.hrPayrollHistory]: "top-nav-hr-history",
+};
+
+export function hrPayrollNavVisible(hasPerm) {
+  const employees = canSeeNav(hasPerm, NAV_KEYS.hrPayrollEmployees)
+    || canSeeNav(hasPerm, "hr.employee.view") || canSeeNav(hasPerm, "hr.employee.manage");
+  const employment = canSeeNav(hasPerm, NAV_KEYS.hrPayrollEmployment)
+    || canSeeNav(hasPerm, "hr.employee.view") || canSeeNav(hasPerm, "hr.employee.manage");
+  const payroll = canSeeNav(hasPerm, NAV_KEYS.hrPayrollPayroll)
+    || ["payroll.view", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.finalize"].some((p) => canSeeNav(hasPerm, p));
+  const payslips = canSeeNav(hasPerm, NAV_KEYS.hrPayrollPayslips)
+    || canSeeNav(hasPerm, "payroll.payslip.view_own") || canSeeNav(hasPerm, "payroll.payslip.view_all");
+  const components = canSeeNav(hasPerm, NAV_KEYS.hrPayrollComponents)
+    || canSeeNav(hasPerm, "payroll.settings") || canSeeNav(hasPerm, "payroll.view");
+  const history = canSeeNav(hasPerm, NAV_KEYS.hrPayrollHistory)
+    || canSeeNav(hasPerm, "payroll.view") || canSeeNav(hasPerm, "payroll.payslip.view_all");
+  return {
+    parent: Boolean(employees || employment || payroll || payslips || components || history || canSeeNav(hasPerm, NAV_KEYS.hrPayroll)),
+    employees: Boolean(employees),
+    employment: Boolean(employment),
+    payroll: Boolean(payroll),
+    payslips: Boolean(payslips),
+    components: Boolean(components),
+    history: Boolean(history),
+  };
+}
+
+export function hrPayrollMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.hrPayroll,
+    hrPayrollNavVisible(hasPerm),
+    HR_PAYROLL_VIS_FIELD,
+    HR_PAYROLL_NAV_ROUTES,
+    HR_PAYROLL_TILE_TONES,
+    HR_PAYROLL_TILE_TESTIDS,
   );
 }

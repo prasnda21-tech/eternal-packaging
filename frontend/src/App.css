@@ -2004,6 +2004,31 @@ html:has(.ship-status-page) #root{
   .ea-form-grid,.emp-grid,.ea-detail-grid,.ea-settings-layout{grid-template-columns:1fr}
 }
 
+.hr-page{display:grid;gap:16px}
+.hr-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.hr-form-grid label{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.hr-span-2{grid-column:1 / -1}
+.hr-master-detail{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;align-items:start}
+.hr-payroll-detail{display:grid;gap:14px}
+.hr-list-button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:1px solid transparent;background:#f7f8f6;padding:9px 10px;margin-bottom:5px}
+.hr-list-button.active{border-color:var(--blue);background:#fff}
+.hr-card-head,.hr-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.hr-card-head h3,.hr-card-head h4{margin:0}
+.hr-detail-list{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}
+.hr-detail-list dt{color:var(--soft);font-size:12px}.hr-detail-list dd{margin:0;font-weight:600}
+.hr-history-item{padding:8px 0;border-bottom:1px solid var(--line)}
+.hr-status{display:inline-flex;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
+.hr-status-draft{background:#eef1f4;color:#4a5560}.hr-status-review{background:#e8f1fb;color:#1d4f91}
+.hr-status-approval{background:#fff3d9;color:#8a5a00}.hr-status-final{background:#e7f6ec;color:#1b7a3d}
+.hr-period-form{display:flex;align-items:end;gap:10px;flex-wrap:wrap}
+.hr-period-form h3{width:100%;margin:0}.hr-period-form label{display:flex;flex-direction:column;gap:5px;font-size:12px}
+.hr-number{width:90px}.hr-check{display:flex!important;flex-direction:row!important;align-items:center;align-self:end}
+.hr-inner-tabs{margin-top:12px}.hr-settings-save{margin-top:16px}.hr-inline-form{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+@media (max-width:900px){
+  .hr-form-grid,.hr-master-detail{grid-template-columns:1fr}
+  .hr-span-2{grid-column:auto}
+}
+
 
 
 
