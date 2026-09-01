@@ -42,7 +42,7 @@ describe("Loading confirm helpers", () => {
     expect(empty[0].available).toBe(0);
     const check = validateLoadingDraftLines([{ line_idx: 0, qty: "10" }], empty);
     expect(check.ok).toBe(false);
-    expect(check.error).toMatch(/fisik/i);
+    expect(check.error).toMatch(/qty Packing/i);
   });
 
   test("remaining after partial loading is packed minus loaded", () => {

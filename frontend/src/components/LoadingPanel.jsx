@@ -61,7 +61,12 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const openConfirm = () => {
     if (!canManage || busy) return;
     if (!physicalReady) {
-      setErr("Qty Loading belum bisa diisi. Qty fisik yang sudah diproses belum siap.");
+      const totalPhysicalAvailable = poLines.reduce((s, r) => s + Number(r.physical_available || 0), 0);
+      if (totalPhysicalAvailable <= 0) {
+        setErr("Loading tidak dapat dilakukan karena belum ada qty Packing.");
+      } else {
+        setErr("Qty Loading belum bisa diisi. Seluruh kuantitas Surat Jalan untuk item ini sudah selesai di-loading.");
+      }
       return;
     }
     if (!activeSj?.id) {
