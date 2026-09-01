@@ -38,6 +38,11 @@ export const NAV_KEYS = {
   statusPo: "nav.reports.status_po",
   gajiOperator: "nav.reports.gaji_operator",
   orderPrediction: "nav.reports.order_prediction",
+  employeeAdmin: "nav.employee_administration",
+  employeeAdminMine: "nav.employee_administration.mine",
+  employeeAdminCreate: "nav.employee_administration.create",
+  employeeAdminApprove: "nav.employee_administration.approve",
+  employeeAdminArchive: "nav.employee_administration.archive",
   settings: "nav.settings",
 };
 
@@ -78,6 +83,11 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.shipmentStatus, label: "Status Pengiriman", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.orderPrediction, label: "Prediksi Order", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.employeeAdmin, label: "Administrasi Karyawan", parent: null },
+  { key: NAV_KEYS.employeeAdminMine, label: "Pengajuan Saya", parent: NAV_KEYS.employeeAdmin },
+  { key: NAV_KEYS.employeeAdminCreate, label: "Buat Pengajuan", parent: NAV_KEYS.employeeAdmin },
+  { key: NAV_KEYS.employeeAdminApprove, label: "Persetujuan", parent: NAV_KEYS.employeeAdmin },
+  { key: NAV_KEYS.employeeAdminArchive, label: "Arsip Dokumen", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
@@ -514,4 +524,58 @@ export function actionKeyToTaskPath(actionKey) {
   };
   if (Object.prototype.hasOwnProperty.call(map, actionKey)) return map[actionKey];
   return "/tasks";
+}
+
+export const EMPLOYEE_ADMIN_NAV_ROUTES = {
+  [NAV_KEYS.employeeAdminMine]: "/administrasi-karyawan/pengajuan-saya",
+  [NAV_KEYS.employeeAdminCreate]: "/administrasi-karyawan/buat",
+  [NAV_KEYS.employeeAdminApprove]: "/administrasi-karyawan/persetujuan",
+  [NAV_KEYS.employeeAdminArchive]: "/administrasi-karyawan/arsip",
+};
+
+const EMPLOYEE_ADMIN_VIS_FIELD = {
+  [NAV_KEYS.employeeAdminMine]: "mine",
+  [NAV_KEYS.employeeAdminCreate]: "create",
+  [NAV_KEYS.employeeAdminApprove]: "approve",
+  [NAV_KEYS.employeeAdminArchive]: "archive",
+};
+
+export const EMPLOYEE_ADMIN_TILE_TONES = {
+  [NAV_KEYS.employeeAdminMine]: "blue",
+  [NAV_KEYS.employeeAdminCreate]: "green",
+  [NAV_KEYS.employeeAdminApprove]: "amber",
+  [NAV_KEYS.employeeAdminArchive]: "purple",
+};
+
+export const EMPLOYEE_ADMIN_TILE_TESTIDS = {
+  [NAV_KEYS.employeeAdminMine]: "top-nav-ea-mine",
+  [NAV_KEYS.employeeAdminCreate]: "top-nav-ea-create",
+  [NAV_KEYS.employeeAdminApprove]: "top-nav-ea-approve",
+  [NAV_KEYS.employeeAdminArchive]: "top-nav-ea-archive",
+};
+
+export function employeeAdminNavVisible(hasPerm) {
+  const mine = canSeeNav(hasPerm, NAV_KEYS.employeeAdminMine) || canSeeNav(hasPerm, "employee_admin.view_own") || canSeeNav(hasPerm, "employee_admin.submit");
+  const create = canSeeNav(hasPerm, NAV_KEYS.employeeAdminCreate) || canSeeNav(hasPerm, "employee_admin.submit");
+  const approve = canSeeNav(hasPerm, NAV_KEYS.employeeAdminApprove) || canSeeNav(hasPerm, "employee_admin.approve");
+  const archive = canSeeNav(hasPerm, NAV_KEYS.employeeAdminArchive) || canSeeNav(hasPerm, "employee_admin.document_view") || canSeeNav(hasPerm, "employee_admin.view_all");
+  return {
+    parent: Boolean(mine || create || approve || archive || canSeeNav(hasPerm, NAV_KEYS.employeeAdmin)),
+    mine: Boolean(mine),
+    create: Boolean(create),
+    approve: Boolean(approve),
+    archive: Boolean(archive),
+  };
+}
+
+export function employeeAdminMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.employeeAdmin,
+    employeeAdminNavVisible(hasPerm),
+    EMPLOYEE_ADMIN_VIS_FIELD,
+    EMPLOYEE_ADMIN_NAV_ROUTES,
+    EMPLOYEE_ADMIN_TILE_TONES,
+    EMPLOYEE_ADMIN_TILE_TESTIDS,
+  );
 }

@@ -1,10 +1,10 @@
-import { BarChart3, Boxes, CalendarClock, ClipboardList, CreditCard, Download, FileBarChart, FileText, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, CalendarClock, ClipboardList, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import BrandMark from "./BrandMark";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
@@ -29,6 +29,10 @@ const TILE_ICONS = {
   [NAV_KEYS.shipmentStatus]: Truck,
   [NAV_KEYS.gajiOperator]: FileBarChart,
   [NAV_KEYS.orderPrediction]: LineChart,
+  [NAV_KEYS.employeeAdminMine]: ClipboardList,
+  [NAV_KEYS.employeeAdminCreate]: PlusCircle,
+  [NAV_KEYS.employeeAdminApprove]: Users,
+  [NAV_KEYS.employeeAdminArchive]: FolderOpen,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,
@@ -87,6 +91,7 @@ export default function AppShell() {
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
+  const employeeAdminActive = location.pathname.startsWith("/administrasi-karyawan");
   const tasksActive = location.pathname.startsWith("/tasks");
   const produksiActive = location.pathname.startsWith("/produksi") || tasksActive;
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
@@ -191,6 +196,8 @@ export default function AppShell() {
   const productionNav = productionNavVisible(hasPerm);
   const productionItems = productionMenuItems(hasPerm);
   const taskItems = taskMenuItems(hasPerm);
+  const employeeAdminNav = employeeAdminNavVisible(hasPerm);
+  const employeeAdminItems = employeeAdminMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showSettings = hasPerm(NAV_KEYS.settings);
@@ -201,6 +208,7 @@ export default function AppShell() {
   const purchasingOpen = activeSidebarMenu === "purchasing";
   const inventoryOpen = activeSidebarMenu === "inventory";
   const reportsOpen = activeSidebarMenu === "reports";
+  const employeeAdminOpen = activeSidebarMenu === "employeeAdmin";
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
   return (
@@ -296,6 +304,21 @@ export default function AppShell() {
               />
             </div>
           )}
+          {employeeAdminNav.parent && (
+            <div className="nav-group" data-testid="top-nav-employee-admin-group">
+              <RailButton
+                ref={(el) => { railRefs.current.employeeAdmin = el; }}
+                testid="top-nav-employee-admin"
+                label="Administrasi Karyawan"
+                icon={IdCard}
+                expanded={employeeAdminOpen}
+                controls="sidebar-flyout-employee-admin"
+                active={employeeAdminActive}
+                open={employeeAdminOpen}
+                onClick={() => toggleMenu("employeeAdmin")}
+              />
+            </div>
+          )}
           {showSettings && (
             <RailNavLink
               to="/settings"
@@ -386,6 +409,21 @@ export default function AppShell() {
           placement={flyoutPos.placement}
           style={flyoutStyle}
           items={reportsItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
+      )}
+
+      {employeeAdminOpen && employeeAdminItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
+          id="sidebar-flyout-employee-admin"
+          testid="sidebar-flyout-employee-admin"
+          title="Administrasi Karyawan"
+          ariaLabel="Menu Administrasi Karyawan"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={employeeAdminItems}
           icons={TILE_ICONS}
           onNavigate={closeFlyout}
         />

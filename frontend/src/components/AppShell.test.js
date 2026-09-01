@@ -60,6 +60,7 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/Persediaan/);
     expect(nav).toMatch(/Barang\/Jasa/);
     expect(shell).toMatch(/Laporan/);
+    expect(shell).toMatch(/Administrasi Karyawan/);
     expect(shell).toMatch(/Pengaturan/);
     expect(nav).toMatch(/TASK_NAV_ORDER/);
     expect(nav).toMatch(/"\/produksi\/jadwal-pengiriman"/);
@@ -111,11 +112,13 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/id="sidebar-flyout-purchasing"/);
     expect(shell).toMatch(/id="sidebar-flyout-inventory"/);
     expect(shell).toMatch(/id="sidebar-flyout-reports"/);
+    expect(shell).toMatch(/id="sidebar-flyout-employee-admin"/);
     expect(shell).toMatch(/produksiOpen && \(productionItems\.length \+ taskItems\.length\) > 0/);
     expect(shell).toMatch(/purchasingOpen && purchasingItems\.length > 0/);
     expect(shell).toMatch(/inventoryOpen && inventoryItems\.length > 0/);
     expect(shell).toMatch(/reportsOpen && reportsItems\.length > 0/);
-    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(5);
+    expect(shell).toMatch(/employeeAdminOpen && employeeAdminItems\.length > 0/);
+    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(6);
     expect(grid).toMatch(/if \(!blocks\.length\) return null/);
   });
 

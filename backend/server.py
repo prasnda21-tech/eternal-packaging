@@ -150,6 +150,7 @@ from services.purchase_receipts import (
     sync_purchase_receipts,
 )
 from services.purchase_http import register_purchase_routes
+from services.employee_admin_http import register_employee_admin_routes
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -7538,6 +7539,15 @@ register_purchase_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_employee_admin_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    require_any_perm=_require_any_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
 
 
 @api_router.post("/accurate/sync")
@@ -7559,6 +7569,8 @@ async def download_file(path: str, user=Depends(current_user)):
         raise HTTPException(404, "File tidak ditemukan")
     if rec.get("kind") == "surat_jalan":
         await _require_perm(user, _SJ_VIEW_FILE)
+    if rec.get("kind") == "employee_admin":
+        raise HTTPException(403, "File Administrasi Karyawan hanya dapat diakses lewat rute modul.")
     try:
         data, ct = obj_storage.get_object(path)
     except FileNotFoundError:
@@ -8911,6 +8923,14 @@ async def seed():
     await db.purchase_payments.create_index("purchase_invoice_id")
     await db.purchase_payments.create_index("purchase_order_id")
     await db.purchase_payments.create_index("created_at")
+    await db.employee_request_types.create_index("id", unique=True)
+    await db.employee_request_types.create_index("code", unique=True)
+    await db.employee_requests.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.employee_requests, "request_number")
+    await db.employee_requests.create_index("employee.id")
+    await db.employee_requests.create_index("status")
+    await db.employee_requests.create_index("type_id")
+    await db.employee_requests.create_index("submitted_at")
     for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
         try:
             await coll.drop_index("idempotency_key_1")
