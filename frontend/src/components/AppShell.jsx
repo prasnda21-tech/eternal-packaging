@@ -1,10 +1,10 @@
-import { BarChart3, Boxes, CalendarClock, ClipboardList, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, CalendarClock, ClipboardList, Coins, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import BrandMark from "./BrandMark";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
@@ -33,6 +33,12 @@ const TILE_ICONS = {
   [NAV_KEYS.employeeAdminCreate]: PlusCircle,
   [NAV_KEYS.employeeAdminApprove]: Users,
   [NAV_KEYS.employeeAdminArchive]: FolderOpen,
+  [NAV_KEYS.hrPayrollEmployees]: Users,
+  [NAV_KEYS.hrPayrollEmployment]: IdCard,
+  [NAV_KEYS.hrPayrollPayroll]: Wallet,
+  [NAV_KEYS.hrPayrollPayslips]: Receipt,
+  [NAV_KEYS.hrPayrollComponents]: Coins,
+  [NAV_KEYS.hrPayrollHistory]: FileBarChart,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,
@@ -87,11 +93,13 @@ function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate }) {
 export default function AppShell() {
   const { user, hasPerm, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
   const employeeAdminActive = location.pathname.startsWith("/administrasi-karyawan");
+  const hrPayrollActive = location.pathname.startsWith("/hr-payroll");
   const tasksActive = location.pathname.startsWith("/tasks");
   const produksiActive = location.pathname.startsWith("/produksi") || tasksActive;
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
@@ -198,6 +206,8 @@ export default function AppShell() {
   const taskItems = taskMenuItems(hasPerm);
   const employeeAdminNav = employeeAdminNavVisible(hasPerm);
   const employeeAdminItems = employeeAdminMenuItems(hasPerm);
+  const hrPayrollNav = hrPayrollNavVisible(hasPerm);
+  const hrPayrollItems = hrPayrollMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showSettings = hasPerm(NAV_KEYS.settings);
@@ -209,6 +219,7 @@ export default function AppShell() {
   const inventoryOpen = activeSidebarMenu === "inventory";
   const reportsOpen = activeSidebarMenu === "reports";
   const employeeAdminOpen = activeSidebarMenu === "employeeAdmin";
+  const hrPayrollOpen = activeSidebarMenu === "hrPayroll";
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
   return (
@@ -319,6 +330,21 @@ export default function AppShell() {
               />
             </div>
           )}
+          {hrPayrollNav.parent && (
+            <div className="nav-group" data-testid="top-nav-hr-payroll-group">
+              <RailButton
+                ref={(el) => { railRefs.current.hrPayroll = el; }}
+                testid="top-nav-hr-payroll-menu"
+                label="HR & Payroll"
+                icon={Wallet}
+                expanded={hrPayrollOpen}
+                controls="sidebar-flyout-hr-payroll"
+                active={hrPayrollActive}
+                open={hrPayrollOpen}
+                onClick={() => toggleMenu("hrPayroll")}
+              />
+            </div>
+          )}
           {showSettings && (
             <RailNavLink
               to="/settings"
@@ -424,6 +450,20 @@ export default function AppShell() {
           placement={flyoutPos.placement}
           style={flyoutStyle}
           items={employeeAdminItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
+      )}
+      {hrPayrollOpen && hrPayrollItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
+          id="sidebar-flyout-hr-payroll"
+          testid="sidebar-flyout-hr-payroll"
+          title="HR & Payroll"
+          ariaLabel="Menu HR & Payroll"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={hrPayrollItems}
           icons={TILE_ICONS}
           onNavigate={closeFlyout}
         />

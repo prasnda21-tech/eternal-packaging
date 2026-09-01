@@ -29,16 +29,17 @@ import PrediksiOrder from "./pages/PrediksiOrder";
 import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
-import { NAV_KEYS, employeeAdminNavVisible, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
+import { NAV_KEYS, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
 import DeliverySchedulePage from "./pages/DeliverySchedulePage";
 import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
 import DeliveryBatchPage from "./pages/DeliveryBatchPage";
 import EmployeeAdmin from "./pages/EmployeeAdmin";
 import EmployeeAdminDetail from "./pages/EmployeeAdminDetail";
+import HrPayroll from "./pages/HrPayroll";
 import "@/App.css";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings"];
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -102,6 +103,18 @@ function AdministrasiIndex() {
   return <Navigate to="/" replace />;
 }
 
+function HrPayrollIndex() {
+  const { hasPerm } = useAuth();
+  const v = hrPayrollNavVisible(hasPerm);
+  if (v.employees) return <Navigate to="/hr-payroll/daftar-karyawan" replace />;
+  if (v.employment) return <Navigate to="/hr-payroll/data-kepegawaian" replace />;
+  if (v.payroll) return <Navigate to="/hr-payroll/penggajian" replace />;
+  if (v.payslips) return <Navigate to="/hr-payroll/slip-gaji" replace />;
+  if (v.components) return <Navigate to="/hr-payroll/komponen-gaji" replace />;
+  if (v.history) return <Navigate to="/hr-payroll/riwayat" replace />;
+  return <Navigate to="/" replace />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -159,6 +172,13 @@ export default function App() {
             <Route path="/administrasi-karyawan/persetujuan" element={<PermGate anyOf={[NAV_KEYS.employeeAdminApprove, "employee_admin.approve"]}><EmployeeAdmin mode="approve" /></PermGate>} />
             <Route path="/administrasi-karyawan/arsip" element={<PermGate anyOf={[NAV_KEYS.employeeAdminArchive, "employee_admin.document_view", "employee_admin.view_all"]}><EmployeeAdmin mode="archive" /></PermGate>} />
             <Route path="/administrasi-karyawan/pengajuan/:id" element={<PermGate anyOf={[NAV_KEYS.employeeAdmin, NAV_KEYS.employeeAdminMine, NAV_KEYS.employeeAdminApprove, NAV_KEYS.employeeAdminArchive, "employee_admin.view_own", "employee_admin.submit", "employee_admin.approve", "employee_admin.view_all", "employee_admin.document_view"]}><EmployeeAdminDetail /></PermGate>} />
+            <Route path="/hr-payroll" element={<HrPayrollIndex />} />
+            <Route path="/hr-payroll/daftar-karyawan" element={<PermGate anyOf={[NAV_KEYS.hrPayrollEmployees, NAV_KEYS.hrPayroll, "hr.employee.view", "hr.employee.manage"]}><HrPayroll mode="employees" /></PermGate>} />
+            <Route path="/hr-payroll/data-kepegawaian" element={<PermGate anyOf={[NAV_KEYS.hrPayrollEmployment, NAV_KEYS.hrPayroll, "hr.employee.view", "hr.employee.manage"]}><HrPayroll mode="employment" /></PermGate>} />
+            <Route path="/hr-payroll/penggajian" element={<PermGate anyOf={[NAV_KEYS.hrPayrollPayroll, NAV_KEYS.hrPayroll, "payroll.view", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.finalize"]}><HrPayroll mode="payroll" /></PermGate>} />
+            <Route path="/hr-payroll/slip-gaji" element={<PermGate anyOf={[NAV_KEYS.hrPayrollPayslips, NAV_KEYS.hrPayroll, "payroll.payslip.view_own", "payroll.payslip.view_all"]}><HrPayroll mode="payslips" /></PermGate>} />
+            <Route path="/hr-payroll/komponen-gaji" element={<PermGate anyOf={[NAV_KEYS.hrPayrollComponents, NAV_KEYS.hrPayroll, "payroll.settings", "payroll.view"]}><HrPayroll mode="components" /></PermGate>} />
+            <Route path="/hr-payroll/riwayat" element={<PermGate anyOf={[NAV_KEYS.hrPayrollHistory, NAV_KEYS.hrPayroll, "payroll.view", "payroll.payslip.view_all"]}><HrPayroll mode="history" /></PermGate>} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id/kerja" element={<PermGate anyOf={["work_panel.view", "operator.update", "po.view"]}><PoWorkView /></PermGate>} />
             <Route path="/po/:id" element={<PODetail />} />
