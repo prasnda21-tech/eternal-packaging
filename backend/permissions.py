@@ -140,6 +140,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.sales.sales_order", "Menu Pesanan Penjualan"),
     ("Akses Menu", "nav.sales.delivery_order", "Menu Pengiriman Pesanan"),
     ("Akses Menu", "nav.sales.sales_invoice", "Menu Faktur Penjualan"),
+    ("Akses Menu", "nav.sales.sales_receipt", "Menu Penerimaan Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.purchasing.requests", "Menu Permintaan"),

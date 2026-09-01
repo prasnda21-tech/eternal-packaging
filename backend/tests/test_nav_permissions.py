@@ -6,7 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from permissions import (
     ALL_PERMISSIONS,
+    NAV_ALWAYS_VISIBLE,
     NAV_CONFIGURED,
+    NAV_MENU_ITEMS,
     NAV_PERMISSION_KEYS,
     ROLE_DEFAULT_PERMISSIONS,
     derived_nav_permissions,
@@ -20,6 +22,9 @@ def test_catalog_includes_nav_keys():
         "nav.dashboard",
         "nav.sales",
         "nav.sales.sales_order",
+        "nav.sales.delivery_order",
+        "nav.sales.sales_invoice",
+        "nav.sales.sales_receipt",
         "nav.sales.import_po",
         "nav.production_schedule",
         "nav.production",
@@ -81,6 +86,32 @@ def test_catalog_includes_nav_keys():
         assert key in ALL_PERMISSIONS, key
 
 
+def test_sales_receipt_nav_is_registered_like_other_sales_menus():
+    assert "nav.sales.sales_receipt" in ALL_PERMISSIONS
+    assert "nav.sales.sales_receipt" in NAV_PERMISSION_KEYS
+    labels = {k: lbl for k, lbl, _p in NAV_MENU_ITEMS}
+    assert labels["nav.sales.sales_receipt"] == "Penerimaan Penjualan"
+    for key in (
+        "nav.sales",
+        "nav.sales.sales_order",
+        "nav.sales.delivery_order",
+        "nav.sales.sales_invoice",
+        "nav.sales.import_po",
+    ):
+        assert key in ALL_PERMISSIONS, key
+        assert key in NAV_PERMISSION_KEYS, key
+    assert "nav.sales.sales_receipt" not in NAV_ALWAYS_VISIBLE
+    assert "not.a.real.permission" not in ALL_PERMISSIONS
+
+
+def test_non_admin_roles_do_not_auto_gain_sales_receipt_nav():
+    for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
+        defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
+        derived = with_nav_defaults(defaults)
+        assert "nav.sales.sales_receipt" not in defaults, role
+        assert "nav.sales.sales_receipt" not in derived, role
+
+
 def test_admin_still_has_all_including_nav():
     admin = set(ROLE_DEFAULT_PERMISSIONS["admin"])
     for key in NAV_PERMISSION_KEYS:
@@ -104,6 +135,7 @@ def test_helper_keeps_schedule_and_always_visible_menus():
     assert "purchase_receipts.view" not in helper
     assert "purchase_receipts.sync" not in helper
     assert "nav.purchasing.receipts" not in helper
+    assert "nav.sales.sales_receipt" not in helper
     assert "nav.tasks" in helper
     assert "nav.tasks.helper" in helper
     assert "nav.tasks.packing" in helper

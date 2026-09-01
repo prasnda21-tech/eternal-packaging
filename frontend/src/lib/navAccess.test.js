@@ -151,6 +151,15 @@ describe("salesMenuItems", () => {
     ]);
   });
 
+  test("Penerimaan Penjualan sidebar key stays nav.sales.sales_receipt", () => {
+    expect(NAV_KEYS.salesReceipt).toBe("nav.sales.sales_receipt");
+    expect(NAV_MENU_FALLBACK.find((m) => m.label === "Penerimaan Penjualan")).toEqual({
+      key: "nav.sales.sales_receipt",
+      label: "Penerimaan Penjualan",
+      parent: NAV_KEYS.sales,
+    });
+  });
+
   test("filters out unauthorized children", () => {
     expect(salesMenuItems(has(NAV_KEYS.sales))).toEqual([]);
     expect(salesMenuItems(has(NAV_KEYS.importPo))).toEqual([]);
