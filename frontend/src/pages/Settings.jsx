@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale,
+  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -12,6 +12,7 @@ import { NAV_MENU_FALLBACK } from "../lib/navAccess";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
+import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -1876,6 +1877,8 @@ export default function Settings() {
   const canEditWage = hasPerm("settings.operator_wage.manage");
   const canViewHpp = hasPerm("settings.hpp.view") || hasPerm("settings.hpp.manage") || hasPerm("permissions.manage");
   const canEditHpp = hasPerm("settings.hpp.manage");
+  const canViewEmployeeAdmin = hasPerm("employee_admin.settings");
+  const canEditEmployeeAdmin = hasPerm("employee_admin.settings");
 
   const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
@@ -1933,6 +1936,9 @@ export default function Settings() {
         {canViewWorkPanel && (
           <button role="tab" className={tab === "work-panel" ? "active" : ""} onClick={() => setTab("work-panel")} data-testid="settings-tab-work-panel"><ClipboardList size={14}/> Form Pekerjaan Divisi</button>
         )}
+        {canViewEmployeeAdmin && (
+          <button role="tab" className={tab === "employee-admin" ? "active" : ""} onClick={() => setTab("employee-admin")} data-testid="settings-tab-employee-admin"><IdCard size={14}/> Administrasi Karyawan</button>
+        )}
         {canViewAccurateCreators && (
           <button role="tab" className={tab === "accurate-creators" ? "active" : ""} onClick={() => setTab("accurate-creators")} data-testid="settings-tab-accurate-creators"><Users size={14}/> Pembuat PO Accurate</button>
         )}
@@ -1968,6 +1974,9 @@ export default function Settings() {
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
       {tab === "work-panel" && canViewWorkPanel && (
         <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel} canManagePerms={canManagePerms} canListRoles={canViewUsers}/>
+      )}
+      {tab === "employee-admin" && canViewEmployeeAdmin && (
+        <EmployeeAdminSettings notify={notify} canEdit={canEditEmployeeAdmin}/>
       )}
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}

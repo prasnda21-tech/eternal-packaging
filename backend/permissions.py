@@ -115,6 +115,12 @@ PERMISSION_CATALOG = [
     ("Dashboard Produksi", "dashboard.production.edit", "Edit data dari Dashboard"),
     ("Dashboard Produksi", "dashboard.production.export", "Export Excel Dashboard Jadwal Produksi"),
     ("Audit", "audit.view", "Lihat audit log"),
+    ("Administrasi Karyawan", "employee_admin.view_own", "Lihat pengajuan sendiri"),
+    ("Administrasi Karyawan", "employee_admin.submit", "Buat pengajuan karyawan"),
+    ("Administrasi Karyawan", "employee_admin.approve", "Setujui pengajuan karyawan"),
+    ("Administrasi Karyawan", "employee_admin.view_all", "Lihat semua pengajuan karyawan"),
+    ("Administrasi Karyawan", "employee_admin.settings", "Atur Administrasi Karyawan"),
+    ("Administrasi Karyawan", "employee_admin.document_view", "Lihat dokumen resmi pengajuan"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -158,6 +164,11 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.reports.gaji_operator", "Menu Gaji Operator"),
     ("Akses Menu", "nav.reports.order_prediction", "Menu Prediksi Order"),
     ("Akses Menu", "nav.settings", "Menu Pengaturan"),
+    ("Akses Menu", "nav.employee_administration", "Menu Administrasi Karyawan"),
+    ("Akses Menu", "nav.employee_administration.mine", "Menu Pengajuan Saya"),
+    ("Akses Menu", "nav.employee_administration.create", "Menu Buat Pengajuan"),
+    ("Akses Menu", "nav.employee_administration.approve", "Menu Persetujuan"),
+    ("Akses Menu", "nav.employee_administration.archive", "Menu Arsip Dokumen"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -223,6 +234,11 @@ NAV_MENU_ITEMS = (
     ("nav.reports.shipment_status", "Status Pengiriman", "nav.reports"),
     ("nav.reports.gaji_operator", "Gaji Operator", "nav.reports"),
     ("nav.reports.order_prediction", "Prediksi Order", "nav.reports"),
+    ("nav.employee_administration", "Administrasi Karyawan", None),
+    ("nav.employee_administration.mine", "Pengajuan Saya", "nav.employee_administration"),
+    ("nav.employee_administration.create", "Buat Pengajuan", "nav.employee_administration"),
+    ("nav.employee_administration.approve", "Persetujuan", "nav.employee_administration"),
+    ("nav.employee_administration.archive", "Arsip Dokumen", "nav.employee_administration"),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -306,6 +322,20 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.delivery")
+    if "employee_admin.view_own" in existing or "employee_admin.submit" in existing or "employee_admin.view_all" in existing:
+        nav.add("nav.employee_administration")
+        nav.add("nav.employee_administration.mine")
+    if "employee_admin.submit" in existing:
+        nav.add("nav.employee_administration")
+        nav.add("nav.employee_administration.create")
+    if "employee_admin.approve" in existing:
+        nav.add("nav.employee_administration")
+        nav.add("nav.employee_administration.approve")
+    if "employee_admin.document_view" in existing or "employee_admin.view_all" in existing:
+        nav.add("nav.employee_administration")
+        nav.add("nav.employee_administration.archive")
+    if "employee_admin.settings" in existing:
+        nav.add("nav.employee_administration")
     return nav
 
 

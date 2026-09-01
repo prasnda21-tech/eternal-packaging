@@ -309,6 +309,24 @@ export const api = {
   bulkDeleteSalesInvoices: (ids, reason = "bulk") => client.post(`/sales-invoices-bulk/delete`, { ids, reason }).then((r) => r.data),
   deleteSalesReceipt: (id) => client.delete(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   bulkDeleteSalesReceipts: (ids, reason = "bulk") => client.post(`/sales-receipts-bulk/delete`, { ids, reason }).then((r) => r.data),
+  employeeAdminMeta: () => client.get(`/employee-admin/meta`).then((r) => r.data),
+  employeeAdminTypes: (includeInactive = true) => client.get(`/employee-admin/types`, { params: { include_inactive: includeInactive } }).then((r) => r.data),
+  employeeAdminEligibleTypes: () => client.get(`/employee-admin/types/eligible`).then((r) => r.data),
+  employeeAdminGetType: (id) => client.get(`/employee-admin/types/${encodeURIComponent(id)}`).then((r) => r.data),
+  employeeAdminCreateType: (payload) => client.post(`/employee-admin/types`, payload).then((r) => r.data),
+  employeeAdminUpdateType: (id, payload) => client.put(`/employee-admin/types/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  employeeAdminRequests: (scope = "mine", q = "") => client.get(`/employee-admin/requests`, { params: { scope, q } }).then((r) => r.data),
+  employeeAdminGetRequest: (id) => client.get(`/employee-admin/requests/${encodeURIComponent(id)}`).then((r) => r.data),
+  employeeAdminSubmitRequest: (payload) => client.post(`/employee-admin/requests`, payload).then((r) => r.data),
+  employeeAdminDecide: (id, payload) => client.post(`/employee-admin/requests/${encodeURIComponent(id)}/decide`, payload).then((r) => r.data),
+  employeeAdminUpload: (file, fieldKey = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("field_key", fieldKey);
+    return client.post(`/employee-admin/uploads`, form).then((r) => r.data);
+  },
+  employeeAdminFileUrl: (requestId, fileId) => `${API}/employee-admin/requests/${encodeURIComponent(requestId)}/files/${encodeURIComponent(fileId)}`,
+  employeeAdminDocumentUrl: (requestId) => `${API}/employee-admin/requests/${encodeURIComponent(requestId)}/document`,
 };
 
 export default api;

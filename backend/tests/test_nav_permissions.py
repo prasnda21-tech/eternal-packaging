@@ -82,6 +82,17 @@ def test_catalog_includes_nav_keys():
         "reports.order_prediction.view",
         "settings.operator_wage.view",
         "settings.operator_wage.manage",
+        "employee_admin.view_own",
+        "employee_admin.submit",
+        "employee_admin.approve",
+        "employee_admin.view_all",
+        "employee_admin.settings",
+        "employee_admin.document_view",
+        "nav.employee_administration",
+        "nav.employee_administration.mine",
+        "nav.employee_administration.create",
+        "nav.employee_administration.approve",
+        "nav.employee_administration.archive",
     ):
         assert key in ALL_PERMISSIONS, key
 
