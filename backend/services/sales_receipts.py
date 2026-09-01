@@ -38,7 +38,7 @@ def derive_base_receipt_number(po_number: str) -> str:
     pn = (po_number or "").strip()
     if not pn:
         return "PAY-" + datetime.now(timezone.utc).strftime("%Y%m%d-001")
-    
+
     # 1. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> PAY/2026/08/30/000123
     # 2. Match PO-20260830-001 or SO-20260830-001 -> PAY-20260830-001
     # 3. Match PO.2026.08.001 -> PAY.2026.08.001
@@ -49,20 +49,20 @@ def derive_base_receipt_number(po_number: str) -> str:
         sep = m.group(1)
         rest = m.group(2)
         return f"PAY{sep}{rest}"
-    
+
     # Other alphabetic prefixes with separator
     m2 = re.match(r'^[A-Za-z]+([\/\.\-\s_])(.*)$', pn)
     if m2:
         sep = m2.group(1)
         rest = m2.group(2)
         return f"PAY{sep}{rest}"
-    
+
     return f"PAY-{pn}"
 
 
 def derive_receipt_number(po_number: str, receipt_index: int) -> str:
     """Computes backend-authoritative receipt number for a specific receipt index.
-    
+
     Index 1: base PAY (e.g. PAY/2026/08/31/000125)
     Index 2: base PAY + "-2" (e.g. PAY/2026/08/31/000125-2)
     Index 3: base PAY + "-3" (e.g. PAY/2026/08/31/000125-3)
@@ -80,10 +80,10 @@ def _parse_non_negative_amount(raw: Any, field_name: str = "Jumlah pembayaran") 
         d = Decimal(str(raw).strip().replace(",", "."))
     except (InvalidOperation, ValueError, TypeError):
         raise HTTPException(400, f"{field_name} '{raw}' tidak valid. Format harus angka.")
-    
+
     if d <= Decimal("0"):
         raise HTTPException(400, f"{field_name} harus lebih besar dari 0.")
-    
+
     return float(d)
 
 
@@ -127,7 +127,7 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
 
 async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
     """Creates a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively.
-    
+
     Guarantees:
     - Linked to exact invoice_id (preserving receipt -> invoice_id -> po_id relation)
     - Validates amount > 0 and amount <= outstanding_amount (overpayment protection)
@@ -239,7 +239,7 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
             order = await db.orders.find_one({"id": str(po_id)})
             if not order:
                 order = await db.orders.find_one({"po_number": str(po_id)})
-            
+
             if order and not order.get("cancelled"):
                 order.setdefault("payment_receipts", []).append({
                     "receipt_id": receipt_id,
@@ -449,3 +449,159 @@ async def bulk_delete_sales_receipts(db, ids: list, user: dict) -> dict:
         "deleted": [{"id": r["id"], "receipt_number": r.get("receipt_number", "")} for r in to_delete],
     }
 
+
+def generate_sales_receipt_pdf_bytes(receipt: dict) -> bytes:
+    """Generate official A4 PDF for Sales Receipt (Penerimaan Penjualan)."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5 * cm,
+        leftMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+    )
+
+    styles = getSampleStyleSheet()
+
+    company_title_style = ParagraphStyle(
+        'CompanyTitle',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=14,
+        leading=17,
+        textColor=colors.HexColor('#0f172a'),
+    )
+
+    doc_title_style = ParagraphStyle(
+        'DocTitle',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=13,
+        leading=16,
+        alignment=2,
+        textColor=colors.HexColor('#059669'), # Green for receipt
+    )
+
+    meta_label_style = ParagraphStyle(
+        'MetaLabel',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor('#334155'),
+    )
+
+    meta_val_style = ParagraphStyle(
+        'MetaVal',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor('#0f172a'),
+    )
+
+    tbl_cell_bold = ParagraphStyle(
+        'TblCellBold',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=8.5,
+        leading=11,
+        alignment=2, # Right align for numbers
+        textColor=colors.HexColor('#0f172a'),
+    )
+
+    from html import escape
+
+    elements = []
+
+    header_data = [
+        [
+            Paragraph("<b>ETERNAL PACKAGING</b>", company_title_style),
+            Paragraph("<b>PENERIMAAN PENJUALAN</b><br/><font size='9' color='#10b981'><b>" + escape(str(receipt.get('receipt_number') or receipt.get('id') or '')) + "</b></font>", doc_title_style),
+        ]
+    ]
+    header_tbl = Table(header_data, colWidths=[9.5 * cm, 8.5 * cm])
+    header_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_tbl)
+    elements.append(Spacer(1, 0.2 * cm))
+    elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#34d399'), spaceAfter=8, spaceBefore=0))
+
+    meta_data = [
+        [
+            Paragraph("<b>Nomor Faktur</b>", meta_label_style),
+            Paragraph(f": {escape(str(receipt.get('invoice_number') or '-'))}", meta_val_style),
+            Paragraph("<b>Customer</b>", meta_label_style),
+            Paragraph(f": {escape(str(receipt.get('customer') or '-'))}", meta_val_style),
+        ],
+        [
+            Paragraph("<b>Nomor PO</b>", meta_label_style),
+            Paragraph(f": {escape(str(receipt.get('po_number') or '-'))}", meta_val_style),
+            Paragraph("<b>Tgl Penerimaan</b>", meta_label_style),
+            Paragraph(f": {str(receipt.get('receipt_date') or '')[:10]}", meta_val_style),
+        ],
+        [
+            Paragraph("<b>Tipe Bayar</b>", meta_label_style),
+            Paragraph(f": {escape(str(receipt.get('payment_state') or '-'))}", meta_val_style),
+            Paragraph("<b>Catatan</b>", meta_label_style),
+            Paragraph(f": {escape(str(receipt.get('notes') or '-'))}", meta_val_style),
+        ],
+    ]
+    meta_tbl = Table(meta_data, colWidths=[3.0 * cm, 6.0 * cm, 3.0 * cm, 6.0 * cm])
+    meta_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    elements.append(meta_tbl)
+    elements.append(Spacer(1, 0.8 * cm))
+
+    def format_money(val):
+        try:
+            f_val = float(val)
+            if f_val.is_integer():
+                return "Rp " + f"{int(f_val):,}".replace(",", ".")
+            else:
+                s = f"{f_val:,.2f}"
+                return "Rp " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+        except:
+            return "Rp 0"
+
+    amount = receipt.get("amount", 0)
+
+    amount_data = [
+        [
+            Paragraph("<font size='10'><b>TOTAL DITERIMA</b></font>", meta_label_style),
+            Paragraph(f"<font size='12'>{format_money(amount)}</font>", tbl_cell_bold),
+        ]
+    ]
+
+    amount_tbl = Table(amount_data, colWidths=[9.0 * cm, 9.0 * cm])
+    amount_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#ecfdf5')),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#6ee7b7')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(amount_tbl)
+
+    doc.build(elements)
+    return buffer.getvalue()

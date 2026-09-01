@@ -130,6 +130,27 @@ export default function PenerimaanPenjualan() {
     }
   };
 
+
+  const [pdfLoadingId, setPdfLoadingId] = useState(null);
+
+  const handlePrintPdf = async (e, receiptId) => {
+    if (e) e.stopPropagation();
+    if (!receiptId) return;
+    setPdfLoadingId(receiptId);
+    try {
+      const blob = await api.downloadSalesReceiptPdf(receiptId);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      const msg = typeof det === "object" ? det?.message || JSON.stringify(det) : det || "Gagal memuat PDF Penerimaan Penjualan.";
+      setListErr(msg);
+    } finally {
+      setPdfLoadingId(null);
+    }
+  };
+
   const handleBulkDelete = async () => {
     setDeleteLoading(true);
     setDeleteErr("");
@@ -504,21 +525,19 @@ export default function PenerimaanPenjualan() {
                 <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "right" }}>Jumlah Penerimaan</th>
                 <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Status Faktur</th>
                 <th style={{ padding: "12px 16px", fontWeight: 600 }}>Catatan</th>
-                {canDelete && (
-                  <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Aksi</th>
-                )}
+                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Aksi</th>
               </tr>
             </thead>
             <tbody>
               {listLoading ? (
                 <tr>
-                  <td colSpan={canDelete ? 10 : 8} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
+                  <td colSpan={canDelete ? 10 : 9} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
                     Memuat data penerimaan penjualan...
                   </td>
                 </tr>
               ) : receipts.length === 0 ? (
                 <tr>
-                  <td colSpan={canDelete ? 10 : 8} style={{ padding: 48, textAlign: "center" }}>
+                  <td colSpan={canDelete ? 10 : 9} style={{ padding: 48, textAlign: "center" }}>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                       <FileText size={36} color="#9ca3af" />
                       <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
@@ -585,34 +604,55 @@ export default function PenerimaanPenjualan() {
                     <td style={{ padding: "12px 16px", color: "#6b7280", maxWidth: 220 }}>
                       {r.notes || "-"}
                     </td>
-                    {canDelete && (
-                      <td style={{ padding: "12px 16px", textAlign: "center" }}>
+                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
+                      <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
                         <button
                           type="button"
-                          data-testid={`btn-delete-receipt-${r.id}`}
-                          onClick={() => {
-                            setDeleteErr("");
-                            setDeleteConfirm({
-                              id: r.id,
-                              number: r.receipt_number,
-                              numbers: [r.receipt_number],
-                            });
-                          }}
+                          onClick={(e) => handlePrintPdf(e, r.id)}
+                          data-testid={`btn-print-pdf-${r.id}`}
+                          disabled={pdfLoadingId === r.id}
+                          title="Cetak PDF Penerimaan Penjualan"
                           style={{
-                            padding: "5px 10px",
+                            padding: "5px 12px",
                             fontSize: "0.8rem",
                             borderRadius: 6,
-                            border: "1px solid #fecaca",
-                            background: "#fef2f2",
-                            color: "#b91c1c",
-                            cursor: "pointer",
+                            border: "1px solid #cbd5e1",
+                            background: "#f8fafc",
+                            color: "#0284c7",
+                            cursor: pdfLoadingId === r.id ? "wait" : "pointer",
                             fontWeight: 600,
                           }}
                         >
-                          Hapus
+                          {pdfLoadingId === r.id ? "Memuat..." : "Cetak PDF"}
                         </button>
-                      </td>
-                    )}
+                        {canDelete && (
+                          <button
+                            type="button"
+                            data-testid={`btn-delete-receipt-${r.id}`}
+                            onClick={() => {
+                              setDeleteErr("");
+                              setDeleteConfirm({
+                                id: r.id,
+                                number: r.receipt_number,
+                                numbers: [r.receipt_number],
+                              });
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              fontSize: "0.8rem",
+                              borderRadius: 6,
+                              border: "1px solid #fecaca",
+                              background: "#fef2f2",
+                              color: "#b91c1c",
+                              cursor: "pointer",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Hapus
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))
               )}
