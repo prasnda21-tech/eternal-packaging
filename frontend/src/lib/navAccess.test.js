@@ -329,9 +329,28 @@ describe("productionNavVisible", () => {
 describe("purchasingMenuItems", () => {
   test("builds tiles from existing Pembelian children only", () => {
     expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts))).toEqual([
-      { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "blue", testid: "top-nav-penerimaan-barang" },
+      { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "amber", testid: "top-nav-penerimaan-barang" },
     ]);
     expect(purchasingMenuItems(has(NAV_KEYS.purchasing))).toEqual([]);
+  });
+
+  test("adds Permintaan, Pesanan, Faktur, Pembayaran without duplicating Penerimaan Barang", () => {
+    const items = purchasingMenuItems(has(
+      NAV_KEYS.purchasing,
+      NAV_KEYS.purchaseRequests,
+      NAV_KEYS.purchaseOrders,
+      NAV_KEYS.purchaseInvoices,
+      NAV_KEYS.purchasePayments,
+      NAV_KEYS.purchaseReceipts,
+    ));
+    expect(items.map((item) => item.label)).toEqual([
+      "Permintaan",
+      "Pesanan Pembelian",
+      "Faktur Pembelian",
+      "Pembayaran Pembelian",
+      "Penerimaan Barang",
+    ]);
+    expect(items.filter((item) => item.label === "Penerimaan Barang")).toHaveLength(1);
   });
 });
 

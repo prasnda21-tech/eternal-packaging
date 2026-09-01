@@ -17,6 +17,10 @@ import Settings from "./pages/Settings";
 import MasterBarangJasa from "./pages/MasterBarangJasa";
 import StockSaatIni from "./pages/StockSaatIni";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
+import PermintaanPembelian from "./pages/PermintaanPembelian";
+import PesananPembelian from "./pages/PesananPembelian";
+import FakturPembelian from "./pages/FakturPembelian";
+import PembayaranPembelian from "./pages/PembayaranPembelian";
 import AnalitikOutput from "./pages/AnalitikOutput";
 import StatusPengiriman from "./pages/StatusPengiriman";
 import StatusPO from "./pages/StatusPO";
@@ -32,7 +36,7 @@ import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
 import DeliveryBatchPage from "./pages/DeliveryBatchPage";
 import "@/App.css";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage"];
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -67,6 +71,10 @@ function PersediaanIndex() {
 function PembelianIndex() {
   const { hasPerm } = useAuth();
   const buy = purchasingNavVisible(hasPerm);
+  if (buy.requests) return <Navigate to="/pembelian/permintaan" replace />;
+  if (buy.orders) return <Navigate to="/pembelian/pesanan-pembelian" replace />;
+  if (buy.invoices) return <Navigate to="/pembelian/faktur-pembelian" replace />;
+  if (buy.payments) return <Navigate to="/pembelian/pembayaran-pembelian" replace />;
   if (buy.receipts) return <Navigate to="/pembelian/penerimaan-barang" replace />;
   return <Navigate to="/" replace />;
 }
@@ -118,6 +126,10 @@ export default function App() {
             <Route path="/penjualan/faktur-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesInvoice, NAV_KEYS.sales, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "po.view"]}><FakturPenjualan /></PermGate>} />
             <Route path="/penjualan/penerimaan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesReceipt, NAV_KEYS.sales, "sales.receipt.view", "sales.receipt.create", "sales.invoice.view", "sales_order.view", "po.view"]}><PenerimaanPenjualan /></PermGate>} />
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
+            <Route path="/pembelian/permintaan" element={<PermGate anyOf={[NAV_KEYS.purchaseRequests, NAV_KEYS.purchasing, "purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
+            <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />
+            <Route path="/pembelian/faktur-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseInvoices, NAV_KEYS.purchasing, "purchase_invoices.view", "purchase_invoices.create"]}><FakturPembelian /></PermGate>} />
+            <Route path="/pembelian/pembayaran-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchasePayments, NAV_KEYS.purchasing, "purchase_payments.view", "purchase_payments.create"]}><PembayaranPembelian /></PermGate>} />
             <Route path="/pembelian/penerimaan-barang" element={<PermGate anyOf={[NAV_KEYS.purchaseReceipts]} alsoAnyOf={["purchase_receipts.view"]}><PenerimaanBarang /></PermGate>} />
             <Route path="/pembelian" element={<PembelianIndex />} />
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />

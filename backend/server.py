@@ -149,6 +149,7 @@ from services.purchase_receipts import (
     purchase_source_from_meta,
     sync_purchase_receipts,
 )
+from services.purchase_http import register_purchase_routes
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -7529,6 +7530,16 @@ async def purchase_receipts_sync(user=Depends(require_perm("purchase_receipts.sy
     return result
 
 
+register_purchase_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+
+
 @api_router.post("/accurate/sync")
 async def accurate_sync(user=Depends(require("admin", "head_production"))):
     """Legacy bulk sync — kept behind admin/HoP for backfill only. Bulk auto-sync
@@ -8876,6 +8887,45 @@ async def seed():
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
     await db.sales_receipts.create_index("invoice_id")
     await db.sales_receipts.create_index("created_at")
+    # Purchasing documents — additive unique business numbers (not sales PO/SJ/INV/PAY)
+    await db.purchase_requests.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_requests, "request_number")
+    await db.purchase_requests.create_index("created_at")
+    await db.purchase_orders.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_orders, "po_number")
+    await db.purchase_orders.create_index("request_id")
+    await db.purchase_orders.create_index("created_at")
+    await db.purchase_goods_receipts.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_goods_receipts, "receipt_number")
+    await db.purchase_goods_receipts.create_index("purchase_order_id")
+    await db.purchase_goods_receipts.create_index("created_at")
+    await db.purchase_receipt_po_links.create_index("id", unique=True)
+    await db.purchase_receipt_po_links.create_index("purchase_order_id")
+    await db.purchase_receipt_po_links.create_index("accurate_receipt_id")
+    await db.purchase_invoices.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_invoices, "invoice_number")
+    await db.purchase_invoices.create_index("purchase_order_id")
+    await db.purchase_invoices.create_index("created_at")
+    await db.purchase_payments.create_index("id", unique=True)
+    await _ensure_unique_business_number_index(db.purchase_payments, "payment_number")
+    await db.purchase_payments.create_index("purchase_invoice_id")
+    await db.purchase_payments.create_index("purchase_order_id")
+    await db.purchase_payments.create_index("created_at")
+    for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
+        try:
+            await coll.drop_index("idempotency_key_1")
+        except Exception:
+            pass
+        await coll.create_index(
+            "idempotency_key",
+            unique=True,
+            partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        )
+    await db.hpp_cost_versions.create_index("id", unique=True)
+    await db.hpp_cost_versions.create_index("version")
+    await db.hpp_cost_versions.create_index("status")
+    await db.hpp_cost_layers.create_index("calculation_version")
+    await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
