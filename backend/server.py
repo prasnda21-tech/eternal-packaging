@@ -6174,6 +6174,7 @@ from services.sales_deliveries import (
 from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
     create_sales_invoice as _create_sales_invoice,
+    generate_sales_invoice_pdf_bytes,
     list_sales_invoices as _list_sales_invoices,
     get_sales_invoice_detail as _get_sales_invoice_detail,
     update_sales_invoice as _update_sales_invoice,
@@ -6184,6 +6185,7 @@ from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
     create_sales_receipt as _create_sales_receipt,
+    generate_sales_receipt_pdf_bytes,
     delete_sales_receipt as _delete_sales_receipt,
     bulk_delete_sales_receipts as _bulk_delete_sales_receipts,
 )
@@ -6693,6 +6695,22 @@ async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
     return {"invoice": inv}
 
 
+
+@api_router.get("/sales-invoices/{id}/pdf")
+async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
+    """Generate and return official PDF for Sales Invoice (Faktur Penjualan)."""
+    await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
+    detail = await _get_sales_invoice_detail(db, id)
+    pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
+    inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
+    filename = f"Faktur_Penjualan_{inv_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+
 @api_router.put("/sales-invoices/{id}")
 async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
     """Update unit prices or notes on an existing sales invoice."""
@@ -6732,6 +6750,22 @@ async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user
     receipt = await _create_sales_receipt(db, payload.model_dump(), user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
 
+
+
+
+@api_router.get("/sales-receipts/{id}/pdf")
+async def get_sales_receipt_pdf_endpoint(id: str, user=Depends(current_user)):
+    """Generate and return official PDF for Sales Receipt (Penerimaan Penjualan)."""
+    await _require_any_perm(user, "sales.receipt.view", "sales.invoice.view", "sales_order.view", "po.view")
+    detail = await _get_sales_receipt_detail(db, id)
+    pdf_bytes = generate_sales_receipt_pdf_bytes(detail)
+    rec_num = str(detail.get("receipt_number", "PAY")).replace("/", "_").replace("\\", "_")
+    filename = f"Penerimaan_Penjualan_{rec_num}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
 
 
 # ==================================================

@@ -166,6 +166,28 @@ export default function FakturPenjualan() {
   };
 
   // Bulk delete
+
+  const [pdfLoadingId, setPdfLoadingId] = useState(null);
+
+  const handlePrintPdf = async (e, invoiceId) => {
+    if (e) e.stopPropagation();
+    if (!invoiceId) return;
+    setPdfLoadingId(invoiceId);
+    try {
+      const blob = await api.downloadSalesInvoicePdf(invoiceId);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      const msg = typeof det === "object" ? det?.message || JSON.stringify(det) : det || "Gagal memuat PDF Faktur Penjualan.";
+      setListErr(msg);
+      if (viewMode === "detail") setDetailErr(msg);
+    } finally {
+      setPdfLoadingId(null);
+    }
+  };
+
   const handleBulkDelete = async () => {
     setDeleteLoading(true);
     setDeleteErr("");
@@ -896,6 +918,25 @@ export default function FakturPenjualan() {
                           }}
                         >
                           Lihat / Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handlePrintPdf(e, inv.id)}
+                          data-testid={`btn-print-pdf-${inv.id}`}
+                          disabled={pdfLoadingId === inv.id}
+                          title="Cetak PDF Faktur Penjualan"
+                          style={{
+                            padding: "5px 12px",
+                            fontSize: "0.8rem",
+                            borderRadius: 6,
+                            border: "1px solid #cbd5e1",
+                            background: "#f8fafc",
+                            color: "#0284c7",
+                            cursor: pdfLoadingId === inv.id ? "wait" : "pointer",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
                         </button>
                         {canDelete && (
                           <button
@@ -1683,6 +1724,28 @@ export default function FakturPenjualan() {
                   style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
                 >
                   Kembali ke Daftar
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => handlePrintPdf(e, selectedInvoiceId)}
+                  data-testid="btn-print-pdf-detail"
+                  disabled={pdfLoadingId === selectedInvoiceId}
+                  title="Cetak PDF Faktur Penjualan"
+                  style={{
+                    padding: "10px 20px",
+                    borderRadius: 8,
+                    border: "1px solid #0284c7",
+                    background: "#f0f9ff",
+                    color: "#0284c7",
+                    cursor: pdfLoadingId === selectedInvoiceId ? "wait" : "pointer",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <FileText size={16} />
+                  {pdfLoadingId === selectedInvoiceId ? "Memuat PDF..." : "Cetak PDF"}
                 </button>
                 {canEdit && (
                   <button

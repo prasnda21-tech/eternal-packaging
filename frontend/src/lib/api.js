@@ -293,6 +293,10 @@ export const api = {
   createSalesDelivery: (payload) => client.post(`/sales-deliveries`, payload).then((r) => r.data),
   salesDeliveryPdfUrl: (id) => `${API}/sales-deliveries/${encodeURIComponent(id)}/pdf`,
   // ---- Sales Invoice (Faktur Penjualan) ----
+
+  downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+  downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+
   listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
