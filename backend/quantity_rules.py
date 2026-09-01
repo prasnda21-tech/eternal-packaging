@@ -1060,7 +1060,9 @@ def available_for_sj_loading_line(order: dict, surat_jalan_id: str, line_idx: in
     """Available loading for this exact line on this exact Surat Jalan."""
     sj_qty = sj_qty_for_line(order, surat_jalan_id, line_idx)
     loaded_qty = loaded_qty_for_sj_line(order, surat_jalan_id, line_idx)
-    return max(0, sj_qty - loaded_qty)
+    sj_avail = max(0, sj_qty - loaded_qty)
+    physical_avail = available_for_loading_confirm_line(order, line_idx)
+    return min(sj_avail, physical_avail)
 
 
 def qty_confirmed_loading_for_line(order: dict, line_idx: int) -> int:
@@ -1189,10 +1191,25 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
 
         name = _line_name(order, idx)
         if qty > avail:
+            physical_avail = available_for_loading_confirm_line(order, idx)
+            sj_qty_cap = sj_qty_for_line(order, surat_jalan_id, idx)
+            loaded_qty_sj = loaded_qty_for_sj_line(order, surat_jalan_id, idx)
+            sj_avail = max(0, sj_qty_cap - loaded_qty_sj)
+            
             if avail <= 0:
+                if physical_avail <= 0:
+                    return (
+                        f"Loading tidak dapat dilakukan karena belum ada qty Packing "
+                        f"yang tersedia untuk '{name}'."
+                    )
                 return (
                     f"Qty Loading '{name}' belum bisa diisi. "
                     "Seluruh kuantitas Surat Jalan untuk item ini sudah selesai di-loading."
+                )
+            
+            if physical_avail < sj_avail and qty > physical_avail:
+                return (
+                    f"Qty Loading '{name}' ({qty}) melebihi qty Packing yang tersedia ({physical_avail})."
                 )
             return (
                 f"Qty Loading '{name}' ({qty}) melebihi sisa Surat Jalan yang siap loading ({avail})."

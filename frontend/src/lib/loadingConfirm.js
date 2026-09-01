@@ -65,22 +65,30 @@ export function loadingPoLines(order, selectedSjId = null) {
         packed,
         loaded: loadedSnap,
         available: Math.max(0, availSnap),
+        physical_available: Math.max(0, availSnap),
+        sj_available: Math.max(0, availSnap),
         label: poLineLabel(li, idx),
       };
     }
 
     let loadedForSj = 0;
+    let totalLoadedLine = 0;
     for (const conf of confirmations) {
-      if (targetIds.has(String(conf.surat_jalan_id))) {
-        for (const ln of conf.lines || []) {
-          if (Number(ln.line_idx) === idx) {
-            loadedForSj += Number(ln.qty ?? ln.quantity ?? 0) || 0;
+      for (const ln of conf.lines || []) {
+        if (Number(ln.line_idx) === idx) {
+          const qty = Number(ln.qty ?? ln.quantity ?? 0) || 0;
+          totalLoadedLine += qty;
+          if (targetIds.has(String(conf.surat_jalan_id))) {
+            loadedForSj += qty;
           }
         }
       }
     }
 
-    const available = Math.max(0, sjLineQty - loadedForSj);
+    const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
+    const physicalAvailable = Math.max(0, cap - totalLoadedLine);
+    const sjAvailable = Math.max(0, sjLineQty - loadedForSj);
+    const available = Math.min(sjAvailable, physicalAvailable);
 
     return {
       line_idx: idx,
@@ -93,6 +101,8 @@ export function loadingPoLines(order, selectedSjId = null) {
       packed,
       loaded: loadedForSj,
       available,
+      physical_available: physicalAvailable,
+      sj_available: sjAvailable,
       label: poLineLabel(li, idx),
     };
   });
@@ -187,7 +197,13 @@ export function validateLoadingDraftLines(rows, poLines) {
     const avail = po ? Number(po.available) : null;
     if (avail != null && qty > avail) {
       if (avail <= 0) {
-        return { ok: false, error: "Qty Loading belum bisa diisi. Qty fisik yang sudah diproses belum siap.", lines: [] };
+        if (po?.physical_available <= 0) {
+          return { ok: false, error: "Loading tidak dapat dilakukan karena belum ada qty Packing.", lines: [] };
+        }
+        return { ok: false, error: "Qty Loading belum bisa diisi. Seluruh kuantitas Surat Jalan untuk item ini sudah selesai di-loading.", lines: [] };
+      }
+      if (po?.physical_available != null && qty > po.physical_available) {
+        return { ok: false, error: `Qty melebihi qty Packing yang tersedia (${po.physical_available}).`, lines: [] };
       }
       return { ok: false, error: `Qty melebihi sisa Surat Jalan yang siap loading (${avail}).`, lines: [] };
     }
