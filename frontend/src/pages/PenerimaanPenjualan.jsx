@@ -15,6 +15,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 function getTodayString() {
   const d = new Date();
@@ -756,34 +757,47 @@ export default function PenerimaanPenjualan() {
                 </div>
               )}
 
+              <FormProgress
+                percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length / 3) * 100)}
+                completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length}
+                total={3}
+                className="mb-4"
+              />
+
               {/* 1. Pilih Faktur Penjualan */}
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                  Pilih Faktur Penjualan *
-                </label>
-                <select
-                  className="form-select"
-                  data-testid="select-receipt-invoice"
-                  value={selectedInvoiceId}
-                  onChange={(e) => setSelectedInvoiceId(e.target.value)}
-                  disabled={createBusy || invoicesLoading}
-                  style={{
-                    width: "100%",
-                    height: 38,
-                    borderRadius: 6,
-                    border: "1px solid #d1d5db",
-                    fontSize: 13,
-                    padding: "0 10px",
-                  }}
-                >
-                  <option value="">-- Pilih Faktur Penjualan --</option>
-                  {invoicesWithBalance.map((inv) => (
-                    <option key={inv.id} value={inv.id}>
-                      {inv.customer} — PO {inv.po_number} (Sisa: {formatRupiah(inv.outstanding_amount || inv.grand_total)})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <FormSection
+                id="sr-invoice-section"
+                title="1. Pilih Faktur Penjualan"
+                description="Pilih faktur yang memiliki sisa tagihan."
+                status={selectedInvoiceId ? "complete" : "incomplete"}
+              >
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                    Pilih Faktur Penjualan *
+                  </label>
+                  <select
+                    className="form-select"
+                    data-testid="select-receipt-invoice"
+                    value={selectedInvoiceId}
+                    onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                    disabled={createBusy || invoicesLoading}
+                    style={{
+                      width: "100%",
+                      height: 38,
+                      borderRadius: 6,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      padding: "0 10px",
+                    }}
+                  >
+                    <option value="">-- Pilih Faktur Penjualan --</option>
+                    {invoicesWithBalance.map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        {inv.customer} — PO {inv.po_number} (Sisa: {formatRupiah(inv.outstanding_amount || inv.grand_total)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
               {/* Summary Card Faktur */}
               {selectedInvoice && (
@@ -819,12 +833,20 @@ export default function PenerimaanPenjualan() {
                 </div>
               )}
 
-              {/* 2. Jumlah Penerimaan */}
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
-                    Jumlah Penerimaan (Rp) *
-                  </label>
+              </FormSection>
+
+              {/* 2. Detail Pembayaran */}
+              <FormSection
+                id="sr-payment-section"
+                title="2. Detail Penerimaan Pembayaran"
+                description="Masukkan nominal pembayaran, tanggal, dan metode transfer."
+                status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }])}
+              >
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
+                      Jumlah Penerimaan (Rp) *
+                    </label>
                   {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
                     <button
                       type="button"
@@ -940,6 +962,7 @@ export default function PenerimaanPenjualan() {
                   </div>
                 </div>
               )}
+              </FormSection>
 
               {/* Modal Actions */}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>

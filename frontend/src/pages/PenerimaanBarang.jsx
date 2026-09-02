@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { errDetail, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 export default function PenerimaanBarang() {
   const { hasPerm } = useAuth();
@@ -250,31 +251,42 @@ export default function PenerimaanBarang() {
         {recvMsg && <p className="muted small">{recvMsg}</p>}
         {canReceive && (
           <div data-testid="po-receive-form">
-            <label>Pesanan Pembelian
+            <FormField id="recv-po" label="Pesanan Pembelian" isRequired value={recvPoId}>
               <select value={recvPoId} onChange={(e) => setRecvPoId(e.target.value)} data-testid="receive-po-selector">
                 <option value="">Pilih PO</option>
                 {eligiblePos.map((o) => <option key={o.id} value={o.id}>{o.po_number} · {o.supplier}</option>)}
               </select>
-            </label>
+            </FormField>
             {recvPreview && (
               <>
-                <label>Tanggal diterima<input type="date" value={recvDate} onChange={(e) => setRecvDate(e.target.value)} /></label>
-                <table className="prod-table">
-                  <thead><tr><th>Item</th><th>Dipesan</th><th>Sudah diterima</th><th>Sisa</th><th>Qty terima</th></tr></thead>
-                  <tbody>
-                    {(recvPreview.lines || []).map((l) => (
-                      <tr key={l.purchase_order_line_id}>
-                        <td>{l.item_name}</td>
-                        <td className="num">{fmtQty(l.ordered_qty)}</td>
-                        <td className="num">{fmtQty(l.cumulative_received_qty)}</td>
-                        <td className="num">{fmtQty(l.remaining_receivable_qty)}</td>
-                        <td>
-                          <input type="number" min="0" value={recvQty[l.purchase_order_line_id] ?? ""} onChange={(e) => setRecvQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))} data-testid="receive-qty-input" />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <FormProgress
+                  percentage={Math.round(([recvDate, Object.values(recvQty).some(v => Number(v) > 0)].filter(Boolean).length / 2) * 100)}
+                  completed={[recvDate, Object.values(recvQty).some(v => Number(v) > 0)].filter(Boolean).length}
+                  total={2}
+                />
+                <FormSection id="recv-header" title="Tanggal Penerimaan" status={computeStatus([{ value: recvDate, isRequired: true }])}>
+                  <FormField id="recv-date" label="Tanggal diterima" isRequired value={recvDate}>
+                    <input type="date" value={recvDate} onChange={(e) => setRecvDate(e.target.value)} />
+                  </FormField>
+                </FormSection>
+                <FormSection id="recv-lines" title="Qty Diterima per Item" status={Object.values(recvQty).some(v => Number(v) > 0) ? "complete" : "incomplete"}>
+                  <table className="prod-table">
+                    <thead><tr><th>Item</th><th>Dipesan</th><th>Sudah diterima</th><th>Sisa</th><th>Qty terima</th></tr></thead>
+                    <tbody>
+                      {(recvPreview.lines || []).map((l) => (
+                        <tr key={l.purchase_order_line_id}>
+                          <td>{l.item_name}</td>
+                          <td className="num">{fmtQty(l.ordered_qty)}</td>
+                          <td className="num">{fmtQty(l.cumulative_received_qty)}</td>
+                          <td className="num">{fmtQty(l.remaining_receivable_qty)}</td>
+                          <td>
+                            <input type="number" min="0" value={recvQty[l.purchase_order_line_id] ?? ""} onChange={(e) => setRecvQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))} data-testid="receive-qty-input" />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </FormSection>
                 <button
                   className="primary"
                   disabled={recvBusy}

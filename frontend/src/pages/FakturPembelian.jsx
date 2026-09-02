@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { errDetail, formatRupiah, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 export default function FakturPembelian() {
   const [searchParams] = useSearchParams();
@@ -132,21 +133,32 @@ export default function FakturPembelian() {
           {preview && (
             <div className="po-snapshot-card" data-testid="po-snapshot-card">
               <p>No PB: <span data-testid="snapshot-po-number">{preview.po_number}</span> · Supplier: {preview.supplier}</p>
-              <label>Tanggal faktur<input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" /></label>
-              <table className="prod-table">
-                <thead><tr><th>Item</th><th>Sisa</th><th>Qty faktur</th><th>Harga</th><th>Subtotal</th></tr></thead>
-                <tbody>
-                  {(preview.lines || []).map((l) => (
-                    <tr key={l.purchase_order_line_id}>
-                      <td>{l.item_name}</td>
-                      <td className="num">{fmtQty(l.remaining_invoice_qty)}</td>
-                      <td><input type="number" min="0" value={qty[l.purchase_order_line_id] ?? ""} onChange={(e) => setQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))} data-testid="qty-input" /></td>
-                      <td className="num">{formatRupiah(l.unit_price)}</td>
-                      <td className="num">{formatRupiah((Number(qty[l.purchase_order_line_id]) || 0) * (Number(l.unit_price) || 0))}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <FormProgress
+                percentage={Math.round(([invoiceDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length / 2) * 100)}
+                completed={[invoiceDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length}
+                total={2}
+              />
+              <FormSection id="invoice-header" title="Informasi Faktur" status={computeStatus([{ value: invoiceDate, isRequired: true }])}>
+                <FormField id="invoice-date" label="Tanggal faktur" isRequired value={invoiceDate}>
+                  <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
+                </FormField>
+              </FormSection>
+              <FormSection id="invoice-lines" title="Detail Item Faktur" status={Object.values(qty).some(v => Number(v) > 0) ? "complete" : "incomplete"}>
+                <table className="prod-table">
+                  <thead><tr><th>Item</th><th>Sisa</th><th>Qty faktur</th><th>Harga</th><th>Subtotal</th></tr></thead>
+                  <tbody>
+                    {(preview.lines || []).map((l) => (
+                      <tr key={l.purchase_order_line_id}>
+                        <td>{l.item_name}</td>
+                        <td className="num">{fmtQty(l.remaining_invoice_qty)}</td>
+                        <td><input type="number" min="0" value={qty[l.purchase_order_line_id] ?? ""} onChange={(e) => setQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))} data-testid="qty-input" /></td>
+                        <td className="num">{formatRupiah(l.unit_price)}</td>
+                        <td className="num">{formatRupiah((Number(qty[l.purchase_order_line_id]) || 0) * (Number(l.unit_price) || 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </FormSection>
               <p data-testid="invoice-grand-total">Grand total: {formatRupiah(totals.grand)}</p>
               <button className="primary" disabled={busy} onClick={save} data-testid="save-invoice-btn">{busy ? "Menyimpan…" : "Simpan Faktur"}</button>
             </div>

@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { currentStepLabel, displayValue, statusLabel } from "../lib/employeeAdmin";
 import { formatDisplayDateTime } from "../lib/constants";
+import { FormSection, FormField } from "../components/form-standard";
 
 function errDetail(ex) {
   return ex?.response?.data?.detail || ex?.message || "Gagal memuat";
@@ -98,14 +99,23 @@ export default function EmployeeAdminDetail() {
         </ol>
       </section>
       {canAct && (
-        <section className="settings-card" data-testid="ea-decide-box">
-          <h3>Keputusan Level {row.current_step_level}</h3>
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Catatan (opsional)" data-testid="ea-decide-note" />
-          <div className="ea-actions">
-            <button type="button" className="primary" disabled={busy} onClick={() => decide("approve")} data-testid="ea-approve">Setujui</button>
-            <button type="button" className="danger" disabled={busy} onClick={() => decide("reject")} data-testid="ea-reject">Tolak</button>
+        <FormSection
+          id="ea-decide-section"
+          title={`Keputusan Level ${row.current_step_level}`}
+          description="Berikan persetujuan atau penolakan terhadap pengajuan ini."
+          status="incomplete"
+          className="settings-card"
+        >
+          <div data-testid="ea-decide-box">
+            <FormField id="ea-decide-note-field" label="Catatan Keputusan" helpText="Opsional: tambahkan alasan persetujuan atau penolakan.">
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Catatan (opsional)" data-testid="ea-decide-note" />
+            </FormField>
+            <div className="ea-actions mt-3">
+              <button type="button" className="primary" disabled={busy} onClick={() => decide("approve")} data-testid="ea-approve">Setujui</button>
+              <button type="button" className="danger" disabled={busy} onClick={() => decide("reject")} data-testid="ea-reject">Tolak</button>
+            </div>
           </div>
-        </section>
+        </FormSection>
       )}
       {canDoc && (
         <a className="primary" href={api.employeeAdminDocumentUrl(row.id)} target="_blank" rel="noreferrer" data-testid="ea-pdf-link">
