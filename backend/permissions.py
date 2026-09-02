@@ -31,6 +31,15 @@ PERMISSION_CATALOG = [
     ("Penjualan", "sales.delivery.delete", "Hapus Pengiriman Pesanan"),
     ("Penjualan", "sales.invoice.delete", "Hapus Faktur Penjualan"),
     ("Penjualan", "sales.receipt.delete", "Hapus Penerimaan Penjualan"),
+    ("Aktivitas Penjualan", "sales.activity.view", "Lihat Aktivitas Sales / Outlet"),
+    ("Aktivitas Penjualan", "sales.activity.create", "Catat Aktivitas Sales sendiri"),
+    ("Aktivitas Penjualan", "sales.outlet.create", "Buat Outlet / Prospek sendiri"),
+    ("Aktivitas Penjualan", "sales.ownership.manage", "Kelola kepemilikan outlet"),
+    ("Aktivitas Penjualan", "sales.pool.manage", "Kelola Pool assignment"),
+    ("Aktivitas Penjualan", "sales.activity.import", "Import migrasi Sales Activity"),
+    ("Aktivitas Penjualan", "sales.activity.activate_migration", "Aktifkan automation data migrasi"),
+    ("Pengaturan", "settings.sales_activity.view", "Lihat pengaturan Sales Activity & Ownership"),
+    ("Pengaturan", "settings.sales_activity.manage", "Ubah pengaturan Sales Activity & Ownership"),
     ("Import PO", "po.import.view", "Buka halaman Import PO"),
     ("Import PO", "accurate.import", "Preview & Import Single PO dari Accurate"),
     ("Import PO", "accurate.import.bulk", "Preview & Import beberapa Sales Order Accurate sekaligus"),
@@ -160,6 +169,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.sales.sales_invoice", "Menu Faktur Penjualan"),
     ("Akses Menu", "nav.sales.sales_receipt", "Menu Penerimaan Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
+    ("Akses Menu", "nav.sales.sales_activity", "Menu Aktivitas Sales"),
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.purchasing.requests", "Menu Permintaan"),
     ("Akses Menu", "nav.purchasing.orders", "Menu Pesanan Pembelian"),
@@ -238,6 +248,7 @@ NAV_MENU_ITEMS = (
     ("nav.sales.sales_invoice", "Faktur Penjualan", "nav.sales"),
     ("nav.sales.sales_receipt", "Penerimaan Penjualan", "nav.sales"),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
+    ("nav.sales.sales_activity", "Aktivitas Sales", "nav.sales"),
     ("nav.purchasing", "Pembelian", None),
     ("nav.purchasing.requests", "Permintaan", "nav.purchasing"),
     ("nav.purchasing.orders", "Pesanan Pembelian", "nav.purchasing"),
@@ -380,6 +391,14 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.hr_payroll.history")
     if "payroll.settings" in existing:
         nav.add("nav.hr_payroll")
+    if (
+        "sales.activity.view" in existing
+        or "sales.activity.create" in existing
+        or "sales.outlet.create" in existing
+        or "sales.ownership.manage" in existing
+    ):
+        nav.add("nav.sales")
+        nav.add("nav.sales.sales_activity")
     return nav
 
 

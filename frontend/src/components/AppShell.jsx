@@ -1,4 +1,4 @@
-import { BarChart3, Boxes, CalendarClock, ClipboardList, Coins, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
@@ -17,6 +17,7 @@ const TILE_ICONS = {
   [NAV_KEYS.salesInvoice]: FileText,
   [NAV_KEYS.salesReceipt]: Receipt,
   [NAV_KEYS.importPo]: Download,
+  [NAV_KEYS.salesActivity]: Contact,
   [NAV_KEYS.purchaseRequests]: ClipboardList,
   [NAV_KEYS.purchaseOrders]: ShoppingBag,
   [NAV_KEYS.purchaseInvoices]: FileText,
