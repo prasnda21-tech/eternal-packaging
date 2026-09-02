@@ -23,6 +23,7 @@ export const NAV_KEYS = {
   salesInvoice: "nav.sales.sales_invoice",
   salesReceipt: "nav.sales.sales_receipt",
   importPo: "nav.sales.import_po",
+  salesActivity: "nav.sales.sales_activity",
   purchasing: "nav.purchasing",
   purchaseRequests: "nav.purchasing.requests",
   purchaseOrders: "nav.purchasing.orders",
@@ -75,6 +76,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.salesActivity, label: "Aktivitas Sales", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseRequests, label: "Permintaan", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchaseOrders, label: "Pesanan Pembelian", parent: NAV_KEYS.purchasing },
@@ -117,13 +119,15 @@ export function salesNavVisible(hasPerm) {
   const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const salesReceipt = parent && (canSeeNav(hasPerm, NAV_KEYS.salesReceipt) || canSeeNav(hasPerm, "sales.receipt.view") || canSeeNav(hasPerm, "sales.receipt.create") || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
+  const salesActivity = parent && (canSeeNav(hasPerm, NAV_KEYS.salesActivity) || canSeeNav(hasPerm, "sales.activity.view") || canSeeNav(hasPerm, "sales.activity.create") || canSeeNav(hasPerm, "sales.outlet.create"));
   return {
-    parent: Boolean(salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo),
+    parent: Boolean(salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity),
     salesOrder: Boolean(salesOrder),
     salesDeliveryOrder: Boolean(salesDeliveryOrder),
     salesInvoice: Boolean(salesInvoice),
     salesReceipt: Boolean(salesReceipt),
     importPo: Boolean(importPo),
+    salesActivity: Boolean(salesActivity),
   };
 }
 
@@ -134,6 +138,7 @@ export const SALES_NAV_ROUTES = {
   [NAV_KEYS.salesInvoice]: "/penjualan/faktur-penjualan",
   [NAV_KEYS.salesReceipt]: "/penjualan/penerimaan-penjualan",
   [NAV_KEYS.importPo]: "/admin/import",
+  [NAV_KEYS.salesActivity]: "/penjualan/aktivitas-sales",
 };
 
 const SALES_VIS_FIELD = {
@@ -142,6 +147,7 @@ const SALES_VIS_FIELD = {
   [NAV_KEYS.salesInvoice]: "salesInvoice",
   [NAV_KEYS.salesReceipt]: "salesReceipt",
   [NAV_KEYS.importPo]: "importPo",
+  [NAV_KEYS.salesActivity]: "salesActivity",
 };
 
 /** Stable tile tones keyed by existing nav.* — not randomized per render. */
@@ -151,6 +157,7 @@ export const SALES_TILE_TONES = {
   [NAV_KEYS.salesInvoice]: "purple",
   [NAV_KEYS.salesReceipt]: "emerald",
   [NAV_KEYS.importPo]: "green",
+  [NAV_KEYS.salesActivity]: "blue",
 };
 
 export const SALES_TILE_TESTIDS = {
@@ -159,6 +166,7 @@ export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.salesInvoice]: "top-nav-sales-invoice",
   [NAV_KEYS.salesReceipt]: "top-nav-sales-receipt",
   [NAV_KEYS.importPo]: "top-nav-import",
+  [NAV_KEYS.salesActivity]: "top-nav-sales-activity",
 };
 
 function menuItemsFromFallback(hasPerm, parentKey, visible, fieldMap, routes, tones, testids, extras = {}) {

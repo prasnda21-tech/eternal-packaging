@@ -14,6 +14,7 @@ import HppSettings from "./HppSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
+import SalesActivitySettings from "../components/SalesActivitySettings";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
@@ -1907,6 +1908,8 @@ export default function Settings() {
   const canViewEmployeeAdmin = hasPerm("employee_admin.settings");
   const canEditEmployeeAdmin = hasPerm("employee_admin.settings");
   const canViewHrPayroll = hasPerm("payroll.settings");
+  const canViewSalesActivity = hasPerm("settings.sales_activity.view") || hasPerm("settings.sales_activity.manage") || hasPerm("permissions.manage");
+  const canEditSalesActivity = hasPerm("settings.sales_activity.manage");
 
   const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
@@ -1970,6 +1973,9 @@ export default function Settings() {
         {canViewHrPayroll && (
           <button role="tab" className={tab === "hr-payroll" ? "active" : ""} onClick={() => setTab("hr-payroll")} data-testid="settings-tab-hr-payroll"><Wallet size={14}/> HR &amp; Payroll</button>
         )}
+        {canViewSalesActivity && (
+          <button role="tab" className={tab === "sales-activity" ? "active" : ""} onClick={() => setTab("sales-activity")} data-testid="settings-tab-sales-activity"><ClipboardList size={14}/> Sales Activity &amp; Ownership</button>
+        )}
         {canViewAccurateCreators && (
           <button role="tab" className={tab === "accurate-creators" ? "active" : ""} onClick={() => setTab("accurate-creators")} data-testid="settings-tab-accurate-creators"><Users size={14}/> Pembuat PO Accurate</button>
         )}
@@ -2008,6 +2014,9 @@ export default function Settings() {
       )}
       {tab === "employee-admin" && canViewEmployeeAdmin && (
         <EmployeeAdminSettings notify={notify} canEdit={canEditEmployeeAdmin}/>
+      )}
+      {tab === "sales-activity" && canViewSalesActivity && (
+        <SalesActivitySettings notify={notify} canEdit={canEditSalesActivity}/>
       )}
       {tab === "hr-payroll" && canViewHrPayroll && (
         <HrPayrollSettings notify={notify} canEdit={canViewHrPayroll}/>

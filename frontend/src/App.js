@@ -26,6 +26,8 @@ import StatusPengiriman from "./pages/StatusPengiriman";
 import StatusPO from "./pages/StatusPO";
 import GajiOperator from "./pages/GajiOperator";
 import PrediksiOrder from "./pages/PrediksiOrder";
+import SalesActivityPage from "./pages/SalesActivityPage";
+import SalesActivityOutletDetail from "./pages/SalesActivityOutletDetail";
 import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
@@ -40,7 +42,7 @@ import HrPayroll from "./pages/HrPayroll";
 import FormShowcase from "./pages/FormShowcase";
 import "@/App.css";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage"];
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -151,6 +153,8 @@ export default function App() {
             <Route path="/penjualan/pengiriman-pesanan" element={<PermGate anyOf={[NAV_KEYS.salesDeliveryOrder, NAV_KEYS.sales, "sales.delivery.view", "sales.delivery.create", "sales_order.view", "po.view"]}><PengirimanPesanan /></PermGate>} />
             <Route path="/penjualan/faktur-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesInvoice, NAV_KEYS.sales, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "po.view"]}><FakturPenjualan /></PermGate>} />
             <Route path="/penjualan/penerimaan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesReceipt, NAV_KEYS.sales, "sales.receipt.view", "sales.receipt.create", "sales.invoice.view", "sales_order.view", "po.view"]}><PenerimaanPenjualan /></PermGate>} />
+            <Route path="/penjualan/aktivitas-sales/outlet/:id" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create"]}><SalesActivityOutletDetail /></PermGate>} />
+            <Route path="/penjualan/aktivitas-sales" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create", "sales.outlet.create"]}><SalesActivityPage /></PermGate>} />
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
             <Route path="/pembelian/permintaan" element={<PermGate anyOf={[NAV_KEYS.purchaseRequests, NAV_KEYS.purchasing, "purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
             <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={[NAV_KEYS.purchaseOrders, NAV_KEYS.purchasing, "purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />

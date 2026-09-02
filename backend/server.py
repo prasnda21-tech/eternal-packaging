@@ -152,6 +152,7 @@ from services.purchase_receipts import (
 from services.purchase_http import register_purchase_routes
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
+from services.sales_activity.http import register_sales_activity_routes
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -7592,6 +7593,15 @@ register_hr_payroll_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_sales_activity_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=_require_perm,
+    require_any_perm=_require_any_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
 
 
 @api_router.post("/accurate/sync")
@@ -7617,6 +7627,8 @@ async def download_file(path: str, user=Depends(current_user)):
         raise HTTPException(403, "File Administrasi Karyawan hanya dapat diakses lewat rute modul.")
     if rec.get("kind") == "hr_payroll":
         raise HTTPException(403, "File HR & Payroll hanya dapat diakses lewat rute modul.")
+    if rec.get("kind") == "sales_visit_photo":
+        raise HTTPException(403, "Foto visit hanya dapat diakses lewat rute Sales Activity.")
     try:
         data, ct = obj_storage.get_object(path)
     except FileNotFoundError:
@@ -8880,6 +8892,8 @@ async def _ensure_unique_business_number_index(collection, field: str) -> None:
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    from services.sales_activity.evaluator import stop_evaluator_loop
+    stop_evaluator_loop()
     client.close()
 
 
@@ -8979,6 +8993,10 @@ async def seed():
     await db.employee_requests.create_index("submitted_at")
     from services.hr_payroll import ensure_indexes as _hr_payroll_ensure_indexes
     await _hr_payroll_ensure_indexes(db)
+    from services.sales_activity.indexes import ensure_indexes as _sales_activity_ensure_indexes
+    await _sales_activity_ensure_indexes(db)
+    from services.sales_activity.evaluator import start_evaluator_loop
+    start_evaluator_loop(db)
     for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
         try:
             await coll.drop_index("idempotency_key_1")

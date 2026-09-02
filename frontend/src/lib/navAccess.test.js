@@ -148,6 +148,7 @@ describe("salesMenuItems", () => {
       "Faktur Penjualan",
       "Penerimaan Penjualan",
       "Import PO",
+      "Aktivitas Sales",
     ]);
   });
 
@@ -163,6 +164,13 @@ describe("salesMenuItems", () => {
   test("filters out unauthorized children", () => {
     expect(salesMenuItems(has(NAV_KEYS.sales))).toEqual([]);
     expect(salesMenuItems(has(NAV_KEYS.importPo))).toEqual([]);
+  });
+
+  test("builds Aktivitas Sales tile when granted", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesActivity));
+    expect(items).toEqual([
+      { key: NAV_KEYS.salesActivity, label: "Aktivitas Sales", to: "/penjualan/aktivitas-sales", tone: "blue", testid: "top-nav-sales-activity" },
+    ]);
   });
 
   test("does not invent Accurate-style sales menus", () => {

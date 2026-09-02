@@ -26,6 +26,16 @@ def test_catalog_includes_nav_keys():
         "nav.sales.sales_invoice",
         "nav.sales.sales_receipt",
         "nav.sales.import_po",
+        "nav.sales.sales_activity",
+        "sales.activity.view",
+        "sales.activity.create",
+        "sales.outlet.create",
+        "sales.ownership.manage",
+        "sales.pool.manage",
+        "sales.activity.import",
+        "sales.activity.activate_migration",
+        "settings.sales_activity.view",
+        "settings.sales_activity.manage",
         "nav.production_schedule",
         "nav.production",
         "nav.delivery_schedule",
@@ -140,6 +150,27 @@ def test_non_admin_roles_do_not_auto_gain_sales_receipt_nav():
         derived = with_nav_defaults(defaults)
         assert "nav.sales.sales_receipt" not in defaults, role
         assert "nav.sales.sales_receipt" not in derived, role
+
+
+def test_non_admin_roles_do_not_auto_gain_sales_activity_permissions():
+    new_keys = {
+        "sales.activity.view",
+        "sales.activity.create",
+        "sales.outlet.create",
+        "sales.ownership.manage",
+        "sales.pool.manage",
+        "sales.activity.import",
+        "sales.activity.activate_migration",
+        "settings.sales_activity.view",
+        "settings.sales_activity.manage",
+        "nav.sales.sales_activity",
+    }
+    for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
+        defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
+        derived = with_nav_defaults(defaults)
+        for key in new_keys:
+            assert key not in defaults, (role, key)
+            assert key not in derived, (role, key)
 
 
 def test_admin_still_has_all_including_nav():

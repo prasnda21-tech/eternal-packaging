@@ -356,6 +356,34 @@ export const api = {
   hrPayrollCreateKasbonSchedule: (payload) => client.post(`/hr-payroll/kasbon-schedules`, payload).then((r) => r.data),
   hrPayrollPayslipUrl: (periodId, lineId, download = true) => `${API}/hr-payroll/periods/${encodeURIComponent(periodId)}/lines/${encodeURIComponent(lineId)}/payslip?download=${download}`,
   hrPayrollHistory: (params = {}) => client.get(`/hr-payroll/history`, { params }).then((r) => r.data),
+  salesActivitySettings: () => client.get(`/sales-activity/settings`).then((r) => r.data),
+  updateSalesActivitySettings: (payload) => client.put(`/sales-activity/settings`, payload).then((r) => r.data),
+  salesActivityUsers: () => client.get(`/sales-activity/sales-users`).then((r) => r.data),
+  listSalesActivityOutlets: (params = {}) => client.get(`/sales-activity/outlets`, { params }).then((r) => r.data),
+  createSalesActivityOutlet: (payload) => client.post(`/sales-activity/outlets`, payload).then((r) => r.data),
+  salesActivityOutlet: (id) => client.get(`/sales-activity/outlets/${encodeURIComponent(id)}`).then((r) => r.data),
+  listSalesActivities: (params = {}) => client.get(`/sales-activity/activities`, { params }).then((r) => r.data),
+  createSalesActivity: (payload) => client.post(`/sales-activity/activities`, payload).then((r) => r.data),
+  salesActivityDetail: (id) => client.get(`/sales-activity/activities/${encodeURIComponent(id)}`).then((r) => r.data),
+  uploadSalesActivityVisitPhoto: (form) => client.post(`/sales-activity/visit-photos`, form, { timeout: 60000 }).then((r) => r.data),
+  deleteSalesActivityVisitPhoto: (photoId) => client.delete(`/sales-activity/visit-photos/${encodeURIComponent(photoId)}`).then((r) => r.data),
+  salesActivityVisitPhotoUrl: (photoId) => `${API}/sales-activity/visit-photos/${encodeURIComponent(photoId)}/file`,
+  listSalesActivityPool: (params = {}) => client.get(`/sales-activity/pool`, { params }).then((r) => r.data),
+  salesActivityReassign: (id, payload) => client.post(`/sales-activity/outlets/${encodeURIComponent(id)}/reassign`, payload).then((r) => r.data),
+  salesActivityExtend: (id, payload) => client.post(`/sales-activity/outlets/${encodeURIComponent(id)}/extend`, payload).then((r) => r.data),
+  salesActivityPause: (id, payload) => client.post(`/sales-activity/outlets/${encodeURIComponent(id)}/pause`, payload).then((r) => r.data),
+  salesActivityResume: (id, payload) => client.post(`/sales-activity/outlets/${encodeURIComponent(id)}/resume`, payload).then((r) => r.data),
+  salesActivitySendToPool: (id, payload) => client.post(`/sales-activity/outlets/${encodeURIComponent(id)}/send-to-pool`, payload).then((r) => r.data),
+  salesActivityAssignFromPool: (id, payload) => client.post(`/sales-activity/outlets/${encodeURIComponent(id)}/assign-from-pool`, payload).then((r) => r.data),
+  salesActivityImportPreview: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/sales-activity/import/preview`, form, { timeout: 90000 }).then((r) => r.data);
+  },
+  salesActivityImportConfirm: (batchId) => client.post(`/sales-activity/import/batches/${encodeURIComponent(batchId)}/confirm`).then((r) => r.data),
+  salesActivityImportBatches: () => client.get(`/sales-activity/import/batches`).then((r) => r.data),
+  salesActivityActivationPreview: (batchId) => client.get(`/sales-activity/import/batches/${encodeURIComponent(batchId)}/activation-preview`).then((r) => r.data),
+  salesActivityActivateMigration: (batchId) => client.post(`/sales-activity/import/batches/${encodeURIComponent(batchId)}/activate`, { confirm: true }).then((r) => r.data),
 };
 
 export default api;
