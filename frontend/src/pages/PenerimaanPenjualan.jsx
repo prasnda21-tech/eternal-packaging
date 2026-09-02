@@ -27,6 +27,8 @@ function formatRupiah(num) {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
+import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+
 export default function PenerimaanPenjualan() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -60,7 +62,7 @@ export default function PenerimaanPenjualan() {
   const [isModalOpen, setIsModalOpen] = useState(Boolean(queryInvoiceId) || searchParams.get("action") === "create");
   const [invoicesWithBalance, setInvoicesWithBalance] = useState([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState(queryInvoiceId);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [receiptAmount, setReceiptAmount] = useState("");
   const [receiptDate, setReceiptDate] = useState(getTodayString());
@@ -175,9 +177,13 @@ export default function PenerimaanPenjualan() {
     try {
       const res = await api.listSalesInvoices({});
       const allInvoices = res.invoices || [];
-      // Filter invoices that have outstanding_amount > 0 or matching queryInvoiceId
-      const eligible = allInvoices.filter((inv) => (inv.outstanding_amount > 0) || inv.id === queryInvoiceId);
+      // Filter invoices strictly by outstanding_amount > 0 (no bypass)
+      const eligible = filterEligibleInvoices(allInvoices);
       setInvoicesWithBalance(eligible);
+      if (queryInvoiceId) {
+        const preselected = resolvePreselectedInvoiceId(eligible, queryInvoiceId);
+        setSelectedInvoiceId(preselected);
+      }
     } catch {
       // Best effort
     } finally {
@@ -224,27 +230,7 @@ export default function PenerimaanPenjualan() {
 
   // Live preview calculation for receipt modal
   const previewCalc = useMemo(() => {
-    if (!selectedInvoice) return null;
-    const grandTotal = Number(selectedInvoice.grand_total) || 0;
-    const paidBefore = Number(selectedInvoice.paid_total) || 0;
-    const outstandingBefore = Math.max(0, Number(selectedInvoice.outstanding_amount) || (grandTotal - paidBefore));
-
-    const numAmount = Math.max(0, Number(receiptAmount) || 0);
-    const newPaid = Math.min(grandTotal, paidBefore + numAmount);
-    const newOutstanding = Math.max(0, outstandingBefore - numAmount);
-    const newState = newPaid >= grandTotal ? "LUNAS" : "DP";
-    const isOverpayment = numAmount > outstandingBefore;
-
-    return {
-      grandTotal,
-      paidBefore,
-      outstandingBefore,
-      amount: numAmount,
-      newPaid,
-      newOutstanding,
-      newState,
-      isOverpayment,
-    };
+    return computeReceiptPreview(selectedInvoice, receiptAmount);
   }, [selectedInvoice, receiptAmount]);
 
   const handleOpenCreateModal = (invId = "") => {
@@ -837,11 +823,17 @@ export default function PenerimaanPenjualan() {
                       </option>
                     ))}
                   </select>
+                  {invoicesWithBalance.length === 0 && !invoicesLoading && (
+                    <p data-testid="no-eligible-invoices-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
+                      Tidak ada faktur dengan sisa tagihan aktif (semua faktur telah lunas atau belum memiliki nilai tagihan).
+                    </p>
+                  )}
                 </div>
 
               {/* Summary Card Faktur */}
               {selectedInvoice && (
                 <div
+                  data-testid="selected-invoice-summary-card"
                   style={{
                     backgroundColor: "#f8fafc",
                     border: "1px solid #e2e8f0",
@@ -850,14 +842,14 @@ export default function PenerimaanPenjualan() {
                     marginBottom: 16,
                   }}
                 >
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, fontSize: 13 }}>
                     <div>
-                      <span style={{ color: "#64748b" }}>Customer:</span>
-                      <div style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.customer}</div>
+                      <span style={{ color: "#64748b" }}>No. Faktur:</span>
+                      <div data-testid="summary-invoice-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.invoice_number || "-"}</div>
                     </div>
                     <div>
                       <span style={{ color: "#64748b" }}>No. PO:</span>
-                      <div style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
+                      <div data-testid="summary-po-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
                     </div>
                     <div>
                       <span style={{ color: "#64748b" }}>Total Faktur:</span>
@@ -865,7 +857,7 @@ export default function PenerimaanPenjualan() {
                     </div>
                     <div>
                       <span style={{ color: "#64748b" }}>Sisa Tagihan Saat Ini:</span>
-                      <div style={{ fontWeight: 700, color: "#dc2626" }}>
+                      <div data-testid="summary-outstanding-amount" style={{ fontWeight: 700, color: "#dc2626" }}>
                         {formatRupiah(selectedInvoice.outstanding_amount)}
                       </div>
                     </div>
