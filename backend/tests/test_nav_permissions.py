@@ -173,6 +173,25 @@ def test_non_admin_roles_do_not_auto_gain_sales_activity_permissions():
             assert key not in derived, (role, key)
 
 
+def test_non_admin_roles_do_not_auto_gain_route_optimizer_permissions():
+    new_keys = {
+        "route_optimizer.view",
+        "route_optimizer.create",
+        "route_optimizer.edit_own",
+        "route_optimizer.optimize",
+        "route_optimizer.manage",
+        "settings.route_optimizer.view",
+        "settings.route_optimizer.manage",
+        "nav.route_optimizer",
+    }
+    for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
+        defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
+        derived = with_nav_defaults(defaults)
+        for key in new_keys:
+            assert key not in defaults, (role, key)
+            assert key not in derived, (role, key)
+
+
 def test_admin_still_has_all_including_nav():
     admin = set(ROLE_DEFAULT_PERMISSIONS["admin"])
     for key in NAV_PERMISSION_KEYS:

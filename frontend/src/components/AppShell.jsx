@@ -1,4 +1,4 @@
-import { BarChart3, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
+import { BarChart3, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
@@ -211,6 +211,7 @@ export default function AppShell() {
   const hrPayrollItems = hrPayrollMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
+  const showRouteOptimizer = hasPerm(NAV_KEYS.routeOptimizer) || hasPerm("route_optimizer.view") || hasPerm("route_optimizer.create") || hasPerm("route_optimizer.manage");
   const showSettings = hasPerm(NAV_KEYS.settings);
 
   const flyoutOpen = !!activeSidebarMenu;
@@ -345,6 +346,15 @@ export default function AppShell() {
                 onClick={() => toggleMenu("hrPayroll")}
               />
             </div>
+          )}
+          {showRouteOptimizer && (
+            <RailNavLink
+              to="/optimasi-rute"
+              testid="top-nav-optimasi-rute"
+              label="Optimasi Rute"
+              icon={Route}
+              onNavigate={closeFlyout}
+            />
           )}
           {showSettings && (
             <RailNavLink

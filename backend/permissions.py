@@ -40,6 +40,13 @@ PERMISSION_CATALOG = [
     ("Aktivitas Penjualan", "sales.activity.activate_migration", "Aktifkan automation data migrasi"),
     ("Pengaturan", "settings.sales_activity.view", "Lihat pengaturan Sales Activity & Ownership"),
     ("Pengaturan", "settings.sales_activity.manage", "Ubah pengaturan Sales Activity & Ownership"),
+    ("Optimasi Rute", "route_optimizer.view", "Lihat Optimasi Rute"),
+    ("Optimasi Rute", "route_optimizer.create", "Buat Rute Optimasi"),
+    ("Optimasi Rute", "route_optimizer.edit_own", "Ubah rute Optimasi sendiri"),
+    ("Optimasi Rute", "route_optimizer.optimize", "Jalankan optimasi rute"),
+    ("Optimasi Rute", "route_optimizer.manage", "Kelola semua rute Optimasi"),
+    ("Pengaturan", "settings.route_optimizer.view", "Lihat pengaturan Optimasi Rute"),
+    ("Pengaturan", "settings.route_optimizer.manage", "Ubah pengaturan Optimasi Rute"),
     ("Import PO", "po.import.view", "Buka halaman Import PO"),
     ("Import PO", "accurate.import", "Preview & Import Single PO dari Accurate"),
     ("Import PO", "accurate.import.bulk", "Preview & Import beberapa Sales Order Accurate sekaligus"),
@@ -198,6 +205,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.hr_payroll.payslips", "Menu Slip Gaji"),
     ("Akses Menu", "nav.hr_payroll.components", "Menu Komponen Gaji"),
     ("Akses Menu", "nav.hr_payroll.history", "Menu Riwayat Penggajian"),
+    ("Akses Menu", "nav.route_optimizer", "Menu Optimasi Rute"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -276,6 +284,7 @@ NAV_MENU_ITEMS = (
     ("nav.hr_payroll.payslips", "Slip Gaji", "nav.hr_payroll"),
     ("nav.hr_payroll.components", "Komponen Gaji", "nav.hr_payroll"),
     ("nav.hr_payroll.history", "Riwayat Penggajian", "nav.hr_payroll"),
+    ("nav.route_optimizer", "Optimasi Rute", None),
     ("nav.settings", "Pengaturan", None),
 )
 

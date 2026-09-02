@@ -384,6 +384,22 @@ export const api = {
   salesActivityImportBatches: () => client.get(`/sales-activity/import/batches`).then((r) => r.data),
   salesActivityActivationPreview: (batchId) => client.get(`/sales-activity/import/batches/${encodeURIComponent(batchId)}/activation-preview`).then((r) => r.data),
   salesActivityActivateMigration: (batchId) => client.post(`/sales-activity/import/batches/${encodeURIComponent(batchId)}/activate`, { confirm: true }).then((r) => r.data),
+  independentRouteSettings: () => client.get(`/route-optimizer/settings`).then((r) => r.data),
+  updateIndependentRouteSettings: (payload) => client.put(`/route-optimizer/settings`, payload).then((r) => r.data),
+  searchIndependentRouteOutlets: (q) => client.get(`/route-optimizer/outlets/search`, { params: { q } }).then((r) => r.data),
+  independentRoutePlacesStatus: () => client.get(`/route-optimizer/places/status`).then((r) => r.data),
+  searchIndependentRoutePlaces: (q) => client.get(`/route-optimizer/places/search`, { params: { q } }).then((r) => r.data),
+  independentRoutePlaceDetails: (placeId) => client.get(`/route-optimizer/places/details`, { params: { place_id: placeId } }).then((r) => r.data),
+  listIndependentRoutes: () => client.get(`/route-optimizer/routes`).then((r) => r.data),
+  createIndependentRoute: (payload) => client.post(`/route-optimizer/routes`, payload).then((r) => r.data),
+  getIndependentRoute: (id) => client.get(`/route-optimizer/routes/${encodeURIComponent(id)}`).then((r) => r.data),
+  updateIndependentRoute: (id, payload) => client.patch(`/route-optimizer/routes/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  addIndependentStop: (id, payload) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/stops`, payload).then((r) => r.data),
+  updateIndependentStop: (routeId, stopId, payload) => client.patch(`/route-optimizer/routes/${encodeURIComponent(routeId)}/stops/${encodeURIComponent(stopId)}`, payload).then((r) => r.data),
+  deleteIndependentStop: (routeId, stopId) => client.delete(`/route-optimizer/routes/${encodeURIComponent(routeId)}/stops/${encodeURIComponent(stopId)}`).then((r) => r.data),
+  optimizeIndependentRoute: (id, payload = {}) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/optimize`, payload).then((r) => r.data),
+  reorderIndependentRoute: (id, payload) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/reorder`, payload).then((r) => r.data),
+  listIndependentRouteVersions: (id) => client.get(`/route-optimizer/routes/${encodeURIComponent(id)}/versions`).then((r) => r.data),
 };
 
 export default api;

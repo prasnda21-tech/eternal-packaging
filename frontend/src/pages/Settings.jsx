@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
-  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet,
+  Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -15,6 +15,7 @@ import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
 import SalesActivitySettings from "../components/SalesActivitySettings";
+import RouteOptimizerSettings from "../components/RouteOptimizerSettings";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
@@ -1910,6 +1911,8 @@ export default function Settings() {
   const canViewHrPayroll = hasPerm("payroll.settings");
   const canViewSalesActivity = hasPerm("settings.sales_activity.view") || hasPerm("settings.sales_activity.manage") || hasPerm("permissions.manage");
   const canEditSalesActivity = hasPerm("settings.sales_activity.manage");
+  const canViewRouteOptimizer = hasPerm("settings.route_optimizer.view") || hasPerm("settings.route_optimizer.manage") || hasPerm("permissions.manage");
+  const canEditRouteOptimizer = hasPerm("settings.route_optimizer.manage");
 
   const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
@@ -1976,6 +1979,9 @@ export default function Settings() {
         {canViewSalesActivity && (
           <button role="tab" className={tab === "sales-activity" ? "active" : ""} onClick={() => setTab("sales-activity")} data-testid="settings-tab-sales-activity"><ClipboardList size={14}/> Sales Activity &amp; Ownership</button>
         )}
+        {canViewRouteOptimizer && (
+          <button role="tab" className={tab === "route-optimizer" ? "active" : ""} onClick={() => setTab("route-optimizer")} data-testid="settings-tab-route-optimizer"><Route size={14}/> Optimasi Rute</button>
+        )}
         {canViewAccurateCreators && (
           <button role="tab" className={tab === "accurate-creators" ? "active" : ""} onClick={() => setTab("accurate-creators")} data-testid="settings-tab-accurate-creators"><Users size={14}/> Pembuat PO Accurate</button>
         )}
@@ -2017,6 +2023,9 @@ export default function Settings() {
       )}
       {tab === "sales-activity" && canViewSalesActivity && (
         <SalesActivitySettings notify={notify} canEdit={canEditSalesActivity}/>
+      )}
+      {tab === "route-optimizer" && canViewRouteOptimizer && (
+        <RouteOptimizerSettings notify={notify} canEdit={canEditRouteOptimizer}/>
       )}
       {tab === "hr-payroll" && canViewHrPayroll && (
         <HrPayrollSettings notify={notify} canEdit={canViewHrPayroll}/>
