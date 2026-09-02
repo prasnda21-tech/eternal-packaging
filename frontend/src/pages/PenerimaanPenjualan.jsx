@@ -266,6 +266,19 @@ export default function PenerimaanPenjualan() {
     setSearchParams({});
   };
 
+  // Close create modal on Escape key
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        handleCloseCreateModal();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isModalOpen]);
+
   const handlePayFull = () => {
     if (selectedInvoice && selectedInvoice.outstanding_amount > 0) {
       setReceiptAmount(String(selectedInvoice.outstanding_amount));
@@ -665,6 +678,15 @@ export default function PenerimaanPenjualan() {
       {/* CREATE RECEIPT MODAL */}
       {isModalOpen && (
         <div
+          data-testid="receipt-create-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="receipt-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              handleCloseCreateModal();
+            }
+          }}
           style={{
             position: "fixed",
             top: 0,
@@ -673,18 +695,23 @@ export default function PenerimaanPenjualan() {
             bottom: 0,
             backgroundColor: "rgba(0, 0, 0, 0.45)",
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             justifyContent: "center",
             zIndex: 1000,
-            padding: 16,
+            padding: "24px 16px",
+            overflowY: "auto",
           }}
         >
           <div
+            onClick={(e) => e.stopPropagation()}
             style={{
               backgroundColor: "#fff",
               borderRadius: 10,
               width: "100%",
               maxWidth: 580,
+              maxHeight: "calc(100vh - 48px)",
+              display: "flex",
+              flexDirection: "column",
               boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
               overflow: "hidden",
             }}
@@ -698,25 +725,38 @@ export default function PenerimaanPenjualan() {
                 justifyContent: "space-between",
                 alignItems: "center",
                 backgroundColor: "#f9fafb",
+                flexShrink: 0,
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <CreditCard size={20} color="#059669" />
-                <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#111827" }}>
+                <h2 id="receipt-modal-title" style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#111827" }}>
                   Catat Penerimaan Penjualan
                 </h2>
               </div>
               <button
                 type="button"
+                data-testid="btn-close-receipt-modal"
+                aria-label="Tutup"
                 onClick={handleCloseCreateModal}
-                style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "#9ca3af",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 4,
+                  borderRadius: 4,
+                }}
               >
                 <X size={20} />
               </button>
             </div>
 
             {/* Modal Body */}
-            <form onSubmit={handleSaveReceipt} style={{ padding: 20 }}>
+            <form onSubmit={handleSaveReceipt} style={{ padding: 20, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column" }}>
               {createErr && (
                 <div
                   style={{
@@ -965,9 +1005,10 @@ export default function PenerimaanPenjualan() {
               </FormSection>
 
               {/* Modal Actions */}
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16, paddingTop: 12, borderTop: "1px solid #f1f5f9" }}>
                 <button
                   type="button"
+                  data-testid="btn-cancel-receipt-modal"
                   className="btn btn-secondary"
                   onClick={handleCloseCreateModal}
                   disabled={createBusy}

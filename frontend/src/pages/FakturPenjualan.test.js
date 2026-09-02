@@ -88,4 +88,11 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/invoice_number/);
     expect(pageSrc).toMatch(/selectedIds\.size === invoices\.length/);
   });
+
+  test("FakturPenjualan create mode uses createCalculations safely without undefined invoiceLines", () => {
+    expect(pageSrc).not.toMatch(/\binvoiceLines\b/);
+    expect(pageSrc).toMatch(/createCalculations\?\.lines/);
+    expect(pageSrc).toMatch(/FormProgress/);
+    expect(pageSrc).toMatch(/FormSection/);
+  });
 });

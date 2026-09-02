@@ -74,4 +74,12 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/delete-error/);
     expect(pageSrc).toMatch(/loadReceipts\(\)/);
   });
+
+  test("PenerimaanPenjualan modal has accessible close controls, testids, escape listener, and backdrop close", () => {
+    expect(pageSrc).toMatch(/btn-close-receipt-modal/);
+    expect(pageSrc).toMatch(/btn-cancel-receipt-modal/);
+    expect(pageSrc).toMatch(/receipt-create-modal/);
+    expect(pageSrc).toMatch(/handleCloseCreateModal/);
+    expect(pageSrc).toMatch(/Escape/);
+  });
 });
