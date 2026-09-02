@@ -976,8 +976,8 @@ export default function FakturPenjualan() {
       {viewMode === "create" && (
         <div>
           <FormProgress
-            percentage={Math.round(([selectedPoId || queryPoId, invoiceDate, invoiceLines.some(l => Number(l.quantity_to_invoice) > 0)].filter(Boolean).length / 3) * 100)}
-            completed={[selectedPoId || queryPoId, invoiceDate, invoiceLines.some(l => Number(l.quantity_to_invoice) > 0)].filter(Boolean).length}
+            percentage={Math.round(([selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length / 3) * 100)}
+            completed={[selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length}
             total={3}
             className="mb-4"
           />
@@ -1145,7 +1145,7 @@ export default function FakturPenjualan() {
                 id="fp-line-items"
                 title="3. Rincian Barang, Kuantitas Faktur & Harga Satuan"
                 description="Mendukung faktur parsial. Masukkan jumlah kuantitas yang ditagihkan (maksimal sisa PO) dan harga satuan per baris."
-                status={invoiceLines.some(l => Number(l.quantity_to_invoice) > 0) ? "complete" : "incomplete"}
+                status={(createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0) ? "complete" : "incomplete"}
                 className="panel"
               >
 
