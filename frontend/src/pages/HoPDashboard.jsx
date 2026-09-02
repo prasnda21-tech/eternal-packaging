@@ -11,6 +11,7 @@ import ReminderList from "../components/ReminderList";
 import ActionCenter from "../components/ActionCenter";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import { NAV_KEYS } from "../lib/navAccess";
+import { DASHBOARD_LOAD_FAILED, dashboardFetchErrorMessage, dashboardPageView } from "../lib/dashboardAuth";
 
 const CARD_VIEWS = {
   active: "active",
@@ -47,7 +48,7 @@ const KpiCard = ({ icon: Icon, label, value, tone = "default", testid, extraTest
 };
 
 export default function HoPDashboard() {
-  const { hasPerm } = useAuth();
+  const { user, loading: authLoading, hasPerm } = useAuth();
   const navigate = useNavigate();
   const canStatusPo = hasPerm(NAV_KEYS.statusPo);
   const [data, setData] = useState(null);
@@ -67,33 +68,40 @@ export default function HoPDashboard() {
   };
 
   const load = async () => {
+    if (authLoading || !user) return;
     setBusy(true);
     setErr("");
     try {
       const [d, r, a] = await Promise.all([
         api.dashboardSummary(),
-        api.reminders(),
+        api.reminders().catch(() => null),
         api.accurateStatus().catch(() => null),
       ]);
       setData(d);
       setReminders(r);
       setAccurate(a);
     } catch (e) {
-      setErr(e.response?.data?.detail || "Gagal memuat dashboard");
+      setErr(dashboardFetchErrorMessage(e, { user, loading: authLoading }) || DASHBOARD_LOAD_FAILED);
     } finally {
       setBusy(false);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (authLoading || !user) return undefined;
+    load();
+    // eslint-disable-next-line
+  }, [authLoading, user]);
 
   const { lastUpdated: dashLastUpdated, isPolling: dashIsPolling, refreshNow: refreshDash } = useAutoRefresh(
     () => api.dashboardSummary(),
     { intervalMs: 30_000, enabled: !!data, onData: (d) => setData(d) }
   );
 
-  if (!data && !err) return <div className="loading" data-testid="hop-loading">Memuat dashboard...</div>;
-  if (err) return <div className="error-page" data-testid="hop-error">{err}</div>;
+  const pageView = dashboardPageView({ loading: authLoading, user, data, err });
+  if (pageView === "loading") return <div className="loading" data-testid="hop-loading">Memuat dashboard...</div>;
+  if (pageView === "unauthenticated") return null;
+  if (pageView === "error") return <div className="error-page" data-testid="hop-error">{err}</div>;
 
   const { kpi, generated_at } = data;
   const click = (key) => (canStatusPo ? () => openStatusPo(CARD_VIEWS[key]) : undefined);
