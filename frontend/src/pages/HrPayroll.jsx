@@ -3,6 +3,7 @@ import { AlertCircle, Edit3, Plus, Save, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { canTransition, moneyFormat, statusLabel } from "../lib/hrPayroll";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const MODE_META = {
   employees: ["Daftar Karyawan", "hr-employees-page"],
@@ -52,14 +53,37 @@ function EmployeeForm({ initial, onClose, onSaved }) {
       <div className="modal-inner modal-wide">
         <header className="modal-head"><h3>{initial?.id ? "Edit Karyawan" : "Tambah Karyawan"}</h3><button className="icon-button" onClick={onClose}><X size={16} /></button></header>
         <form className="emp-form" onSubmit={save} data-testid="hr-employee-form">
-          <div className="hr-form-grid">
-            {[["name", "Nama lengkap"], ["employee_number", "Nomor karyawan"], ["role", "Jabatan"], ["division", "Divisi"], ["employment_status", "Status kerja"], ["join_date", "Tanggal bergabung"], ["end_date", "Tanggal berakhir"], ["worker_type", "Tipe pekerja"], ["email", "Email"], ["phone", "Telepon"], ["bank_name", "Nama bank"], ["bank_account", "Nomor rekening"], ["bank_account_name", "Nama pemilik rekening"], ["user_id", "User ID (opsional)"]].map(([key, label]) => (
-              <label key={key}>{label}<input type={key.includes("date") ? "date" : "text"} value={form[key] || ""} onChange={(e) => set(key, e.target.value)} required={["name", "employee_number"].includes(key)} /></label>
-            ))}
-            <label>Gaji pokok<input type="number" min="0" value={form.salary_profile.base_salary || 0} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, base_salary: e.target.value } }))} /></label>
-            <label>Efektif gaji sejak<input type="date" value={form.salary_profile.effective_from || ""} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, effective_from: e.target.value } }))} /></label>
-            <label className="hr-span-2">Alamat<textarea value={form.address || ""} onChange={(e) => set("address", e.target.value)} /></label>
-          </div>
+          <FormProgress
+            percentage={Math.round(([form.name, form.employee_number, form.role, form.division, form.join_date].filter(v => v).length / 5) * 100)}
+            completed={[form.name, form.employee_number, form.role, form.division, form.join_date].filter(v => v).length}
+            total={5}
+          />
+          <FormSection
+            id="hr-employee-info"
+            title="Informasi Karyawan"
+            description="Data dasar dan kepegawaian."
+            status={computeStatus([
+              { value: form.name, isRequired: true },
+              { value: form.employee_number, isRequired: true },
+            ])}
+          >
+            <div className="hr-form-grid">
+              {[["name", "Nama lengkap"], ["employee_number", "Nomor karyawan"], ["role", "Jabatan"], ["division", "Divisi"], ["employment_status", "Status kerja"], ["join_date", "Tanggal bergabung"], ["end_date", "Tanggal berakhir"], ["worker_type", "Tipe pekerja"], ["email", "Email"], ["phone", "Telepon"], ["bank_name", "Nama bank"], ["bank_account", "Nomor rekening"], ["bank_account_name", "Nama pemilik rekening"], ["user_id", "User ID (opsional)"]].map(([key, label]) => (
+                <FormField key={key} id={`hr-emp-${key}`} label={label} isRequired={["name", "employee_number"].includes(key)} value={form[key] || ""}>
+                  <input type={key.includes("date") ? "date" : "text"} value={form[key] || ""} onChange={(e) => set(key, e.target.value)} required={["name", "employee_number"].includes(key)} />
+                </FormField>
+              ))}
+              <FormField id="hr-emp-gaji" label="Gaji pokok" value={form.salary_profile.base_salary}>
+                <input type="number" min="0" value={form.salary_profile.base_salary || 0} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, base_salary: e.target.value } }))} />
+              </FormField>
+              <FormField id="hr-emp-efektif" label="Efektif gaji sejak" value={form.salary_profile.effective_from}>
+                <input type="date" value={form.salary_profile.effective_from || ""} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, effective_from: e.target.value } }))} />
+              </FormField>
+              <FormField id="hr-emp-alamat" label="Alamat" className="hr-span-2" value={form.address}>
+                <textarea value={form.address || ""} onChange={(e) => set("address", e.target.value)} />
+              </FormField>
+            </div>
+          </FormSection>
           {err && <div className="error"><AlertCircle size={14} /> {err}</div>}
           <div className="emp-actions"><button type="button" className="ghost" onClick={onClose}>Batal</button><button className="primary" disabled={busy}><Save size={14} /> Simpan</button></div>
         </form>

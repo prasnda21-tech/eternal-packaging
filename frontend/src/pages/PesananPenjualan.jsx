@@ -16,6 +16,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 function getTodayString() {
   const d = new Date();
@@ -460,11 +461,24 @@ export default function PesananPenjualan() {
             </div>
           )}
 
+          <FormProgress
+            percentage={Math.round(([formData.po_number, formData.po_date, formData.customer_name, formData.line_items.some(l => l.product_name && Number(l.quantity) > 0)].filter(Boolean).length / 4) * 100)}
+            completed={[formData.po_number, formData.po_date, formData.customer_name, formData.line_items.some(l => l.product_name && Number(l.quantity) > 0)].filter(Boolean).length}
+            total={4}
+            className="mb-4"
+          />
+
           {/* Card 1: Informasi Header PO */}
-          <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-            <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Informasi Pesanan (Header)</h3>
-            </header>
+          <FormSection
+            id="so-header"
+            title="Informasi Pesanan (Header)"
+            description="Informasi utama pesanan penjualan, pelanggan, dan ketentuan pengiriman."
+            status={computeStatus([
+              { value: formData.po_number, isRequired: true },
+              { value: formData.po_date, isRequired: true },
+              { value: formData.customer_name, isRequired: true },
+            ])}
+          >
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
               {/* No PO */}
@@ -705,17 +719,16 @@ export default function PesananPenjualan() {
                 style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
               />
             </div>
-          </section>
+          </FormSection>
 
           {/* Card 2: Line Items */}
-          <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-              <div>
-                <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Daftar Line Item (Barang / Jasa)</h3>
-                <p style={{ margin: "2px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
-                  Masing-masing baris item memiliki identitas independen (tidak akan dimerge otomatis).
-                </p>
-              </div>
+          <FormSection
+            id="so-lines"
+            title="Daftar Line Item (Barang / Jasa)"
+            description="Masing-masing baris item memiliki identitas independen (tidak akan dimerge otomatis)."
+            status={formData.line_items.some(l => l.product_name && Number(l.quantity) > 0) ? "complete" : "incomplete"}
+          >
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
               <button
                 type="button"
                 className="ghost sm"
@@ -725,7 +738,7 @@ export default function PesananPenjualan() {
               >
                 <Plus size={14} /> Tambah Baris
               </button>
-            </header>
+            </div>
 
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
@@ -853,7 +866,7 @@ export default function PesananPenjualan() {
                 Total Quantity: <strong>{totalQty.toLocaleString("id-ID")} pcs</strong>
               </span>
             </div>
-          </section>
+          </FormSection>
 
           {/* Form Actions */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 24 }}>

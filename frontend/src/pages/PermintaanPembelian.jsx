@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { errDetail, todayYmd } from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 export default function PermintaanPembelian() {
   const navigate = useNavigate();
@@ -155,31 +156,54 @@ export default function PermintaanPembelian() {
 
       {view === "create" && (
         <div className="card" data-testid="permintaan-create-form">
-          <label>Tanggal<input type="date" value={requestDate} onChange={(e) => setRequestDate(e.target.value)} data-testid="permintaan-date" /></label>
-          <label>Catatan<input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
-          <table className="prod-table" data-testid="permintaan-lines">
-            <thead><tr><th>Item</th><th>Kode</th><th>Satuan</th><th>Qty</th><th></th></tr></thead>
-            <tbody>
-              {lines.map((l, i) => (
-                <tr key={i}>
-                  <td>
-                    <select value={l.master_item_id} onChange={(e) => pickItem(i, e.target.value)} data-testid={`line-item-${i}`}>
-                      <option value="">Pilih / ketik nama</option>
-                      {items.map((it) => <option key={it.id} value={it.id}>{it.item_name}</option>)}
-                    </select>
-                    {!l.master_item_id && (
-                      <input value={l.item_name} onChange={(e) => setLine(i, { item_name: e.target.value })} placeholder="Nama item" />
-                    )}
-                  </td>
-                  <td><input value={l.item_code} onChange={(e) => setLine(i, { item_code: e.target.value })} /></td>
-                  <td><input value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })} /></td>
-                  <td><input type="number" min="0" value={l.requested_qty} onChange={(e) => setLine(i, { requested_qty: e.target.value })} data-testid={`line-qty-${i}`} /></td>
-                  <td><button type="button" className="ghost sm" onClick={() => removeLine(i)}>Hapus</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button className="ghost" type="button" onClick={addLine} data-testid="add-request-line">Tambah baris</button>
+          <FormProgress
+            percentage={Math.round(([requestDate, lines.some(l => l.item_name || l.master_item_id)].filter(Boolean).length / 2) * 100)}
+            completed={[requestDate, lines.some(l => l.item_name || l.master_item_id)].filter(Boolean).length}
+            total={2}
+          />
+          <FormSection
+            id="permintaan-header"
+            title="Informasi Permintaan"
+            description="Tanggal dan catatan permintaan."
+            status={computeStatus([{ value: requestDate, isRequired: true }])}
+          >
+            <FormField id="permintaan-date-field" label="Tanggal" isRequired value={requestDate}>
+              <input type="date" value={requestDate} onChange={(e) => setRequestDate(e.target.value)} data-testid="permintaan-date" />
+            </FormField>
+            <FormField id="permintaan-notes-field" label="Catatan" value={notes}>
+              <input value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </FormField>
+          </FormSection>
+          <FormSection
+            id="permintaan-lines"
+            title="Daftar Item"
+            description="Tambahkan item yang diminta."
+            status={lines.some(l => l.item_name || l.master_item_id) ? "complete" : "incomplete"}
+          >
+            <table className="prod-table" data-testid="permintaan-lines">
+              <thead><tr><th>Item</th><th>Kode</th><th>Satuan</th><th>Qty</th><th></th></tr></thead>
+              <tbody>
+                {lines.map((l, i) => (
+                  <tr key={i}>
+                    <td>
+                      <select value={l.master_item_id} onChange={(e) => pickItem(i, e.target.value)} data-testid={`line-item-${i}`}>
+                        <option value="">Pilih / ketik nama</option>
+                        {items.map((it) => <option key={it.id} value={it.id}>{it.item_name}</option>)}
+                      </select>
+                      {!l.master_item_id && (
+                        <input value={l.item_name} onChange={(e) => setLine(i, { item_name: e.target.value })} placeholder="Nama item" />
+                      )}
+                    </td>
+                    <td><input value={l.item_code} onChange={(e) => setLine(i, { item_code: e.target.value })} /></td>
+                    <td><input value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })} /></td>
+                    <td><input type="number" min="0" value={l.requested_qty} onChange={(e) => setLine(i, { requested_qty: e.target.value })} data-testid={`line-qty-${i}`} /></td>
+                    <td><button type="button" className="ghost sm" onClick={() => removeLine(i)}>Hapus</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button className="ghost" type="button" onClick={addLine} data-testid="add-request-line">Tambah baris</button>
+          </FormSection>
           <button className="primary" disabled={busy} onClick={save} data-testid="save-permintaan">{busy ? "Menyimpan…" : "Simpan Permintaan"}</button>
         </div>
       )}

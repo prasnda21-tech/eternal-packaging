@@ -15,6 +15,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 function getTodayString() {
   const d = new Date();
@@ -974,51 +975,46 @@ export default function FakturPenjualan() {
       {/* VIEW: CREATE */}
       {viewMode === "create" && (
         <div>
+          <FormProgress
+            percentage={Math.round(([selectedPoId || queryPoId, invoiceDate, invoiceLines.some(l => Number(l.quantity_to_invoice) > 0)].filter(Boolean).length / 3) * 100)}
+            completed={[selectedPoId || queryPoId, invoiceDate, invoiceLines.some(l => Number(l.quantity_to_invoice) > 0)].filter(Boolean).length}
+            total={3}
+            className="mb-4"
+          />
+
           {/* Step 1: PO Selector Panel (Only shown if opened directly from menu without pre-selected PO) */}
           {!queryPoId && (
-            <section
-              className="panel"
-              style={{
-                background: "#fff",
-                border: "1px solid #e2e8f0",
-                borderRadius: 10,
-                padding: 20,
-                marginBottom: 20,
-                boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-              }}
+            <FormSection
+              id="fp-select-po"
+              title="1. Pilih Pesanan Penjualan (PO Asal)"
+              description="Pilih PO yang eligible untuk dibuatkan faktur penjualan."
+              status={selectedPoId ? "complete" : "incomplete"}
             >
-              <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>
-                  1. Pilih Pesanan Penjualan (PO Asal)
-                </h3>
-              </header>
-
               <div style={{ maxWidth: 540 }}>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 6 }}>
-                  Nomor PO <span style={{ color: "#ef4444" }}>*</span>
-                </label>
-                <select
-                  value={selectedPoId}
-                  onChange={handleSelectPo}
-                  disabled={previewLoading || formBusy}
-                  data-testid="po-selector"
-                  style={{
-                    width: "100%",
-                    padding: "8px 12px",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: 6,
-                    fontSize: "0.95rem",
-                  }}
-                >
-                  <option value="">-- Pilih PO --</option>
-                  {availablePOs.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.po_number} — {p.customer} ({Number(p.total_quantity || 0).toLocaleString("id-ID")} pcs)
-                    </option>
-                  ))}
-                </select>
+                <FormField id="fp-po-selector-field" label="Nomor PO" isRequired value={selectedPoId}>
+                  <select
+                    value={selectedPoId}
+                    onChange={handleSelectPo}
+                    disabled={previewLoading || formBusy}
+                    data-testid="po-selector"
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 6,
+                      fontSize: "0.95rem",
+                    }}
+                  >
+                    <option value="">-- Pilih PO --</option>
+                    {availablePOs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.po_number} — {p.customer} ({Number(p.total_quantity || 0).toLocaleString("id-ID")} pcs)
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
               </div>
-            </section>
+            </FormSection>
           )}
 
           {/* Step 2: PO Snapshot & Financial Config */}
@@ -1026,24 +1022,14 @@ export default function FakturPenjualan() {
             <div style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
           ) : previewData ? (
             <form onSubmit={handleSaveInvoice}>
-              <section
+              <FormSection
+                id="fp-snapshot-financial"
+                title={queryPoId ? "Informasi PO & Konfigurasi Finansial Faktur" : "2. Informasi PO Snapshot & Konfigurasi Finansial"}
+                description="Detail PO asal dan ketentuan termin pembayaran faktur."
+                status={computeStatus([{ value: invoiceDate, isRequired: true }])}
                 className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-                }}
-                data-testid="po-snapshot-card"
               >
-                <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>
-                    {queryPoId ? "Informasi PO & Konfigurasi Finansial Faktur" : "2. Informasi PO Snapshot & Konfigurasi Finansial"}
-                  </h3>
-                </header>
-
+                <div data-testid="po-snapshot-card">
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
                   <div>
                     <span style={{ fontSize: "0.75rem", color: "#64748b", textTransform: "uppercase" }}>No PO</span>
@@ -1151,28 +1137,17 @@ export default function FakturPenjualan() {
                     />
                   </div>
                 </div>
-              </section>
+                </div>
+              </FormSection>
 
               {/* Table Line Items with Partial Invoicing Quantity */}
-              <section
+              <FormSection
+                id="fp-line-items"
+                title="3. Rincian Barang, Kuantitas Faktur & Harga Satuan"
+                description="Mendukung faktur parsial. Masukkan jumlah kuantitas yang ditagihkan (maksimal sisa PO) dan harga satuan per baris."
+                status={invoiceLines.some(l => Number(l.quantity_to_invoice) > 0) ? "complete" : "incomplete"}
                 className="panel"
-                style={{
-                  background: "#fff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: 20,
-                  marginBottom: 20,
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-                }}
               >
-                <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>
-                    3. Rincian Barang, Kuantitas Faktur & Harga Satuan
-                  </h3>
-                  <p style={{ margin: "4px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
-                    Mendukung faktur parsial. Masukkan jumlah kuantitas yang ditagihkan (maksimal sisa PO) dan harga satuan per baris.
-                  </p>
-                </header>
 
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
@@ -1313,7 +1288,7 @@ export default function FakturPenjualan() {
                     </div>
                   </div>
                 </div>
-              </section>
+              </FormSection>
 
               {createCalculations.totalRemaining <= 0 && (
                 <div

@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { errDetail, formatRupiah, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 export default function PesananPembelian() {
   const [searchParams] = useSearchParams();
@@ -167,22 +168,48 @@ export default function PesananPembelian() {
           {preview && (
             <div className="po-snapshot-card" data-testid="request-snapshot-card">
               <p>No Permintaan: <span data-testid="snapshot-request-number">{preview.request_number}</span></p>
-              <label>Supplier<input value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="po-supplier" /></label>
-              <label>Tanggal<input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} data-testid="po-date" /></label>
-              <table className="prod-table">
-                <thead><tr><th>Item</th><th>Sisa</th><th>Qty PO</th><th>Harga satuan</th><th>Subtotal</th></tr></thead>
-                <tbody>
-                  {(preview.lines || []).map((l) => (
-                    <tr key={l.request_line_id}>
-                      <td>{l.item_name}</td>
-                      <td className="num">{fmtQty(l.remaining_order_qty)}</td>
-                      <td><input type="number" min="0" max={l.remaining_order_qty} value={qty[l.request_line_id] ?? ""} onChange={(e) => setQty((p) => ({ ...p, [l.request_line_id]: e.target.value }))} data-testid="qty-input" /></td>
-                      <td><input type="number" min="0" value={price[l.request_line_id] ?? ""} onChange={(e) => setPrice((p) => ({ ...p, [l.request_line_id]: e.target.value }))} data-testid="unit-price-input" /></td>
-                      <td className="num">{formatRupiah((Number(qty[l.request_line_id]) || 0) * (Number(price[l.request_line_id]) || 0))}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <FormProgress
+                percentage={Math.round(([supplier, orderDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length / 3) * 100)}
+                completed={[supplier, orderDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length}
+                total={3}
+              />
+              <FormSection
+                id="po-header"
+                title="Informasi Pesanan"
+                description="Supplier dan tanggal pesanan."
+                status={computeStatus([
+                  { value: supplier, isRequired: true },
+                  { value: orderDate, isRequired: true },
+                ])}
+              >
+                <FormField id="po-supplier-field" label="Supplier" isRequired value={supplier}>
+                  <input value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="po-supplier" />
+                </FormField>
+                <FormField id="po-date-field" label="Tanggal" isRequired value={orderDate}>
+                  <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} data-testid="po-date" />
+                </FormField>
+              </FormSection>
+              <FormSection
+                id="po-lines"
+                title="Detail Item Pesanan"
+                description="Isi qty dan harga per item."
+                status={Object.values(qty).some(v => Number(v) > 0) ? "complete" : "incomplete"}
+              >
+                <table className="prod-table">
+                  <thead><tr><th>Item</th><th>Sisa</th><th>Qty PO</th><th>Harga satuan</th><th>Subtotal</th></tr></thead>
+                  <tbody>
+                    {(preview.lines || []).map((l) => (
+                      <tr key={l.request_line_id}>
+                        <td>{l.item_name}</td>
+                        <td className="num">{fmtQty(l.remaining_order_qty)}</td>
+                        <td><input type="number" min="0" max={l.remaining_order_qty} value={qty[l.request_line_id] ?? ""} onChange={(e) => setQty((p) => ({ ...p, [l.request_line_id]: e.target.value }))} data-testid="qty-input" /></td>
+                        <td><input type="number" min="0" value={price[l.request_line_id] ?? ""} onChange={(e) => setPrice((p) => ({ ...p, [l.request_line_id]: e.target.value }))} data-testid="unit-price-input" /></td>
+                        <td className="num">{formatRupiah((Number(qty[l.request_line_id]) || 0) * (Number(price[l.request_line_id]) || 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </FormSection>
               <button className="primary" disabled={busy} onClick={save} data-testid="save-po">{busy ? "Menyimpan…" : "Simpan Pesanan Pembelian"}</button>
             </div>
           )}

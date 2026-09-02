@@ -14,6 +14,7 @@ import HppSettings from "./HppSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -144,13 +145,30 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
 
   return (
     <form className="emp-form" onSubmit={submit} data-testid="employee-form">
+      <FormProgress
+        percentage={Math.round(([form.name, form.role, (isEdit ? true : form.email)].filter(Boolean).length / 3) * 100)}
+        completed={[form.name, form.role, (isEdit ? true : form.email)].filter(Boolean).length}
+        total={3}
+        className="mb-4"
+      />
+
       {showData && (
-        <div className="emp-grid">
-          <label>Email login
-            <input type="email" required disabled={isEdit || busy}
-              value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
-              data-testid="emp-email"/>
-          </label>
+        <FormSection
+          id="settings-emp-data"
+          title="Data Akun & Karyawan"
+          description="Informasi kredensial login dan profil pengguna."
+          status={computeStatus([
+            { value: form.email, isRequired: !isEdit },
+            { value: form.name, isRequired: true },
+            { value: form.role, isRequired: true },
+          ])}
+        >
+          <div className="emp-grid">
+            <FormField id="emp-email-field" label="Email login" isRequired={!isEdit} value={form.email}>
+              <input type="email" required disabled={isEdit || busy}
+                value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
+                data-testid="emp-email"/>
+            </FormField>
           <label>Role
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
               disabled={busy || !canManageRoles} data-testid="emp-role">
@@ -212,11 +230,18 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
               value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
               data-testid="emp-notes"/>
           </label>
-        </div>
+          </div>
+        </FormSection>
       )}
 
       {showPerms && (
-        <div className="emp-perms">
+        <FormSection
+          id="settings-emp-perms"
+          title="Hak Akses Khusus (Override)"
+          description="Default = ikut role. Grant menambah, Deny menghilangkan untuk user ini saja."
+          status="neutral"
+        >
+          <div className="emp-perms">
           <div className="emp-perms-head">
             <div>
               <h4>Hak akses khusus (override)</h4>
@@ -294,7 +319,8 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
             {!filteredModules.length && <p className="muted small">Tidak ada permission cocok.</p>}
           </div>
         </div>
-      )}
+      </FormSection>
+    )}
 
       {isEdit && showData && onResetPassword && (
         <div className="emp-secondary">

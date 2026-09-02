@@ -4,6 +4,7 @@ import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { errDetail, formatRupiah, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
+import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 export default function PembayaranPembelian() {
   const [searchParams] = useSearchParams();
@@ -102,23 +103,38 @@ export default function PembayaranPembelian() {
         <div className="modal" role="dialog" data-testid="payment-modal">
           <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
             <h3>Pembayaran Pembelian</h3>
-            <label>Faktur
+            <FormField id="payment-invoice" label="Faktur" isRequired value={invoiceId}>
               <select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} data-testid="invoice-selector">
                 <option value="">Pilih faktur outstanding</option>
                 {eligible.map((inv) => <option key={inv.id} value={inv.id}>{inv.invoice_number} · sisa {formatRupiah(inv.outstanding_amount)}</option>)}
               </select>
-            </label>
+            </FormField>
             {invoice && (
               <div data-testid="payment-readonly">
-                <p>No Faktur: {invoice.invoice_number}</p>
-                <p>No Pesanan Pembelian: {invoice.po_number}</p>
-                <p>Supplier: {invoice.supplier}</p>
-                <p>Grand Total: {formatRupiah(invoice.grand_total)}</p>
-                <p data-testid="paid-total">Sudah Dibayar: {formatRupiah(invoice.paid_total)}</p>
-                <p data-testid="outstanding">Sisa Tagihan: {formatRupiah(invoice.outstanding_amount)}</p>
-                <label>Tanggal Pembayaran<input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} data-testid="payment-date" /></label>
-                <label>Jumlah Pembayaran<input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="payment-amount" /></label>
-                <label>Catatan<input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
+                <FormProgress
+                  percentage={Math.round(([paymentDate, amount].filter(Boolean).length / 2) * 100)}
+                  completed={[paymentDate, amount].filter(Boolean).length}
+                  total={2}
+                />
+                <FormSection id="payment-info" title="Informasi Faktur" status="neutral">
+                  <p>No Faktur: {invoice.invoice_number}</p>
+                  <p>No Pesanan Pembelian: {invoice.po_number}</p>
+                  <p>Supplier: {invoice.supplier}</p>
+                  <p>Grand Total: {formatRupiah(invoice.grand_total)}</p>
+                  <p data-testid="paid-total">Sudah Dibayar: {formatRupiah(invoice.paid_total)}</p>
+                  <p data-testid="outstanding">Sisa Tagihan: {formatRupiah(invoice.outstanding_amount)}</p>
+                </FormSection>
+                <FormSection id="payment-form" title="Detail Pembayaran" status={computeStatus([{ value: paymentDate, isRequired: true }, { value: amount, isRequired: true }])}>
+                  <FormField id="payment-date-field" label="Tanggal Pembayaran" isRequired value={paymentDate}>
+                    <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} data-testid="payment-date" />
+                  </FormField>
+                  <FormField id="payment-amount-field" label="Jumlah Pembayaran" isRequired value={amount}>
+                    <input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="payment-amount" />
+                  </FormField>
+                  <FormField id="payment-notes-field" label="Catatan" value={notes}>
+                    <input value={notes} onChange={(e) => setNotes(e.target.value)} />
+                  </FormField>
+                </FormSection>
               </div>
             )}
             <div className="delete-modal-actions">

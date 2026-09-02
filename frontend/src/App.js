@@ -37,6 +37,7 @@ import DeliveryBatchPage from "./pages/DeliveryBatchPage";
 import EmployeeAdmin from "./pages/EmployeeAdmin";
 import EmployeeAdminDetail from "./pages/EmployeeAdminDetail";
 import HrPayroll from "./pages/HrPayroll";
+import FormShowcase from "./pages/FormShowcase";
 import "@/App.css";
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings"];
@@ -184,6 +185,8 @@ export default function App() {
             <Route path="/po/:id" element={<PODetail />} />
             <Route path="/po/:id/surat-jalan" element={<SuratJalan />} />
           </Route>
+          {/* Dev-only showcase (no auth needed for dev preview) */}
+          <Route path="/dev/form-showcase" element={<FormShowcase />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

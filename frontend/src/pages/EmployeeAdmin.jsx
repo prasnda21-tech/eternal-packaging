@@ -4,6 +4,7 @@ import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { currentStepLabel, eligibleTypeOptions, statusLabel } from "../lib/employeeAdmin";
 import { formatDisplayDate } from "../lib/constants";
+import { FormSection, FormField, FormProgress, useFormProgress, computeStatus } from "../components/form-standard";
 
 const MODE_META = {
   mine: { title: "Pengajuan Saya", eyebrow: "Administrasi Karyawan", scope: "mine", testid: "ea-mine-page" },
@@ -194,22 +195,47 @@ export default function EmployeeAdmin({ mode }) {
         {err && <div className="error" data-testid="ea-error"><AlertCircle size={14} /> {err}</div>}
         {!types.length && !err && <p className="muted" data-testid="ea-no-eligible">Tidak ada jenis pengajuan yang dapat Anda ajukan.</p>}
         {!!types.length && (
-          <form className="settings-card" onSubmit={submit} data-testid="ea-create-form">
-            <label>Jenis Pengajuan
-              <select value={typeId} onChange={(e) => setTypeId(e.target.value)} data-testid="ea-type-select">
-                {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
-            </label>
-            {selected?.description ? <p className="muted small">{selected.description}</p> : null}
-            <DynamicEmployeeForm
-              fields={selected?.form_fields || []}
-              values={values}
-              setValues={setValues}
-              onUpload={upload}
-              busy={busy}
+          <>
+            <FormProgress
+              percentage={typeId ? (Object.values(values).filter(v => v !== undefined && v !== null && v !== "").length > 0 ? 50 : 10) : 0}
+              completed={Object.values(values).filter(v => v !== undefined && v !== null && v !== "").length}
+              total={selected?.form_fields?.filter(f => f.required)?.length || 0}
             />
-            <button type="submit" className="primary" disabled={busy} data-testid="ea-submit">{busy ? "Mengirim…" : "Kirim Pengajuan"}</button>
-          </form>
+            <form className="settings-card" onSubmit={submit} data-testid="ea-create-form">
+              <FormSection
+                id="ea-type-selection"
+                title="Jenis Pengajuan"
+                description="Pilih jenis pengajuan yang sesuai."
+                status={typeId ? "complete" : "incomplete"}
+              >
+                <FormField id="ea-type" label="Jenis Pengajuan" isRequired value={typeId}>
+                  <select value={typeId} onChange={(e) => setTypeId(e.target.value)} data-testid="ea-type-select">
+                    {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </FormField>
+                {selected?.description ? <p className="muted small">{selected.description}</p> : null}
+              </FormSection>
+              {selected?.form_fields?.length > 0 && (
+                <FormSection
+                  id="ea-form-fields"
+                  title="Formulir Pengajuan"
+                  description="Lengkapi data yang diperlukan."
+                  status={computeStatus(
+                    (selected?.form_fields || []).filter(f => f.active !== false && f.required).map(f => ({ value: values[f.key], isRequired: true }))
+                  )}
+                >
+                  <DynamicEmployeeForm
+                    fields={selected?.form_fields || []}
+                    values={values}
+                    setValues={setValues}
+                    onUpload={upload}
+                    busy={busy}
+                  />
+                </FormSection>
+              )}
+              <button type="submit" className="primary" disabled={busy} data-testid="ea-submit">{busy ? "Mengirim…" : "Kirim Pengajuan"}</button>
+            </form>
+          </>
         )}
       </div>
     );
