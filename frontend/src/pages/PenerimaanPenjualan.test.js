@@ -81,5 +81,93 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/receipt-create-modal/);
     expect(pageSrc).toMatch(/handleCloseCreateModal/);
     expect(pageSrc).toMatch(/Escape/);
+    expect(pageSrc).toMatch(/no-eligible-invoices-hint/);
+  });
+
+  describe("Critical Penerimaan Invoice Selector Eligibility Tests", () => {
+    const { filterEligibleInvoices } = require("../lib/salesReceipts");
+
+    test("CRITICAL: invoice A with outstanding > 0 is eligible and rendered", () => {
+      const invoices = [
+        {
+          id: "inv-a-123",
+          invoice_number: "INV-A",
+          po_id: "po-a-123",
+          po_number: "PO-A",
+          customer: "Customer A",
+          grand_total: 500000,
+          paid_total: 200000,
+          outstanding_amount: 300000,
+          payment_status: "DP",
+        },
+      ];
+
+      const eligible = filterEligibleInvoices(invoices);
+      expect(eligible).toHaveLength(1);
+      expect(eligible[0].id).toBe("inv-a-123");
+      expect(eligible[0].po_id).toBe("po-a-123");
+      expect(eligible[0].outstanding_amount).toBe(300000);
+    });
+
+    test("CRITICAL: paid invoice with outstanding = 0 (LUNAS) must NOT become eligible", () => {
+      const invoices = [
+        {
+          id: "inv-b-paid",
+          invoice_number: "INV-B",
+          po_id: "po-b-123",
+          po_number: "PO-B",
+          customer: "Customer B",
+          grand_total: 500000,
+          paid_total: 500000,
+          outstanding_amount: 0,
+          payment_status: "LUNAS",
+        },
+      ];
+
+      const eligible = filterEligibleInvoices(invoices);
+      expect(eligible).toHaveLength(0);
+    });
+
+    test("CRITICAL: zero grand-total invoice (outstanding = 0) must NOT become eligible", () => {
+      const invoices = [
+        {
+          id: "inv-c-zero",
+          invoice_number: "INV-C",
+          po_id: "po-c-123",
+          po_number: "PO-C",
+          customer: "Customer C",
+          grand_total: 0,
+          paid_total: 0,
+          outstanding_amount: 0,
+          payment_status: "BELUM DIBAYAR",
+        },
+      ];
+
+      const eligible = filterEligibleInvoices(invoices);
+      expect(eligible).toHaveLength(0);
+    });
+
+    test("CRITICAL: mixed list isolates only invoices with outstanding > 0", () => {
+      const mixedInvoices = [
+        { id: "inv-1", invoice_number: "INV-1", grand_total: 100000, paid_total: 0, outstanding_amount: 100000 },
+        { id: "inv-2", invoice_number: "INV-2", grand_total: 200000, paid_total: 200000, outstanding_amount: 0 },
+        { id: "inv-3", invoice_number: "INV-3", grand_total: 0, paid_total: 0, outstanding_amount: 0 },
+        { id: "inv-4", invoice_number: "INV-4", grand_total: 350000, paid_total: 100000, outstanding_amount: 250000 },
+      ];
+
+      const eligible = filterEligibleInvoices(mixedInvoices);
+      expect(eligible).toHaveLength(2);
+      expect(eligible.map((x) => x.id)).toEqual(["inv-1", "inv-4"]);
+    });
+
+    test("queryInvoiceId targeting an invoice with balance 0 does NOT make it eligible (no bypass)", () => {
+      const invoices = [
+        { id: "inv-target", invoice_number: "INV-TARGET", outstanding_amount: 0 },
+        { id: "inv-other", invoice_number: "INV-OTHER", outstanding_amount: 0 },
+      ];
+
+      const eligible = filterEligibleInvoices(invoices);
+      expect(eligible).toHaveLength(0);
+    });
   });
 });
