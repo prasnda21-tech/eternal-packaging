@@ -153,6 +153,7 @@ from services.purchase_http import register_purchase_routes
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.sales_activity.http import register_sales_activity_routes
+from services.independent_route.http import register_independent_route_routes
 from permissions import (
     PERMISSION_CATALOG, ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS,
     ROLE_LABELS, STAGE_PERMISSION, effective_permissions,
@@ -7602,6 +7603,15 @@ register_sales_activity_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_independent_route_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=_require_perm,
+    require_any_perm=_require_any_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
 
 
 @api_router.post("/accurate/sync")
@@ -8995,6 +9005,8 @@ async def seed():
     await _hr_payroll_ensure_indexes(db)
     from services.sales_activity.indexes import ensure_indexes as _sales_activity_ensure_indexes
     await _sales_activity_ensure_indexes(db)
+    from services.independent_route.store import ensure_indexes as _independent_route_ensure_indexes
+    await _independent_route_ensure_indexes(db)
     from services.sales_activity.evaluator import start_evaluator_loop
     start_evaluator_loop(db)
     for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):

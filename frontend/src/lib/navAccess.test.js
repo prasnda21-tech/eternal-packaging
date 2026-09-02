@@ -287,6 +287,12 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
       NAV_KEYS.tasksDelivery,
     ]));
     expect(keys).not.toEqual(expect.arrayContaining([NAV_KEYS.driverRoute]));
+    expect(keys).toEqual(expect.arrayContaining([NAV_KEYS.routeOptimizer]));
+    expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.routeOptimizer)).toEqual({
+      key: NAV_KEYS.routeOptimizer,
+      label: "Optimasi Rute",
+      parent: null,
+    });
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.production).label).toBe("Produksi");
     expect(NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.schedule).parent).toBe(NAV_KEYS.production);
     const parent = NAV_MENU_FALLBACK.find((m) => m.key === NAV_KEYS.tasks);

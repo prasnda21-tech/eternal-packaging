@@ -40,9 +40,11 @@ import EmployeeAdmin from "./pages/EmployeeAdmin";
 import EmployeeAdminDetail from "./pages/EmployeeAdminDetail";
 import HrPayroll from "./pages/HrPayroll";
 import FormShowcase from "./pages/FormShowcase";
+import OptimasiRute from "./pages/OptimasiRute";
+import OptimasiRuteEditor from "./pages/OptimasiRuteEditor";
 import "@/App.css";
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage"];
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -146,6 +148,9 @@ export default function App() {
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />
             <Route path="/produksi/pengiriman-hari-ini" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
+            <Route path="/optimasi-rute/baru" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.create", "route_optimizer.manage"]}><OptimasiRuteEditor /></PermGate>} />
+            <Route path="/optimasi-rute/:id" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.view", "route_optimizer.create", "route_optimizer.edit_own", "route_optimizer.optimize", "route_optimizer.manage"]}><OptimasiRuteEditor /></PermGate>} />
+            <Route path="/optimasi-rute" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.view", "route_optimizer.create", "route_optimizer.edit_own", "route_optimizer.optimize", "route_optimizer.manage"]}><OptimasiRute /></PermGate>} />
             <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />

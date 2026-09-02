@@ -51,6 +51,7 @@ export const NAV_KEYS = {
   hrPayrollPayslips: "nav.hr_payroll.payslips",
   hrPayrollComponents: "nav.hr_payroll.components",
   hrPayrollHistory: "nav.hr_payroll.history",
+  routeOptimizer: "nav.route_optimizer",
   settings: "nav.settings",
 };
 
@@ -104,6 +105,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.hrPayrollPayslips, label: "Slip Gaji", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.hrPayrollComponents, label: "Komponen Gaji", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.hrPayrollHistory, label: "Riwayat Payroll", parent: NAV_KEYS.hrPayroll },
+  { key: NAV_KEYS.routeOptimizer, label: "Optimasi Rute", parent: null },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
