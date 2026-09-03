@@ -10,6 +10,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK } from "../lib/navAccess";
+import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload } from "../lib/settingsPermissionUi";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
@@ -136,15 +137,10 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
     }
   };
 
-  const filteredModules = useMemo(() => {
-    if (!permissionCatalog) return [];
-    const q = permQuery.trim().toLowerCase();
-    const entries = Object.entries(permissionCatalog.modules || {});
-    if (!q) return entries;
-    return entries
-      .map(([m, ps]) => [m, ps.filter((p) => p.label.toLowerCase().includes(q) || p.key.toLowerCase().includes(q))])
-      .filter(([, ps]) => ps.length);
-  }, [permissionCatalog, permQuery]);
+  const filteredModules = useMemo(
+    () => businessPermissionModules(permissionCatalog, permQuery),
+    [permissionCatalog, permQuery]
+  );
 
   return (
     <form className="emp-form" onSubmit={submit} data-testid="employee-form">
@@ -905,9 +901,8 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
         await api.adminUpdateRole(selected, { label: labelDraft, description: descDraft });
       }
       if (selected !== "admin") {
-        const payload = [...permsDraft].filter((k) => k !== "nav.configured");
-        if (payload.some((k) => String(k).startsWith("nav."))) payload.push("nav.configured");
-        await api.adminUpdateRolePermissions(selected, payload);
+        const roleDoc = roles.find((r) => r.role === selected);
+        await api.adminUpdateRolePermissions(selected, roleBusinessSavePayload(permsDraft, roleDoc?.permissions));
       }
       setInitial(new Set(permsDraft));
       setMetaInitial({ label: labelDraft, description: descDraft });
@@ -961,32 +956,20 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const isAdminRole = selected === "admin";
   const dirty = useMemo(() => {
     if (labelDraft !== metaInitial.label || descDraft !== metaInitial.description) return true;
-    if (permsDraft.size !== initial.size) return true;
-    for (const k of permsDraft) if (!initial.has(k)) return true;
+    const a = [...permsDraft].filter((k) => !isSidebarNavPermissionKey(k));
+    const b = new Set([...initial].filter((k) => !isSidebarNavPermissionKey(k)));
+    if (a.length !== b.size) return true;
+    for (const k of a) if (!b.has(k)) return true;
     return false;
   }, [permsDraft, initial, labelDraft, descDraft, metaInitial]);
 
-  const filteredModules = useMemo(() => {
-    if (!permissionCatalog) return [];
-    const q = permQuery.trim().toLowerCase();
-    const entries = Object.entries(permissionCatalog.modules || {}).filter(([m]) => m !== "Akses Menu");
-    if (!q) return entries;
-    return entries
-      .map(([m, ps]) => [m, ps.filter((p) => p.label.toLowerCase().includes(q) || p.key.toLowerCase().includes(q))])
-      .filter(([, ps]) => ps.length);
-  }, [permissionCatalog, permQuery]);
+  const filteredModules = useMemo(
+    () => businessPermissionModules(permissionCatalog, permQuery),
+    [permissionCatalog, permQuery]
+  );
 
   return (
     <div className="settings-body" data-testid="roles-tab">
-      <NavAccessMatrix
-        roles={roles}
-        permissionCatalog={permissionCatalog}
-        canManagePerms={canManagePerms}
-        notify={notify}
-        onSaved={() => load(true)}
-        currentUserRole={user?.role}
-        onRefreshMe={refresh}
-      />
       <div className="roles-layout">
         <aside className="role-sidebar" data-testid="role-sidebar">
           <div className="role-sidebar-title" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1883,6 +1866,65 @@ function OperatorWageTab(props) {
   return <OperatorWageSettings {...props} />;
 }
 
+/** Category navigation cards — UI only; section ids must stay stable for deep links / tests. */
+const SETTINGS_NAV_ITEMS = [
+  { id: "employees", label: "Karyawan", description: "Kelola data user", Icon: Users, tone: "cyan", testid: "settings-tab-employees" },
+  { id: "roles", label: "Role & Hak Akses", description: "Kelola permission", Icon: Shield, tone: "indigo", testid: "settings-tab-roles" },
+  { id: "sidebar-access", label: "Akses Menu Sidebar", description: "Atur menu pengguna", Icon: PanelLeft, tone: "sky", testid: "settings-tab-sidebar-access" },
+  { id: "operator-wage", label: "Sistem Upah Operator", description: "Atur skema upah", Icon: Coins, tone: "emerald", testid: "settings-tab-operator-wage" },
+  { id: "hpp", label: "Pengaturan HPP", description: "Biaya & harga pokok", Icon: Scale, tone: "amber", testid: "settings-tab-hpp" },
+  { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
+  { id: "delivery-deadline", label: "Deadline Pengiriman", description: "Batas waktu kirim", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
+  { id: "operator-target", label: "Target Output Operator", description: "Target harian/mingguan", Icon: TargetIcon, tone: "cyan", testid: "settings-tab-operator-target" },
+  { id: "work-panel", label: "Form Pekerjaan Divisi", description: "Form & akses divisi", Icon: ClipboardList, tone: "violet", testid: "settings-tab-work-panel" },
+  { id: "employee-admin", label: "Administrasi Karyawan", description: "Data administrasi", Icon: IdCard, tone: "fuchsia", testid: "settings-tab-employee-admin" },
+  { id: "hr-payroll", label: "HR & Payroll", description: "Payroll & kehadiran", Icon: Wallet, tone: "indigo", testid: "settings-tab-hr-payroll" },
+  { id: "sales-activity", label: "Sales Activity & Ownership", description: "Aktivitas & ownership", Icon: ClipboardList, tone: "teal", testid: "settings-tab-sales-activity" },
+  { id: "route-optimizer", label: "Optimasi Rute", description: "Pengaturan rute", Icon: Route, tone: "blue", testid: "settings-tab-route-optimizer" },
+  { id: "accurate-creators", label: "Pembuat PO Accurate", description: "Mapping createdBy", Icon: Users, tone: "sky", testid: "settings-tab-accurate-creators" },
+  { id: "audit", label: "Audit Log", description: "Riwayat perubahan", Icon: ScrollText, tone: "slate", testid: "settings-tab-audit" },
+];
+
+function SettingsCategoryNav({ items, activeId, onSelect }) {
+  return (
+    <section className="settings-cat-nav" data-testid="settings-category-nav" aria-labelledby="settings-cat-nav-heading">
+      <h2 id="settings-cat-nav-heading" className="settings-cat-nav-heading">Pengaturan</h2>
+      <div className="settings-cat-grid" role="tablist" aria-label="Kategori pengaturan">
+        {items.map((item) => {
+          const Icon = item.Icon;
+          const isActive = activeId === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              aria-current={isActive ? "page" : undefined}
+              className={`settings-cat-card${isActive ? " is-active" : ""}`}
+              data-tone={item.tone}
+              data-testid={item.testid}
+              onClick={() => onSelect(item.id)}
+            >
+              <span className="settings-cat-card-icon" aria-hidden="true">
+                <Icon size={22} strokeWidth={1.75} />
+              </span>
+              <span className="settings-cat-card-body">
+                <span className="settings-cat-card-title-row">
+                  <span className="settings-cat-card-title">{item.label}</span>
+                  {isActive && <span className="settings-cat-card-badge">AKTIF</span>}
+                </span>
+                {item.description ? (
+                  <span className="settings-cat-card-desc">{item.description}</span>
+                ) : null}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /* ---------------- Root ---------------- */
 export default function Settings() {
   const { user, hasPerm } = useAuth();
@@ -1915,6 +1957,26 @@ export default function Settings() {
   const canViewRouteOptimizer = hasPerm("settings.route_optimizer.view") || hasPerm("settings.route_optimizer.manage") || hasPerm("permissions.manage");
   const canEditRouteOptimizer = hasPerm("settings.route_optimizer.manage");
 
+  const navVisibility = {
+    employees: canViewUsers,
+    roles: canManagePerms,
+    "sidebar-access": canViewSidebarAccess,
+    "operator-wage": canViewWage,
+    hpp: canViewHpp,
+    "customer-approval": canViewCaSettings,
+    "delivery-deadline": canViewDdSettings,
+    "operator-target": canViewOpTarget,
+    "work-panel": canViewWorkPanel,
+    "employee-admin": canViewEmployeeAdmin,
+    "hr-payroll": canViewHrPayroll,
+    "sales-activity": canViewSalesActivity,
+    "route-optimizer": canViewRouteOptimizer,
+    "accurate-creators": canViewAccurateCreators,
+    audit: canViewAudit,
+  };
+
+  const visibleNavItems = SETTINGS_NAV_ITEMS.filter((item) => navVisibility[item.id]);
+
   const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
   const [catalog, setCatalog] = useState(null);
@@ -1946,54 +2008,9 @@ export default function Settings() {
         <span><b>Role</b> menentukan hak akses default seorang karyawan. Bila ada kekhususan (mis. helper A hanya boleh Persiapan, helper B hanya Packing), atur <b>Hak akses per karyawan</b> di tab Karyawan sebagai override.</span>
       </InfoBanner>
 
-      <div className="settings-tabs" role="tablist">
-        {canViewUsers && (
-          <button role="tab" className={tab === "employees" ? "active" : ""} onClick={() => setTab("employees")} data-testid="settings-tab-employees"><Users size={14}/> Karyawan</button>
-        )}
-        {canManagePerms && (
-          <button role="tab" className={tab === "roles" ? "active" : ""} onClick={() => setTab("roles")} data-testid="settings-tab-roles"><Shield size={14}/> Role &amp; Hak Akses</button>
-        )}
-        {canViewSidebarAccess && (
-          <button role="tab" className={tab === "sidebar-access" ? "active" : ""} onClick={() => setTab("sidebar-access")} data-testid="settings-tab-sidebar-access"><PanelLeft size={14}/> Akses Menu Sidebar</button>
-        )}
-        {canViewWage && (
-          <button role="tab" className={tab === "operator-wage" ? "active" : ""} onClick={() => setTab("operator-wage")} data-testid="settings-tab-operator-wage"><Coins size={14}/> Sistem Upah Operator</button>
-        )}
-        {canViewHpp && (
-          <button role="tab" className={tab === "hpp" ? "active" : ""} onClick={() => setTab("hpp")} data-testid="settings-tab-hpp"><Scale size={14}/> Pengaturan HPP</button>
-        )}
-        {canViewCaSettings && (
-          <button role="tab" className={tab === "customer-approval" ? "active" : ""} onClick={() => setTab("customer-approval")} data-testid="settings-tab-customer-approval"><ClipboardCheck size={14}/> Customer Approval</button>
-        )}
-        {canViewDdSettings && (
-          <button role="tab" className={tab === "delivery-deadline" ? "active" : ""} onClick={() => setTab("delivery-deadline")} data-testid="settings-tab-delivery-deadline"><Truck size={14}/> Deadline Pengiriman</button>
-        )}
-        {canViewOpTarget && (
-          <button role="tab" className={tab === "operator-target" ? "active" : ""} onClick={() => setTab("operator-target")} data-testid="settings-tab-operator-target"><TargetIcon size={14}/> Target Output Operator</button>
-        )}
-        {canViewWorkPanel && (
-          <button role="tab" className={tab === "work-panel" ? "active" : ""} onClick={() => setTab("work-panel")} data-testid="settings-tab-work-panel"><ClipboardList size={14}/> Form Pekerjaan Divisi</button>
-        )}
-        {canViewEmployeeAdmin && (
-          <button role="tab" className={tab === "employee-admin" ? "active" : ""} onClick={() => setTab("employee-admin")} data-testid="settings-tab-employee-admin"><IdCard size={14}/> Administrasi Karyawan</button>
-        )}
-        {canViewHrPayroll && (
-          <button role="tab" className={tab === "hr-payroll" ? "active" : ""} onClick={() => setTab("hr-payroll")} data-testid="settings-tab-hr-payroll"><Wallet size={14}/> HR &amp; Payroll</button>
-        )}
-        {canViewSalesActivity && (
-          <button role="tab" className={tab === "sales-activity" ? "active" : ""} onClick={() => setTab("sales-activity")} data-testid="settings-tab-sales-activity"><ClipboardList size={14}/> Sales Activity &amp; Ownership</button>
-        )}
-        {canViewRouteOptimizer && (
-          <button role="tab" className={tab === "route-optimizer" ? "active" : ""} onClick={() => setTab("route-optimizer")} data-testid="settings-tab-route-optimizer"><Route size={14}/> Optimasi Rute</button>
-        )}
-        {canViewAccurateCreators && (
-          <button role="tab" className={tab === "accurate-creators" ? "active" : ""} onClick={() => setTab("accurate-creators")} data-testid="settings-tab-accurate-creators"><Users size={14}/> Pembuat PO Accurate</button>
-        )}
-        {canViewAudit && (
-          <button role="tab" className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")} data-testid="settings-tab-audit"><ScrollText size={14}/> Audit Log</button>
-        )}
-      </div>
+      <SettingsCategoryNav items={visibleNavItems} activeId={tab} onSelect={setTab} />
 
+      <div className="settings-active-panel" data-testid="settings-active-panel">
       {canViewUsers && !canManageUsers && tab === "employees" && (
         <div className="settings-info warn" data-testid="employees-readonly-note">
           <AlertCircle size={14}/><div>Mode read-only. Butuh <b>users.manage</b> untuk menambah/mengubah karyawan.</div>
@@ -2036,6 +2053,7 @@ export default function Settings() {
       )}
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
       {tab === "audit" && canViewAudit && <AuditTab/>}
+      </div>
 
       <Toast msg={toast}/>
     </div>
