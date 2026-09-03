@@ -19,6 +19,8 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/input-receipt-amount/);
     expect(pageSrc).toMatch(/input-receipt-date/);
     expect(pageSrc).toMatch(/input-receipt-notes/);
+    expect(pageSrc).toMatch(/receipt-modal-body/);
+    expect(pageSrc).toMatch(/receipt-modal-footer/);
     expect(pageSrc).toMatch(/btn-submit-receipt/);
   });
 
@@ -79,6 +81,10 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/btn-close-receipt-modal/);
     expect(pageSrc).toMatch(/btn-cancel-receipt-modal/);
     expect(pageSrc).toMatch(/receipt-create-modal/);
+    expect(pageSrc).toMatch(/overflowY:\s*"auto"/);
+    expect(pageSrc).toMatch(/minHeight:\s*0/);
+    expect(pageSrc).toMatch(/flex:\s*"0 0 auto"/);
+    expect(pageSrc).toMatch(/className="fs-section-scroll-safe"/);
     expect(pageSrc).toMatch(/handleCloseCreateModal/);
     expect(pageSrc).toMatch(/Escape/);
     expect(pageSrc).toMatch(/no-eligible-invoices-hint/);
