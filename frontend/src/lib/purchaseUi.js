@@ -13,6 +13,11 @@ export function newIdempotencyKey() {
 
 export function errDetail(ex) {
   const det = ex?.response?.data?.detail;
-  if (typeof det === "object" && det) return det.message || JSON.stringify(det);
+  if (typeof det === "object" && det) {
+    if (Array.isArray(det.errors) && det.errors.length) {
+      return [det.message, ...det.errors].filter(Boolean).join(" · ");
+    }
+    return det.message || JSON.stringify(det);
+  }
   return det || ex?.message || "Terjadi kesalahan";
 }

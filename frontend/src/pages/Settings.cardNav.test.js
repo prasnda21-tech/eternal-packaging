@@ -22,6 +22,7 @@ describe("Settings category card navigation", () => {
       "sidebar-access",
       "operator-wage",
       "hpp",
+      "customer-pricing",
       "customer-approval",
       "delivery-deadline",
       "operator-target",
@@ -57,6 +58,7 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/"sales-activity":\s*canViewSalesActivity/);
     expect(settingsSrc).toMatch(/"route-optimizer":\s*canViewRouteOptimizer/);
     expect(settingsSrc).toMatch(/hpp:\s*canViewHpp/);
+    expect(settingsSrc).toMatch(/"customer-pricing":\s*canViewCustomerPricing/);
   });
 
   test("only active panel content is conditionally rendered", () => {
