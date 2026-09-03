@@ -743,262 +743,263 @@ export default function PenerimaanPenjualan() {
             </div>
 
             {/* Modal Body */}
-            <form onSubmit={handleSaveReceipt} style={{ padding: 20, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column" }}>
-              {createErr && (
-                <div
-                  style={{
-                    padding: "10px 14px",
-                    backgroundColor: "#fef2f2",
-                    border: "1px solid #fecaca",
-                    color: "#b91c1c",
-                    borderRadius: 6,
-                    marginBottom: 16,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontSize: 13,
-                  }}
-                >
-                  <AlertCircle size={16} />
-                  <span>{createErr}</span>
-                </div>
-              )}
-
-              {successMsg && (
-                <div
-                  style={{
-                    padding: "10px 14px",
-                    backgroundColor: "#ecfdf5",
-                    border: "1px solid #a7f3d0",
-                    color: "#065f46",
-                    borderRadius: 6,
-                    marginBottom: 16,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontSize: 13,
-                  }}
-                >
-                  <CheckCircle2 size={16} />
-                  <span>{successMsg}</span>
-                </div>
-              )}
-
-              <FormProgress
-                percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length / 3) * 100)}
-                completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length}
-                total={3}
-                className="mb-4"
-              />
-
-              {/* 1. Pilih Faktur Penjualan */}
-              <FormSection
-                id="sr-invoice-section"
-                title="1. Pilih Faktur Penjualan"
-                description="Pilih faktur yang memiliki sisa tagihan."
-                status={selectedInvoiceId ? "complete" : "incomplete"}
+            <form onSubmit={handleSaveReceipt} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <div
+                data-testid="receipt-modal-body"
+                style={{ padding: "20px 20px 28px", overflowY: "auto", flex: "1 1 auto", minHeight: 0 }}
               >
-                <div style={{ marginBottom: 16 }}>
-                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                    Pilih Faktur Penjualan *
-                  </label>
-                  <select
-                    className="form-select"
-                    data-testid="select-receipt-invoice"
-                    value={selectedInvoiceId}
-                    onChange={(e) => setSelectedInvoiceId(e.target.value)}
-                    disabled={createBusy || invoicesLoading}
+                {createErr && (
+                  <div
                     style={{
-                      width: "100%",
-                      height: 38,
+                      padding: "10px 14px",
+                      backgroundColor: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      color: "#b91c1c",
                       borderRadius: 6,
-                      border: "1px solid #d1d5db",
+                      marginBottom: 16,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
                       fontSize: 13,
-                      padding: "0 10px",
                     }}
                   >
-                    <option value="">-- Pilih Faktur Penjualan --</option>
-                    {invoicesWithBalance.map((inv) => (
-                      <option key={inv.id} value={inv.id}>
-                        {inv.customer} — PO {inv.po_number} (Sisa: {formatRupiah(inv.outstanding_amount || inv.grand_total)})
-                      </option>
-                    ))}
-                  </select>
-                  {invoicesWithBalance.length === 0 && !invoicesLoading && (
-                    <p data-testid="no-eligible-invoices-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
-                      Tidak ada faktur dengan sisa tagihan aktif (semua faktur telah lunas atau belum memiliki nilai tagihan).
-                    </p>
+                    <AlertCircle size={16} />
+                    <span>{createErr}</span>
+                  </div>
+                )}
+
+                {successMsg && (
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      backgroundColor: "#ecfdf5",
+                      border: "1px solid #a7f3d0",
+                      color: "#065f46",
+                      borderRadius: 6,
+                      marginBottom: 16,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 13,
+                    }}
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>{successMsg}</span>
+                  </div>
+                )}
+
+                <FormProgress
+                  percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length / 3) * 100)}
+                  completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length}
+                  total={3}
+                  className="mb-4"
+                />
+
+                {/* 1. Pilih Faktur Penjualan */}
+                <FormSection
+                  id="sr-invoice-section"
+                  title="1. Pilih Faktur Penjualan"
+                  description="Pilih faktur yang memiliki sisa tagihan."
+                  status={selectedInvoiceId ? "complete" : "incomplete"}
+                  className="fs-section-scroll-safe"
+                >
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                      Pilih Faktur Penjualan *
+                    </label>
+                    <select
+                      className="form-select"
+                      data-testid="select-receipt-invoice"
+                      value={selectedInvoiceId}
+                      onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                      disabled={createBusy || invoicesLoading}
+                      style={{
+                        width: "100%",
+                        fontSize: 13,
+                      }}
+                    >
+                      <option value="">-- Pilih Faktur Penjualan --</option>
+                      {invoicesWithBalance.map((inv) => (
+                        <option key={inv.id} value={inv.id}>
+                          {inv.customer} — PO {inv.po_number} (Sisa: {formatRupiah(inv.outstanding_amount || inv.grand_total)})
+                        </option>
+                      ))}
+                    </select>
+                    {invoicesWithBalance.length === 0 && !invoicesLoading && (
+                      <p data-testid="no-eligible-invoices-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
+                        Tidak ada faktur dengan sisa tagihan aktif (semua faktur telah lunas atau belum memiliki nilai tagihan).
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Summary Card Faktur */}
+                  {selectedInvoice && (
+                    <div
+                      data-testid="selected-invoice-summary-card"
+                      style={{
+                        backgroundColor: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 8,
+                        padding: 14,
+                        marginBottom: 16,
+                      }}
+                    >
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, fontSize: 13 }}>
+                        <div>
+                          <span style={{ color: "#64748b" }}>No. Faktur:</span>
+                          <div data-testid="summary-invoice-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.invoice_number || "-"}</div>
+                        </div>
+                        <div>
+                          <span style={{ color: "#64748b" }}>No. PO:</span>
+                          <div data-testid="summary-po-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
+                        </div>
+                        <div>
+                          <span style={{ color: "#64748b" }}>Total Faktur:</span>
+                          <div style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(selectedInvoice.grand_total)}</div>
+                        </div>
+                        <div>
+                          <span style={{ color: "#64748b" }}>Sisa Tagihan Saat Ini:</span>
+                          <div data-testid="summary-outstanding-amount" style={{ fontWeight: 700, color: "#dc2626" }}>
+                            {formatRupiah(selectedInvoice.outstanding_amount)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   )}
+                </FormSection>
+
+                {/* 2. Detail Pembayaran */}
+                <FormSection
+                  id="sr-payment-section"
+                  title="2. Detail Penerimaan Pembayaran"
+                  description="Masukkan nominal pembayaran, tanggal, dan metode transfer."
+                  status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }])}
+                  className="fs-section-scroll-safe"
+                >
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
+                        Jumlah Penerimaan (Rp) *
+                      </label>
+                    {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
+                      <button
+                        type="button"
+                        onClick={handlePayFull}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "#059669",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          textDecoration: "underline",
+                        }}
+                      >
+                        Bayar Sisa Tagihan (Lunas)
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    className="form-input"
+                    data-testid="input-receipt-amount"
+                    placeholder="0"
+                    min="1"
+                    max={selectedInvoice?.outstanding_amount || undefined}
+                    value={receiptAmount}
+                    onChange={(e) => setReceiptAmount(e.target.value)}
+                    disabled={createBusy || !selectedInvoice}
+                    style={{
+                      width: "100%",
+                      fontSize: 14,
+                      fontWeight: 600,
+                    }}
+                  />
                 </div>
 
-              {/* Summary Card Faktur */}
-              {selectedInvoice && (
-                <div
-                  data-testid="selected-invoice-summary-card"
-                  style={{
-                    backgroundColor: "#f8fafc",
-                    border: "1px solid #e2e8f0",
-                    borderRadius: 8,
-                    padding: 14,
-                    marginBottom: 16,
-                  }}
-                >
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, fontSize: 13 }}>
+                {/* 3. Tanggal Penerimaan */}
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                    Tanggal Penerimaan *
+                  </label>
+                  <input
+                    type="date"
+                    className="form-input"
+                    data-testid="input-receipt-date"
+                    value={receiptDate}
+                    onChange={(e) => setReceiptDate(e.target.value)}
+                    disabled={createBusy}
+                    style={{
+                      width: "100%",
+                      fontSize: 13,
+                    }}
+                  />
+                </div>
+
+                {/* 4. Catatan */}
+                <div style={{ marginBottom: 18 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                    Catatan Pembayaran
+                  </label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    data-testid="input-receipt-notes"
+                    placeholder="Contoh: DP 50% via BCA / Pelunasan cash"
+                    value={receiptNotes}
+                    onChange={(e) => setReceiptNotes(e.target.value)}
+                    disabled={createBusy}
+                    style={{
+                      width: "100%",
+                      fontSize: 13,
+                    }}
+                  />
+                </div>
+
+                {/* Live Preview Bar */}
+                {previewCalc && previewCalc.amount > 0 && !previewCalc.isOverpayment && (
+                  <div
+                    style={{
+                      backgroundColor: "#ecfdf5",
+                      border: "1px solid #a7f3d0",
+                      borderRadius: 6,
+                      padding: 12,
+                      marginBottom: 18,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
                     <div>
-                      <span style={{ color: "#64748b" }}>No. Faktur:</span>
-                      <div data-testid="summary-invoice-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.invoice_number || "-"}</div>
+                      <div style={{ fontSize: 11, color: "#065f46" }}>Status Baru Setelah Penerimaan:</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
+                        {previewCalc.newState === "LUNAS" ? "LUNAS (100% Terbayar)" : `DP (Sisa: ${formatRupiah(previewCalc.newOutstanding)})`}
+                      </div>
                     </div>
-                    <div>
-                      <span style={{ color: "#64748b" }}>No. PO:</span>
-                      <div data-testid="summary-po-number" style={{ fontWeight: 600, color: "#1e293b" }}>{selectedInvoice.po_number}</div>
-                    </div>
-                    <div>
-                      <span style={{ color: "#64748b" }}>Total Faktur:</span>
-                      <div style={{ fontWeight: 600, color: "#1e293b" }}>{formatRupiah(selectedInvoice.grand_total)}</div>
-                    </div>
-                    <div>
-                      <span style={{ color: "#64748b" }}>Sisa Tagihan Saat Ini:</span>
-                      <div data-testid="summary-outstanding-amount" style={{ fontWeight: 700, color: "#dc2626" }}>
-                        {formatRupiah(selectedInvoice.outstanding_amount)}
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 11, color: "#065f46" }}>Total Terbayar:</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
+                        {formatRupiah(previewCalc.newPaid)}
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
-
-              </FormSection>
-
-              {/* 2. Detail Pembayaran */}
-              <FormSection
-                id="sr-payment-section"
-                title="2. Detail Penerimaan Pembayaran"
-                description="Masukkan nominal pembayaran, tanggal, dan metode transfer."
-                status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }])}
-              >
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
-                      Jumlah Penerimaan (Rp) *
-                    </label>
-                  {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
-                    <button
-                      type="button"
-                      onClick={handlePayFull}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#059669",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        textDecoration: "underline",
-                      }}
-                    >
-                      Bayar Sisa Tagihan (Lunas)
-                    </button>
-                  )}
-                </div>
-                <input
-                  type="number"
-                  className="form-input"
-                  data-testid="input-receipt-amount"
-                  placeholder="0"
-                  min="1"
-                  max={selectedInvoice?.outstanding_amount || undefined}
-                  value={receiptAmount}
-                  onChange={(e) => setReceiptAmount(e.target.value)}
-                  disabled={createBusy || !selectedInvoice}
-                  style={{
-                    width: "100%",
-                    height: 38,
-                    borderRadius: 6,
-                    border: "1px solid #d1d5db",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    padding: "0 10px",
-                  }}
-                />
+                )}
+                </FormSection>
               </div>
-
-              {/* 3. Tanggal Penerimaan */}
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                  Tanggal Penerimaan *
-                </label>
-                <input
-                  type="date"
-                  className="form-input"
-                  data-testid="input-receipt-date"
-                  value={receiptDate}
-                  onChange={(e) => setReceiptDate(e.target.value)}
-                  disabled={createBusy}
-                  style={{
-                    width: "100%",
-                    height: 38,
-                    borderRadius: 6,
-                    border: "1px solid #d1d5db",
-                    fontSize: 13,
-                    padding: "0 10px",
-                  }}
-                />
-              </div>
-
-              {/* 4. Catatan */}
-              <div style={{ marginBottom: 18 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                  Catatan Pembayaran
-                </label>
-                <input
-                  type="text"
-                  className="form-input"
-                  data-testid="input-receipt-notes"
-                  placeholder="Contoh: DP 50% via BCA / Pelunasan cash"
-                  value={receiptNotes}
-                  onChange={(e) => setReceiptNotes(e.target.value)}
-                  disabled={createBusy}
-                  style={{
-                    width: "100%",
-                    height: 38,
-                    borderRadius: 6,
-                    border: "1px solid #d1d5db",
-                    fontSize: 13,
-                    padding: "0 10px",
-                  }}
-                />
-              </div>
-
-              {/* Live Preview Bar */}
-              {previewCalc && previewCalc.amount > 0 && !previewCalc.isOverpayment && (
-                <div
-                  style={{
-                    backgroundColor: "#ecfdf5",
-                    border: "1px solid #a7f3d0",
-                    borderRadius: 6,
-                    padding: 12,
-                    marginBottom: 18,
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 11, color: "#065f46" }}>Status Baru Setelah Penerimaan:</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
-                      {previewCalc.newState === "LUNAS" ? "LUNAS (100% Terbayar)" : `DP (Sisa: ${formatRupiah(previewCalc.newOutstanding)})`}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 11, color: "#065f46" }}>Total Terbayar:</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>
-                      {formatRupiah(previewCalc.newPaid)}
-                    </div>
-                  </div>
-                </div>
-              )}
-              </FormSection>
 
               {/* Modal Actions */}
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16, paddingTop: 12, borderTop: "1px solid #f1f5f9" }}>
+              <div
+                data-testid="receipt-modal-footer"
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 10,
+                  padding: "12px 20px 16px",
+                  borderTop: "1px solid #f1f5f9",
+                  backgroundColor: "#fff",
+                  flex: "0 0 auto",
+                }}
+              >
                 <button
                   type="button"
                   data-testid="btn-cancel-receipt-modal"

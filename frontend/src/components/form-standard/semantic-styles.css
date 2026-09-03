@@ -73,6 +73,10 @@
   color: var(--mod-ink, #155e75);
 }
 
+.fs-section-scroll-safe {
+  overflow: visible;
+}
+
 .fs-section-complete {
   background-color: #ffffff;
   border-color: #e2e8f0; /* slate-200 */
