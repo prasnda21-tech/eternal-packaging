@@ -56,6 +56,19 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def resolve_quantity_tier(
+    tiers: List[dict], quantity: int
+) -> Optional[Tuple[int, dict]]:
+    """Resolve Phase 1 inclusive tier boundaries without pricing recalculation."""
+    matches = [
+        (index, tier)
+        for index, tier in enumerate(tiers or [])
+        if quantity >= tier.get("min_qty", 0)
+        and (tier.get("max_qty") is None or quantity <= tier.get("max_qty"))
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _dec(value: Any) -> Decimal:
     try:
         return Decimal(str(value if value is not None else 0))
@@ -767,6 +780,7 @@ async def _build_version(
         previous = existing.get(aid, {})
         product = {
             **snapshot,
+            "public_variant_id": previous.get("public_variant_id") or _new_id(),
             "manual_hpp": None,
             "hpp_method": None,
             "hpp_snapshot": None,

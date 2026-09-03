@@ -18,6 +18,17 @@ export const publicApiUrl = (path) => {
   return path.startsWith("/") ? `${origin}${path}` : `${origin}/${path}`;
 };
 
+const publicJsonRequest = async (path, options = {}) => {
+  const response = await fetch(`${API}${path}`, {
+    credentials: "omit",
+    ...options,
+  });
+  let data = {};
+  try { data = await response.json(); } catch { data = {}; }
+  if (!response.ok) throw { response: { status: response.status, data } };
+  return data;
+};
+
 export const api = {
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
@@ -279,6 +290,20 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  publicCustomerPricingGroups: () =>
+    publicJsonRequest("/public/customer-pricing/groups"),
+  publicCustomerPricingGroup: (publicId) =>
+    publicJsonRequest(`/public/customer-pricing/groups/${encodeURIComponent(publicId)}`),
+  calculatePublicCustomerPrice: (payload) =>
+    publicJsonRequest("/public/customer-pricing/calculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        group_public_id: payload.group_public_id,
+        public_variant_id: payload.public_variant_id,
+        quantity: payload.quantity,
+      }),
+    }),
   orderTrackingLink: (id) => client.post(`/orders/${id}/tracking-link`).then((r) => r.data),
   deliverySchedule: (params = {}) => client.get(`/delivery/schedule`, { params }).then((r) => r.data),
   deliveryReschedules: (params = {}) => client.get(`/delivery/reschedules`, { params }).then((r) => r.data),

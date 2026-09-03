@@ -31,6 +31,7 @@ import SalesActivityOutletDetail from "./pages/SalesActivityOutletDetail";
 import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
+import PublicHargaPage from "./pages/PublicHargaPage";
 import { NAV_KEYS, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
 import DeliverySchedulePage from "./pages/DeliverySchedulePage";
@@ -130,6 +131,7 @@ export default function App() {
           {/* Public — customer pages (no login required) */}
           <Route path="/customer/design-approval/:token" element={<PublicCustomerApproval />} />
           <Route path="/tracking/:token" element={<CustomerTrackingPage />} />
+          <Route path="/harga" element={<PublicHargaPage />} />
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />

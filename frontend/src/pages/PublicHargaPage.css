@@ -1,0 +1,264 @@
+.public-harga-page{
+  min-height:100vh;
+  background:#f3f0e7;
+  color:#20251f;
+  overflow-x:hidden;
+}
+.public-harga-page,.public-harga-page *{box-sizing:border-box}
+.public-harga-header{
+  display:flex;
+  align-items:flex-start;
+  gap:22px;
+  width:min(100% - 32px,960px);
+  margin:0 auto;
+  padding:42px 0 30px;
+  border-bottom:1px solid #d8d3c4;
+}
+.public-harga-header .brand-mark{
+  flex:0 0 auto;
+  padding:8px 10px;
+  background:#183c2c;
+  color:#fff;
+  border-radius:10px;
+}
+.public-harga-header .brand-logo-symbol{background:#fff}
+.public-harga-header h1{
+  margin:2px 0 5px;
+  font-size:clamp(28px,5vw,44px);
+  line-height:1.04;
+  letter-spacing:-.045em;
+}
+.public-harga-header p{margin:0;color:#667064}
+.public-harga-header .public-harga-eyebrow{
+  margin:0 0 8px;
+  font:600 11px 'IBM Plex Mono',monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:#337052;
+}
+.public-harga-content{
+  display:grid;
+  gap:18px;
+  width:min(100% - 32px,960px);
+  margin:0 auto;
+  padding:24px 0 36px;
+}
+.public-harga-section,.public-harga-state{
+  min-width:0;
+  padding:24px;
+  background:#fff;
+  border:1px solid #ddd8c9;
+  border-radius:14px;
+  box-shadow:0 5px 18px rgba(48,54,44,.04);
+}
+.public-harga-state{text-align:center;color:#667064}
+.public-harga-state h2{margin:0 0 6px;color:#20251f;font-size:20px}
+.public-harga-state p{margin:0}
+.public-harga-state.is-error,.public-harga-message.is-error{color:#8b2f2f}
+.public-harga-section-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  margin-bottom:18px;
+}
+.public-harga-section-head h2{margin:0;font-size:20px;letter-spacing:-.02em}
+.public-harga-step{
+  margin:0 0 3px;
+  font:600 10px 'IBM Plex Mono',monospace;
+  color:#337052;
+  letter-spacing:.12em;
+}
+.public-harga-search{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-width:min(260px,100%);
+  padding:0 11px;
+  border:1px solid #cec8b7;
+  border-radius:9px;
+  background:#fff;
+}
+.public-harga-search input{
+  width:100%;
+  min-width:0;
+  height:40px;
+  border:0;
+  outline:0;
+  font:inherit;
+  background:transparent;
+}
+.public-harga-search .sr-only{
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  white-space:nowrap;
+  border:0;
+}
+.public-harga-groups{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(170px,1fr));
+  gap:10px;
+}
+.public-harga-groups button{
+  min-width:0;
+  min-height:76px;
+  padding:14px;
+  border:1px solid #d5cfbf;
+  border-radius:10px;
+  background:#fdfcf8;
+  color:#20251f;
+  text-align:left;
+  cursor:pointer;
+  transition:border-color .15s,background .15s,transform .15s;
+}
+.public-harga-groups button:hover{border-color:#6d967f;transform:translateY(-1px)}
+.public-harga-groups button:focus-visible{
+  outline:3px solid rgba(51,112,82,.2);
+  outline-offset:2px;
+}
+.public-harga-groups button.is-selected{
+  border-color:#24583e;
+  background:#edf5f0;
+  box-shadow:inset 0 0 0 1px #24583e;
+}
+.public-harga-groups strong,.public-harga-groups span{display:block}
+.public-harga-groups strong{font-size:15px;overflow-wrap:anywhere}
+.public-harga-groups span{margin-top:6px;color:#6c756a;font-size:12px}
+.public-harga-no-search,.public-harga-inline-state{margin:0;color:#6c756a}
+.public-harga-form{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;
+  gap:12px;
+  align-items:end;
+}
+.public-harga-form label{display:grid;min-width:0;gap:6px}
+.public-harga-form label > span{
+  font:600 11px 'IBM Plex Mono',monospace;
+  letter-spacing:.07em;
+  text-transform:uppercase;
+  color:#596257;
+}
+.public-harga-form select,.public-harga-form input{
+  width:100%;
+  min-width:0;
+  height:46px;
+  padding:0 12px;
+  border:1px solid #c9c3b3;
+  border-radius:9px;
+  background:#fff;
+  color:#20251f;
+  font:inherit;
+}
+.public-harga-form select:focus,.public-harga-form input:focus{
+  border-color:#24583e;
+  outline:3px solid rgba(51,112,82,.14);
+}
+.public-harga-calculate{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  min-height:46px;
+  padding:0 20px;
+  border:1px solid #183c2c;
+  border-radius:9px;
+  background:#183c2c;
+  color:#fff;
+  font:600 14px inherit;
+  cursor:pointer;
+}
+.public-harga-calculate:hover{background:#24583e}
+.public-harga-calculate:disabled{cursor:wait;opacity:.7}
+.public-harga-message{margin:14px 0 0;font-size:14px}
+.public-harga-result{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  margin-top:20px;
+  border:1px solid #b8cbbc;
+  border-radius:12px;
+  overflow:hidden;
+  background:#edf5f0;
+}
+.public-harga-result > div{display:grid;gap:6px;padding:18px}
+.public-harga-result > div + div{border-left:1px solid #b8cbbc}
+.public-harga-result span{
+  font:600 10px 'IBM Plex Mono',monospace;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:#4f6456;
+}
+.public-harga-result strong{font-size:clamp(21px,4vw,30px);letter-spacing:-.03em}
+.public-harga-result .is-total strong{color:#1c6843}
+.public-harga-result p{
+  grid-column:1 / -1;
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  margin:0;
+  padding:12px 18px;
+  border-top:1px solid #b8cbbc;
+  color:#4f6456;
+  font-size:13px;
+}
+.public-harga-result p b{color:#20251f}
+.public-harga-variant-name{
+  max-width:50%;
+  overflow-wrap:anywhere;
+  color:#5f6b60;
+  font-size:13px;
+  text-align:right;
+}
+.public-harga-table-wrap{width:100%;min-width:0;overflow-x:auto}
+.public-harga-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.public-harga-table th,.public-harga-table td{
+  padding:12px 10px;
+  border-bottom:1px solid #e6e1d5;
+  text-align:left;
+  overflow-wrap:anywhere;
+}
+.public-harga-table th{
+  background:#f7f5ee;
+  color:#687167;
+  font:600 10px 'IBM Plex Mono',monospace;
+  letter-spacing:.07em;
+  text-transform:uppercase;
+}
+.public-harga-table th:last-child,.public-harga-table td:last-child{text-align:right}
+.public-harga-table tbody tr:last-child td{border-bottom:0}
+.public-harga-table td:last-child{font-weight:650;color:#24583e}
+.public-harga-footer{
+  width:min(100% - 32px,960px);
+  margin:0 auto;
+  padding:0 0 32px;
+  color:#737b70;
+  font-size:12px;
+  text-align:center;
+}
+@media (max-width:640px){
+  .public-harga-header{
+    width:min(100% - 24px,960px);
+    gap:14px;
+    padding:24px 0 20px;
+  }
+  .public-harga-header .brand-mark{padding:5px}
+  .public-harga-header .brand-copy{display:none}
+  .public-harga-content,.public-harga-footer{width:min(100% - 24px,960px)}
+  .public-harga-content{padding-top:14px}
+  .public-harga-section,.public-harga-state{padding:17px 14px;border-radius:11px}
+  .public-harga-section-head{align-items:flex-start;flex-direction:column}
+  .public-harga-search{width:100%;min-width:0}
+  .public-harga-groups{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .public-harga-groups button{min-height:72px;padding:12px}
+  .public-harga-form{grid-template-columns:1fr}
+  .public-harga-calculate{width:100%;min-height:48px;margin-top:2px}
+  .public-harga-result{grid-template-columns:1fr}
+  .public-harga-result > div + div{border-left:0;border-top:1px solid #b8cbbc}
+  .public-harga-result p{align-items:flex-start;flex-direction:column;gap:4px}
+  .public-harga-table th,.public-harga-table td{padding:11px 8px;font-size:13px}
+  .public-harga-variant-name{max-width:100%;text-align:left}
+}
