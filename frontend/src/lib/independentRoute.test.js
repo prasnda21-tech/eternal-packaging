@@ -1,13 +1,18 @@
 import {
+  ADD_STOP_PHASES,
   GOOGLE_PLACES_UNCONFIGURED,
   LOCATION_SOURCES,
   accuracyWarning,
+  applyGooglePlaceToStopDraft,
   applyMove,
+  buildAddStopPayload,
   canAccessRoutePage,
   canCrossPriority,
   canMoveStop,
   captureGeolocation,
+  changeAddStopLocation,
   confirmGooglePlace,
+  emptyAddStopDraft,
   formatAccuracy,
   formatCoord,
   formatKm,
@@ -15,6 +20,8 @@ import {
   googleMapsPlaceUrl,
   googleMapsStopUrl,
   googlePlaceCandidateFromDetails,
+  initialAddStopLocationMode,
+  initialAddStopPhase,
   isValidCoordinate,
   mapsLinkForStop,
   missingLocationStops,
@@ -71,6 +78,37 @@ describe("independent route helpers", () => {
       .toContain("query_place_id=ChIJ-starbucks");
     expect(mapsLinkForStop({ google_place_id: "ChIJ-starbucks", lat: -6.2146, lng: 106.8451 })).toContain("query_place_id=");
     expect(googlePlaceCandidateFromDetails({ place_id: "x", lat: 0, lng: 0 })).toBeNull();
+  });
+
+  test("Google result click fills stop draft and advances to priority without persist", () => {
+    expect(initialAddStopPhase()).toBe(ADD_STOP_PHASES.LOCATION);
+    expect(initialAddStopLocationMode()).toBe("GOOGLE");
+    const candidate = googlePlaceCandidateFromDetails({
+      place_id: "ChIJ-abc",
+      name: "PT ABC Packaging",
+      formatted_address: "Jl. Sudirman No. 1, Jakarta",
+      lat: -6.200001,
+      lng: 106.816666,
+    });
+    const next = applyGooglePlaceToStopDraft(emptyAddStopDraft("p3"), candidate);
+    expect(next.persist).toBe(false);
+    expect(next.phase).toBe(ADD_STOP_PHASES.PRIORITY);
+    expect(next.draft.display_name).toBe("PT ABC Packaging");
+    expect(next.draft.formatted_address).toBe("Jl. Sudirman No. 1, Jakarta");
+    expect(next.draft.lat).toBe(-6.200001);
+    expect(next.draft.lng).toBe(106.816666);
+    expect(next.draft.google_place_id).toBe("ChIJ-abc");
+    expect(next.draft.location_source).toBe(LOCATION_SOURCES.GOOGLE_PLACES);
+    expect(next.draft.ref_kind).toBe("ROUTE_ONLY");
+    expect(changeAddStopLocation(next.draft).phase).toBe(ADD_STOP_PHASES.LOCATION);
+    const payload = buildAddStopPayload({ ...next.draft, priority_id: "p1" });
+    expect(payload.display_name).toBe("PT ABC Packaging");
+    expect(payload.formatted_address).toBe("Jl. Sudirman No. 1, Jakarta");
+    expect(payload.lat).toBe(-6.200001);
+    expect(payload.lng).toBe(106.816666);
+    expect(payload.google_place_id).toBe("ChIJ-abc");
+    expect(payload.priority_id).toBe("p1");
+    expect(payload.ref_kind).toBe("ROUTE_ONLY");
   });
 
   test("priority reorder blocks crossing ranks", () => {

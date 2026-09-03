@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import GooglePlacePicker from "../components/GooglePlacePicker";
 import RoutePlannerMap from "../components/RoutePlannerMap";
 import {
+  ADD_STOP_PHASES,
   DEFAULT_PRIORITIES,
   END_MODES,
   LOCATION_PICK_MODES,
@@ -14,13 +15,19 @@ import {
   START_MODES,
   STRATEGIES,
   accuracyWarning,
+  applyGooglePlaceToStopDraft,
   applyMove,
+  buildAddStopPayload,
   canMoveStop,
   captureGeolocation,
+  changeAddStopLocation,
+  emptyAddStopDraft,
   formatAccuracy,
   formatCoord,
   formatKm,
   googleMapsDirUrl,
+  initialAddStopLocationMode,
+  initialAddStopPhase,
   isValidCoordinate,
   mapsLinkForStop,
   missingLocationStops,
@@ -330,7 +337,7 @@ export default function OptimasiRuteEditor() {
             <div className="iro-card-head">
               <h3>Customer / Outlet</h3>
               {canEdit && (
-                <button type="button" className="iro-btn-primary" onClick={() => setModal({ step: 1 })} data-testid="iro-add-stop">
+                <button type="button" className="iro-btn-primary" onClick={() => setModal({ phase: initialAddStopPhase() })} data-testid="iro-add-stop">
                   <Plus size={16} /> Tambah Stop
                 </button>
               )}
@@ -358,7 +365,7 @@ export default function OptimasiRuteEditor() {
                 </a>
               )}
             </div>
-            {stops.length === 0 ? <p className="iro-empty">Belum ada stop. Tambah customer/outlet atau stop khusus rute.</p> : null}
+            {stops.length === 0 ? <p className="iro-empty">Belum ada stop. Cari di Google Maps untuk menambah stop khusus rute.</p> : null}
             {stops.map((stop, index) => (
               <article key={stop.id} className="iro-stop-card" data-testid={`iro-stop-${stop.id}`}>
                 <div className="iro-stop-seq">{stop.display_order || index + 1}</div>
@@ -383,7 +390,7 @@ export default function OptimasiRuteEditor() {
                     </a>
                   )}
                   {canEdit && (
-                    <button type="button" className="iro-linkish" onClick={() => setModal({ step: 2, edit: stop })} data-testid={`iro-edit-loc-${stop.id}`}>Ubah Titik</button>
+                    <button type="button" className="iro-linkish" onClick={() => setModal({ phase: ADD_STOP_PHASES.LOCATION, edit: stop })} data-testid={`iro-edit-loc-${stop.id}`}>Ubah Titik</button>
                   )}
                 </div>
               </article>
@@ -407,7 +414,7 @@ export default function OptimasiRuteEditor() {
         <StopWizard
           levels={levels}
           initial={modal.edit}
-          step={modal.step}
+          startPhase={modal.phase}
           onClose={() => setModal(null)}
           onSave={async (payload) => {
             if (modal.edit) {
@@ -530,31 +537,42 @@ function ManualPoint({ label, point, onChange, testid }) {
   );
 }
 
-function StopWizard({ levels, initial, step, onClose, onSave }) {
-  const [phase, setPhase] = useState(step || 1);
-  const [q, setQ] = useState("");
-  const [hits, setHits] = useState([]);
-  const [name, setName] = useState(initial?.display_name || "");
-  const [address, setAddress] = useState(initial?.address || "");
-  const [refKind, setRefKind] = useState(initial?.ref_kind || "ROUTE_ONLY");
-  const [refId, setRefId] = useState(initial?.ref_id || "");
-  const [lat, setLat] = useState(initial?.lat ?? "");
-  const [lng, setLng] = useState(initial?.lng ?? "");
-  const [source, setSource] = useState(initial?.location_source || LOCATION_SOURCES.MAP_PIN);
-  const [locMode, setLocMode] = useState(pickModeFromSource(initial?.location_source));
-  const [googleMeta, setGoogleMeta] = useState({
+function StopWizard({ levels, initial, startPhase, onClose, onSave }) {
+  const defaultPriority = initial?.priority_id || levels[2]?.id || "p3";
+  const [phase, setPhase] = useState(startPhase || initialAddStopPhase());
+  const [draft, setDraft] = useState(() => ({
+    ...emptyAddStopDraft(defaultPriority),
+    display_name: initial?.display_name || "",
+    address: initial?.address || initial?.formatted_address || "",
+    ref_kind: initial?.ref_kind || "ROUTE_ONLY",
+    ref_id: initial?.ref_id || null,
+    lat: initial?.lat ?? "",
+    lng: initial?.lng ?? "",
+    location_source: initial?.location_source || LOCATION_SOURCES.GOOGLE_PLACES,
     google_place_id: initial?.google_place_id || "",
     place_name: initial?.place_name || "",
     formatted_address: initial?.formatted_address || "",
     google_maps_url: initial?.google_maps_url || "",
-  });
-  const [priorityId, setPriorityId] = useState(initial?.priority_id || levels[2]?.id || "p3");
+    priority_id: defaultPriority,
+  }));
+  const [locMode, setLocMode] = useState(initialAddStopLocationMode());
   const [err, setErr] = useState("");
 
-  const search = async () => {
-    if (q.trim().length < 2) return;
-    const r = await api.searchIndependentRouteOutlets(q.trim());
-    setHits(r.candidates || []);
+  const applyManualPoint = (nextLat, nextLng, nextSource, advance) => {
+    setDraft((cur) => ({
+      ...cur,
+      lat: nextLat,
+      lng: nextLng,
+      location_source: nextSource,
+      google_place_id: "",
+      place_name: "",
+      formatted_address: "",
+      google_maps_url: "",
+      display_name: cur.display_name || "Stop rute",
+    }));
+    if (advance && isValidCoordinate(nextLat, nextLng)) {
+      setPhase(ADD_STOP_PHASES.PRIORITY);
+    }
   };
 
   const pickGps = async () => {
@@ -563,170 +581,145 @@ function StopWizard({ levels, initial, step, onClose, onSave }) {
       setErr(result.message);
       return;
     }
-    setLat(result.lat);
-    setLng(result.lng);
-    setSource(LOCATION_SOURCES.CURRENT_LOCATION);
-    setGoogleMeta({ google_place_id: "", place_name: "", formatted_address: "", google_maps_url: "" });
+    setErr("");
+    applyManualPoint(result.lat, result.lng, LOCATION_SOURCES.CURRENT_LOCATION, true);
   };
 
-  const applyPoint = (nextLat, nextLng, nextSource, extra = {}) => {
-    setLat(nextLat);
-    setLng(nextLng);
-    setSource(nextSource);
-    if (nextSource === LOCATION_SOURCES.GOOGLE_PLACES) {
-      setGoogleMeta({
-        google_place_id: extra.google_place_id || "",
-        place_name: extra.place_name || "",
-        formatted_address: extra.formatted_address || "",
-        google_maps_url: extra.google_maps_url || "",
-      });
-      if (!name.trim() && extra.place_name) setName(extra.place_name);
-      if (!address.trim() && extra.formatted_address) setAddress(extra.formatted_address);
-    } else {
-      setGoogleMeta({ google_place_id: "", place_name: "", formatted_address: "", google_maps_url: "" });
-    }
+  const onGoogleConfirm = (snap) => {
+    const next = applyGooglePlaceToStopDraft(draft, snap);
+    setDraft(next.draft);
+    setPhase(next.phase);
+    setErr("");
   };
 
   const submit = async () => {
     setErr("");
-    if (!name.trim()) {
+    const payload = buildAddStopPayload(draft);
+    if (!payload.display_name) {
       setErr("Nama stop wajib.");
       return;
     }
-    if (!isValidCoordinate(lat, lng)) {
+    if (!isValidCoordinate(payload.lat, payload.lng)) {
       setErr("Titik lokasi wajib sebelum stop bisa dioptimasi.");
       return;
     }
     try {
-      await onSave({
-        display_name: name.trim(),
-        address,
-        ref_kind: refKind,
-        ref_id: refId || null,
-        lat: Number(lat),
-        lng: Number(lng),
-        location_source: source,
-        google_place_id: source === LOCATION_SOURCES.GOOGLE_PLACES ? googleMeta.google_place_id : null,
-        place_name: source === LOCATION_SOURCES.GOOGLE_PLACES ? googleMeta.place_name : null,
-        formatted_address: source === LOCATION_SOURCES.GOOGLE_PLACES ? googleMeta.formatted_address : null,
-        google_maps_url: source === LOCATION_SOURCES.GOOGLE_PLACES ? googleMeta.google_maps_url : null,
-        priority_id: priorityId,
-      });
+      await onSave(payload);
     } catch (e) {
       setErr(e?.response?.data?.detail || "Gagal menyimpan stop.");
     }
   };
 
+  const goChangeLocation = () => {
+    const next = changeAddStopLocation(draft);
+    setPhase(next.phase);
+    setLocMode(initialAddStopLocationMode());
+  };
+
+  const locReady = isValidCoordinate(draft.lat, draft.lng);
+
   return (
     <div className="modal" data-testid="iro-stop-modal">
       <div className="modal-inner iro-modal">
-        <h3>{initial ? "Ubah titik stop" : "Tambah Stop"}</h3>
-        <p className="subhead">Langkah {phase} dari 4 · Titik yang disimpan bersifat otoritatif untuk rute ini.</p>
-        {err ? <div className="iro-alert is-error">{err}</div> : null}
-        {phase === 1 && (
-          <div>
-            <label>Cari customer / outlet
-              <input value={q} onChange={(e) => setQ(e.target.value)} data-testid="iro-stop-search" />
-            </label>
-            <div className="iro-row-actions">
-              <button type="button" className="iro-btn-secondary" onClick={search}>Cari</button>
-              <button type="button" className="iro-btn-secondary" data-testid="iro-route-only" onClick={() => { setRefKind("ROUTE_ONLY"); setRefId(""); }}>
-                Stop khusus rute
-              </button>
+        <div className="iro-modal-head">
+          <h3>{initial ? "Ubah titik stop" : "Tambah Stop"}</h3>
+          <p className="subhead">
+            {phase === ADD_STOP_PHASES.LOCATION
+              ? "Cari outlet di Google Maps. Klik hasil untuk konfirmasi lokasi."
+              : "Pilih prioritas, lalu simpan. Stop khusus rute (tidak membuat master)."}
+          </p>
+        </div>
+        <div className="iro-modal-body">
+          {err ? <div className="iro-alert is-error">{err}</div> : null}
+          {phase === ADD_STOP_PHASES.LOCATION && (
+            <div data-testid="iro-stop-phase-location">
+              <LocationModeTabs mode={locMode} onChange={setLocMode} testidPrefix="iro-stop" />
+              {locMode === "GOOGLE" && (
+                <GooglePlacePicker
+                  testidPrefix="iro-gmaps"
+                  showPreview={false}
+                  mapHeight={160}
+                  onConfirm={onGoogleConfirm}
+                />
+              )}
+              {locMode === "MANUAL" && (
+                <div className="iro-grid-2">
+                  <label>Latitude<input value={draft.lat} onChange={(e) => applyManualPoint(e.target.value, draft.lng, LOCATION_SOURCES.MANUAL_COORDINATE, false)} data-testid="iro-stop-lat" /></label>
+                  <label>Longitude<input value={draft.lng} onChange={(e) => applyManualPoint(draft.lat, e.target.value, LOCATION_SOURCES.MANUAL_COORDINATE, false)} data-testid="iro-stop-lng" /></label>
+                </div>
+              )}
+              {locMode === "GPS" && (
+                <div className="iro-row-actions">
+                  <button type="button" className="iro-btn-secondary" onClick={pickGps} data-testid="iro-stop-gps">Pakai GPS saat ini</button>
+                </div>
+              )}
+              {locMode === "MAP" && (
+                <RoutePlannerMap
+                  points={locReady ? [{ lat: Number(draft.lat), lng: Number(draft.lng), kind: "STOP", priority_id: draft.priority_id, seq: "•" }] : []}
+                  pickMode
+                  onPick={(p) => applyManualPoint(p.lat, p.lng, LOCATION_SOURCES.MAP_PIN, true)}
+                  height={220}
+                />
+              )}
+              {locMode !== "MAP" && locMode !== "GOOGLE" && locReady && (
+                <RoutePlannerMap
+                  points={[{ lat: Number(draft.lat), lng: Number(draft.lng), kind: "STOP", priority_id: draft.priority_id, seq: "•" }]}
+                  height={180}
+                />
+              )}
+              {locMode !== "MANUAL" && (
+                <div className="iro-grid-2" hidden>
+                  <label>Latitude<input value={draft.lat} readOnly data-testid="iro-stop-lat" /></label>
+                  <label>Longitude<input value={draft.lng} readOnly data-testid="iro-stop-lng" /></label>
+                </div>
+              )}
             </div>
-            <ul className="iro-hits">
-              {hits.map((h) => (
-                <li key={`${h.ref_kind}-${h.ref_id}`}>
-                  <button type="button" onClick={() => {
-                    setName(h.display_name);
-                    setAddress(h.address || "");
-                    setRefKind(h.ref_kind);
-                    setRefId(h.ref_id);
-                    if (isValidCoordinate(h.lat, h.lng)) {
-                      setLat(h.lat);
-                      setLng(h.lng);
-                      setSource(LOCATION_SOURCES.MANUAL_COORDINATE);
-                    }
-                  }}>
-                    <strong>{h.display_name}</strong>
-                    <span>{h.source_label} · {h.address || "tanpa alamat"}</span>
+          )}
+          {phase === ADD_STOP_PHASES.PRIORITY && (
+            <div data-testid="iro-stop-phase-priority">
+              <div className="iro-picked" data-testid="iro-selected-place">
+                <h4>LOKASI TERPILIH</h4>
+                <p><b>{draft.display_name || draft.place_name || "Stop rute"}</b></p>
+                {draft.formatted_address || draft.address ? <p>{draft.formatted_address || draft.address}</p> : null}
+                <p className="iro-coord-line" data-testid="iro-stop-coord">
+                  {locReady ? formatCoord(draft.lat, draft.lng) : "belum dipilih"}
+                </p>
+                <p className="iro-muted">Source: {draft.location_source === LOCATION_SOURCES.GOOGLE_PLACES ? "Google Maps" : draft.location_source}</p>
+                <p className="iro-muted">Stop khusus rute (tidak membuat master)</p>
+                <button type="button" className="iro-linkish" onClick={goChangeLocation} data-testid="iro-ubah-lokasi">Ubah lokasi</button>
+              </div>
+              <label>Nama tampilan
+                <input value={draft.display_name} onChange={(e) => setDraft({ ...draft, display_name: e.target.value })} data-testid="iro-stop-name" />
+              </label>
+              <div className="iro-legend" data-testid="iro-stop-priority">
+                {levels.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`iro-chip is-btn ${draft.priority_id === p.id ? "is-on" : ""}`}
+                    style={{ background: p.color }}
+                    onClick={() => setDraft({ ...draft, priority_id: p.id })}
+                  >
+                    {String(p.id).toUpperCase()} · {p.label}
                   </button>
-                </li>
-              ))}
-            </ul>
-            <label>Nama tampilan
-              <input value={name} onChange={(e) => setName(e.target.value)} data-testid="iro-stop-name" />
-            </label>
-          </div>
-        )}
-        {phase === 2 && (
-          <div>
-            <p className="iro-coord-line" data-testid="iro-stop-coord">
-              Routing Point: {isValidCoordinate(lat, lng) ? formatCoord(lat, lng) : "belum dipilih"}
-            </p>
-            <LocationModeTabs mode={locMode} onChange={setLocMode} testidPrefix="iro-stop" />
-            {locMode === "GOOGLE" && (
-              <GooglePlacePicker
-                testidPrefix="iro-gmaps"
-                onConfirm={(snap) => applyPoint(snap.lat, snap.lng, LOCATION_SOURCES.GOOGLE_PLACES, snap)}
-              />
-            )}
-            {locMode === "MANUAL" && (
-              <div className="iro-grid-2">
-                <label>Latitude<input value={lat} onChange={(e) => applyPoint(e.target.value, lng, LOCATION_SOURCES.MANUAL_COORDINATE)} data-testid="iro-stop-lat" /></label>
-                <label>Longitude<input value={lng} onChange={(e) => applyPoint(lat, e.target.value, LOCATION_SOURCES.MANUAL_COORDINATE)} data-testid="iro-stop-lng" /></label>
+                ))}
               </div>
-            )}
-            {locMode === "GPS" && (
-              <div className="iro-row-actions">
-                <button type="button" className="iro-btn-secondary" onClick={pickGps} data-testid="iro-stop-gps">Pakai GPS saat ini</button>
-              </div>
-            )}
-            {locMode === "MAP" && (
-              <RoutePlannerMap
-                points={isValidCoordinate(lat, lng) ? [{ lat: Number(lat), lng: Number(lng), kind: "STOP", priority_id: priorityId, seq: "•" }] : []}
-                pickMode
-                onPick={(p) => applyPoint(p.lat, p.lng, LOCATION_SOURCES.MAP_PIN)}
-                height={260}
-              />
-            )}
-            {locMode !== "MAP" && locMode !== "GOOGLE" && isValidCoordinate(lat, lng) && (
-              <RoutePlannerMap
-                points={[{ lat: Number(lat), lng: Number(lng), kind: "STOP", priority_id: priorityId, seq: "•" }]}
-                height={200}
-              />
-            )}
-            {locMode !== "MANUAL" && (
-              <div className="iro-grid-2" hidden>
-                <label>Latitude<input value={lat} readOnly data-testid="iro-stop-lat" /></label>
-                <label>Longitude<input value={lng} readOnly data-testid="iro-stop-lng" /></label>
-              </div>
-            )}
-          </div>
-        )}
-        {phase === 3 && (
-          <div className="iro-legend" data-testid="iro-stop-priority">
-            {levels.map((p) => (
-              <button key={p.id} type="button" className={`iro-chip is-btn ${priorityId === p.id ? "is-on" : ""}`} style={{ background: p.color }} onClick={() => setPriorityId(p.id)}>
-                {String(p.id).toUpperCase()} · {p.label}
-              </button>
-            ))}
-          </div>
-        )}
-        {phase === 4 && (
-          <div>
-            <p><b>{name || "Tanpa nama"}</b></p>
-            <p>Routing Point: {formatCoord(lat, lng)}</p>
-            <p>Source: {source === LOCATION_SOURCES.GOOGLE_PLACES ? "Google Maps" : source}</p>
-            <p>Prioritas: {String(priorityId).toUpperCase()}</p>
-            <p>Jenis: {refKind === "ROUTE_ONLY" ? "Stop khusus rute (tidak membuat master)" : "Referensi master, koordinat tetap independen"}</p>
-          </div>
-        )}
-        <div className="iro-row-actions">
+            </div>
+          )}
+        </div>
+        <div className="iro-modal-foot">
           <button type="button" className="iro-btn-secondary" onClick={onClose}>Batal</button>
-          {phase > 1 && <button type="button" className="iro-btn-secondary" onClick={() => setPhase(phase - 1)}>Kembali</button>}
-          {phase < 4 && <button type="button" className="iro-btn-primary" data-testid="iro-stop-next" onClick={() => setPhase(phase + 1)}>Lanjut</button>}
-          {phase === 4 && <button type="button" className="iro-btn-primary" data-testid="iro-stop-save" onClick={submit}><Save size={14} /> Simpan stop</button>}
+          {phase === ADD_STOP_PHASES.LOCATION && locReady && (
+            <button type="button" className="iro-btn-secondary" onClick={() => setPhase(ADD_STOP_PHASES.PRIORITY)}>Kembali</button>
+          )}
+          {phase === ADD_STOP_PHASES.LOCATION && locMode !== "GOOGLE" && locReady && (
+            <button type="button" className="iro-btn-primary" data-testid="iro-stop-next" onClick={() => setPhase(ADD_STOP_PHASES.PRIORITY)}>Lanjut</button>
+          )}
+          {phase === ADD_STOP_PHASES.PRIORITY && (
+            <button type="button" className="iro-btn-primary" data-testid="iro-stop-save" onClick={submit}>
+              <Save size={14} /> Simpan Stop
+            </button>
+          )}
         </div>
       </div>
     </div>

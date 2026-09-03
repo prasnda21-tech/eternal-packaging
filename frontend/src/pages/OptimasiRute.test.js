@@ -26,7 +26,9 @@ describe("Optimasi Rute pages", () => {
     expect(list).toMatch(/iro-create-btn/);
     expect(editor).toMatch(/iro-save-route/);
     expect(editor).toMatch(/iro-add-stop/);
-    expect(editor).toMatch(/IRO-TEST|Stop khusus rute|iro-route-only/);
+    expect(editor).toMatch(/IRO-TEST|Stop khusus rute|iro-route-only|ROUTE_ONLY/);
+    expect(editor).not.toMatch(/Langkah 1 dari 4/);
+    expect(editor).not.toMatch(/Cari customer \/ outlet/);
     expect(editor).toMatch(/iro-stop-lat/);
     expect(editor).toMatch(/LOKASI BELUM DISET|iro-missing-location/);
     expect(editor).toMatch(/iro-gps-btn/);

@@ -20,6 +20,7 @@ export default function GooglePlacePicker({
   onConfirm,
   testidPrefix = "iro-gmaps",
   mapHeight = 220,
+  showPreview = true,
 }) {
   const [status, setStatus] = useState(null);
   const [query, setQuery] = useState("");
@@ -29,6 +30,7 @@ export default function GooglePlacePicker({
   const [err, setErr] = useState("");
   const [empty, setEmpty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -48,9 +50,11 @@ export default function GooglePlacePicker({
     if (!status?.configured || !shouldQueryPlaces(query)) {
       setResults([]);
       setEmpty(false);
+      setSearching(false);
       return undefined;
     }
     const handle = setTimeout(async () => {
+      setSearching(true);
       try {
         const payload = await api.searchIndependentRoutePlaces(query.trim());
         const parsed = parsePlacesStatus(payload);
@@ -68,6 +72,8 @@ export default function GooglePlacePicker({
         setResults([]);
         setEmpty(false);
         setErr(e?.response?.data?.detail || "Pencarian Google Maps gagal. Coba lagi atau pakai titik peta / koordinat.");
+      } finally {
+        setSearching(false);
       }
     }, GOOGLE_SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
@@ -89,20 +95,21 @@ export default function GooglePlacePicker({
         setErr("Detail tempat tidak memiliki koordinat valid.");
         return;
       }
+      const snap = confirmGooglePlace(next);
+      if (!snap) {
+        setCandidate(null);
+        setErr("Detail tempat tidak memiliki koordinat valid.");
+        return;
+      }
       setCandidate(next);
+      setConfirmed(true);
+      onConfirm?.(snap);
     } catch (e) {
       setCandidate(null);
       setErr(e?.response?.data?.detail || "Detail tempat Google Maps gagal dimuat.");
     } finally {
       setBusy(false);
     }
-  };
-
-  const confirm = () => {
-    const snap = confirmGooglePlace(candidate);
-    if (!snap) return;
-    setConfirmed(true);
-    onConfirm?.(snap);
   };
 
   if (status && !status.configured) {
@@ -119,14 +126,16 @@ export default function GooglePlacePicker({
 
   return (
     <div className="iro-gmaps" data-testid={`${testidPrefix}-box`}>
-      <label>Cari Lokasi di Google Maps
+      <label>Cari outlet di Google Maps
         <input
           value={query}
+          autoFocus
           onChange={(e) => { setQuery(e.target.value); setConfirmed(false); }}
-          placeholder="Cari nama outlet, alamat, atau tempat..."
+          placeholder="Cari nama outlet, toko, alamat, atau tempat..."
           data-testid={`${testidPrefix}-query`}
         />
       </label>
+      {searching ? <p className="iro-muted" data-testid={`${testidPrefix}-loading`}>Mencari Google Maps…</p> : null}
       {busy ? <p className="iro-muted">Memuat detail tempat…</p> : null}
       {err ? <div className="iro-alert is-error" data-testid={`${testidPrefix}-error`}>{err}</div> : null}
       {empty ? <p className="iro-muted" data-testid={`${testidPrefix}-empty`}>Tidak ada hasil Google Maps.</p> : null}
@@ -142,7 +151,7 @@ export default function GooglePlacePicker({
           ))}
         </ul>
       )}
-      {candidate && (
+      {showPreview && candidate && (
         <div className="iro-picked" data-testid={`${testidPrefix}-picked`}>
           <h4>LOKASI TERPILIH</h4>
           <p><b>Nama:</b> {candidate.place_name || "—"}</p>
@@ -162,15 +171,7 @@ export default function GooglePlacePicker({
               height={mapHeight}
             />
           )}
-          <button
-            type="button"
-            className="iro-btn-primary"
-            onClick={confirm}
-            data-testid={`${testidPrefix}-confirm`}
-          >
-            Gunakan Titik Ini
-          </button>
-          {confirmed ? <p className="iro-muted" data-testid={`${testidPrefix}-confirmed`}>Titik dikonfirmasi. Simpan stop untuk menyimpan.</p> : null}
+          {confirmed ? <p className="iro-muted" data-testid={`${testidPrefix}-confirmed`}>Lokasi dikonfirmasi. Simpan stop untuk menyimpan.</p> : null}
         </div>
       )}
     </div>
