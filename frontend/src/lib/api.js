@@ -179,6 +179,19 @@ export const api = {
   updateHppSettings: (payload) => client.put(`/settings/hpp`, payload).then((r) => r.data),
   recalculateHpp: (payload = {}) => client.post(`/settings/hpp/recalculate`, payload).then((r) => r.data),
   hppCostQuery: (params = {}) => client.get(`/hpp/cost-query`, { params }).then((r) => r.data),
+  customerPricingSettings: () => client.get(`/settings/customer-pricing`).then((r) => r.data),
+  updateCustomerPricingSettings: (payload) => client.put(`/settings/customer-pricing`, payload).then((r) => r.data),
+  customerPricingGroups: (params = {}) => client.get(`/customer-pricing/groups`, { params }).then((r) => r.data),
+  createCustomerPricingGroup: (payload) => client.post(`/customer-pricing/groups`, payload).then((r) => r.data),
+  customerPricingGroup: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}`).then((r) => r.data),
+  patchCustomerPricingGroup: (id, payload) => client.patch(`/customer-pricing/groups/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  createCustomerPricingDraft: (id) => client.post(`/customer-pricing/groups/${encodeURIComponent(id)}/draft`).then((r) => r.data),
+  customerPricingVersions: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}/versions`).then((r) => r.data),
+  customerPricingVersion: (id) => client.get(`/customer-pricing/versions/${encodeURIComponent(id)}`).then((r) => r.data),
+  updateCustomerPricingVersion: (id, payload) => client.put(`/customer-pricing/versions/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  refreshCustomerPricingHpp: (id) => client.post(`/customer-pricing/versions/${encodeURIComponent(id)}/refresh-hpp`).then((r) => r.data),
+  previewCustomerPricingVersion: (id, payload = {}) => client.post(`/customer-pricing/versions/${encodeURIComponent(id)}/preview`, payload).then((r) => r.data),
+  publishCustomerPricingVersion: (id, payload = {}) => client.post(`/customer-pricing/versions/${encodeURIComponent(id)}/publish`, payload).then((r) => r.data),
   importFilePreview: (file, onProgress) => {
     const form = new FormData();
     form.append("file", file);

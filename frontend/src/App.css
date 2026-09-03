@@ -2104,6 +2104,89 @@ html:has(.ship-status-page) #root{
 .settings-card{background:#fff;border:1px solid var(--color-card-border,#e2e8f0);border-top:4px solid var(--mod,#2563eb);border-radius:20px;box-shadow:var(--shadow);padding:16px 18px}
 .settings-card > h3:first-child{margin:0 0 12px;color:var(--mod-ink,#1e3a8a);font-weight:800;letter-spacing:-.02em}
 
+.cp-settings{display:grid;gap:12px}
+.cp-page-head h2{margin:0 0 2px}
+.cp-page-head p{margin:0}
+.cp-section{display:grid;gap:8px;padding-top:6px;border-top:1px solid var(--line,#e5e7eb)}
+.cp-section:first-of-type{border-top:0;padding-top:0}
+.cp-section-compact h3{margin:0;font-size:14px}
+.cp-section-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:center}
+.cp-toolbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cp-toolbar input{min-width:140px;flex:1;min-height:32px}
+.cp-inline-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.cp-inline-fields label{display:grid;gap:4px;font-size:12px;font-weight:600;color:#475569}
+.cp-inline-fields input{min-height:32px}
+.cp-badge-warn{background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:600;font-size:11px}
+.cp-master-list{list-style:none;margin:10px 0;padding:0;max-height:240px;overflow:auto;display:grid;gap:4px}
+.cp-master-list button{width:100%;text-align:left;padding:8px 10px;border:1px solid transparent;background:#f8fafc;border-radius:8px}
+.cp-master-list button.is-selected{border-color:#2563eb;background:#eff6ff}
+.cp-master-list button:disabled{opacity:.58;cursor:not-allowed}
+.cp-product-table-wrap,.cp-sheet-scroll{overflow:auto;border:1px solid #cbd5e1;background:#fff;border-radius:6px}
+.cp-sheet{width:100%;border-collapse:collapse;font-size:13px;background:#fff;min-width:520px}
+.cp-sheet th{position:sticky;top:0;z-index:1;background:#e2e8f0;color:#0f172a;font-weight:700;text-align:left;border:1px solid #cbd5e1;padding:6px 8px;white-space:nowrap}
+.cp-sheet td{border:1px solid #cbd5e1;padding:0;vertical-align:middle;background:#fff}
+.cp-sheet td.muted,.cp-sheet .cp-formula-cell{padding:4px 8px;white-space:nowrap}
+.cp-sheet tbody tr:hover td{background:#f8fafc}
+.cp-sheet input{width:100%;min-height:30px;border:0 !important;border-radius:0 !important;box-shadow:none !important;background:transparent;padding:4px 8px;font:inherit}
+.cp-sheet input:focus{outline:2px solid #2563eb;outline-offset:-2px;background:#eff6ff;box-shadow:none !important}
+.cp-sheet input.is-readonly,.cp-sheet input:disabled{background:#f1f5f9;color:#334155}
+.cp-sheet .col-no{width:40px;text-align:center;padding:4px}
+.cp-sheet .col-act{width:44px;text-align:center}
+.cp-product-row{cursor:pointer}
+.cp-product-row:focus{outline:2px solid #2563eb;outline-offset:-2px}
+.cp-product-sheet{min-width:980px}
+.cp-product-sheet td{padding:7px 8px;white-space:nowrap}
+.cp-product-sheet td:first-child{white-space:normal;min-width:170px}
+.cp-cell-sub{display:block;margin-top:2px;color:#64748b;font-size:11px;font-weight:500}
+.cp-updated-cell{font-size:12px;color:#64748b}
+.cp-product-sheet .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.cp-editor-shell{display:grid;gap:8px;border:1px solid #cbd5e1;border-radius:8px;padding:10px;background:#f8fafc}
+.cp-editor-header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:flex-start}
+.cp-editor-title h3{margin:0;font-size:16px;letter-spacing:-.01em}
+.cp-group-name-input{min-width:260px;max-width:min(520px,70vw);font-size:16px;font-weight:800;padding:4px 7px;min-height:32px}
+.cp-editor-meta{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:12px;color:#64748b;margin-top:4px}
+.cp-editor-meta .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.cp-status-pill{display:inline-flex;padding:1px 8px;border-radius:4px;font-weight:700;font-size:11px;border:1px solid #cbd5e1;background:#fff;color:#475569}
+.cp-status-pill.is-draft{background:#fff7ed;border-color:#fdba74;color:#c2410c}
+.cp-status-pill.is-published{background:#ecfdf5;border-color:#6ee7b7;color:#047857}
+.cp-editor-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cp-history{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cp-history-label{font-size:12px;font-weight:700;color:#64748b}
+.cp-history ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:4px}
+.cp-history .is-active-ver{border-color:#2563eb;background:#eff6ff}
+.cp-config-bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end;padding:8px;background:#fff;border:1px solid #e2e8f0;border-radius:6px}
+.cp-config-block{display:grid;gap:4px}
+.cp-config-label{font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
+.cp-config-field{display:grid;gap:4px;font-size:12px;font-weight:600}
+.cp-config-field input{min-height:32px;min-width:120px}
+.cp-seg{display:inline-flex;border:1px solid #94a3b8;border-radius:6px;overflow:hidden;background:#fff}
+.cp-seg label{display:inline-flex;align-items:center;margin:0;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;border-right:1px solid #cbd5e1;color:#475569;background:#fff}
+.cp-seg label:last-child{border-right:0}
+.cp-seg label.is-active{background:#1e293b;color:#fff}
+.cp-seg input{position:absolute;opacity:0;pointer-events:none}
+.cp-sheet-toolbar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.cp-sheet-toolbar strong{font-size:13px}
+.cp-membership-table,.cp-price-matrix{min-width:720px}
+.cp-membership-table td,.cp-price-matrix td{padding:5px 8px;white-space:nowrap}
+.cp-membership-table td:first-child,.cp-price-matrix td:first-child{white-space:normal;min-width:180px}
+.cp-price-matrix td:not(:first-child),.cp-price-matrix th:not(:first-child){text-align:right}
+.cp-price-matrix input{text-align:right;min-width:110px}
+.cp-tiers{display:grid;gap:6px}
+.cp-auto-hpp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cp-readonly,.cp-preview{display:grid;gap:6px}
+.cp-readonly-bar,.cp-preview-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12px}
+.cp-preview-err{color:#b91c1c;font-weight:600}
+.signal-strip.compact{padding:6px 8px;font-size:12px;gap:6px}
+.signal-strip.ok{border-color:#bbf7d0;background:#f0fdf4}
+.signal-strip.ok svg{color:#15803d}
+button.ghost.sm,button.primary.sm{min-height:30px;padding:4px 10px;font-size:12.5px}
+button.ghost.sm.icon{padding:4px 6px}
+@media (max-width:700px){
+  .cp-editor-header{flex-direction:column}
+  .cp-config-bar{flex-direction:column;align-items:stretch}
+  .cp-sheet{min-width:640px}
+}
+
 .ea-page{display:grid;gap:16px}
 .ea-toolbar{display:flex;gap:12px;align-items:center;padding:10px 12px}
 .ea-search{display:flex;align-items:center;gap:8px;border:2px solid var(--color-input-border);padding:6px 10px;background:var(--color-input-bg);min-width:240px;border-radius:12px}

@@ -150,6 +150,7 @@ from services.purchase_receipts import (
     sync_purchase_receipts,
 )
 from services.purchase_http import register_purchase_routes
+from services.customer_pricing_http import register_customer_pricing_routes
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.sales_activity.http import register_sales_activity_routes
@@ -7576,6 +7577,13 @@ register_purchase_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_customer_pricing_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_employee_admin_routes(
     api_router,
     get_db=lambda: db,
@@ -9024,6 +9032,8 @@ async def seed():
     await db.hpp_cost_versions.create_index("status")
     await db.hpp_cost_layers.create_index("calculation_version")
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
+    from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
+    await _customer_pricing_ensure_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
