@@ -173,10 +173,10 @@
 .empty-state{padding:28px 20px;text-align:center;color:var(--soft);border:1px dashed var(--line);background:var(--surface);border-radius:var(--radius)}
 
 /* -------- Buttons -------- */
-.task-button,.primary{border:0;background:var(--ep-primary);color:white;min-height:40px;padding:0 14px;display:inline-flex;align-items:center;gap:9px;transition:background .18s,transform .18s;cursor:pointer;font-weight:600;border-radius:6px}
+.task-button,.primary{border:0;background:var(--ep-primary);color:white;min-height:40px;padding:0 14px;display:inline-flex;align-items:center;gap:9px;transition:background .18s,transform .18s;cursor:pointer;font-weight:600;border-radius:12px}
 .task-button:hover,.primary:hover{background:var(--ep-dark);transform:none}
 .primary:disabled{opacity:.55;cursor:not-allowed}
-.ghost{background:transparent;border:1px solid var(--line);color:var(--ink);padding:8px 12px;display:inline-flex;align-items:center;gap:8px;cursor:pointer;transition:background .18s;min-height:36px;border-radius:6px}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--ink);padding:8px 12px;display:inline-flex;align-items:center;gap:8px;cursor:pointer;transition:background .18s;min-height:36px;border-radius:12px}
 .ghost:hover{background:var(--muted)}
 .ghost:disabled{opacity:.5;cursor:not-allowed}
 .ghost.sm{padding:5px 10px;font-size:12px;min-height:30px}
@@ -208,19 +208,19 @@
 .toast{position:fixed;right:24px;bottom:24px;background:var(--ink);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;font-size:14px;box-shadow:0 10px 30px #17212633;z-index:10}
 
 /* -------- Login -------- */
-.login-page{min-height:100vh;background:linear-gradient(180deg,#EEF7F2 0%,#F7FBF8 100%);color:var(--ink);display:grid;place-items:center;padding:32px 16px}
+.login-page{min-height:100vh;background:linear-gradient(180deg,#F8FAFC 0%,#ECFEFF 55%,#F5F3FF 100%);color:var(--ink);display:grid;place-items:center;padding:32px 16px}
 .login-mark{padding:0;margin:0 0 16px;display:flex;justify-content:center;align-items:center}
 .login-mark .brand-mark{width:100%;justify-content:center}
 .login-mark .brand-logo-full{width:min(100%,280px)}
-.login-card,.login-panel{background:var(--surface);color:var(--ink);padding:36px 32px 28px;max-width:440px;width:100%;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+.login-card,.login-panel{background:var(--surface);color:var(--ink);padding:36px 32px 28px;max-width:440px;width:100%;border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}
 .login-panel h1{font-size:clamp(22px,3vw,28px);line-height:1.2;letter-spacing:-.03em;margin:8px 0 10px;text-align:center}
 .login-panel h1 em{color:var(--ep-primary);font-style:normal}
 .login-panel .eyebrow{text-align:center;margin-bottom:4px}
 .login-copy{font-size:14px;color:var(--soft);margin-bottom:22px;text-align:center}
 .login-panel form{display:grid;gap:14px}
 .login-panel label{font:11px 'IBM Plex Mono';text-transform:uppercase;letter-spacing:.12em;display:grid;gap:6px;color:var(--soft)}
-.login-panel input{height:44px;border:1px solid var(--line);background:#fff;padding:0 12px;color:var(--ink);font-size:15px;border-radius:6px}
-.login-panel input:focus{outline:none;border-color:var(--ep-primary);box-shadow:0 0 0 3px rgba(23,107,77,.12)}
+.login-panel input{height:44px;border:2px solid #22d3ee;background:#cffafe;padding:0 12px;color:var(--ink);font-size:15px;border-radius:12px}
+.login-panel input:focus{outline:none;border-color:#0891b2;box-shadow:0 0 0 4px rgba(8,145,178,.26)}
 .full{width:100%;justify-content:center;margin-top:6px}
 .demo-note{font:11px 'IBM Plex Mono';color:var(--soft);margin-top:18px;text-align:center}
 .error{color:var(--red);font-size:13px;padding:6px 0}
@@ -670,7 +670,7 @@
 
 
 /* -------- Settings page (Karyawan, Role & Hak Akses, Audit) -------- */
-.settings-info{display:flex;gap:12px;align-items:flex-start;background:#EEF7F2;border:1px solid var(--line);padding:14px 18px;color:var(--ink);font-size:14px;line-height:1.55;margin:6px 0 22px;border-radius:var(--radius)}
+.settings-info{display:flex;gap:12px;align-items:flex-start;background:#EFF6FF;border:1px solid #93C5FD;padding:14px 18px;color:var(--ink);font-size:14px;line-height:1.55;margin:6px 0 22px;border-radius:16px}
 .settings-info.warn{background:#fdf3e6;border-color:#e9c58a}
 .settings-info svg{flex:0 0 auto;margin-top:2px;color:var(--blue)}
 .settings-info.warn svg{color:#b96f16}
@@ -712,7 +712,7 @@
 
 /* Modal */
 .modal{position:fixed;inset:0;background:rgba(23,33,38,.55);display:grid;place-items:center;z-index:80;padding:24px}
-.modal-inner{background:var(--surface);max-width:640px;width:100%;max-height:88vh;overflow-y:auto;border:1px solid var(--line);box-shadow:0 24px 60px rgba(23,33,38,.25)}
+.modal-inner{background:var(--surface);max-width:640px;width:100%;max-height:88vh;overflow-y:auto;border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 60px rgba(23,33,38,.25)}
 .modal-inner.modal-wide{max-width:860px}
 .modal-head{display:flex;justify-content:space-between;align-items:center;padding:18px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface);z-index:1}
 .modal-head h3{margin:0;font-size:19px;letter-spacing:-.01em}
@@ -1972,10 +1972,13 @@ html:has(.ship-status-page) #root{
 .ship-table tbody tr.is-disabled td{opacity:.65;background:#f6f6f6}
 .primary.sm{min-height:28px;padding:3px 10px;font-size:12.5px}
 
+.settings-card{background:#fff;border:1px solid var(--color-card-border,#e2e8f0);border-top:4px solid var(--mod,#2563eb);border-radius:20px;box-shadow:var(--shadow);padding:16px 18px}
+.settings-card > h3:first-child{margin:0 0 12px;color:var(--mod-ink,#1e3a8a);font-weight:800;letter-spacing:-.02em}
+
 .ea-page{display:grid;gap:16px}
-.ea-toolbar{display:flex;gap:12px;align-items:center}
-.ea-search{display:flex;align-items:center;gap:8px;border:1px solid var(--line);padding:6px 10px;background:#fff;min-width:240px}
-.ea-search input{border:0;outline:0;font:inherit;width:100%}
+.ea-toolbar{display:flex;gap:12px;align-items:center;padding:10px 12px}
+.ea-search{display:flex;align-items:center;gap:8px;border:2px solid var(--color-input-border);padding:6px 10px;background:var(--color-input-bg);min-width:240px;border-radius:12px}
+.ea-search input{border:0;outline:0;font:inherit;width:100%;background:transparent;box-shadow:none;min-height:32px}
 .ea-form-grid,.emp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .ea-span-2{grid-column:1 / -1}
 .ea-form-grid label,.emp-grid label{display:flex;flex-direction:column;gap:6px;font-size:13px}
@@ -2047,7 +2050,9 @@ html:has(.ship-status-page) #root{
 .iro-grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}
 .iro-grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .iro-page label,.iro-settings label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600}
-.iro-page input,.iro-page select,.iro-settings input,.iro-settings select{border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;font:inherit}
+.iro-page input,.iro-page select,.iro-settings input,.iro-settings select{border:2px solid #67e8f9;border-radius:12px;padding:8px 12px;font:inherit;background:#ecfeff;min-height:42px;color:#0f172a}
+.iro-page input:focus,.iro-page select:focus,.iro-settings input:focus,.iro-settings select:focus{outline:none;border-color:#0891b2;box-shadow:0 0 0 4px rgba(8,145,178,.26)}
+.iro-page input[readonly],.iro-settings input[readonly]{background:#f1f5f9;border-color:#e2e8f0;color:#475569}
 .iro-mode-row{display:flex;gap:8px;flex-wrap:wrap}
 .iro-mode{flex:1;min-width:160px;text-align:left;border:1px solid #cbd5e1;background:#f8fafc;border-radius:12px;padding:10px;cursor:pointer}
 .iro-mode.is-on{border-color:#2563eb;background:#dbeafe}
@@ -2059,7 +2064,7 @@ html:has(.ship-status-page) #root{
 .iro-sum.is-teal{background:#0f766e}.iro-sum.is-rose{background:#e11d48}.iro-sum.is-cyan{background:#0891b2}
 .iro-sum.is-blue{background:#2563eb}.iro-sum.is-purple{background:#7c3aed}
 .iro-chip,.iro-status,.iro-pill{display:inline-flex;align-items:center;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:800;color:#fff}
-.iro-chip.is-btn{border:0;cursor:pointer;opacity:.72}.iro-chip.is-on{opacity:1;outline:2px solid #0f172a}
+.iro-chip.is-btn{border:0;cursor:pointer;opacity:.72;min-height:36px;padding:6px 12px;font-size:12px}.iro-chip.is-on{opacity:1;outline:3px solid #0f172a;transform:scale(1.04)}
 .iro-status.is-draft{background:#64748b}.iro-status.is-optimized{background:#0f766e}.iro-status.is-final{background:#7c3aed}
 .iro-pill{background:#1e293b}.iro-pill.is-warn{background:#d97706}.iro-pill.is-manual{background:#4338ca}
 .iro-legend{display:flex;gap:8px;flex-wrap:wrap}
@@ -2089,7 +2094,7 @@ html:has(.ship-status-page) #root{
 .iro-hits{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .iro-hits button{width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:10px;padding:10px 12px}
 .iro-modal{max-width:520px;display:flex;flex-direction:column;max-height:min(88vh,680px);overflow:hidden;padding:0}
-.iro-modal-head{padding:16px 16px 8px}
+.iro-modal-head{padding:16px 16px 8px;background:#ecfeff;border-top:4px solid #0891b2}
 .iro-modal-head h3{margin:0 0 4px}
 .iro-modal-head .subhead{margin:0;color:#64748b;font-size:13px}
 .iro-modal-body{padding:8px 16px 12px;overflow-y:auto;flex:1;min-height:0}
@@ -2097,7 +2102,11 @@ html:has(.ship-status-page) #root{
 .iro-priority-editor{display:grid;gap:8px}
 .iro-priority-row{display:grid;grid-template-columns:90px 1fr 70px 56px auto;gap:8px;align-items:center}
 .iro-check{flex-direction:row!important;align-items:center}
-.iro-gps-box,.iro-manual{display:grid;gap:8px;padding:10px;border-radius:12px;background:#eff6ff}
+.iro-gps-box{display:grid;gap:8px;padding:10px;border-radius:12px;background:#ecfeff;border:1px solid #67e8f9}
+.iro-manual{display:grid;gap:8px;padding:12px;border-radius:16px;background:#fff7ed;border:2px solid #fb923c}
+.iro-manual input{background:#fff7ed;border-color:#fb923c}
+.iro-gmaps{padding:12px;border-radius:16px;background:#eff6ff;border:2px solid #60a5fa}
+.iro-gmaps input{background:#eff6ff;border-color:#60a5fa}
 .iro-loc-modes{display:flex;flex-wrap:wrap;gap:6px}
 .iro-loc-mode{border:1px solid #cbd5e1;background:#fff;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer}
 .iro-loc-mode.is-on{border-color:#0f766e;background:#ccfbf1;color:#115e59}

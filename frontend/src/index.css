@@ -1,22 +1,79 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap');
+
 :root {
+  /* Brand — sidebar / logo stay forest professional */
   --ep-dark:#0F3D2E;
   --ep-primary:#176B4D;
   --ep-accent:#2F8F6B;
-  --paper:#EEF7F2;
+
+  /* Page canvas — soft neutral, color lives in sections */
+  --paper:#F8FAFC;
   --surface:#FFFFFF;
-  --muted:#E4F0EA;
-  --ink:#1E2A24;
-  --soft:#5B6B63;
-  --line:#D9E6DE;
-  --blue:#176B4D;
-  --red:#b52e2e;
-  --amber:#9b6417;
-  --green:#2F8F6B;
-  --radius:6px;
-  --shadow:0 1px 2px rgba(15,61,46,.04), 0 8px 24px rgba(15,61,46,.04);
+  --muted:#F1F5F9;
+  --ink:#0F172A;
+  --soft:#64748B;
+  --line:#E2E8F0;
+
+  /* Semantic (text + icon still required) */
+  --blue:#2563EB;
+  --red:#DC2626;
+  --amber:#D97706;
+  --green:#059669;
+
+  --radius:12px;
+  --radius-xl:16px;
+  --radius-2xl:20px;
+  --shadow:0 1px 2px rgba(15,23,42,.05), 0 10px 28px rgba(15,23,42,.06);
+
+  /* Manual input surfaces */
+  --color-input-bg:#E0F2FE;
+  --color-input-border:#38BDF8;
+  --color-input-hover:#0EA5E9;
+  --color-input-focus:#0284C7;
+  --color-input-text:#0F172A;
+  --color-input-placeholder:#94A3B8;
+  --color-input-ring:rgba(14,165,233,.28);
+
+  /* Read-only / system */
+  --color-readonly-bg:#F1F5F9;
+  --color-readonly-border:#E2E8F0;
+  --color-readonly-text:#475569;
+
+  --color-card-bg:#FFFFFF;
+  --color-card-border:#E2E8F0;
+
+  /* Module accents */
+  --color-sales:#0D9488;
+  --color-production:#4F46E5;
+  --color-purchasing:#D97706;
+  --color-inventory:#65A30D;
+  --color-hr:#7C3AED;
+  --color-payroll:#4F46E5;
+  --color-admin:#C026D3;
+  --color-route:#0891B2;
+  --color-settings:#334155;
+  --color-dashboard:#0891B2;
+  --color-reports:#2563EB;
+
+  /* Active module (overridden by [data-module]) */
+  --mod:#0891B2;
+  --mod-strong:#0E7490;
+  --mod-soft:#ECFEFF;
+  --mod-border:#67E8F9;
+  --mod-ink:#155E75;
 }
-* { box-sizing:border-box; } body { margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; } button,input { font:inherit; } button { cursor:pointer; } ::selection { background:#c5e4d4; }
+
+* { box-sizing:border-box; }
+body {
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:'IBM Plex Sans',sans-serif;
+}
+button,input,select,textarea { font:inherit; }
+button { cursor:pointer; }
+::selection { background:#BAE6FD; }
+::placeholder { color:var(--color-input-placeholder); }

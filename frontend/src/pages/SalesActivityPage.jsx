@@ -36,7 +36,7 @@ export default function SalesActivityPage() {
   return (
     <div className="sa-page" data-testid="sales-activity-page">
       <div className="sa-page-chrome">
-        <div className="sa-page-head">
+        <div className="sa-page-head page-heading">
           <div>
             <p className="eyebrow">Penjualan</p>
             <h1>Aktivitas Sales &amp; Kepemilikan Outlet</h1>

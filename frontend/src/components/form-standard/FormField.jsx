@@ -96,6 +96,7 @@ export function FormField({
         >
           <span className="flex items-center gap-1.5">
             {label}
+            {isRequired && <span className="ep-req" aria-hidden="true">*</span>}
             {isRequired && (
               <span
                 className="fs-badge-required inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"

@@ -29,7 +29,7 @@ const errorText = (ex) => ex?.response?.data?.detail || ex?.message || "Perminta
 const employeeName = (row) => row?.employee_snapshot?.name || row?.employee?.name || row?.name || "-";
 
 function PageHead({ title, action }) {
-  return <div className="page-heading"><div><p className="eyebrow">HR &amp; Payroll</p><h1>{title}</h1></div>{action}</div>;
+  return <div className="page-heading"><div><p className="eyebrow">HR &amp; Payroll</p><h1>{title}</h1></div><div className="page-heading-actions">{action}</div></div>;
 }
 
 function EmployeeForm({ initial, onClose, onSaved }) {

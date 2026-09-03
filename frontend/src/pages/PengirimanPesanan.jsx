@@ -412,7 +412,7 @@ export default function PengirimanPesanan() {
   return (
     <div className="page-container" style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       {/* HEADER SECTION */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+      <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {viewMode === "create" ? (
             <button

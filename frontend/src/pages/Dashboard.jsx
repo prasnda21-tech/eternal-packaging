@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, CircleAlert, ClipboardCheck, Package, RefreshCw, Square, Trash2, Truck, XCircle, Check, ChevronRight, Filter, X } from "lucide-react";
+import { CheckSquare, CircleAlert, ClipboardCheck, LayoutDashboard, Package, RefreshCw, Square, Trash2, Truck, XCircle, Check, ChevronRight, Filter, X } from "lucide-react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -145,10 +145,13 @@ export default function Dashboard() {
   return (
     <>
       <div className="page-heading">
-        <div>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+          <span className="page-heading-icon" aria-hidden="true"><LayoutDashboard size={22} /></span>
+          <div>
           <p className="eyebrow">{new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long" })}</p>
           <h1 data-testid="page-title">{pageTitle}</h1>
           <p className="subhead">Antrian {ROLES[user.role] || user.role} · satu aksi berikutnya</p>
+          </div>
         </div>
         <button className="icon-button" onClick={() => load(statusTab)} data-testid="refresh-orders-button" aria-label="Muat ulang">
           <RefreshCw size={19} className={busy ? "spin" : ""} />

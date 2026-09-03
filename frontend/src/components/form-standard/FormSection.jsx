@@ -57,11 +57,11 @@ export function FormSection({
         aria-labelledby={`section-title-${id}`}
         data-testid={`form-section-${id}`}
       >
-        <div className="flex items-start justify-between mb-4 pb-3 border-b border-gray-100 gap-3">
+        <div className="fs-section-head flex items-start justify-between mb-4 pb-3 gap-3">
           <div>
             <h3
               id={`section-title-${id}`}
-              className="text-base font-semibold text-gray-900 flex items-center gap-2"
+              className="text-base font-extrabold tracking-tight text-slate-900 flex items-center gap-2"
             >
               {title}
             </h3>

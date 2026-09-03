@@ -560,6 +560,7 @@ export default function FakturPenjualan() {
     >
       {/* HEADER SECTION */}
       <div
+        className="page-heading"
         style={{
           display: "flex",
           justifyContent: "space-between",

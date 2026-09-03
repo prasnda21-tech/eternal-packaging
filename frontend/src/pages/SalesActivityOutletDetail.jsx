@@ -44,7 +44,7 @@ export default function SalesActivityOutletDetail() {
 
   return (
     <div className="sa-detail po-detail" data-testid="sa-outlet-detail">
-      <div className="sa-page-head">
+      <div className="sa-page-head page-heading">
         <div className="sa-detail-title">
           <Link className="ghost sm" to="/penjualan/aktivitas-sales">Kembali</Link>
           <p className="eyebrow">Outlet</p>

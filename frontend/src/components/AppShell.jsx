@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
+import { moduleFromPath } from "../lib/uiModule";
 import BrandMark from "./BrandMark";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
 
@@ -224,8 +225,10 @@ export default function AppShell() {
   const hrPayrollOpen = activeSidebarMenu === "hrPayroll";
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
+  const uiModule = moduleFromPath(location.pathname);
+
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-module={uiModule} data-ui-system="colorful">
       <div className="app-sidebar-slot">
       <aside className="app-sidebar" ref={sidebarRef}>
         <Link to="/" className="brand" title="Eternal Packaging" data-testid="sidebar-brand" onClick={closeFlyout}>
