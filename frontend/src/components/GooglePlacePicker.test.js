@@ -13,20 +13,23 @@ describe("GooglePlacePicker", () => {
   const src = fs.readFileSync(path.join(__dirname, "GooglePlacePicker.jsx"), "utf8");
   const editor = fs.readFileSync(path.join(__dirname, "../pages/OptimasiRuteEditor.jsx"), "utf8");
 
-  test("search UI shows candidate results and confirmation gate", () => {
-    expect(src).toMatch(/Cari nama outlet, alamat, atau tempat/);
+  test("search UI shows results and click confirms without extra button", () => {
+    expect(src).toMatch(/Cari nama outlet, toko, alamat, atau tempat/);
+    expect(src).toMatch(/Cari outlet di Google Maps/);
     expect(src).toMatch(/iro-gmaps-results|testidPrefix\}-results/);
     expect(src).toMatch(/LOKASI TERPILIH/);
-    expect(src).toMatch(/Gunakan Titik Ini/);
+    expect(src).not.toMatch(/Gunakan Titik Ini/);
+    expect(src).not.toMatch(/Gunakan Titik/);
     expect(src).toMatch(/Buka di Google Maps/);
     expect(src).toMatch(/GOOGLE_SEARCH_DEBOUNCE_MS/);
     expect(src).toMatch(/shouldQueryPlaces/);
+    expect(src).toMatch(/Mencari Google Maps/);
     expect(src).not.toMatch(/addIndependentStop/);
     expect(src).not.toMatch(/updateIndependentStop/);
     expect(src).not.toMatch(/createIndependentRoute/);
   });
 
-  test("selecting a result is not a save; confirm builds exact snapshot", () => {
+  test("selecting a result confirms location in form state but is not a save", () => {
     const candidate = googlePlaceCandidateFromDetails({
       place_id: "ChIJ-abc",
       name: "Toko ABC",
@@ -42,7 +45,9 @@ describe("GooglePlacePicker", () => {
       confirmed: true,
     });
     expect(src).toMatch(/onConfirm\?\.\(snap\)/);
+    expect(src).toMatch(/confirmGooglePlace\(next\)/);
     expect(src).not.toMatch(/onConfirm\(\s*next\s*\)/);
+    expect(src).not.toMatch(/addIndependentStop/);
   });
 
   test("unconfigured and search failure never fabricate results", () => {

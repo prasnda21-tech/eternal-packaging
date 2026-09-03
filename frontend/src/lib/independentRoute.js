@@ -174,6 +174,84 @@ export function confirmGooglePlace(candidate) {
   return { ...candidate, location_source: LOCATION_SOURCES.GOOGLE_PLACES, confirmed: true };
 }
 
+export const ADD_STOP_PHASES = {
+  LOCATION: "location",
+  PRIORITY: "priority",
+};
+
+export function initialAddStopPhase() {
+  return ADD_STOP_PHASES.LOCATION;
+}
+
+export function initialAddStopLocationMode() {
+  return "GOOGLE";
+}
+
+export function emptyAddStopDraft(priorityId = "p3") {
+  return {
+    display_name: "",
+    address: "",
+    ref_kind: "ROUTE_ONLY",
+    ref_id: null,
+    lat: "",
+    lng: "",
+    location_source: LOCATION_SOURCES.GOOGLE_PLACES,
+    google_place_id: "",
+    place_name: "",
+    formatted_address: "",
+    google_maps_url: "",
+    priority_id: priorityId,
+  };
+}
+
+export function applyGooglePlaceToStopDraft(draft, snap) {
+  const confirmed = confirmGooglePlace(snap);
+  if (!confirmed) {
+    return { draft, phase: ADD_STOP_PHASES.LOCATION, persist: false };
+  }
+  return {
+    draft: {
+      ...(draft || emptyAddStopDraft()),
+      display_name: confirmed.place_name || draft?.display_name || "",
+      address: confirmed.formatted_address || "",
+      lat: confirmed.lat,
+      lng: confirmed.lng,
+      location_source: LOCATION_SOURCES.GOOGLE_PLACES,
+      google_place_id: confirmed.google_place_id,
+      place_name: confirmed.place_name,
+      formatted_address: confirmed.formatted_address,
+      google_maps_url: confirmed.google_maps_url,
+      ref_kind: draft?.ref_kind || "ROUTE_ONLY",
+      ref_id: draft?.ref_id || null,
+    },
+    phase: ADD_STOP_PHASES.PRIORITY,
+    persist: false,
+  };
+}
+
+export function changeAddStopLocation(draft) {
+  return { draft, phase: ADD_STOP_PHASES.LOCATION, persist: false };
+}
+
+export function buildAddStopPayload(draft) {
+  const source = draft?.location_source;
+  const google = source === LOCATION_SOURCES.GOOGLE_PLACES;
+  return {
+    display_name: String(draft?.display_name || draft?.place_name || "").trim(),
+    address: draft?.address || draft?.formatted_address || "",
+    ref_kind: draft?.ref_kind || "ROUTE_ONLY",
+    ref_id: draft?.ref_id || null,
+    lat: Number(draft?.lat),
+    lng: Number(draft?.lng),
+    location_source: source,
+    google_place_id: google ? (draft.google_place_id || null) : null,
+    place_name: google ? (draft.place_name || null) : null,
+    formatted_address: google ? (draft.formatted_address || null) : null,
+    google_maps_url: google ? (draft.google_maps_url || null) : null,
+    priority_id: draft?.priority_id,
+  };
+}
+
 export function googleMapsDirUrl(points) {
   const valid = (points || []).filter((p) => isValidCoordinate(p.lat, p.lng));
   if (valid.length < 2) {
