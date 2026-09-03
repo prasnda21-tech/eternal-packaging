@@ -18,6 +18,17 @@ export const publicApiUrl = (path) => {
   return path.startsWith("/") ? `${origin}${path}` : `${origin}/${path}`;
 };
 
+const publicJsonRequest = async (path, options = {}) => {
+  const response = await fetch(`${API}${path}`, {
+    credentials: "omit",
+    ...options,
+  });
+  let data = {};
+  try { data = await response.json(); } catch { data = {}; }
+  if (!response.ok) throw { response: { status: response.status, data } };
+  return data;
+};
+
 export const api = {
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
@@ -185,6 +196,19 @@ export const api = {
   createCustomerPricingGroup: (payload) => client.post(`/customer-pricing/groups`, payload).then((r) => r.data),
   customerPricingGroup: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}`).then((r) => r.data),
   patchCustomerPricingGroup: (id, payload) => client.patch(`/customer-pricing/groups/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  customerPricingCatalogImageUrl: (id, version = "") =>
+    `${API}/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image${version ? `?v=${encodeURIComponent(version)}` : ""}`,
+  uploadCustomerPricingCatalogImage: (id, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(
+      `/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image`,
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } }
+    ).then((r) => r.data);
+  },
+  deleteCustomerPricingCatalogImage: (id) =>
+    client.delete(`/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image`).then((r) => r.data),
   createCustomerPricingDraft: (id) => client.post(`/customer-pricing/groups/${encodeURIComponent(id)}/draft`).then((r) => r.data),
   customerPricingVersions: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}/versions`).then((r) => r.data),
   customerPricingVersion: (id) => client.get(`/customer-pricing/versions/${encodeURIComponent(id)}`).then((r) => r.data),
@@ -279,6 +303,20 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  publicCustomerPricingGroups: () =>
+    publicJsonRequest("/public/customer-pricing/groups"),
+  publicCustomerPricingGroup: (publicId) =>
+    publicJsonRequest(`/public/customer-pricing/groups/${encodeURIComponent(publicId)}`),
+  calculatePublicCustomerPrice: (payload) =>
+    publicJsonRequest("/public/customer-pricing/calculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        group_public_id: payload.group_public_id,
+        public_variant_id: payload.public_variant_id,
+        quantity: payload.quantity,
+      }),
+    }),
   orderTrackingLink: (id) => client.post(`/orders/${id}/tracking-link`).then((r) => r.data),
   deliverySchedule: (params = {}) => client.get(`/delivery/schedule`, { params }).then((r) => r.data),
   deliveryReschedules: (params = {}) => client.get(`/delivery/reschedules`, { params }).then((r) => r.data),

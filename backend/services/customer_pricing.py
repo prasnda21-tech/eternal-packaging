@@ -28,6 +28,7 @@ LEGACY_PRODUCTS = "customer_pricing_products"
 SETTINGS_KEY = "customer_pricing"
 
 MAX_CUSTOMER_PRICING_QTY = 10_000_000
+MAX_PUBLIC_DESCRIPTION_LENGTH = 280
 STATUS_DRAFT = "DRAFT"
 STATUS_PUBLISHED = "PUBLISHED"
 MODE_HPP_FORMULA = "HPP_FORMULA"
@@ -56,6 +57,19 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def resolve_quantity_tier(
+    tiers: List[dict], quantity: int
+) -> Optional[Tuple[int, dict]]:
+    """Resolve Phase 1 inclusive tier boundaries without pricing recalculation."""
+    matches = [
+        (index, tier)
+        for index, tier in enumerate(tiers or [])
+        if quantity >= tier.get("min_qty", 0)
+        and (tier.get("max_qty") is None or quantity <= tier.get("max_qty"))
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _dec(value: Any) -> Decimal:
     try:
         return Decimal(str(value if value is not None else 0))
@@ -70,6 +84,35 @@ def _clean_group_name(value: Any) -> str:
     if len(name) > 120:
         raise HTTPException(400, "Nama kelompok maksimal 120 karakter.")
     return name
+
+
+def _clean_public_description(value: Any) -> Optional[str]:
+    description = str(value or "").strip()
+    if not description:
+        return None
+    if len(description) > MAX_PUBLIC_DESCRIPTION_LENGTH:
+        raise HTTPException(
+            400,
+            f"Deskripsi publik maksimal {MAX_PUBLIC_DESCRIPTION_LENGTH} karakter.",
+        )
+    return description
+
+
+def _catalog_image_meta(doc: dict) -> Optional[dict]:
+    image = doc.get("catalog_image")
+    if not isinstance(image, dict) or not image.get("file_id"):
+        return None
+    return {
+        "file_id": str(image["file_id"]),
+        "content_type": image.get("content_type"),
+        "original_filename": image.get("original_filename"),
+        "size": image.get("size"),
+        "uploaded_at": image.get("uploaded_at"),
+        "url": (
+            f"/api/customer-pricing/groups/{doc.get('id')}/catalog-image"
+            f"?v={image['file_id']}"
+        ),
+    }
 
 
 def _parse_positive_int_qty(raw: Any, field: str) -> int:
@@ -458,6 +501,8 @@ def public_group(doc: dict, summary_version: Optional[dict] = None) -> dict:
         "id": doc.get("id"),
         "public_id": doc.get("public_id"),
         "group_name": doc.get("group_name"),
+        "public_description": doc.get("public_description"),
+        "catalog_image": _catalog_image_meta(doc),
         "enabled": bool(doc.get("enabled", True)),
         "current_draft_version_id": doc.get("current_draft_version_id"),
         "current_published_version_id": doc.get("current_published_version_id"),
@@ -557,12 +602,15 @@ async def get_group(db, group_id: str) -> dict:
 
 async def create_group(db, payload: dict, user: dict) -> dict:
     name = _clean_group_name((payload or {}).get("group_name"))
+    description = _clean_public_description((payload or {}).get("public_description"))
     now = now_iso()
     actor = actor_snapshot(user)
     doc = {
         "id": _new_id(),
         "public_id": _new_id(),
         "group_name": name,
+        "public_description": description,
+        "catalog_image": None,
         "enabled": True,
         "current_draft_version_id": None,
         "current_published_version_id": None,
@@ -586,6 +634,10 @@ async def patch_group(db, group_id: str, payload: dict, user: dict) -> dict:
     }
     if "enabled" in payload:
         updates["enabled"] = bool(payload.get("enabled"))
+    if "public_description" in payload:
+        updates["public_description"] = _clean_public_description(
+            payload.get("public_description")
+        )
     try:
         await db[GROUPS].update_one({"id": group_id}, {"$set": updates})
     except DuplicateKeyError:
@@ -767,6 +819,7 @@ async def _build_version(
         previous = existing.get(aid, {})
         product = {
             **snapshot,
+            "public_variant_id": previous.get("public_variant_id") or _new_id(),
             "manual_hpp": None,
             "hpp_method": None,
             "hpp_snapshot": None,

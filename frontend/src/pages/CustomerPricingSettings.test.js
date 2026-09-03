@@ -18,7 +18,7 @@ const appSrc = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
 const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
 
 describe("Customer Pricing multi-product group UI", () => {
-  test("Settings wiring and APIs use groups, not one-product endpoints", () => {
+  test("Settings APIs stay group-based while public pricing uses anonymous transport", () => {
     expect(settingsSrc).toMatch(/id:\s*"customer-pricing"/);
     expect(settingsSrc).toMatch(/CustomerPricingSettings/);
     expect(settingsSrc).toMatch(/canPublishCustomerPricing/);
@@ -26,7 +26,11 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(apiSrc).toMatch(/createCustomerPricingGroup/);
     expect(apiSrc).toMatch(/customer-pricing\/groups/);
     expect(apiSrc).not.toMatch(/customer-pricing\/products/);
-    expect(apiSrc).not.toMatch(/\/public\/customer-pricing/);
+    expect(apiSrc).toMatch(/publicCustomerPricingGroups/);
+    expect(apiSrc).toMatch(/\/public\/customer-pricing\/groups/);
+    expect(apiSrc).toMatch(/credentials:\s*"omit"/);
+    expect(apiSrc).toMatch(/uploadCustomerPricingCatalogImage/);
+    expect(apiSrc).toMatch(/deleteCustomerPricingCatalogImage/);
   });
 
   test("group list has requested compact columns and group-level summary", () => {
@@ -75,9 +79,23 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(cssSrc).toMatch(/@media\s*\(max-width:\s*700px\)/);
   });
 
-  test("phase locks remain: no public /harga route", () => {
-    expect(appSrc).not.toMatch(/path="\/harga"/);
-    expect(cpSrc).not.toMatch(/NavAccessMatrix/);
+  test("Phase 2 public route stays separate from Phase 1 settings UI", () => {
+    expect(appSrc).toMatch(/path="\/harga"/);
+    expect(cpSrc).not.toMatch(/PublicHargaPage|NavAccessMatrix/);
+  });
+
+  test("group presentation metadata is optional and managed outside pricing versions", () => {
+    expect(cpSrc).toMatch(/data-testid="cp-catalog-presentation"/);
+    expect(cpSrc).toMatch(/data-testid="cp-public-description"/);
+    expect(cpSrc).toMatch(/maxLength=\{280\}/);
+    expect(cpSrc).toMatch(/Upload Foto/);
+    expect(cpSrc).toMatch(/Ganti Foto/);
+    expect(cpSrc).toMatch(/Hapus Foto/);
+    expect(cpSrc).toMatch(/patchCustomerPricingGroup/);
+    expect(cpSrc).toMatch(/uploadCustomerPricingCatalogImage/);
+    expect(cpSrc).toMatch(/deleteCustomerPricingCatalogImage/);
+    expect(cpSrc).not.toMatch(/catalog_image:\s*catalogImage/);
+    expect(cssSrc).toMatch(/\.cp-catalog-image-preview/);
   });
 });
 

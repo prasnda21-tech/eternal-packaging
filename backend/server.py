@@ -151,6 +151,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.customer_pricing_http import register_customer_pricing_routes
+from services.customer_pricing_public_http import register_public_customer_pricing_routes
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.sales_activity.http import register_sales_activity_routes
@@ -7583,6 +7584,10 @@ register_customer_pricing_routes(
     current_user=current_user,
     require_any_perm=_require_any_perm,
     Depends=Depends,
+)
+register_public_customer_pricing_routes(
+    api_router,
+    get_db=lambda: db,
 )
 register_employee_admin_routes(
     api_router,
