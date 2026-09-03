@@ -4,6 +4,7 @@ import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -1931,10 +1932,13 @@ export default function Settings() {
   return (
     <div data-testid="settings-page" className="settings-page">
       <div className="page-heading">
-        <div>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+          <span className="page-heading-icon" aria-hidden="true"><SettingsIcon size={22} /></span>
+          <div>
           <p className="eyebrow">Pengaturan · Karyawan &amp; Hak Akses</p>
           <h1>Karyawan &amp; Hak Akses</h1>
           <p className="subhead">Kelola karyawan, atur role default, dan pantau audit log</p>
+          </div>
         </div>
       </div>
 

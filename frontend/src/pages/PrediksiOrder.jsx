@@ -106,7 +106,7 @@ export default function PrediksiOrder() {
   return (
     <div className="ship-status-page prediksi-order-page" data-testid="prediksi-order-page">
       <div className="ship-status-chrome">
-        <header className="ship-status-heading">
+        <header className="ship-status-heading page-heading">
           <h1>Prediksi Order Customer</h1>
           <p className="muted small">Analisis otomatis berdasarkan histori Order Masuk.</p>
           <p className="muted small" data-testid="prediksi-disclaimer">

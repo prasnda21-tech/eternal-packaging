@@ -24,7 +24,7 @@ export default function Login() {
   };
 
   return (
-    <main className="login-page">
+    <main className="login-page" data-module="dashboard">
       <section className="login-card login-panel">
         <div className="login-mark" data-testid="login-brand">
           <BrandMark stacked />

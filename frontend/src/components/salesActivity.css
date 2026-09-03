@@ -27,7 +27,7 @@
   font-size: clamp(22px, 2.4vw, 28px);
   line-height: 1.15;
   letter-spacing: -0.03em;
-  font-weight: 700;
+  font-weight: 800;
   color: var(--ink);
 }
 
@@ -84,9 +84,9 @@
   gap: 10px;
   margin: 0 0 14px;
   padding: 12px 14px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  background: var(--mod-soft, #ecfeff);
+  border: 1px solid var(--mod-border, #67e8f9);
+  border-radius: 16px;
   box-shadow: var(--shadow);
 }
 
@@ -106,20 +106,21 @@
 .sa-section {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: 20px;
   box-shadow: var(--shadow);
   padding: 16px 16px 18px;
 }
 
 .sa-section-title {
-  margin: 0 0 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-  font: 11px "IBM Plex Mono", monospace;
-  letter-spacing: 0.12em;
+  margin: -16px -16px 14px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--mod-border, #99f6e4);
+  background: var(--mod-soft, #f0fdfa);
+  border-radius: 20px 20px 0 0;
+  font: 700 12px "IBM Plex Sans", sans-serif;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--soft);
-  font-weight: 600;
+  color: var(--mod-ink, #134e4a);
 }
 
 .sa-section-fields {
@@ -148,8 +149,8 @@
 }
 
 .sa-req {
-  color: var(--red);
-  font-weight: 700;
+  color: var(--mod-strong, #0f766e);
+  font-weight: 800;
 }
 
 .sa-field-hint {
@@ -181,15 +182,15 @@
 .sa-detail textarea.sa-control,
 .sa-settings textarea.sa-control {
   width: 100%;
-  min-height: 40px;
+  min-height: 42px;
   padding: 8px 12px;
-  border: 1px solid #b7c9be;
-  border-radius: 6px;
-  background: #fff;
+  border: 2px solid var(--color-input-border, #22d3ee);
+  border-radius: 12px;
+  background: var(--color-input-bg, #cffafe);
   color: var(--ink);
   font: inherit;
   font-size: 14px;
-  box-shadow: 0 1px 0 rgba(15, 61, 46, 0.03);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
 }
 
 .sa-page textarea.sa-control,
@@ -203,7 +204,7 @@
 .sa-page .sa-control:hover,
 .sa-detail .sa-control:hover,
 .sa-settings .sa-control:hover {
-  border-color: #8aa394;
+  border-color: var(--color-input-hover, #06b6d4);
 }
 
 .sa-control:focus,
@@ -211,17 +212,17 @@
 .sa-detail .sa-control:focus,
 .sa-settings .sa-control:focus {
   outline: none;
-  border-color: var(--ep-primary);
-  box-shadow: 0 0 0 3px rgba(23, 107, 77, 0.16);
+  border-color: var(--color-input-focus, #0d9488);
+  box-shadow: 0 0 0 4px var(--color-input-ring, rgba(13,148,136,.26));
 }
 
 .sa-control:disabled,
 .sa-page .sa-control:disabled,
 .sa-detail .sa-control:disabled,
 .sa-settings .sa-control:disabled {
-  background: #eef2f0;
-  color: #7a8780;
-  border-color: #d5ddd8;
+  background: var(--color-readonly-bg, #f1f5f9);
+  color: var(--color-readonly-text, #475569);
+  border-color: var(--color-readonly-border, #e2e8f0);
   cursor: not-allowed;
 }
 
@@ -236,13 +237,14 @@
   margin: 0;
   min-height: 40px;
   padding: 8px 12px;
-  border: 1px dashed #b7c9be;
-  border-radius: 6px;
-  background: #f4f8f6;
-  color: var(--ink);
+  border: 1px solid var(--color-readonly-border, #e2e8f0);
+  border-radius: 12px;
+  background: var(--color-readonly-bg, #f1f5f9);
+  color: var(--color-readonly-text, #475569);
   font-size: 14px;
   display: flex;
   align-items: center;
+  cursor: default;
 }
 
 .sa-check {
@@ -351,7 +353,8 @@
 .sa-kpi {
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-top: 3px solid var(--mod, #0d9488);
+  border-radius: 16px;
   padding: 12px 14px;
   box-shadow: var(--shadow);
 }

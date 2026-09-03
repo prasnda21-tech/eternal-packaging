@@ -1,5 +1,5 @@
 /* ======================================================
-   Global Interactive Form UI Standard ó Semantic Styles
+   Global Interactive Form UI Standard ù Semantic Styles
    ====================================================== */
 
 /* ---------- CSS Custom Properties per state ---------- */
@@ -38,9 +38,11 @@
 
 /* ---------- Field container base ---------- */
 .fs-field-container {
-  background-color: var(--fs-bg, transparent);
-  border-color: var(--fs-border-color, #e5e7eb);
-  box-shadow: 0 0 0 1px var(--fs-ring-color, transparent);
+  background-color: var(--fs-bg, var(--color-input-bg, #eff6ff));
+  border-color: var(--fs-border-color, var(--color-input-border, #7dd3fc));
+  border-width: 2px;
+  border-radius: 0.85rem;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
   transition: all 0.15s ease-in-out;
 }
 
@@ -53,9 +55,22 @@
 
 /* ---------- Section container ---------- */
 .fs-section {
-  border-radius: 0.5rem;
-  border: 1px solid transparent;
+  border-radius: 1.25rem;
+  border: 1px solid var(--color-card-border, #e2e8f0);
+  box-shadow: var(--shadow);
+  overflow: hidden;
   transition: border-color 0.2s ease-in-out, background-color 0.2s ease-in-out;
+}
+
+.fs-section-head {
+  background: var(--mod-soft, #ecfeff);
+  margin: -1.25rem -1.25rem 1rem;
+  padding: 1rem 1.25rem 0.85rem;
+  border-bottom: 1px solid var(--mod-border, #67e8f9);
+}
+
+.fs-section-head h3 {
+  color: var(--mod-ink, #155e75);
 }
 
 .fs-section-complete {

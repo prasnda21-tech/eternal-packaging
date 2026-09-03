@@ -43,6 +43,7 @@ import FormShowcase from "./pages/FormShowcase";
 import OptimasiRute from "./pages/OptimasiRute";
 import OptimasiRuteEditor from "./pages/OptimasiRuteEditor";
 import "@/App.css";
+import "@/ui-system.css";
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage"];
 
