@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, ImageIcon, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
 import { errDetail, formatRupiah } from "../lib/purchaseUi";
@@ -175,6 +175,10 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   const [viewOnlyVersion, setViewOnlyVersion] = useState(null);
   const [history, setHistory] = useState([]);
   const [groupName, setGroupName] = useState("");
+  const [publicDescription, setPublicDescription] = useState("");
+  const [catalogImage, setCatalogImage] = useState(null);
+  const [catalogImageBroken, setCatalogImageBroken] = useState(false);
+  const catalogImageInput = useRef(null);
   const [pricingMode, setPricingMode] = useState(MODE_MANUAL);
   const [hppSource, setHppSource] = useState(HPP_AUTO);
   const [profitMode, setProfitMode] = useState(PROFIT_FIXED);
@@ -226,10 +230,27 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
       const groupResponse = await api.customerPricingGroup(group.id);
       const versionsResponse = await api.customerPricingVersions(group.id);
       setEditorGroup(groupResponse.group);
+      setPublicDescription(groupResponse.group?.public_description || "");
+      setCatalogImage(groupResponse.group?.catalog_image || null);
+      setCatalogImageBroken(false);
       setHistory(versionsResponse.versions || []);
       if (canEdit) {
-        const draftResponse = await api.createCustomerPricingDraft(group.id);
-        applyVersion(draftResponse.version);
+        const draft = (versionsResponse.versions || []).find(
+          (item) => item.status === "DRAFT"
+        );
+        const published = (versionsResponse.versions || []).find(
+          (item) => item.status === "PUBLISHED"
+        );
+        if (draft) {
+          applyVersion(draft);
+        } else if (published) {
+          setViewOnlyVersion(published);
+          setVersion(null);
+          setGroupName(published.group_name || group.group_name);
+        } else {
+          const draftResponse = await api.createCustomerPricingDraft(group.id);
+          applyVersion(draftResponse.version);
+        }
       } else {
         const published = (versionsResponse.versions || []).find(
           (item) => item.status === "PUBLISHED"
@@ -250,6 +271,9 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
     setVersion(null);
     setViewOnlyVersion(null);
     setHistory([]);
+    setPublicDescription("");
+    setCatalogImage(null);
+    setCatalogImageBroken(false);
     setPreview(null);
     setError("");
   };
@@ -287,6 +311,79 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
       setNewGroupName("");
       await loadGroups();
       await openGroup(response.group);
+    } catch (exception) {
+      setError(errDetail(exception));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCatalogPresentation = async () => {
+    if (!editorGroup) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.patchCustomerPricingGroup(editorGroup.id, {
+        public_description: publicDescription,
+      });
+      setEditorGroup(response.group);
+      setPublicDescription(response.group?.public_description || "");
+      notify?.(response.message || "Tampilan katalog disimpan");
+      await loadGroups();
+    } catch (exception) {
+      setError(errDetail(exception));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uploadCatalogImage = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !editorGroup) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.uploadCustomerPricingCatalogImage(editorGroup.id, file);
+      setEditorGroup(response.group);
+      setCatalogImage(response.group?.catalog_image || null);
+      setCatalogImageBroken(false);
+      notify?.(response.message || "Foto katalog diperbarui");
+      await loadGroups();
+    } catch (exception) {
+      setError(errDetail(exception));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeCatalogImage = async () => {
+    if (!editorGroup || !catalogImage) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.deleteCustomerPricingCatalogImage(editorGroup.id);
+      setEditorGroup(response.group);
+      setCatalogImage(null);
+      setCatalogImageBroken(false);
+      notify?.(response.message || "Foto katalog dihapus");
+      await loadGroups();
+    } catch (exception) {
+      setError(errDetail(exception));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cloneDraft = async () => {
+    if (!editorGroup) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.createCustomerPricingDraft(editorGroup.id);
+      applyVersion(response.version);
+      const versionsResponse = await api.customerPricingVersions(editorGroup.id);
+      setHistory(versionsResponse.versions || []);
     } catch (exception) {
       setError(errDetail(exception));
     } finally {
@@ -809,7 +906,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                 <button
                   className="primary sm"
                   disabled={busy}
-                  onClick={() => openGroup(editorGroup)}
+                  onClick={cloneDraft}
                   data-testid="cp-clone-draft"
                 >
                   Clone Draft
@@ -838,6 +935,95 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
               </ul>
             </div>
           )}
+
+          <section className="cp-catalog-presentation" data-testid="cp-catalog-presentation">
+            <div className="cp-catalog-copy">
+              <div>
+                <span className="cp-config-label">Tampilan Katalog Publik</span>
+                <strong>Deskripsi & Foto Katalog</strong>
+                <p className="muted small">
+                  Metadata tampilan grup. Perubahan ini tidak mengubah versi atau angka harga.
+                </p>
+              </div>
+              <label>
+                Deskripsi Singkat
+                <textarea
+                  rows={3}
+                  maxLength={280}
+                  value={publicDescription}
+                  onChange={(event) => setPublicDescription(event.target.value)}
+                  disabled={!canEdit || busy}
+                  placeholder="Deskripsi singkat untuk pelanggan (opsional)"
+                  data-testid="cp-public-description"
+                />
+                <span className="cp-description-count">{publicDescription.length}/280</span>
+              </label>
+              {canEdit && (
+                <button
+                  className="ghost sm"
+                  disabled={busy}
+                  onClick={saveCatalogPresentation}
+                  data-testid="cp-save-catalog-presentation"
+                >
+                  Simpan Tampilan
+                </button>
+              )}
+            </div>
+            <div className="cp-catalog-image-panel">
+              <span className="cp-config-label">Foto Katalog</span>
+              <div className="cp-catalog-image-preview">
+                {catalogImage && !catalogImageBroken ? (
+                  <img
+                    src={api.customerPricingCatalogImageUrl(
+                      editorGroup.id,
+                      catalogImage.file_id
+                    )}
+                    alt={`Foto katalog ${groupName}`}
+                    onError={() => setCatalogImageBroken(true)}
+                  />
+                ) : (
+                  <div className="cp-catalog-image-empty">
+                    <ImageIcon size={28} aria-hidden="true" />
+                    <span>Belum ada foto</span>
+                  </div>
+                )}
+              </div>
+              {catalogImage?.original_filename && (
+                <span className="muted small">{catalogImage.original_filename}</span>
+              )}
+              {canEdit && (
+                <div className="cp-catalog-image-actions">
+                  <input
+                    ref={catalogImageInput}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    hidden
+                    onChange={uploadCatalogImage}
+                    data-testid="cp-catalog-image-input"
+                  />
+                  <button
+                    className="ghost sm"
+                    disabled={busy}
+                    onClick={() => catalogImageInput.current?.click()}
+                    data-testid="cp-upload-catalog-image"
+                  >
+                    <Upload size={14} />
+                    {catalogImage ? "Ganti Foto" : "Upload Foto"}
+                  </button>
+                  {catalogImage && (
+                    <button
+                      className="ghost sm danger"
+                      disabled={busy}
+                      onClick={removeCatalogImage}
+                      data-testid="cp-remove-catalog-image"
+                    >
+                      <Trash2 size={14} /> Hapus Foto
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
 
           {!readOnly && (
             <>

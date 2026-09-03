@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 
 from services import customer_pricing as cp
+from services import customer_pricing_catalog as catalog
 from services.purchase_common import money_round, now_iso
 
 MAX_PUBLIC_GROUPS = 200
@@ -104,7 +105,24 @@ def _serialize_group(
         )
     if not variants:
         return None
-    return {"public_id": public_id, "name": name, "variants": variants}
+    image = group.get("catalog_image") or {}
+    image_file_id = _public_ref(image.get("file_id"))
+    image_url = None
+    if image_file_id:
+        image_url = f"/api/public/customer-pricing/groups/{public_id}/image"
+    description = (
+        str(group.get("public_description") or "").strip()[
+            : cp.MAX_PUBLIC_DESCRIPTION_LENGTH
+        ]
+        or None
+    )
+    return {
+        "public_id": public_id,
+        "name": name,
+        "public_description": description,
+        "image_url": image_url,
+        "variants": variants,
+    }
 
 
 async def _load_catalog(db, *, group_public_id: Optional[str] = None) -> List[dict]:
@@ -162,6 +180,8 @@ async def list_public_groups(db) -> List[dict]:
         {
             "public_id": group["public_id"],
             "name": group["name"],
+            "public_description": group["public_description"],
+            "image_url": group["image_url"],
             "variants": [
                 {
                     "public_variant_id": variant["public_variant_id"],
@@ -180,6 +200,16 @@ async def get_public_group(db, group_public_id: str) -> dict:
     if len(groups) != 1:
         raise HTTPException(404, PUBLIC_NOT_FOUND)
     return groups[0]
+
+
+async def get_public_group_image(db, group_public_id: str):
+    public_group = await get_public_group(db, group_public_id)
+    group = await db[cp.GROUPS].find_one(
+        {"public_id": public_group["public_id"]}, {"_id": 0, "id": 1}
+    )
+    if not group:
+        raise HTTPException(404, PUBLIC_NOT_FOUND)
+    return await catalog.get_catalog_image(db, group_id=group["id"])
 
 
 def _validate_quantity(quantity: Any) -> int:

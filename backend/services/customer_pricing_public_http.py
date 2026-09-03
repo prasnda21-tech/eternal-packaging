@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from fastapi import Response
+from fastapi.responses import Response as BinaryResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 
@@ -20,6 +21,8 @@ class PublicVariantSummary(PublicSchema):
 class PublicGroupSummary(PublicSchema):
     public_id: str
     name: str
+    public_description: Optional[str] = Field(default=None, max_length=280)
+    image_url: Optional[str] = None
     variants: List[PublicVariantSummary]
 
 
@@ -41,6 +44,8 @@ class PublicVariantDetail(PublicVariantSummary):
 class PublicGroupDetail(PublicSchema):
     public_id: str
     name: str
+    public_description: Optional[str] = Field(default=None, max_length=280)
+    image_url: Optional[str] = None
     variants: List[PublicVariantDetail]
 
 
@@ -92,6 +97,25 @@ def register_public_customer_pricing_routes(api_router, *, get_db):
     async def list_public_customer_pricing_groups(response: Response):
         no_store(response)
         return {"groups": await public_pricing.list_public_groups(get_db())}
+
+    @api_router.get(
+        "/public/customer-pricing/groups/{group_public_id}/image",
+        response_class=BinaryResponse,
+    )
+    async def get_public_customer_pricing_group_image(group_public_id: str):
+        data, content_type, _filename = (
+            await public_pricing.get_public_group_image(
+                get_db(), group_public_id
+            )
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @api_router.get(
         "/public/customer-pricing/groups/{group_public_id}",

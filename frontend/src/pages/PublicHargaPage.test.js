@@ -3,8 +3,17 @@ import { createRoot } from "react-dom/client";
 import api from "../lib/api";
 import PublicHargaPage from "./PublicHargaPage";
 
+const mockNavigate = jest.fn();
+let mockParams = {};
+jest.mock("react-router-dom", () => ({
+  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useNavigate: () => mockNavigate,
+  useParams: () => mockParams,
+}), { virtual: true });
+
 jest.mock("../lib/api", () => ({
   __esModule: true,
+  publicApiUrl: (path) => `http://localhost:8000${path}`,
   default: {
     publicCustomerPricingGroups: jest.fn(),
     publicCustomerPricingGroup: jest.fn(),
@@ -18,6 +27,8 @@ const groups = [
   {
     public_id: "group-paper-cup",
     name: "Paper Cup",
+    public_description: "Paper cup premium untuk kebutuhan minuman.",
+    image_url: "/api/public/customer-pricing/groups/group-paper-cup/image",
     variants: [
       { public_variant_id: "variant-12", display_name: "12oz", unit: "pcs" },
       { public_variant_id: "variant-16", display_name: "16oz", unit: "pcs" },
@@ -26,6 +37,8 @@ const groups = [
   {
     public_id: "group-paper-bag",
     name: "Paper Bag",
+    public_description: null,
+    image_url: null,
     variants: [
       { public_variant_id: "variant-small", display_name: "Small", unit: "pcs" },
     ],
@@ -33,8 +46,7 @@ const groups = [
 ];
 
 const cupDetail = {
-  public_id: "group-paper-cup",
-  name: "Paper Cup",
+  ...groups[0],
   variants: [
     {
       public_variant_id: "variant-12",
@@ -57,20 +69,6 @@ const cupDetail = {
   ],
 };
 
-const bagDetail = {
-  public_id: "group-paper-bag",
-  name: "Paper Bag",
-  variants: [
-    {
-      public_variant_id: "variant-small",
-      display_name: "Small",
-      unit: "pcs",
-      minimum_quantity: 500,
-      tiers: [{ min_qty: 500, max_qty: null, unit_price: 1800 }],
-    },
-  ],
-};
-
 const flush = async () => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -86,18 +84,24 @@ const setNativeValue = (element, value) => {
   element.dispatchEvent(new Event("change", { bubbles: true }));
 };
 
-describe("PublicHargaPage", () => {
+describe("PublicHargaPage catalog and detail", () => {
   let container;
   let root;
+
+  const renderAt = async (pathName) => {
+    mockParams = pathName === "/harga"
+      ? {}
+      : { groupPublicId: pathName.replace("/harga/", "") };
+    await act(async () => root.render(<PublicHargaPage />));
+    await flush();
+  };
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     api.publicCustomerPricingGroups.mockResolvedValue({ groups });
-    api.publicCustomerPricingGroup.mockImplementation((id) => (
-      Promise.resolve({ group: id === "group-paper-bag" ? bagDetail : cupDetail })
-    ));
+    api.publicCustomerPricingGroup.mockResolvedValue({ group: cupDetail });
     api.calculatePublicCustomerPrice.mockResolvedValue({
       group: { public_id: "group-paper-cup", name: "Paper Cup" },
       variant: {
@@ -112,6 +116,8 @@ describe("PublicHargaPage", () => {
       currency: "IDR",
       calculated_at: "2026-09-04T00:00:00+00:00",
     });
+    mockNavigate.mockReset();
+    mockParams = {};
   });
 
   afterEach(async () => {
@@ -120,53 +126,49 @@ describe("PublicHargaPage", () => {
     jest.clearAllMocks();
   });
 
-  test("renders the anonymous catalog without an internal shell or internal pricing labels", async () => {
-    await act(async () => root.render(<PublicHargaPage />));
-    await flush();
+  test("/harga renders a catalog first with image and intentional placeholder cards", async () => {
+    await renderAt("/harga");
     expect(container.querySelector('[data-testid="public-harga-page"]')).not.toBeNull();
     expect(container.querySelector(".app-shell")).toBeNull();
-    expect(container.textContent).toContain("Eternal Packaging");
+    expect(container.textContent).toContain("Cek Harga Produk");
     expect(container.textContent).toContain("Paper Cup");
     expect(container.textContent).toContain("Paper Bag");
-    expect(container.textContent).toContain("12oz");
-    expect(container.textContent).toContain("1.000–2.999 pcs");
-    const publicText = container.textContent.toLowerCase();
-    for (const internalLabel of ["hpp", "profit", "draft", "published", "margin", "markup"]) {
-      expect(publicText).not.toContain(internalLabel);
-    }
-  });
-
-  test("changes group and variant and always clears an old backend result", async () => {
-    await act(async () => root.render(<PublicHargaPage />));
-    await flush();
-    const variantSelect = container.querySelector('[data-testid="harga-variant-select"]');
-    await act(async () => setNativeValue(variantSelect, "variant-16"));
-    expect(variantSelect.value).toBe("variant-16");
-    expect(container.textContent).toContain("Rp 2.800");
-
-    const bagButton = container.querySelector(
-      '[data-testid="harga-group-group-paper-bag"]'
+    expect(container.textContent).toContain("Paper cup premium");
+    expect(container.textContent).toContain("2 varian");
+    expect(container.querySelector('img[alt="Paper Cup"]').src).toContain(
+      "/api/public/customer-pricing/groups/group-paper-cup/image"
     );
-    await act(async () => bagButton.dispatchEvent(
-      new MouseEvent("click", { bubbles: true })
-    ));
-    await flush();
-    expect(api.publicCustomerPricingGroup).toHaveBeenLastCalledWith("group-paper-bag");
-    expect(container.querySelector('[data-testid="harga-variant-select"]').value)
-      .toBe("variant-small");
-    expect(container.querySelector('[data-testid="harga-quantity-input"]').placeholder)
-      .toBe("Minimal 500");
+    expect(container.querySelectorAll('[data-testid="harga-image-placeholder"]').length)
+      .toBe(1);
+    expect(container.querySelector('[data-testid="harga-quantity-input"]')).toBeNull();
+    expect(api.publicCustomerPricingGroup).not.toHaveBeenCalled();
   });
 
-  test("submits quantity and renders unit price total and tier only from backend response", async () => {
-    await act(async () => root.render(<PublicHargaPage />));
-    await flush();
+  test("clicking the full catalog card navigates to the opaque detail route", async () => {
+    await renderAt("/harga");
+    const card = container.querySelector('[data-testid="harga-group-group-paper-cup"]');
+    await act(async () => card.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(mockNavigate).toHaveBeenCalledWith("/harga/group-paper-cup");
+  });
+
+  test("detail loads presentation data, chips, quantity, result, and backend tier highlight", async () => {
+    await renderAt("/harga/group-paper-cup");
+    expect(api.publicCustomerPricingGroup).toHaveBeenCalledWith("group-paper-cup");
+    expect(container.textContent).toContain("Paper cup premium");
+    expect(container.querySelector('[data-testid="harga-detail-image"] img')).not.toBeNull();
+
+    const first = container.querySelector('[data-testid="harga-variant-variant-12"]');
+    const second = container.querySelector('[data-testid="harga-variant-variant-16"]');
+    expect(first.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => second.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(second.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain("Rp 2.800");
+    await act(async () => first.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
     const quantity = container.querySelector('[data-testid="harga-quantity-input"]');
     await act(async () => setNativeValue(quantity, "5000"));
     const button = container.querySelector('[data-testid="harga-calculate-button"]');
-    await act(async () => button.dispatchEvent(
-      new MouseEvent("click", { bubbles: true })
-    ));
+    await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flush();
     expect(api.calculatePublicCustomerPrice).toHaveBeenCalledWith({
       group_public_id: "group-paper-cup",
@@ -179,47 +181,66 @@ describe("PublicHargaPage", () => {
       .toBe("Rp 10.995.000");
     expect(container.querySelector('[data-testid="harga-selected-tier"]').textContent)
       .toBe("5.000+ pcs");
+    expect(container.querySelector('[data-testid="harga-tier-selected-row"]').textContent)
+      .toContain("Rp 2.100");
   });
 
-  test("shows backend MOQ errors safely", async () => {
+  test("backend validation errors are readable and no price is calculated locally", async () => {
     api.calculatePublicCustomerPrice.mockRejectedValueOnce({
-      response: { status: 422, data: {
-        detail: "Minimum pemesanan untuk produk ini adalah 1.000 pcs.",
-      } },
+      response: {
+        status: 422,
+        data: { detail: "Minimum pemesanan untuk produk ini adalah 1.000 pcs." },
+      },
     });
-    await act(async () => root.render(<PublicHargaPage />));
-    await flush();
+    await renderAt("/harga/group-paper-cup");
     const quantity = container.querySelector('[data-testid="harga-quantity-input"]');
     await act(async () => setNativeValue(quantity, "999"));
-    const button = container.querySelector('[data-testid="harga-calculate-button"]');
-    await act(async () => button.dispatchEvent(
-      new MouseEvent("click", { bubbles: true })
-    ));
+    await act(async () => container
+      .querySelector('[data-testid="harga-calculate-button"]')
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flush();
     expect(container.querySelector('[data-testid="harga-calculation-error"]').textContent)
       .toContain("Minimum pemesanan");
+    expect(container.querySelector('[data-testid="harga-result"]')).toBeNull();
   });
 
-  test("shows catalog loading and safe error states", async () => {
-    let rejectCatalog;
-    api.publicCustomerPricingGroups.mockReturnValueOnce(
-      new Promise((_resolve, reject) => { rejectCatalog = reject; })
-    );
-    await act(async () => root.render(<PublicHargaPage />));
-    expect(container.querySelector('[data-testid="public-harga-loading"]')).not.toBeNull();
-    await act(async () => rejectCatalog({
-      response: { status: 503, data: { detail: "Harga produk tidak dapat dimuat." } },
-    }));
-    await flush();
-    expect(container.querySelector('[data-testid="public-harga-error"]').textContent)
-      .toContain("Harga produk tidak dapat dimuat.");
+  test("invalid group and catalog failures use safe public states", async () => {
+    api.publicCustomerPricingGroup.mockRejectedValueOnce({
+      response: { status: 404, data: { detail: "Produk harga tidak tersedia." } },
+    });
+    await renderAt("/harga/not-valid");
+    expect(container.querySelector('[data-testid="public-harga-not-found"]').textContent)
+      .toContain("Produk tidak tersedia.");
+    expect(container.textContent).not.toContain("[object Object]");
   });
 
-  test("shows the friendly empty state", async () => {
+  test("back to catalog uses public navigation and public DOM excludes internal pricing labels", async () => {
+    await renderAt("/harga/group-paper-cup");
+    const back = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.textContent.includes("Kembali ke Katalog"));
+    expect(back.getAttribute("href")).toBe("/harga");
+    const publicText = container.textContent.toLowerCase();
+    for (const label of ["hpp", "profit", "draft", "published", "margin", "markup"]) {
+      expect(publicText).not.toContain(label);
+    }
+    expect(container.querySelector(".app-shell")).toBeNull();
+  });
+
+  test("empty catalog and missing detail image use polished public placeholders", async () => {
     api.publicCustomerPricingGroups.mockResolvedValueOnce({ groups: [] });
-    await act(async () => root.render(<PublicHargaPage />));
-    await flush();
+    await renderAt("/harga");
     expect(container.querySelector('[data-testid="public-harga-empty"]').textContent)
-      .toContain("Harga produk belum tersedia.");
+      .toContain("Produk tidak tersedia.");
+    expect(container.querySelector('[data-testid="harga-quantity-input"]')).toBeNull();
+
+    api.publicCustomerPricingGroup.mockResolvedValueOnce({
+      group: { ...cupDetail, image_url: null },
+    });
+    await renderAt("/harga/group-paper-cup");
+    expect(container.querySelector('[data-testid="harga-detail-image"] img')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="harga-detail-image"] [data-testid="harga-image-placeholder"]')
+    ).not.toBeNull();
+    expect(container.querySelector('[data-testid="harga-variant-buttons"]')).not.toBeNull();
   });
 });

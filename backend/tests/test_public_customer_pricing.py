@@ -20,6 +20,7 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 import server
 from server import app
 from services import customer_pricing as cp
+from services import customer_pricing_catalog as catalog
 from services import customer_pricing_public as public_pricing
 
 
@@ -221,6 +222,27 @@ async def test_public_visibility_is_enabled_current_published_membership_only():
 @pytest.mark.anyio
 async def test_public_json_serializer_excludes_every_internal_pricing_field_and_id():
     group, version = await publish_manual()
+    await cp.patch_group(
+        server.db,
+        group["id"],
+        {"public_description": "Kemasan minuman untuk kebutuhan usaha."},
+        actor(),
+    )
+    with patch(
+        "services.customer_pricing_catalog.obj_storage.put_object",
+        return_value={
+            "path": "eternal-packaging/private/customer-pricing-object.png",
+            "size": 68,
+        },
+    ):
+        await catalog.upload_catalog_image(
+            server.db,
+            group_id=group["id"],
+            filename="../../catalog cup.png",
+            content_type="application/octet-stream",
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 60,
+            user=actor(),
+        )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -239,6 +261,12 @@ async def test_public_json_serializer_excludes_every_internal_pricing_field_and_
     assert catalog_response.status_code == 200
     assert detail_response.status_code == 200
     assert calculate_response.status_code == 200
+    assert catalog_response.json()["groups"][0]["public_description"].startswith(
+        "Kemasan minuman"
+    )
+    assert catalog_response.json()["groups"][0]["image_url"] == (
+        f"/api/public/customer-pricing/groups/{group['public_id']}/image"
+    )
     forbidden = {
         "hpp",
         "hpp_snapshot",
@@ -271,6 +299,7 @@ async def test_public_json_serializer_excludes_every_internal_pricing_field_and_
             version["products"][0]["accurate_item_id"],
             version["products"][0]["master_item_id"],
             actor()["id"],
+            "eternal-packaging/private/customer-pricing-object.png",
         ):
             assert internal_value not in serialized
 
@@ -412,6 +441,21 @@ async def test_formula_and_manual_prices_are_frozen_and_no_hpp_lookup_occurs():
 @pytest.mark.anyio
 async def test_public_groups_detail_and_calculate_are_pure_reads():
     group, version = await publish_manual()
+    with patch(
+        "services.customer_pricing_catalog.obj_storage.put_object",
+        return_value={
+            "path": "eternal-packaging/customer-pricing/test/catalog.png",
+            "size": 68,
+        },
+    ):
+        await catalog.upload_catalog_image(
+            server.db,
+            group_id=group["id"],
+            filename="catalog.png",
+            content_type="image/png",
+            data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 60,
+            user=actor(),
+        )
     real_db = server.db
     published_before = copy.deepcopy(
         await real_db[cp.VERSIONS].find_one({"id": version["id"]})
@@ -448,6 +492,25 @@ async def test_public_groups_detail_and_calculate_are_pure_reads():
                 {"id": version["id"]}
             ) == published_before
 
+            with patch(
+                "services.customer_pricing_catalog.obj_storage.get_object",
+                return_value=(
+                    b"\x89PNG\r\n\x1a\n" + b"\x00" * 60,
+                    "image/png",
+                ),
+            ):
+                image_response = await client.get(
+                    f"/api/public/customer-pricing/groups/{group['public_id']}/image"
+                )
+            assert image_response.status_code == 200
+            assert image_response.headers["content-type"].startswith("image/png")
+            assert image_response.headers["x-content-type-options"] == "nosniff"
+            assert "public" in image_response.headers["cache-control"]
+            assert guard.writes == []
+            assert await real_db[cp.VERSIONS].find_one(
+                {"id": version["id"]}
+            ) == published_before
+
             calculate_response = await client.post(
                 "/api/public/customer-pricing/calculate", json=request
             )
@@ -462,6 +525,114 @@ async def test_public_groups_detail_and_calculate_are_pure_reads():
     assert await real_db[cp.VERSIONS].find_one(
         {"id": version["id"]}
     ) == published_before
+
+
+@pytest.mark.anyio
+async def test_catalog_image_manage_permission_validation_and_snapshot_immutability():
+    group, version = await publish_manual()
+    version_before = copy.deepcopy(
+        await server.db[cp.VERSIONS].find_one({"id": version["id"]})
+    )
+    manager = actor()
+    viewer = {
+        **actor(),
+        "role": "test-viewer",
+        "permissions_override": {cp.PERM_VIEW: True},
+    }
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 60
+    storage_path = (
+        f"{catalog.obj_storage.APP_NAME}/customer-pricing/"
+        f"{group['id']}/server-generated.png"
+    )
+
+    app.dependency_overrides[server.current_user] = lambda: manager
+    try:
+        with patch(
+            "services.customer_pricing_catalog.obj_storage.put_object",
+            return_value={"path": storage_path, "size": len(png)},
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                uploaded = await client.post(
+                    f"/api/customer-pricing/groups/{group['id']}/catalog-image",
+                    files={"file": ("../cup premium.png", png, "image/png")},
+                )
+        assert uploaded.status_code == 200
+        image_meta = uploaded.json()["group"]["catalog_image"]
+        assert image_meta["content_type"] == "image/png"
+        assert image_meta["original_filename"] == "cup_premium.png"
+        assert "storage_path" not in json.dumps(uploaded.json())
+
+        app.dependency_overrides[server.current_user] = lambda: viewer
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            denied = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/catalog-image",
+                files={"file": ("cup.png", png, "image/png")},
+            )
+        assert denied.status_code == 403
+
+        app.dependency_overrides[server.current_user] = lambda: manager
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            invalid = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/catalog-image",
+                files={"file": ("payload.exe", b"MZ\x90\x00not-an-image", "image/png")},
+            )
+            oversized = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/catalog-image",
+                files={
+                    "file": (
+                        "large.png",
+                        png + b"\x00" * catalog.MAX_CATALOG_IMAGE_BYTES,
+                        "image/png",
+                    )
+                },
+            )
+        assert invalid.status_code == 400
+        assert oversized.status_code == 400
+        assert await server.db[cp.VERSIONS].find_one(
+            {"id": version["id"]}
+        ) == version_before
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            deleted = await client.delete(
+                f"/api/customer-pricing/groups/{group['id']}/catalog-image"
+            )
+        assert deleted.status_code == 200
+        assert deleted.json()["group"]["catalog_image"] is None
+        assert await server.db[cp.VERSIONS].find_one(
+            {"id": version["id"]}
+        ) == version_before
+    finally:
+        app.dependency_overrides.pop(server.current_user, None)
+
+
+@pytest.mark.anyio
+async def test_public_catalog_image_missing_or_ineligible_returns_safe_404():
+    group, _version = await publish_manual()
+    disabled, _disabled_version = await publish_manual(
+        "Hidden Image Group", ("public-test-hidden-image",)
+    )
+    await cp.patch_group(server.db, disabled["id"], {"enabled": False}, actor())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await client.get(
+            f"/api/public/customer-pricing/groups/{group['public_id']}/image"
+        )
+        hidden = await client.get(
+            f"/api/public/customer-pricing/groups/{disabled['public_id']}/image"
+        )
+    assert missing.status_code == 404
+    assert hidden.status_code == 404
+    assert "storage_path" not in missing.text
+    assert "storage_path" not in hidden.text
 
 
 @pytest.mark.anyio

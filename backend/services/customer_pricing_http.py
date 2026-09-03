@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from fastapi import File, UploadFile
+from fastapi.responses import Response as BinaryResponse
 from pydantic import BaseModel, ConfigDict
 
 
@@ -19,6 +21,7 @@ def register_customer_pricing_routes(
     Depends,
 ):
     from services import customer_pricing as cp
+    from services import customer_pricing_catalog as catalog
 
     def dump(payload) -> dict:
         if payload is None:
@@ -73,6 +76,51 @@ def register_customer_pricing_routes(
         await require_any_perm(user, cp.PERM_MANAGE)
         group = await cp.patch_group(get_db(), group_id, dump(payload), user)
         return {"group": group, "message": "Kelompok harga diperbarui"}
+
+    @api_router.post("/customer-pricing/groups/{group_id}/catalog-image")
+    async def upload_customer_pricing_catalog_image(
+        group_id: str,
+        file: UploadFile = File(...),
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, cp.PERM_MANAGE)
+        raw = await file.read(catalog.MAX_CATALOG_IMAGE_BYTES + 1)
+        group = await catalog.upload_catalog_image(
+            get_db(),
+            group_id=group_id,
+            filename=file.filename or "",
+            content_type=file.content_type or "",
+            data=raw,
+            user=user,
+        )
+        return {"group": group, "message": "Foto katalog diperbarui"}
+
+    @api_router.get("/customer-pricing/groups/{group_id}/catalog-image")
+    async def get_customer_pricing_catalog_image(
+        group_id: str, user=Depends(current_user)
+    ):
+        await require_view(user)
+        data, content_type, _filename = await catalog.get_catalog_image(
+            get_db(), group_id=group_id
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @api_router.delete("/customer-pricing/groups/{group_id}/catalog-image")
+    async def delete_customer_pricing_catalog_image(
+        group_id: str, user=Depends(current_user)
+    ):
+        await require_any_perm(user, cp.PERM_MANAGE)
+        group = await catalog.remove_catalog_image(
+            get_db(), group_id=group_id, user=user
+        )
+        return {"group": group, "message": "Foto katalog dihapus"}
 
     @api_router.post("/customer-pricing/groups/{group_id}/draft")
     async def create_customer_pricing_draft(group_id: str, user=Depends(current_user)):

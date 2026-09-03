@@ -132,6 +132,7 @@ export default function App() {
           <Route path="/customer/design-approval/:token" element={<PublicCustomerApproval />} />
           <Route path="/tracking/:token" element={<CustomerTrackingPage />} />
           <Route path="/harga" element={<PublicHargaPage />} />
+          <Route path="/harga/:groupPublicId" element={<PublicHargaPage />} />
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />

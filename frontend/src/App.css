@@ -2154,6 +2154,20 @@ html:has(.ship-status-page) #root{
 .cp-history-label{font-size:12px;font-weight:700;color:#64748b}
 .cp-history ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:4px}
 .cp-history .is-active-ver{border-color:#2563eb;background:#eff6ff}
+.cp-catalog-presentation{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:14px;padding:12px;border:1px solid #dbe4ea;border-radius:8px;background:#fff}
+.cp-catalog-copy{display:grid;gap:10px;align-content:start}
+.cp-catalog-copy > div > strong{display:block;margin-top:3px;font-size:14px;color:#1e293b}
+.cp-catalog-copy > div > p{margin:3px 0 0}
+.cp-catalog-copy label{position:relative;display:grid;gap:5px;font-size:12px;font-weight:700;color:#475569}
+.cp-catalog-copy textarea{width:100%;min-height:76px;padding:8px 10px;resize:vertical;font:inherit;font-weight:400}
+.cp-description-count{position:absolute;right:8px;bottom:7px;padding:1px 4px;background:rgba(255,255,255,.88);color:#94a3b8;font-size:10px;font-weight:500}
+.cp-catalog-copy > button{justify-self:start}
+.cp-catalog-image-panel{display:grid;gap:7px;align-content:start}
+.cp-catalog-image-preview{display:grid;place-items:center;width:100%;aspect-ratio:4/3;overflow:hidden;border:1px solid #dbe4ea;border-radius:8px;background:#f1f5f9}
+.cp-catalog-image-preview img{width:100%;height:100%;object-fit:cover}
+.cp-catalog-image-empty{display:grid;place-items:center;gap:5px;color:#94a3b8;font-size:11px}
+.cp-catalog-image-actions{display:flex;flex-wrap:wrap;gap:6px}
+.cp-catalog-image-actions .danger{color:#b91c1c}
 .cp-config-bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end;padding:8px;background:#fff;border:1px solid #e2e8f0;border-radius:6px}
 .cp-config-block{display:grid;gap:4px}
 .cp-config-label{font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
@@ -2183,6 +2197,8 @@ button.ghost.sm,button.primary.sm{min-height:30px;padding:4px 10px;font-size:12.
 button.ghost.sm.icon{padding:4px 6px}
 @media (max-width:700px){
   .cp-editor-header{flex-direction:column}
+  .cp-catalog-presentation{grid-template-columns:1fr}
+  .cp-catalog-image-panel{max-width:280px}
   .cp-config-bar{flex-direction:column;align-items:stretch}
   .cp-sheet{min-width:640px}
 }

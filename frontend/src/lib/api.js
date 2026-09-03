@@ -196,6 +196,19 @@ export const api = {
   createCustomerPricingGroup: (payload) => client.post(`/customer-pricing/groups`, payload).then((r) => r.data),
   customerPricingGroup: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}`).then((r) => r.data),
   patchCustomerPricingGroup: (id, payload) => client.patch(`/customer-pricing/groups/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  customerPricingCatalogImageUrl: (id, version = "") =>
+    `${API}/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image${version ? `?v=${encodeURIComponent(version)}` : ""}`,
+  uploadCustomerPricingCatalogImage: (id, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(
+      `/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image`,
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } }
+    ).then((r) => r.data);
+  },
+  deleteCustomerPricingCatalogImage: (id) =>
+    client.delete(`/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image`).then((r) => r.data),
   createCustomerPricingDraft: (id) => client.post(`/customer-pricing/groups/${encodeURIComponent(id)}/draft`).then((r) => r.data),
   customerPricingVersions: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}/versions`).then((r) => r.data),
   customerPricingVersion: (id) => client.get(`/customer-pricing/versions/${encodeURIComponent(id)}`).then((r) => r.data),

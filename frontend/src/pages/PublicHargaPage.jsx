@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Calculator, Search } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Calculator,
+  PackageOpen,
+  Search,
+} from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import BrandMark from "../components/BrandMark";
-import api from "../lib/api";
+import api, { publicApiUrl } from "../lib/api";
 import { formatApiError } from "../lib/errors";
 import "./PublicHargaPage.css";
 
@@ -10,27 +17,53 @@ const formatNumber = (value) =>
 
 const formatMoney = (value) => `Rp ${formatNumber(value)}`;
 
-const tierLabel = (tier, unit = "pcs") => {
+const tierRange = (tier) => {
   if (!tier) return "—";
-  const range = tier.max_qty == null
+  return tier.max_qty == null
     ? `${formatNumber(tier.min_qty)}+`
     : `${formatNumber(tier.min_qty)}–${formatNumber(tier.max_qty)}`;
-  return `${range} ${unit || "pcs"}`;
 };
 
-export default function PublicHargaPage() {
+function PublicHeader() {
+  return (
+    <header className="ph-header">
+      <Link className="ph-brand" to="/harga" aria-label="Eternal Packaging">
+        <BrandMark compact />
+        <span>ETERNAL PACKAGING</span>
+      </Link>
+      <span className="ph-header-label">Harga Produk</span>
+    </header>
+  );
+}
+
+function ProductVisual({ imageUrl, name, large = false }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [imageUrl]);
+  const source = imageUrl ? publicApiUrl(imageUrl) : "";
+
+  return (
+    <div
+      className={`ph-product-visual ${large ? "is-large" : ""}`}
+      data-testid={large ? "harga-detail-image" : "harga-card-image"}
+    >
+      {source && !failed ? (
+        <img src={source} alt={name} onError={() => setFailed(true)} />
+      ) : (
+        <div className="ph-image-placeholder" data-testid="harga-image-placeholder">
+          <PackageOpen aria-hidden="true" />
+          <span>ETERNAL</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CatalogPage() {
+  const navigate = useNavigate();
   const [groups, setGroups] = useState([]);
-  const [selectedGroupId, setSelectedGroupId] = useState("");
-  const [groupDetail, setGroupDetail] = useState(null);
-  const [selectedVariantId, setSelectedVariantId] = useState("");
-  const [quantity, setQuantity] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [calculating, setCalculating] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [calculationError, setCalculationError] = useState("");
-  const [result, setResult] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,14 +71,13 @@ export default function PublicHargaPage() {
     setLoadError("");
     api.publicCustomerPricingGroups()
       .then((data) => {
-        if (cancelled) return;
-        const available = Array.isArray(data?.groups) ? data.groups : [];
-        setGroups(available);
-        setSelectedGroupId(available[0]?.public_id || "");
+        if (!cancelled) {
+          setGroups(Array.isArray(data?.groups) ? data.groups : []);
+        }
       })
       .catch((error) => {
         if (!cancelled) {
-          setLoadError(formatApiError(error, "Harga produk tidak dapat dimuat."));
+          setLoadError(formatApiError(error, "Katalog produk tidak dapat dimuat."));
         }
       })
       .finally(() => {
@@ -54,55 +86,148 @@ export default function PublicHargaPage() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    setGroupDetail(null);
-    setSelectedVariantId("");
-    setResult(null);
-    setCalculationError("");
-    if (!selectedGroupId) return () => { cancelled = true; };
-    setDetailLoading(true);
-    api.publicCustomerPricingGroup(selectedGroupId)
-      .then((data) => {
-        if (cancelled) return;
-        const detail = data?.group || null;
-        setGroupDetail(detail);
-        setSelectedVariantId(detail?.variants?.[0]?.public_variant_id || "");
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setCalculationError(formatApiError(error, "Produk harga tidak tersedia."));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDetailLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [selectedGroupId]);
-
   const filteredGroups = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("id-ID");
     if (!query) return groups;
     return groups.filter((group) => (
       group.name.toLocaleLowerCase("id-ID").includes(query)
+      || (group.public_description || "").toLocaleLowerCase("id-ID").includes(query)
       || (group.variants || []).some((variant) => (
         variant.display_name.toLocaleLowerCase("id-ID").includes(query)
       ))
     ));
   }, [groups, search]);
 
-  const selectedVariant = groupDetail?.variants?.find(
+  return (
+    <main className="public-harga-page" data-testid="public-harga-page">
+      <PublicHeader />
+      <section className="ph-catalog-hero">
+        <p className="ph-eyebrow">KATALOG PRODUK</p>
+        <h1>Cek Harga Produk</h1>
+        <p>Pilih produk untuk melihat varian dan harga berdasarkan jumlah pesanan.</p>
+      </section>
+
+      <section className="ph-catalog-shell" aria-labelledby="harga-catalog-title">
+        <div className="ph-catalog-toolbar">
+          <div>
+            <p className="ph-kicker">Pilihan Kemasan</p>
+            <h2 id="harga-catalog-title">Temukan produk yang Anda butuhkan</h2>
+          </div>
+          {groups.length > 4 && (
+            <label className="ph-search">
+              <Search size={18} aria-hidden="true" />
+              <span className="ph-sr-only">Cari produk</span>
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Cari produk..."
+                data-testid="harga-catalog-search"
+              />
+            </label>
+          )}
+        </div>
+
+        {loading && (
+          <div className="ph-public-state" data-testid="public-harga-loading">
+            Loading katalog...
+          </div>
+        )}
+        {!loading && loadError && (
+          <div className="ph-public-state is-error" role="alert" data-testid="public-harga-error">
+            {loadError}
+          </div>
+        )}
+        {!loading && !loadError && groups.length === 0 && (
+          <div className="ph-public-state" data-testid="public-harga-empty">
+            <PackageOpen aria-hidden="true" />
+            <h2>Produk tidak tersedia.</h2>
+            <p>Katalog harga belum tersedia saat ini.</p>
+          </div>
+        )}
+        {!loading && !loadError && groups.length > 0 && (
+          <>
+            <div className="ph-catalog-grid" data-testid="public-harga-groups">
+              {filteredGroups.map((group) => (
+                <article className="ph-product-card" key={group.public_id}>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/harga/${encodeURIComponent(group.public_id)}`)}
+                    data-testid={`harga-group-${group.public_id}`}
+                    aria-label={`Lihat harga ${group.name}`}
+                  >
+                    <ProductVisual imageUrl={group.image_url} name={group.name} />
+                    <span className="ph-card-content">
+                      <span className="ph-card-title">{group.name}</span>
+                      <span className="ph-card-variants">
+                        {group.variants?.length || 0} varian
+                      </span>
+                      {group.public_description && (
+                        <span className="ph-card-description">
+                          {group.public_description}
+                        </span>
+                      )}
+                      <span className="ph-card-cta">
+                        Lihat Harga <ArrowRight size={17} aria-hidden="true" />
+                      </span>
+                    </span>
+                  </button>
+                </article>
+              ))}
+            </div>
+            {filteredGroups.length === 0 && (
+              <div className="ph-public-state is-compact">
+                Produk tidak ditemukan.
+              </div>
+            )}
+          </>
+        )}
+      </section>
+      <footer className="ph-footer">Eternal Packaging · Harga produk terkini</footer>
+    </main>
+  );
+}
+
+function DetailPage({ groupPublicId }) {
+  const [group, setGroup] = useState(null);
+  const [selectedVariantId, setSelectedVariantId] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [calculating, setCalculating] = useState(false);
+  const [calculationError, setCalculationError] = useState("");
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError("");
+    setGroup(null);
+    api.publicCustomerPricingGroup(groupPublicId)
+      .then((data) => {
+        if (cancelled) return;
+        const detail = data?.group || null;
+        setGroup(detail);
+        setSelectedVariantId(detail?.variants?.[0]?.public_variant_id || "");
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setLoadError(formatApiError(error, "Produk tidak tersedia."));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [groupPublicId]);
+
+  const selectedVariant = group?.variants?.find(
     (variant) => variant.public_variant_id === selectedVariantId
   ) || null;
 
-  const selectGroup = (publicId) => {
-    if (publicId === selectedGroupId) return;
-    setSelectedGroupId(publicId);
-    setQuantity("");
-  };
-
   const selectVariant = (publicVariantId) => {
     setSelectedVariantId(publicVariantId);
+    setQuantity("");
     setResult(null);
     setCalculationError("");
   };
@@ -117,215 +242,208 @@ export default function PublicHargaPage() {
     event.preventDefault();
     setResult(null);
     setCalculationError("");
-    if (!selectedGroupId || !selectedVariantId || !/^\d+$/.test(quantity)) {
+    if (!selectedVariantId || !/^\d+$/.test(quantity) || Number(quantity) <= 0) {
       setCalculationError("Jumlah pesanan tidak valid.");
       return;
     }
     setCalculating(true);
     try {
       const calculated = await api.calculatePublicCustomerPrice({
-        group_public_id: selectedGroupId,
+        group_public_id: groupPublicId,
         public_variant_id: selectedVariantId,
         quantity: Number(quantity),
       });
       setResult(calculated);
     } catch (error) {
-      setCalculationError(formatApiError(error, "Harga tidak dapat dihitung."));
+      setCalculationError(formatApiError(error, "Harga belum tersedia."));
     } finally {
       setCalculating(false);
     }
   };
 
+  const selectedTierMatches = (tier) => (
+    result?.selected_tier
+    && result.selected_tier.min_qty === tier.min_qty
+    && result.selected_tier.max_qty === tier.max_qty
+  );
+
   return (
-    <main className="public-harga-page" data-testid="public-harga-page">
-      <header className="public-harga-header">
-        <BrandMark compact />
-        <div>
-          <p className="public-harga-eyebrow">Eternal Packaging</p>
-          <h1>Cek Harga Produk</h1>
-          <p>Pilih produk, varian, dan jumlah pesanan.</p>
-        </div>
-      </header>
+    <main className="public-harga-page" data-testid="public-harga-detail-page">
+      <PublicHeader />
+      <div className="ph-detail-shell">
+        <Link className="ph-back-link" to="/harga">
+          <ArrowLeft size={18} aria-hidden="true" />
+          Kembali ke Katalog
+        </Link>
 
-      <div className="public-harga-content">
         {loading && (
-          <section className="public-harga-state" data-testid="public-harga-loading">
-            Memuat harga produk...
-          </section>
+          <div className="ph-public-state" data-testid="public-harga-detail-loading">
+            Memuat produk...
+          </div>
         )}
-
         {!loading && loadError && (
-          <section className="public-harga-state is-error" role="alert" data-testid="public-harga-error">
-            {loadError}
-          </section>
+          <div className="ph-public-state is-error" role="alert" data-testid="public-harga-not-found">
+            <PackageOpen aria-hidden="true" />
+            <h1>Produk tidak tersedia.</h1>
+            <p>{loadError}</p>
+            <Link to="/harga">Lihat katalog produk</Link>
+          </div>
         )}
 
-        {!loading && !loadError && groups.length === 0 && (
-          <section className="public-harga-state" data-testid="public-harga-empty">
-            <h2>Harga produk belum tersedia.</h2>
-            <p>Silakan cek kembali nanti atau hubungi Eternal Packaging.</p>
-          </section>
-        )}
-
-        {!loading && !loadError && groups.length > 0 && (
+        {!loading && !loadError && group && selectedVariant && (
           <>
-            <section className="public-harga-section" aria-labelledby="harga-produk-title">
-              <div className="public-harga-section-head">
-                <div>
-                  <p className="public-harga-step">01</p>
-                  <h2 id="harga-produk-title">Pilih Produk</h2>
-                </div>
-                {groups.length > 6 && (
-                  <label className="public-harga-search">
-                    <Search size={16} aria-hidden="true" />
-                    <span className="sr-only">Cari produk</span>
-                    <input
-                      type="search"
-                      value={search}
-                      onChange={(event) => setSearch(event.target.value)}
-                      placeholder="Cari produk..."
-                    />
-                  </label>
+            <section className="ph-detail-hero">
+              <ProductVisual imageUrl={group.image_url} name={group.name} large />
+              <div className="ph-detail-content">
+                <p className="ph-eyebrow">ETERNAL PACKAGING</p>
+                <h1>{group.name}</h1>
+                {group.public_description && (
+                  <p className="ph-detail-description">{group.public_description}</p>
                 )}
-              </div>
-              <div className="public-harga-groups" data-testid="public-harga-groups">
-                {filteredGroups.map((group) => (
-                  <button
-                    type="button"
-                    key={group.public_id}
-                    className={group.public_id === selectedGroupId ? "is-selected" : ""}
-                    aria-pressed={group.public_id === selectedGroupId}
-                    onClick={() => selectGroup(group.public_id)}
-                    data-testid={`harga-group-${group.public_id}`}
-                  >
-                    <strong>{group.name}</strong>
-                    <span>{group.variants.length} varian</span>
-                  </button>
-                ))}
-              </div>
-              {filteredGroups.length === 0 && (
-                <p className="public-harga-no-search">Produk tidak ditemukan.</p>
-              )}
-            </section>
 
-            <section className="public-harga-section" aria-labelledby="harga-kalkulator-title">
-              <div className="public-harga-section-head">
-                <div>
-                  <p className="public-harga-step">02</p>
-                  <h2 id="harga-kalkulator-title">Hitung Harga</h2>
-                </div>
-              </div>
-
-              {detailLoading && (
-                <p className="public-harga-inline-state" data-testid="public-harga-detail-loading">
-                  Memuat varian...
-                </p>
-              )}
-
-              {!detailLoading && groupDetail && selectedVariant && (
-                <form className="public-harga-form" onSubmit={calculate}>
-                  <label>
-                    <span>Varian</span>
-                    <select
-                      value={selectedVariantId}
-                      onChange={(event) => selectVariant(event.target.value)}
-                      data-testid="harga-variant-select"
-                    >
-                      {groupDetail.variants.map((variant) => (
-                        <option key={variant.public_variant_id} value={variant.public_variant_id}>
+                <form className="ph-calculator" onSubmit={calculate}>
+                  <fieldset>
+                    <legend>Pilih Varian</legend>
+                    <div className="ph-variant-chips" data-testid="harga-variant-buttons">
+                      {group.variants.map((variant) => (
+                        <button
+                          type="button"
+                          key={variant.public_variant_id}
+                          className={
+                            variant.public_variant_id === selectedVariantId
+                              ? "is-selected"
+                              : ""
+                          }
+                          aria-pressed={variant.public_variant_id === selectedVariantId}
+                          onClick={() => selectVariant(variant.public_variant_id)}
+                          data-testid={`harga-variant-${variant.public_variant_id}`}
+                        >
                           {variant.display_name}
-                        </option>
+                        </button>
                       ))}
-                    </select>
+                    </div>
+                  </fieldset>
+
+                  <label className="ph-quantity-field">
+                    <span>Jumlah Pesanan</span>
+                    <span className="ph-quantity-input">
+                      <input
+                        type="number"
+                        min="1"
+                        max="10000000"
+                        step="1"
+                        inputMode="numeric"
+                        value={quantity}
+                        onChange={(event) => updateQuantity(event.target.value)}
+                        placeholder={formatNumber(selectedVariant.minimum_quantity)}
+                        data-testid="harga-quantity-input"
+                      />
+                      <b>{selectedVariant.unit || "pcs"}</b>
+                    </span>
+                    <small>
+                      Minimum {formatNumber(selectedVariant.minimum_quantity)}{" "}
+                      {selectedVariant.unit || "pcs"}
+                    </small>
                   </label>
-                  <label>
-                    <span>Jumlah ({selectedVariant.unit || "pcs"})</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10000000"
-                      step="1"
-                      inputMode="numeric"
-                      value={quantity}
-                      onChange={(event) => updateQuantity(event.target.value)}
-                      placeholder={`Minimal ${formatNumber(selectedVariant.minimum_quantity)}`}
-                      data-testid="harga-quantity-input"
-                    />
-                  </label>
+
                   <button
                     type="submit"
-                    className="public-harga-calculate"
+                    className="ph-calculate-button"
                     disabled={calculating}
                     data-testid="harga-calculate-button"
                   >
-                    <Calculator size={18} aria-hidden="true" />
+                    <Calculator size={19} aria-hidden="true" />
                     {calculating ? "Menghitung..." : "Hitung Harga"}
                   </button>
+                  {calculationError && (
+                    <p className="ph-form-error" role="alert" data-testid="harga-calculation-error">
+                      {calculationError}
+                    </p>
+                  )}
                 </form>
-              )}
+              </div>
+            </section>
 
-              {calculationError && (
-                <p className="public-harga-message is-error" role="alert" data-testid="harga-calculation-error">
-                  {calculationError}
-                </p>
-              )}
-
-              {result && (
-                <div className="public-harga-result" data-testid="harga-result" aria-live="polite">
+            {result ? (
+              <section className="ph-results" data-testid="harga-result" aria-live="polite">
+                <div className="ph-section-heading">
+                  <p className="ph-kicker">Hasil Harga</p>
+                  <h2>Estimasi harga pesanan Anda</h2>
+                </div>
+                <div className="ph-result-grid">
                   <div>
                     <span>Harga / {result.variant.unit || "pcs"}</span>
-                    <strong data-testid="harga-unit-price">{formatMoney(result.unit_price)}</strong>
+                    <strong data-testid="harga-unit-price">
+                      {formatMoney(result.unit_price)}
+                    </strong>
                   </div>
-                  <div className="is-total">
+                  <div>
                     <span>Total</span>
                     <strong data-testid="harga-total">{formatMoney(result.total)}</strong>
                   </div>
-                  <p>
-                    Tier yang dipakai
-                    <b data-testid="harga-selected-tier">
-                      {tierLabel(result.selected_tier, result.variant.unit)}
-                    </b>
-                  </p>
                 </div>
-              )}
-            </section>
-
-            {!detailLoading && selectedVariant && (
-              <section className="public-harga-section" aria-labelledby="harga-tier-title">
-                <div className="public-harga-section-head">
-                  <div>
-                    <p className="public-harga-step">03</p>
-                    <h2 id="harga-tier-title">Tier Harga</h2>
-                  </div>
-                  <span className="public-harga-variant-name">{selectedVariant.display_name}</span>
-                </div>
-                <div className="public-harga-table-wrap">
-                  <table className="public-harga-table" data-testid="harga-tier-table">
-                    <thead>
-                      <tr>
-                        <th>Qty</th>
-                        <th>Harga / {selectedVariant.unit || "pcs"}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedVariant.tiers.map((tier) => (
-                        <tr key={`${tier.min_qty}-${tier.max_qty ?? "plus"}`}>
-                          <td>{tierLabel(tier, selectedVariant.unit)}</td>
-                          <td>{formatMoney(tier.unit_price)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <p className="ph-used-tier">
+                  Tier yang digunakan
+                  <b data-testid="harga-selected-tier">
+                    {tierRange(result.selected_tier)} {result.variant.unit || "pcs"}
+                  </b>
+                </p>
+              </section>
+            ) : (
+              <section className="ph-result-prompt" data-testid="harga-result-empty">
+                <Calculator aria-hidden="true" />
+                <div>
+                  <h2>Harga belum tersedia.</h2>
+                  <p>Pilih varian dan masukkan jumlah pesanan untuk menghitung harga.</p>
                 </div>
               </section>
             )}
+
+            <section className="ph-tier-section">
+              <div className="ph-section-heading">
+                <p className="ph-kicker">Harga Berdasarkan Jumlah</p>
+                <h2>Tier harga {selectedVariant.display_name}</h2>
+              </div>
+              <div className="ph-tier-table-wrap">
+                <table className="ph-tier-table" data-testid="harga-tier-table">
+                  <thead>
+                    <tr>
+                      <th>Jumlah</th>
+                      <th>Harga / {selectedVariant.unit || "pcs"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedVariant.tiers.map((tier) => (
+                      <tr
+                        key={`${tier.min_qty}-${tier.max_qty ?? "plus"}`}
+                        className={selectedTierMatches(tier) ? "is-selected" : ""}
+                        data-testid={
+                          selectedTierMatches(tier) ? "harga-tier-selected-row" : undefined
+                        }
+                      >
+                        <td>
+                          {tierRange(tier)} {selectedVariant.unit || "pcs"}
+                        </td>
+                        <td>{formatMoney(tier.unit_price)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </>
         )}
       </div>
-
-      <footer className="public-harga-footer">
-        Harga dihitung berdasarkan jumlah pesanan dan dapat diperbarui oleh Eternal Packaging.
+      <footer className="ph-footer">
+        Harga dihitung berdasarkan tier jumlah pesanan yang berlaku.
       </footer>
     </main>
   );
+}
+
+export default function PublicHargaPage() {
+  const { groupPublicId } = useParams();
+  return groupPublicId
+    ? <DetailPage groupPublicId={groupPublicId} />
+    : <CatalogPage />;
 }
