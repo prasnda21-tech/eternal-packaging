@@ -454,8 +454,6 @@ export default function ProductionSchedule() {
                           className="pill sm"
                           title={r.delivery_deadline_source === "manual" ? "Manual override" : "Otomatis"}
                           style={{
-                            fontSize: 10,
-                            padding: "1px 5px",
                             background: r.delivery_deadline_source === "manual" ? "#ffe9b8" : "#e6ecf3",
                             color: r.delivery_deadline_source === "manual" ? "#7a5a1e" : "#3a4b60",
                           }}
