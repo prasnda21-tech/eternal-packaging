@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Download, Search, Upload, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -6,7 +6,7 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { isAccuratePurchaseSource, purchaseSourceLabel } from "../lib/currentStock";
 import ImportPreviewModal from "../components/ImportPreviewModal";
-import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
+import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 
 function parseInputQty(raw, { allowNegative = false } = {}) {
   const t = String(raw ?? "").trim();
@@ -75,7 +75,7 @@ export default function StockSaatIni() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
   const [stockFilter, setStockFilter] = useState("all");
   const [sortBy, setSortBy] = useState("name");
   const [sortDir, setSortDir] = useState("asc");
@@ -83,22 +83,33 @@ export default function StockSaatIni() {
   const [pageSize, setPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const loadSeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q]);
 
+  useEffect(() => {
+    if (!searchPending) return;
+    setLoading(true);
+    setData((prev) => (prev ? { ...prev, items: [] } : prev));
+  }, [searchPending]);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setErr("");
+    setData((prev) => (prev ? { ...prev, items: [] } : prev));
     try {
       const d = await api.currentStock({
         q, stock_filter: stockFilter, sort_by: sortBy, sort_dir: sortDir, page, page_size: pageSize,
       });
+      if (seq !== loadSeq.current) return;
       setData(d);
     } catch (ex) {
+      if (seq !== loadSeq.current) return;
       const det = ex.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Stock Saat Ini"));
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [q, stockFilter, sortBy, sortDir, page, pageSize]);
 
@@ -119,6 +130,7 @@ export default function StockSaatIni() {
   };
 
   const patchRow = async (item, fields) => {
+    if (searchPending || loading) return;
     const id = item.master_item_id || item.accurate_item_id;
     const r = await api.currentStockUpdate(id, fields);
     const next = r.item;
@@ -163,6 +175,12 @@ export default function StockSaatIni() {
   const pageCount = data?.page_count || 1;
   const purchaseAccurate = isAccuratePurchaseSource(data?.purchase_source);
   const sourceLabel = purchaseSourceLabel(data?.purchase_source);
+  const tableBusy = searchPending || loading;
+  const tableView = liveSearchTableView({
+    pending: searchPending,
+    loading,
+    itemCount: items.length,
+  });
 
   return (
     <div className="prod-page master-items-page stock-page" data-testid="stock-saat-ini-page">
@@ -258,14 +276,16 @@ export default function StockSaatIni() {
               <th className="col-fit">Terakhir Update</th>
             </tr>
           </thead>
-          <tbody>
-            {loading && <tr><td colSpan={9} className="muted small">Memuat…</td></tr>}
-            {!loading && items.length === 0 && (
+          <tbody data-testid="stock-tbody" data-search-state={tableView}>
+            {tableView === "loading" && (
+              <tr data-testid="stock-loading"><td colSpan={9} className="muted small">Memuat…</td></tr>
+            )}
+            {tableView === "empty" && (
               <tr>
                 <td colSpan={9} className="muted small" data-testid="stock-empty">Tidak ada item.</td>
               </tr>
             )}
-            {!loading && items.map((it) => (
+            {tableView === "results" && items.map((it) => (
               <tr
                 key={it.accurate_item_id || it.master_item_id}
                 data-testid={`stock-row-${it.accurate_item_id || it.master_item_id}`}
@@ -277,7 +297,7 @@ export default function StockSaatIni() {
                 <td className="col-fit num">
                   <QtyCell
                     value={it.manual_current_qty}
-                    disabled={!canUpdate}
+                    disabled={!canUpdate || tableBusy}
                     allowNegative
                     testid={`stock-manual-${it.accurate_item_id}`}
                     onSave={(v) => patchRow(it, { manual_current_qty: v })}
@@ -293,7 +313,7 @@ export default function StockSaatIni() {
                     <span className="stock-purchase-cell">
                       <QtyCell
                         value={it.purchase_qty}
-                        disabled={!canUpdate}
+                        disabled={!canUpdate || tableBusy}
                         testid={`stock-purchase-${it.accurate_item_id}`}
                         onSave={(v) => patchRow(it, { manual_purchase_qty: v })}
                       />
@@ -324,9 +344,9 @@ export default function StockSaatIni() {
 
       {pageCount > 1 && (
         <div className="master-pager" data-testid="stock-pager">
-          <button className="ghost sm" disabled={page <= 1 || loading} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
+          <button className="ghost sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
           <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} item</span>
-          <button className="ghost sm" disabled={page >= pageCount || loading} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
+          <button className="ghost sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
 
