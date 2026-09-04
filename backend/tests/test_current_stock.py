@@ -293,6 +293,15 @@ def test_filter_negative_export_set():
     assert out["formula"] == "(manual_current_qty + purchase_qty) - po_qty - operator_print_qty"
 
 
+def test_matches_search_includes_accurate_item_id():
+    from services.current_stock import matches_search
+    row = {"item_name": "Cup", "item_code": "PC-12", "accurate_item_id": "PREVIEW-101"}
+    assert matches_search(row, "preview-101")
+    assert matches_search(row, "PC-12")
+    assert matches_search(row, "cup")
+    assert not matches_search(row, "missing")
+
+
 def test_qty_num_whole_int():
     assert qty_num(4000.0) == 4000
     assert isinstance(qty_num(4000.0), int)

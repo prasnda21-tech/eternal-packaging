@@ -7,6 +7,7 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { errDetail, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 
 export default function PenerimaanBarang() {
   const { hasPerm } = useAuth();
@@ -21,8 +22,7 @@ export default function PenerimaanBarang() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [syncErr, setSyncErr] = useState("");
-  const [qInput, setQInput] = useState("");
-  const [q, setQ] = useState("");
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [openId, setOpenId] = useState(null);
@@ -52,6 +52,7 @@ export default function PenerimaanBarang() {
   }, [q, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { setPage(1); }, [q]);
 
   useEffect(() => {
     api.listPurchaseGoodsReceipts({}).then((r) => setPoReceipts(r.receipts || [])).catch(() => setPoReceipts([]));
@@ -70,14 +71,8 @@ export default function PenerimaanBarang() {
     }).catch((ex) => setRecvErr(errDetail(ex)));
   }, [recvPoId]);
 
-  const doSearch = (e) => {
-    e?.preventDefault?.();
-    setPage(1);
-    setQ(qInput.trim());
-  };
   const clearSearch = () => {
-    setQInput("");
-    setQ("");
+    clearQuery();
     setPage(1);
   };
 
@@ -182,8 +177,9 @@ export default function PenerimaanBarang() {
               type="text"
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
-              placeholder="Cari no penerimaan / item"
+              placeholder="Cari no penerimaan / item (live)"
               data-testid="penerimaan-search"
+              aria-label="Cari penerimaan barang live"
             />
             {q && (
               <button type="button" className="ghost sm" onClick={clearSearch} aria-label="Bersihkan">

@@ -3,6 +3,7 @@ import { AlertCircle, ImageIcon, Plus, RefreshCw, Trash2, Upload, X } from "luci
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
 import { errDetail, formatRupiah } from "../lib/purchaseUi";
+import { LIVE_SEARCH_DEBOUNCE_MS } from "../hooks/useDebouncedLiveSearch";
 
 export const MODE_FORMULA = "HPP_FORMULA";
 export const MODE_MANUAL = "MANUAL_TIER_PRICE";
@@ -162,6 +163,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
     default_quotation_validity_days: "",
   });
   const [groups, setGroups] = useState([]);
+  const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -188,7 +190,9 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [masterQuery, setMasterQuery] = useState("");
   const [masterItems, setMasterItems] = useState([]);
+  const [masterSearchBusy, setMasterSearchBusy] = useState(false);
   const [selectedMaster, setSelectedMaster] = useState(null);
+  const masterSearchSeq = useRef(0);
 
   const loadSettings = useCallback(async () => {
     const response = await api.customerPricingSettings();
@@ -205,11 +209,25 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   }, [query]);
 
   useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setQuery(queryInput.trim());
+    }, LIVE_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [queryInput]);
+
+  useEffect(() => {
     setBusy(true);
-    Promise.all([loadSettings(), loadGroups()])
+    loadSettings()
       .catch((exception) => setError(errDetail(exception)))
       .finally(() => setBusy(false));
-  }, [loadSettings, loadGroups]);
+  }, [loadSettings]);
+
+  useEffect(() => {
+    setBusy(true);
+    loadGroups()
+      .catch((exception) => setError(errDetail(exception)))
+      .finally(() => setBusy(false));
+  }, [loadGroups]);
 
   const applyVersion = (next) => {
     setVersion(next);
@@ -391,23 +409,35 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
     }
   };
 
-  const searchMasters = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      const response = await api.masterItems({
-        q: masterQuery,
-        status: "active",
-        page: 1,
-        page_size: 50,
-      });
-      setMasterItems(response.items || []);
-    } catch (exception) {
-      setError(errDetail(exception));
-    } finally {
-      setBusy(false);
-    }
-  };
+  useEffect(() => {
+    if (!productPickerOpen) return undefined;
+    setMasterItems([]);
+    setMasterSearchBusy(true);
+    setSelectedMaster(null);
+    const requestId = ++masterSearchSeq.current;
+    const handle = window.setTimeout(async () => {
+      try {
+        const response = await api.masterItems({
+          q: masterQuery.trim(),
+          status: "active",
+          page: 1,
+          page_size: 50,
+        });
+        if (requestId !== masterSearchSeq.current) return;
+        setMasterItems(response.items || []);
+      } catch (exception) {
+        if (requestId !== masterSearchSeq.current) return;
+        setMasterItems([]);
+        setError(errDetail(exception));
+      } finally {
+        if (requestId === masterSearchSeq.current) setMasterSearchBusy(false);
+      }
+    }, 300);
+    return () => {
+      window.clearTimeout(handle);
+      masterSearchSeq.current += 1;
+    };
+  }, [productPickerOpen, masterQuery]);
 
   const addSelectedProduct = () => {
     if (!selectedMaster) return;
@@ -696,12 +726,18 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
               <h3>Kelompok Harga</h3>
               <div className="cp-toolbar">
                 <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  onKeyDown={(event) => event.key === "Enter" && loadGroups()}
-                  placeholder="Cari kelompok / produk…"
+                  value={queryInput}
+                  onChange={(event) => setQueryInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      setQuery(queryInput.trim());
+                    }
+                  }}
+                  placeholder="Cari kelompok / produk (live)…"
+                  data-testid="cp-group-search"
+                  aria-label="Cari kelompok harga live"
                 />
-                <button className="ghost sm" disabled={busy} onClick={loadGroups}>Cari</button>
                 {canEdit && (
                   <button
                     className="primary sm"
@@ -822,13 +858,24 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
             <div className="cp-toolbar">
               <input
                 value={masterQuery}
-                onChange={(event) => setMasterQuery(event.target.value)}
-                onKeyDown={(event) => event.key === "Enter" && searchMasters()}
+                onChange={(event) => {
+                  setMasterQuery(event.target.value);
+                  setMasterItems([]);
+                  setMasterSearchBusy(true);
+                  setSelectedMaster(null);
+                }}
                 placeholder="Cari nama / kode…"
                 data-testid="cp-master-search"
+                autoFocus
               />
-              <button className="ghost" onClick={searchMasters} disabled={busy}>Cari</button>
             </div>
+            {masterSearchBusy && (
+              <p className="muted small" data-testid="cp-master-loading">Memuat…</p>
+            )}
+            {!masterSearchBusy && masterItems.length === 0 && (
+              <p className="muted small" data-testid="cp-master-empty">Produk tidak ditemukan</p>
+            )}
+            {!masterSearchBusy && (
             <ul className="cp-master-list">
               {masterItems.map((item) => {
                 const duplicate = products.some(
@@ -856,6 +903,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                 );
               })}
             </ul>
+            )}
             <div className="delete-modal-actions">
               <button className="ghost" onClick={() => setProductPickerOpen(false)}>Batal</button>
               <button

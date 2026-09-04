@@ -7,6 +7,7 @@ import { formatDisplayDate } from "../lib/constants";
 import { NAV_KEYS } from "../lib/navAccess";
 import { exportOperatorIds } from "../lib/operatorFilter";
 import OperatorMultiSelect from "../components/OperatorMultiSelect";
+import FacetSearchSelect from "../components/FacetSearchSelect";
 
 function todayIso() {
   const d = new Date();
@@ -30,6 +31,20 @@ function fmtQty(n) {
 function fmtMoney(n) {
   if (n === "" || n == null) return "Belum Disetel";
   return Number(n || 0).toLocaleString("id-ID");
+}
+
+/** Backend matches line item_code / name — never send accurate_item_id alone. */
+export function gajiFilterItemValue(it) {
+  if (!it) return "";
+  return String(it.item_code || it.item_name || "").trim();
+}
+
+export function gajiFilterItemLabel(it) {
+  if (!it) return "";
+  const code = String(it.item_code || "").trim();
+  const name = String(it.item_name || "").trim();
+  if (code && name) return `${code} · ${name}`;
+  return code || name || String(it.accurate_item_id || "");
 }
 
 export default function GajiOperator() {
@@ -111,14 +126,18 @@ export default function GajiOperator() {
           />
           <label className="ship-filter-field">
             <span>Produk / Item</span>
-            <select value={item} onChange={(e) => setItem(e.target.value)} data-testid="gaji-filter-item">
-              <option value="">Semua Produk</option>
-              {items.map((it) => (
-                <option key={it.accurate_item_id || it.master_item_id} value={it.item_code || it.accurate_item_id || it.item_name}>
-                  {it.item_code ? `${it.item_code} · ` : ""}{it.item_name}
-                </option>
-              ))}
-            </select>
+            <FacetSearchSelect
+              testId="gaji-filter-item"
+              options={items}
+              value={item}
+              onChange={setItem}
+              emptyValue=""
+              emptyLabel="Semua Produk"
+              placeholder="Cari produk / kode…"
+              getOptionValue={gajiFilterItemValue}
+              getOptionLabel={gajiFilterItemLabel}
+              getSearchText={(it) => `${it.item_code || ""} ${it.item_name || ""} ${it.accurate_item_id || ""}`}
+            />
           </label>
           <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="gaji-refresh" disabled={busy}>
             <RefreshCw size={14} className={busy ? "spin" : ""} />

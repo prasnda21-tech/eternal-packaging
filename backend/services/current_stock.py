@@ -227,7 +227,8 @@ def matches_search(item: dict, q: str) -> bool:
         return True
     code = str(item.get("item_code") or "").lower()
     name = str(item.get("item_name") or "").lower()
-    return needle in code or needle in name
+    aid = str(item.get("accurate_item_id") or "").lower()
+    return needle in code or needle in name or needle in aid
 
 
 def build_stock_rows(

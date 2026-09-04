@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "../lib/api";
 
 function todayIso() {
@@ -12,6 +12,8 @@ function todayIso() {
 function numOrEmpty(v) {
   return v == null || v === "" ? "" : v;
 }
+
+export const WAGE_ITEM_SEARCH_DEBOUNCE_MS = 300;
 
 export default function OperatorWageSettings({ notify, canEdit }) {
   const [operators, setOperators] = useState([]);
@@ -28,14 +30,13 @@ export default function OperatorWageSettings({ notify, canEdit }) {
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [items, setItems] = useState([]);
+  const [itemSearchBusy, setItemSearchBusy] = useState(false);
   const [editing, setEditing] = useState("");
+  const itemSearchSeq = useRef(0);
 
   const load = () => {
     setBusy(true);
-    Promise.all([
-      api.operatorWageSettings(),
-      api.masterItems({ page: 1, page_size: 80, q }).catch(() => ({ items: [] })),
-    ]).then(([d, m]) => {
+    api.operatorWageSettings().then((d) => {
       const s = d.settings || {};
       setOperators((d.operators || []).map((o) => ({
         ...o,
@@ -60,14 +61,35 @@ export default function OperatorWageSettings({ notify, canEdit }) {
         effective_from: b.effective_from || "",
         active: b.active !== false,
       });
-      setItems(m.items || []);
     }).catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat upah")).finally(() => setBusy(false));
   };
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setItems([]);
+    setItemSearchBusy(true);
+    const requestId = ++itemSearchSeq.current;
+    const handle = window.setTimeout(async () => {
+      try {
+        // Settings may manage historical / inactive product additions — do not force status=active.
+        const m = await api.masterItems({ page: 1, page_size: 80, q: q.trim() });
+        if (requestId !== itemSearchSeq.current) return;
+        setItems(m.items || []);
+      } catch {
+        if (requestId !== itemSearchSeq.current) return;
+        setItems([]);
+      } finally {
+        if (requestId === itemSearchSeq.current) setItemSearchBusy(false);
+      }
+    }, WAGE_ITEM_SEARCH_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(handle);
+      itemSearchSeq.current += 1;
+    };
+  }, [q]);
 
   const upsertAddition = (item) => {
     const next = [...additions];
@@ -390,14 +412,28 @@ export default function OperatorWageSettings({ notify, canEdit }) {
           </table>
         </div>
         <div className="wage-item-search">
-          <input placeholder="Cari produk master" value={q} onChange={(e) => setQ(e.target.value)} data-testid="wage-item-search" />
-          <button type="button" className="ghost sm" onClick={load} data-testid="wage-item-search-btn">Cari</button>
+          <input
+            placeholder="Cari produk master (live)"
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setItems([]);
+              setItemSearchBusy(true);
+            }}
+            data-testid="wage-item-search"
+          />
         </div>
-        {!!items.length && canEdit && (
+        {itemSearchBusy && <p className="muted small" data-testid="wage-item-loading">Memuat…</p>}
+        {!itemSearchBusy && q.trim() && !items.length && (
+          <p className="muted small" data-testid="wage-item-empty">Produk tidak ditemukan</p>
+        )}
+        {!itemSearchBusy && !!items.length && canEdit && (
           <ul className="muted small wage-item-results" data-testid="wage-item-results">
             {items.slice(0, 8).map((it) => (
-              <li key={it.id || it.accurate_item_id}>
+              <li key={it.accurate_item_id || it.id}>
                 <span className="mono">{it.item_code}</span> {it.item_name}
+                <span className="muted"> · ID {it.accurate_item_id}</span>
+                {it.is_active === false ? <span className="muted"> · nonaktif</span> : null}
                 <button type="button" className="ghost sm" onClick={() => upsertAddition(it)} data-testid={`wage-add-item-${it.accurate_item_id || it.id}`}>
                   Tambah
                 </button>

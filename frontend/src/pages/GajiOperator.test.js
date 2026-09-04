@@ -31,4 +31,12 @@ describe("Gaji Operator page", () => {
     expect(ms).toMatch(/nextSelectAll\(draft, allIds\)/);
     expect(ms).toMatch(/searchOperators\(operators, query\)/);
   });
+
+  test("product filter is live searchable facet select not native scroll select", () => {
+    expect(src).toMatch(/FacetSearchSelect/);
+    expect(src).toMatch(/gaji-filter-item/);
+    expect(src).toMatch(/gajiFilterItemValue/);
+    expect(src).not.toMatch(/<select value=\{item\}/);
+    expect(src).toMatch(/item_code \|\| it\.item_name/);
+  });
 });

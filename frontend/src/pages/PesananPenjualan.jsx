@@ -17,6 +17,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 
 function getTodayString() {
   const d = new Date();
@@ -186,22 +187,29 @@ export default function PesananPenjualan() {
     });
   };
 
-  const handleSelectMasterItem = (index, masterId) => {
-    const master = options.master_items?.find((m) => String(m.id) === String(masterId) || String(m.accurate_item_id) === String(masterId));
-    if (master) {
-      setFormData((prev) => {
-        const lines = [...prev.line_items];
+  const handleSelectMasterItem = (index, master) => {
+    setFormData((prev) => {
+      const lines = [...prev.line_items];
+      if (!master) {
+        lines[index] = {
+          ...lines[index],
+          name: "",
+          item_code: "",
+          accurate_item_id: null,
+          master_item_id: null,
+        };
+      } else {
         lines[index] = {
           ...lines[index],
           name: master.item_name || lines[index].name,
           item_code: master.item_code || lines[index].item_code,
           unit: master.unit || lines[index].unit || "pcs",
           accurate_item_id: master.accurate_item_id || null,
-          master_item_id: master.id || null,
+          master_item_id: master.id || master.master_item_id || null,
         };
-        return { ...prev, line_items: lines };
-      });
-    }
+      }
+      return { ...prev, line_items: lines };
+    });
   };
 
   const addLineItem = () => {
@@ -760,23 +768,33 @@ export default function PesananPenjualan() {
                     <tr key={idx} data-testid={`line-item-row-${idx}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
                       <td style={{ padding: "10px 8px", color: "#64748b", fontWeight: 600 }}>{idx + 1}</td>
                       <td style={{ padding: "10px 8px" }}>
-                        <input
-                          type="text"
-                          list={`master-item-list-${idx}`}
-                          value={line.name}
-                          onChange={(e) => handleLineChange(idx, "name", e.target.value)}
-                          placeholder="Nama barang..."
-                          data-testid={`line-name-${idx}`}
-                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                          required
+                        <MasterItemSearchSelect
+                          testId={`line-item-search-${idx}`}
+                          value={
+                            line.accurate_item_id || line.master_item_id
+                              ? {
+                                  accurate_item_id: line.accurate_item_id,
+                                  id: line.master_item_id,
+                                  master_item_id: line.master_item_id,
+                                  item_name: line.name,
+                                  item_code: line.item_code,
+                                  unit: line.unit,
+                                }
+                              : null
+                          }
+                          onChange={(master) => handleSelectMasterItem(idx, master)}
+                          placeholder="Cari nama / kode barang…"
                         />
-                        <datalist id={`master-item-list-${idx}`}>
-                          {options.master_items?.map((m) => (
-                            <option key={m.id || m.accurate_item_id} value={m.item_name}>
-                              {m.item_code ? `[${m.item_code}] ` : ""}{m.item_name}
-                            </option>
-                          ))}
-                        </datalist>
+                        {!line.accurate_item_id && !line.master_item_id && (
+                          <input
+                            type="text"
+                            value={line.name}
+                            onChange={(e) => handleLineChange(idx, "name", e.target.value)}
+                            placeholder="Atau ketik nama bebas (tanpa master)"
+                            data-testid={`line-name-${idx}`}
+                            style={{ width: "100%", marginTop: 6, padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                          />
+                        )}
                       </td>
                       <td style={{ padding: "10px 8px" }}>
                         <input

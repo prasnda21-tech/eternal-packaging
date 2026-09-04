@@ -61,6 +61,9 @@ describe("Customer Pricing multi-product group UI", () => {
     expect(cpSrc).toMatch(/accurate_item_id/);
     expect(cpSrc).toMatch(/master_item_id/);
     expect(cpSrc).not.toMatch(/oz.*match|code.*prefix|sku.*similar/i);
+    expect(cpSrc).toMatch(/masterSearchSeq/);
+    expect(cpSrc).toMatch(/cp-master-empty/);
+    expect(cpSrc).not.toMatch(/searchMasters/);
   });
 
   test("Published UI is readonly and creates a new Draft to edit", () => {
