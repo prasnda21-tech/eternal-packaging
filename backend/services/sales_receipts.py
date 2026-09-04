@@ -18,6 +18,13 @@ from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 from workflow_gates import sync_workflow_stage, design_ok, payment_ok
+from services.sales_receipt_payment_proof import (
+    parse_proof_payload,
+    proof_from_receipt,
+    public_proof,
+    soft_delete_proof_for_receipt,
+    store_payment_proof,
+)
 
 _receipt_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
@@ -112,7 +119,22 @@ async def list_sales_receipts(
 
     cursor = db.sales_receipts.find(filters, {"_id": 0}).sort("created_at", -1)
     receipts = await cursor.to_list(1000)
-    return receipts
+    return [_public_receipt(r) for r in receipts]
+
+
+def _public_receipt(receipt: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip any non-public proof fields from a receipt document."""
+    if not isinstance(receipt, dict):
+        return receipt
+    out = dict(receipt)
+    proof = proof_from_receipt(out)
+    if proof:
+        out["payment_proof"] = proof
+        out["has_payment_proof"] = True
+    else:
+        out.pop("payment_proof", None)
+        out["has_payment_proof"] = False
+    return out
 
 
 async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
@@ -122,7 +144,7 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
         r = await db.sales_receipts.find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
     if not r:
         raise HTTPException(404, f"Penerimaan Penjualan '{receipt_id}' tidak ditemukan.")
-    return r
+    return _public_receipt(r)
 
 
 async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
@@ -141,12 +163,34 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
     if not invoice_id:
         raise HTTPException(400, "ID Faktur Penjualan (invoice_id) wajib diisi.")
 
+    # Validate proof payload early so invalid files never create a receipt / payment effect.
+    proof_input = parse_proof_payload(payload.get("payment_proof"))
+
     async with _get_receipt_lock():
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         if idempotency_key:
             existing_by_key = await db.sales_receipts.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
             if existing_by_key:
-                return existing_by_key
+                # Idempotent replay: if original request included proof and receipt still lacks it, attach once.
+                if proof_input and not proof_from_receipt(existing_by_key):
+                    try:
+                        proof_meta = await store_payment_proof(
+                            db,
+                            receipt=existing_by_key,
+                            user=user,
+                            filename=proof_input["name"],
+                            data_url=proof_input["data_url"],
+                            uploaded_at=now_iso(),
+                        )
+                        await db.sales_receipts.update_one(
+                            {"id": existing_by_key["id"]},
+                            {"$set": {"payment_proof": proof_meta}},
+                        )
+                        existing_by_key["payment_proof"] = proof_meta
+                        await _patch_order_payment_receipt_proof(db, existing_by_key, proof_meta)
+                    except HTTPException:
+                        raise
+                return _public_receipt(existing_by_key)
 
         # 1. Fetch exact invoice
         invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
@@ -246,6 +290,8 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
                     "invoice_id": invoice["id"],
                     "amount": amount,
                     "payment_state": payment_state,
+                    "receipt_number": receipt_number,
+                    "receipt_date": receipt_date,
                     "at": now_iso(),
                 })
                 order["payment_fact"] = {
@@ -290,7 +336,78 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
 
                 await db.orders.replace_one({"id": order["id"]}, order)
 
-        return receipt_doc
+        # 6. Optional Bukti Payment — after receipt is legitimate; rollback receipt if storage fails.
+        if proof_input:
+            try:
+                proof_meta = await store_payment_proof(
+                    db,
+                    receipt=receipt_doc,
+                    user=user,
+                    filename=proof_input["name"],
+                    data_url=proof_input["data_url"],
+                    uploaded_at=now_iso(),
+                )
+            except HTTPException:
+                # Roll back receipt + invoice/order payment side-effects so failed proof
+                # does not leave an authoritative payment without required evidence.
+                await db.sales_receipts.delete_one({"id": receipt_id})
+                await _recalc_invoice_payment_from_receipts(db, invoice["id"])
+                await _recalc_order_payment_facts_after_receipt_delete(db, invoice.get("po_id"), [receipt_id])
+                raise
+            await db.sales_receipts.update_one(
+                {"id": receipt_id},
+                {"$set": {"payment_proof": proof_meta}},
+            )
+            receipt_doc["payment_proof"] = proof_meta
+            await _patch_order_payment_receipt_proof(db, receipt_doc, proof_meta)
+
+        return _public_receipt(receipt_doc)
+
+
+async def _patch_order_payment_receipt_proof(db, receipt: dict, proof_meta: dict) -> None:
+    """Attach public proof meta onto the matching payment_receipts entry. No payment_files mutation."""
+    po_id = receipt.get("po_id")
+    receipt_id = receipt.get("id")
+    if not po_id or not receipt_id or not proof_meta:
+        return
+    order = await db.orders.find_one({"id": str(po_id)}, {"_id": 0, "payment_receipts": 1})
+    if not order:
+        return
+    changed = False
+    entries = list(order.get("payment_receipts") or [])
+    for entry in entries:
+        if entry.get("receipt_id") == receipt_id:
+            entry["payment_proof"] = public_proof(proof_meta) or proof_meta
+            entry["has_payment_proof"] = True
+            changed = True
+            break
+    if changed:
+        await db.orders.update_one({"id": str(po_id)}, {"$set": {"payment_receipts": entries}})
+
+
+async def attach_payment_proof_to_receipt(db, receipt_id: str, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+    """Attach proof to a receipt that has none. Idempotent if proof already exists. Immutable replace denied."""
+    receipt = await db.sales_receipts.find_one({"id": str(receipt_id)}, {"_id": 0})
+    if not receipt:
+        raise HTTPException(404, "Penerimaan Penjualan tidak ditemukan.")
+    existing = proof_from_receipt(receipt)
+    if existing and existing.get("id"):
+        return _public_receipt(receipt)
+    proof_input = parse_proof_payload(payload.get("payment_proof") or payload)
+    if not proof_input:
+        raise HTTPException(400, "Bukti Payment wajib diunggah.")
+    proof_meta = await store_payment_proof(
+        db,
+        receipt=receipt,
+        user=user,
+        filename=proof_input["name"],
+        data_url=proof_input["data_url"],
+        uploaded_at=now_iso(),
+    )
+    await db.sales_receipts.update_one({"id": receipt["id"]}, {"$set": {"payment_proof": proof_meta}})
+    receipt["payment_proof"] = proof_meta
+    await _patch_order_payment_receipt_proof(db, receipt, proof_meta)
+    return _public_receipt(receipt)
 
 
 _PAY_DOWNSTREAM_MSG = (
@@ -390,6 +507,12 @@ async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
 
     receipt_number = rec.get("receipt_number", rec["id"])
     await db.sales_receipts.delete_one({"id": rec["id"]})
+    await soft_delete_proof_for_receipt(
+        db,
+        rec["id"],
+        deleted_by=str(user.get("email") or ""),
+        reason="sales_receipt_deleted",
+    )
     await _recalc_invoice_payment_from_receipts(db, invoice_id)
     await _recalc_order_payment_facts_after_receipt_delete(db, po_id, [rec["id"]])
     return {"deleted": True, "receipt_number": receipt_number, "id": rec["id"]}
@@ -434,6 +557,13 @@ async def bulk_delete_sales_receipts(db, ids: list, user: dict) -> dict:
     if to_delete:
         delete_ids = [r["id"] for r in to_delete]
         await db.sales_receipts.delete_many({"id": {"$in": delete_ids}})
+        for r in to_delete:
+            await soft_delete_proof_for_receipt(
+                db,
+                r["id"],
+                deleted_by=str(user.get("email") or ""),
+                reason="sales_receipt_bulk_deleted",
+            )
 
         affected_invoice_ids = list(set(r.get("invoice_id") for r in to_delete if r.get("invoice_id")))
         for inv_id in affected_invoice_ids:

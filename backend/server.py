@@ -6194,6 +6194,11 @@ from services.sales_receipts import (
     generate_sales_receipt_pdf_bytes,
     delete_sales_receipt as _delete_sales_receipt,
     bulk_delete_sales_receipts as _bulk_delete_sales_receipts,
+    attach_payment_proof_to_receipt as _attach_sales_receipt_payment_proof,
+)
+from services.sales_receipt_payment_proof import (
+    load_proof_bytes as _load_sales_receipt_payment_proof_bytes,
+    content_disposition as _sales_receipt_proof_content_disposition,
 )
 
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
@@ -6280,12 +6285,22 @@ class SalesInvoiceUpdatePayload(BaseModel):
 
 
 # ---------- Sales Receipt (Penerimaan Penjualan) ----------
+class SalesReceiptPaymentProofPayload(BaseModel):
+    name: str
+    data_url: str
+
+
 class SalesReceiptCreatePayload(BaseModel):
     invoice_id: str
     receipt_date: Optional[str] = None
     amount: Union[int, float, str]
     notes: Optional[str] = ""
     idempotency_key: Optional[str] = None
+    payment_proof: Optional[SalesReceiptPaymentProofPayload] = None
+
+
+class SalesReceiptAttachProofPayload(BaseModel):
+    payment_proof: SalesReceiptPaymentProofPayload
 
 
 async def _next_suggested_po_number(database) -> str:
@@ -6753,10 +6768,48 @@ async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
 async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user=Depends(current_user)):
     """Create a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively."""
     await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
-    receipt = await _create_sales_receipt(db, payload.model_dump(), user)
+    data = payload.model_dump()
+    if data.get("payment_proof") is None:
+        data.pop("payment_proof", None)
+    receipt = await _create_sales_receipt(db, data, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
 
 
+@api_router.post("/sales-receipts/{id}/payment-proof")
+async def attach_sales_receipt_payment_proof_endpoint(
+    id: str,
+    payload: SalesReceiptAttachProofPayload,
+    user=Depends(current_user),
+):
+    """Attach Bukti Payment to a receipt that has none. Idempotent if already present. No replace."""
+    await _require_any_perm(user, "sales.receipt.create", "sales.invoice.create", "sales_order.create", "po.edit")
+    receipt = await _attach_sales_receipt_payment_proof(db, id, payload.model_dump(), user)
+    return {"receipt": receipt, "message": "Bukti Payment berhasil dilampirkan"}
+
+
+@api_router.get("/sales-receipts/{id}/payment-proof")
+async def get_sales_receipt_payment_proof_endpoint(
+    id: str,
+    download: bool = False,
+    user=Depends(current_user),
+):
+    """Preview or download Bukti Payment. Authenticated proxy — never raw Object Storage URL.
+
+    Pure read: does not mutate receipt, payment, workflow, or file metadata.
+    """
+    # Financial/receipt gate only — po.view alone must NOT open Bukti Payment.
+    await _require_any_perm(
+        user,
+        "sales.receipt.view",
+        "payment.view",
+    )
+    data, ct, filename = await _load_sales_receipt_payment_proof_bytes(db, id)
+    headers = {
+        "Content-Disposition": _sales_receipt_proof_content_disposition(filename, download=download),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
+    return FastAPIResponse(content=data, media_type=ct, headers=headers)
 
 
 @api_router.get("/sales-receipts/{id}/pdf")

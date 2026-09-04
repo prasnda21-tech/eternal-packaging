@@ -347,6 +347,13 @@ export const api = {
 
   downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
+  downloadSalesReceiptPaymentProof: (id, download = false) =>
+    client
+      .get(`/sales-receipts/${encodeURIComponent(id)}/payment-proof`, {
+        params: download ? { download: true } : {},
+        responseType: "blob",
+      })
+      .then((r) => r.data),
 
   listSalesInvoices: (params = {}) => client.get(`/sales-invoices`, { params }).then((r) => r.data),
   getSalesInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
@@ -357,6 +364,8 @@ export const api = {
   listSalesReceipts: (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
+  attachSalesReceiptPaymentProof: (id, paymentProof) =>
+    client.post(`/sales-receipts/${encodeURIComponent(id)}/payment-proof`, { payment_proof: paymentProof }).then((r) => r.data),
   // ---- Delete (Safe) ----
   deleteSalesDelivery: (id) => client.delete(`/sales-deliveries/${encodeURIComponent(id)}`).then((r) => r.data),
   bulkDeleteSalesDeliveries: (ids, reason = "bulk") => client.post(`/sales-deliveries-bulk/delete`, { ids, reason }).then((r) => r.data),

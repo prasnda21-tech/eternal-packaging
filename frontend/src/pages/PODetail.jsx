@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, FileCheck2, FileText, MapPin, MessageSquare, Package, Printer, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, Package, Printer, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -28,6 +28,7 @@ import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
 import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../lib/paymentProof";
+import { canViewSalesReceiptPaymentProof, receiptHasPaymentProof } from "../lib/salesReceiptPaymentProof";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
 
@@ -55,6 +56,10 @@ export default function PODetail() {
   // Payment upload state (Req wiring)
   const [payUploading, setPayUploading] = useState(false);
   const [payUploadErr, setPayUploadErr] = useState("");
+  const [salesReceipts, setSalesReceipts] = useState([]);
+  const [salesReceiptsLoading, setSalesReceiptsLoading] = useState(false);
+  const [salesReceiptsErr, setSalesReceiptsErr] = useState("");
+  const [proofViewBusyId, setProofViewBusyId] = useState("");
   const [screenerDraft, setScreenerDraft] = useState("");
   const [screenerNotes, setScreenerNotes] = useState("");
   const [actionConfirm, setActionConfirm] = useState(null);
@@ -82,6 +87,46 @@ export default function PODetail() {
     setScreenerDraft("");
     setScreenerNotes(order?.screener_info?.notes || "");
   }, [order?.id, order?.screener_info?.updated_at]);
+
+  useEffect(() => {
+    if (!order?.id) {
+      setSalesReceipts([]);
+      return;
+    }
+    let cancelled = false;
+    setSalesReceiptsLoading(true);
+    setSalesReceiptsErr("");
+    api.listSalesReceipts({ po_id: order.id })
+      .then((res) => {
+        if (!cancelled) setSalesReceipts(res.receipts || []);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        const d = e.response?.data?.detail;
+        setSalesReceiptsErr(typeof d === "string" ? d : (d?.message || "Gagal memuat Penerimaan Penjualan"));
+        setSalesReceipts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSalesReceiptsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [order?.id, order?.payment_fact?.updated_at, order?.payment_approved_at]);
+
+  const viewSalesReceiptProof = async (receiptId) => {
+    if (!receiptId) return;
+    setProofViewBusyId(receiptId);
+    try {
+      const blob = await api.downloadSalesReceiptPaymentProof(receiptId, false);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      showToast(typeof d === "string" ? d : (d?.message || "Gagal membuka Bukti Payment"));
+    } finally {
+      setProofViewBusyId("");
+    }
+  };
 
   // Batch 2: auto refresh 30s untuk PODetail — hanya update server-backed state
   // (order), tidak menyentuh state form lokal panel-panel (Helper draft,
@@ -226,6 +271,7 @@ export default function PODetail() {
   const canApprovePayment = hasPerm("payment.approve");
   const canApproveSample = hasPerm("operator.sample_approve") || hasPerm("schedule.edit");
   const canUploadPayment = hasPerm("payment.upload");
+  const canViewReceiptProof = canViewSalesReceiptPaymentProof(hasPerm);
   const canUploadDesign = hasPerm("design.upload");
   const canUploadSample = hasPerm("operator.sample_upload");
   const canManageUrgent = hasPerm("urgent.manage");
@@ -954,6 +1000,57 @@ export default function PODetail() {
           <PaymentStatusBadge order={order} />
         </header>
         <div className="payment-body">
+          <div className="sales-receipts-payment" data-testid="sales-receipts-payment-section">
+            <h4 style={{ margin: "0 0 8px 0", fontSize: 13 }}>Penerimaan Penjualan</h4>
+            {salesReceiptsLoading && (
+              <p className="muted small" data-testid="sales-receipts-loading">Memuat penerimaan…</p>
+            )}
+            {salesReceiptsErr && (
+              <div className="error" data-testid="sales-receipts-error">{salesReceiptsErr}</div>
+            )}
+            {!salesReceiptsLoading && !salesReceiptsErr && salesReceipts.length === 0 && (
+              <p className="muted small" data-testid="sales-receipts-empty">
+                Belum ada Penerimaan Penjualan untuk PO ini.
+              </p>
+            )}
+            {salesReceipts.length > 0 && (
+              <ul className="payment-files" data-testid="sales-receipts-payment-list">
+                {salesReceipts.map((r) => {
+                  const hasProof = receiptHasPaymentProof(r);
+                  return (
+                    <li key={r.id} data-testid={`sales-receipt-payment-row-${r.id}`} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="mono small">{r.receipt_number || r.id}</div>
+                        <div className="muted small">
+                          {formatDisplayDate(r.receipt_date || r.created_at)}
+                          {" · "}
+                          Rp {Number(r.amount || 0).toLocaleString("id-ID")}
+                          {r.payment_state ? ` · ${r.payment_state}` : ""}
+                        </div>
+                      </div>
+                      <div>
+                        {hasProof && canViewReceiptProof ? (
+                          <button
+                            type="button"
+                            className="ghost sm"
+                            data-testid={`btn-view-receipt-proof-${r.id}`}
+                            disabled={proofViewBusyId === r.id}
+                            onClick={() => viewSalesReceiptProof(r.id)}
+                          >
+                            <Eye size={14} /> {proofViewBusyId === r.id ? "Membuka…" : "Lihat Bukti Payment"}
+                          </button>
+                        ) : !hasProof ? (
+                          <span className="muted small" data-testid={`receipt-no-proof-${r.id}`}>
+                            Tidak ada bukti payment
+                          </span>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
           <PaymentFilesList files={order.payment_files || []} order={order} />
           {payUploadErr && (
             <div className="error" data-testid="payment-upload-error">{payUploadErr}</div>
