@@ -10,6 +10,28 @@ import {
   salesNavVisible,
 } from "../lib/navAccess";
 
+jest.mock("react-router-dom", () => ({
+  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useNavigate: () => jest.fn(),
+  useParams: () => ({}),
+}), { virtual: true });
+
+jest.mock("../lib/auth", () => ({
+  useAuth: () => ({
+    user: { name: "Test User", email: "test@example.com", role: "admin" },
+    hasPerm: () => true,
+  }),
+}));
+
+jest.mock("../lib/api", () => ({
+  __esModule: true,
+  default: {
+    salesOrderOptions: jest.fn().mockResolvedValue({}),
+    listSalesOrders: jest.fn().mockResolvedValue({ orders: [] }),
+    createSalesOrder: jest.fn().mockResolvedValue({}),
+  },
+}));
+
 describe("Pesanan Penjualan UI & Data Invariants", () => {
   const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
   const appSrc = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
@@ -101,5 +123,135 @@ describe("Pesanan Penjualan Nav Integration", () => {
         testid: "top-nav-sales-order",
       },
     ]);
+  });
+});
+
+describe("Pesanan Penjualan Line Items UX & Live Search", () => {
+  const { filterPoLineItems } = require("./PesananPenjualan");
+  const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+
+  const sampleItems = [
+    {
+      item_code: "BX-01",
+      name: "Box Karton 20x20",
+      quantity: 10,
+      unit: "pcs",
+      color: "Coklat",
+      production_process: "print",
+      notes: "Cetak logo",
+      accurate_item_id: "AID-101",
+      master_item_id: "MID-101",
+    },
+    {
+      item_code: "PB-02",
+      name: "Plastik Bubble Wrap",
+      quantity: 5,
+      unit: "roll",
+      color: "Bening",
+      production_process: "non_print",
+      notes: "Tebal",
+      accurate_item_id: "AID-102",
+      master_item_id: "MID-102",
+    },
+    {
+      item_code: "BX-02",
+      name: "Box Karton 30x30",
+      quantity: 20,
+      unit: "pcs",
+      color: "Putih",
+      production_process: "print",
+      notes: "Handle with care",
+      accurate_item_id: "AID-103",
+      master_item_id: "MID-103",
+    },
+  ];
+
+  test("1. search input exists directly above line item list with placeholder", () => {
+    expect(src).toMatch(/data-testid="line-items-search-input"/);
+    expect(src).toMatch(/placeholder="Cari barang \/ jasa\.\.\."/);
+    expect(src).not.toMatch(/btn-search-line-items/);
+  });
+
+  test("2. full item list visible when search empty", () => {
+    const results = filterPoLineItems(sampleItems, "");
+    expect(results).toHaveLength(3);
+    expect(results.map((r) => r.originalIndex)).toEqual([0, 1, 2]);
+    expect(results.map((r) => r.line.item_code)).toEqual(["BX-01", "PB-02", "BX-02"]);
+  });
+
+  test("3. typing name filters immediately with partial match", () => {
+    const results = filterPoLineItems(sampleItems, "bubble");
+    expect(results).toHaveLength(1);
+    expect(results[0].originalIndex).toBe(1);
+    expect(results[0].line.name).toBe("Plastik Bubble Wrap");
+  });
+
+  test("4. typing item code filters if code exists", () => {
+    const results = filterPoLineItems(sampleItems, "BX-01");
+    expect(results).toHaveLength(1);
+    expect(results[0].originalIndex).toBe(0);
+    expect(results[0].line.item_code).toBe("BX-01");
+  });
+
+  test("5. search is case-insensitive and trims whitespace", () => {
+    const resultsUpper = filterPoLineItems(sampleItems, "  BOX  ");
+    expect(resultsUpper).toHaveLength(2);
+    expect(resultsUpper.map((r) => r.line.item_code)).toEqual(["BX-01", "BX-02"]);
+
+    const resultsCodeLower = filterPoLineItems(sampleItems, "bx-02");
+    expect(resultsCodeLower).toHaveLength(1);
+    expect(resultsCodeLower[0].line.name).toBe("Box Karton 30x30");
+  });
+
+  test("6. clearing search restores full list", () => {
+    let query = "bubble";
+    let filtered = filterPoLineItems(sampleItems, query);
+    expect(filtered).toHaveLength(1);
+
+    query = "";
+    filtered = filterPoLineItems(sampleItems, query);
+    expect(filtered).toHaveLength(3);
+  });
+
+  test("7. no-match returns empty array and template contains empty state message", () => {
+    const results = filterPoLineItems(sampleItems, "barang-tidak-ada-xyz");
+    expect(results).toHaveLength(0);
+    expect(src).toMatch(/Tidak ada barang\/jasa yang cocok\./);
+    expect(src).toMatch(/data-testid="line-items-empty-state"/);
+  });
+
+  test("8. selecting filtered item updates exact item identity by original index", () => {
+    const lines = [
+      { name: "Dus A", item_code: "D-01", quantity: 1, accurate_item_id: "A1" },
+      { name: "Box Karton", item_code: "BX-01", quantity: 10, accurate_item_id: "A2" },
+      { name: "Dus B", item_code: "D-02", quantity: 2, accurate_item_id: "A3" },
+      { name: "Box Karton", item_code: "BX-02", quantity: 20, accurate_item_id: "A4" },
+    ];
+
+    const filtered = filterPoLineItems(lines, "BX-02");
+    expect(filtered).toHaveLength(1);
+    const target = filtered[0];
+    expect(target.originalIndex).toBe(3);
+    expect(target.line.item_code).toBe("BX-02");
+
+    const updatedLines = [...lines];
+    updatedLines[target.originalIndex] = {
+      ...updatedLines[target.originalIndex],
+      quantity: 99,
+      notes: "Updated row",
+    };
+
+    expect(updatedLines[3].quantity).toBe(99);
+    expect(updatedLines[3].notes).toBe("Updated row");
+    expect(updatedLines[1].quantity).toBe(10);
+    expect(updatedLines[0].name).toBe("Dus A");
+  });
+
+  test("9. item list container has enlarged scrollable layout and sticky table header", () => {
+    expect(src).toMatch(/data-testid="line-items-table-container"/);
+    expect(src).toMatch(/overflowY:\s*"auto"/);
+    expect(src).toMatch(/maxHeight:\s*"560px"/);
+    expect(src).toMatch(/minHeight:\s*"380px"/);
+    expect(src).toMatch(/position:\s*"sticky"/);
   });
 });
