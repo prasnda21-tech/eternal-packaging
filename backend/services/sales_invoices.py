@@ -636,6 +636,7 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
+    from services.pdf_date import format_pdf_date
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -745,7 +746,7 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
         ],
         [
             Paragraph("<b>Tanggal Faktur</b>", meta_label_style),
-            Paragraph(f": {str(invoice.get('invoice_date') or '')[:10]}", meta_val_style),
+            Paragraph(f": {format_pdf_date(invoice.get('invoice_date'))}", meta_val_style),
             Paragraph("<b>Alamat</b>", meta_label_style),
             Paragraph(f": {escape(str(invoice.get('address') or '-'))}", meta_val_style),
         ],
@@ -753,7 +754,7 @@ def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:
             Paragraph("<b>Termin (Hari)</b>", meta_label_style),
             Paragraph(f": {invoice.get('payment_term_days') or '0'}", meta_val_style),
             Paragraph("<b>Jatuh Tempo</b>", meta_label_style),
-            Paragraph(f": {str(invoice.get('due_date') or '')[:10]}", meta_val_style),
+            Paragraph(f": {format_pdf_date(invoice.get('due_date'))}", meta_val_style),
         ],
         [
             Paragraph("<b>Catatan</b>", meta_label_style),

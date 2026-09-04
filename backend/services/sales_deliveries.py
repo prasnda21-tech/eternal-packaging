@@ -911,7 +911,8 @@ def generate_sales_delivery_pdf_bytes(delivery: dict, po_summary: Optional[dict]
     elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#0284c7'), spaceAfter=8, spaceBefore=0))
 
     # 2. Metadata Grid
-    d_date = str(delivery.get("delivery_date") or "")[:10]
+    from services.pdf_date import format_pdf_date
+    d_date = format_pdf_date(delivery.get("delivery_date"))
     meta_data = [
         [
             Paragraph("<b>Nomor PO</b>", meta_label_style),

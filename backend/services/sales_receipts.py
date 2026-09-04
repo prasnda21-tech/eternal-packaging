@@ -589,6 +589,7 @@ def generate_sales_receipt_pdf_bytes(receipt: dict) -> bytes:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
+    from services.pdf_date import format_pdf_date
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -682,7 +683,7 @@ def generate_sales_receipt_pdf_bytes(receipt: dict) -> bytes:
             Paragraph("<b>Nomor PO</b>", meta_label_style),
             Paragraph(f": {escape(str(receipt.get('po_number') or '-'))}", meta_val_style),
             Paragraph("<b>Tgl Penerimaan</b>", meta_label_style),
-            Paragraph(f": {str(receipt.get('receipt_date') or '')[:10]}", meta_val_style),
+            Paragraph(f": {format_pdf_date(receipt.get('receipt_date'))}", meta_val_style),
         ],
         [
             Paragraph("<b>Tipe Bayar</b>", meta_label_style),
