@@ -3199,9 +3199,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
             logger.exception("Surat Jalan object storage write failed; keeping data_url fallback")
         order.setdefault("surat_jalan_files", []).append(entry)
         if not order.get("delivery_note_number"):
-            order["delivery_note_number"] = (
-                f"SJ-{str(order.get('po_number') or '').replace('PO-', '').replace('PO.', '')}"
-            )
+            from services.sales_deliveries import derive_base_sj_number
+            order["delivery_note_number"] = derive_base_sj_number(str(order.get("po_number") or ""))
         # Operational date for Pengiriman Hari Ini — not file uploaded_at.
         order["delivery_note_created_at"] = op_iso
         if selected_raw or not parse_operational_date_key(order.get("scheduled_delivery_date")):
@@ -3666,10 +3665,11 @@ async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Dep
             raise HTTPException(400, "Belum bisa membuat Surat Jalan — tahap Packing belum selesai.")
         before_holder["delivery_note_number"] = order.get("delivery_note_number")
         before_holder["delivery_note_created_by"] = order.get("delivery_note_created_by")
+        from services.sales_deliveries import derive_base_sj_number
         number = (
             payload.delivery_note_number
             or order.get("delivery_note_number")
-            or f"SJ-{order['po_number'].replace('PO-', '').replace('PO.', '')}"
+            or derive_base_sj_number(str(order.get("po_number") or ""))
         )
         existing = _qr_shipments_stored(order)
         explicit_lines = _shipment_line_payload(payload.lines) if payload.lines else None
@@ -6303,25 +6303,6 @@ class SalesReceiptAttachProofPayload(BaseModel):
     payment_proof: SalesReceiptPaymentProofPayload
 
 
-async def _next_suggested_po_number(database) -> str:
-    today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    prefix = f"PO-{today_str}-"
-    regex = f"^{prefix}\\d+"
-    cursor = database.orders.find({"po_number": {"$regex": regex}}, {"po_number": 1, "_id": 0})
-    existing = await cursor.to_list(1000)
-    max_seq = 0
-    for doc in existing:
-        pn = str(doc.get("po_number") or "")
-        suffix = pn[len(prefix):]
-        try:
-            seq = int(suffix)
-            if seq > max_seq:
-                max_seq = seq
-        except ValueError:
-            pass
-    return f"{prefix}{max_seq + 1:03d}"
-
-
 def _parse_order_date_iso(raw: Optional[str], default_days_ahead: int = 0) -> str:
     now = datetime.now(timezone.utc)
     if not raw or not str(raw).strip():
@@ -6342,6 +6323,42 @@ def _parse_order_date_iso(raw: Optional[str], default_days_ahead: int = 0) -> st
         return dt.isoformat()
     except Exception:
         raise HTTPException(400, f"Format tanggal tidak valid: {raw}")
+
+
+async def _next_suggested_po_number(database, target_date: Optional[Union[datetime, date, str]] = None) -> str:
+    dt = None
+    if target_date is not None:
+        if isinstance(target_date, datetime):
+            dt = target_date if target_date.tzinfo else target_date.replace(tzinfo=timezone.utc)
+        elif isinstance(target_date, date):
+            dt = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
+        elif isinstance(target_date, str) and target_date.strip():
+            try:
+                iso_s = _parse_order_date_iso(target_date)
+                dt = datetime.fromisoformat(iso_s)
+            except Exception:
+                dt = None
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+
+    today_str = dt.strftime("%d/%m/%y")
+    prefix = f"PO/{today_str}/"
+    regex = f"^{re.escape(prefix)}\\d+"
+    cursor = database.orders.find({"po_number": {"$regex": regex}}, {"po_number": 1, "_id": 0})
+    existing = await cursor.to_list(1000)
+    max_seq = 0
+    for doc in existing:
+        pn = str(doc.get("po_number") or "")
+        suffix = pn[len(prefix):]
+        m = re.match(r"^(\d+)", suffix)
+        if m:
+            try:
+                seq = int(m.group(1))
+                if seq > max_seq:
+                    max_seq = seq
+            except ValueError:
+                pass
+    return f"{prefix}{max_seq + 1:03d}"
 
 
 @api_router.get("/sales-orders/options")
@@ -6449,10 +6466,20 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "master_item_id": (li.master_item_id or "").strip() or None,
         })
     
+    order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
+    deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)
+    estimated_delivery = _parse_order_date_iso(payload.estimated_delivery or payload.deadline, default_days_ahead=3)
+
     po_num = (payload.po_number or "").strip()
     if not po_num:
-        po_num = await _next_suggested_po_number(db)
-    
+        for _ in range(5):
+            candidate = await _next_suggested_po_number(db, target_date=order_date)
+            if not await db.orders.find_one({"po_number": candidate}, {"_id": 1}):
+                po_num = candidate
+                break
+        if not po_num:
+            po_num = candidate
+
     # Duplicate check
     existing = await db.orders.find_one({"po_number": po_num}, {"_id": 0, "id": 1, "po_number": 1})
     if existing:
@@ -6461,10 +6488,6 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "existing_po_number": po_num,
             "existing_po_id": existing.get("id"),
         })
-    
-    order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
-    deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)
-    estimated_delivery = _parse_order_date_iso(payload.estimated_delivery or payload.deadline, default_days_ahead=3)
     
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)

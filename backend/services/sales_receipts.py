@@ -44,13 +44,14 @@ def derive_base_receipt_number(po_number: str) -> str:
     """Derives base receipt number from PO number while preserving main sequence."""
     pn = (po_number or "").strip()
     if not pn:
-        return "PAY-" + datetime.now(timezone.utc).strftime("%Y%m%d-001")
+        return "PAY/" + datetime.now(timezone.utc).strftime("%d/%m/%y/001")
 
-    # 1. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> PAY/2026/08/30/000123
-    # 2. Match PO-20260830-001 or SO-20260830-001 -> PAY-20260830-001
-    # 3. Match PO.2026.08.001 -> PAY.2026.08.001
-    # 4. Match PO 12345 -> PAY 12345
-    # 5. Match PO12345 -> PAY12345
+    # 1. Match PO/04/09/26/001 or SO/04/09/26/001 -> PAY/04/09/26/001
+    # 2. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> PAY/2026/08/30/000123
+    # 3. Match PO-20260830-001 or SO-20260830-001 -> PAY-20260830-001
+    # 4. Match PO.2026.08.001 -> PAY.2026.08.001
+    # 5. Match PO 12345 -> PAY 12345
+    # 6. Match PO12345 -> PAY12345
     m = re.match(r'^(?:PO|SO)([\/\.\-\s_]?)(.*)$', pn, re.IGNORECASE)
     if m:
         sep = m.group(1)
@@ -70,9 +71,9 @@ def derive_base_receipt_number(po_number: str) -> str:
 def derive_receipt_number(po_number: str, receipt_index: int) -> str:
     """Computes backend-authoritative receipt number for a specific receipt index.
 
-    Index 1: base PAY (e.g. PAY/2026/08/31/000125)
-    Index 2: base PAY + "_2" (e.g. PAY/2026/08/31/000125_2)
-    Index 3: base PAY + "_3" (e.g. PAY/2026/08/31/000125_3)
+    Index 1: base PAY (e.g. PAY/04/09/26/001 or PAY-20260830-001)
+    Index 2: base PAY + "_2" (e.g. PAY/04/09/26/001_2)
+    Index 3: base PAY + "_3" (e.g. PAY/04/09/26/001_3)
     """
     base = derive_base_receipt_number(po_number)
     if receipt_index <= 1:
