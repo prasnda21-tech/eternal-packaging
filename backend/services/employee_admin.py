@@ -24,6 +24,7 @@ from services.purchase_common import (
     next_dated_seq,
     now_iso,
 )
+from services.pdf_date import format_pdf_date
 
 TYPES_COLLECTION = "employee_request_types"
 REQUESTS_COLLECTION = "employee_requests"
@@ -899,7 +900,7 @@ def _placeholder_map(request: dict) -> Dict[str, str]:
         "employee.role": str(emp.get("role") or "-"),
         "request.number": str(request.get("request_number") or "-"),
         "request.type": str(request.get("type_name") or "-"),
-        "request.date": str(request.get("submitted_at") or "-")[:10],
+        "request.date": format_pdf_date(request.get("submitted_at"), fallback="-"),
         "document.number": str((request.get("document") or {}).get("document_number") or "-"),
         "company.name": "Eternal Packaging",
     }
@@ -912,6 +913,8 @@ def _placeholder_map(request: dict) -> Dict[str, str]:
             shown = "Ya" if val else "Tidak"
         elif field.get("type") == "file":
             shown = (val or {}).get("name") if isinstance(val, dict) else (str(val or "-") or "-")
+        elif field.get("type") in ("date", "datetime") and val is not None and val != "":
+            shown = format_pdf_date(val, fallback="-")
         elif field.get("type") == "currency" and val is not None:
             shown = f"Rp {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         else:
@@ -959,7 +962,7 @@ def generate_pdf_bytes(request: dict) -> bytes:
         [Paragraph("<b>Karyawan</b>", body_style), Paragraph(_safe_text(emp.get("name")), body_style)],
         [Paragraph("<b>ID Karyawan</b>", body_style), Paragraph(_safe_text(emp.get("employee_id")), body_style)],
         [Paragraph("<b>No Pengajuan</b>", body_style), Paragraph(_safe_text(request.get("request_number")), body_style)],
-        [Paragraph("<b>Tanggal</b>", body_style), Paragraph(_safe_text(str(request.get("submitted_at") or "")[:19]), body_style)],
+        [Paragraph("<b>Tanggal</b>", body_style), Paragraph(_safe_text(format_pdf_date(request.get("submitted_at"), fallback="-")), body_style)],
     ]
     tbl = Table(meta, colWidths=[4.5 * cm, 12 * cm])
     tbl.setStyle(TableStyle([
@@ -981,8 +984,9 @@ def generate_pdf_bytes(request: dict) -> bytes:
     for rec in request.get("approval_history") or []:
         if rec.get("action") != "approved":
             continue
-        actor = rec.get("actor") or {}
-        line = f"Level {rec.get('level')}: {_safe_text(actor.get('name'))} — {_safe_text(rec.get('timestamp'))}"
+        actor = rec.get('actor') or {}
+        ts_str = format_pdf_date(rec.get('timestamp')) if rec.get('timestamp') else "-"
+        line = f"Level {rec.get('level')}: {_safe_text(actor.get('name'))} — {_safe_text(ts_str)}"
         if rec.get("note"):
             line += f"<br/>Catatan: {_safe_text(rec.get('note'))}"
         elements.append(Paragraph(line, body_style))
