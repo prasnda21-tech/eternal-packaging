@@ -7,6 +7,7 @@ import { formatDisplayDate } from "../lib/constants";
 import { errDetail, todayYmd } from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 
 export default function PermintaanPembelian() {
   const navigate = useNavigate();
@@ -24,7 +25,6 @@ export default function PermintaanPembelian() {
   const [requestDate, setRequestDate] = useState(todayYmd());
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState([{ item_name: "", item_code: "", unit: "pcs", requested_qty: "", master_item_id: "", accurate_item_id: "" }]);
-  const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -44,21 +44,16 @@ export default function PermintaanPembelian() {
 
   const openCreate = async () => {
     setView("create");
-    try {
-      const opt = await api.purchaseRequestOptions();
-      setItems(opt.items || []);
-    } catch { setItems([]); }
   };
 
   const addLine = () => setLines((p) => [...p, { item_name: "", item_code: "", unit: "pcs", requested_qty: "", master_item_id: "", accurate_item_id: "" }]);
   const removeLine = (i) => setLines((p) => (p.length <= 1 ? p : p.filter((_, idx) => idx !== i)));
   const setLine = (i, patch) => setLines((p) => p.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
-  const pickItem = (i, id) => {
-    const it = items.find((x) => x.id === id);
+  const pickItem = (i, it) => {
     if (!it) return setLine(i, { master_item_id: "", accurate_item_id: "", item_name: "", item_code: "", unit: "pcs" });
     setLine(i, {
-      master_item_id: it.id || "",
+      master_item_id: it.id || it.master_item_id || "",
       accurate_item_id: it.accurate_item_id || "",
       item_name: it.item_name || "",
       item_code: it.item_code || "",
@@ -186,12 +181,31 @@ export default function PermintaanPembelian() {
                 {lines.map((l, i) => (
                   <tr key={i}>
                     <td>
-                      <select value={l.master_item_id} onChange={(e) => pickItem(i, e.target.value)} data-testid={`line-item-${i}`}>
-                        <option value="">Pilih / ketik nama</option>
-                        {items.map((it) => <option key={it.id} value={it.id}>{it.item_name}</option>)}
-                      </select>
-                      {!l.master_item_id && (
-                        <input value={l.item_name} onChange={(e) => setLine(i, { item_name: e.target.value })} placeholder="Nama item" />
+                      <MasterItemSearchSelect
+                        testId={`line-item-${i}`}
+                        value={
+                          l.accurate_item_id || l.master_item_id
+                            ? {
+                                accurate_item_id: l.accurate_item_id,
+                                id: l.master_item_id,
+                                master_item_id: l.master_item_id,
+                                item_name: l.item_name,
+                                item_code: l.item_code,
+                                unit: l.unit,
+                              }
+                            : null
+                        }
+                        onChange={(item) => pickItem(i, item)}
+                        placeholder="Cari nama / kode produk…"
+                      />
+                      {!l.master_item_id && !l.accurate_item_id && (
+                        <input
+                          value={l.item_name}
+                          onChange={(e) => setLine(i, { item_name: e.target.value })}
+                          placeholder="Atau nama item bebas"
+                          data-testid={`line-item-free-${i}`}
+                          style={{ marginTop: 6 }}
+                        />
                       )}
                     </td>
                     <td><input value={l.item_code} onChange={(e) => setLine(i, { item_code: e.target.value })} /></td>

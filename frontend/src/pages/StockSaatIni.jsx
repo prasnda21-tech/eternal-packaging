@@ -6,6 +6,7 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { isAccuratePurchaseSource, purchaseSourceLabel } from "../lib/currentStock";
 import ImportPreviewModal from "../components/ImportPreviewModal";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 
 function parseInputQty(raw, { allowNegative = false } = {}) {
   const t = String(raw ?? "").trim();
@@ -74,8 +75,7 @@ export default function StockSaatIni() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [qInput, setQInput] = useState("");
-  const [q, setQ] = useState("");
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [stockFilter, setStockFilter] = useState("all");
   const [sortBy, setSortBy] = useState("name");
   const [sortDir, setSortDir] = useState("asc");
@@ -83,6 +83,8 @@ export default function StockSaatIni() {
   const [pageSize, setPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+
+  useEffect(() => { setPage(1); }, [q]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,14 +104,8 @@ export default function StockSaatIni() {
 
   useEffect(() => { load(); }, [load]);
 
-  const doSearch = (e) => {
-    e?.preventDefault?.();
-    setPage(1);
-    setQ(qInput.trim());
-  };
   const clearSearch = () => {
-    setQInput("");
-    setQ("");
+    clearQuery();
     setPage(1);
   };
 
@@ -204,8 +200,9 @@ export default function StockSaatIni() {
               type="text"
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
-              placeholder="Cari kode / nama"
+              placeholder="Cari kode / nama / Accurate ID (live)"
               data-testid="stock-search"
+              aria-label="Cari stock produk live"
             />
             {q && (
               <button type="button" className="ghost sm" onClick={clearSearch} aria-label="Bersihkan">

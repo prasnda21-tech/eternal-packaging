@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import { nextMasterSyncBanner } from "./masterItemsSyncBanner";
 
 const TYPE_LABEL = {
@@ -26,12 +27,13 @@ export default function MasterBarangJasa() {
   const [syncError, setSyncError] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
-  const [qInput, setQInput] = useState("");
-  const [q, setQ] = useState("");
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [itemType, setItemType] = useState("");
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => { setPage(1); }, [q]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,14 +51,8 @@ export default function MasterBarangJasa() {
 
   useEffect(() => { load(); }, [load]);
 
-  const doSearch = (e) => {
-    e?.preventDefault?.();
-    setPage(1);
-    setQ(qInput.trim());
-  };
   const clearSearch = () => {
-    setQInput("");
-    setQ("");
+    clearQuery();
     setPage(1);
   };
 
@@ -155,8 +151,9 @@ export default function MasterBarangJasa() {
               type="text"
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
-              placeholder="Cari kode / nama"
+              placeholder="Cari kode / nama / Accurate ID (live)"
               data-testid="master-items-search"
+              aria-label="Cari barang/jasa live"
             />
             {q && (
               <button type="button" className="ghost sm" onClick={clearSearch} aria-label="Bersihkan">

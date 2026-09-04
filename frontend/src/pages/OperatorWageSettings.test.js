@@ -34,4 +34,12 @@ describe("Sistem Upah Operator settings", () => {
     expect(src).toMatch(/additional_rate_per_pcs/);
     expect(src).toMatch(/rate_type: o.rate_type \|\| "override"/);
   });
+
+  test("live product search is debounced without Cari button", () => {
+    expect(src).toMatch(/WAGE_ITEM_SEARCH_DEBOUNCE_MS/);
+    expect(src).toMatch(/masterItems/);
+    expect(src).toMatch(/wage-item-loading/);
+    expect(src).toMatch(/wage-item-empty/);
+    expect(src).not.toMatch(/wage-item-search-btn/);
+  });
 });

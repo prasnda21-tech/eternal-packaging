@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { BarChart3, Download, RefreshCw, Search } from "lucide-react";
 import api from "../lib/api";
+import FacetSearchSelect from "./FacetSearchSelect";
 
 const PERIOD_OPTS = [
   { key: "today", label: "Hari Ini" },
@@ -431,10 +432,18 @@ export default function OperatorAnalyticsPanel() {
             <option value="all">Semua outlet / customer</option>
             {customers.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
-          <select value={item} onChange={(e) => setItem(e.target.value)} data-testid="op-an-item">
-            <option value="all">Semua item / cup</option>
-            {items.map((it) => <option key={it} value={it}>{it}</option>)}
-          </select>
+          <FacetSearchSelect
+            testId="op-an-item"
+            options={items}
+            value={item === "all" ? "" : item}
+            onChange={(next) => setItem(next ? next : "all")}
+            emptyValue=""
+            emptyLabel="Semua item / cup"
+            placeholder="Cari item / cup…"
+            getOptionValue={(it) => String(it)}
+            getOptionLabel={(it) => String(it)}
+            getSearchText={(it) => String(it)}
+          />
           <select value={po} onChange={(e) => setPo(e.target.value)} data-testid="op-an-po">
             <option value="all">Semua PO</option>
             {pos.map((p) => <option key={p} value={p}>{p}</option>)}

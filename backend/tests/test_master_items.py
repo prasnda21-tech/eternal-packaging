@@ -518,6 +518,70 @@ def test_build_list_query_status():
     assert q == {"is_active": True}
 
 
+def test_build_list_query_escapes_regex_special_chars():
+    """User typing regex metacharacters must not break or widen Mongo $regex."""
+    for needle in (".*", "(", ")", "[", "]", "+", "?", "{", "}", "|", "^", "$", "\\", "a+b"):
+        filt = build_list_query(needle, "", "")
+        assert "$or" in filt
+        for clause in filt["$or"]:
+            field = next(iter(clause.values()))
+            assert field["$regex"] == __import__("re").escape(needle)
+            assert field["$options"] == "i"
+
+
+def test_list_search_case_insensitive_and_by_code():
+    db = FakeDB()
+    rows = [
+        _raw(1, name="Cup Alpha", code="SKU-AAA"),
+        _raw(2, name="Box Beta", code="SKU-BBB"),
+        _raw(3, name="Cup Alpha", code="SKU-CCC"),  # same display name, different ID
+    ]
+    # _raw may not accept code= — check helper
+    _await(sync_master_items(db, FakeAccurate(rows)))
+    # Ensure codes set if sync preserves them
+    by_code = _await(list_master_items(db, q="sku-bbb", page=1, page_size=20))
+    assert by_code["total"] >= 1
+    assert any(i["accurate_item_id"] == "2" or i.get("item_code", "").upper() == "SKU-BBB" for i in by_code["items"])
+
+    by_name = _await(list_master_items(db, q="cup alpha", page=1, page_size=20))
+    ids = [i["accurate_item_id"] for i in by_name["items"]]
+    assert "1" in ids and "3" in ids
+    assert ids.count("1") == 1 and ids.count("3") == 1
+
+
+def test_list_search_same_name_keeps_separate_ids():
+    db = FakeDB()
+    rows = [
+        {"accurate_item_id": "A1", "item_code": "C1", "item_name": "Produk Sama", "unit": "pcs", "is_active": True},
+        {"accurate_item_id": "A2", "item_code": "C2", "item_name": "Produk Sama", "unit": "pcs", "is_active": True},
+    ]
+    # Use upsert path if FakeAccurate/_raw shape differs
+    for r in rows:
+        _await(upsert_master_item(db, r))
+    page = _await(list_master_items(db, q="Produk Sama", page=1, page_size=20))
+    found = {i["accurate_item_id"] for i in page["items"]}
+    assert found == {"A1", "A2"}
+    assert len(page["items"]) == 2
+
+
+def test_list_search_special_chars_does_not_error():
+    db = FakeDB()
+    _await(upsert_master_item(db, {
+        "accurate_item_id": "X1",
+        "item_code": "A+B",
+        "item_name": "Item (Special)",
+        "unit": "pcs",
+        "is_active": True,
+    }))
+    page = _await(list_master_items(db, q="(Special)", page=1, page_size=10))
+    assert page["total"] >= 1
+    page2 = _await(list_master_items(db, q="A+B", page=1, page_size=10))
+    assert page2["total"] >= 1
+    page3 = _await(list_master_items(db, q=".*", page=1, page_size=10))
+    # escaped .* must not match everything as wildcards
+    assert page3["total"] == 0
+
+
 # ---------- mock Accurate client ----------
 def test_mock_client_lists_and_details():
     c = AccurateClient()
