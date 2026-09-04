@@ -1822,7 +1822,7 @@ html:has(.prod-schedule-page) #root{
   border-bottom:1px solid var(--line);
 }
 .prod-schedule-page .prod-table{
-  font-size:12px;
+  font-size:14px;
   border-collapse:separate;
   border-spacing:0;
 }
@@ -1830,7 +1830,10 @@ html:has(.prod-schedule-page) #root{
   position:sticky;
   top:0;
   z-index:4;
-  padding:3px 6px;
+  padding:5px 8px;
+  font-size:14px;
+  font-weight:600;
+  letter-spacing:.05em;
   background:var(--ep-dark);
   border-bottom:1px solid #0b2d22;
   border-right:1px solid rgba(255,255,255,.12);
@@ -1838,20 +1841,26 @@ html:has(.prod-schedule-page) #root{
 }
 .prod-schedule-page .prod-table thead th:last-child{border-right:0}
 .prod-schedule-page .prod-table tbody td{
-  padding:2px 6px;
-  line-height:1.2;
+  padding:4px 8px;
+  line-height:1.3;
   vertical-align:middle;
   border-bottom:1px solid var(--line);
   border-right:1px solid var(--line);
 }
 .prod-schedule-page .prod-table tbody td:last-child{border-right:0}
-.prod-schedule-page .prod-table tbody td.col-text{line-height:1.2}
+.prod-schedule-page .prod-table tbody td.col-text{line-height:1.3}
+.prod-schedule-page .prod-table tbody td.small{font-size:13px}
+.prod-schedule-page .prod-table tbody td .muted.small,
+.prod-schedule-page .prod-table tbody td .small{font-size:13px}
 .prod-schedule-page .prod-table tbody td.prod-qty-cell,
 .prod-schedule-page .prod-table tbody td.prod-ops{vertical-align:top}
 .prod-schedule-page .prod-table tbody td.prod-qty-cell{white-space:normal}
-.prod-schedule-page .prod-op-line{margin-bottom:1px;gap:8px;line-height:1.15}
+.prod-schedule-page .prod-op-line{margin-bottom:2px;gap:8px;line-height:1.25}
 .prod-schedule-page .prod-date-line{padding:0}
-.prod-schedule-page .pill.sm{padding:1px 5px;font-size:10px}
+.prod-schedule-page .prod-line-qty-name{font-size:12px;max-width:11rem}
+.prod-schedule-page .pill.sm{padding:2px 6px;font-size:12px}
+.prod-schedule-page .urgent-badge,
+.prod-schedule-page .standard-badge{font-size:12px;padding:3px 7px}
 .prod-schedule-page .prod-qty-over{color:var(--red);font-weight:650}
 @media (max-width:640px){
   .app-shell:has(.prod-schedule-page){
