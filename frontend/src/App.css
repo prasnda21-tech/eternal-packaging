@@ -1258,6 +1258,10 @@
 .prod-table tbody tr.hold td{background:#fff8e1}
 .prod-table tbody tr.cancelled td{background:#faece9;opacity:.72;text-decoration:line-through}
 .prod-table tbody tr.cancelled td .pill{text-decoration:none}
+.prod-table tbody td.prod-cell-today,
+.prod-table tbody tr:hover td.prod-cell-today,
+.prod-table tbody tr.hold td.prod-cell-today{background-color:#fef08a !important;color:#713f12 !important}
+
 .prod-ops{min-width:7.25rem;max-width:16.5rem}
 .prod-qty-cell,.prod-ops{vertical-align:top}
 .prod-line-qty-block{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;gap:1px;font-variant-numeric:tabular-nums}

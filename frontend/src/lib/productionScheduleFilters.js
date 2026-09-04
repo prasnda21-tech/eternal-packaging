@@ -72,6 +72,18 @@ export function workDateKeys(r) {
   return keys;
 }
 
+export function isScheduledToday(r, today = new Date()) {
+  if (!r) return false;
+  if (r.cancelled || r.status_final === "Cancelled") return false;
+  if ((r.current_stage || 0) >= 14 || r.status_final === "Terkirim") return false;
+  const status = statusOfRow(r);
+  if (status === "cancelled" || status === "selesai") return false;
+  const todayKey = toDateKey(today);
+  if (!todayKey) return false;
+  return workDateKeys(r).includes(todayKey);
+}
+
+
 export function applyProductionFilters(rows, filters = {}) {
   const f = { ...FILTER_DEFAULTS, ...filters };
   const q = String(f.q || "").trim().toLowerCase();

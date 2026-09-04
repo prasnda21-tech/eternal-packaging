@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
+  isScheduledToday,
   productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
@@ -24,13 +25,13 @@ const STATUS_OPTS = [
 ];
 
 const TABLE_COLS = [
+  { key: "customer", label: "Customer", filter: "customer" },
   { key: "deadline", label: "Deadline", fit: true, filter: "deadline", sort: "deadline" },
   { key: "deadline_ship", label: "Deadline Pengiriman", testid: "prod-th-deadline-effective" },
   { key: "work_date", label: "Tgl Pengerjaan", testid: "prod-th-work-date", filter: "work_date", sort: "work_date" },
   { key: "prio", label: "Prio", fit: true, filter: "prio" },
   { key: "buffer", label: "Buffer", fit: true, testid: "prod-th-buffer", filter: "buffer" },
   { key: "po", label: "No PO", fit: true, filter: "po" },
-  { key: "customer", label: "Customer", filter: "customer" },
   { key: "outlet", label: "Outlet" },
   { key: "qty", label: "Total Qty", num: true },
   { key: "qty_cetak", label: "Qty Cetak", num: true },
@@ -433,8 +434,16 @@ export default function ProductionSchedule() {
               {sorted.map((r) => {
                 const qtyProg = totalQtyScheduledCell(r);
                 const cetakProg = scheduledPrintQtyProgress(r);
+                const isToday = isScheduledToday(r);
                 return (
                 <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
+                  <td
+                    className={"prod-cell-wrap col-text" + (isToday ? " prod-cell-today" : "")}
+                    style={isToday ? { backgroundColor: "#fef08a", color: "#713f12" } : undefined}
+                    data-testid={`prod-customer-${r.po_number}`}
+                  >
+                    <strong>{r.customer || "-"}</strong>
+                  </td>
                   <td className="mono small col-fit">{formatDate(r.deadline)}</td>
                   <td className="mono small prod-cell-stack col-text" data-testid={`prod-deadline-effective-${r.po_number}`}>
                     {r.delivery_deadline_effective ? (
@@ -486,7 +495,6 @@ export default function ProductionSchedule() {
                     {r.buffer_stock ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span> : <span className="muted small">—</span>}
                   </td>
                   <td className="mono col-fit"><Link to={schedulePoHref(r.id, hasPerm)} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
-                  <td className="prod-cell-wrap col-text"><strong>{r.customer || "-"}</strong></td>
                   <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
                   <td
                     className="num col-fit prod-qty-cell"
