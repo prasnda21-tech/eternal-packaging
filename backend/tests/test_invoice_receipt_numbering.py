@@ -31,7 +31,8 @@ os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 
 import server
-from server import app, current_user
+from server import app, current_user, _next_suggested_po_number
+from services.sales_deliveries import derive_base_sj_number, derive_sj_number
 from services.sales_invoices import (
     derive_base_invoice_number,
     derive_invoice_number,
@@ -121,7 +122,7 @@ async def test_case_1_first_invoice_number():
 @pytest.mark.anyio
 async def test_case_2_second_invoice_same_po():
     """CASE 2: second invoice same PO -> INV/2026/08/20/000019-2"""
-    assert derive_invoice_number("PO/2026/08/20/000019", 2) == "INV/2026/08/20/000019-2"
+    assert derive_invoice_number("PO/2026/08/20/000019", 2) == "INV/2026/08/20/000019_2"
 
     po_num = f"PO/2026/08/20/000019-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [
@@ -148,7 +149,7 @@ async def test_case_2_second_invoice_same_po():
 async def test_case_3_dash_format_po_number():
     """CASE 3: PO: PO-2425EC -> first invoice: INV-2425EC, second: INV-2425EC-2"""
     assert derive_invoice_number("PO-2425EC", 1) == "INV-2425EC"
-    assert derive_invoice_number("PO-2425EC", 2) == "INV-2425EC-2"
+    assert derive_invoice_number("PO-2425EC", 2) == "INV-2425EC_2"
 
     po_num = f"PO-2425EC-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [
@@ -280,7 +281,7 @@ async def test_case_8_first_receipt_number():
 @pytest.mark.anyio
 async def test_case_9_second_receipt_same_po():
     """CASE 9: second receipt same PO -> PAY/2026/08/20/000019-2"""
-    assert derive_receipt_number("PO/2026/08/20/000019", 2) == "PAY/2026/08/20/000019-2"
+    assert derive_receipt_number("PO/2026/08/20/000019", 2) == "PAY/2026/08/20/000019_2"
 
     po_num = f"PO/2026/08/20/000019-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [{"line_idx": 0, "item_name": "Dus", "quantity": 100, "unit": "pcs"}])
@@ -301,7 +302,7 @@ async def test_case_9_second_receipt_same_po():
 async def test_case_10_dash_format_receipt_number():
     """CASE 10: PO: PO-2425EC -> first receipt: PAY-2425EC, second: PAY-2425EC-2"""
     assert derive_receipt_number("PO-2425EC", 1) == "PAY-2425EC"
-    assert derive_receipt_number("PO-2425EC", 2) == "PAY-2425EC-2"
+    assert derive_receipt_number("PO-2425EC", 2) == "PAY-2425EC_2"
 
     po_num = f"PO-2425EC-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [{"line_idx": 0, "item_name": "Dus", "quantity": 100, "unit": "pcs"}])
@@ -429,3 +430,86 @@ async def test_case_15_double_submit_no_duplicate_pay_number():
 
     count = await server.db.sales_receipts.count_documents({"invoice_id": inv["id"]})
     assert count == 1
+
+
+@pytest.mark.anyio
+async def test_case_16_po_daily_counter_and_next_day_reset():
+    """CASE 16: PO/dd/mm/yy/counter daily counter reset and second PO numbering rules.
+    1. First PO same date: PO/04/09/26/001
+    2. Second PO same date: PO/04/09/26/002 (NOT PO/04/09/26/001_2)
+    3. Third PO same date: PO/04/09/26/003
+    4. First PO next date resets: PO/05/09/26/001
+    """
+    d1 = "2026-09-04"
+    d2 = "2026-09-05"
+
+    await server.db.orders.delete_many({"po_number": {"$regex": r"^PO/(04|05)/09/26/"}})
+
+    po1 = await _next_suggested_po_number(server.db, target_date=d1)
+    assert po1 == "PO/04/09/26/001"
+    await server.db.orders.insert_one({"id": str(uuid.uuid4()), "po_number": po1, "order_date": d1})
+
+    po2 = await _next_suggested_po_number(server.db, target_date=d1)
+    assert po2 == "PO/04/09/26/002"
+    assert po2 != "PO/04/09/26/001_2"
+    await server.db.orders.insert_one({"id": str(uuid.uuid4()), "po_number": po2, "order_date": d1})
+
+    po3 = await _next_suggested_po_number(server.db, target_date=d1)
+    assert po3 == "PO/04/09/26/003"
+    await server.db.orders.insert_one({"id": str(uuid.uuid4()), "po_number": po3, "order_date": d1})
+
+    next_day_po1 = await _next_suggested_po_number(server.db, target_date=d2)
+    assert next_day_po1 == "PO/05/09/26/001"
+
+    await server.db.orders.delete_many({"po_number": {"$regex": r"^PO/(04|05)/09/26/"}})
+
+
+@pytest.mark.anyio
+async def test_case_17_revised_format_po_sj_inv_pay_chain_and_repeat_suffixes():
+    """CASE 17: Child Sales documents preserve PO base and append repeat suffix.
+    - PO/04/09/26/001 ->
+      SJ: SJ/04/09/26/001, SJ/04/09/26/001_2, SJ/04/09/26/001_3
+      INV: INV/04/09/26/001, INV/04/09/26/001_2, INV/04/09/26/001_3
+      PAY: PAY/04/09/26/001, PAY/04/09/26/001_2, PAY/04/09/26/001_3
+    """
+    po_base = "PO/04/09/26/001"
+
+    # Surat Jalan
+    assert derive_base_sj_number(po_base) == "SJ/04/09/26/001"
+    assert derive_sj_number(po_base, 1) == "SJ/04/09/26/001"
+    assert derive_sj_number(po_base, 2) == "SJ/04/09/26/001_2"
+    assert derive_sj_number(po_base, 3) == "SJ/04/09/26/001_3"
+
+    # Faktur Penjualan (INV)
+    assert derive_base_invoice_number(po_base) == "INV/04/09/26/001"
+    assert derive_invoice_number(po_base, 1) == "INV/04/09/26/001"
+    assert derive_invoice_number(po_base, 2) == "INV/04/09/26/001_2"
+    assert derive_invoice_number(po_base, 3) == "INV/04/09/26/001_3"
+
+    # Penerimaan Penjualan (PAY)
+    assert derive_base_receipt_number(po_base) == "PAY/04/09/26/001"
+    assert derive_receipt_number(po_base, 1) == "PAY/04/09/26/001"
+    assert derive_receipt_number(po_base, 2) == "PAY/04/09/26/001_2"
+    assert derive_receipt_number(po_base, 3) == "PAY/04/09/26/001_3"
+
+    # End-to-end invoice creation
+    order = await _seed_test_order(po_base, [{"line_idx": 0, "item_name": "Dus", "quantity": 500, "unit": "pcs"}])
+    inv1 = await create_sales_invoice(server.db, {"po_id": order["id"], "lines": [{"line_idx": 0, "quantity": 200, "unit_price": 1000}]}, TEST_USER)
+    assert inv1["invoice_number"] == "INV/04/09/26/001"
+
+    inv2 = await create_sales_invoice(server.db, {"po_id": order["id"], "lines": [{"line_idx": 0, "quantity": 200, "unit_price": 1000}]}, TEST_USER)
+    assert inv2["invoice_number"] == "INV/04/09/26/001_2"
+
+    rec1 = await create_sales_receipt(server.db, {"invoice_id": inv1["id"], "amount": 100000}, TEST_USER)
+    assert rec1["receipt_number"] == "PAY/04/09/26/001"
+
+    rec2 = await create_sales_receipt(server.db, {"invoice_id": inv1["id"], "amount": 50000}, TEST_USER)
+    assert rec2["receipt_number"] == "PAY/04/09/26/001_2"
+
+    rec3 = await create_sales_receipt(server.db, {"invoice_id": inv1["id"], "amount": 50000}, TEST_USER)
+    assert rec3["receipt_number"] == "PAY/04/09/26/001_3"
+
+    # Clean up
+    await server.db.orders.delete_one({"id": order["id"]})
+    await server.db.sales_invoices.delete_many({"po_id": order["id"]})
+    await server.db.sales_receipts.delete_many({"invoice_id": inv1["id"]})

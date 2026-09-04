@@ -48,13 +48,14 @@ def derive_base_sj_number(po_number: str) -> str:
     """Derives base SJ number from PO number while preserving main sequence."""
     pn = (po_number or "").strip()
     if not pn:
-        return "SJ-" + datetime.now(timezone.utc).strftime("%Y%m%d-001")
+        return "SJ/" + datetime.now(timezone.utc).strftime("%d/%m/%y/001")
     
-    # 1. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> SJ/2026/08/30/000123
-    # 2. Match PO-20260830-001 or SO-20260830-001 -> SJ-20260830-001
-    # 3. Match PO.2026.08.001 -> SJ.2026.08.001
-    # 4. Match PO 12345 -> SJ 12345
-    # 5. Match PO12345 -> SJ12345
+    # 1. Match PO/04/09/26/001 or SO/04/09/26/001 -> SJ/04/09/26/001
+    # 2. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> SJ/2026/08/30/000123
+    # 3. Match PO-20260830-001 or SO-20260830-001 -> SJ-20260830-001
+    # 4. Match PO.2026.08.001 -> SJ.2026.08.001
+    # 5. Match PO 12345 -> SJ 12345
+    # 6. Match PO12345 -> SJ12345
     m = re.match(r'^(?:PO|SO)([\/\.\-\s_]?)(.*)$', pn, re.IGNORECASE)
     if m:
         sep = m.group(1)
@@ -75,14 +76,14 @@ def derive_base_sj_number(po_number: str) -> str:
 def derive_sj_number(po_number: str, shipment_index: int) -> str:
     """Computes backend-authoritative SJ number for a specific shipment index.
     
-    Index 1: base SJ (e.g. SJ/2026/08/30/000123 or SJ-20260830-001)
-    Index 2: base SJ + "-2"
-    Index 3: base SJ + "-3"
+    Index 1: base SJ (e.g. SJ/04/09/26/001 or SJ-20260830-001)
+    Index 2: base SJ + "_2"
+    Index 3: base SJ + "_3"
     """
     base = derive_base_sj_number(po_number)
     if shipment_index <= 1:
         return base
-    return f"{base}-{shipment_index}"
+    return f"{base}_{shipment_index}"
 
 
 def delivery_lines_fingerprint(lines: List[dict]) -> Tuple[Tuple[int, int, str], ...]:

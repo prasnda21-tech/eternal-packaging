@@ -37,13 +37,14 @@ def derive_base_invoice_number(po_number: str) -> str:
     """Derives base invoice number from PO number while preserving main sequence."""
     pn = (po_number or "").strip()
     if not pn:
-        return "INV-" + datetime.now(timezone.utc).strftime("%Y%m%d-001")
+        return "INV/" + datetime.now(timezone.utc).strftime("%d/%m/%y/001")
 
-    # 1. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> INV/2026/08/30/000123
-    # 2. Match PO-20260830-001 or SO-20260830-001 -> INV-20260830-001
-    # 3. Match PO.2026.08.001 -> INV.2026.08.001
-    # 4. Match PO 12345 -> INV 12345
-    # 5. Match PO12345 -> INV12345
+    # 1. Match PO/04/09/26/001 or SO/04/09/26/001 -> INV/04/09/26/001
+    # 2. Match PO/2026/08/30/000123 or SO/2026/08/30/000123 -> INV/2026/08/30/000123
+    # 3. Match PO-20260830-001 or SO-20260830-001 -> INV-20260830-001
+    # 4. Match PO.2026.08.001 -> INV.2026.08.001
+    # 5. Match PO 12345 -> INV 12345
+    # 6. Match PO12345 -> INV12345
     m = re.match(r'^(?:PO|SO)([\/\.\-\s_]?)(.*)$', pn, re.IGNORECASE)
     if m:
         sep = m.group(1)
@@ -63,14 +64,14 @@ def derive_base_invoice_number(po_number: str) -> str:
 def derive_invoice_number(po_number: str, invoice_index: int) -> str:
     """Computes backend-authoritative invoice number for a specific invoice index.
 
-    Index 1: base INV (e.g. INV/2026/08/31/000125)
-    Index 2: base INV + "-2" (e.g. INV/2026/08/31/000125-2)
-    Index 3: base INV + "-3" (e.g. INV/2026/08/31/000125-3)
+    Index 1: base INV (e.g. INV/04/09/26/001 or INV-20260830-001)
+    Index 2: base INV + "_2" (e.g. INV/04/09/26/001_2)
+    Index 3: base INV + "_3" (e.g. INV/04/09/26/001_3)
     """
     base = derive_base_invoice_number(po_number)
     if invoice_index <= 1:
         return base
-    return f"{base}-{invoice_index}"
+    return f"{base}_{invoice_index}"
 
 
 def _parse_non_negative_price(raw: Any, field_name: str = "Harga satuan") -> float:
