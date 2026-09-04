@@ -90,6 +90,7 @@ def default_settings() -> dict:
             "prospect_timer_baseline": "ACTIVATION_TIMESTAMP",
         },
         "override_rules": [],
+        "prospect_pic_user_ids": [],
     }
 
 
@@ -279,6 +280,9 @@ def merge_settings(stored: Optional[dict]) -> dict:
         decorated.append(row)
     types = decorated
     overrides = incoming.get("override_rules") if isinstance(incoming.get("override_rules"), list) else []
+    pic_ids = incoming.get("prospect_pic_user_ids")
+    if not isinstance(pic_ids, list):
+        pic_ids = list(base["prospect_pic_user_ids"])
     return {
         "key": SETTINGS_KEY,
         "default_rule": default_rule,
@@ -288,13 +292,47 @@ def merge_settings(stored: Optional[dict]) -> dict:
         "manual": manual,
         "migration": migration,
         "override_rules": overrides,
+        "prospect_pic_user_ids": [str(x).strip() for x in pic_ids if str(x or "").strip()],
         "updated_at": incoming.get("updated_at"),
         "updated_by": incoming.get("updated_by"),
         "updated_by_name": incoming.get("updated_by_name"),
     }
 
 
-def sanitize_put(payload: dict, existing: Optional[dict] = None, known_user_ids: Optional[set] = None) -> dict:
+def _sanitize_user_id_list(
+    raw: Any,
+    *,
+    field: str,
+    known_user_ids: Optional[set] = None,
+    active_user_ids: Optional[set] = None,
+) -> List[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(400, f"{field} harus berupa list")
+    out: List[str] = []
+    seen = set()
+    for item in raw:
+        uid = str(item or "").strip()
+        if not uid:
+            continue
+        if uid in seen:
+            raise HTTPException(400, f"{field} tidak boleh berisi user duplikat")
+        if known_user_ids is not None and uid not in known_user_ids:
+            raise HTTPException(400, f"User tidak ditemukan: {uid}")
+        if active_user_ids is not None and uid not in active_user_ids:
+            raise HTTPException(400, f"User tidak aktif tidak dapat menjadi PIC Sales Prospek: {uid}")
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+def sanitize_put(
+    payload: dict,
+    existing: Optional[dict] = None,
+    known_user_ids: Optional[set] = None,
+    active_user_ids: Optional[set] = None,
+) -> dict:
     current = merge_settings(existing)
     raw = payload or {}
     rule_in = raw.get("default_rule") or {}
@@ -349,6 +387,12 @@ def sanitize_put(payload: dict, existing: Optional[dict] = None, known_user_ids:
             "prospect_timer_baseline": "ACTIVATION_TIMESTAMP",
         },
         "override_rules": _sanitize_override_rules(raw.get("override_rules", current.get("override_rules") or [])),
+        "prospect_pic_user_ids": _sanitize_user_id_list(
+            raw.get("prospect_pic_user_ids", current.get("prospect_pic_user_ids") or []),
+            field="prospect_pic_user_ids",
+            known_user_ids=known_user_ids,
+            active_user_ids=active_user_ids,
+        ),
     }
     if candidate["dormancy"]["warning_days"] >= candidate["dormancy"]["threshold_days"]:
         raise HTTPException(400, "dormancy.warning_days harus lebih kecil dari threshold_days")
@@ -450,9 +494,20 @@ async def load_settings(db) -> dict:
     return merge_settings(doc)
 
 
-async def save_settings(db, payload: dict, actor: dict, known_user_ids: Optional[set] = None) -> dict:
+async def save_settings(
+    db,
+    payload: dict,
+    actor: dict,
+    known_user_ids: Optional[set] = None,
+    active_user_ids: Optional[set] = None,
+) -> dict:
     existing = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
-    sanitized = sanitize_put(payload, existing, known_user_ids=known_user_ids)
+    sanitized = sanitize_put(
+        payload,
+        existing,
+        known_user_ids=known_user_ids,
+        active_user_ids=active_user_ids,
+    )
     from services.sales_activity.clock import iso_now
 
     doc = {

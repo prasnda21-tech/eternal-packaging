@@ -416,9 +416,6 @@ async def begin_new_cycle(
 async def manual_reassign(db, outlet_id: str, new_owner_id: str, reason: str, actor: dict, perms: set) -> dict:
     await _require_manage(perms)
     reason = require_reason(reason)
-    target = await get_user(db, new_owner_id)
-    if not target or not is_user_active(target):
-        raise HTTPException(400, "Sales tujuan tidak valid")
     snap = await get_ownership(db, outlet_id)
     if not snap:
         raise HTTPException(404, "Ownership tidak ditemukan")
@@ -426,6 +423,16 @@ async def manual_reassign(db, outlet_id: str, new_owner_id: str, reason: str, ac
         raise HTTPException(409, "Outlet ada di Pool. Gunakan assign dari Pool.")
     settings = await load_settings(db)
     outlet = await db[COL_OUTLETS].find_one({"id": outlet_id}, {"_id": 0})
+    # Outlet Prospek: new owner must be on PIC Sales Prospek allowlist.
+    # Other kinds keep existing supervisor reassignment rules.
+    kind = str(snap.get("customer_kind") or (outlet or {}).get("customer_kind") or "").upper()
+    if kind == KIND_PROSPECT:
+        from services.sales_activity.outlets import resolve_prospect_pic_owner
+        target = await resolve_prospect_pic_owner(db, settings, new_owner_id, actor)
+    else:
+        target = await get_user(db, new_owner_id)
+        if not target or not is_user_active(target):
+            raise HTTPException(400, "Sales tujuan tidak valid")
     updated = await begin_new_cycle(
         db,
         snap,

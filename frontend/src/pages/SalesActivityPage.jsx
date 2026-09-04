@@ -59,12 +59,21 @@ export default function SalesActivityPage() {
   );
 }
 
+function defaultProspectOwnerId(pics, user) {
+  if (!pics?.length) return "";
+  if (pics.length === 1) return pics[0].id;
+  const self = user?.id || user?.user_id;
+  if (self && pics.some((p) => p.id === self)) return self;
+  return "";
+}
+
 function OutletTab({ notify }) {
   const { hasPerm, user } = useAuth();
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", address: "", whatsapp: "", category: "", lead_source: "" });
+  const [picUsers, setPicUsers] = useState([]);
+  const [form, setForm] = useState({ name: "", address: "", whatsapp: "", category: "", lead_source: "", owner_id: "" });
 
   const load = () => {
     api.listSalesActivityOutlets({ q }).then((r) => setRows(r.items || [])).catch((e) => notify(errText(e)));
@@ -74,12 +83,50 @@ function OutletTab({ notify }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
 
-  const resetForm = () => setForm({ name: "", address: "", whatsapp: "", category: "", lead_source: "" });
+  useEffect(() => {
+    if (!creating || !canCreateOutlet(hasPerm)) return;
+    api.salesActivityProspectPicUsers()
+      .then((r) => {
+        const pics = r.users || [];
+        setPicUsers(pics);
+        setForm((prev) => ({
+          ...prev,
+          owner_id: prev.owner_id && pics.some((p) => p.id === prev.owner_id)
+            ? prev.owner_id
+            : defaultProspectOwnerId(pics, user),
+        }));
+      })
+      .catch((e) => notify(errText(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creating]);
+
+  const resetForm = () => setForm({
+    name: "",
+    address: "",
+    whatsapp: "",
+    category: "",
+    lead_source: "",
+    owner_id: defaultProspectOwnerId(picUsers, user),
+  });
+
+  const picEmpty = creating && picUsers.length === 0;
+  const canSubmit = Boolean(form.owner_id) && !picEmpty;
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!canSubmit) {
+      notify("Belum ada PIC Sales Prospek yang diatur. Hubungi administrator.");
+      return;
+    }
     try {
-      await api.createSalesActivityOutlet(form);
+      await api.createSalesActivityOutlet({
+        name: form.name,
+        address: form.address,
+        whatsapp: form.whatsapp,
+        category: form.category,
+        lead_source: form.lead_source,
+        owner_id: form.owner_id,
+      });
       resetForm();
       setCreating(false);
       notify("Outlet dibuat. Automation aktif.");
@@ -130,13 +177,32 @@ function OutletTab({ notify }) {
             <SaField label="Sumber Lead">
               <input className="sa-control" value={form.lead_source} onChange={(e) => setForm({ ...form, lead_source: e.target.value })} />
             </SaField>
-            <div className="sa-readonly">
-              <span className="sa-field-label">Owner / PIC Sales</span>
-              <p className="sa-readonly-value">{user?.name || "Akun yang login"}</p>
-              <p className="sa-field-hint">Owner mengikuti akun yang sedang login. Tidak dapat diubah dari form ini.</p>
-            </div>
+            <SaField label="Owner / PIC Sales" required>
+              <select
+                className="sa-control"
+                required
+                value={form.owner_id}
+                onChange={(e) => setForm({ ...form, owner_id: e.target.value })}
+                data-testid="sa-outlet-owner-select"
+                disabled={picEmpty}
+              >
+                <option value="">{picEmpty ? "Tidak tersedia" : "Pilih PIC Sales"}</option>
+                {picUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}{u.role ? ` · ${u.role}` : ""}</option>
+                ))}
+              </select>
+            </SaField>
+            {picEmpty && (
+              <p className="error sa-field-wide" data-testid="sa-outlet-pic-empty">
+                Belum ada PIC Sales Prospek yang diatur. Hubungi administrator.
+              </p>
+            )}
           </SaSection>
-          <SaFormFooter onCancel={() => { setCreating(false); resetForm(); }} submitLabel="Simpan" />
+          <SaFormFooter
+            onCancel={() => { setCreating(false); resetForm(); }}
+            submitLabel="Simpan"
+            submitDisabled={!canSubmit}
+          />
         </form>
       )}
 
