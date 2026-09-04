@@ -46,6 +46,20 @@ describe("Surat Jalan item/qty helpers", () => {
     expect(hist[0].has_item_qty).toBe(false);
   });
 
+  test("generated and manual SJ files appear together with source", () => {
+    const hist = sjHistory({
+      surat_jalan_files: [
+        { id: "gen-1", name: "Surat Jalan SJ-1.pdf", source: "SYSTEM_GENERATED", sj_number: "SJ-1", shipment_id: "sh-1", lines: [{ line_idx: 0, qty: 10 }] },
+        { id: "man-1", name: "signed-scan.pdf", lines: [] },
+      ],
+    });
+    expect(hist).toHaveLength(2);
+    expect(hist[0].source).toBe("SYSTEM_GENERATED");
+    expect(hist[0].sj_number).toBe("SJ-1");
+    expect(hist[1].name).toBe("signed-scan.pdf");
+    expect(hist[0].id).not.toBe(hist[1].id);
+  });
+
   test("empty row helper", () => {
     expect(emptySjLine()).toEqual({ line_idx: "", qty: "" });
   });

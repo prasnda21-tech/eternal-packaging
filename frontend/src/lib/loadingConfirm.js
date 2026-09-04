@@ -111,19 +111,28 @@ export function loadingPoLines(order, selectedSjId = null) {
 export function sjFilesForLoading(order) {
   const list = [];
   const seen = new Set();
+  const coveredShipments = new Set();
 
   const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
   for (const f of files) {
     const id = f?.id || f?.file_id;
     if (id && !seen.has(String(id))) {
       seen.add(String(id));
+      if (f.shipment_id) coveredShipments.add(String(f.shipment_id));
+      coveredShipments.add(String(id));
+      const sjNumber = f.sj_number || "";
       list.push({
         id: String(id),
-        name: f.name || (f.sj_number ? `Surat Jalan - ${f.sj_number}` : "Surat Jalan"),
+        file_id: String(id),
+        shipment_id: f.shipment_id ? String(f.shipment_id) : "",
+        sj_number: sjNumber,
+        name: f.name || (sjNumber ? `Surat Jalan ${sjNumber}` : "Surat Jalan"),
         uploaded_by_name: f.uploaded_by_name || f.uploaded_by,
         uploaded_at: f.uploaded_at,
+        source: f.source || "",
         lines: f.lines || [],
         total_qty: f.total_qty || 0,
+        has_file: true,
       });
     }
   }
@@ -131,17 +140,26 @@ export function sjFilesForLoading(order) {
   const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
   for (const sh of shipments) {
     const id = sh?.id || sh?.sales_delivery_id || sh?.number;
-    if (id && !seen.has(String(id))) {
-      seen.add(String(id));
-      list.push({
-        id: String(id),
-        name: sh.number ? `Surat Jalan - ${sh.number}` : (sh.name || "Surat Jalan"),
-        uploaded_by_name: sh.created_by_name || sh.created_by,
-        uploaded_at: sh.created_at,
-        lines: sh.lines || [],
-        total_qty: sh.total_qty || 0,
-      });
+    if (!id) continue;
+    const sid = String(id);
+    if (seen.has(sid) || coveredShipments.has(sid) || (sh.file_id && seen.has(String(sh.file_id)))) {
+      continue;
     }
+    seen.add(sid);
+    const sjNumber = sh.number || sh.sj_number || "";
+    list.push({
+      id: sid,
+      file_id: sh.file_id || null,
+      shipment_id: sid,
+      sj_number: sjNumber,
+      name: sjNumber ? `Surat Jalan ${sjNumber}` : (sh.name || "Surat Jalan"),
+      uploaded_by_name: sh.created_by_name || sh.created_by,
+      uploaded_at: sh.created_at,
+      source: "",
+      lines: sh.lines || [],
+      total_qty: sh.total_qty || 0,
+      has_file: Boolean(sh.file_id),
+    });
   }
 
   return list;

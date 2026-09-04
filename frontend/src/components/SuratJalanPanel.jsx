@@ -209,6 +209,9 @@ export default function SuratJalanPanel({
               return (
                 <li key={fileId || f.name} data-testid={`surat-jalan-file-${fileId || f.name}`} className="sj-file-card">
                   <strong>{f.name}</strong>
+                  {f.source === "SYSTEM_GENERATED" && (
+                    <span className="muted small" data-testid={`sj-generated-badge-${fileId}`}>Dibuat Sistem</span>
+                  )}
                   {(f.uploaded_by_name || f.uploaded_by) && (
                     <span className="muted small">{f.uploaded_by_name || f.uploaded_by}</span>
                   )}

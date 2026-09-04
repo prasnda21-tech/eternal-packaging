@@ -26,6 +26,8 @@ describe("Loading restored as SJ qty confirmation", () => {
     expect(panel).toMatch(/KONFIRMASI LOADING/);
     expect(panel).toMatch(/surat_jalan_id/);
     expect(panel).toMatch(/Lihat Surat Jalan|loading-sj-lihat/);
+    expect(panel).toMatch(/loading-sj-number/);
+    expect(panel).toMatch(/loading-sj-file-row/);
   });
 
   test("PO detail has active Loading action", () => {

@@ -102,8 +102,16 @@ async def test_case_1_2_auto_sj_created_with_exact_number_and_qty():
             assert sh["total_qty"] == 200
             assert sh["lines"][0]["qty"] == 200
 
-            # CASE 2 & 3: No actual file upload -> no fake file record / URL / key in surat_jalan_files
-            assert len(updated_order.get("surat_jalan_files") or []) == 0
+            files = updated_order.get("surat_jalan_files") or []
+            assert len(files) == 1
+            gen = files[0]
+            assert gen["id"] == deliv["id"]
+            assert gen["shipment_id"] == deliv["id"]
+            assert gen["source"] == "SYSTEM_GENERATED"
+            assert gen["content_type"] == "application/pdf"
+            assert str(gen.get("storage_path") or "").strip()
+            assert str(gen.get("name") or "").lower().endswith(".pdf")
+            assert not str(gen.get("data_url") or "").startswith("data:")
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -137,7 +145,11 @@ async def test_case_3_idempotent_no_duplicate_sj():
 
             updated_order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
             assert len(updated_order["shipments"]) == 1
-            assert len(updated_order.get("surat_jalan_files") or []) == 0
+            files = updated_order.get("surat_jalan_files") or []
+            assert len(files) == 1
+            assert files[0]["id"] == updated_order["shipments"][0]["id"]
+            assert files[0]["source"] == "SYSTEM_GENERATED"
+            assert str(files[0].get("storage_path") or "").strip()
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -181,6 +193,12 @@ async def test_case_4_multiple_shipments_sj_numbering_and_independence():
             assert updated_order["shipments"][0]["total_qty"] == 200
             assert updated_order["shipments"][1]["number"] == f"{base_sj}-2"
             assert updated_order["shipments"][1]["total_qty"] == 150
+            files = updated_order.get("surat_jalan_files") or []
+            assert len(files) == 2
+            by_ship = {f.get("shipment_id"): f for f in files}
+            assert by_ship[d1["id"]]["sj_number"] == base_sj
+            assert by_ship[d2["id"]]["sj_number"] == f"{base_sj}-2"
+            assert by_ship[d1["id"]]["storage_path"] != by_ship[d2["id"]]["storage_path"]
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -418,8 +436,8 @@ async def test_case_15_16_packing_prerequisite_enforced():
 
 
 @pytest.mark.anyio
-async def test_case_17_file_view_semantics_untouched():
-    """No fake file upload: viewing non-existent file returns 404 (file semantics untouched)."""
+async def test_case_17_generated_file_is_viewable():
+    """Generated Pengiriman PDF is a real file served through the existing view endpoint."""
     po_num = f"PO-{uuid.uuid4().hex[:6].upper()}"
     po = await create_helper_po(po_num, [{"name": "Cup 22oz", "quantity": 500, "unit": "pcs"}])
 
@@ -438,9 +456,10 @@ async def test_case_17_file_view_semantics_untouched():
             assert res_deliv.status_code == 200
             deliv_id = res_deliv.json()["delivery"]["id"]
 
-            # File view endpoint for non-uploaded file returns 404
-            res_file = await client.get(f"/api/orders/{po['id']}/surat-jalan-files/{deliv_id}")
-            assert res_file.status_code == 404
+            res_file = await client.get(f"/api/orders/{po['id']}/surat-jalan/files/{deliv_id}")
+            assert res_file.status_code == 200
+            assert res_file.content.startswith(b"%PDF")
+            assert "pdf" in (res_file.headers.get("content-type") or "")
     finally:
         app.dependency_overrides.pop(current_user, None)
 

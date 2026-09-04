@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading } from "./loadingConfirm";
 import { parseSjQty } from "./suratJalan";
 
 describe("Loading confirm helpers", () => {
@@ -71,5 +71,62 @@ describe("Loading confirm helpers", () => {
 
   test("empty row helper", () => {
     expect(emptyLoadingLine()).toEqual({ line_idx: "", qty: "" });
+  });
+
+  test("generated SJ file is listed once and keeps exact shipment identity", () => {
+    const files = sjFilesForLoading({
+      surat_jalan_files: [
+        {
+          id: "sh-1",
+          shipment_id: "sh-1",
+          sj_number: "SJ-100",
+          name: "Surat Jalan SJ-100.pdf",
+          source: "SYSTEM_GENERATED",
+          lines: [{ line_idx: 0, qty: 200 }],
+        },
+      ],
+      shipments: [
+        { id: "sh-1", number: "SJ-100", file_id: "sh-1", lines: [{ line_idx: 0, qty: 200 }] },
+        { id: "sh-2", number: "SJ-100-2", file_id: "sh-2", lines: [{ line_idx: 0, qty: 150 }] },
+      ],
+    });
+    expect(files).toHaveLength(2);
+    expect(files[0].id).toBe("sh-1");
+    expect(files[0].sj_number).toBe("SJ-100");
+    expect(files[0].has_file).toBe(true);
+    expect(files[1].id).toBe("sh-2");
+    expect(files[1].sj_number).toBe("SJ-100-2");
+  });
+
+  test("manual and generated files coexist without merging shipments", () => {
+    const files = sjFilesForLoading({
+      surat_jalan_files: [
+        { id: "sh-1", shipment_id: "sh-1", sj_number: "SJ-1", source: "SYSTEM_GENERATED", name: "Surat Jalan SJ-1.pdf" },
+        { id: "manual-1", name: "signed-scan.pdf" },
+      ],
+      shipments: [{ id: "sh-1", number: "SJ-1", file_id: "sh-1" }],
+    });
+    expect(files.map((f) => f.id)).toEqual(["sh-1", "manual-1"]);
+    expect(files[0].source).toBe("SYSTEM_GENERATED");
+    expect(files[1].name).toBe("signed-scan.pdf");
+  });
+
+  test("loading qty still respects packing even when generated SJ qty is higher", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "Paper Cup 12oz", quantity: 10000 }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 6000 }] },
+      shipments: [{ id: "sh-1", number: "SJ-1", lines: [{ line_idx: 0, qty: 8000 }] }],
+      surat_jalan_files: [{
+        id: "sh-1",
+        shipment_id: "sh-1",
+        sj_number: "SJ-1",
+        source: "SYSTEM_GENERATED",
+        lines: [{ line_idx: 0, qty: 8000 }],
+      }],
+    }, "sh-1");
+    expect(lines[0].qty_sj).toBe(8000);
+    expect(lines[0].available).toBe(6000);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "6000" }], lines).ok).toBe(true);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "8000" }], lines).ok).toBe(false);
   });
 });
