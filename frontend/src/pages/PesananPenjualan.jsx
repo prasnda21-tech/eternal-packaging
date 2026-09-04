@@ -42,6 +42,20 @@ const INITIAL_LINE_ITEM = {
   master_item_id: null,
 };
 
+export function filterPoLineItems(lineItems, searchQuery) {
+  const q = (searchQuery || "").trim().toLowerCase();
+  const list = (lineItems || []).map((line, originalIndex) => ({
+    line,
+    originalIndex,
+  }));
+  if (!q) return list;
+  return list.filter(({ line }) => {
+    const name = String(line?.name || "").toLowerCase();
+    const code = String(line?.item_code || "").toLowerCase();
+    return name.includes(q) || code.includes(q);
+  });
+}
+
 export default function PesananPenjualan() {
   const navigate = useNavigate();
   const { user, hasPerm } = useAuth();
@@ -99,6 +113,12 @@ export default function PesananPenjualan() {
   const [formBusy, setFormBusy] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [lineSearchQuery, setLineSearchQuery] = useState("");
+
+  const filteredLineItems = useMemo(
+    () => filterPoLineItems(formData.line_items, lineSearchQuery),
+    [formData.line_items, lineSearchQuery]
+  );
 
   const loadOptions = useCallback(async () => {
     setOptionsLoading(true);
@@ -328,6 +348,7 @@ export default function PesananPenjualan() {
     });
     setFormErr("");
     setSuccessMsg("");
+    setLineSearchQuery("");
   };
 
   const handleFormSubmit = async (e) => {
@@ -807,7 +828,48 @@ export default function PesananPenjualan() {
             description="Masing-masing baris item memiliki identitas independen (tidak akan dimerge otomatis)."
             status={formData.line_items.some(l => l.product_name && Number(l.quantity) > 0) ? "complete" : "incomplete"}
           >
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+              <div style={{ position: "relative", minWidth: 260, maxWidth: 380, flex: "1 1 260px" }}>
+                <Search size={16} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#94a3b8", pointerEvents: "none" }} />
+                <input
+                  type="text"
+                  data-testid="line-items-search-input"
+                  value={lineSearchQuery}
+                  onChange={(e) => setLineSearchQuery(e.target.value)}
+                  placeholder="Cari barang / jasa..."
+                  style={{
+                    width: "100%",
+                    padding: "8px 32px 8px 34px",
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    fontSize: "0.875rem",
+                    boxSizing: "border-box",
+                  }}
+                />
+                {lineSearchQuery && (
+                  <button
+                    type="button"
+                    data-testid="btn-clear-line-search"
+                    onClick={() => setLineSearchQuery("")}
+                    style={{
+                      position: "absolute",
+                      right: 8,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "#94a3b8",
+                      padding: 2,
+                      display: "flex",
+                      alignItems: "center",
+                    }}
+                    title="Bersihkan pencarian"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 className="ghost sm"
@@ -819,129 +881,156 @@ export default function PesananPenjualan() {
               </button>
             </div>
 
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
-                <thead>
+            <div
+              data-testid="line-items-table-container"
+              style={{
+                overflowX: "auto",
+                overflowY: "auto",
+                minHeight: "380px",
+                maxHeight: "560px",
+                border: "1px solid #e2e8f0",
+                borderRadius: 8,
+              }}
+            >
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, textAlign: "left", fontSize: "0.9rem" }}>
+                <thead style={{ position: "sticky", top: 0, zIndex: 2, background: "#f8fafc" }}>
                   <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
-                    <th style={{ padding: "10px 8px", width: 40 }}>#</th>
-                    <th style={{ padding: "10px 8px", minWidth: 220 }}>Barang / Jasa <span style={{ color: "#ef4444" }}>*</span></th>
-                    <th style={{ padding: "10px 8px", width: 120 }}>Kode</th>
-                    <th style={{ padding: "10px 8px", width: 130 }}>Proses</th>
-                    <th style={{ padding: "10px 8px", width: 100 }}>Qty <span style={{ color: "#ef4444" }}>*</span></th>
-                    <th style={{ padding: "10px 8px", width: 80 }}>Satuan</th>
-                    <th style={{ padding: "10px 8px", width: 140 }}>Warna</th>
-                    <th style={{ padding: "10px 8px", minWidth: 160 }}>Catatan Item</th>
-                    <th style={{ padding: "10px 8px", width: 48, textAlign: "center" }}>Aksi</th>
+                    <th style={{ padding: "10px 8px", width: 40, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>#</th>
+                    <th style={{ padding: "10px 8px", minWidth: 220, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Barang / Jasa <span style={{ color: "#ef4444" }}>*</span></th>
+                    <th style={{ padding: "10px 8px", width: 120, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Kode</th>
+                    <th style={{ padding: "10px 8px", width: 130, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Proses</th>
+                    <th style={{ padding: "10px 8px", width: 100, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Qty <span style={{ color: "#ef4444" }}>*</span></th>
+                    <th style={{ padding: "10px 8px", width: 80, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Satuan</th>
+                    <th style={{ padding: "10px 8px", width: 140, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Warna</th>
+                    <th style={{ padding: "10px 8px", minWidth: 160, background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Catatan Item</th>
+                    <th style={{ padding: "10px 8px", width: 48, textAlign: "center", background: "#f8fafc", borderBottom: "2px solid #e2e8f0" }}>Aksi</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {formData.line_items.map((line, idx) => (
-                    <tr key={idx} data-testid={`line-item-row-${idx}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                      <td style={{ padding: "10px 8px", color: "#64748b", fontWeight: 600 }}>{idx + 1}</td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <MasterItemSearchSelect
-                          testId={`line-item-search-${idx}`}
-                          value={
-                            line.accurate_item_id || line.master_item_id
-                              ? {
-                                  accurate_item_id: line.accurate_item_id,
-                                  id: line.master_item_id,
-                                  master_item_id: line.master_item_id,
-                                  item_name: line.name,
-                                  item_code: line.item_code,
-                                  unit: line.unit,
-                                }
-                              : null
-                          }
-                          onChange={(master) => handleSelectMasterItem(idx, master)}
-                          placeholder="Cari nama / kode barang…"
-                        />
-                        {!line.accurate_item_id && !line.master_item_id && (
-                          <input
-                            type="text"
-                            value={line.name}
-                            onChange={(e) => handleLineChange(idx, "name", e.target.value)}
-                            placeholder="Atau ketik nama bebas (tanpa master)"
-                            data-testid={`line-name-${idx}`}
-                            style={{ width: "100%", marginTop: 6, padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                          />
-                        )}
-                      </td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <input
-                          type="text"
-                          value={line.item_code || ""}
-                          onChange={(e) => handleLineChange(idx, "item_code", e.target.value)}
-                          placeholder="Kode"
-                          data-testid={`line-code-${idx}`}
-                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                        />
-                      </td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <select
-                          value={line.production_process}
-                          onChange={(e) => handleLineChange(idx, "production_process", e.target.value)}
-                          data-testid={`line-process-${idx}`}
-                          style={{ width: "100%", padding: "6px 8px", border: "1px solid #cbd5e1", borderRadius: 6, background: "#fff" }}
-                        >
-                          <option value="print">Cetak</option>
-                          <option value="non_print">Tidak Cetak</option>
-                        </select>
-                      </td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <input
-                          type="number"
-                          min="1"
-                          value={line.quantity}
-                          onChange={(e) => handleLineChange(idx, "quantity", e.target.value)}
-                          data-testid={`line-qty-${idx}`}
-                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                          required
-                        />
-                      </td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <input
-                          type="text"
-                          value={line.unit || "pcs"}
-                          onChange={(e) => handleLineChange(idx, "unit", e.target.value)}
-                          data-testid={`line-unit-${idx}`}
-                          style={{ width: "100%", padding: "6px 8px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                        />
-                      </td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <input
-                          type="text"
-                          value={line.color || ""}
-                          onChange={(e) => handleLineChange(idx, "color", e.target.value)}
-                          placeholder="mis. Full color"
-                          data-testid={`line-color-${idx}`}
-                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                        />
-                      </td>
-                      <td style={{ padding: "10px 8px" }}>
-                        <input
-                          type="text"
-                          value={line.notes || ""}
-                          onChange={(e) => handleLineChange(idx, "notes", e.target.value)}
-                          placeholder="Catatan..."
-                          data-testid={`line-notes-${idx}`}
-                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
-                        />
-                      </td>
-                      <td style={{ padding: "10px 8px", textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => removeLineItem(idx)}
-                          disabled={formData.line_items.length <= 1}
-                          data-testid={`btn-remove-line-${idx}`}
-                          style={{ background: "transparent", border: "none", color: formData.line_items.length <= 1 ? "#cbd5e1" : "#ef4444", cursor: formData.line_items.length <= 1 ? "not-allowed" : "pointer", padding: 4 }}
-                          title="Hapus baris"
-                        >
-                          <Trash2 size={16} />
-                        </button>
+                  {filteredLineItems.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={9}
+                        data-testid="line-items-empty-state"
+                        style={{
+                          padding: "48px 16px",
+                          textAlign: "center",
+                          color: "#64748b",
+                          fontSize: "0.95rem",
+                        }}
+                      >
+                        Tidak ada barang/jasa yang cocok.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredLineItems.map(({ line, originalIndex }) => (
+                      <tr key={originalIndex} data-testid={`line-item-row-${originalIndex}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "10px 8px", color: "#64748b", fontWeight: 600, borderBottom: "1px solid #f1f5f9" }}>{originalIndex + 1}</td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <MasterItemSearchSelect
+                            testId={`line-item-search-${originalIndex}`}
+                            value={
+                              line.accurate_item_id || line.master_item_id
+                                ? {
+                                    accurate_item_id: line.accurate_item_id,
+                                    id: line.master_item_id,
+                                    master_item_id: line.master_item_id,
+                                    item_name: line.name,
+                                    item_code: line.item_code,
+                                    unit: line.unit,
+                                  }
+                                : null
+                            }
+                            onChange={(master) => handleSelectMasterItem(originalIndex, master)}
+                            placeholder="Cari nama / kode barang…"
+                          />
+                          {!line.accurate_item_id && !line.master_item_id && (
+                            <input
+                              type="text"
+                              value={line.name}
+                              onChange={(e) => handleLineChange(originalIndex, "name", e.target.value)}
+                              placeholder="Atau ketik nama bebas (tanpa master)"
+                              data-testid={`line-name-${originalIndex}`}
+                              style={{ width: "100%", marginTop: 6, padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                            />
+                          )}
+                        </td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <input
+                            type="text"
+                            value={line.item_code || ""}
+                            onChange={(e) => handleLineChange(originalIndex, "item_code", e.target.value)}
+                            placeholder="Kode"
+                            data-testid={`line-code-${originalIndex}`}
+                            style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                          />
+                        </td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <select
+                            value={line.production_process}
+                            onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)}
+                            data-testid={`line-process-${originalIndex}`}
+                            style={{ width: "100%", padding: "6px 8px", border: "1px solid #cbd5e1", borderRadius: 6, background: "#fff" }}
+                          >
+                            <option value="print">Cetak</option>
+                            <option value="non_print">Tidak Cetak</option>
+                          </select>
+                        </td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <input
+                            type="number"
+                            min="1"
+                            value={line.quantity}
+                            onChange={(e) => handleLineChange(originalIndex, "quantity", e.target.value)}
+                            data-testid={`line-qty-${originalIndex}`}
+                            style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                            required
+                          />
+                        </td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <input
+                            type="text"
+                            value={line.unit || "pcs"}
+                            onChange={(e) => handleLineChange(originalIndex, "unit", e.target.value)}
+                            data-testid={`line-unit-${originalIndex}`}
+                            style={{ width: "100%", padding: "6px 8px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                          />
+                        </td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <input
+                            type="text"
+                            value={line.color || ""}
+                            onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)}
+                            placeholder="mis. Full color"
+                            data-testid={`line-color-${originalIndex}`}
+                            style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                          />
+                        </td>
+                        <td style={{ padding: "10px 8px", borderBottom: "1px solid #f1f5f9" }}>
+                          <input
+                            type="text"
+                            value={line.notes || ""}
+                            onChange={(e) => handleLineChange(originalIndex, "notes", e.target.value)}
+                            placeholder="Catatan..."
+                            data-testid={`line-notes-${originalIndex}`}
+                            style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box" }}
+                          />
+                        </td>
+                        <td style={{ padding: "10px 8px", textAlign: "center", borderBottom: "1px solid #f1f5f9" }}>
+                          <button
+                            type="button"
+                            onClick={() => removeLineItem(originalIndex)}
+                            disabled={formData.line_items.length <= 1}
+                            data-testid={`btn-remove-line-${originalIndex}`}
+                            style={{ background: "transparent", border: "none", color: formData.line_items.length <= 1 ? "#cbd5e1" : "#ef4444", cursor: formData.line_items.length <= 1 ? "not-allowed" : "pointer", padding: 4 }}
+                            title="Hapus baris"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -950,6 +1039,11 @@ export default function PesananPenjualan() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, padding: "12px 16px", background: "#f8fafc", borderRadius: 8 }}>
               <span style={{ fontSize: "0.9rem", color: "#475569" }}>
                 Total Item: <strong>{formData.line_items.length}</strong>
+                {lineSearchQuery.trim() && (
+                  <span style={{ marginLeft: 8, color: "#64748b" }}>
+                    (Menampilkan {filteredLineItems.length} dari {formData.line_items.length})
+                  </span>
+                )}
               </span>
               <span style={{ fontSize: "1rem", color: "#0f172a" }}>
                 Total Quantity: <strong>{totalQty.toLocaleString("id-ID")} pcs</strong>
