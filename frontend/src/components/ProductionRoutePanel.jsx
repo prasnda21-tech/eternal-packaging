@@ -3,6 +3,16 @@ import { Printer, X } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 
+export function getRouteButtonClass(currentProcess, buttonType) {
+  const p = (currentProcess || "").toLowerCase();
+  return p === buttonType ? "primary sm" : "ghost sm";
+}
+
+export function shouldDispatchRouteUpdate(currentProcess, targetValue) {
+  const current = (currentProcess || "").toLowerCase();
+  return current !== targetValue;
+}
+
 /**
  * ProductionRoutePanel — Batch 3 · classification per line item Cetak/Non-Cetak.
  * Legacy line tanpa `production_process` → dianggap "print" default (backward
@@ -24,6 +34,14 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleSelectRoute = (idx, targetValue) => {
+    const current = lis[idx]?.production_process;
+    if (!shouldDispatchRouteUpdate(current, targetValue)) {
+      return; // Safe no-op: already active, no clear/unset, no redundant API call
+    }
+    setRoute(idx, targetValue);
   };
 
   return (
@@ -55,7 +73,7 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
         </thead>
         <tbody>
           {lis.map((li, idx) => {
-            const p = (li.production_process || "print").toLowerCase();
+            const p = (li.production_process || "").toLowerCase();
             return (
               <tr key={idx} data-testid={`route-row-${idx}`} style={{ borderBottom: "1px solid var(--line)" }}>
                 <td style={{ padding: "8px" }}>
@@ -67,8 +85,8 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
                   <div style={{ display: "flex", gap: 6 }}>
                     <button
                       type="button"
-                      className={p === "print" ? "primary sm" : "ghost sm"}
-                      onClick={() => setRoute(idx, "print")}
+                      className={getRouteButtonClass(li.production_process, "print")}
+                      onClick={() => handleSelectRoute(idx, "print")}
                       disabled={!canEdit || busy}
                       data-testid={`route-print-${idx}`}
                     >
@@ -76,8 +94,8 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
                     </button>
                     <button
                       type="button"
-                      className={p === "non_print" ? "primary sm" : "ghost sm"}
-                      onClick={() => setRoute(idx, "non_print")}
+                      className={getRouteButtonClass(li.production_process, "non_print")}
+                      onClick={() => handleSelectRoute(idx, "non_print")}
                       disabled={!canEdit || busy}
                       data-testid={`route-nonprint-${idx}`}
                     >
