@@ -76,6 +76,12 @@ export default function PesananPenjualan() {
     po_number: "",
     order_date: getTodayString(),
     customer: "",
+    customer_id: null,
+    customer_phone: "",
+    customer_address: "",
+    customer_pic: "",
+    customer_email: "",
+    customer_city: "",
     outlet: "",
     recipient: "",
     address: "",
@@ -144,13 +150,36 @@ export default function PesananPenjualan() {
   const handleCustomerChange = (newCustomer) => {
     const outlets = options.outlets_by_customer?.[newCustomer] || [];
     let patch = { customer: newCustomer };
+
+    const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+    const masterMatch = options.master_customers?.find(
+      (c) => norm(c.name) === norm(newCustomer)
+    );
+
+    if (masterMatch) {
+      patch.customer_id = masterMatch.id;
+      patch.customer_phone = masterMatch.phone || "";
+      if (masterMatch.address) {
+        patch.address = masterMatch.address;
+        patch.customer_address = masterMatch.address;
+      }
+      if (masterMatch.pic) {
+        patch.recipient = masterMatch.pic;
+        patch.customer_pic = masterMatch.pic;
+      }
+      if (masterMatch.email) patch.customer_email = masterMatch.email;
+      if (masterMatch.city) patch.customer_city = masterMatch.city;
+    } else {
+      patch.customer_id = null;
+    }
+
     if (outlets.length === 1) {
       const o = outlets[0];
       patch = {
         ...patch,
         outlet: o.outlet || "",
-        address: o.address || formData.address,
-        recipient: o.recipient || formData.recipient,
+        address: o.address || patch.address || formData.address,
+        recipient: o.recipient || patch.recipient || formData.recipient,
         delivery_zone: o.delivery_zone || formData.delivery_zone,
         sales: o.sales || formData.sales,
         payment_terms: o.payment_terms || formData.payment_terms,
@@ -310,6 +339,18 @@ export default function PesananPenjualan() {
     if (!formData.customer.trim()) {
       setFormErr("Customer wajib diisi.");
       return;
+    }
+    const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+    const isMaster = options.master_customers?.some((c) => norm(c.name) === norm(formData.customer));
+    if (!isMaster && !formData.customer_id) {
+      if (!formData.customer_phone?.trim()) {
+        setFormErr("Pelanggan baru terdeteksi: No. HP / WhatsApp pelanggan wajib diisi.");
+        return;
+      }
+      if (!formData.address?.trim()) {
+        setFormErr("Pelanggan baru terdeteksi: Alamat lengkap pengiriman wajib diisi.");
+        return;
+      }
     }
     if (!formData.line_items?.length) {
       setFormErr("Minimal harus ada 1 line item.");
@@ -550,6 +591,36 @@ export default function PesananPenjualan() {
                     <option key={c} value={c} />
                   ))}
                 </datalist>
+                {formData.customer?.trim() && (
+                  <div style={{ marginTop: 4, fontSize: "0.78rem" }}>
+                    {options.master_customers?.some(
+                      (c) => (c.name || "").trim().toLowerCase() === formData.customer.trim().toLowerCase()
+                    ) || formData.customer_id ? (
+                      <span data-testid="badge-customer-registered" style={{ color: "#059669", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        ✓ Pelanggan Terdaftar di Master
+                      </span>
+                    ) : (
+                      <span data-testid="badge-customer-new" style={{ color: "#0284c7", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        + Pelanggan Baru (otomatis masuk ke Data Pelanggan saat PO disimpan)
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* No. HP / WhatsApp Pelanggan */}
+              <div>
+                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                  No. HP / WhatsApp Pelanggan
+                </label>
+                <input
+                  type="text"
+                  value={formData.customer_phone || ""}
+                  onChange={(e) => setFormData((p) => ({ ...p, customer_phone: e.target.value }))}
+                  placeholder="mis. 0812-3456-7890"
+                  data-testid="input-customer-phone"
+                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
+                />
               </div>
 
               {/* Outlet / Cabang */}

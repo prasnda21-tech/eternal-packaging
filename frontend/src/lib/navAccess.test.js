@@ -120,10 +120,18 @@ describe("salesNavVisible", () => {
 
 describe("salesMenuItems", () => {
   test("builds tiles from existing Penjualan children only", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesOrder, NAV_KEYS.importPo));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesCustomers, NAV_KEYS.salesOrder, NAV_KEYS.importPo));
     expect(items).toEqual([
+      { key: NAV_KEYS.salesCustomers, label: "Data Pelanggan", to: "/penjualan/data-pelanggan", tone: "teal", testid: "top-nav-sales-customers" },
       { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", to: "/penjualan/pesanan-penjualan", tone: "blue", testid: "top-nav-sales-order" },
       { key: NAV_KEYS.importPo, label: "Import PO", to: "/admin/import", tone: "green", testid: "top-nav-import" },
+    ]);
+  });
+
+  test("builds Data Pelanggan tile when granted alone", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesCustomers));
+    expect(items).toEqual([
+      { key: NAV_KEYS.salesCustomers, label: "Data Pelanggan", to: "/penjualan/data-pelanggan", tone: "teal", testid: "top-nav-sales-customers" },
     ]);
   });
 
@@ -143,6 +151,7 @@ describe("salesMenuItems", () => {
 
   test("NAV_MENU_FALLBACK includes Penjualan children", () => {
     expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual([
+      "Data Pelanggan",
       "Pesanan Penjualan",
       "Pengiriman Pesanan",
       "Faktur Penjualan",
