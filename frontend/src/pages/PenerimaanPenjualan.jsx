@@ -28,6 +28,11 @@ function formatRupiah(num) {
 }
 
 import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+import {
+  RECEIPT_PROOF_ACCEPT,
+  buildReceiptProofPayload,
+  validateReceiptProofFile,
+} from "../lib/salesReceiptPaymentProof";
 
 export default function PenerimaanPenjualan() {
   const navigate = useNavigate();
@@ -67,6 +72,8 @@ export default function PenerimaanPenjualan() {
   const [receiptAmount, setReceiptAmount] = useState("");
   const [receiptDate, setReceiptDate] = useState(getTodayString());
   const [receiptNotes, setReceiptNotes] = useState("");
+  const [proofFile, setProofFile] = useState(null);
+  const [proofErr, setProofErr] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
   const [createErr, setCreateErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -238,6 +245,8 @@ export default function PenerimaanPenjualan() {
     setReceiptAmount("");
     setReceiptDate(getTodayString());
     setReceiptNotes("");
+    setProofFile(null);
+    setProofErr("");
     setCreateErr("");
     setIsModalOpen(true);
   };
@@ -248,8 +257,27 @@ export default function PenerimaanPenjualan() {
     setSelectedInvoice(null);
     setReceiptAmount("");
     setReceiptNotes("");
+    setProofFile(null);
+    setProofErr("");
     setCreateErr("");
     setSearchParams({});
+  };
+
+  const handleProofFileChange = (e) => {
+    const f = e.target.files?.[0] || null;
+    e.target.value = "";
+    setProofErr("");
+    if (!f) {
+      setProofFile(null);
+      return;
+    }
+    const check = validateReceiptProofFile(f);
+    if (!check.ok) {
+      setProofFile(null);
+      setProofErr(check.error);
+      return;
+    }
+    setProofFile(f);
   };
 
   // Close create modal on Escape key
@@ -286,17 +314,26 @@ export default function PenerimaanPenjualan() {
       setCreateErr(`Jumlah penerimaan (${formatRupiah(numAmount)}) melebihi sisa tagihan (${formatRupiah(previewCalc.outstandingBefore)}).`);
       return;
     }
+    const proofCheck = validateReceiptProofFile(proofFile);
+    if (!proofCheck.ok) {
+      setProofErr(proofCheck.error);
+      setCreateErr(proofCheck.error);
+      return;
+    }
 
     setCreateBusy(true);
     setCreateErr("");
+    setProofErr("");
     setSuccessMsg("");
 
     try {
+      const payment_proof = await buildReceiptProofPayload(proofFile);
       const payload = {
         invoice_id: selectedInvoiceId,
         receipt_date: receiptDate || getTodayString(),
         amount: numAmount,
         notes: receiptNotes.trim(),
+        payment_proof,
       };
       const res = await api.createSalesReceipt(payload);
       setSuccessMsg(res.message || "Penerimaan Penjualan berhasil disimpan!");
@@ -789,9 +826,9 @@ export default function PenerimaanPenjualan() {
                 )}
 
                 <FormProgress
-                  percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length / 3) * 100)}
-                  completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate].filter(Boolean).length}
-                  total={3}
+                  percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, proofFile].filter(Boolean).length / 4) * 100)}
+                  completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, proofFile].filter(Boolean).length}
+                  total={4}
                   className="mb-4"
                 />
 
@@ -937,7 +974,7 @@ export default function PenerimaanPenjualan() {
                 </div>
 
                 {/* 4. Catatan */}
-                <div style={{ marginBottom: 18 }}>
+                <div style={{ marginBottom: 16 }}>
                   <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
                     Catatan Pembayaran
                   </label>
@@ -954,6 +991,60 @@ export default function PenerimaanPenjualan() {
                       fontSize: 13,
                     }}
                   />
+                </div>
+
+                {/* 5. Bukti Payment */}
+                <div style={{ marginBottom: 18 }} data-testid="receipt-payment-proof-field">
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                    Bukti Payment *
+                  </label>
+                  <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#64748b" }}>
+                    Unggah JPG, JPEG, PNG, atau PDF. Nominal pembayaran tetap mengikuti jumlah penerimaan di atas — bukan dari file.
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                    <label
+                      className={"primary btn-file" + (createBusy ? " disabled" : "")}
+                      data-testid="receipt-proof-upload-label"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        cursor: createBusy ? "not-allowed" : "pointer",
+                        opacity: createBusy ? 0.6 : 1,
+                      }}
+                    >
+                      <input
+                        type="file"
+                        accept={RECEIPT_PROOF_ACCEPT}
+                        disabled={createBusy}
+                        onChange={handleProofFileChange}
+                        data-testid="input-receipt-payment-proof"
+                        style={{ display: "none" }}
+                      />
+                      <FileText size={14} /> {proofFile ? "Ganti File" : "Pilih File"}
+                    </label>
+                    {proofFile && (
+                      <>
+                        <span className="muted small" data-testid="receipt-proof-filename" style={{ fontSize: 13, color: "#0f172a" }}>
+                          {proofFile.name}
+                        </span>
+                        <button
+                          type="button"
+                          className="ghost sm"
+                          data-testid="btn-clear-receipt-proof"
+                          disabled={createBusy}
+                          onClick={() => { setProofFile(null); setProofErr(""); }}
+                        >
+                          Hapus
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {proofErr && (
+                    <div className="error" data-testid="receipt-proof-error" style={{ marginTop: 8, fontSize: 12, color: "#b91c1c" }}>
+                      {proofErr}
+                    </div>
+                  )}
                 </div>
 
                 {/* Live Preview Bar */}
