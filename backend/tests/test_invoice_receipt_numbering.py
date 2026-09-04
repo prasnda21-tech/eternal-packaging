@@ -121,7 +121,7 @@ async def test_case_1_first_invoice_number():
 @pytest.mark.anyio
 async def test_case_2_second_invoice_same_po():
     """CASE 2: second invoice same PO -> INV/2026/08/20/000019-2"""
-    assert derive_invoice_number("PO/2026/08/20/000019", 2) == "INV/2026/08/20/000019-2"
+    assert derive_invoice_number("PO/2026/08/20/000019", 2) == "INV/2026/08/20/000019_2"
 
     po_num = f"PO/2026/08/20/000019-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [
@@ -148,7 +148,7 @@ async def test_case_2_second_invoice_same_po():
 async def test_case_3_dash_format_po_number():
     """CASE 3: PO: PO-2425EC -> first invoice: INV-2425EC, second: INV-2425EC-2"""
     assert derive_invoice_number("PO-2425EC", 1) == "INV-2425EC"
-    assert derive_invoice_number("PO-2425EC", 2) == "INV-2425EC-2"
+    assert derive_invoice_number("PO-2425EC", 2) == "INV-2425EC_2"
 
     po_num = f"PO-2425EC-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [
@@ -280,7 +280,7 @@ async def test_case_8_first_receipt_number():
 @pytest.mark.anyio
 async def test_case_9_second_receipt_same_po():
     """CASE 9: second receipt same PO -> PAY/2026/08/20/000019-2"""
-    assert derive_receipt_number("PO/2026/08/20/000019", 2) == "PAY/2026/08/20/000019-2"
+    assert derive_receipt_number("PO/2026/08/20/000019", 2) == "PAY/2026/08/20/000019_2"
 
     po_num = f"PO/2026/08/20/000019-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [{"line_idx": 0, "item_name": "Dus", "quantity": 100, "unit": "pcs"}])
@@ -301,7 +301,7 @@ async def test_case_9_second_receipt_same_po():
 async def test_case_10_dash_format_receipt_number():
     """CASE 10: PO: PO-2425EC -> first receipt: PAY-2425EC, second: PAY-2425EC-2"""
     assert derive_receipt_number("PO-2425EC", 1) == "PAY-2425EC"
-    assert derive_receipt_number("PO-2425EC", 2) == "PAY-2425EC-2"
+    assert derive_receipt_number("PO-2425EC", 2) == "PAY-2425EC_2"
 
     po_num = f"PO-2425EC-{uuid.uuid4().hex[:4]}"
     order = await _seed_test_order(po_num, [{"line_idx": 0, "item_name": "Dus", "quantity": 100, "unit": "pcs"}])

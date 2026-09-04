@@ -71,13 +71,13 @@ def derive_receipt_number(po_number: str, receipt_index: int) -> str:
     """Computes backend-authoritative receipt number for a specific receipt index.
 
     Index 1: base PAY (e.g. PAY/2026/08/31/000125)
-    Index 2: base PAY + "-2" (e.g. PAY/2026/08/31/000125-2)
-    Index 3: base PAY + "-3" (e.g. PAY/2026/08/31/000125-3)
+    Index 2: base PAY + "_2" (e.g. PAY/2026/08/31/000125_2)
+    Index 3: base PAY + "_3" (e.g. PAY/2026/08/31/000125_3)
     """
     base = derive_base_receipt_number(po_number)
     if receipt_index <= 1:
         return base
-    return f"{base}-{receipt_index}"
+    return f"{base}_{receipt_index}"
 
 
 def _parse_non_negative_amount(raw: Any, field_name: str = "Jumlah pembayaran") -> float:

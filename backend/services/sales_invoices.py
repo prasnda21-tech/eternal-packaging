@@ -64,13 +64,13 @@ def derive_invoice_number(po_number: str, invoice_index: int) -> str:
     """Computes backend-authoritative invoice number for a specific invoice index.
 
     Index 1: base INV (e.g. INV/2026/08/31/000125)
-    Index 2: base INV + "-2" (e.g. INV/2026/08/31/000125-2)
-    Index 3: base INV + "-3" (e.g. INV/2026/08/31/000125-3)
+    Index 2: base INV + "_2" (e.g. INV/2026/08/31/000125_2)
+    Index 3: base INV + "_3" (e.g. INV/2026/08/31/000125_3)
     """
     base = derive_base_invoice_number(po_number)
     if invoice_index <= 1:
         return base
-    return f"{base}-{invoice_index}"
+    return f"{base}_{invoice_index}"
 
 
 def _parse_non_negative_price(raw: Any, field_name: str = "Harga satuan") -> float:

@@ -76,13 +76,13 @@ def derive_sj_number(po_number: str, shipment_index: int) -> str:
     """Computes backend-authoritative SJ number for a specific shipment index.
     
     Index 1: base SJ (e.g. SJ/2026/08/30/000123 or SJ-20260830-001)
-    Index 2: base SJ + "-2"
-    Index 3: base SJ + "-3"
+    Index 2: base SJ + "_2"
+    Index 3: base SJ + "_3"
     """
     base = derive_base_sj_number(po_number)
     if shipment_index <= 1:
         return base
-    return f"{base}-{shipment_index}"
+    return f"{base}_{shipment_index}"
 
 
 def delivery_lines_fingerprint(lines: List[dict]) -> Tuple[Tuple[int, int, str], ...]:

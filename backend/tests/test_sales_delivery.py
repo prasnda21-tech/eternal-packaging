@@ -156,7 +156,7 @@ async def test_case_b_c_d_partial_shipment_chain():
             assert r2.status_code == 200
             d2 = r2.json()["delivery"]
             assert d2["shipment_index"] == 2
-            assert d2["sj_number"] == f"{base_sj}-2"
+            assert d2["sj_number"] == f"{base_sj}_2"
             assert d2["total_qty"] == 300
 
             sum2 = (await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")).json()
@@ -172,7 +172,7 @@ async def test_case_b_c_d_partial_shipment_chain():
             assert r3.status_code == 200
             d3 = r3.json()["delivery"]
             assert d3["shipment_index"] == 3
-            assert d3["sj_number"] == f"{base_sj}-3"
+            assert d3["sj_number"] == f"{base_sj}_3"
             assert d3["total_qty"] == 300
 
             sum3 = (await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")).json()

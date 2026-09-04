@@ -184,20 +184,20 @@ async def test_case_4_multiple_shipments_sj_numbering_and_independence():
             })
             assert r2.status_code == 200
             d2 = r2.json()["delivery"]
-            assert d2["sj_number"] == f"{base_sj}-2"
+            assert d2["sj_number"] == f"{base_sj}_2"
             assert d2["total_qty"] == 150
 
             updated_order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
             assert len(updated_order["shipments"]) == 2
             assert updated_order["shipments"][0]["number"] == base_sj
             assert updated_order["shipments"][0]["total_qty"] == 200
-            assert updated_order["shipments"][1]["number"] == f"{base_sj}-2"
+            assert updated_order["shipments"][1]["number"] == f"{base_sj}_2"
             assert updated_order["shipments"][1]["total_qty"] == 150
             files = updated_order.get("surat_jalan_files") or []
             assert len(files) == 2
             by_ship = {f.get("shipment_id"): f for f in files}
             assert by_ship[d1["id"]]["sj_number"] == base_sj
-            assert by_ship[d2["id"]]["sj_number"] == f"{base_sj}-2"
+            assert by_ship[d2["id"]]["sj_number"] == f"{base_sj}_2"
             assert by_ship[d1["id"]]["storage_path"] != by_ship[d2["id"]]["storage_path"]
     finally:
         app.dependency_overrides.pop(current_user, None)
