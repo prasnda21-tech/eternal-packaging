@@ -12,6 +12,13 @@ describe("Surat Jalan card upload + preview", () => {
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8");
 
+  test("generated SJ documents are labeled without removing manual upload", () => {
+    expect(src).toMatch(/Dibuat Sistem/);
+    expect(src).toMatch(/SYSTEM_GENERATED/);
+    expect(src).toMatch(/surat-jalan-upload-button/);
+    expect(src).toMatch(/Upload Surat Jalan/);
+  });
+
   test("card has file upload only, no manual item and qty", () => {
     expect(src).toMatch(/Pilih File|Upload Surat Jalan/);
     expect(src).toMatch(/surat-jalan-upload-button/);
@@ -48,6 +55,16 @@ describe("Surat Jalan card upload + preview", () => {
     expect(src).toMatch(/Hapus file Surat Jalan ini\?/);
     expect(src).toMatch(/deleteSuratJalanFile/);
     expect(src).toMatch(/sj-hapus-/);
+  });
+
+  test("Loading view uses file-view permission and does not grant upload", () => {
+    const viewBtn = fs.readFileSync(path.join(__dirname, "SuratJalanViewButton.jsx"), "utf8");
+    expect(viewBtn).toMatch(/SJ_VIEW_FILE_PERM/);
+    expect(viewBtn).not.toMatch(/delivery_note.manage/);
+    expect(loading).toMatch(/SuratJalanViewButton/);
+    expect(loading).toMatch(/Lihat Surat Jalan/);
+    expect(loading).not.toMatch(/Upload Surat Jalan/);
+    expect(loading).not.toMatch(/addAttachment/);
   });
 
   test("file preview on schedule, loading, driver, and PO detail", () => {

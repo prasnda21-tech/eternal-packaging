@@ -82,10 +82,12 @@ from services.payment_files import (
 from services.surat_jalan_files import (
     PERM_VIEW_FILE as _SJ_VIEW_FILE,
     PERM_DELETE_FILE as _SJ_DELETE_FILE,
+    SOURCE_SYSTEM_GENERATED as _SJ_SOURCE_GENERATED,
     content_disposition as _sj_content_disposition,
     decode_data_url as _sj_decode_data_url,
     find_file as _sj_find_file,
     history_entries as _sj_history_entries,
+    is_generated_sj_file as _sj_is_generated,
     remove_file_from_order as _sj_remove_file,
     sniffer_content_type as _sj_sniff_ct,
     strip_sj_bytes_from_order as _strip_sj_bytes,
@@ -6816,19 +6818,35 @@ async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
     for f in (order.get("surat_jalan_files") or []):
         if f.get("is_deleted"):
             continue
+        if _sj_is_generated(f):
+            continue
         if f.get("sj_number") == sj_number or f.get("delivery_note_number") == sj_number:
             return "Surat Jalan tidak dapat dihapus karena memiliki file lampiran."
     return None
 
 
 async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> None:
-    """Remove the exact business SJ shipment row only (not Loading/Pengiriman/files)."""
+    """Remove the exact business SJ shipment row and its system-generated PDF only."""
     if not po_id:
         return
     delivery_id = delivery.get("id")
     if delivery_id:
         await db.orders.update_one({"id": po_id}, {"$pull": {"shipments": {"sales_delivery_id": delivery_id}}})
         await db.orders.update_one({"id": po_id}, {"$pull": {"shipments": {"id": delivery_id}}})
+        await db.orders.update_one(
+            {"id": po_id},
+            {"$pull": {"surat_jalan_files": {"id": delivery_id, "source": _SJ_SOURCE_GENERATED}}},
+        )
+        await db.files.update_many(
+            {
+                "kind": "surat_jalan",
+                "order_id": po_id,
+                "id": delivery_id,
+                "source": _SJ_SOURCE_GENERATED,
+                "is_deleted": {"$ne": True},
+            },
+            {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_reason": "sales.delivery.delete"}},
+        )
 
 
 @api_router.delete("/sales-receipts/{id}")

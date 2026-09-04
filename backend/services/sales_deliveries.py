@@ -9,15 +9,26 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 from quantity_rules import packing_lines_stored, qty_packed_for_line, qty_shipped_for_line
+from services import storage as obj_storage
+from services.surat_jalan_files import (
+    SOURCE_SYSTEM_GENERATED,
+    SOURCE_TYPE_PENGIRIMAN,
+    find_generated_sj_file,
+    generated_file_is_real,
+    generated_sj_file_id,
+)
+
+logger = logging.getLogger(__name__)
 
 _delivery_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
@@ -72,6 +83,204 @@ def derive_sj_number(po_number: str, shipment_index: int) -> str:
     if shipment_index <= 1:
         return base
     return f"{base}-{shipment_index}"
+
+
+def delivery_lines_fingerprint(lines: List[dict]) -> Tuple[Tuple[int, int, str], ...]:
+    """Exact-line identity fingerprint. Same-name products stay separate."""
+    rows = []
+    for ln in lines or []:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            qty = int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity") or 0)
+        except (ValueError, TypeError):
+            qty = 0
+        if qty <= 0:
+            continue
+        try:
+            idx = int(ln.get("line_idx", 0))
+        except (ValueError, TypeError):
+            idx = 0
+        rows.append((idx, qty, str(ln.get("line_id") or "")))
+    return tuple(sorted(rows))
+
+
+def build_generated_sj_file_entry(delivery: dict, user: dict, storage_path: str, created_at: str) -> dict:
+    file_id = generated_sj_file_id(delivery.get("id") or delivery.get("delivery_id"))
+    sj_number = str(delivery.get("sj_number") or "").strip()
+    lines = []
+    for ln in delivery.get("line_items") or []:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            qty = int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity") or 0)
+        except (ValueError, TypeError):
+            qty = 0
+        if qty <= 0:
+            continue
+        try:
+            idx = int(ln.get("line_idx", 0))
+        except (ValueError, TypeError):
+            idx = 0
+        lines.append({
+            "line_idx": idx,
+            "line_id": ln.get("line_id"),
+            "qty": qty,
+            "name": ln.get("name"),
+            "unit": ln.get("unit") or "pcs",
+            "item_code": ln.get("item_code"),
+            "color": ln.get("color"),
+            "production_process": ln.get("production_process"),
+        })
+    return {
+        "id": file_id,
+        "name": f"Surat Jalan {sj_number}.pdf" if sj_number else "Surat Jalan.pdf",
+        "content_type": "application/pdf",
+        "uploaded_by": (user or {}).get("email") or "system",
+        "uploaded_by_name": (user or {}).get("name") or (user or {}).get("email") or "Sistem",
+        "uploaded_by_role": (user or {}).get("role") or "",
+        "uploaded_at": created_at,
+        "shipment_id": file_id,
+        "sj_number": sj_number or None,
+        "lines": lines,
+        "source": SOURCE_SYSTEM_GENERATED,
+        "source_type": SOURCE_TYPE_PENGIRIMAN,
+        "storage_path": storage_path,
+    }
+
+
+async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict) -> Tuple[Optional[dict], Optional[str]]:
+    """Generate the real SJ PDF, store it, and register the authoritative file.
+
+    Idempotent: same shipment always maps to the same file id / object key.
+    Never writes fake surat_jalan_files metadata when storage/PDF fails.
+    """
+    shipment_id = str(delivery.get("id") or delivery.get("delivery_id") or "").strip()
+    po_id = str(delivery.get("po_id") or (order or {}).get("id") or "").strip()
+    if not shipment_id or not po_id:
+        return None, "shipment_identity_missing"
+
+    fresh = await db.orders.find_one({"id": po_id}, {"_id": 0}) or order or {}
+    existing = find_generated_sj_file(fresh, shipment_id)
+    if generated_file_is_real(existing):
+        rec = await db.files.find_one({"id": existing.get("id"), "is_deleted": {"$ne": True}}, {"_id": 0})
+        if rec and rec.get("storage_path"):
+            return existing, None
+
+    try:
+        pdf_bytes = generate_sales_delivery_pdf_bytes(delivery, None)
+    except Exception:
+        logger.exception("Failed to generate Surat Jalan PDF for shipment %s", shipment_id)
+        return None, "pdf_generate_failed"
+
+    if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+        logger.error("Generated Surat Jalan bytes are not a real PDF for shipment %s", shipment_id)
+        return None, "pdf_invalid"
+
+    file_id = generated_sj_file_id(shipment_id)
+    storage_path = f"{obj_storage.APP_NAME}/surat-jalan/{po_id}/{file_id}.pdf"
+    try:
+        stored = obj_storage.put_object(storage_path, pdf_bytes, "application/pdf")
+        storage_path = stored.get("path") or storage_path
+    except Exception:
+        logger.exception("Surat Jalan object storage write failed for shipment %s", shipment_id)
+        return None, "storage_failed"
+
+    stamp = now_iso()
+    entry = build_generated_sj_file_entry(delivery, user or {}, storage_path, stamp)
+    file_doc = {
+        "id": file_id,
+        "storage_path": storage_path,
+        "original_filename": entry["name"],
+        "content_type": "application/pdf",
+        "size": (stored.get("size") if isinstance(stored, dict) else None) or len(pdf_bytes),
+        "kind": "surat_jalan",
+        "order_id": po_id,
+        "shipment_id": shipment_id,
+        "sj_number": entry.get("sj_number"),
+        "source": SOURCE_SYSTEM_GENERATED,
+        "source_type": SOURCE_TYPE_PENGIRIMAN,
+        "uploaded_by": entry.get("uploaded_by"),
+        "uploaded_at": stamp,
+        "is_deleted": False,
+    }
+    try:
+        await db.files.insert_one(file_doc)
+    except DuplicateKeyError:
+        await db.files.update_one(
+            {"id": file_id},
+            {"$set": {
+                "storage_path": storage_path,
+                "original_filename": entry["name"],
+                "content_type": "application/pdf",
+                "size": file_doc["size"],
+                "kind": "surat_jalan",
+                "order_id": po_id,
+                "shipment_id": shipment_id,
+                "sj_number": entry.get("sj_number"),
+                "source": SOURCE_SYSTEM_GENERATED,
+                "source_type": SOURCE_TYPE_PENGIRIMAN,
+                "is_deleted": False,
+            }},
+        )
+
+    await db.orders.update_one(
+        {"id": po_id, "surat_jalan_files.id": {"$ne": file_id}},
+        {"$push": {"surat_jalan_files": entry}},
+    )
+    await db.orders.update_one(
+        {"id": po_id, "surat_jalan_files.id": file_id},
+        {"$set": {
+            "surat_jalan_files.$.storage_path": storage_path,
+            "surat_jalan_files.$.content_type": "application/pdf",
+            "surat_jalan_files.$.name": entry["name"],
+            "surat_jalan_files.$.source": SOURCE_SYSTEM_GENERATED,
+            "surat_jalan_files.$.source_type": SOURCE_TYPE_PENGIRIMAN,
+            "surat_jalan_files.$.shipment_id": shipment_id,
+            "surat_jalan_files.$.sj_number": entry.get("sj_number"),
+            "surat_jalan_files.$.lines": entry.get("lines") or [],
+        }},
+    )
+    await db.orders.update_one(
+        {"id": po_id},
+        {"$set": {"shipments.$[sh].file_id": file_id}},
+        array_filters=[{"sh.id": shipment_id}],
+    )
+    await db.sales_deliveries.update_one(
+        {"id": shipment_id},
+        {"$set": {"generated_sj_file_id": file_id, "updated_at": stamp}},
+    )
+    return entry, None
+
+
+async def _reuse_existing_delivery_if_retry(db, order: dict, validated_lines: List[dict], user: dict) -> Optional[dict]:
+    """If a matching shipment exists without a real generated PDF, complete that document.
+
+    Does not collapse later legitimate partials that happen to use the same qty.
+    """
+    want = delivery_lines_fingerprint(validated_lines)
+    if not want:
+        return None
+    po_id = str(order.get("id") or "")
+    existing = await db.sales_deliveries.find(
+        {"po_id": po_id, "is_cancelled": {"$ne": True}},
+        {"_id": 0},
+    ).sort("shipment_index", 1).to_list(1000)
+    if not existing:
+        return None
+
+    fresh_order = await db.orders.find_one({"id": po_id}, {"_id": 0}) or order
+    for d in existing:
+        if delivery_lines_fingerprint(d.get("line_items")) != want:
+            continue
+        gen = find_generated_sj_file(fresh_order, d.get("id"))
+        if generated_file_is_real(gen):
+            continue
+        entry, _err = await ensure_generated_sj_pdf(db, fresh_order, d, user)
+        if entry:
+            d["generated_sj_file_id"] = entry["id"]
+        return d
+    return None
 
 
 async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
@@ -273,9 +482,6 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
 
         # 2. Get latest delivery summary and remaining quantities
         summary = await get_po_delivery_summary(db, order)
-        if not summary["can_create_delivery"]:
-            raise HTTPException(400, "Seluruh kuantitas Pesanan Penjualan ini sudah selesai dibuatkan Pengiriman Pesanan.")
-
         lines_summary_by_idx = {l["line_idx"]: l for l in summary["lines"]}
 
         # 3. Validate line items payload
@@ -309,6 +515,34 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
             if qty_to_ship <= 0:
                 continue
 
+            total_delivery_qty += qty_to_ship
+            validated_lines.append({
+                "line_idx": line_idx,
+                "line_id": target_line["line_id"],
+                "item_code": target_line["item_code"],
+                "name": target_line["name"],
+                "unit": target_line["unit"],
+                "color": target_line["color"],
+                "production_process": target_line["production_process"],
+                "ordered_qty": target_line["ordered_qty"],
+                "qty": qty_to_ship,
+                "notes": (item.get("notes") or "").strip(),
+            })
+
+        if not validated_lines or total_delivery_qty <= 0:
+            raise HTTPException(400, "Total kuantitas pengiriman sekarang harus lebih besar dari 0.")
+
+        reused = await _reuse_existing_delivery_if_retry(db, order, validated_lines, user)
+        if reused:
+            return reused
+
+        if not summary["can_create_delivery"]:
+            raise HTTPException(400, "Seluruh kuantitas Pesanan Penjualan ini sudah selesai dibuatkan Pengiriman Pesanan.")
+
+        for item in validated_lines:
+            line_idx = item["line_idx"]
+            target_line = lines_summary_by_idx[line_idx]
+            qty_to_ship = item["qty"]
             remain = target_line["remaining_qty"]
             if qty_to_ship > remain:
                 raise HTTPException(
@@ -328,23 +562,6 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                         f"Kuantitas pengiriman untuk '{target_line['name']}' ({qty_to_ship} {target_line['unit']}) "
                         f"melebihi kuantitas packing yang siap dibuatkan Surat Jalan ({avail_packing} {target_line['unit']})."
                     )
-
-            total_delivery_qty += qty_to_ship
-            validated_lines.append({
-                "line_idx": line_idx,
-                "line_id": target_line["line_id"],
-                "item_code": target_line["item_code"],
-                "name": target_line["name"],
-                "unit": target_line["unit"],
-                "color": target_line["color"],
-                "production_process": target_line["production_process"],
-                "ordered_qty": target_line["ordered_qty"],
-                "qty": qty_to_ship,
-                "notes": (item.get("notes") or "").strip(),
-            })
-
-        if not validated_lines or total_delivery_qty <= 0:
-            raise HTTPException(400, "Total kuantitas pengiriman sekarang harus lebih besar dari 0.")
 
         # 4. Determine shipment index and SJ number backend-authoritatively
         now = now_iso()
@@ -459,6 +676,17 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                         }
                     }
                 )
+
+                file_entry, pdf_err = await ensure_generated_sj_pdf(db, order, delivery_doc, user)
+                if file_entry:
+                    delivery_doc["generated_sj_file_id"] = file_entry["id"]
+                elif pdf_err:
+                    delivery_doc["generated_sj_file_error"] = pdf_err
+                    logger.warning(
+                        "Pengiriman %s saved without generated SJ PDF (%s); retry can complete the document",
+                        authoritative_sj,
+                        pdf_err,
+                    )
 
                 return delivery_doc
             except DuplicateKeyError:

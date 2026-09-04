@@ -164,12 +164,36 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
               data-testid="loading-sj-select"
             >
               {files.map((f) => (
-                <option key={f.id} value={f.id}>{f.name}</option>
+                <option key={f.id} value={f.id}>{f.sj_number || f.name}</option>
               ))}
             </select>
           </label>
         ) : (
           <p className="muted small" data-testid="loading-no-sj">Belum ada file Surat Jalan.</p>
+        )}
+
+        {hasSj && activeSj && (
+          <div
+            data-testid="loading-sj-file-row"
+            style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+          >
+            <span data-testid="loading-sj-number">
+              <strong>Surat Jalan:</strong> {activeSj.sj_number || activeSj.name}
+            </span>
+            {activeSj.has_file !== false && (activeSj.file_id || activeSj.id) ? (
+              <SuratJalanViewButton
+                order={order}
+                entries={[{
+                  id: activeSj.file_id || activeSj.id,
+                  file_id: activeSj.file_id || activeSj.id,
+                  name: activeSj.name,
+                  source: activeSj.source,
+                }]}
+                label="Lihat Surat Jalan"
+                testid="loading-sj-lihat"
+              />
+            ) : null}
+          </div>
         )}
 
         {hasSj && activeSj && totalSjQty > 0 && (
@@ -202,8 +226,6 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
             </div>
           </div>
         )}
-
-        <SuratJalanViewButton order={order} testid="loading-sj-lihat" />
 
         {canManage && hasSj && (
           <div className="sj-item-block" data-testid="loading-item-block">

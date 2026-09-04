@@ -22,6 +22,10 @@ PERM_VIEW_FILE = "delivery_note.view_file"
 PERM_MANAGE = "delivery_note.manage"
 PERM_DELETE_FILE = "delivery_note.delete_file"
 
+SOURCE_SYSTEM_GENERATED = "SYSTEM_GENERATED"
+SOURCE_TYPE_PENGIRIMAN = "PENGIRIMAN"
+SOURCE_MANUAL_UPLOAD = "MANUAL_UPLOAD"
+
 _PUBLIC_FILE_KEYS = (
     "id",
     "name",
@@ -31,8 +35,11 @@ _PUBLIC_FILE_KEYS = (
     "uploaded_by_role",
     "uploaded_at",
     "shipment_id",
+    "sj_number",
     "lines",
     "legacy",
+    "source",
+    "source_type",
 )
 
 
@@ -93,6 +100,41 @@ def has_valid_item_qty(entry: Optional[dict] = None, shipment: Optional[dict] = 
     return lines_qty_total(lines) > 0
 
 
+def generated_sj_file_id(shipment_id: str) -> str:
+    """Deterministic file id: same as shipment so Loading identity stays exact."""
+    return _safe_str(shipment_id)
+
+
+def is_generated_sj_file(entry: Optional[dict]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return _safe_str(entry.get("source")) == SOURCE_SYSTEM_GENERATED
+
+
+def find_generated_sj_file(order: dict, shipment_id: str) -> Optional[dict]:
+    sid = _safe_str(shipment_id)
+    if not sid:
+        return None
+    want_id = generated_sj_file_id(sid)
+    for f in file_entries(order):
+        if not is_generated_sj_file(f):
+            continue
+        if _safe_str(f.get("id")) == want_id or _safe_str(f.get("shipment_id")) == sid:
+            return f
+    return None
+
+
+def generated_file_is_real(entry: Optional[dict]) -> bool:
+    """True only when a real stored object exists — never metadata-only placeholders."""
+    if not isinstance(entry, dict):
+        return False
+    if not is_generated_sj_file(entry):
+        return False
+    if _safe_str(entry.get("storage_path")):
+        return True
+    return _safe_str(entry.get("data_url")).startswith("data:")
+
+
 def file_for_shipment(order: dict, shipment: dict) -> Optional[dict]:
     if not isinstance(shipment, dict):
         return None
@@ -103,6 +145,9 @@ def file_for_shipment(order: dict, shipment: dict) -> Optional[dict]:
     sid = _safe_str(shipment.get("id") or shipment.get("accurate_shipment_id"))
     if not sid:
         return None
+    generated = find_generated_sj_file(order, sid)
+    if generated:
+        return generated
     for f in file_entries(order):
         if _safe_str(f.get("shipment_id")) == sid:
             return f
@@ -242,10 +287,13 @@ def history_entries(order: dict) -> List[dict]:
             "id": fid or f"sj-{len(out)}",
             "file_id": _safe_str((f or {}).get("id")) or None,
             "shipment_id": _safe_str(sh.get("id")) or None,
+            "sj_number": _safe_str(sh.get("number") or (f or {}).get("sj_number")) or None,
             "name": (f or {}).get("name") or sh.get("file_name") or sh.get("number") or "Surat Jalan",
             "uploaded_by": (f or {}).get("uploaded_by") or sh.get("created_by"),
             "uploaded_by_name": (f or {}).get("uploaded_by_name") or sh.get("created_by_name"),
             "uploaded_at": (f or {}).get("uploaded_at") or sh.get("created_at"),
+            "source": (f or {}).get("source"),
+            "source_type": (f or {}).get("source_type"),
             "lines": lines,
             "has_item_qty": has_qty,
             "has_file": has_file,
@@ -261,10 +309,13 @@ def history_entries(order: dict) -> List[dict]:
             "id": fid or f"sj-{len(out)}",
             "file_id": fid or None,
             "shipment_id": _safe_str(f.get("shipment_id")) or None,
+            "sj_number": _safe_str(f.get("sj_number")) or None,
             "name": f.get("name") or "Surat Jalan",
             "uploaded_by": f.get("uploaded_by"),
             "uploaded_by_name": f.get("uploaded_by_name"),
             "uploaded_at": f.get("uploaded_at"),
+            "source": f.get("source"),
+            "source_type": f.get("source_type"),
             "lines": entry_lines(f),
             "has_item_qty": has_qty,
             "has_file": file_has_blob(f),

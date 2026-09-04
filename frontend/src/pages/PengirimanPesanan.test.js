@@ -49,6 +49,12 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/api\.salesDeliveryPdfUrl/);
   });
 
+  test("create success refreshes list without inventing file metadata", () => {
+    expect(src).toMatch(/loadDeliveries\(\)/);
+    expect(src).not.toMatch(/SYSTEM_GENERATED/);
+    expect(src).not.toMatch(/surat_jalan_files:\s*\[/);
+  });
+
   test("includes both list, create form, and detail modal with PDF print", () => {
     expect(src).toMatch(/viewMode === "create"/);
     expect(src).toMatch(/viewMode === "list"/);
