@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
-import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
+import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import { nextMasterSyncBanner } from "./masterItemsSyncBanner";
 
 const TYPE_LABEL = {
@@ -27,25 +27,36 @@ export default function MasterBarangJasa() {
   const [syncError, setSyncError] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
-  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
   const [itemType, setItemType] = useState("");
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const loadSeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q]);
 
+  useEffect(() => {
+    if (!searchPending) return;
+    setLoading(true);
+    setData((prev) => (prev ? { ...prev, items: [] } : prev));
+  }, [searchPending]);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setLoadError("");
+    setData((prev) => (prev ? { ...prev, items: [] } : prev));
     try {
       const d = await api.masterItems({ q, item_type: itemType, status, page, page_size: pageSize });
+      if (seq !== loadSeq.current) return;
       setData(d);
     } catch (ex) {
+      if (seq !== loadSeq.current) return;
       const det = ex.response?.data?.detail;
       setLoadError(typeof det === "object" ? det.message : (det || "Gagal memuat Barang/Jasa"));
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [q, itemType, status, page, pageSize]);
 
@@ -84,6 +95,13 @@ export default function MasterBarangJasa() {
   const items = data?.items || [];
   const types = data?.item_types || [];
   const pageCount = data?.page_count || 1;
+  const tableBusy = searchPending || loading;
+
+  const tableView = liveSearchTableView({
+    pending: searchPending,
+    loading,
+    itemCount: items.length,
+  });
 
   return (
     <div className="prod-page master-items-page" data-testid="master-barang-jasa-page">
@@ -209,18 +227,18 @@ export default function MasterBarangJasa() {
               <th className="col-fit">Terakhir Sync</th>
             </tr>
           </thead>
-          <tbody>
-            {loading && (
-              <tr><td colSpan={7} className="muted small">Memuat…</td></tr>
+          <tbody data-testid="master-items-tbody" data-search-state={tableView}>
+            {tableView === "loading" && (
+              <tr data-testid="master-items-loading"><td colSpan={7} className="muted small">Memuat…</td></tr>
             )}
-            {!loading && items.length === 0 && (
+            {tableView === "empty" && (
               <tr>
                 <td colSpan={7} className="muted small" data-testid="master-items-empty">
                   Belum ada Barang/Jasa. {canSync ? "Klik Sinkronkan dari Accurate." : "Hubungi Admin untuk sinkronisasi."}
                 </td>
               </tr>
             )}
-            {!loading && items.map((it) => (
+            {tableView === "results" && items.map((it) => (
               <tr key={it.id} data-testid={`master-item-${it.accurate_item_id}`}>
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
@@ -239,9 +257,9 @@ export default function MasterBarangJasa() {
 
       {pageCount > 1 && (
         <div className="master-pager" data-testid="master-items-pager">
-          <button className="ghost sm" disabled={page <= 1 || loading} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
+          <button className="ghost sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
           <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} item</span>
-          <button className="ghost sm" disabled={page >= pageCount || loading} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
+          <button className="ghost sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
     </div>
