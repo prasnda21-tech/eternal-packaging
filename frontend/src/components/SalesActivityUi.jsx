@@ -36,13 +36,13 @@ export function SaTabHead({ title, description, children }) {
   );
 }
 
-export function SaFormFooter({ onCancel, cancelLabel = "Batal", submitLabel = "Simpan", submitTestId }) {
+export function SaFormFooter({ onCancel, cancelLabel = "Batal", submitLabel = "Simpan", submitTestId, submitDisabled = false }) {
   return (
     <div className="sa-form-footer">
       {onCancel ? (
         <button type="button" className="ghost" onClick={onCancel}>{cancelLabel}</button>
       ) : null}
-      <button type="submit" className="primary" data-testid={submitTestId}>{submitLabel}</button>
+      <button type="submit" className="primary" data-testid={submitTestId} disabled={submitDisabled}>{submitLabel}</button>
     </div>
   );
 }

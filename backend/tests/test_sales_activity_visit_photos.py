@@ -119,8 +119,31 @@ def _png_bytes():
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
 
-async def _make_outlet(client, name="Toko Visit Foto"):
-    res = await client.post("/api/sales-activity/outlets", json={"name": name, "address": "Jl. Foto"})
+async def _seed_prospect_pics(*uids):
+    from services.sales_activity.settings import default_settings, merge_settings
+
+    existing = await server.db.app_settings.find_one({"key": "sales_activity"}, {"_id": 0})
+    doc = merge_settings(existing) if existing else default_settings()
+    doc["key"] = "sales_activity"
+    doc["prospect_pic_user_ids"] = [str(u).strip() for u in uids if str(u or "").strip()]
+    await server.db.app_settings.update_one({"key": "sales_activity"}, {"$set": doc}, upsert=True)
+
+
+async def _make_outlet(client, name="Toko Visit Foto", owner_id=None):
+    uid = owner_id
+    if not uid:
+        # Prefer actor from dependency override seed — resolve from JWT override user via DB last insert is fragile;
+        # callers that need a specific owner should pass owner_id. Default: ensure any active user in allowlist.
+        users = await server.db.users.find({}, {"id": 1}).to_list(50)
+        ids = [u["id"] for u in users if u.get("id")]
+        await _seed_prospect_pics(*ids)
+        uid = ids[0] if ids else None
+    else:
+        await _seed_prospect_pics(uid)
+    payload = {"name": name, "address": "Jl. Foto"}
+    if uid:
+        payload["owner_id"] = uid
+    res = await client.post("/api/sales-activity/outlets", json=payload)
     assert res.status_code == 200, res.text
     return res.json()
 

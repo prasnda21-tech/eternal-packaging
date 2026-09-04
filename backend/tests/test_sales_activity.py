@@ -64,7 +64,7 @@ def anyio_backend():
 async def isolated_db():
     from motor.motor_asyncio import AsyncIOMotorClient
 
-    assert os.environ["DB_NAME"] == TEST_DB
+    os.environ["DB_NAME"] = TEST_DB
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     server.db = server.client[TEST_DB]
     assert server.db.name == TEST_DB
@@ -139,10 +139,23 @@ async def _put_settings(client, **overrides):
     return res.json()["settings"]
 
 
+async def _seed_prospect_pics(*uids):
+    """Direct fixture for isolated tests (does not require settings.manage)."""
+    from services.sales_activity.settings import default_settings, merge_settings
+
+    existing = await server.db.app_settings.find_one({"key": "sales_activity"}, {"_id": 0})
+    doc = merge_settings(existing) if existing else default_settings()
+    doc["key"] = "sales_activity"
+    doc["prospect_pic_user_ids"] = [str(u).strip() for u in uids if str(u or "").strip()]
+    await server.db.app_settings.update_one({"key": "sales_activity"}, {"$set": doc}, upsert=True)
+    return doc["prospect_pic_user_ids"]
+
+
 @pytest.mark.anyio
 async def test_case_1_native_outlet_starts_automation():
     clock.set_frozen(datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc))
     sales = _user("u-ayub", "ayub@sa-test.local", "Ayub", perms=SALES_PERMS)
+    await _seed_prospect_pics("u-ayub")
     client = await _client_for(sales)
     try:
         res = await client.post("/api/sales-activity/outlets", json={"name": "Toko Native Satu", "address": "Jl. A"})
@@ -159,14 +172,16 @@ async def test_case_1_native_outlet_starts_automation():
 
 
 @pytest.mark.anyio
-async def test_case_2_sales_cannot_spoof_owner():
+async def test_case_2_sales_cannot_assign_non_eligible_owner():
     sales = _user("u-ayub2", "ayub2@sa-test.local", "Ayub", perms=SALES_PERMS)
     other = _user("u-risna2", "risna2@sa-test.local", "Risna", perms=SALES_PERMS)
     await _seed_user(other)
+    await _seed_prospect_pics("u-ayub2")
     client = await _client_for(sales)
     try:
         res = await client.post("/api/sales-activity/outlets", json={"name": "Toko Spoof", "owner_id": "u-risna2"})
-        assert res.status_code == 403
+        assert res.status_code == 400
+        assert "PIC Sales Prospek" in (res.json().get("detail") or "")
     finally:
         await _close(client)
 
@@ -314,6 +329,7 @@ async def test_case_9_and_10_hybrid_then_pool():
         settings["default_rule"]["inactivity_expiration_days"] = 30
         settings["default_rule"]["warning_before_expiration_days"] = 7
         settings["default_rule"]["inactivity_warning_days"] = 7
+        settings["prospect_pic_user_ids"] = ["u-a9", "u-b9"]
         assert (await client.put("/api/sales-activity/settings", json=settings)).status_code == 200
         created = await client.post("/api/sales-activity/outlets", json={"name": "Prospect Rotate", "owner_id": "u-a9"})
         assert created.status_code == 200, created.text
@@ -350,6 +366,7 @@ async def test_case_11_manual_wins():
         settings["reassignment"]["sales_sequence"] = ["u-a11", "u-b11"]
         settings["default_rule"]["warning_before_expiration_days"] = 7
         settings["default_rule"]["inactivity_warning_days"] = 7
+        settings["prospect_pic_user_ids"] = ["u-a11", "u-b11", "u-c11"]
         await client.put("/api/sales-activity/settings", json=settings)
         created = await client.post("/api/sales-activity/outlets", json={"name": "Manual Wins", "owner_id": "u-a11"})
         oid = created.json()["outlet"]["id"]
@@ -379,6 +396,7 @@ async def test_case_12_and_13_pause_resume():
         settings["reassignment"]["sales_sequence"] = ["u-a12", "u-b12"]
         settings["default_rule"]["warning_before_expiration_days"] = 7
         settings["default_rule"]["inactivity_warning_days"] = 7
+        settings["prospect_pic_user_ids"] = ["u-a12", "u-b12"]
         await client.put("/api/sales-activity/settings", json=settings)
         created = await client.post("/api/sales-activity/outlets", json={"name": "Pause Resume", "owner_id": "u-a12"})
         oid = created.json()["outlet"]["id"]
@@ -419,8 +437,10 @@ async def test_case_14_and_15_activity_timer():
             "evidence_required": False,
             "next_follow_up_required": False,
         }]
+        settings["prospect_pic_user_ids"] = ["u-admin14"]
         await client.put("/api/sales-activity/settings", json=settings)
         created = await client.post("/api/sales-activity/outlets", json={"name": "Timer Outlet"})
+        assert created.status_code == 200, created.text
         oid = created.json()["outlet"]["id"]
         first_eligible = created.json()["ownership"]["eligible_at"]
         clock.set_frozen(datetime(2026, 9, 4, tzinfo=timezone.utc))
@@ -455,6 +475,7 @@ async def test_case_16_valid_so_protects_customer():
         settings["default_rule"]["inactivity_warning_days"] = 7
         settings["dormancy"]["threshold_days"] = 180
         settings["dormancy"]["warning_days"] = 14
+        settings["prospect_pic_user_ids"] = ["u-a16", "u-b16"]
         await client.put("/api/sales-activity/settings", json=settings)
         created = await client.post("/api/sales-activity/outlets", json={"name": "Toko Proteksi", "owner_id": "u-a16"})
         oid = created.json()["outlet"]["id"]
@@ -494,6 +515,7 @@ async def test_case_17_dormant_goes_to_pool_not_next_sales():
         settings["dormancy"]["warning_days"] = 7
         settings["default_rule"]["warning_before_expiration_days"] = 7
         settings["default_rule"]["inactivity_warning_days"] = 7
+        settings["prospect_pic_user_ids"] = ["u-a17", "u-b17"]
         await client.put("/api/sales-activity/settings", json=settings)
         created = await client.post("/api/sales-activity/outlets", json={"name": "Toko Dorman", "owner_id": "u-a17"})
         oid = created.json()["outlet"]["id"]
@@ -523,9 +545,11 @@ async def test_case_18_pool_assignment_new_cycle():
     b = _user("u-b18", "b18@sa-test.local", "Basala")
     await _seed_user(a)
     await _seed_user(b)
+    await _seed_prospect_pics("u-a18", "u-b18")
     client = await _client_for(admin)
     try:
         created = await client.post("/api/sales-activity/outlets", json={"name": "Pool Assign", "owner_id": "u-a18"})
+        assert created.status_code == 200, created.text
         oid = created.json()["outlet"]["id"]
         await client.post(f"/api/sales-activity/outlets/{oid}/send-to-pool", json={"reason": "Manual pool"})
         events_before = await server.db[COL_EVENTS].count_documents({"outlet_id": oid})
@@ -556,6 +580,7 @@ async def test_case_19_repeated_evaluator_one_transition():
         settings["reassignment"]["sales_sequence"] = ["u-a19", "u-b19"]
         settings["default_rule"]["warning_before_expiration_days"] = 7
         settings["default_rule"]["inactivity_warning_days"] = 7
+        settings["prospect_pic_user_ids"] = ["u-a19", "u-b19"]
         await client.put("/api/sales-activity/settings", json=settings)
         created = await client.post("/api/sales-activity/outlets", json={"name": "Concurrent Eval", "owner_id": "u-a19"})
         oid = created.json()["outlet"]["id"]
@@ -661,9 +686,11 @@ async def test_case_22_unauthorized_403():
 @pytest.mark.anyio
 async def test_case_23_rule_version_preserved():
     admin = _user("u-admin23", "admin23@sa-test.local", "Admin", admin=True)
+    await _seed_prospect_pics("u-admin23")
     client = await _client_for(admin)
     try:
         created = await client.post("/api/sales-activity/outlets", json={"name": "Versioned"})
+        assert created.status_code == 200, created.text
         oid = created.json()["outlet"]["id"]
         first_version = created.json()["ownership"]["rule_version"]
         settings = (await client.get("/api/sales-activity/settings")).json()["settings"]
@@ -684,9 +711,11 @@ async def test_case_23_rule_version_preserved():
 @pytest.mark.anyio
 async def test_case_24_get_does_not_mutate():
     admin = _user("u-admin24", "admin24@sa-test.local", "Admin", admin=True)
+    await _seed_prospect_pics("u-admin24")
     client = await _client_for(admin)
     try:
         created = await client.post("/api/sales-activity/outlets", json={"name": "GET Pure"})
+        assert created.status_code == 200, created.text
         oid = created.json()["outlet"]["id"]
         before_events = await server.db[COL_EVENTS].count_documents({})
         before_snap = await server.db[COL_OWNERSHIP].find_one({"outlet_id": oid})

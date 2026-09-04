@@ -20,11 +20,10 @@ from services.sales_activity.constants import (
 )
 from services.sales_activity.orders import last_order_at, last_valid_sales_order
 from services.sales_activity.settings import load_settings
-from services.sales_activity.users import get_user, public_user
+from services.sales_activity.users import get_user, is_user_active
 from services.sales_activity.util import (
     actor_id,
     actor_name,
-    is_blank,
     new_id,
     normalize_text,
     normalize_whatsapp,
@@ -39,6 +38,36 @@ def _identity_keys(payload: dict) -> dict:
         "outlet_code": strong_text(payload.get("outlet_code")),
         "whatsapp_norm": normalize_whatsapp(payload.get("whatsapp")),
     }
+
+
+def prospect_pic_allowlist(settings: dict) -> list:
+    return [str(x).strip() for x in (settings.get("prospect_pic_user_ids") or []) if str(x or "").strip()]
+
+
+async def resolve_prospect_pic_owner(db, settings: dict, requested_owner_id: str, actor: dict) -> dict:
+    """Authoritative Owner / PIC Sales for native Outlet Prospek create/change.
+
+    Uses canonical user id only. Ignores any client-supplied owner_name.
+    """
+    allowlist = prospect_pic_allowlist(settings)
+    if not allowlist:
+        raise HTTPException(
+            400,
+            "Belum ada PIC Sales Prospek yang diatur. Hubungi administrator.",
+        )
+    owner_id = strong_text(requested_owner_id)
+    if not owner_id:
+        actor_uid = strong_text(actor.get("id"))
+        if actor_uid and actor_uid in allowlist:
+            owner_id = actor_uid
+        else:
+            raise HTTPException(400, "Pilih Owner / PIC Sales Prospek")
+    if owner_id not in allowlist:
+        raise HTTPException(400, "Owner / PIC Sales tidak termasuk daftar PIC Sales Prospek")
+    owner = await get_user(db, owner_id)
+    if not owner or not is_user_active(owner):
+        raise HTTPException(400, "Owner / PIC Sales tidak valid atau tidak aktif")
+    return owner
 
 
 async def find_strong_duplicate(db, keys: dict, exclude_id: Optional[str] = None) -> Optional[dict]:
@@ -81,24 +110,11 @@ async def create_native_outlet(db, payload: dict, user: dict, perms: set) -> dic
     name = strong_text(payload.get("name") or payload.get("nama_outlet"))
     if not name:
         raise HTTPException(400, "Nama outlet wajib")
-    requested_owner = strong_text(payload.get("owner_id"))
     actor = {"id": actor_id(user), "name": actor_name(user), "email": user.get("email"), "role": user.get("role")}
     if not actor["id"]:
         raise HTTPException(400, "User tidak memiliki id")
-    if requested_owner and requested_owner != actor["id"]:
-        if PERM_OWNERSHIP_MANAGE not in perms:
-            raise HTTPException(403, "Tidak boleh mengklaim outlet milik sales lain")
-        owner = await get_user(db, requested_owner)
-        if not owner:
-            raise HTTPException(400, "owner_id tidak ditemukan")
-    else:
-        owner = {
-            "id": actor["id"],
-            "name": actor["name"],
-            "email": user.get("email"),
-            "role": user.get("role"),
-            "status": "active",
-        }
+    settings = await load_settings(db)
+    owner = await resolve_prospect_pic_owner(db, settings, payload.get("owner_id"), actor)
     keys = _identity_keys(payload)
     dup = await find_strong_duplicate(db, keys)
     if dup:
@@ -132,7 +148,6 @@ async def create_native_outlet(db, payload: dict, user: dict, perms: set) -> dic
         "identity_keys": keys,
     })
     await db[COL_OUTLETS].insert_one(doc)
-    settings = await load_settings(db)
     snap = await ownership_svc.start_native_cycle(db, doc, owner, settings, actor)
     return {"outlet": public_doc(doc), "ownership": public_doc(snap), "warnings": warnings}
 

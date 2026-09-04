@@ -21,17 +21,47 @@ export default function SalesActivityOutletDetail() {
   const [reason, setReason] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [users, setUsers] = useState([]);
+  const [picUsers, setPicUsers] = useState([]);
   const notify = (m) => { setToast(m); setTimeout(() => setToast(""), 4000); };
 
   const load = () => api.salesActivityOutlet(id).then(setData).catch((e) => notify(errText(e)));
   useEffect(() => {
     load();
-    if (canManageOwnership(hasPerm)) api.salesActivityUsers().then((r) => setUsers(r.users || [])).catch(() => {});
+    if (canManageOwnership(hasPerm)) {
+      Promise.all([
+        api.salesActivityUsers().catch(() => ({ users: [] })),
+        api.salesActivityProspectPicUsers().catch(() => ({ users: [] })),
+      ]).then(([all, pics]) => {
+        setUsers(all.users || []);
+        setPicUsers(pics.users || []);
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  useEffect(() => {
+    const current = data?.ownership?.current_owner_id;
+    if (current) {
+      setOwnerId((prev) => prev || current);
+    }
+  }, [data?.ownership?.current_owner_id]);
+
   if (!data) return <div className="loading">Memuat...</div>;
   const { outlet, ownership = {}, activities = [], history = [], last_valid_order } = data;
+  const isProspect = String(ownership.customer_kind || outlet.customer_kind || "").toUpperCase() === "PROSPECT";
+  const reassignOptions = (() => {
+    if (!isProspect) return users;
+    const map = new Map((picUsers || []).map((u) => [u.id, u]));
+    const currentId = ownership.current_owner_id;
+    if (currentId && !map.has(currentId)) {
+      map.set(currentId, {
+        id: currentId,
+        name: ownership.current_owner_name || currentId,
+        status: "historical",
+      });
+    }
+    return Array.from(map.values());
+  })();
 
   const act = async (fn) => {
     if (!reason.trim()) { notify("Alasan wajib"); return; }
@@ -94,10 +124,19 @@ export default function SalesActivityOutletDetail() {
             <SaField label="Alasan" required wide>
               <input className="sa-control" value={reason} onChange={(e) => setReason(e.target.value)} data-testid="sa-reason" />
             </SaField>
-            <SaField label="Sales">
-              <select className="sa-control" value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+            <SaField label={isProspect ? "Owner / PIC Sales" : "Sales"}>
+              <select
+                className="sa-control"
+                value={ownerId}
+                onChange={(e) => setOwnerId(e.target.value)}
+                data-testid="sa-detail-owner-select"
+              >
                 <option value="">Pilih</option>
-                {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                {reassignOptions.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}{u.status === "historical" ? " (saat ini)" : ""}
+                  </option>
+                ))}
               </select>
             </SaField>
             <div className="sa-action-row sa-field-wide">

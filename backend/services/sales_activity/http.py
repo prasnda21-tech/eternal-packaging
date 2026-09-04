@@ -27,7 +27,7 @@ from services.sales_activity.constants import (
     PERM_VIEW,
 )
 from services.sales_activity.settings import load_settings, save_settings
-from services.sales_activity.users import list_users
+from services.sales_activity.users import is_user_active, list_users, users_by_ids
 from services.sales_activity.util import actor_id, actor_name
 
 
@@ -68,13 +68,41 @@ def register_sales_activity_routes(api_router, *, get_db, current_user, require_
         await require_perm(user, PERM_SETTINGS_MANAGE)
         users = await list_users(get_db())
         known = {u["id"] for u in users}
-        settings = await save_settings(get_db(), payload.model_dump(), _actor(user), known_user_ids=known)
+        active = {u["id"] for u in users if is_user_active(u)}
+        settings = await save_settings(
+            get_db(),
+            payload.model_dump(),
+            _actor(user),
+            known_user_ids=known,
+            active_user_ids=active,
+        )
         return {"settings": settings}
 
     @api_router.get("/sales-activity/sales-users")
     async def sales_users(user=Depends(current_user)):
         await require_any_perm(user, PERM_SETTINGS_MANAGE, PERM_OWNERSHIP_MANAGE, PERM_POOL_MANAGE)
         return {"users": await list_users(get_db())}
+
+    @api_router.get("/sales-activity/prospect-pic-users")
+    async def prospect_pic_users(user=Depends(current_user)):
+        """Active users eligible as Owner / PIC Sales on Outlet Prospek."""
+        await require_any_perm(
+            user,
+            PERM_OUTLET_CREATE,
+            PERM_OWNERSHIP_MANAGE,
+            PERM_VIEW,
+            PERM_SETTINGS_VIEW,
+            PERM_SETTINGS_MANAGE,
+        )
+        settings = await load_settings(get_db())
+        ids = [str(x).strip() for x in (settings.get("prospect_pic_user_ids") or []) if str(x or "").strip()]
+        by_id = await users_by_ids(get_db(), ids)
+        users = []
+        for uid in ids:
+            row = by_id.get(uid)
+            if row and is_user_active(row):
+                users.append(row)
+        return {"users": users}
 
     @api_router.get("/sales-activity/outlets")
     async def list_outlets(

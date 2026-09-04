@@ -13,6 +13,23 @@ describe("SalesActivityPage contracts", () => {
     expect(src).toMatch(/data-testid="sa-outlet-create-form"/);
   });
 
+  test("outlet prospek owner is selectable PIC dropdown", () => {
+    expect(src).toMatch(/data-testid="sa-outlet-owner-select"/);
+    expect(src).toMatch(/api\.salesActivityProspectPicUsers/);
+    expect(src).toMatch(/Owner \/ PIC Sales/);
+    expect(src).toMatch(/Belum ada PIC Sales Prospek yang diatur/);
+    expect(src).toMatch(/data-testid="sa-outlet-pic-empty"/);
+    expect(src).toMatch(/submitDisabled=\{!canSubmit\}/);
+    expect(src).not.toMatch(/Owner mengikuti akun yang sedang login/);
+    expect(src).toMatch(/owner_id: form\.owner_id/);
+  });
+
+  test("activity tab remains separate from outlet owner select", () => {
+    expect(src).toMatch(/data-testid="sa-tab-activity"/);
+    expect(src).toMatch(/function ActivityTab/);
+    expect(src.indexOf("sa-outlet-owner-select")).toBeLessThan(src.indexOf("function ActivityTab"));
+  });
+
   test("import preview is separate from activation", () => {
     expect(src).toMatch(/Import tidak menjalankan automation/);
     expect(src).toMatch(/data-testid="sa-import-paused-banner"/);
@@ -41,6 +58,13 @@ describe("SalesActivityOutletDetail contracts", () => {
     expect(detail).toMatch(/canManageOwnership/);
     expect(detail).toMatch(/data-testid="sa-history-table"/);
     expect(detail).toMatch(/data-testid="sa-detail-paused"/);
+  });
+
+  test("prospect reassign uses PIC allowlist options", () => {
+    expect(detail).toMatch(/salesActivityProspectPicUsers/);
+    expect(detail).toMatch(/data-testid="sa-detail-owner-select"/);
+    expect(detail).toMatch(/isProspect/);
+    expect(detail).toMatch(/\(saat ini\)/);
   });
 
   test("detail shows visit photos and historical evidence", () => {
@@ -105,6 +129,14 @@ describe("SalesActivitySettings contracts", () => {
     expect(settings).toMatch(/data-testid="sa-dormant-destination"/);
     expect(settings).toMatch(/Destinasi dormant: Pool/);
     expect(settings).toMatch(/data-testid="sa-settings-save"/);
+  });
+
+  test("PIC Sales Prospek allowlist multi-select", () => {
+    expect(settings).toMatch(/PIC Sales Prospek/);
+    expect(settings).toMatch(/data-testid="sa-settings-prospect-pic"/);
+    expect(settings).toMatch(/prospect_pic_user_ids/);
+    expect(settings).toMatch(/toggleProspectPic/);
+    expect(settings).toMatch(/status \|\| "active"/);
   });
 
   test("visit setting uses foto visit wajib label", () => {

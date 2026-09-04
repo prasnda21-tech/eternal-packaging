@@ -40,6 +40,14 @@ export default function SalesActivitySettings({ notify, canEdit }) {
     setRe("sales_sequence", seq.includes(id) ? seq.filter((x) => x !== id) : [...seq, id]);
   };
 
+  const toggleProspectPic = (id) => {
+    const ids = settings.prospect_pic_user_ids || [];
+    setSettings({
+      ...settings,
+      prospect_pic_user_ids: ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+    });
+  };
+
   const setType = (idx, k, v) => {
     const types = settings.activity_types.map((t, i) => {
       if (i !== idx) return t;
@@ -110,6 +118,28 @@ export default function SalesActivitySettings({ notify, canEdit }) {
                 {u.name} ({u.email})
               </label>
             ))}
+          </div>
+        </SaSection>
+
+        <SaSection title="PIC Sales Prospek">
+          <p className="sa-field-hint sa-field-wide">
+            User aktif yang boleh dipilih sebagai Owner / PIC Sales pada Outlet Prospek.
+          </p>
+          <div className="sa-type-grid sa-field-wide" data-testid="sa-settings-prospect-pic">
+            {(users || []).filter((u) => String(u.status || "active") === "active").map((u) => (
+              <label key={u.id} className="sa-check">
+                <input
+                  type="checkbox"
+                  checked={(settings.prospect_pic_user_ids || []).includes(u.id)}
+                  onChange={() => toggleProspectPic(u.id)}
+                  data-testid={`sa-settings-prospect-pic-${u.id}`}
+                />
+                {u.name}{u.role ? ` · ${u.role}` : ""}{u.email ? ` (${u.email})` : ""}
+              </label>
+            ))}
+            {(users || []).filter((u) => String(u.status || "active") === "active").length === 0 && (
+              <p className="muted">Tidak ada user aktif.</p>
+            )}
           </div>
         </SaSection>
 

@@ -410,6 +410,7 @@ export const api = {
   salesActivitySettings: () => client.get(`/sales-activity/settings`).then((r) => r.data),
   updateSalesActivitySettings: (payload) => client.put(`/sales-activity/settings`, payload).then((r) => r.data),
   salesActivityUsers: () => client.get(`/sales-activity/sales-users`).then((r) => r.data),
+  salesActivityProspectPicUsers: () => client.get(`/sales-activity/prospect-pic-users`).then((r) => r.data),
   listSalesActivityOutlets: (params = {}) => client.get(`/sales-activity/outlets`, { params }).then((r) => r.data),
   createSalesActivityOutlet: (payload) => client.post(`/sales-activity/outlets`, payload).then((r) => r.data),
   salesActivityOutlet: (id) => client.get(`/sales-activity/outlets/${encodeURIComponent(id)}`).then((r) => r.data),
