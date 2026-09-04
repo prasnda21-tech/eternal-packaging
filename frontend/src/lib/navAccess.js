@@ -18,6 +18,7 @@ export const NAV_KEYS = {
   tasksLoading: "nav.tasks.loading",
   tasksDelivery: "nav.tasks.delivery",
   sales: "nav.sales",
+  salesCustomers: "nav.sales.customers",
   salesOrder: "nav.sales.sales_order",
   salesDeliveryOrder: "nav.sales.delivery_order",
   salesInvoice: "nav.sales.sales_invoice",
@@ -72,6 +73,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.tasksLoading, label: "Loading", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.tasksDelivery, label: "Driver / Terkirim", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
+  { key: NAV_KEYS.salesCustomers, label: "Data Pelanggan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesDeliveryOrder, label: "Pengiriman Pesanan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", parent: NAV_KEYS.sales },
@@ -116,6 +118,7 @@ export function canSeeNav(hasPerm, key) {
 /** Parent that is not a page itself is hidden when no child is visible. */
 export function salesNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
+  const salesCustomers = parent && (canSeeNav(hasPerm, NAV_KEYS.salesCustomers) || canSeeNav(hasPerm, "sales.customer.view") || canSeeNav(hasPerm, "sales.customer.manage") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
@@ -123,7 +126,8 @@ export function salesNavVisible(hasPerm) {
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
   const salesActivity = parent && (canSeeNav(hasPerm, NAV_KEYS.salesActivity) || canSeeNav(hasPerm, "sales.activity.view") || canSeeNav(hasPerm, "sales.activity.create") || canSeeNav(hasPerm, "sales.outlet.create"));
   return {
-    parent: Boolean(salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity),
+    parent: Boolean(salesCustomers || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity),
+    salesCustomers: Boolean(salesCustomers),
     salesOrder: Boolean(salesOrder),
     salesDeliveryOrder: Boolean(salesDeliveryOrder),
     salesInvoice: Boolean(salesInvoice),
@@ -135,6 +139,7 @@ export function salesNavVisible(hasPerm) {
 
 /** Existing Penjualan child routes. */
 export const SALES_NAV_ROUTES = {
+  [NAV_KEYS.salesCustomers]: "/penjualan/data-pelanggan",
   [NAV_KEYS.salesOrder]: "/penjualan/pesanan-penjualan",
   [NAV_KEYS.salesDeliveryOrder]: "/penjualan/pengiriman-pesanan",
   [NAV_KEYS.salesInvoice]: "/penjualan/faktur-penjualan",
@@ -144,6 +149,7 @@ export const SALES_NAV_ROUTES = {
 };
 
 const SALES_VIS_FIELD = {
+  [NAV_KEYS.salesCustomers]: "salesCustomers",
   [NAV_KEYS.salesOrder]: "salesOrder",
   [NAV_KEYS.salesDeliveryOrder]: "salesDeliveryOrder",
   [NAV_KEYS.salesInvoice]: "salesInvoice",
@@ -154,6 +160,7 @@ const SALES_VIS_FIELD = {
 
 /** Stable tile tones keyed by existing nav.* — not randomized per render. */
 export const SALES_TILE_TONES = {
+  [NAV_KEYS.salesCustomers]: "teal",
   [NAV_KEYS.salesOrder]: "blue",
   [NAV_KEYS.salesDeliveryOrder]: "amber",
   [NAV_KEYS.salesInvoice]: "purple",
@@ -163,6 +170,7 @@ export const SALES_TILE_TONES = {
 };
 
 export const SALES_TILE_TESTIDS = {
+  [NAV_KEYS.salesCustomers]: "top-nav-sales-customers",
   [NAV_KEYS.salesOrder]: "top-nav-sales-order",
   [NAV_KEYS.salesDeliveryOrder]: "top-nav-sales-delivery-order",
   [NAV_KEYS.salesInvoice]: "top-nav-sales-invoice",

@@ -6200,6 +6200,19 @@ from services.sales_receipt_payment_proof import (
     load_proof_bytes as _load_sales_receipt_payment_proof_bytes,
     content_disposition as _sales_receipt_proof_content_disposition,
 )
+from services.sales_customers import (
+    COLLECTION as _SALES_CUSTOMERS_COLLECTION,
+    list_sales_customers as _list_sales_customers,
+    get_sales_customer as _get_sales_customer,
+    create_sales_customer as _create_sales_customer,
+    update_sales_customer as _update_sales_customer,
+    prepare_customer_for_po as _prepare_customer_for_po,
+    link_or_create_customer_for_po as _link_or_create_customer_for_po,
+    resolve_or_create_customer_for_po as _resolve_or_create_customer_for_po,
+    ensure_sales_customer_indexes as _ensure_sales_customer_indexes,
+    SalesCustomerCreatePayload,
+    SalesCustomerUpdatePayload,
+)
 
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
 class SalesOrderLineItemInput(BaseModel):
@@ -6218,6 +6231,12 @@ class SalesOrderCreatePayload(BaseModel):
     po_number: Optional[str] = None
     order_date: Optional[str] = None
     customer: str
+    customer_id: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_address: Optional[str] = None
+    customer_pic: Optional[str] = None
+    customer_email: Optional[str] = None
+    customer_city: Optional[str] = None
     outlet: Optional[str] = None
     recipient: Optional[str] = None
     address: Optional[str] = None
@@ -6361,13 +6380,71 @@ async def _next_suggested_po_number(database, target_date: Optional[Union[dateti
     return f"{prefix}{max_seq + 1:03d}"
 
 
+# ---------- Sales Customers (Data Pelanggan) ----------
+@api_router.get("/sales-customers")
+async def list_sales_customers_endpoint(
+    q: Optional[str] = None,
+    user=Depends(current_user),
+):
+    """List sales customers with optional search term."""
+    await _require_any_perm(
+        user,
+        "sales.customer.view",
+        "sales.customer.manage",
+    )
+    customers = await _list_sales_customers(db, q=q)
+    return {"customers": customers}
+
+
+@api_router.post("/sales-customers")
+async def create_sales_customer_endpoint(
+    payload: SalesCustomerCreatePayload,
+    user=Depends(current_user),
+):
+    """Create a new customer in sales customer master."""
+    await _require_any_perm(user, "sales.customer.manage")
+    cust = await _create_sales_customer(db, payload, user_email=user.get("email"))
+    return {"customer": cust, "message": "Data pelanggan berhasil disimpan"}
+
+
+@api_router.get("/sales-customers/{customer_id}")
+async def get_sales_customer_endpoint(
+    customer_id: str,
+    user=Depends(current_user),
+):
+    """Get single sales customer by id."""
+    await _require_any_perm(
+        user,
+        "sales.customer.view",
+        "sales.customer.manage",
+    )
+    cust = await _get_sales_customer(db, customer_id)
+    if not cust:
+        raise HTTPException(404, "Pelanggan tidak ditemukan.")
+    return {"customer": cust}
+
+
+@api_router.put("/sales-customers/{customer_id}")
+async def update_sales_customer_endpoint(
+    customer_id: str,
+    payload: SalesCustomerUpdatePayload,
+    user=Depends(current_user),
+):
+    """Update sales customer by id."""
+    await _require_any_perm(user, "sales.customer.manage")
+    cust = await _update_sales_customer(db, customer_id, payload, user_email=user.get("email"))
+    return {"customer": cust, "message": "Data pelanggan berhasil diperbarui"}
+
+
 @api_router.get("/sales-orders/options")
 async def get_sales_order_options(user=Depends(current_user)):
     """Fetch autocomplete suggestions for Customer, Outlet, Sales, Master Items, and next No PO."""
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit", "po.import.view")
+    master_customers = await _list_sales_customers(db)
     customers = await db.orders.distinct("customer", {"cancelled": {"$ne": True}})
     outlet_custs = await db.delivery_outlets.distinct("customer_name")
-    all_customers = sorted({c.strip() for c in (customers + outlet_custs) if c and str(c).strip()})
+    master_cust_names = [c["name"] for c in master_customers if c.get("name")]
+    all_customers = sorted({c.strip() for c in (customers + outlet_custs + master_cust_names) if c and str(c).strip()})
 
     raw_outlets = await db.delivery_outlets.find({}, {"_id": 0}).to_list(1000)
     recent_orders = await db.orders.find(
@@ -6415,6 +6492,7 @@ async def get_sales_order_options(user=Depends(current_user)):
     suggested_po = await _next_suggested_po_number(db)
     return {
         "customers": all_customers,
+        "master_customers": master_customers,
         "outlets_by_customer": outlets_by_customer,
         "sales_options": all_sales,
         "master_items": master_items,
@@ -6488,13 +6566,27 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "existing_po_number": po_num,
             "existing_po_id": existing.get("id"),
         })
-    
+
+    # Prepare customer (does NOT persist new customer yet)
+    customer_id, customer_name, is_new, candidate_customer_doc = await _prepare_customer_for_po(
+        db,
+        customer_name=cust,
+        customer_id=payload.customer_id,
+        phone=payload.customer_phone,
+        address=payload.customer_address or payload.address,
+        pic=payload.customer_pic or payload.recipient,
+        email=payload.customer_email,
+        city=payload.customer_city,
+        user_email=user.get("email"),
+    )
+
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
     item_cnt = len(normalized_lines)
-    
+    order_id = str(uuid.uuid4())
+
     new_order = {
-        "id": str(uuid.uuid4()),
+        "id": order_id,
         "po_number": po_num,
         "accurate_id": None,
         "accurate_synced_at": None,
@@ -6507,7 +6599,9 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "deadline": deadline,
         "priority": "normal",
         "urgency_approved_by": None,
-        "customer": cust,
+        "customer": customer_name,
+        "customer_id": customer_id,
+        "customer_phone": (payload.customer_phone or "").strip() or None,
         "outlet": (payload.outlet or "").strip() or None,
         "recipient": (payload.recipient or "").strip() or None,
         "address": (payload.address or "").strip() or None,
@@ -6548,7 +6642,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "created_at": now,
         "updated_at": now,
     }
-    
+
     try:
         await db.orders.insert_one(new_order)
     except DuplicateKeyError:
@@ -6556,7 +6650,16 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "message": f"Nomor PO '{po_num}' sudah pernah digunakan.",
             "existing_po_number": po_num,
         })
-    
+
+    # If new customer was prepared, link/persist customer master immediately after PO persistence
+    if is_new and candidate_customer_doc:
+        final_customer_id = await _link_or_create_customer_for_po(
+            db,
+            order_id=order_id,
+            candidate_doc=candidate_customer_doc,
+        )
+        new_order["customer_id"] = final_customer_id
+
     new_order.pop("_id", None)
     await _audit_po(new_order, "sales_order.create", user, note=f"Buat Pesanan Penjualan {po_num}")
     return {"order": new_order, "message": "Pesanan Penjualan berhasil dibuat"}
@@ -9076,6 +9179,7 @@ async def seed():
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
     await db.sales_receipts.create_index("invoice_id")
     await db.sales_receipts.create_index("created_at")
+    await _ensure_sales_customer_indexes(db)
     # Purchasing documents — additive unique business numbers (not sales PO/SJ/INV/PAY)
     await db.purchase_requests.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.purchase_requests, "request_number")
