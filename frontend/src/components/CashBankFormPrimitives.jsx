@@ -55,16 +55,17 @@ export function KbSearchField({
     >
       <Search size={14} strokeWidth={2} aria-hidden="true" className="kb-search-field-icon" />
       <input
-        type="search"
+        type="text"
         value={value}
         onChange={onChange}
         placeholder={placeholder}
         data-testid={testid}
         aria-label={ariaLabel || placeholder}
+        autoComplete="off"
       />
       {value ? (
-        <button type="button" className="ghost sm kb-search-field-clear" onClick={onClear} aria-label="Bersihkan">
-          <X size={12} />
+        <button type="button" className="kb-search-field-clear" onClick={onClear} aria-label="Bersihkan">
+          <X size={12} strokeWidth={2} aria-hidden="true" />
         </button>
       ) : null}
     </form>

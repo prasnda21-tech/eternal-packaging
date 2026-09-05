@@ -1029,12 +1029,36 @@
   border-radius:4px;
   box-shadow:none !important;
 }
+/* Nested KbSearchField: kill field-input chrome (higher specificity than rules above). */
+.kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.content .kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]){
+  display:block !important;
+  flex:1 1 auto !important;
+  width:auto !important;
+  max-width:none !important;
+  min-width:0 !important;
+  height:100% !important;
+  min-height:0 !important;
+  margin:0 !important;
+  padding:0 !important;
+  border:0 !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  outline:none !important;
+}
+.content .kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 .content .kas-bank-page .kb-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 .content .kas-bank-page .kb-field select:focus,
 .content .kas-bank-page .kb-field textarea:focus{
   border-color:var(--mod) !important;
   box-shadow:0 0 0 3px var(--color-input-ring) !important;
   outline:none;
+}
+.content .kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus{
+  border:0 !important;
+  box-shadow:none !important;
+  outline:none !important;
 }
 .kas-bank-page .kb-field select:disabled,
 .kas-bank-page .kb-field input:disabled,
@@ -1142,57 +1166,107 @@
   background:linear-gradient(180deg,#fff 0%, var(--mod-soft) 160%);
 }
 .kas-bank-page .kb-toolbar .search-inline,
-.kas-bank-page .kb-search-field{
+.kas-bank-page .kb-search-field,
+.content .kas-bank-page .kb-search-field{
   display:flex;
   align-items:center;
   gap:8px;
   flex:1 1 220px;
   min-width:0;
-  min-height:36px;
-  height:36px;
+  min-height:42px;
+  height:42px;
   box-sizing:border-box;
   margin:0;
   border:2px solid var(--kb-line-strong);
   background:#fff;
-  border-radius:6px;
-  padding:0 10px;
+  border-radius:4px;
+  padding:0 10px 0 12px;
+  box-shadow:none;
 }
-.kas-bank-page .kb-search-field-icon{
-  flex:0 0 auto;
+.kas-bank-page .kb-search-field-icon,
+.content .kas-bank-page .kb-search-field-icon{
+  flex:0 0 14px;
+  width:14px;
+  height:14px;
   color:var(--mod-ink);
   display:block;
   pointer-events:none;
+  border:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  padding:0;
+  margin:0;
+  opacity:.9;
 }
 .kas-bank-page .kb-toolbar .search-inline input,
 .kas-bank-page .kb-search-field input,
 .kas-bank-page .kb-field .kb-search-field input,
-.content .kas-bank-page .kb-field .kb-search-field input{
-  flex:1 1 auto;
-  min-width:0;
-  width:100%;
-  height:100%;
+.content .kas-bank-page .kb-field .kb-search-field input,
+.content .kas-bank-page .kb-search-field input{
+  display:block !important;
+  flex:1 1 auto !important;
+  min-width:0 !important;
+  width:auto !important;
+  max-width:none !important;
+  height:100% !important;
+  min-height:0 !important;
   border:0 !important;
-  outline:0;
+  outline:0 !important;
   background:transparent !important;
   box-shadow:none !important;
   padding:0 !important;
-  margin:0;
-  min-height:0 !important;
+  margin:0 !important;
   font-size:13.5px;
+  line-height:1.2;
   color:var(--ink);
   font-family:inherit;
   border-radius:0 !important;
+  -webkit-appearance:none;
+  appearance:none;
+}
+.kas-bank-page .kb-field .kb-search-field input:focus,
+.content .kas-bank-page .kb-field .kb-search-field input:focus,
+.content .kas-bank-page .kb-search-field input:focus{
+  border:0 !important;
+  box-shadow:none !important;
+  outline:none !important;
+}
+.kas-bank-page .kb-search-field input::-webkit-search-decoration,
+.kas-bank-page .kb-search-field input::-webkit-search-cancel-button,
+.kas-bank-page .kb-search-field input::-webkit-search-results-button,
+.kas-bank-page .kb-search-field input::-webkit-search-results-decoration{
+  -webkit-appearance:none;
+  appearance:none;
+  display:none;
 }
 .kas-bank-page .kb-toolbar .search-inline:focus-within,
-.kas-bank-page .kb-search-field:focus-within{
+.kas-bank-page .kb-search-field:focus-within,
+.content .kas-bank-page .kb-search-field:focus-within{
   border-color:var(--mod);
   box-shadow:0 0 0 3px var(--color-input-ring);
 }
-.kas-bank-page .kb-search-field-clear{
+.kas-bank-page .kb-search-field-clear,
+.content .kas-bank-page .kb-search-field-clear{
   flex:0 0 auto;
-  padding:2px 4px !important;
-  min-height:0;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:20px;
+  height:20px;
+  margin:0;
+  padding:0 !important;
+  border:0 !important;
+  border-radius:4px;
+  background:transparent !important;
+  box-shadow:none !important;
+  color:var(--soft);
+  cursor:pointer;
   line-height:1;
+}
+.kas-bank-page .kb-search-field-clear:hover,
+.content .kas-bank-page .kb-search-field-clear:hover{
+  color:var(--ink);
+  background:color-mix(in srgb, var(--mod-soft) 70%, #fff) !important;
 }
 .kas-bank-page .kb-toolbar-status{
   flex:0 0 auto;
