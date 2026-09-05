@@ -13,6 +13,7 @@ from services import storage as obj_storage
 from services.purchase_common import actor_snapshot, now_iso
 
 CATALOG_IMAGE_KIND = "customer_pricing_catalog_image"
+PRODUCT_IMAGE_KIND = "customer_pricing_product_image"
 MAX_CATALOG_IMAGE_BYTES = 5 * 1024 * 1024
 CATALOG_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp"}
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -179,6 +180,176 @@ async def get_catalog_image(
         raise HTTPException(404, "Foto katalog tidak tersedia.") from None
     except Exception:
         raise HTTPException(502, "Foto katalog tidak dapat dimuat.") from None
+    return (
+        data,
+        media_type if media_type in CATALOG_IMAGE_MIMES else fetched_type,
+        record.get("original_filename"),
+    )
+
+
+async def upload_product_image(
+    db,
+    *,
+    group_id: str,
+    accurate_item_id: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    user: dict,
+) -> dict:
+    group = await db[cp.GROUPS].find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Kelompok harga tidak ditemukan.")
+    aid = str(accurate_item_id or "").strip()
+    if not aid:
+        raise HTTPException(400, "ID produk wajib diisi.")
+    active_ids = {str(item) for item in (group.get("active_accurate_item_ids") or [])}
+    if aid not in active_ids:
+        draft = await db[cp.VERSIONS].find_one(
+            {"id": group.get("current_draft_version_id")}, {"_id": 0, "products": 1}
+        )
+        pub = await db[cp.VERSIONS].find_one(
+            {"id": group.get("current_published_version_id")}, {"_id": 0, "products": 1}
+        )
+        draft_aids = {str(p.get("accurate_item_id") or "") for p in (draft or {}).get("products", [])}
+        pub_aids = {str(p.get("accurate_item_id") or "") for p in (pub or {}).get("products", [])}
+        if aid not in (draft_aids | pub_aids):
+            raise HTTPException(404, "Produk tidak ditemukan di dalam kelompok harga ini.")
+    if not data:
+        raise HTTPException(400, "File gambar kosong.")
+    if len(data) > MAX_CATALOG_IMAGE_BYTES:
+        raise HTTPException(400, "Ukuran foto produk maksimal 5 MB.")
+
+    mime = sniff_catalog_image_mime(data, content_type)
+    if mime not in CATALOG_IMAGE_MIMES:
+        raise HTTPException(400, "Tipe gambar tidak didukung.")
+
+    file_id = str(uuid.uuid4())
+    extension = obj_storage.ext_for(mime, "jpg")
+    original_filename = _safe_original_filename(filename, extension)
+    storage_path = (
+        f"{obj_storage.APP_NAME}/customer-pricing/{group_id}/products/{aid}/"
+        f"{file_id}.{extension}"
+    )
+    try:
+        stored = obj_storage.put_object(storage_path, data, mime)
+    except Exception:
+        raise HTTPException(
+            502, "Gagal mengunggah foto produk. Silakan coba lagi."
+        ) from None
+
+    now = now_iso()
+    image = {
+        "file_id": file_id,
+        "content_type": mime,
+        "original_filename": original_filename,
+        "size": stored.get("size") or len(data),
+        "uploaded_at": now,
+    }
+    file_doc = {
+        "id": file_id,
+        "kind": PRODUCT_IMAGE_KIND,
+        "group_id": group_id,
+        "accurate_item_id": aid,
+        "storage_path": stored.get("path") or storage_path,
+        "content_type": mime,
+        "original_filename": original_filename,
+        "size": image["size"],
+        "uploaded_at": now,
+        "uploaded_by": actor_snapshot(user),
+        "is_deleted": False,
+    }
+    await db.files.insert_one(file_doc)
+    await db[cp.GROUPS].update_one(
+        {"id": group_id},
+        {
+            "$set": {
+                f"product_images.{aid}": image,
+                "updated_at": now,
+                "updated_by": actor_snapshot(user),
+            }
+        },
+    )
+    previous_file_id = (((group.get("product_images") or {}).get(aid) or {}).get("file_id"))
+    if previous_file_id and previous_file_id != file_id:
+        await db.files.update_one(
+            {
+                "id": previous_file_id,
+                "kind": PRODUCT_IMAGE_KIND,
+                "group_id": group_id,
+                "accurate_item_id": aid,
+            },
+            {"$set": {"is_deleted": True}},
+        )
+    return await cp.get_group(db, group_id)
+
+
+async def remove_product_image(
+    db, *, group_id: str, accurate_item_id: str, user: dict
+) -> dict:
+    group = await db[cp.GROUPS].find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Kelompok harga tidak ditemukan.")
+    aid = str(accurate_item_id or "").strip()
+    image = (group.get("product_images") or {}).get(aid) or {}
+    now = now_iso()
+    await db[cp.GROUPS].update_one(
+        {"id": group_id},
+        {
+            "$unset": {f"product_images.{aid}": ""},
+            "$set": {
+                "updated_at": now,
+                "updated_by": actor_snapshot(user),
+            },
+        },
+    )
+    if image.get("file_id"):
+        await db.files.update_one(
+            {
+                "id": image["file_id"],
+                "kind": PRODUCT_IMAGE_KIND,
+                "group_id": group_id,
+                "accurate_item_id": aid,
+            },
+            {"$set": {"is_deleted": True}},
+        )
+    return await cp.get_group(db, group_id)
+
+
+async def get_product_image(
+    db, *, group_id: str, accurate_item_id: str
+) -> Tuple[bytes, str, Optional[str]]:
+    group = await db[cp.GROUPS].find_one(
+        {"id": group_id}, {"_id": 0, "product_images": 1}
+    )
+    if not group:
+        raise HTTPException(404, "Kelompok harga tidak ditemukan.")
+    aid = str(accurate_item_id or "").strip()
+    image = ((group or {}).get("product_images") or {}).get(aid) or {}
+    file_id = str(image.get("file_id") or "").strip()
+    if not file_id:
+        raise HTTPException(404, "Foto produk tidak tersedia.")
+    record = await db.files.find_one(
+        {
+            "id": file_id,
+            "kind": PRODUCT_IMAGE_KIND,
+            "group_id": group_id,
+            "accurate_item_id": aid,
+            "is_deleted": {"$ne": True},
+        },
+        {"_id": 0},
+    )
+    if not record or not record.get("storage_path"):
+        raise HTTPException(404, "Foto produk tidak tersedia.")
+    media_type = str(record.get("content_type") or image.get("content_type") or "")
+    if media_type not in CATALOG_IMAGE_MIMES:
+        raise HTTPException(404, "Foto produk tidak tersedia.")
+    try:
+        data, fetched_type = obj_storage.get_object(record["storage_path"])
+    except FileNotFoundError:
+        raise HTTPException(404, "Foto produk tidak tersedia.") from None
+    except Exception:
+        raise HTTPException(502, "Foto produk tidak dapat dimuat.") from None
     return (
         data,
         media_type if media_type in CATALOG_IMAGE_MIMES else fetched_type,

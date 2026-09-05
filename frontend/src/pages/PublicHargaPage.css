@@ -298,14 +298,18 @@
 }
 .ph-variant-chips{display:flex;flex-wrap:wrap;gap:10px}
 .ph-variant-chips button{
-  min-height:44px;
-  padding:8px 18px;
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  min-height:48px;
+  padding:5px 14px 5px 6px;
   border:1px solid #c6d8da;
   border-radius:12px;
   background:#fff;
   color:#2d4c53;
   font:700 14px inherit;
   cursor:pointer;
+  transition:all .15s ease;
 }
 .ph-variant-chips button:hover{border-color:var(--ph-accent)}
 .ph-variant-chips button.is-selected{
@@ -313,6 +317,76 @@
   background:#eaf7f7;
   color:#066570;
   box-shadow:inset 0 0 0 1px var(--ph-accent);
+}
+.ph-variant-visual{
+  position:relative;
+  display:grid;
+  place-items:center;
+  overflow:hidden;
+  border-radius:8px;
+  background:#edf5f5;
+  border:1px solid #d4e3e5;
+  flex-shrink:0;
+}
+.ph-variant-visual.is-sm{width:32px;height:32px;border-radius:6px}
+.ph-variant-visual.is-md{width:36px;height:36px}
+.ph-variant-visual.is-lg{width:56px;height:56px;border-radius:10px}
+.ph-variant-visual img{width:100%;height:100%;object-fit:cover}
+.ph-variant-placeholder{
+  display:grid;
+  place-items:center;
+  gap:2px;
+  color:#7ea0a5;
+  font-size:8px;
+  font-weight:800;
+  text-align:center;
+}
+.ph-variant-placeholder svg{color:#7ea0a5}
+.ph-card-variant-strip{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:10px;
+}
+.ph-card-variant-item{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:2px 8px 2px 3px;
+  background:#f4f9f9;
+  border:1px solid #e1ecee;
+  border-radius:7px;
+  font-size:12px;
+  font-weight:650;
+  color:#2d4c53;
+}
+.ph-card-variant-name{
+  max-width:90px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.ph-selected-variant-card{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin:16px 0 18px;
+  padding:12px 16px;
+  background:#f7fbfb;
+  border:1px solid #d8e7e9;
+  border-radius:14px;
+}
+.ph-selected-variant-meta{
+  display:grid;
+  gap:2px;
+}
+.ph-selected-variant-meta strong{
+  font-size:15px;
+  color:#102a32;
+}
+.ph-selected-variant-meta span{
+  font-size:12px;
+  color:#60737a;
 }
 .ph-quantity-field{display:block}
 .ph-quantity-input{

@@ -82,6 +82,7 @@ def _serialize_group(
         return None
     variants = []
     seen_variant_ids = set()
+    product_images = group.get("product_images") or {}
     for product in version.get("products") or []:
         accurate_item_id = str(product.get("accurate_item_id") or "")
         if product.get("is_active") is False or accurate_item_id not in active_accurate_item_ids:
@@ -94,6 +95,14 @@ def _serialize_group(
         if public_variant_id in seen_variant_ids:
             return None
         seen_variant_ids.add(public_variant_id)
+        prod_img = product_images.get(accurate_item_id) or {}
+        prod_img_file_id = _public_ref(prod_img.get("file_id"))
+        prod_image_url = None
+        if prod_img_file_id:
+            prod_image_url = (
+                f"/api/public/customer-pricing/groups/{public_id}/variants/"
+                f"{public_variant_id}/image"
+            )
         variants.append(
             {
                 "public_variant_id": public_variant_id,
@@ -101,6 +110,7 @@ def _serialize_group(
                 "unit": str(product.get("unit") or "").strip() or None,
                 "minimum_quantity": tiers[0]["min_qty"],
                 "tiers": tiers,
+                "image_url": prod_image_url,
             }
         )
     if not variants:
@@ -187,6 +197,7 @@ async def list_public_groups(db) -> List[dict]:
                     "public_variant_id": variant["public_variant_id"],
                     "display_name": variant["display_name"],
                     "unit": variant["unit"],
+                    "image_url": variant.get("image_url"),
                 }
                 for variant in group["variants"]
             ],
@@ -210,6 +221,46 @@ async def get_public_group_image(db, group_public_id: str):
     if not group:
         raise HTTPException(404, PUBLIC_NOT_FOUND)
     return await catalog.get_catalog_image(db, group_id=group["id"])
+
+
+async def get_public_variant_image(
+    db, group_public_id: str, public_variant_id: str
+):
+    public_group = await get_public_group(db, group_public_id)
+    target_vid = str(public_variant_id or "").strip()
+    variant = next(
+        (
+            v
+            for v in (public_group.get("variants") or [])
+            if v.get("public_variant_id") == target_vid
+        ),
+        None,
+    )
+    if not variant:
+        raise HTTPException(404, PUBLIC_NOT_FOUND)
+    group = await db[cp.GROUPS].find_one(
+        {"public_id": public_group["public_id"]},
+        {"_id": 0, "id": 1, "current_published_version_id": 1},
+    )
+    if not group or not group.get("current_published_version_id"):
+        raise HTTPException(404, PUBLIC_NOT_FOUND)
+    version = await db[cp.VERSIONS].find_one(
+        {"id": group["current_published_version_id"]},
+        {"_id": 0, "products": 1},
+    )
+    product = next(
+        (
+            p
+            for p in (version or {}).get("products") or []
+            if p.get("public_variant_id") == target_vid
+        ),
+        None,
+    )
+    if not product or not product.get("accurate_item_id"):
+        raise HTTPException(404, PUBLIC_NOT_FOUND)
+    return await catalog.get_product_image(
+        db, group_id=group["id"], accurate_item_id=product["accurate_item_id"]
+    )
 
 
 def _validate_quantity(quantity: Any) -> int:

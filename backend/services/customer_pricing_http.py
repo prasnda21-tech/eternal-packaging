@@ -122,6 +122,60 @@ def register_customer_pricing_routes(
         )
         return {"group": group, "message": "Foto katalog dihapus"}
 
+    @api_router.post("/customer-pricing/groups/{group_id}/products/{accurate_item_id}/image")
+    async def upload_customer_pricing_product_image(
+        group_id: str,
+        accurate_item_id: str,
+        file: UploadFile = File(...),
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, cp.PERM_MANAGE)
+        raw = await file.read(catalog.MAX_CATALOG_IMAGE_BYTES + 1)
+        group = await catalog.upload_product_image(
+            get_db(),
+            group_id=group_id,
+            accurate_item_id=accurate_item_id,
+            filename=file.filename or "",
+            content_type=file.content_type or "",
+            data=raw,
+            user=user,
+        )
+        return {"group": group, "message": "Foto produk diperbarui"}
+
+    @api_router.get("/customer-pricing/groups/{group_id}/products/{accurate_item_id}/image")
+    async def get_customer_pricing_product_image(
+        group_id: str,
+        accurate_item_id: str,
+        user=Depends(current_user),
+    ):
+        await require_view(user)
+        data, content_type, _filename = await catalog.get_product_image(
+            get_db(), group_id=group_id, accurate_item_id=accurate_item_id
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @api_router.delete("/customer-pricing/groups/{group_id}/products/{accurate_item_id}/image")
+    async def delete_customer_pricing_product_image(
+        group_id: str,
+        accurate_item_id: str,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, cp.PERM_MANAGE)
+        group = await catalog.remove_product_image(
+            get_db(),
+            group_id=group_id,
+            accurate_item_id=accurate_item_id,
+            user=user,
+        )
+        return {"group": group, "message": "Foto produk dihapus"}
+
     @api_router.post("/customer-pricing/groups/{group_id}/draft")
     async def create_customer_pricing_draft(group_id: str, user=Depends(current_user)):
         await require_any_perm(user, cp.PERM_MANAGE)

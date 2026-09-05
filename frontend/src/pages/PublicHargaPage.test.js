@@ -243,4 +243,79 @@ describe("PublicHargaPage catalog and detail", () => {
     ).not.toBeNull();
     expect(container.querySelector('[data-testid="harga-variant-buttons"]')).not.toBeNull();
   });
+
+  test("product photos display own images, no-photo uses placeholder, and never fallback to group cover", async () => {
+    const photoGroup = {
+      public_id: "group-custom-box",
+      name: "Custom Box",
+      public_description: "Custom box packaging",
+      image_url: "/api/public/customer-pricing/groups/group-custom-box/image",
+      variants: [
+        {
+          public_variant_id: "var-box-a",
+          display_name: "Box A",
+          unit: "pcs",
+          image_url: "/api/public/customer-pricing/groups/group-custom-box/variants/var-box-a/image",
+        },
+        {
+          public_variant_id: "var-box-b",
+          display_name: "Box B",
+          unit: "pcs",
+          image_url: null,
+        },
+      ],
+    };
+    const photoDetail = {
+      ...photoGroup,
+      variants: [
+        {
+          ...photoGroup.variants[0],
+          minimum_quantity: 500,
+          tiers: [{ min_qty: 500, max_qty: null, unit_price: 1500 }],
+        },
+        {
+          ...photoGroup.variants[1],
+          minimum_quantity: 500,
+          tiers: [{ min_qty: 500, max_qty: null, unit_price: 1800 }],
+        },
+      ],
+    };
+
+    api.publicCustomerPricingGroups.mockResolvedValueOnce({ groups: [photoGroup] });
+    await renderAt("/harga");
+
+    const groupImg = container.querySelector('[data-testid="harga-card-image"] img');
+    expect(groupImg.src).toContain(photoGroup.image_url);
+
+    const varAThumb = container.querySelector('[data-testid="harga-variant-item-var-box-a"] img');
+    expect(varAThumb).not.toBeNull();
+    expect(varAThumb.src).toContain("var-box-a/image");
+
+    const varBPlaceholder = container.querySelector('[data-testid="harga-variant-item-var-box-b"] [data-testid="harga-variant-placeholder"]');
+    expect(varBPlaceholder).not.toBeNull();
+    expect(container.querySelector('[data-testid="harga-variant-item-var-box-b"] img')).toBeNull();
+
+    api.publicCustomerPricingGroup.mockResolvedValueOnce({ group: photoDetail });
+    await renderAt("/harga/group-custom-box");
+
+    const detailCover = container.querySelector('[data-testid="harga-detail-image"] img');
+    expect(detailCover.src).toContain(photoGroup.image_url);
+
+    const btnA = container.querySelector('[data-testid="harga-variant-var-box-a"] img');
+    expect(btnA).not.toBeNull();
+    expect(btnA.src).toContain("var-box-a/image");
+
+    const btnB = container.querySelector('[data-testid="harga-variant-var-box-b"] [data-testid="harga-variant-placeholder"]');
+    expect(btnB).not.toBeNull();
+    expect(container.querySelector('[data-testid="harga-variant-var-box-b"] img')).toBeNull();
+
+    const selectedBannerImg = container.querySelector('[data-testid="harga-selected-variant-card"] img');
+    expect(selectedBannerImg.src).toContain("var-box-a/image");
+
+    const btnBEl = container.querySelector('[data-testid="harga-variant-var-box-b"]');
+    await act(async () => btnBEl.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const bannerPlaceholder = container.querySelector('[data-testid="harga-selected-variant-card"] [data-testid="harga-variant-placeholder"]');
+    expect(bannerPlaceholder).not.toBeNull();
+    expect(container.querySelector('[data-testid="harga-selected-variant-card"] img')).toBeNull();
+  });
 });

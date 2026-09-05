@@ -189,4 +189,29 @@ describe("shared pricing and independent formula calculations", () => {
     expect(hppSourceSummary(formula("HPP_PLUS_PERCENT", [40]))).toBe("HPP Eternal");
     expect(tierLabel({ min_qty: 5000, max_qty: null })).toBe("5000+");
   });
+
+  test("each product has its own media area with upload/replace/delete controls bound to accurate_item_id", () => {
+    expect(cpSrc).toMatch(/cp-product-photo-cell/);
+    expect(cpSrc).toMatch(/cp-product-photo-wrap/);
+    expect(cpSrc).toMatch(/uploadCustomerPricingProductImage/);
+    expect(cpSrc).toMatch(/deleteCustomerPricingProductImage/);
+    expect(cpSrc).toMatch(/customerPricingProductImageUrl/);
+    expect(cpSrc).toMatch(/data-testid=\{`cp-product-photo-\$\{product\.accurate_item_id\}`\}/);
+    expect(cpSrc).toMatch(/data-testid=\{`cp-upload-product-photo-\$\{product\.accurate_item_id\}`\}/);
+    expect(cpSrc).toMatch(/data-testid=\{`cp-remove-product-photo-\$\{product\.accurate_item_id\}`\}/);
+    expect(apiSrc).toMatch(/uploadCustomerPricingProductImage/);
+    expect(apiSrc).toMatch(/deleteCustomerPricingProductImage/);
+    expect(apiSrc).toMatch(/customerPricingProductImageUrl/);
+  });
+
+  test("same-name products maintain independent accurate_item_id bindings", () => {
+    const p1 = { id: "m-1", accurate_item_id: "aid-1", item_name: "Kardus Polos", item_code: "KP-1", unit: "pcs" };
+    const p2 = { id: "m-2", accurate_item_id: "aid-2", item_name: "Kardus Polos", item_code: "KP-2", unit: "pcs" };
+    const list = appendExactProduct([], p1, 1);
+    const updated = appendExactProduct(list, p2, 1);
+    expect(updated).toHaveLength(2);
+    expect(updated[0].accurate_item_id).toBe("aid-1");
+    expect(updated[1].accurate_item_id).toBe("aid-2");
+    expect(updated[0].display_name).toBe(updated[1].display_name);
+  });
 });

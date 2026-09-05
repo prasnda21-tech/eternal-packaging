@@ -16,6 +16,7 @@ class PublicVariantSummary(PublicSchema):
     public_variant_id: str
     display_name: str
     unit: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class PublicGroupSummary(PublicSchema):
@@ -106,6 +107,27 @@ def register_public_customer_pricing_routes(api_router, *, get_db):
         data, content_type, _filename = (
             await public_pricing.get_public_group_image(
                 get_db(), group_public_id
+            )
+        )
+        return BinaryResponse(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @api_router.get(
+        "/public/customer-pricing/groups/{group_public_id}/variants/{public_variant_id}/image",
+        response_class=BinaryResponse,
+    )
+    async def get_public_customer_pricing_variant_image(
+        group_public_id: str, public_variant_id: str
+    ):
+        data, content_type, _filename = (
+            await public_pricing.get_public_variant_image(
+                get_db(), group_public_id, public_variant_id
             )
         )
         return BinaryResponse(
