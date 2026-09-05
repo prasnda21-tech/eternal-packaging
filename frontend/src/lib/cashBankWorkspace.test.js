@@ -15,12 +15,14 @@ describe("cashBankWorkspace tabs", () => {
     sessionStorage.clear();
   });
 
-  test("catalog has four Kas & Bank menus", () => {
+  test("catalog has six Kas & Bank menus", () => {
     expect(CASH_BANK_WORKSPACE_TABS.map((t) => t.path)).toEqual([
       "/kas-bank/daftar",
       "/kas-bank/penerimaan",
       "/kas-bank/pembayaran",
       "/kas-bank/transfer",
+      "/kas-bank/mutasi",
+      "/kas-bank/rekonsiliasi",
     ]);
   });
 

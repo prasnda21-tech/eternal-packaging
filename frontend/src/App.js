@@ -22,6 +22,8 @@ import DaftarKasBank from "./pages/DaftarKasBank";
 import PenerimaanKasBank from "./pages/PenerimaanKasBank";
 import PembayaranKasBank from "./pages/PembayaranKasBank";
 import TransferKasBank from "./pages/TransferKasBank";
+import MutasiKasBank from "./pages/MutasiKasBank";
+import RekonsiliasiKasBank from "./pages/RekonsiliasiKasBank";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
 import PermintaanPembelian from "./pages/PermintaanPembelian";
 import PesananPembelian from "./pages/PesananPembelian";
@@ -120,6 +122,8 @@ function KasBankIndex() {
   if (v.receipts) return <Navigate to="/kas-bank/penerimaan" replace />;
   if (v.payments) return <Navigate to="/kas-bank/pembayaran" replace />;
   if (v.transfers) return <Navigate to="/kas-bank/transfer" replace />;
+  if (v.mutasi) return <Navigate to="/kas-bank/mutasi" replace />;
+  if (v.reconciliation) return <Navigate to="/kas-bank/rekonsiliasi" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -204,6 +208,8 @@ export default function App() {
             <Route path="/kas-bank/penerimaan" element={<PermGate anyOf={[NAV_KEYS.cashBankReceipts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PenerimaanKasBank /></PermGate>} />
             <Route path="/kas-bank/pembayaran" element={<PermGate anyOf={[NAV_KEYS.cashBankPayments, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PembayaranKasBank /></PermGate>} />
             <Route path="/kas-bank/transfer" element={<PermGate anyOf={[NAV_KEYS.cashBankTransfers, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><TransferKasBank /></PermGate>} />
+            <Route path="/kas-bank/mutasi" element={<PermGate anyOf={[NAV_KEYS.cashBankMutasi, NAV_KEYS.cashBank, "cash_bank.view"]}><MutasiKasBank /></PermGate>} />
+            <Route path="/kas-bank/rekonsiliasi" element={<PermGate anyOf={[NAV_KEYS.cashBankReconciliation, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.reconcile"]}><RekonsiliasiKasBank /></PermGate>} />
             <Route path="/kas-bank" element={<KasBankIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />

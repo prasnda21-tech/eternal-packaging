@@ -60,6 +60,8 @@ export const NAV_KEYS = {
   cashBankReceipts: "nav.cash_bank.receipts",
   cashBankPayments: "nav.cash_bank.payments",
   cashBankTransfers: "nav.cash_bank.transfers",
+  cashBankMutasi: "nav.cash_bank.mutasi",
+  cashBankReconciliation: "nav.cash_bank.reconciliation",
   settings: "nav.settings",
 };
 
@@ -122,6 +124,8 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.cashBankReceipts, label: "Penerimaan", parent: NAV_KEYS.cashBank },
   { key: NAV_KEYS.cashBankPayments, label: "Pembayaran", parent: NAV_KEYS.cashBank },
   { key: NAV_KEYS.cashBankTransfers, label: "Transfer", parent: NAV_KEYS.cashBank },
+  { key: NAV_KEYS.cashBankMutasi, label: "Mutasi Kas & Bank", parent: NAV_KEYS.cashBank },
+  { key: NAV_KEYS.cashBankReconciliation, label: "Rekonsiliasi Bank", parent: NAV_KEYS.cashBank },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
@@ -741,6 +745,8 @@ export const CASH_BANK_NAV_ROUTES = {
   [NAV_KEYS.cashBankReceipts]: "/kas-bank/penerimaan",
   [NAV_KEYS.cashBankPayments]: "/kas-bank/pembayaran",
   [NAV_KEYS.cashBankTransfers]: "/kas-bank/transfer",
+  [NAV_KEYS.cashBankMutasi]: "/kas-bank/mutasi",
+  [NAV_KEYS.cashBankReconciliation]: "/kas-bank/rekonsiliasi",
 };
 
 const CASH_BANK_VIS_FIELD = {
@@ -748,6 +754,8 @@ const CASH_BANK_VIS_FIELD = {
   [NAV_KEYS.cashBankReceipts]: "receipts",
   [NAV_KEYS.cashBankPayments]: "payments",
   [NAV_KEYS.cashBankTransfers]: "transfers",
+  [NAV_KEYS.cashBankMutasi]: "mutasi",
+  [NAV_KEYS.cashBankReconciliation]: "reconciliation",
 };
 
 export const CASH_BANK_TILE_TONES = {
@@ -755,6 +763,8 @@ export const CASH_BANK_TILE_TONES = {
   [NAV_KEYS.cashBankReceipts]: "green",
   [NAV_KEYS.cashBankPayments]: "amber",
   [NAV_KEYS.cashBankTransfers]: "blue",
+  [NAV_KEYS.cashBankMutasi]: "cyan",
+  [NAV_KEYS.cashBankReconciliation]: "slate",
 };
 
 export const CASH_BANK_TILE_TESTIDS = {
@@ -762,6 +772,8 @@ export const CASH_BANK_TILE_TESTIDS = {
   [NAV_KEYS.cashBankReceipts]: "top-nav-kas-bank-penerimaan",
   [NAV_KEYS.cashBankPayments]: "top-nav-kas-bank-pembayaran",
   [NAV_KEYS.cashBankTransfers]: "top-nav-kas-bank-transfer",
+  [NAV_KEYS.cashBankMutasi]: "top-nav-kas-bank-mutasi",
+  [NAV_KEYS.cashBankReconciliation]: "top-nav-kas-bank-rekonsiliasi",
 };
 
 export function cashBankNavVisible(hasPerm) {
@@ -769,22 +781,34 @@ export function cashBankNavVisible(hasPerm) {
     canSeeNav(hasPerm, "cash_bank.view")
     || canSeeNav(hasPerm, "cash_bank.manage")
     || canSeeNav(hasPerm, "cash_bank.post")
-    || canSeeNav(hasPerm, "cash_bank.reverse");
+    || canSeeNav(hasPerm, "cash_bank.reverse")
+    || canSeeNav(hasPerm, "cash_bank.reconcile");
   const accounts = canSeeNav(hasPerm, NAV_KEYS.cashBankAccounts) || pagePerm;
   const receipts = canSeeNav(hasPerm, NAV_KEYS.cashBankReceipts) || pagePerm;
   const payments = canSeeNav(hasPerm, NAV_KEYS.cashBankPayments) || pagePerm;
   const transfers = canSeeNav(hasPerm, NAV_KEYS.cashBankTransfers) || pagePerm;
+  const mutasi = canSeeNav(hasPerm, NAV_KEYS.cashBankMutasi)
+    || canSeeNav(hasPerm, "cash_bank.view")
+    || pagePerm;
+  const reconciliation = canSeeNav(hasPerm, NAV_KEYS.cashBankReconciliation)
+    || canSeeNav(hasPerm, "cash_bank.reconcile")
+    || canSeeNav(hasPerm, "cash_bank.view")
+    || pagePerm;
   const parent = canSeeNav(hasPerm, NAV_KEYS.cashBank)
     || accounts
     || receipts
     || payments
-    || transfers;
+    || transfers
+    || mutasi
+    || reconciliation;
   return {
-    parent: Boolean(parent && (accounts || receipts || payments || transfers)),
+    parent: Boolean(parent && (accounts || receipts || payments || transfers || mutasi || reconciliation)),
     accounts: Boolean(parent && accounts),
     receipts: Boolean(parent && receipts),
     payments: Boolean(parent && payments),
     transfers: Boolean(parent && transfers),
+    mutasi: Boolean(parent && mutasi),
+    reconciliation: Boolean(parent && reconciliation),
   };
 }
 

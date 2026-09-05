@@ -160,6 +160,7 @@ PERMISSION_CATALOG = [
     ("Kas & Bank", "cash_bank.manage", "Kelola Kas & Bank"),
     ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
     ("Kas & Bank", "cash_bank.reverse", "Reversal Kas & Bank"),
+    ("Kas & Bank", "cash_bank.reconcile", "Rekonsiliasi Kas & Bank"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -225,6 +226,8 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.cash_bank.receipts", "Menu Penerimaan Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.payments", "Menu Pembayaran Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.transfers", "Menu Transfer Kas & Bank"),
+    ("Akses Menu", "nav.cash_bank.mutasi", "Menu Mutasi Kas & Bank"),
+    ("Akses Menu", "nav.cash_bank.reconciliation", "Menu Rekonsiliasi Bank"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -443,12 +446,17 @@ def derived_nav_permissions(existing: set) -> set:
         or "cash_bank.manage" in existing
         or "cash_bank.post" in existing
         or "cash_bank.reverse" in existing
+        or "cash_bank.reconcile" in existing
     ):
         nav.add("nav.cash_bank")
         nav.add("nav.cash_bank.accounts")
         nav.add("nav.cash_bank.receipts")
         nav.add("nav.cash_bank.payments")
         nav.add("nav.cash_bank.transfers")
+        nav.add("nav.cash_bank.mutasi")
+        # Rekonsiliasi: only when view or reconcile (not auto from post/reverse alone
+        # beyond the shared parent — mutasi is read-only via view).
+        nav.add("nav.cash_bank.reconciliation")
     return nav
 
 

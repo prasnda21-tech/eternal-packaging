@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, ArrowRight, Eye, Pencil, Plus, Search, Trash2, X,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
@@ -290,6 +291,31 @@ export default function CashBankVoucherPage({ kind }) {
       setActionError(errText(ex));
     }
   };
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const deepId = searchParams.get("id");
+    if (!deepId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const full = await meta.get(deepId);
+        if (cancelled) return;
+        setViewRow(full);
+        setViewOpen(true);
+        setFormOpen(false);
+      } catch (ex) {
+        if (!cancelled) setActionError(errText(ex));
+      } finally {
+        if (!cancelled) {
+          const next = new URLSearchParams(searchParams);
+          next.delete("id");
+          setSearchParams(next, { replace: true });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [searchParams, setSearchParams, meta]);
 
   const buildPayload = async () => {
     const payload = {

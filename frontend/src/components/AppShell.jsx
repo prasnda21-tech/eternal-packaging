@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse, ArrowLeftRight, Scale } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
@@ -49,6 +49,8 @@ const TILE_ICONS = {
   [NAV_KEYS.cashBankReceipts]: Receipt,
   [NAV_KEYS.cashBankPayments]: CreditCard,
   [NAV_KEYS.cashBankTransfers]: ArrowLeftRight,
+  [NAV_KEYS.cashBankMutasi]: ListOrdered,
+  [NAV_KEYS.cashBankReconciliation]: Scale,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,

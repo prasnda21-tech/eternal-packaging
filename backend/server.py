@@ -9675,9 +9675,11 @@ async def seed():
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes
     from services.cash_bank_vouchers import ensure_indexes as _cash_bank_voucher_ensure_indexes
     from services.journal_core import ensure_indexes as _journal_core_ensure_indexes
+    from services.cash_bank_reconciliation import ensure_indexes as _cash_bank_recon_ensure_indexes
     await _cash_bank_master_ensure_indexes(db)
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
+    await _cash_bank_recon_ensure_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
