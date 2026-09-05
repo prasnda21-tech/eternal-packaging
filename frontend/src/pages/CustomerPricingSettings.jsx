@@ -181,6 +181,8 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
   const [catalogImage, setCatalogImage] = useState(null);
   const [catalogImageBroken, setCatalogImageBroken] = useState(false);
   const catalogImageInput = useRef(null);
+  const [brokenProductImages, setBrokenProductImages] = useState({});
+  const productImageInputs = useRef({});
   const [pricingMode, setPricingMode] = useState(MODE_MANUAL);
   const [hppSource, setHppSource] = useState(HPP_AUTO);
   const [profitMode, setProfitMode] = useState(PROFIT_FIXED);
@@ -292,6 +294,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
     setPublicDescription("");
     setCatalogImage(null);
     setCatalogImageBroken(false);
+    setBrokenProductImages({});
     setPreview(null);
     setError("");
   };
@@ -385,6 +388,49 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
       setCatalogImage(null);
       setCatalogImageBroken(false);
       notify?.(response.message || "Foto katalog dihapus");
+      await loadGroups();
+    } catch (exception) {
+      setError(errDetail(exception));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uploadProductImage = async (accurateItemId, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !editorGroup || !accurateItemId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.uploadCustomerPricingProductImage(
+        editorGroup.id,
+        accurateItemId,
+        file
+      );
+      setEditorGroup(response.group);
+      setBrokenProductImages((prev) => ({ ...prev, [accurateItemId]: false }));
+      notify?.(response.message || "Foto produk diperbarui");
+      await loadGroups();
+    } catch (exception) {
+      setError(errDetail(exception));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeProductImage = async (accurateItemId) => {
+    if (!editorGroup || !accurateItemId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.deleteCustomerPricingProductImage(
+        editorGroup.id,
+        accurateItemId
+      );
+      setEditorGroup(response.group);
+      setBrokenProductImages((prev) => ({ ...prev, [accurateItemId]: false }));
+      notify?.(response.message || "Foto produk dihapus");
       await loadGroups();
     } catch (exception) {
       setError(errDetail(exception));
@@ -1140,52 +1186,123 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                 <table className="cp-sheet cp-membership-table">
                   <thead>
                     <tr>
-                      <th>Produk</th><th>Kode</th><th>Unit</th>
+                      <th>Foto</th><th>Produk</th><th>Kode</th><th>Unit</th>
                       <th>HPP / Status</th><th>Aksi</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {products.map((product) => (
-                      <tr key={product.accurate_item_id} data-testid={`cp-selected-${product.accurate_item_id}`}>
-                        <td>
-                          <strong>{product.display_name}</strong>
-                          <span className="cp-cell-sub mono">ID {product.accurate_item_id}</span>
-                        </td>
-                        <td>{product.item_code || "—"}</td>
-                        <td>{product.unit || "—"}</td>
-                        <td>
-                          {pricingMode === MODE_MANUAL
-                            ? "Tidak digunakan"
-                            : hppSource === HPP_MANUAL
-                              ? (
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={product.manual_hpp}
-                                  onChange={(event) =>
-                                    updateProduct(product.accurate_item_id, {
-                                      manual_hpp: event.target.value,
-                                    })
+                    {products.map((product) => {
+                      const prodImg = editorGroup?.product_images?.[product.accurate_item_id];
+                      return (
+                        <tr key={product.accurate_item_id} data-testid={`cp-selected-${product.accurate_item_id}`}>
+                          <td className="cp-product-photo-cell" data-testid={`cp-product-photo-${product.accurate_item_id}`}>
+                            <div className="cp-product-photo-wrap">
+                              {prodImg && !brokenProductImages[product.accurate_item_id] ? (
+                                <img
+                                  src={api.customerPricingProductImageUrl(
+                                    editorGroup.id,
+                                    product.accurate_item_id,
+                                    prodImg.file_id
+                                  )}
+                                  alt={`Foto ${product.display_name}`}
+                                  className="cp-product-photo-thumb"
+                                  onError={() =>
+                                    setBrokenProductImages((prev) => ({
+                                      ...prev,
+                                      [product.accurate_item_id]: true,
+                                    }))
                                   }
-                                  aria-label={`HPP Manual ${product.display_name}`}
                                 />
-                              )
-                              : <StatusBadge product={product} />}
-                        </td>
-                        <td>
-                          <button
-                            className="ghost sm icon"
-                            onClick={() => removeProduct(product.accurate_item_id)}
-                            aria-label={`Hapus ${product.display_name}`}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                              ) : (
+                                <div
+                                  className="cp-product-photo-empty"
+                                  data-testid={`cp-product-photo-placeholder-${product.accurate_item_id}`}
+                                >
+                                  <ImageIcon size={18} aria-hidden="true" />
+                                  <span>Belum ada foto</span>
+                                </div>
+                              )}
+                            </div>
+                            {canEdit && (
+                              <div className="cp-product-photo-actions">
+                                <input
+                                  ref={(element) => {
+                                    productImageInputs.current[product.accurate_item_id] = element;
+                                  }}
+                                  type="file"
+                                  accept="image/jpeg,image/png,image/webp"
+                                  hidden
+                                  onChange={(event) =>
+                                    uploadProductImage(product.accurate_item_id, event)
+                                  }
+                                  data-testid={`cp-product-photo-input-${product.accurate_item_id}`}
+                                />
+                                <button
+                                  type="button"
+                                  className="ghost sm"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    productImageInputs.current[product.accurate_item_id]?.click()
+                                  }
+                                  data-testid={`cp-upload-product-photo-${product.accurate_item_id}`}
+                                >
+                                  <Upload size={12} />
+                                  {prodImg ? "Ganti Foto" : "Upload Foto"}
+                                </button>
+                                {prodImg && (
+                                  <button
+                                    type="button"
+                                    className="ghost sm danger"
+                                    disabled={busy}
+                                    onClick={() => removeProductImage(product.accurate_item_id)}
+                                    data-testid={`cp-remove-product-photo-${product.accurate_item_id}`}
+                                  >
+                                    <Trash2 size={12} /> Hapus Foto
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <strong>{product.display_name}</strong>
+                            <span className="cp-cell-sub mono">ID {product.accurate_item_id}</span>
+                          </td>
+                          <td>{product.item_code || "—"}</td>
+                          <td>{product.unit || "—"}</td>
+                          <td>
+                            {pricingMode === MODE_MANUAL
+                              ? "Tidak digunakan"
+                              : hppSource === HPP_MANUAL
+                                ? (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={product.manual_hpp}
+                                    onChange={(event) =>
+                                      updateProduct(product.accurate_item_id, {
+                                        manual_hpp: event.target.value,
+                                      })
+                                    }
+                                    aria-label={`HPP Manual ${product.display_name}`}
+                                  />
+                                )
+                                : <StatusBadge product={product} />}
+                          </td>
+                          <td>
+                            <button
+                              className="ghost sm icon"
+                              onClick={() => removeProduct(product.accurate_item_id)}
+                              aria-label={`Hapus ${product.display_name}`}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {!products.length && (
-                      <tr><td colSpan={5} className="muted small">Belum ada produk dipilih.</td></tr>
+                      <tr><td colSpan={6} className="muted small">Belum ada produk dipilih.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1355,6 +1472,7 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                 <table className="cp-sheet cp-price-matrix">
                   <thead>
                     <tr>
+                      <th>Foto</th>
                       <th>Produk</th>
                       {viewOnlyVersion.pricing_mode === MODE_FORMULA && <th>HPP</th>}
                       {viewOnlyVersion.tiers.map((tier, index) => (
@@ -1363,20 +1481,52 @@ export default function CustomerPricingSettings({ notify, canEdit, canPublish })
                     </tr>
                   </thead>
                   <tbody>
-                    {viewOnlyVersion.products.map((product) => (
-                      <tr key={product.accurate_item_id}>
-                        <td>
-                          <strong>{product.display_name}</strong>
-                          <span className="cp-cell-sub mono">ID {product.accurate_item_id}</span>
-                        </td>
-                        {viewOnlyVersion.pricing_mode === MODE_FORMULA && (
-                          <td>{product.hpp_snapshot ? formatRupiah(product.hpp_snapshot) : "—"}</td>
-                        )}
-                        {product.tier_prices.map((price, index) => (
-                          <td key={index}>{price != null ? formatRupiah(price) : "—"}</td>
-                        ))}
-                      </tr>
-                    ))}
+                    {viewOnlyVersion.products.map((product) => {
+                      const prodImg = editorGroup?.product_images?.[product.accurate_item_id];
+                      return (
+                        <tr key={product.accurate_item_id}>
+                          <td className="cp-product-photo-cell" data-testid={`cp-readonly-product-photo-${product.accurate_item_id}`}>
+                            <div className="cp-product-photo-wrap">
+                              {prodImg && !brokenProductImages[product.accurate_item_id] ? (
+                                <img
+                                  src={api.customerPricingProductImageUrl(
+                                    editorGroup.id,
+                                    product.accurate_item_id,
+                                    prodImg.file_id
+                                  )}
+                                  alt={`Foto ${product.display_name}`}
+                                  className="cp-product-photo-thumb"
+                                  onError={() =>
+                                    setBrokenProductImages((prev) => ({
+                                      ...prev,
+                                      [product.accurate_item_id]: true,
+                                    }))
+                                  }
+                                />
+                              ) : (
+                                <div
+                                  className="cp-product-photo-empty"
+                                  data-testid={`cp-readonly-product-photo-placeholder-${product.accurate_item_id}`}
+                                >
+                                  <ImageIcon size={18} aria-hidden="true" />
+                                  <span>Belum ada foto</span>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <strong>{product.display_name}</strong>
+                            <span className="cp-cell-sub mono">ID {product.accurate_item_id}</span>
+                          </td>
+                          {viewOnlyVersion.pricing_mode === MODE_FORMULA && (
+                            <td>{product.hpp_snapshot ? formatRupiah(product.hpp_snapshot) : "—"}</td>
+                          )}
+                          {product.tier_prices.map((price, index) => (
+                            <td key={index}>{price != null ? formatRupiah(price) : "—"}</td>
+                          ))}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

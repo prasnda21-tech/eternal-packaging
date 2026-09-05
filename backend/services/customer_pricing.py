@@ -115,6 +115,28 @@ def _catalog_image_meta(doc: dict) -> Optional[dict]:
     }
 
 
+def _product_images_meta(doc: dict) -> Dict[str, dict]:
+    images = doc.get("product_images")
+    if not isinstance(images, dict):
+        return {}
+    group_id = doc.get("id")
+    result = {}
+    for aid, image in images.items():
+        if isinstance(image, dict) and image.get("file_id"):
+            result[str(aid)] = {
+                "file_id": str(image["file_id"]),
+                "content_type": image.get("content_type"),
+                "original_filename": image.get("original_filename"),
+                "size": image.get("size"),
+                "uploaded_at": image.get("uploaded_at"),
+                "url": (
+                    f"/api/customer-pricing/groups/{group_id}/products/"
+                    f"{aid}/image?v={image['file_id']}"
+                ),
+            }
+    return result
+
+
 def _parse_positive_int_qty(raw: Any, field: str) -> int:
     if raw is None or raw == "":
         raise HTTPException(400, f"{field} wajib diisi.")
@@ -503,6 +525,7 @@ def public_group(doc: dict, summary_version: Optional[dict] = None) -> dict:
         "group_name": doc.get("group_name"),
         "public_description": doc.get("public_description"),
         "catalog_image": _catalog_image_meta(doc),
+        "product_images": _product_images_meta(doc),
         "enabled": bool(doc.get("enabled", True)),
         "current_draft_version_id": doc.get("current_draft_version_id"),
         "current_published_version_id": doc.get("current_published_version_id"),
@@ -611,6 +634,7 @@ async def create_group(db, payload: dict, user: dict) -> dict:
         "group_name": name,
         "public_description": description,
         "catalog_image": None,
+        "product_images": {},
         "enabled": True,
         "current_draft_version_id": None,
         "current_published_version_id": None,

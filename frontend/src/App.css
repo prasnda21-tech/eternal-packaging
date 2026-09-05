@@ -2202,6 +2202,13 @@ html:has(.ship-status-page) #root{
 .cp-catalog-image-empty{display:grid;place-items:center;gap:5px;color:#94a3b8;font-size:11px}
 .cp-catalog-image-actions{display:flex;flex-wrap:wrap;gap:6px}
 .cp-catalog-image-actions .danger{color:#b91c1c}
+.cp-product-photo-cell{width:110px;min-width:110px;vertical-align:top}
+.cp-product-photo-wrap{width:64px;height:64px;border:1px solid #dbe4ea;border-radius:6px;overflow:hidden;background:#f8fafc;display:grid;place-items:center}
+.cp-product-photo-thumb{width:100%;height:100%;object-fit:cover}
+.cp-product-photo-empty{display:grid;place-items:center;gap:2px;color:#94a3b8;font-size:9px;text-align:center;padding:2px}
+.cp-product-photo-empty span{line-height:1}
+.cp-product-photo-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.cp-product-photo-actions button{padding:2px 6px;font-size:11px;min-height:24px}
 .cp-config-bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end;padding:8px;background:#fff;border:1px solid #e2e8f0;border-radius:6px}
 .cp-config-block{display:grid;gap:4px}
 .cp-config-label{font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em}

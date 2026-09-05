@@ -58,6 +58,28 @@ function ProductVisual({ imageUrl, name, large = false }) {
   );
 }
 
+function VariantVisual({ imageUrl, name, size = "md" }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [imageUrl]);
+  const source = imageUrl ? publicApiUrl(imageUrl) : "";
+
+  return (
+    <div
+      className={`ph-variant-visual is-${size}`}
+      data-testid="harga-variant-visual"
+    >
+      {source && !failed ? (
+        <img src={source} alt={name} onError={() => setFailed(true)} />
+      ) : (
+        <div className="ph-variant-placeholder" data-testid="harga-variant-placeholder">
+          <PackageOpen size={size === "sm" ? 14 : size === "lg" ? 22 : 18} aria-hidden="true" />
+          <span>FOTO</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CatalogPage() {
   const navigate = useNavigate();
   const [groups, setGroups] = useState([]);
@@ -162,6 +184,21 @@ function CatalogPage() {
                       <span className="ph-card-variants">
                         {group.variants?.length || 0} varian
                       </span>
+                      {group.variants && group.variants.length > 0 && (
+                        <div className="ph-card-variant-strip" data-testid={`harga-variants-strip-${group.public_id}`}>
+                          {group.variants.slice(0, 4).map((variant) => (
+                            <div
+                              key={variant.public_variant_id}
+                              className="ph-card-variant-item"
+                              title={variant.display_name}
+                              data-testid={`harga-variant-item-${variant.public_variant_id}`}
+                            >
+                              <VariantVisual imageUrl={variant.image_url} name={variant.display_name} size="sm" />
+                              <span className="ph-card-variant-name">{variant.display_name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {group.public_description && (
                         <span className="ph-card-description">
                           {group.public_description}
@@ -318,7 +355,8 @@ function DetailPage({ groupPublicId }) {
                           onClick={() => selectVariant(variant.public_variant_id)}
                           data-testid={`harga-variant-${variant.public_variant_id}`}
                         >
-                          {variant.display_name}
+                          <VariantVisual imageUrl={variant.image_url} name={variant.display_name} size="md" />
+                          <span className="ph-variant-btn-label">{variant.display_name}</span>
                         </button>
                       ))}
                     </div>
@@ -403,6 +441,13 @@ function DetailPage({ groupPublicId }) {
               <div className="ph-section-heading">
                 <p className="ph-kicker">Harga Berdasarkan Jumlah</p>
                 <h2>Tier harga {selectedVariant.display_name}</h2>
+              </div>
+              <div className="ph-selected-variant-card" data-testid="harga-selected-variant-card">
+                <VariantVisual imageUrl={selectedVariant.image_url} name={selectedVariant.display_name} size="lg" />
+                <div className="ph-selected-variant-meta">
+                  <strong>{selectedVariant.display_name}</strong>
+                  <span>Minimum pemesanan: {formatNumber(selectedVariant.minimum_quantity)} {selectedVariant.unit || "pcs"}</span>
+                </div>
               </div>
               <div className="ph-tier-table-wrap">
                 <table className="ph-tier-table" data-testid="harga-tier-table">

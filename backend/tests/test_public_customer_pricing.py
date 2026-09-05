@@ -759,3 +759,223 @@ async def test_public_variant_id_is_opaque_stable_and_legacy_publish_is_never_mu
         server.db, legacy_group["public_id"]
     )
     assert detail["variants"][0]["public_variant_id"] == new_public_variant_id
+
+
+@pytest.mark.anyio
+async def test_product_photo_lifecycle_isolation_and_public_delivery():
+    manager = actor()
+    viewer = {
+        **actor(),
+        "role": "test-viewer",
+        "permissions_override": {cp.PERM_VIEW: True},
+    }
+    png1 = b"\x89PNG\r\n\x1a\n" + b"\x01" * 60
+    png2 = b"\x89PNG\r\n\x1a\n" + b"\x02" * 60
+    cover_png = b"\x89PNG\r\n\x1a\n" + b"\x09" * 60
+
+    aid1 = "public-test-prod-1"
+    aid2 = "public-test-prod-2"
+    # Both products have the EXACT same name to verify stable identity isolation
+    await seed_master(aid1, "Kardus Custom")
+    await seed_master(aid2, "Kardus Custom")
+
+    group = await cp.create_group(server.db, {"group_name": "Box Group"}, manager)
+    draft = await cp.create_or_get_draft(server.db, group["id"], manager)
+    draft = await cp.update_draft(
+        server.db, draft["id"], manual_payload(draft, (aid1, aid2)), manager
+    )
+    published = await cp.publish_version(
+        server.db, draft["id"], {"revision": draft["revision"]}, manager
+    )
+    version = published["version"]
+    version_before = copy.deepcopy(
+        await server.db[cp.VERSIONS].find_one({"id": version["id"]})
+    )
+
+    # Attach group cover image
+    storage_cover = f"{catalog.obj_storage.APP_NAME}/customer-pricing/{group['id']}/cover.png"
+    with patch(
+        "services.customer_pricing_catalog.obj_storage.put_object",
+        return_value={"path": storage_cover, "size": len(cover_png)},
+    ):
+        await catalog.upload_catalog_image(
+            server.db,
+            group_id=group["id"],
+            filename="cover.png",
+            content_type="image/png",
+            data=cover_png,
+            user=manager,
+        )
+
+    v1_id = version["products"][0]["public_variant_id"]
+    v2_id = version["products"][1]["public_variant_id"]
+
+    storage_p1 = f"{catalog.obj_storage.APP_NAME}/customer-pricing/{group['id']}/products/{aid1}/p1.png"
+    storage_p1_v2 = f"{catalog.obj_storage.APP_NAME}/customer-pricing/{group['id']}/products/{aid1}/p1-v2.png"
+
+    app.dependency_overrides[server.current_user] = lambda: viewer
+    try:
+        # 1. Unauthorized upload rejected
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            denied = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image",
+                files={"file": ("p1.png", png1, "image/png")},
+            )
+        assert denied.status_code == 403
+
+        # 2. Validation: invalid mime & oversized rejected
+        app.dependency_overrides[server.current_user] = lambda: manager
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            invalid = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image",
+                files={"file": ("virus.exe", b"MZ\x90not-img", "image/png")},
+            )
+            oversized = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image",
+                files={
+                    "file": (
+                        "big.png",
+                        png1 + b"\x00" * catalog.MAX_CATALOG_IMAGE_BYTES,
+                        "image/png",
+                    )
+                },
+            )
+            mismatched = await client.post(
+                f"/api/customer-pricing/groups/{group['id']}/products/non-existent-aid/image",
+                files={"file": ("p1.png", png1, "image/png")},
+            )
+        assert invalid.status_code == 400
+        assert oversized.status_code == 400
+        assert mismatched.status_code == 404
+
+        # 3. Successful upload attaches to exact product identity (aid1)
+        with patch(
+            "services.customer_pricing_catalog.obj_storage.put_object",
+            return_value={"path": storage_p1, "size": len(png1)},
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                upload_res = await client.post(
+                    f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image",
+                    files={"file": ("p1.png", png1, "image/png")},
+                )
+        assert upload_res.status_code == 200
+        res_group = upload_res.json()["group"]
+        assert aid1 in res_group["product_images"]
+        assert aid2 not in res_group["product_images"]  # Same-name product 2 has NO photo
+        assert res_group["product_images"][aid1]["content_type"] == "image/png"
+        assert res_group["catalog_image"] is not None  # Group cover intact!
+
+        # Published version immutability check
+        assert await server.db[cp.VERSIONS].find_one({"id": version["id"]}) == version_before
+
+        # Internal GET product image
+        with patch(
+            "services.customer_pricing_catalog.obj_storage.get_object",
+            return_value=(png1, "image/png"),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                get_p1 = await client.get(
+                    f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image"
+                )
+                get_p2 = await client.get(
+                    f"/api/customer-pricing/groups/{group['id']}/products/{aid2}/image"
+                )
+        assert get_p1.status_code == 200
+        assert get_p1.content == png1
+        assert get_p2.status_code == 404
+
+        # 4. Public catalog listing & detail verification
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            pub_groups = await client.get("/api/public/customer-pricing/groups")
+            pub_detail = await client.get(f"/api/public/customer-pricing/groups/{group['public_id']}")
+        assert pub_groups.status_code == 200
+        assert pub_detail.status_code == 200
+
+        group_summary = next(g for g in pub_groups.json()["groups"] if g["public_id"] == group["public_id"])
+        # Group cover present on group
+        assert group_summary["image_url"] == f"/api/public/customer-pricing/groups/{group['public_id']}/image"
+        # Variant 1 has photo URL
+        v1_summary = next(v for v in group_summary["variants"] if v["public_variant_id"] == v1_id)
+        assert v1_summary["image_url"] == f"/api/public/customer-pricing/groups/{group['public_id']}/variants/{v1_id}/image"
+        # Variant 2 has NO photo -> image_url is None (DILARANG fallback to group cover!)
+        v2_summary = next(v for v in group_summary["variants"] if v["public_variant_id"] == v2_id)
+        assert v2_summary["image_url"] is None
+
+        # Detail response
+        detail_data = pub_detail.json()["group"]
+        assert detail_data["image_url"] == f"/api/public/customer-pricing/groups/{group['public_id']}/image"
+        v1_detail = next(v for v in detail_data["variants"] if v["public_variant_id"] == v1_id)
+        v2_detail = next(v for v in detail_data["variants"] if v["public_variant_id"] == v2_id)
+        assert v1_detail["image_url"] == f"/api/public/customer-pricing/groups/{group['public_id']}/variants/{v1_id}/image"
+        assert v2_detail["image_url"] is None
+
+        # Public variant image retrieval
+        with patch(
+            "services.customer_pricing_catalog.obj_storage.get_object",
+            return_value=(png1, "image/png"),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                pub_v1_img = await client.get(
+                    f"/api/public/customer-pricing/groups/{group['public_id']}/variants/{v1_id}/image"
+                )
+                pub_v2_img = await client.get(
+                    f"/api/public/customer-pricing/groups/{group['public_id']}/variants/{v2_id}/image"
+                )
+        assert pub_v1_img.status_code == 200
+        assert pub_v1_img.content == png1
+        assert "public, max-age=300" in pub_v1_img.headers["Cache-Control"]
+        assert pub_v2_img.status_code == 404
+
+        # 5. Replace photo on product 1
+        with patch(
+            "services.customer_pricing_catalog.obj_storage.put_object",
+            return_value={"path": storage_p1_v2, "size": len(png2)},
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                replace_res = await client.post(
+                    f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image",
+                    files={"file": ("p1-new.png", png2, "image/png")},
+                )
+        assert replace_res.status_code == 200
+        assert aid1 in replace_res.json()["group"]["product_images"]
+        assert aid2 not in replace_res.json()["group"]["product_images"]
+        assert await server.db[cp.VERSIONS].find_one({"id": version["id"]}) == version_before
+
+        # 6. Delete photo clears ONLY exact product photo
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            del_res = await client.delete(
+                f"/api/customer-pricing/groups/{group['id']}/products/{aid1}/image"
+            )
+        assert del_res.status_code == 200
+        assert aid1 not in del_res.json()["group"]["product_images"]
+        # Group cover still intact!
+        assert del_res.json()["group"]["catalog_image"] is not None
+        # Version snapshot still untouched!
+        assert await server.db[cp.VERSIONS].find_one({"id": version["id"]}) == version_before
+
+        # After delete, public variant 1 returns 404
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            pub_after_del = await client.get(
+                f"/api/public/customer-pricing/groups/{group['public_id']}/variants/{v1_id}/image"
+            )
+        assert pub_after_del.status_code == 404
+    finally:
+        app.dependency_overrides.pop(server.current_user, None)

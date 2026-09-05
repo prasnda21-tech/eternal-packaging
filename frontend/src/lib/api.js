@@ -232,6 +232,19 @@ export const api = {
   },
   deleteCustomerPricingCatalogImage: (id) =>
     client.delete(`/customer-pricing/groups/${encodeURIComponent(id)}/catalog-image`).then((r) => r.data),
+  customerPricingProductImageUrl: (groupId, accurateItemId, version = "") =>
+    `${API}/customer-pricing/groups/${encodeURIComponent(groupId)}/products/${encodeURIComponent(accurateItemId)}/image${version ? `?v=${encodeURIComponent(version)}` : ""}`,
+  uploadCustomerPricingProductImage: (groupId, accurateItemId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(
+      `/customer-pricing/groups/${encodeURIComponent(groupId)}/products/${encodeURIComponent(accurateItemId)}/image`,
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } }
+    ).then((r) => r.data);
+  },
+  deleteCustomerPricingProductImage: (groupId, accurateItemId) =>
+    client.delete(`/customer-pricing/groups/${encodeURIComponent(groupId)}/products/${encodeURIComponent(accurateItemId)}/image`).then((r) => r.data),
   createCustomerPricingDraft: (id) => client.post(`/customer-pricing/groups/${encodeURIComponent(id)}/draft`).then((r) => r.data),
   customerPricingVersions: (id) => client.get(`/customer-pricing/groups/${encodeURIComponent(id)}/versions`).then((r) => r.data),
   customerPricingVersion: (id) => client.get(`/customer-pricing/versions/${encodeURIComponent(id)}`).then((r) => r.data),
