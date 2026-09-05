@@ -1,814 +1,1017 @@
 [
   {
-    "code": "7000100",
-    "name": "Akumulasi Penyusutan"
-  },
-  {
-    "code": "700010005",
-    "name": "Akumulasi Penyusutan Bangunan"
-  },
-  {
-    "code": "700010001",
-    "name": "Akumulasi Penyusutan Inventaris Kantor"
-  },
-  {
-    "code": "700010004",
-    "name": "Akumulasi Penyusutan Kendaraan"
-  },
-  {
-    "code": "700010003",
-    "name": "Akumulasi Penyusutan Mesin Produksi"
-  },
-  {
-    "code": "700010002",
-    "name": "Akumulasi Penyusutan Peralatan Kantor"
-  },
-  {
-    "code": "7203",
-    "name": "Aset Lancar Lainnya"
-  },
-  {
-    "code": "7204",
-    "name": "Aset Tetap"
-  },
-  {
-    "code": "1102",
-    "name": "Bank"
-  },
-  {
-    "code": "110210",
-    "name": "Bank BCA CV Eternal"
-  },
-  {
-    "code": "110209",
-    "name": "Bank BCA Pemasukan SMG"
-  },
-  {
-    "code": "110204",
-    "name": "Bank BCA Pemasukan YK"
-  },
-  {
-    "code": "110202",
-    "name": "Bank BCA Pengeluaran"
-  },
-  {
-    "code": "110205",
-    "name": "Bank BCA Tabungan"
-  },
-  {
-    "code": "110206",
-    "name": "Bank BRI Pemasukan YK"
-  },
-  {
-    "code": "1105",
-    "name": "Barang Terkirim"
-  },
-  {
-    "code": "701",
-    "name": "Beban ATK"
-  },
-  {
-    "code": "170001880",
-    "name": "Beban Advertising"
-  },
-  {
-    "code": "70095",
-    "name": "Beban Bahan Kimia Produksi"
-  },
-  {
-    "code": "1000057",
-    "name": "Beban Barang Reject"
-  },
-  {
-    "code": "1000056",
-    "name": "Beban Barang Sample"
-  },
-  {
-    "code": "7001004",
-    "name": "Beban Bonus Pegawai"
-  },
-  {
-    "code": "700206",
-    "name": "Beban Bunga Pinjaman"
-  },
-  {
-    "code": "70094",
-    "name": "Beban Cat Produksi"
-  },
-  {
-    "code": "7000150",
-    "name": "Beban Entertaiment"
-  },
-  {
-    "code": "7001001",
-    "name": "Beban Gaji Pokok"
-  },
-  {
-    "code": "7001002",
-    "name": "Beban Insentif Pegawai"
-  },
-  {
-    "code": "700086",
-    "name": "Beban Kain Perca"
-  },
-  {
-    "code": "700102",
-    "name": "Beban Keamanan"
-  },
-  {
-    "code": "1000717",
-    "name": "Beban Kebersihan"
-  },
-  {
-    "code": "70096",
-    "name": "Beban Kendaraan"
-  },
-  {
-    "code": "700084",
-    "name": "Beban Lakban Produksi"
-  },
-  {
-    "code": "7001003",
-    "name": "Beban Lembur Pegawai"
-  },
-  {
-    "code": "700100",
-    "name": "Beban Listrik"
-  },
-  {
-    "code": "700028",
-    "name": "Beban Listrik Kantor"
-  },
-  {
-    "code": "700024",
-    "name": "Beban Listrik Produksi"
-  },
-  {
-    "code": "7000",
-    "name": "Beban Operasional"
-  },
-  {
-    "code": "70098",
-    "name": "Beban Operasional Kantor"
-  },
-  {
-    "code": "70099",
-    "name": "Beban Operasional Produksi"
-  },
-  {
-    "code": "700103",
-    "name": "Beban Pajak Penghasilan"
-  },
-  {
-    "code": "700088",
-    "name": "Beban Pemeliharaan"
-  },
-  {
-    "code": "7000200",
-    "name": "Beban Penyusutan"
-  },
-  {
-    "code": "700020005",
-    "name": "Beban Penyusutan Bangunan"
-  },
-  {
-    "code": "700020001",
-    "name": "Beban Penyusutan Inventaris Kantor"
-  },
-  {
-    "code": "700020004",
-    "name": "Beban Penyusutan Kendaraan"
-  },
-  {
-    "code": "700020003",
-    "name": "Beban Penyusutan Mesin Produksi"
-  },
-  {
-    "code": "700020002",
-    "name": "Beban Penyusutan Peralatan Kantor"
-  },
-  {
-    "code": "1000055",
-    "name": "Beban Persediaan"
-  },
-  {
-    "code": "5101",
-    "name": "Beban Pokok Penjualan"
-  },
-  {
-    "code": "1000054",
-    "name": "Beban Selisih Persediaan"
-  },
-  {
-    "code": "1000969",
-    "name": "Beban Sewa"
-  },
-  {
-    "code": "100096901",
-    "name": "Beban Sewa Gedung"
-  },
-  {
-    "code": "100096903",
-    "name": "Beban Sewa Kendaraan"
-  },
-  {
-    "code": "100096902",
-    "name": "Beban Sewa Lahan"
-  },
-  {
-    "code": "700087",
-    "name": "Beban Sumbangan"
-  },
-  {
-    "code": "7001006",
-    "name": "Beban Training Pegawai"
-  },
-  {
-    "code": "1000720",
-    "name": "Biaya Admin"
-  },
-  {
-    "code": "700023",
-    "name": "Biaya Bahan Bakar"
-  },
-  {
-    "code": "700",
-    "name": "Biaya Cetak di Luar"
-  },
-  {
-    "code": "700520",
-    "name": "Biaya Entertainment"
-  },
-  {
-    "code": "1700018895",
-    "name": "Biaya Iklan Agency"
-  },
-  {
-    "code": "170001892",
-    "name": "Biaya Iklan Instagram"
-  },
-  {
-    "code": "170001891",
-    "name": "Biaya Iklan Shopee"
-  },
-  {
-    "code": "700089",
-    "name": "Biaya Internet"
-  },
-  {
-    "code": "702",
-    "name": "Biaya Langganan"
-  },
-  {
-    "code": "6999",
-    "name": "Biaya Operasional Lainnya"
-  },
-  {
-    "code": "70097",
-    "name": "Biaya Pajak Tahunan"
-  },
-  {
-    "code": "70093",
-    "name": "Biaya Pemeliharaan Kendaraan"
-  },
-  {
-    "code": "700031",
-    "name": "Biaya Pengiriman"
-  },
-  {
-    "code": "170001890",
-    "name": "Biaya Promosi/Iklan"
-  },
-  {
-    "code": "4103",
-    "name": "Biaya Screen"
-  },
-  {
-    "code": "4102",
-    "name": "Biaya Warna"
-  },
-  {
-    "code": "700083",
-    "name": "Bremol"
-  },
-  {
-    "code": "700021",
-    "name": "CAT"
-  },
-  {
-    "code": "1077718",
-    "name": "Cashback"
-  },
-  {
-    "code": "440102",
-    "name": "Cashback Penjualan"
-  },
-  {
-    "code": "7000109",
-    "name": "Cat Biru 39 Duta"
-  },
-  {
-    "code": "7000111",
-    "name": "Cat Biru Peacok 42 Duta"
-  },
-  {
-    "code": "7000117",
-    "name": "Cat Gold Duta"
-  },
-  {
-    "code": "7000114",
-    "name": "Cat Hijau 73 Duta"
-  },
-  {
-    "code": "7000110",
-    "name": "Cat Hijau 79 Duta"
-  },
-  {
-    "code": "7000105",
-    "name": "Cat Hitam 92 Duta"
-  },
-  {
-    "code": "7000108",
-    "name": "Cat Kuning 24 Duta"
-  },
-  {
-    "code": "7000113",
-    "name": "Cat Magenta 58 Duta"
-  },
-  {
-    "code": "7000107",
-    "name": "Cat Merah 100 Duta"
-  },
-  {
-    "code": "7000118",
-    "name": "Cat Pink Duta"
-  },
-  {
-    "code": "7000106",
-    "name": "Cat Putih 61 Duta"
-  },
-  {
-    "code": "7000119",
-    "name": "Cat Toyo 79 Brown"
-  },
-  {
-    "code": "7000112",
-    "name": "Cat Ungu/Violette 84 Duta"
-  },
-  {
-    "code": "700018",
-    "name": "Cicilan Bank"
-  },
-  {
-    "code": "700030",
-    "name": "Dimas"
-  },
-  {
-    "code": "4401",
-    "name": "Diskon Penjualan"
-  },
-  {
-    "code": "4301",
-    "name": "Diskon Penjualan Barang"
-  },
-  {
-    "code": "440101",
-    "name": "Diskon Penjualan IDR"
-  },
-  {
-    "code": "300001",
-    "name": "Equitas Saldo Awal"
-  },
-  {
-    "code": "700101",
-    "name": "Eternal Semarang"
-  },
-  {
-    "code": "700094",
-    "name": "Gagal Bayar"
-  },
-  {
-    "code": "70023",
-    "name": "Gaji Abid"
-  },
-  {
-    "code": "70035",
-    "name": "Gaji Adham"
-  },
-  {
-    "code": "70053",
-    "name": "Gaji Adhi Nugraha"
-  },
-  {
-    "code": "70037",
-    "name": "Gaji Aksal"
-  },
-  {
-    "code": "70018",
-    "name": "Gaji Amrul"
-  },
-  {
-    "code": "70029",
-    "name": "Gaji Andi"
-  },
-  {
-    "code": "70019",
-    "name": "Gaji Angger"
-  },
-  {
-    "code": "70048",
-    "name": "Gaji Aris"
-  },
-  {
-    "code": "70049",
-    "name": "Gaji Arya"
-  },
-  {
-    "code": "70022",
-    "name": "Gaji Ayub"
-  },
-  {
-    "code": "70044",
-    "name": "Gaji Bayu"
-  },
-  {
-    "code": "70040",
-    "name": "Gaji Deni"
-  },
-  {
-    "code": "70038",
-    "name": "Gaji Dewa"
-  },
-  {
-    "code": "70042",
-    "name": "Gaji Diah Supriyati"
-  },
-  {
-    "code": "70050",
-    "name": "Gaji Djoko"
-  },
-  {
-    "code": "70025",
-    "name": "Gaji Fahdo"
-  },
-  {
-    "code": "70021",
-    "name": "Gaji Fajar"
-  },
-  {
-    "code": "70057",
-    "name": "Gaji Fajar Ahmad M"
-  },
-  {
-    "code": "70060",
-    "name": "Gaji Fajar Cahyo N"
-  },
-  {
-    "code": "70039",
-    "name": "Gaji Fajar Riyanti"
-  },
-  {
-    "code": "70036",
-    "name": "Gaji Fajar Yunita"
-  },
-  {
-    "code": "70051",
-    "name": "Gaji Farkhan"
-  },
-  {
-    "code": "70061",
-    "name": "Gaji Fauzan Ma'ruf"
-  },
-  {
-    "code": "70031",
-    "name": "Gaji Fendi"
-  },
-  {
-    "code": "70024",
-    "name": "Gaji Gilang"
-  },
-  {
-    "code": "70028",
-    "name": "Gaji Imam"
-  },
-  {
-    "code": "70032",
-    "name": "Gaji Irfan"
-  },
-  {
-    "code": "70017",
-    "name": "Gaji Karyawan"
-  },
-  {
-    "code": "70033",
-    "name": "Gaji Kurnia"
-  },
-  {
-    "code": "70047",
-    "name": "Gaji Mahfud"
-  },
-  {
-    "code": "70052",
-    "name": "Gaji Niko"
-  },
-  {
-    "code": "70010",
-    "name": "Gaji Pegawai"
-  },
-  {
-    "code": "70034",
-    "name": "Gaji Rahma"
-  },
-  {
-    "code": "70046",
-    "name": "Gaji Risna"
-  },
-  {
-    "code": "70054",
-    "name": "Gaji Rizal Hanafi"
-  },
-  {
-    "code": "70058",
-    "name": "Gaji Saddam"
-  },
-  {
-    "code": "70045",
-    "name": "Gaji Sukoco"
-  },
-  {
-    "code": "70055",
-    "name": "Gaji Tegar"
-  },
-  {
-    "code": "70030",
-    "name": "Gaji Tian"
-  },
-  {
-    "code": "70026",
-    "name": "Gaji Tompling"
-  },
-  {
-    "code": "70059",
-    "name": "Gaji Verlando"
-  },
-  {
-    "code": "70020",
-    "name": "Gaji Wisnu"
-  },
-  {
-    "code": "70027",
-    "name": "Gaji Yudi"
-  },
-  {
-    "code": "70043",
-    "name": "Gaji Yusuf"
-  },
-  {
-    "code": "70041",
-    "name": "Gaji Zahroh"
-  },
-  {
-    "code": "70056",
-    "name": "Gaji Zakki"
-  },
-  {
-    "code": "210201",
-    "name": "Hutang Biaya"
-  },
-  {
-    "code": "210401",
-    "name": "Hutang Gaji Karyawan"
-  },
-  {
-    "code": "700205",
-    "name": "Hutang Jangka Panjang"
-  },
-  {
-    "code": "720301",
-    "name": "Inventaris Kantor Aset Lancar"
-  },
-  {
-    "code": "720401",
-    "name": "Inventaris Kantor Aset Tetap"
-  },
-  {
-    "code": "700035",
-    "name": "Jasa Printing"
-  },
-  {
-    "code": "110201",
-    "name": "KAS BESAR"
-  },
-  {
-    "code": "700029",
-    "name": "Kaporit"
-  },
-  {
-    "code": "110203",
-    "name": "Kas BCA"
-  },
-  {
-    "code": "720304",
-    "name": "Kendaraan Aset Lancar"
-  },
-  {
-    "code": "720404",
-    "name": "Kendaraan Aset Tetap"
-  },
-  {
-    "code": "2104",
-    "name": "Kewajiban Jangka Pendek Lainnya"
-  },
-  {
-    "code": "300002",
-    "name": "Laba Ditahan"
-  },
-  {
-    "code": "7202",
-    "name": "Laba/Rugi Belum Terealisasi"
-  },
-  {
-    "code": "720201",
-    "name": "Laba/Rugi Belum Terealisasi IDR"
-  },
-  {
-    "code": "7201",
-    "name": "Laba/Rugi Terealisasi"
-  },
-  {
-    "code": "720101",
-    "name": "Laba/Rugi Terealisasi IDR"
-  },
-  {
-    "code": "700025",
-    "name": "M4"
-  },
-  {
-    "code": "700080",
-    "name": "MESIN SABLON"
-  },
-  {
-    "code": "700027",
-    "name": "Manajemen"
-  },
-  {
-    "code": "720303",
-    "name": "Mesin Produksi Aset Lancar"
-  },
-  {
-    "code": "720403",
-    "name": "Mesin Produksi Aset Tetap"
-  },
-  {
-    "code": "700085",
-    "name": "Minyak Goreng"
-  },
-  {
-    "code": "3000",
-    "name": "Modal"
-  },
-  {
-    "code": "2102",
-    "name": "PPN"
-  },
-  {
-    "code": "1106",
-    "name": "PPN Masukan"
-  },
-  {
-    "code": "7000101",
-    "name": "Pembangunan"
-  },
-  {
-    "code": "720305",
-    "name": "Pembangunan / Renovasi Aset Lancar"
-  },
-  {
-    "code": "720405",
-    "name": "Pembangunan / Renovasi Aset Tetap"
-  },
-  {
-    "code": "700092",
-    "name": "Pemutihan"
-  },
-  {
     "code": "1000050",
-    "name": "Pendapatan Lainnya"
+    "name": "Pendapatan Lainnya",
+    "account_type": "OINC"
   },
   {
     "code": "100005001",
-    "name": "Pengurangan Gaji Pegawai"
+    "name": "Pengurangan Gaji Pegawai",
+    "account_type": "OINC"
   },
   {
-    "code": "4101",
-    "name": "Penjualan"
+    "code": "1000054",
+    "name": "Beban Selisih Persediaan",
+    "account_type": "EXPS"
   },
   {
-    "code": "710001",
-    "name": "Penyesuaian Saldo Kas/Bank"
+    "code": "1000055",
+    "name": "Beban Persediaan",
+    "account_type": "EXPS"
   },
   {
-    "code": "720302",
-    "name": "Peralatan Kantor Aset Lancar"
+    "code": "1000056",
+    "name": "Beban Barang Sample",
+    "account_type": "EXPS"
   },
   {
-    "code": "720402",
-    "name": "Peralatan Kantor Aset Tetap"
+    "code": "1000057",
+    "name": "Beban Barang Reject",
+    "account_type": "EXPS"
   },
   {
-    "code": "700026",
-    "name": "Peralatan Produksi"
+    "code": "1000717",
+    "name": "Beban Kebersihan",
+    "account_type": "EXPS"
   },
   {
-    "code": "1104",
-    "name": "Persediaan Barang"
-  },
-  {
-    "code": "1107",
-    "name": "Persediaan Dalam Proses"
-  },
-  {
-    "code": "110207",
-    "name": "Petty Cash BCA"
-  },
-  {
-    "code": "110208",
-    "name": "Petty Cash Tunai"
-  },
-  {
-    "code": "110303",
-    "name": "Piutang Karyawan"
-  },
-  {
-    "code": "1103",
-    "name": "Piutang Usaha"
-  },
-  {
-    "code": "110301",
-    "name": "Piutang Usaha IDR"
-  },
-  {
-    "code": "300003",
-    "name": "Prive / Dividen"
-  },
-  {
-    "code": "1077717",
-    "name": "REFUND"
-  },
-  {
-    "code": "4201",
-    "name": "Retur Penjualan"
+    "code": "1000720",
+    "name": "Biaya Admin",
+    "account_type": "EXPS"
   },
   {
     "code": "1000968",
-    "name": "Returnal"
+    "name": "Returnal",
+    "account_type": "EXPS"
   },
   {
-    "code": "700038",
-    "name": "SHARING PROFIT BAGUS MEY"
+    "code": "1000969",
+    "name": "Beban Sewa",
+    "account_type": "EXPS"
   },
   {
-    "code": "7000116",
-    "name": "SR"
+    "code": "100096901",
+    "name": "Beban Sewa Gedung",
+    "account_type": "EXPS"
   },
   {
-    "code": "7000115",
-    "name": "Senzitizer"
+    "code": "100096902",
+    "name": "Beban Sewa Lahan",
+    "account_type": "EXPS"
   },
   {
-    "code": "7000103",
-    "name": "Sharing Profit Dimas"
+    "code": "100096903",
+    "name": "Beban Sewa Kendaraan",
+    "account_type": "EXPS"
   },
   {
-    "code": "7000102",
-    "name": "Sharing Profit Mas Bagus"
+    "code": "1077717",
+    "name": "REFUND",
+    "account_type": "EXPS"
   },
   {
-    "code": "7000104",
-    "name": "Tunjangan Hari Raya"
+    "code": "1077718",
+    "name": "Cashback",
+    "account_type": "EXPS"
   },
   {
-    "code": "7001005",
-    "name": "Tunjangan Hari Raya"
+    "code": "1102",
+    "name": "Bank",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110201",
+    "name": "KAS BESAR",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110202",
+    "name": "Bank BCA Pengeluaran",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110203",
+    "name": "Kas BCA",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110204",
+    "name": "Bank BCA Pemasukan YK",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110205",
+    "name": "Bank BCA Tabungan",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110206",
+    "name": "Bank BRI Pemasukan YK",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110207",
+    "name": "Petty Cash BCA",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110208",
+    "name": "Petty Cash Tunai",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110209",
+    "name": "Bank BCA Pemasukan SMG",
+    "account_type": "BANK"
+  },
+  {
+    "code": "110210",
+    "name": "Bank BCA CV Eternal",
+    "account_type": "BANK"
+  },
+  {
+    "code": "1103",
+    "name": "Piutang Usaha",
+    "account_type": "AREC"
+  },
+  {
+    "code": "110301",
+    "name": "Piutang Usaha IDR",
+    "account_type": "AREC"
   },
   {
     "code": "110302",
-    "name": "Uang Muka Pembelian IDR"
+    "name": "Uang Muka Pembelian IDR",
+    "account_type": "AREC"
   },
   {
-    "code": "210102",
-    "name": "Uang Muka Penjualan IDR"
+    "code": "110303",
+    "name": "Piutang Karyawan",
+    "account_type": "AREC"
   },
   {
-    "code": "2103",
-    "name": "Utang Pembelian Belum Ditagih"
+    "code": "1104",
+    "name": "Persediaan Barang",
+    "account_type": "INTR"
+  },
+  {
+    "code": "1105",
+    "name": "Barang Terkirim",
+    "account_type": "INTR"
+  },
+  {
+    "code": "1106",
+    "name": "PPN Masukan",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "1107",
+    "name": "Persediaan Dalam Proses",
+    "account_type": "INTR"
+  },
+  {
+    "code": "170001880",
+    "name": "Beban Advertising",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "1700018895",
+    "name": "Biaya Iklan Agency",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "170001890",
+    "name": "Biaya Promosi/Iklan",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "170001891",
+    "name": "Biaya Iklan Shopee",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "170001892",
+    "name": "Biaya Iklan Instagram",
+    "account_type": "EXPS"
   },
   {
     "code": "2101",
-    "name": "Utang Usaha"
+    "name": "Utang Usaha",
+    "account_type": "APAY"
   },
   {
     "code": "210101",
-    "name": "Utang Usaha IDR"
+    "name": "Utang Usaha IDR",
+    "account_type": "APAY"
+  },
+  {
+    "code": "210102",
+    "name": "Uang Muka Penjualan IDR",
+    "account_type": "APAY"
+  },
+  {
+    "code": "2102",
+    "name": "PPN",
+    "account_type": "OCLY"
+  },
+  {
+    "code": "210201",
+    "name": "Hutang Biaya",
+    "account_type": "OCLY"
+  },
+  {
+    "code": "2103",
+    "name": "Utang Pembelian Belum Ditagih",
+    "account_type": "OCLY"
+  },
+  {
+    "code": "2104",
+    "name": "Kewajiban Jangka Pendek Lainnya",
+    "account_type": "OCLY"
+  },
+  {
+    "code": "210401",
+    "name": "Hutang Gaji Karyawan",
+    "account_type": "OCLY"
+  },
+  {
+    "code": "3000",
+    "name": "Modal",
+    "account_type": "EQTY"
+  },
+  {
+    "code": "300001",
+    "name": "Equitas Saldo Awal",
+    "account_type": "EQTY"
+  },
+  {
+    "code": "300002",
+    "name": "Laba Ditahan",
+    "account_type": "EQTY"
+  },
+  {
+    "code": "300003",
+    "name": "Prive / Dividen",
+    "account_type": "EQTY"
+  },
+  {
+    "code": "4101",
+    "name": "Penjualan",
+    "account_type": "REVE"
+  },
+  {
+    "code": "4102",
+    "name": "Biaya Warna",
+    "account_type": "REVE"
+  },
+  {
+    "code": "4103",
+    "name": "Biaya Screen",
+    "account_type": "REVE"
+  },
+  {
+    "code": "4201",
+    "name": "Retur Penjualan",
+    "account_type": "REVE"
+  },
+  {
+    "code": "4301",
+    "name": "Diskon Penjualan Barang",
+    "account_type": "REVE"
+  },
+  {
+    "code": "4401",
+    "name": "Diskon Penjualan",
+    "account_type": "REVE"
+  },
+  {
+    "code": "440101",
+    "name": "Diskon Penjualan IDR",
+    "account_type": "REVE"
+  },
+  {
+    "code": "440102",
+    "name": "Cashback Penjualan",
+    "account_type": "REVE"
+  },
+  {
+    "code": "5101",
+    "name": "Beban Pokok Penjualan",
+    "account_type": "COGS"
+  },
+  {
+    "code": "6999",
+    "name": "Biaya Operasional Lainnya",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700",
+    "name": "Biaya Cetak di Luar",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000",
+    "name": "Beban Operasional",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000100",
+    "name": "Akumulasi Penyusutan",
+    "account_type": "DEPR"
+  },
+  {
+    "code": "700010001",
+    "name": "Akumulasi Penyusutan Inventaris Kantor",
+    "account_type": "DEPR"
+  },
+  {
+    "code": "700010002",
+    "name": "Akumulasi Penyusutan Peralatan Kantor",
+    "account_type": "DEPR"
+  },
+  {
+    "code": "700010003",
+    "name": "Akumulasi Penyusutan Mesin Produksi",
+    "account_type": "DEPR"
+  },
+  {
+    "code": "700010004",
+    "name": "Akumulasi Penyusutan Kendaraan",
+    "account_type": "DEPR"
+  },
+  {
+    "code": "700010005",
+    "name": "Akumulasi Penyusutan Bangunan",
+    "account_type": "DEPR"
+  },
+  {
+    "code": "7000101",
+    "name": "Pembangunan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000102",
+    "name": "Sharing Profit Mas Bagus",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "7000103",
+    "name": "Sharing Profit Dimas",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "7000104",
+    "name": "Tunjangan Hari Raya",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "7000105",
+    "name": "Cat Hitam 92 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000106",
+    "name": "Cat Putih 61 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000107",
+    "name": "Cat Merah 100 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000108",
+    "name": "Cat Kuning 24 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000109",
+    "name": "Cat Biru 39 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000110",
+    "name": "Cat Hijau 79 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000111",
+    "name": "Cat Biru Peacok 42 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000112",
+    "name": "Cat Ungu/Violette 84 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000113",
+    "name": "Cat Magenta 58 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000114",
+    "name": "Cat Hijau 73 Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000115",
+    "name": "Senzitizer",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000116",
+    "name": "SR",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000117",
+    "name": "Cat Gold Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000118",
+    "name": "Cat Pink Duta",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000119",
+    "name": "Cat Toyo 79 Brown",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000150",
+    "name": "Beban Entertaiment",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "700018",
+    "name": "Cicilan Bank",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7000200",
+    "name": "Beban Penyusutan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700020001",
+    "name": "Beban Penyusutan Inventaris Kantor",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700020002",
+    "name": "Beban Penyusutan Peralatan Kantor",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700020003",
+    "name": "Beban Penyusutan Mesin Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700020004",
+    "name": "Beban Penyusutan Kendaraan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700020005",
+    "name": "Beban Penyusutan Bangunan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700021",
+    "name": "CAT",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700023",
+    "name": "Biaya Bahan Bakar",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700024",
+    "name": "Beban Listrik Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700025",
+    "name": "M4",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700026",
+    "name": "Peralatan Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700027",
+    "name": "Manajemen",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700028",
+    "name": "Beban Listrik Kantor",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700029",
+    "name": "Kaporit",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700030",
+    "name": "Dimas",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700031",
+    "name": "Biaya Pengiriman",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700035",
+    "name": "Jasa Printing",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "700038",
+    "name": "SHARING PROFIT BAGUS MEY",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700080",
+    "name": "MESIN SABLON",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700083",
+    "name": "Bremol",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700084",
+    "name": "Beban Lakban Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700085",
+    "name": "Minyak Goreng",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700086",
+    "name": "Beban Kain Perca",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700087",
+    "name": "Beban Sumbangan",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "700088",
+    "name": "Beban Pemeliharaan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700089",
+    "name": "Biaya Internet",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700092",
+    "name": "Pemutihan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700094",
+    "name": "Gagal Bayar",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70010",
+    "name": "Gaji Pegawai",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700100",
+    "name": "Beban Listrik",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7001001",
+    "name": "Beban Gaji Pokok",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7001002",
+    "name": "Beban Insentif Pegawai",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7001003",
+    "name": "Beban Lembur Pegawai",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7001004",
+    "name": "Beban Bonus Pegawai",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7001005",
+    "name": "Tunjangan Hari Raya",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "7001006",
+    "name": "Beban Training Pegawai",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700101",
+    "name": "Eternal Semarang",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700102",
+    "name": "Beban Keamanan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700103",
+    "name": "Beban Pajak Penghasilan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70017",
+    "name": "Gaji Karyawan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70018",
+    "name": "Gaji Amrul",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70019",
+    "name": "Gaji Angger",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70020",
+    "name": "Gaji Wisnu",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700205",
+    "name": "Hutang Jangka Panjang",
+    "account_type": "LTLY"
+  },
+  {
+    "code": "700206",
+    "name": "Beban Bunga Pinjaman",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "70021",
+    "name": "Gaji Fajar",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70022",
+    "name": "Gaji Ayub",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70023",
+    "name": "Gaji Abid",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70024",
+    "name": "Gaji Gilang",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70025",
+    "name": "Gaji Fahdo",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70026",
+    "name": "Gaji Tompling",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70027",
+    "name": "Gaji Yudi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70028",
+    "name": "Gaji Imam",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70029",
+    "name": "Gaji Andi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70030",
+    "name": "Gaji Tian",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70031",
+    "name": "Gaji Fendi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70032",
+    "name": "Gaji Irfan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70033",
+    "name": "Gaji Kurnia",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70034",
+    "name": "Gaji Rahma",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70035",
+    "name": "Gaji Adham",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70036",
+    "name": "Gaji Fajar Yunita",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70037",
+    "name": "Gaji Aksal",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70038",
+    "name": "Gaji Dewa",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70039",
+    "name": "Gaji Fajar Riyanti",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70040",
+    "name": "Gaji Deni",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70041",
+    "name": "Gaji Zahroh",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70042",
+    "name": "Gaji Diah Supriyati",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70043",
+    "name": "Gaji Yusuf",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70044",
+    "name": "Gaji Bayu",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70045",
+    "name": "Gaji Sukoco",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70046",
+    "name": "Gaji Risna",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70047",
+    "name": "Gaji Mahfud",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70048",
+    "name": "Gaji Aris",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70049",
+    "name": "Gaji Arya",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70050",
+    "name": "Gaji Djoko",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70051",
+    "name": "Gaji Farkhan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70052",
+    "name": "Gaji Niko",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "700520",
+    "name": "Biaya Entertainment",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70053",
+    "name": "Gaji Adhi Nugraha",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70054",
+    "name": "Gaji Rizal Hanafi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70055",
+    "name": "Gaji Tegar",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70056",
+    "name": "Gaji Zakki",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70057",
+    "name": "Gaji Fajar Ahmad M",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70058",
+    "name": "Gaji Saddam",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70059",
+    "name": "Gaji Verlando",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70060",
+    "name": "Gaji Fajar Cahyo N",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70061",
+    "name": "Gaji Fauzan Ma'ruf",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70093",
+    "name": "Biaya Pemeliharaan Kendaraan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70094",
+    "name": "Beban Cat Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70095",
+    "name": "Beban Bahan Kimia Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70096",
+    "name": "Beban Kendaraan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70097",
+    "name": "Biaya Pajak Tahunan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70098",
+    "name": "Beban Operasional Kantor",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "70099",
+    "name": "Beban Operasional Produksi",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "701",
+    "name": "Beban ATK",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "702",
+    "name": "Biaya Langganan",
+    "account_type": "EXPS"
+  },
+  {
+    "code": "710001",
+    "name": "Penyesuaian Saldo Kas/Bank",
+    "account_type": "OINC"
+  },
+  {
+    "code": "7201",
+    "name": "Laba/Rugi Terealisasi",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "720101",
+    "name": "Laba/Rugi Terealisasi IDR",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "7202",
+    "name": "Laba/Rugi Belum Terealisasi",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "720201",
+    "name": "Laba/Rugi Belum Terealisasi IDR",
+    "account_type": "OEXP"
+  },
+  {
+    "code": "7203",
+    "name": "Aset Lancar Lainnya",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "720301",
+    "name": "Inventaris Kantor Aset Lancar",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "720302",
+    "name": "Peralatan Kantor Aset Lancar",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "720303",
+    "name": "Mesin Produksi Aset Lancar",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "720304",
+    "name": "Kendaraan Aset Lancar",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "720305",
+    "name": "Pembangunan / Renovasi Aset Lancar",
+    "account_type": "OCAS"
+  },
+  {
+    "code": "7204",
+    "name": "Aset Tetap",
+    "account_type": "FASS"
+  },
+  {
+    "code": "720401",
+    "name": "Inventaris Kantor Aset Tetap",
+    "account_type": "FASS"
+  },
+  {
+    "code": "720402",
+    "name": "Peralatan Kantor Aset Tetap",
+    "account_type": "FASS"
+  },
+  {
+    "code": "720403",
+    "name": "Mesin Produksi Aset Tetap",
+    "account_type": "FASS"
+  },
+  {
+    "code": "720404",
+    "name": "Kendaraan Aset Tetap",
+    "account_type": "FASS"
+  },
+  {
+    "code": "720405",
+    "name": "Pembangunan / Renovasi Aset Tetap",
+    "account_type": "FASS"
   }
 ]
