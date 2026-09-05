@@ -1,0 +1,33 @@
+import { ledgerMenuItems, ledgerNavVisible, NAV_KEYS, NAV_MENU_FALLBACK } from "./navAccess";
+
+const has = (...keys) => (k) => keys.includes(k);
+
+describe("Buku Besar nav", () => {
+  test("sidebar catalog includes parent and Akun Perkiraan child only", () => {
+    const labels = NAV_MENU_FALLBACK
+      .filter((m) => m.parent === NAV_KEYS.ledger || m.key === NAV_KEYS.ledger)
+      .map((m) => m.label);
+    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan"]);
+  });
+
+  test("hidden without grants", () => {
+    const v = ledgerNavVisible(has());
+    expect(v.parent).toBe(false);
+    expect(ledgerMenuItems(has()).length).toBe(0);
+  });
+
+  test("view permission shows Akun Perkiraan", () => {
+    const v = ledgerNavVisible(has("ledger.accounts.view"));
+    expect(v.parent).toBe(true);
+    expect(v.accounts).toBe(true);
+    expect(ledgerMenuItems(has("ledger.accounts.view")).map((i) => i.to)).toEqual([
+      "/buku-besar/akun-perkiraan",
+    ]);
+  });
+
+  test("nav.ledger.accounts alone is enough", () => {
+    const v = ledgerNavVisible(has(NAV_KEYS.ledgerAccounts));
+    expect(v.parent).toBe(true);
+    expect(v.accounts).toBe(true);
+  });
+});

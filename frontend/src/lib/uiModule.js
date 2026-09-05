@@ -27,6 +27,7 @@ export function moduleFromPath(pathname = "") {
   if (path.startsWith("/optimasi-rute")) return UI_MODULES.route;
   if (path.startsWith("/settings")) return UI_MODULES.settings;
   if (path.startsWith("/laporan")) return UI_MODULES.reports;
+  if (path.startsWith("/buku-besar")) return UI_MODULES.reports;
   if (
     path.startsWith("/produksi")
     || path.startsWith("/tasks")

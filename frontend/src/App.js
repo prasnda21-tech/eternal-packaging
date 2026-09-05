@@ -17,6 +17,7 @@ import DataPelanggan from "./pages/DataPelanggan";
 import Settings from "./pages/Settings";
 import MasterBarangJasa from "./pages/MasterBarangJasa";
 import StockSaatIni from "./pages/StockSaatIni";
+import AkunPerkiraan from "./pages/AkunPerkiraan";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
 import PermintaanPembelian from "./pages/PermintaanPembelian";
 import PesananPembelian from "./pages/PesananPembelian";
@@ -33,7 +34,7 @@ import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
 import PublicHargaPage from "./pages/PublicHargaPage";
-import { NAV_KEYS, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
+import { NAV_KEYS, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
 import DeliverySchedulePage from "./pages/DeliverySchedulePage";
 import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
@@ -98,6 +99,13 @@ function LaporanIndex() {
   if (r.shipmentStatus) return <Navigate to="/laporan/status-pengiriman" replace />;
   if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
   if (r.orderPrediction) return <Navigate to="/laporan/prediksi-order" replace />;
+  return <Navigate to="/" replace />;
+}
+
+function BukuBesarIndex() {
+  const { hasPerm } = useAuth();
+  const v = ledgerNavVisible(hasPerm);
+  if (v.accounts) return <Navigate to="/buku-besar/akun-perkiraan" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -176,6 +184,8 @@ export default function App() {
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
             <Route path="/persediaan" element={<PersediaanIndex />} />
+            <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />
+            <Route path="/buku-besar" element={<BukuBesarIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
