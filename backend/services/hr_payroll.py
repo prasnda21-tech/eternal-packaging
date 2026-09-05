@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from permissions import ROLE_LABELS
 from services.purchase_common import (
     actor_snapshot,
     get_named_lock,
@@ -103,6 +104,99 @@ def _clean(doc: Optional[dict]) -> Optional[dict]:
 
 def public_employee(doc: Optional[dict]) -> Optional[dict]:
     return _clean(doc)
+
+
+async def _role_label_map(db) -> Dict[str, str]:
+    """Built-in labels plus custom role labels from `roles` collection."""
+    labels = {str(k): str(v) for k, v in ROLE_LABELS.items()}
+    try:
+        rows = await db.roles.find({}, {"_id": 0, "role": 1, "label": 1}).to_list(500)
+    except Exception:
+        rows = []
+    for row in rows or []:
+        slug = str((row or {}).get("role") or "").strip()
+        label = str((row or {}).get("label") or "").strip()
+        if slug and label:
+            labels[slug] = label
+    return labels
+
+
+def _present_employee(
+    doc: Optional[dict],
+    *,
+    linked_user: Optional[dict] = None,
+    role_labels: Optional[Dict[str, str]] = None,
+) -> Optional[dict]:
+    """Pure read presenter for persistent hr_employees rows. Never writes."""
+    out = _clean(doc)
+    if not out:
+        return None
+    labels = role_labels or {}
+    out["has_hr_profile"] = True
+    out["directory_key"] = f"hr:{out.get('id')}"
+    if linked_user:
+        slug = str(linked_user.get("role") or out.get("role") or "").strip()
+        out["name"] = str(linked_user.get("name") or out.get("name") or "").strip()
+        out["email"] = str(linked_user.get("email") or out.get("email") or "").strip()
+        out["role"] = slug
+        out["role_label"] = labels.get(slug) or ROLE_LABELS.get(slug) or slug or None
+        out["active"] = str(linked_user.get("status") or "active").lower() != "inactive"
+        out["account_status"] = linked_user.get("status") or "active"
+        out["user_id"] = linked_user.get("id")
+        out["linked_from_settings"] = True
+        out["directory_source"] = "hr_linked"
+    else:
+        slug = str(out.get("role") or "").strip()
+        out["role_label"] = labels.get(slug) or ROLE_LABELS.get(slug) or (slug or None)
+        out["linked_from_settings"] = False
+        out["directory_source"] = "hr_legacy" if not out.get("user_id") else "hr_orphan"
+    return out
+
+
+def _virtual_user_directory_row(user: dict, role_labels: Optional[Dict[str, str]] = None) -> dict:
+    """Settings user without hr_employees profile — directory-only, zero persistence."""
+    labels = role_labels or {}
+    slug = str(user.get("role") or "").strip()
+    active = str(user.get("status") or "active").lower() != "inactive"
+    user_id = str(user.get("id") or "").strip()
+    return {
+        "id": None,
+        "directory_key": f"user:{user_id}",
+        "user_id": user_id,
+        "name": str(user.get("name") or "").strip(),
+        "email": str(user.get("email") or "").strip(),
+        "role": slug,
+        "role_label": labels.get(slug) or ROLE_LABELS.get(slug) or slug or None,
+        "active": active,
+        "account_status": user.get("status") or "active",
+        "employee_number": None,
+        "division": None,
+        "employment_status": None,
+        "join_date": None,
+        "end_date": None,
+        "worker_type": None,
+        "phone": str(user.get("phone") or "").strip() or None,
+        "address": None,
+        "bank_name": None,
+        "bank_account": None,
+        "bank_account_name": None,
+        "npwp": None,
+        "bpjs_kesehatan": None,
+        "bpjs_ketenagakerjaan": None,
+        "salary_profile": None,
+        "employment_history": [],
+        "linked_from_settings": True,
+        "has_hr_profile": False,
+        "directory_source": "settings_user",
+    }
+
+
+async def _load_all_users_for_directory(db) -> Dict[str, dict]:
+    users = await db.users.find(
+        {},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "employee_id": 1, "status": 1, "phone": 1},
+    ).to_list(5000)
+    return {str(u["id"]): u for u in users if u and u.get("id")}
 
 
 def public_period(doc: Optional[dict]) -> Optional[dict]:
@@ -233,23 +327,94 @@ def _audit(action: str, user: dict, note: str = "") -> dict:
     }
 
 
-async def list_employees(db, *, include_inactive: bool = True, q: str = "") -> List[dict]:
-    filt = {} if include_inactive else {"active": {"$ne": False}}
-    rows = await db[EMPLOYEES].find(filt, {"_id": 0}).sort("name", 1).to_list(2000)
+async def list_employees(
+    db,
+    *,
+    include_inactive: bool = True,
+    q: str = "",
+    hr_profile_only: bool = False,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> dict:
+    """Pure-read directory union of hr_employees + Settings users (no writes).
+
+    Filter/search/sort run on the FINAL union. Optional pagination slices that
+    final result (never paginate hr_employees alone then append users).
+    """
+    hr_rows = await db[EMPLOYEES].find({}, {"_id": 0}).to_list(2000)
+    users_by_id = await _load_all_users_for_directory(db)
+    labels = await _role_label_map(db)
+
+    presented: List[dict] = []
+    linked_user_ids = set()
+    for row in hr_rows:
+        uid = str(row.get("user_id") or "").strip()
+        linked = users_by_id.get(uid) if uid else None
+        if linked:
+            linked_user_ids.add(uid)
+        item = _present_employee(row, linked_user=linked, role_labels=labels)
+        if item:
+            presented.append(item)
+
+    if not hr_profile_only:
+        for uid, user in users_by_id.items():
+            if uid in linked_user_ids:
+                continue
+            presented.append(_virtual_user_directory_row(user, labels))
+    else:
+        presented = [row for row in presented if row.get("has_hr_profile") is True and row.get("id")]
+
+    if not include_inactive:
+        presented = [row for row in presented if row.get("active") is not False]
+
     needle = q.strip().lower()
     if needle:
-        rows = [
-            row for row in rows
-            if needle in " ".join(str(row.get(k) or "") for k in ("employee_number", "name", "role", "division", "email")).lower()
+        presented = [
+            row for row in presented
+            if needle in " ".join(
+                str(row.get(k) or "")
+                for k in (
+                    "employee_number", "name", "role", "role_label", "division",
+                    "email", "user_id", "directory_key",
+                )
+            ).lower()
         ]
-    return [public_employee(row) for row in rows]
+
+    presented.sort(key=lambda row: (
+        str(row.get("name") or "").lower(),
+        str(row.get("directory_key") or row.get("id") or ""),
+    ))
+
+    total = len(presented)
+    page_num = 1
+    size = total or 1
+    page_count = 1
+    if page is not None or page_size is not None:
+        page_num = max(1, int(page or 1))
+        size = max(1, min(int(page_size or 50), 200))
+        page_count = max(1, (total + size - 1) // size) if total else 1
+        start = (page_num - 1) * size
+        presented = presented[start:start + size]
+
+    return {
+        "employees": presented,
+        "count": total,
+        "page": page_num,
+        "page_size": size if (page is not None or page_size is not None) else total,
+        "page_count": page_count,
+    }
 
 
 async def get_employee(db, employee_id: str) -> dict:
-    row = await db[EMPLOYEES].find_one({"id": employee_id}, {"_id": 0})
+    eid = str(employee_id or "").strip()
+    if not eid or eid.lower() in {"null", "undefined", "none"} or eid.startswith("user:"):
+        raise HTTPException(404, "Karyawan tidak ditemukan.")
+    row = await db[EMPLOYEES].find_one({"id": eid}, {"_id": 0})
     if not row:
         raise HTTPException(404, "Karyawan tidak ditemukan.")
-    return public_employee(row)
+    linked = await _safe_user(db, str(row.get("user_id") or "").strip()) if row.get("user_id") else None
+    labels = await _role_label_map(db)
+    return _present_employee(row, linked_user=linked, role_labels=labels)
 
 
 async def _safe_user(db, user_id: str) -> Optional[dict]:
@@ -257,7 +422,7 @@ async def _safe_user(db, user_id: str) -> Optional[dict]:
         return None
     return await db.users.find_one(
         {"id": user_id},
-        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "employee_id": 1, "status": 1},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "employee_id": 1, "status": 1, "phone": 1},
     )
 
 
@@ -343,6 +508,7 @@ async def create_employee(db, payload: dict, user: dict) -> dict:
         doc["name"] = str(linked.get("name") or doc["name"])
         doc["email"] = str(linked.get("email") or doc["email"])
         doc["role"] = str(linked.get("role") or doc["role"])
+        doc["active"] = str(linked.get("status") or "active").lower() != "inactive"
         if not payload.get("employee_number"):
             doc["employee_number"] = str(linked.get("employee_id") or doc["employee_number"])
     if not doc["name"]:
@@ -351,7 +517,179 @@ async def create_employee(db, payload: dict, user: dict) -> dict:
         await db[EMPLOYEES].insert_one(doc)
     except DuplicateKeyError:
         raise HTTPException(409, "Nomor karyawan atau tautan user sudah dipakai.")
-    return public_employee(doc)
+    labels = await _role_label_map(db)
+    return _present_employee(doc, linked_user=linked, role_labels=labels)
+
+
+def _account_payload(raw: Any) -> dict:
+    src = raw if isinstance(raw, dict) else {}
+    return {
+        "email": str(src.get("email") or "").strip().lower(),
+        "name": str(src.get("name") or "").strip(),
+        "role": str(src.get("role") or "").strip(),
+        "password": src.get("password"),
+        "nickname": (str(src.get("nickname") or "").strip() or None),
+        "phone": (str(src.get("phone") or "").strip() or None),
+        "joined_at": src.get("joined_at"),
+        "notes": src.get("notes"),
+    }
+
+
+async def _compensate_created_user(db, user_id: str) -> None:
+    """Rollback exact task-created Eternal user + its user.create audit row only."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return
+    await db.users.delete_many({"id": uid})
+    # Exact audit side-effect from create_canonical_user — never mass-delete.
+    await db.audit_logs.delete_many({"action": "user.create", "after.id": uid})
+
+
+async def create_employee_with_optional_account(
+    db,
+    payload: dict,
+    user: dict,
+    *,
+    create_canonical_user,
+    actor_may_create_users: bool,
+) -> dict:
+    """Create HR employee; optionally create Eternal account + exact user_id link.
+
+    Account creation is explicit only (`create_account` present/true). Compensating
+    cleanup deletes the exact newly-created user (+ its user.create audit) if HR
+    insert fails afterward.
+    """
+    account_flag = payload.get("create_account")
+    wants_account = bool(account_flag) if not isinstance(account_flag, dict) else True
+    account_raw = account_flag if isinstance(account_flag, dict) else (payload.get("account") or {})
+
+    if not wants_account:
+        # Strip account fields so they cannot silently create users.
+        clean = {k: v for k, v in payload.items() if k not in ("create_account", "account")}
+        return await create_employee(db, clean, user)
+
+    if not actor_may_create_users:
+        raise HTTPException(403, "Anda tidak berhak membuat akun Eternal. Butuh permission users.manage.")
+    if payload.get("user_id"):
+        raise HTTPException(400, "Tidak dapat menautkan user_id sekaligus membuat akun Eternal baru.")
+
+    account = _account_payload(account_raw)
+    if not account["name"]:
+        account["name"] = str(payload.get("name") or "").strip()
+    if not account["email"]:
+        raise HTTPException(400, "Email akun Eternal wajib diisi.")
+    if not account["role"]:
+        raise HTTPException(400, "Role akun Eternal wajib dipilih.")
+    if not account["password"] or len(str(account["password"])) < 6:
+        raise HTTPException(400, "Password akun Eternal minimal 6 karakter.")
+
+    # Validate HR payload before creating user (avoid orphan accounts on HR validation errors).
+    number = str(payload.get("employee_number") or "").strip()
+    if not number:
+        raise HTTPException(400, "Nomor karyawan wajib diisi.")
+    hr_name = str(payload.get("name") or account["name"] or "").strip()
+    if not hr_name:
+        raise HTTPException(400, "Nama karyawan wajib diisi.")
+
+    created_user = await create_canonical_user(
+        email=account["email"],
+        name=account["name"],
+        role=account["role"],
+        password=account["password"],
+        nickname=account.get("nickname"),
+        phone=account.get("phone") or str(payload.get("phone") or "").strip() or None,
+        joined_at=account.get("joined_at"),
+        notes=account.get("notes"),
+        permissions_override={},
+        actor=user,
+        require_password=True,
+    )
+    uid = created_user["id"]
+    hr_payload = {
+        k: v for k, v in payload.items()
+        if k not in ("create_account", "account", "password", "user_id")
+    }
+    hr_payload["user_id"] = uid
+    hr_payload["name"] = hr_name
+    # Do not invent HR jabatan/division from Eternal role — keep HR fields as submitted.
+    try:
+        return await create_employee(db, hr_payload, user)
+    except Exception:
+        await _compensate_created_user(db, uid)
+        raise
+
+
+async def create_eternal_account_for_employee(
+    db,
+    employee_id: str,
+    account_payload: dict,
+    user: dict,
+    *,
+    create_canonical_user,
+    actor_may_create_users: bool,
+) -> dict:
+    """Explicit account provisioning for an existing unlinked HR employee."""
+    if not actor_may_create_users:
+        raise HTTPException(403, "Anda tidak berhak membuat akun Eternal. Butuh permission users.manage.")
+    eid = str(employee_id or "").strip()
+    if not eid or eid.lower() in {"null", "undefined", "none"}:
+        raise HTTPException(404, "Karyawan tidak ditemukan.")
+    existing = await db[EMPLOYEES].find_one({"id": eid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Karyawan tidak ditemukan.")
+    if existing.get("user_id"):
+        raise HTTPException(409, "Karyawan ini sudah tertaut ke akun Eternal.")
+
+    account = _account_payload(account_payload)
+    if not account["name"]:
+        account["name"] = str(existing.get("name") or "").strip()
+    if not account["email"]:
+        raise HTTPException(400, "Email akun Eternal wajib diisi.")
+    if not account["role"]:
+        raise HTTPException(400, "Role akun Eternal wajib dipilih.")
+    if not account["password"] or len(str(account["password"])) < 6:
+        raise HTTPException(400, "Password akun Eternal minimal 6 karakter.")
+
+    created_user = await create_canonical_user(
+        email=account["email"],
+        name=account["name"],
+        role=account["role"],
+        password=account["password"],
+        nickname=account.get("nickname"),
+        phone=account.get("phone") or str(existing.get("phone") or "").strip() or None,
+        joined_at=account.get("joined_at"),
+        notes=account.get("notes"),
+        permissions_override={},
+        actor=user,
+        require_password=True,
+    )
+    uid = created_user["id"]
+    try:
+        result = await db[EMPLOYEES].find_one_and_update(
+            {"id": eid, "$or": [{"user_id": None}, {"user_id": {"$exists": False}}, {"user_id": ""}]},
+            {
+                "$set": {
+                    "user_id": uid,
+                    "name": str(created_user.get("name") or existing.get("name") or ""),
+                    "email": str(created_user.get("email") or existing.get("email") or ""),
+                    "role": str(created_user.get("role") or existing.get("role") or ""),
+                    "updated_at": now_iso(),
+                },
+                "$push": {"audit_events": _audit("linked_eternal_account", user, f"user_id={uid}")},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if not result:
+            await _compensate_created_user(db, uid)
+            raise HTTPException(409, "Karyawan ini sudah tertaut ke akun Eternal.")
+    except HTTPException:
+        raise
+    except Exception:
+        await _compensate_created_user(db, uid)
+        raise
+
+    labels = await _role_label_map(db)
+    return _present_employee(result, linked_user=created_user, role_labels=labels)
 
 
 async def update_employee(db, employee_id: str, payload: dict, user: dict) -> dict:
@@ -364,18 +702,29 @@ async def update_employee(db, employee_id: str, payload: dict, user: dict) -> di
         if not number:
             raise HTTPException(400, "Nomor karyawan wajib diisi.")
         updates["employee_number"] = number[:80]
-    if "user_id" in payload:
-        linked = await _safe_user(db, str(payload.get("user_id") or "").strip())
-        if payload.get("user_id") and not linked:
-            raise HTTPException(404, "User yang ditautkan tidak ditemukan.")
-        if linked:
-            updates.update({
-                "name": str(linked.get("name") or updates.get("name") or existing.get("name") or ""),
-                "email": str(linked.get("email") or updates.get("email") or existing.get("email") or ""),
-                "role": str(linked.get("role") or updates.get("role") or existing.get("role") or ""),
-            })
-            if not existing.get("employee_number"):
-                updates["employee_number"] = str(linked.get("employee_id") or "")
+
+    # Resolve linked Settings user (payload user_id wins when provided).
+    linked_id = updates["user_id"] if "user_id" in updates else existing.get("user_id")
+    linked = await _safe_user(db, str(linked_id or "").strip()) if linked_id else None
+    if linked_id and not linked:
+        raise HTTPException(404, "User yang ditautkan tidak ditemukan.")
+
+    if linked:
+        # Settings is authority for name / role / email / active — do not allow HR overwrite.
+        updates.pop("name", None)
+        updates.pop("role", None)
+        updates.pop("email", None)
+        updates.pop("active", None)
+        updates.update({
+            "name": str(linked.get("name") or existing.get("name") or ""),
+            "email": str(linked.get("email") or existing.get("email") or ""),
+            "role": str(linked.get("role") or existing.get("role") or ""),
+            "active": str(linked.get("status") or "active").lower() != "inactive",
+            "user_id": linked.get("id"),
+        })
+        if not existing.get("employee_number") and not updates.get("employee_number"):
+            updates["employee_number"] = str(linked.get("employee_id") or "")
+
     updates["updated_at"] = now_iso()
     events = list(existing.get("audit_events") or [])
     events.append(_audit("updated", user))
@@ -386,7 +735,8 @@ async def update_employee(db, employee_id: str, payload: dict, user: dict) -> di
         )
     except DuplicateKeyError:
         raise HTTPException(409, "Nomor karyawan atau tautan user sudah dipakai.")
-    return public_employee(result)
+    labels = await _role_label_map(db)
+    return _present_employee(result, linked_user=linked, role_labels=labels)
 
 
 def _component_doc(payload: dict, existing: Optional[dict] = None) -> dict:

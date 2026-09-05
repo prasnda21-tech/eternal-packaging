@@ -32,60 +32,249 @@ function PageHead({ title, action }) {
   return <div className="page-heading"><div><p className="eyebrow">HR &amp; Payroll</p><h1>{title}</h1></div><div className="page-heading-actions">{action}</div></div>;
 }
 
-function EmployeeForm({ initial, onClose, onSaved }) {
+function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalAccount = false, startWithAccountCreate = false }) {
   const [form, setForm] = useState(() => ({ ...emptyEmployee, ...initial, salary_profile: { ...emptyEmployee.salary_profile, ...(initial?.salary_profile || {}) } }));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [createAccount, setCreateAccount] = useState(() => Boolean(startWithAccountCreate));
+  const [account, setAccount] = useState({
+    name: initial?.name || "",
+    email: initial?.email || "",
+    role: "",
+    password: "",
+    nickname: "",
+    phone: initial?.phone || "",
+  });
+  const linkedFromSettings = Boolean(form.user_id || initial?.linked_from_settings);
+  const isVirtualDirectory = initial?.has_hr_profile === false;
+  const isCreate = !initial?.id && !isVirtualDirectory;
+  const isHrOnlyUnlinked = Boolean(initial?.id && !initial?.user_id && initial?.has_hr_profile !== false);
+  const accountMode = isCreate ? createAccount : (isHrOnlyUnlinked && createAccount);
+  const hasHrProfile = Boolean(initial?.id) || isCreate;
   const set = (key, value) => setForm((cur) => ({ ...cur, [key]: value }));
+  const setAccountField = (key, value) => setAccount((cur) => ({ ...cur, [key]: value }));
+  const activeRoles = useMemo(() => (roles || []).filter((r) => r.status !== "inactive"), [roles]);
+
+  useEffect(() => {
+    if (!createAccount) return;
+    setAccount((cur) => ({
+      ...cur,
+      name: cur.name || form.name || "",
+      email: cur.email || form.email || "",
+      phone: cur.phone || form.phone || "",
+      role: cur.role || (activeRoles[0]?.role || ""),
+    }));
+  }, [createAccount, form.name, form.email, form.phone, activeRoles]);
+
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const scrollY = window.scrollY;
+    const previous = {
+      htmlOverflow: html.style.overflow,
+      bodyOverflow: body.style.overflow,
+      bodyPosition: body.style.position,
+      bodyTop: body.style.top,
+      bodyWidth: body.style.width,
+    };
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    body.style.position = "fixed";
+    body.style.top = `-${scrollY}px`;
+    body.style.width = "100%";
+    return () => {
+      html.style.overflow = previous.htmlOverflow;
+      body.style.overflow = previous.bodyOverflow;
+      body.style.position = previous.bodyPosition;
+      body.style.top = previous.bodyTop;
+      body.style.width = previous.bodyWidth;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+
   const save = async (e) => {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      const payload = { ...form, user_id: form.user_id || null, salary_profile: { ...form.salary_profile, base_salary: Number(form.salary_profile.base_salary) || 0 } };
-      if (initial?.id) await api.hrPayrollUpdateEmployee(initial.id, payload);
-      else await api.hrPayrollCreateEmployee(payload);
+      if (isVirtualDirectory) {
+        setErr("Profil HR belum ada. Gunakan Tambah Karyawan, atau kelola nama/role di Settings → Karyawan.");
+        return;
+      }
+      if (accountMode) {
+        if (!canCreateEternalAccount) {
+          setErr("Anda tidak berhak membuat akun Eternal (users.manage).");
+          return;
+        }
+        if (!account.email?.trim() || !account.role || !account.password || account.password.length < 6) {
+          setErr("Akun Eternal membutuhkan email, role, dan password minimal 6 karakter.");
+          return;
+        }
+      }
+      if (isHrOnlyUnlinked && createAccount) {
+        await api.hrPayrollCreateEternalAccount(initial.id, {
+          name: account.name || form.name,
+          email: account.email.trim().toLowerCase(),
+          role: account.role,
+          password: account.password,
+          nickname: account.nickname || null,
+          phone: account.phone || form.phone || null,
+        });
+      } else {
+        const payload = {
+          ...form,
+          user_id: form.user_id || null,
+          salary_profile: { ...form.salary_profile, base_salary: Number(form.salary_profile.base_salary) || 0 },
+        };
+        if (linkedFromSettings && initial?.id) {
+          delete payload.name;
+          delete payload.role;
+          delete payload.email;
+          delete payload.active;
+        }
+        if (isCreate && createAccount) {
+          payload.create_account = {
+            name: account.name || form.name,
+            email: account.email.trim().toLowerCase(),
+            role: account.role,
+            password: account.password,
+            nickname: account.nickname || null,
+            phone: account.phone || form.phone || null,
+          };
+          delete payload.user_id;
+        } else if (isCreate) {
+          payload.create_account = false;
+        }
+        if (initial?.id) await api.hrPayrollUpdateEmployee(initial.id, payload);
+        else await api.hrPayrollCreateEmployee(payload);
+      }
       await onSaved();
       onClose();
     } catch (ex) { setErr(errorText(ex)); } finally { setBusy(false); }
   };
+  const fields = [
+    ["name", "Nama lengkap"], ["employee_number", "Nomor karyawan"], ["role", "Jabatan HR"], ["division", "Divisi"],
+    ["employment_status", "Status kerja"], ["join_date", "Tanggal bergabung"], ["end_date", "Tanggal berakhir"],
+    ["worker_type", "Tipe pekerja"], ["email", "Email (HR)"], ["phone", "Telepon"], ["bank_name", "Nama bank"],
+    ["bank_account", "Nomor rekening"], ["bank_account_name", "Nama pemilik rekening"],
+  ];
+  if (!accountMode && !linkedFromSettings) fields.push(["user_id", "User ID (opsional)"]);
+  const lockedKeys = linkedFromSettings ? new Set(["name", "role", "email", "user_id"]) : new Set();
+  const showAccountToggle = (isCreate || isHrOnlyUnlinked) && canCreateEternalAccount;
   return (
-    <div className="modal" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-inner modal-wide">
-        <header className="modal-head"><h3>{initial?.id ? "Edit Karyawan" : "Tambah Karyawan"}</h3><button className="icon-button" onClick={onClose}><X size={16} /></button></header>
-        <form className="emp-form" onSubmit={save} data-testid="hr-employee-form">
-          <FormProgress
-            percentage={Math.round(([form.name, form.employee_number, form.role, form.division, form.join_date].filter(v => v).length / 5) * 100)}
-            completed={[form.name, form.employee_number, form.role, form.division, form.join_date].filter(v => v).length}
-            total={5}
-          />
-          <FormSection
-            id="hr-employee-info"
-            title="Informasi Karyawan"
-            description="Data dasar dan kepegawaian."
-            status={computeStatus([
-              { value: form.name, isRequired: true },
-              { value: form.employee_number, isRequired: true },
-            ])}
-          >
-            <div className="hr-form-grid">
-              {[["name", "Nama lengkap"], ["employee_number", "Nomor karyawan"], ["role", "Jabatan"], ["division", "Divisi"], ["employment_status", "Status kerja"], ["join_date", "Tanggal bergabung"], ["end_date", "Tanggal berakhir"], ["worker_type", "Tipe pekerja"], ["email", "Email"], ["phone", "Telepon"], ["bank_name", "Nama bank"], ["bank_account", "Nomor rekening"], ["bank_account_name", "Nama pemilik rekening"], ["user_id", "User ID (opsional)"]].map(([key, label]) => (
-                <FormField key={key} id={`hr-emp-${key}`} label={label} isRequired={["name", "employee_number"].includes(key)} value={form[key] || ""}>
-                  <input type={key.includes("date") ? "date" : "text"} value={form[key] || ""} onChange={(e) => set(key, e.target.value)} required={["name", "employee_number"].includes(key)} />
+    <div className="modal" data-testid="hr-employee-modal" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal-inner modal-wide hr-employee-modal" onClick={(e) => e.stopPropagation()}>
+        <header className="modal-head">
+          <h3>{isCreate ? "Tambah Karyawan" : isHrOnlyUnlinked && createAccount ? "Buat Akun Eternal" : hasHrProfile ? "Edit Karyawan" : "Detail Karyawan (Settings)"}</h3>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Tutup"><X size={16} /></button>
+        </header>
+        <form className="emp-form hr-employee-form" onSubmit={save} data-testid="hr-employee-form">
+          <div className="hr-employee-form-body" data-testid="hr-employee-form-body">
+            <FormProgress
+              percentage={Math.round(([form.name, form.employee_number, form.role, form.division, form.join_date].filter(v => v).length / 5) * 100)}
+              completed={[form.name, form.employee_number, form.role, form.division, form.join_date].filter(v => v).length}
+              total={5}
+            />
+            {linkedFromSettings && (
+              <p className="muted small" data-testid="hr-employee-settings-authority">
+                Nama, email, role, dan status akun dikelola melalui Settings → Karyawan (canonical user ID: {form.user_id}).
+                {!hasHrProfile && " Profil HR belum dibuat — tidak ada mutasi HR dari baris directory ini."}
+              </p>
+            )}
+            {showAccountToggle && (
+              <label className="hr-check" data-testid="hr-create-eternal-toggle">
+                <input
+                  type="checkbox"
+                  checked={createAccount}
+                  onChange={(e) => setCreateAccount(e.target.checked)}
+                />
+                Buat Akun Eternal
+              </label>
+            )}
+            {showAccountToggle && !createAccount && (
+              <p className="muted small" data-testid="hr-create-eternal-hint">Default OFF — menambah karyawan HR tidak memberi akses login aplikasi.</p>
+            )}
+            {accountMode && (
+              <FormSection
+                id="hr-eternal-account"
+                title="Akun Eternal"
+                description="Membuat akun login canonical di Settings → Karyawan. Role = hak akses aplikasi, bukan jabatan HR."
+                className="fs-section-scroll-safe"
+                status={computeStatus([
+                  { value: account.email, isRequired: true },
+                  { value: account.role, isRequired: true },
+                  { value: account.password, isRequired: true },
+                ])}
+              >
+                <div className="hr-form-grid" data-testid="hr-eternal-account-fields">
+                  <FormField id="hr-acc-name" label="Nama akun" isRequired value={account.name}>
+                    <input value={account.name} onChange={(e) => setAccountField("name", e.target.value)} required data-testid="hr-acc-name" />
+                  </FormField>
+                  <FormField id="hr-acc-email" label="Email login" isRequired value={account.email}>
+                    <input type="email" value={account.email} onChange={(e) => setAccountField("email", e.target.value)} required data-testid="hr-acc-email" />
+                  </FormField>
+                  <FormField id="hr-acc-role" label="Role / Hak Akses" isRequired value={account.role}>
+                    <select value={account.role} onChange={(e) => setAccountField("role", e.target.value)} required data-testid="hr-acc-role">
+                      <option value="">Pilih role</option>
+                      {activeRoles.map((r) => (
+                        <option key={r.role} value={r.role}>{r.label || r.role}</option>
+                      ))}
+                    </select>
+                  </FormField>
+                  <FormField id="hr-acc-password" label="Password" isRequired value={account.password}>
+                    <input type="password" value={account.password} onChange={(e) => setAccountField("password", e.target.value)} required minLength={6} autoComplete="new-password" data-testid="hr-acc-password" placeholder="Wajib diisi (min. 6)" />
+                  </FormField>
+                  <FormField id="hr-acc-nickname" label="Nama panggilan" value={account.nickname}>
+                    <input value={account.nickname} onChange={(e) => setAccountField("nickname", e.target.value)} data-testid="hr-acc-nickname" />
+                  </FormField>
+                  <FormField id="hr-acc-phone" label="Nomor HP" value={account.phone}>
+                    <input value={account.phone} onChange={(e) => setAccountField("phone", e.target.value)} data-testid="hr-acc-phone" />
+                  </FormField>
+                </div>
+              </FormSection>
+            )}
+            {!(isHrOnlyUnlinked && createAccount) && (
+            <FormSection
+              id="hr-employee-info"
+              title="Informasi Karyawan"
+              description="Data dasar dan kepegawaian."
+              className="fs-section-scroll-safe"
+              status={computeStatus([
+                { value: form.name, isRequired: true },
+                { value: form.employee_number, isRequired: hasHrProfile },
+              ])}
+            >
+              <div className="hr-form-grid">
+                {fields.map(([key, label]) => (
+                  <FormField key={key} id={`hr-emp-${key}`} label={label} isRequired={["name", "employee_number"].includes(key) && hasHrProfile && !lockedKeys.has(key)} value={form[key] || ""}>
+                    <input
+                      type={key.includes("date") ? "date" : "text"}
+                      value={key === "role" && lockedKeys.has("role") && form.role_label ? form.role_label : (form[key] || "")}
+                      onChange={(e) => set(key, e.target.value)}
+                      required={["name", "employee_number"].includes(key) && hasHrProfile && !lockedKeys.has(key)}
+                      readOnly={lockedKeys.has(key) || !hasHrProfile}
+                      disabled={lockedKeys.has(key) || !hasHrProfile}
+                      data-testid={lockedKeys.has(key) || !hasHrProfile ? `hr-emp-${key}-readonly` : undefined}
+                    />
+                  </FormField>
+                ))}
+                <FormField id="hr-emp-gaji" label="Gaji pokok" value={form.salary_profile?.base_salary}>
+                  <input type="number" min="0" value={form.salary_profile?.base_salary || 0} disabled={!hasHrProfile} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, base_salary: e.target.value } }))} />
                 </FormField>
-              ))}
-              <FormField id="hr-emp-gaji" label="Gaji pokok" value={form.salary_profile.base_salary}>
-                <input type="number" min="0" value={form.salary_profile.base_salary || 0} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, base_salary: e.target.value } }))} />
-              </FormField>
-              <FormField id="hr-emp-efektif" label="Efektif gaji sejak" value={form.salary_profile.effective_from}>
-                <input type="date" value={form.salary_profile.effective_from || ""} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, effective_from: e.target.value } }))} />
-              </FormField>
-              <FormField id="hr-emp-alamat" label="Alamat" className="hr-span-2" value={form.address}>
-                <textarea value={form.address || ""} onChange={(e) => set("address", e.target.value)} />
-              </FormField>
-            </div>
-          </FormSection>
-          {err && <div className="error"><AlertCircle size={14} /> {err}</div>}
-          <div className="emp-actions"><button type="button" className="ghost" onClick={onClose}>Batal</button><button className="primary" disabled={busy}><Save size={14} /> Simpan</button></div>
+                <FormField id="hr-emp-efektif" label="Efektif gaji sejak" value={form.salary_profile?.effective_from}>
+                  <input type="date" value={form.salary_profile?.effective_from || ""} disabled={!hasHrProfile} onChange={(e) => setForm((cur) => ({ ...cur, salary_profile: { ...cur.salary_profile, effective_from: e.target.value } }))} />
+                </FormField>
+                <FormField id="hr-emp-alamat" label="Alamat" className="hr-span-2" value={form.address}>
+                  <textarea value={form.address || ""} disabled={!hasHrProfile} onChange={(e) => set("address", e.target.value)} />
+                </FormField>
+              </div>
+            </FormSection>
+            )}
+            {err && <div className="error"><AlertCircle size={14} /> {err}</div>}
+          </div>
+          <div className="emp-actions hr-employee-form-footer" data-testid="hr-employee-form-footer">
+            <button type="button" className="ghost" onClick={onClose}>Batal</button>
+            {hasHrProfile && <button className="primary" disabled={busy} data-testid="hr-employee-save"><Save size={14} /> Simpan</button>}
+          </div>
         </form>
       </div>
     </div>
@@ -97,12 +286,22 @@ function Employees({ employment = false }) {
   const [rows, setRows] = useState([]);
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [accountFor, setAccountFor] = useState(null);
+  const [roles, setRoles] = useState([]);
   const [err, setErr] = useState("");
+  const canCreateEternalAccount = hasPerm("users.manage") && hasPerm("hr.employee.manage");
+  const rowKey = (row) => row?.directory_key || row?.id || row?.user_id;
+  const canEditHr = (row) => Boolean(row?.has_hr_profile !== false && row?.id);
+  const canCreateAccountFor = (row) => Boolean(canCreateEternalAccount && canEditHr(row) && !row?.user_id);
   const load = useCallback(async () => {
     try {
-      const data = await api.hrPayrollEmployees();
+      const [data, meta] = await Promise.all([api.hrPayrollEmployees(), api.hrPayrollMeta().catch(() => ({ roles: [] }))]);
       setRows(data.employees || []);
-      setSelected((cur) => (cur ? (data.employees || []).find((r) => r.id === cur.id) || null : null));
+      setRoles(meta.roles || []);
+      setSelected((cur) => {
+        if (!cur) return null;
+        return (data.employees || []).find((r) => rowKey(r) === rowKey(cur)) || null;
+      });
     } catch (ex) { setErr(errorText(ex)); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -112,21 +311,30 @@ function Employees({ employment = false }) {
         <PageHead title="Data Kepegawaian" />
         {err && <div className="error">{err}</div>}
         <div className="hr-master-detail">
-          <div className="settings-card"><h3>Karyawan</h3>{rows.map((row) => <button type="button" className={`hr-list-button ${selected?.id === row.id ? "active" : ""}`} key={row.id} onClick={() => setSelected(row)}>{row.employee_number} · {row.name}</button>)}</div>
+          <div className="settings-card"><h3>Karyawan</h3>{rows.map((row) => <button type="button" className={`hr-list-button ${rowKey(selected) === rowKey(row) ? "active" : ""}`} key={rowKey(row)} onClick={() => setSelected(row)}>{row.employee_number || "—"} · {row.name}</button>)}</div>
           <div className="settings-card">
             {!selected ? <p className="muted">Pilih karyawan untuk melihat detail.</p> : <>
-              <div className="hr-card-head"><h3>{selected.name}</h3>{hasPerm("hr.employee.manage") && <button className="ghost sm" onClick={() => setEditing(selected)}><Edit3 size={13} /> Edit</button>}</div>
+              <div className="hr-card-head">
+                <h3>{selected.name}</h3>
+                <div className="hr-actions">
+                  {hasPerm("hr.employee.manage") && canEditHr(selected) && <button className="ghost sm" onClick={() => setEditing(selected)}><Edit3 size={13} /> Edit</button>}
+                  {hasPerm("hr.employee.manage") && canCreateAccountFor(selected) && <button className="ghost sm" data-testid="hr-create-account-action" onClick={() => setAccountFor(selected)}>Buat Akun Eternal</button>}
+                </div>
+              </div>
               <dl className="hr-detail-list">
-                <dt>Status kerja</dt><dd>{selected.employment_status || "-"}</dd><dt>Jabatan / Divisi</dt><dd>{selected.role || "-"} / {selected.division || "-"}</dd>
+                <dt>Status kerja</dt><dd>{selected.employment_status || "-"}</dd><dt>Jabatan / Divisi</dt><dd>{selected.role_label || selected.role || "-"} / {selected.division || "-"}</dd>
                 <dt>Masa kerja</dt><dd>{selected.join_date || "-"} s.d. {selected.end_date || "sekarang"}</dd><dt>Gaji pokok</dt><dd>{moneyFormat(selected.salary_profile?.base_salary)}</dd>
                 <dt>Bank</dt><dd>{selected.bank_name || "-"} · {selected.bank_account || "-"}</dd>
+                {selected.user_id && <><dt>User ID</dt><dd data-testid="hr-employment-user-id">{selected.user_id}</dd></>}
+                {selected.has_hr_profile === false && <><dt>Profil HR</dt><dd data-testid="hr-virtual-directory-note">Directory Settings saja — belum ada profil HR</dd></>}
               </dl>
               <h4>Riwayat Kepegawaian</h4>
               {(selected.employment_history || []).length ? (selected.employment_history || []).map((item, i) => <div key={i} className="hr-history-item">{item.title || item.role || "Perubahan"} · {item.effective_date || item.date || "-"}</div>) : <p className="muted">Belum ada riwayat.</p>}
             </>}
           </div>
         </div>
-        {editing && <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} />}
+        {editing && canEditHr(editing) && <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />}
+        {accountFor && canCreateAccountFor(accountFor) && <EmployeeForm initial={accountFor} onClose={() => setAccountFor(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} startWithAccountCreate />}
       </div>
     );
   }
@@ -134,10 +342,35 @@ function Employees({ employment = false }) {
     <div data-testid="hr-employees-page">
       <PageHead title="Daftar Karyawan" action={hasPerm("hr.employee.manage") && <button className="primary" onClick={() => setEditing({})}><Plus size={14} /> Tambah Karyawan</button>} />
       {err && <div className="error">{err}</div>}
-      <div className="table-wrap"><table className="ship-table"><thead><tr><th>No.</th><th>Nama</th><th>Jabatan</th><th>Divisi</th><th>Status</th><th>Gaji Pokok</th><th></th></tr></thead>
-        <tbody>{rows.map((row) => <tr key={row.id}><td>{row.employee_number}</td><td><strong>{row.name}</strong></td><td>{row.role || "-"}</td><td>{row.division || "-"}</td><td>{row.active === false ? "Nonaktif" : "Aktif"}</td><td>{moneyFormat(row.salary_profile?.base_salary)}</td><td>{hasPerm("hr.employee.manage") && <button className="ghost sm" onClick={() => setEditing(row)}>Edit</button>}</td></tr>)}</tbody>
+      <div className="table-wrap"><table className="ship-table" data-testid="hr-employees-table"><thead><tr><th>No.</th><th>Nama</th><th>Jabatan</th><th>Divisi</th><th>Status</th><th>Gaji Pokok</th><th></th></tr></thead>
+        <tbody>{rows.map((row) => (
+          <tr
+            key={rowKey(row)}
+            data-testid="hr-employee-row"
+            data-user-id={row.user_id || ""}
+            data-employee-id={row.id || ""}
+            data-directory-key={rowKey(row)}
+            data-has-hr-profile={row.has_hr_profile === false ? "false" : "true"}
+          >
+            <td>{row.employee_number || "—"}</td>
+            <td><strong>{row.name}</strong>{row.has_hr_profile === false && <div className="muted small" data-testid="hr-directory-no-profile">Belum ada profil HR</div>}</td>
+            <td>{row.role_label || row.role || "-"}</td>
+            <td>{row.division || "-"}</td>
+            <td>{row.active === false ? "Nonaktif" : "Aktif"}</td>
+            <td>{moneyFormat(row.salary_profile?.base_salary)}</td>
+            <td>
+              {hasPerm("hr.employee.manage") && canEditHr(row) && <button className="ghost sm" onClick={() => setEditing(row)}>Edit</button>}
+              {hasPerm("hr.employee.manage") && canCreateAccountFor(row) && <button className="ghost sm" data-testid="hr-create-account-action" onClick={() => setAccountFor(row)}>Buat Akun Eternal</button>}
+            </td>
+          </tr>
+        ))}</tbody>
       </table></div>
-      {editing && <EmployeeForm initial={editing.id ? editing : null} onClose={() => setEditing(null)} onSaved={load} />}
+      {editing && (editing.id || editing.has_hr_profile !== false) && (
+        <EmployeeForm initial={editing.id ? editing : null} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />
+      )}
+      {accountFor && canCreateAccountFor(accountFor) && (
+        <EmployeeForm initial={accountFor} onClose={() => setAccountFor(null)} onSaved={async () => { setAccountFor(null); await load(); }} roles={roles} canCreateEternalAccount={canCreateEternalAccount} startWithAccountCreate />
+      )}
     </div>
   );
 }
@@ -169,16 +402,21 @@ function Components() {
 }
 
 function AttendanceEditor({ period, employees, attendance, onSaved }) {
+  const hrEmployees = useMemo(
+    () => (employees || []).filter((emp) => emp?.id && emp?.has_hr_profile !== false),
+    [employees],
+  );
   const [draft, setDraft] = useState(() => Object.fromEntries((attendance || []).map((row) => [row.employee_id, row])));
   const save = async (employeeId) => {
+    if (!employeeId) return;
     await api.hrPayrollUpdateAttendance(period.id, employeeId, draft[employeeId] || {});
     onSaved();
   };
   if (period.status !== "DRAFT") return null;
-  return <div className="settings-card"><h3>Kehadiran</h3><div className="table-wrap"><table className="ship-table"><thead><tr><th>Karyawan</th><th>Hari kerja</th><th>Terlambat (menit)</th><th>Alpha</th><th>Lembur hari kerja (jam)</th><th></th></tr></thead><tbody>{employees.map((emp) => {
+  return <div className="settings-card"><h3>Kehadiran</h3><div className="table-wrap"><table className="ship-table"><thead><tr><th>Karyawan</th><th>Hari kerja</th><th>Terlambat (menit)</th><th>Alpha</th><th>Lembur hari kerja (jam)</th><th></th></tr></thead><tbody>{hrEmployees.map((emp) => {
     const row = draft[emp.id] || { employee_id: emp.id, work_days: 0, late_minutes: 0, alpha_days: 0, overtime_weekday_hours: 0, overtime_weekend_hours: 0, overtime_holiday_hours: 0, unpaid_leave_days: 0, unpaid_sick_days: 0 };
     const field = (key) => <input className="hr-number" type="number" min="0" value={row[key] || 0} onChange={(e) => setDraft((cur) => ({ ...cur, [emp.id]: { ...row, [key]: Number(e.target.value) } }))} />;
-    return <tr key={emp.id}><td>{emp.name}</td><td>{field("work_days")}</td><td>{field("late_minutes")}</td><td>{field("alpha_days")}</td><td>{field("overtime_weekday_hours")}</td><td><button className="ghost sm" onClick={() => save(emp.id)}>Simpan</button></td></tr>;
+    return <tr key={emp.id} data-testid="hr-attendance-employee-row"><td>{emp.name}</td><td>{field("work_days")}</td><td>{field("late_minutes")}</td><td>{field("alpha_days")}</td><td>{field("overtime_weekday_hours")}</td><td><button className="ghost sm" onClick={() => save(emp.id)}>Simpan</button></td></tr>;
   })}</tbody></table></div></div>;
 }
 
@@ -195,8 +433,8 @@ function Payroll() {
   const loadPeriods = useCallback(async () => { const data = await api.hrPayrollPeriods(); setPeriods(data.periods || []); }, []);
   const loadDetail = useCallback(async (period) => {
     if (!period?.id) return;
-    const [p, l, a, e, k] = await Promise.all([api.hrPayrollPeriod(period.id), api.hrPayrollLines(period.id), api.hrPayrollAttendance(period.id), api.hrPayrollEmployees(), api.hrPayrollKasbonSchedules({ active_only: true })]);
-    setSelected(p.period); setLines(l.lines || []); setAttendance(a.attendance || []); setEmployees(e.employees || []); setKasbon(k.schedules || []);
+    const [p, l, a, e, k] = await Promise.all([api.hrPayrollPeriod(period.id), api.hrPayrollLines(period.id), api.hrPayrollAttendance(period.id), api.hrPayrollEmployees({ hr_profile_only: true }), api.hrPayrollKasbonSchedules({ active_only: true })]);
+    setSelected(p.period); setLines(l.lines || []); setAttendance(a.attendance || []); setEmployees((e.employees || []).filter((emp) => emp?.id && emp?.has_hr_profile !== false)); setKasbon(k.schedules || []);
   }, []);
   useEffect(() => { loadPeriods().catch((ex) => setErr(errorText(ex))); }, [loadPeriods]);
   const create = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePeriod({ ...form, year: Number(form.year), month: Number(form.month) }); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };

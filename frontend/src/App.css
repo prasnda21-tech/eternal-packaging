@@ -2252,6 +2252,52 @@ button.ghost.sm.icon{padding:4px 6px}
 .hr-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .hr-form-grid label{display:flex;flex-direction:column;gap:6px;font-size:13px}
 .hr-span-2{grid-column:1 / -1}
+
+/* HR employee modal: viewport-safe shell (header + scroll body + sticky footer) */
+.modal-inner.hr-employee-modal{
+  max-height:calc(100vh - 32px);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+.hr-employee-modal .modal-head{
+  flex-shrink:0;
+  position:relative;
+  top:auto;
+}
+.modal-inner.hr-employee-modal > .hr-employee-form{
+  flex:1 1 auto;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  gap:0;
+  padding:0;
+  overflow:hidden;
+}
+.hr-employee-form-body{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-x:hidden;
+  overflow-y:auto;
+  padding:20px 22px;
+  display:block;
+  scroll-padding-bottom:24px;
+}
+.hr-employee-form-body > * + *{
+  margin-top:22px;
+}
+.hr-employee-form-body .fs-section{
+  overflow:visible;
+}
+.hr-employee-form-footer{
+  flex-shrink:0;
+  margin:0;
+  padding:14px 22px 16px;
+  border-top:1px solid var(--line);
+  background:var(--surface);
+  position:relative;
+  z-index:2;
+}
 .hr-master-detail{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;align-items:start}
 .hr-payroll-detail{display:grid;gap:14px}
 .hr-list-button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:1px solid transparent;background:#f7f8f6;padding:9px 10px;margin-bottom:5px}
