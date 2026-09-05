@@ -3,11 +3,11 @@ import { ledgerMenuItems, ledgerNavVisible, NAV_KEYS, NAV_MENU_FALLBACK } from "
 const has = (...keys) => (k) => keys.includes(k);
 
 describe("Buku Besar nav", () => {
-  test("sidebar catalog includes parent and Akun Perkiraan child only", () => {
+  test("sidebar catalog includes parent, Akun Perkiraan, Jurnal Umum", () => {
     const labels = NAV_MENU_FALLBACK
       .filter((m) => m.parent === NAV_KEYS.ledger || m.key === NAV_KEYS.ledger)
       .map((m) => m.label);
-    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan"]);
+    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan", "Jurnal Umum"]);
   });
 
   test("hidden without grants", () => {
@@ -20,8 +20,18 @@ describe("Buku Besar nav", () => {
     const v = ledgerNavVisible(has("ledger.accounts.view"));
     expect(v.parent).toBe(true);
     expect(v.accounts).toBe(true);
+    expect(v.generalJournal).toBe(false);
     expect(ledgerMenuItems(has("ledger.accounts.view")).map((i) => i.to)).toEqual([
       "/buku-besar/akun-perkiraan",
+    ]);
+  });
+
+  test("general_journal.view shows Jurnal Umum under Buku Besar", () => {
+    const v = ledgerNavVisible(has("general_journal.view"));
+    expect(v.parent).toBe(true);
+    expect(v.generalJournal).toBe(true);
+    expect(ledgerMenuItems(has("general_journal.view")).map((i) => i.to)).toEqual([
+      "/buku-besar/jurnal-umum",
     ]);
   });
 
