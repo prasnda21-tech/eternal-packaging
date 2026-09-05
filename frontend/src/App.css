@@ -857,6 +857,18 @@
 .emp-secondary{display:flex;justify-content:flex-end}
 .emp-actions{display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--line);padding-top:16px}
 
+/* Viewport-safe employee modal */
+.modal-viewport-safe-wrap{padding:16px;overflow:hidden}
+.modal-inner.modal-viewport-safe{max-height:min(calc(100vh - 32px),860px);display:flex;flex-direction:column;overflow:hidden}
+.modal-inner.modal-viewport-safe .modal-head{flex-shrink:0}
+.modal-inner > form.emp-modal-form,
+.modal-viewport-safe > form.emp-modal-form{overflow:hidden;display:flex;flex-direction:column;flex:1;min-height:0;padding:0;gap:0}
+.emp-modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:20px 22px;display:flex;flex-direction:column;gap:20px}
+.emp-modal-body > *{flex-shrink:0}
+.emp-modal-foot{flex-shrink:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 22px;border-top:1px solid var(--line);background:var(--surface);z-index:2}
+.emp-modal-foot .emp-actions{border-top:0;padding-top:0}
+.emp-foot-secondary{display:flex;align-items:center}
+
 /* Permission override block (inside modal) */
 .emp-perms{display:flex;flex-direction:column;gap:14px}
 .emp-perms-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
@@ -978,7 +990,9 @@
   .audit-thead,.audit-trow{grid-template-columns:1fr}
   .audit-thead{display:none}
   .emp-grid{grid-template-columns:1fr}
-  .modal-inner.modal-wide{max-width:96vw}
+  .modal-inner.modal-wide,.modal-inner.modal-viewport-safe{max-width:96vw}
+  .modal-viewport-safe-wrap{padding:12px}
+  .emp-modal-foot{flex-wrap:wrap;gap:10px}
 }
 
 /* -------- Import PO: mode tabs + file dropzone -------- */

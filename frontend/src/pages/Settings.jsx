@@ -144,8 +144,9 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   );
 
   return (
-    <form className="emp-form" onSubmit={submit} data-testid="employee-form">
-      <FormProgress
+    <form className="emp-form emp-modal-form" onSubmit={submit} data-testid="employee-form">
+      <div className="emp-modal-body" data-testid="employee-modal-body">
+        <FormProgress
         percentage={Math.round(([form.name, form.role, (isEdit ? true : form.email)].filter(Boolean).length / 3) * 100)}
         completed={[form.name, form.role, (isEdit ? true : form.email)].filter(Boolean).length}
         total={3}
@@ -322,17 +323,22 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
       </FormSection>
     )}
 
-      {isEdit && showData && onResetPassword && (
-        <div className="emp-secondary">
-          <button type="button" className="ghost sm" onClick={onResetPassword} disabled={busy} data-testid="emp-reset-password"><KeyRound size={13}/> Reset password</button>
-        </div>
-      )}
-
-      {err && <div className="error" data-testid="employee-form-error">{err}</div>}
-      <div className="emp-actions">
-        <button type="button" className="ghost" onClick={onCancel} disabled={busy} data-testid="employee-form-cancel"><X size={14}/> Batal</button>
-        <button type="submit" className="primary" disabled={busy} data-testid="employee-form-submit"><Save size={14}/> {isEdit ? "Simpan perubahan" : "Buat karyawan"}</button>
+        {err && <div className="error" data-testid="employee-form-error">{err}</div>}
       </div>
+
+      <footer className="emp-modal-foot" data-testid="employee-modal-footer">
+        <div className="emp-foot-secondary">
+          {isEdit && showData && onResetPassword && (
+            <button type="button" className="ghost sm" onClick={onResetPassword} disabled={busy} data-testid="emp-reset-password">
+              <KeyRound size={13}/> Reset password
+            </button>
+          )}
+        </div>
+        <div className="emp-actions">
+          <button type="button" className="ghost" onClick={onCancel} disabled={busy} data-testid="employee-form-cancel"><X size={14}/> Batal</button>
+          <button type="submit" className="primary" disabled={busy} data-testid="employee-form-submit"><Save size={14}/> {isEdit ? "Simpan perubahan" : "Buat karyawan"}</button>
+        </div>
+      </footer>
     </form>
   );
 }
@@ -575,8 +581,8 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
       )}
 
       {modal && ["create","edit","perms"].includes(modal.type) && canManage && (
-        <div className="modal" data-testid="employee-modal" onClick={(e) => e.target === e.currentTarget && close()}>
-          <div className={"modal-inner " + (modal.type === "perms" ? "modal-wide" : "")}>
+        <div className="modal modal-viewport-safe-wrap" data-testid="employee-modal" onClick={(e) => e.target === e.currentTarget && close()}>
+          <div className={"modal-inner modal-viewport-safe " + (modal.type === "perms" ? "modal-wide" : "")}>
             <header className="modal-head">
               <h3>
                 {modal.type === "create" && "Tambah Karyawan"}
