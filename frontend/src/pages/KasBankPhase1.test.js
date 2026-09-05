@@ -90,6 +90,17 @@ describe("Kas & Bank frontend contracts", () => {
     expect(src).toMatch(/activeFilter/);
   });
 
+  test("Daftar COA picker is BANK-only with safe legacy current link", () => {
+    const src = fs.readFileSync(path.join(__dirname, "DaftarKasBank.jsx"), "utf8");
+    expect(src).toMatch(/account_type/);
+    expect(src).toMatch(/BANK/);
+    expect(src).toMatch(/isBank/);
+    expect(src).toMatch(/isCurrent/);
+    expect(src).toMatch(/disabled=\{\!\!editRow\}/);
+    expect(src).not.toMatch(/a\.name\.includes\(/);
+    expect(src).not.toMatch(/toLowerCase\(\)\.includes\(["']kas/);
+  });
+
   test("api client exposes cash bank endpoints", () => {
     const src = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
     expect(src).toMatch(/cashBankAccounts/);
