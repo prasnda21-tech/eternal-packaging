@@ -1,7 +1,7 @@
 """Chart of Accounts (Akun Perkiraan) — master ledger accounts.
 
-Phase 1 stores code + name only. Balance / type / parent / journal fields
-belong to later phases and must not be invented here.
+Persists code, name, and Accurate account_type (classification only).
+Balance / parent / journal fields belong to later phases.
 """
 from __future__ import annotations
 
@@ -16,6 +16,27 @@ from pymongo.errors import DuplicateKeyError
 COLLECTION = "ledger_accounts"
 PERM_VIEW = "ledger.accounts.view"
 PERM_MANAGE = "ledger.accounts.manage"
+
+# Accurate Online account type codes (static catalog — not a CRUD master).
+ACCOUNT_TYPES = (
+    "BANK",
+    "EXPS",
+    "OEXP",
+    "REVE",
+    "OCAS",
+    "DEPR",
+    "FASS",
+    "OCLY",
+    "EQTY",
+    "AREC",
+    "INTR",
+    "OINC",
+    "APAY",
+    "COGS",
+    "LTLY",
+    "OASS",
+)
+ACCOUNT_TYPE_SET = frozenset(ACCOUNT_TYPES)
 
 # Future journal / accounting collections that may reference an account.
 # Checked on delete only — never cascade.
@@ -34,7 +55,7 @@ SEED_JSON = Path(__file__).resolve().parents[1] / "data" / "chart_of_accounts_se
 
 
 class AccountValidationError(ValueError):
-    """Invalid code/name payload."""
+    """Invalid code/name/type payload."""
 
 
 class AccountConflictError(Exception):
@@ -70,6 +91,18 @@ def normalize_name(raw: Any) -> str:
     return str(raw).strip()
 
 
+def normalize_account_type(raw: Any) -> Optional[str]:
+    """Return canonical Accurate type code, empty string if blank, or None if invalid."""
+    if raw is None:
+        return ""
+    s = str(raw).strip().upper()
+    if not s:
+        return ""
+    if s not in ACCOUNT_TYPE_SET:
+        return None
+    return s
+
+
 def actor_label(user: Optional[dict]) -> str:
     if not user:
         return ""
@@ -79,10 +112,16 @@ def actor_label(user: Optional[dict]) -> str:
 def public_account(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not doc:
         return None
+    raw_type = doc.get("account_type")
+    account_type = None
+    if raw_type is not None and str(raw_type).strip():
+        normalized = normalize_account_type(raw_type)
+        account_type = normalized if normalized else str(raw_type).strip().upper()
     return {
         "id": doc.get("id"),
         "code": normalize_code(doc.get("code")),
         "name": normalize_name(doc.get("name")),
+        "account_type": account_type,
         "created_at": doc.get("created_at"),
         "created_by": doc.get("created_by"),
         "updated_at": doc.get("updated_at"),
@@ -90,20 +129,32 @@ def public_account(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     }
 
 
-def validate_payload(raw: dict) -> Tuple[str, str]:
+def validate_payload(raw: dict, *, require_account_type: bool = True) -> Tuple[str, str, Optional[str]]:
     code = normalize_code((raw or {}).get("code"))
     name = normalize_name((raw or {}).get("name"))
     if not code:
         raise AccountValidationError("Kode Perkiraan wajib diisi")
     if not name:
         raise AccountValidationError("Nama Akun wajib diisi")
-    return code, name
+
+    has_type_key = "account_type" in (raw or {})
+    if require_account_type or has_type_key:
+        normalized = normalize_account_type((raw or {}).get("account_type"))
+        if normalized is None:
+            raise AccountValidationError("Tipe Akun tidak valid")
+        if require_account_type and not normalized:
+            raise AccountValidationError("Tipe Akun wajib diisi")
+        account_type = normalized or None
+    else:
+        account_type = None
+    return code, name, account_type
 
 
 async def ensure_indexes(db) -> None:
     col = db[COLLECTION]
     await col.create_index("id", unique=True)
     await col.create_index("code", unique=True)
+    await col.create_index("account_type")
 
 
 async def list_accounts(db, *, q: Optional[str] = None) -> List[dict]:
@@ -114,6 +165,7 @@ async def list_accounts(db, *, q: Optional[str] = None) -> List[dict]:
         query["$or"] = [
             {"code": {"$regex": needle, "$options": "i"}},
             {"name": {"$regex": needle, "$options": "i"}},
+            {"account_type": {"$regex": needle, "$options": "i"}},
         ]
     docs = await db[COLLECTION].find(query, {"_id": 0}).sort("code", 1).to_list(5000)
     return [public_account(d) for d in docs]
@@ -125,7 +177,7 @@ async def get_account(db, account_id: str) -> Optional[dict]:
 
 
 async def create_account(db, raw: dict, *, user: Optional[dict] = None) -> dict:
-    code, name = validate_payload(raw)
+    code, name, account_type = validate_payload(raw, require_account_type=True)
     existing = await db[COLLECTION].find_one({"code": code}, {"_id": 0, "id": 1})
     if existing:
         raise AccountConflictError(f"Kode Perkiraan '{code}' sudah digunakan")
@@ -135,6 +187,7 @@ async def create_account(db, raw: dict, *, user: Optional[dict] = None) -> dict:
         "id": str(uuid.uuid4()),
         "code": code,  # string
         "name": name,
+        "account_type": account_type,
         "created_at": now,
         "created_by": actor,
         "updated_at": now,
@@ -145,6 +198,49 @@ async def create_account(db, raw: dict, *, user: Optional[dict] = None) -> dict:
     except DuplicateKeyError as exc:
         raise AccountConflictError(f"Kode Perkiraan '{code}' sudah digunakan") from exc
     return public_account(doc)
+
+
+async def update_account(
+    db,
+    account_id: str,
+    raw: dict,
+    *,
+    user: Optional[dict] = None,
+) -> dict:
+    """Update name and/or account_type. Code is immutable."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        raise KeyError("missing")
+    doc = await db[COLLECTION].find_one({"id": aid}, {"_id": 0})
+    if not doc:
+        raise KeyError("missing")
+
+    updates: Dict[str, Any] = {}
+    if "name" in (raw or {}):
+        name = normalize_name((raw or {}).get("name"))
+        if not name:
+            raise AccountValidationError("Nama Akun wajib diisi")
+        updates["name"] = name
+    if "account_type" in (raw or {}):
+        normalized = normalize_account_type((raw or {}).get("account_type"))
+        if normalized is None:
+            raise AccountValidationError("Tipe Akun tidak valid")
+        if not normalized:
+            raise AccountValidationError("Tipe Akun wajib diisi")
+        updates["account_type"] = normalized
+    if "code" in (raw or {}):
+        new_code = normalize_code((raw or {}).get("code"))
+        if new_code and new_code != normalize_code(doc.get("code")):
+            raise AccountValidationError("Kode Perkiraan tidak dapat diubah")
+
+    if not updates:
+        return public_account(doc)
+
+    updates["updated_at"] = now_iso()
+    updates["updated_by"] = actor_label(user)
+    await db[COLLECTION].update_one({"id": aid}, {"$set": updates})
+    refreshed = await db[COLLECTION].find_one({"id": aid}, {"_id": 0})
+    return public_account(refreshed)
 
 
 async def account_is_referenced(db, account_id: str, code: str) -> bool:
@@ -192,7 +288,7 @@ async def delete_account(db, account_id: str) -> dict:
 
 
 def load_seed_rows(path: Optional[Path] = None) -> List[Dict[str, str]]:
-    """Load explicit seed rows. Only code + name; ignore balance/source fields."""
+    """Load explicit seed rows: code + name + account_type. Ignore balance/parent fields."""
     src = Path(path) if path else SEED_JSON
     raw = json.loads(src.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
@@ -202,15 +298,20 @@ def load_seed_rows(path: Optional[Path] = None) -> List[Dict[str, str]]:
     for row in raw:
         if not isinstance(row, dict):
             continue
-        # Explicitly ignore balance / type / parent / currency / source fields.
+        # Explicitly ignore balance / parent / currency / source fields.
         code = normalize_code(row.get("code") or row.get("Kode Perkiraan"))
         name = normalize_name(row.get("name") or row.get("Nama Akun") or row.get("Nama"))
+        account_type = normalize_account_type(
+            row.get("account_type") or row.get("Tipe Akun")
+        )
         if not code or not name:
             continue
+        if account_type is None or not account_type:
+            raise ValueError(f"seed row '{code}' missing/invalid account_type")
         if code in seen:
             continue
         seen.add(code)
-        out.append({"code": code, "name": name})
+        out.append({"code": code, "name": name, "account_type": account_type})
     return out
 
 
@@ -229,7 +330,13 @@ async def seed_accounts(
     for row in payload:
         code = normalize_code(row.get("code"))
         name = normalize_name(row.get("name"))
+        account_type = normalize_account_type(
+            row.get("account_type") or row.get("Tipe Akun")
+        )
         if not code or not name:
+            skipped += 1
+            continue
+        if account_type is None or not account_type:
             skipped += 1
             continue
         existing = await col.find_one({"code": code}, {"_id": 1})
@@ -240,6 +347,7 @@ async def seed_accounts(
             "id": str(uuid.uuid4()),
             "code": code,
             "name": name,
+            "account_type": account_type,
             "created_at": now,
             "created_by": actor,
             "updated_at": now,

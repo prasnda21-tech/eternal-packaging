@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Plus, Search, Trash2, X } from "lucide-react";
+import { AlertCircle, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
+
+/** Accurate account type codes (static; labels = codes). */
+export const ACCOUNT_TYPE_CODES = [
+  "BANK", "EXPS", "OEXP", "REVE", "OCAS", "DEPR", "FASS", "OCLY",
+  "EQTY", "AREC", "INTR", "OINC", "APAY", "COGS", "LTLY", "OASS",
+];
+
+export const accountTypeLabel = (value) => {
+  const s = String(value || "").trim().toUpperCase();
+  return s || "Belum ditentukan";
+};
 
 const errText = (ex) => {
   const det = ex?.response?.data?.detail;
@@ -18,8 +29,10 @@ export default function AkunPerkiraan() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
+  const [accountType, setAccountType] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -49,7 +62,8 @@ export default function AkunPerkiraan() {
     return items.filter((row) => {
       const codeS = String(row?.code || "").toLowerCase();
       const nameS = String(row?.name || "").toLowerCase();
-      return codeS.includes(needle) || nameS.includes(needle);
+      const typeS = String(row?.account_type || "").toLowerCase();
+      return codeS.includes(needle) || nameS.includes(needle) || typeS.includes(needle);
     });
   }, [items, q]);
 
@@ -59,21 +73,50 @@ export default function AkunPerkiraan() {
     itemCount: filtered.length,
   });
 
-  const openForm = () => {
+  const openCreate = () => {
+    setEditing(null);
     setCode("");
     setName("");
+    setAccountType("");
     setFormError("");
     setFormOpen(true);
   };
 
-  const submitCreate = async (e) => {
+  const openEdit = (row) => {
+    setEditing(row);
+    setCode(String(row?.code || ""));
+    setName(String(row?.name || ""));
+    setAccountType(String(row?.account_type || "").trim().toUpperCase());
+    setFormError("");
+    setFormOpen(true);
+  };
+
+  const closeForm = () => {
+    if (saving) return;
+    setFormOpen(false);
+    setEditing(null);
+  };
+
+  const submitForm = async (e) => {
     e?.preventDefault?.();
     if (!canManage || saving) return;
     setSaving(true);
     setFormError("");
     try {
-      await api.createLedgerAccount({ code, name });
+      if (editing) {
+        await api.updateLedgerAccount(editing.id, {
+          name,
+          account_type: accountType,
+        });
+      } else {
+        await api.createLedgerAccount({
+          code,
+          name,
+          account_type: accountType,
+        });
+      }
       setFormOpen(false);
+      setEditing(null);
       await load();
     } catch (ex) {
       setFormError(errText(ex));
@@ -103,10 +146,10 @@ export default function AkunPerkiraan() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Buku Besar</p>
           <h1 data-testid="akun-perkiraan-title">Akun Perkiraan</h1>
-          <p className="subhead">Master kode dan nama akun</p>
+          <p className="subhead">Master kode, nama, dan tipe akun</p>
         </div>
         {canManage && (
-          <button type="button" className="primary" onClick={openForm} data-testid="akun-perkiraan-add">
+          <button type="button" className="primary" onClick={openCreate} data-testid="akun-perkiraan-add">
             <Plus size={14} /> Tambah Akun
           </button>
         )}
@@ -126,7 +169,7 @@ export default function AkunPerkiraan() {
               type="text"
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
-              placeholder="Cari kode atau nama (live)"
+              placeholder="Cari kode, nama, atau tipe (live)"
               data-testid="akun-perkiraan-search"
               aria-label="Cari akun perkiraan"
             />
@@ -148,16 +191,17 @@ export default function AkunPerkiraan() {
             <tr>
               <th className="col-fit">Kode Perkiraan</th>
               <th className="col-text">Nama Akun</th>
+              <th className="col-fit">Tipe Akun</th>
               <th className="col-fit">Aksi</th>
             </tr>
           </thead>
           <tbody data-testid="akun-perkiraan-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="akun-perkiraan-loading"><td colSpan={3} className="muted small">Memuat…</td></tr>
+              <tr data-testid="akun-perkiraan-loading"><td colSpan={4} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={3} className="muted small" data-testid="akun-perkiraan-empty">
+                <td colSpan={4} className="muted small" data-testid="akun-perkiraan-empty">
                   Tidak ada akun yang cocok.
                 </td>
               </tr>
@@ -166,16 +210,29 @@ export default function AkunPerkiraan() {
               <tr key={row.id} data-testid={`akun-row-${row.code}`}>
                 <td className="mono">{row.code}</td>
                 <td>{row.name}</td>
+                <td className="mono" data-testid={`akun-type-${row.code}`}>
+                  {accountTypeLabel(row.account_type)}
+                </td>
                 <td>
                   {canManage ? (
-                    <button
-                      type="button"
-                      className="ghost sm danger"
-                      onClick={() => { setDeleteError(""); setPendingDelete(row); }}
-                      data-testid={`akun-delete-${row.code}`}
-                    >
-                      <Trash2 size={12} /> Hapus
-                    </button>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        onClick={() => openEdit(row)}
+                        data-testid={`akun-edit-${row.code}`}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost sm danger"
+                        onClick={() => { setDeleteError(""); setPendingDelete(row); }}
+                        data-testid={`akun-delete-${row.code}`}
+                      >
+                        <Trash2 size={12} /> Hapus
+                      </button>
+                    </div>
                   ) : (
                     <span className="muted small">—</span>
                   )}
@@ -187,22 +244,23 @@ export default function AkunPerkiraan() {
       </div>
 
       {formOpen && (
-        <div className="modal" role="dialog" aria-modal="true" data-testid="akun-perkiraan-form-modal" onClick={() => !saving && setFormOpen(false)}>
+        <div className="modal" role="dialog" aria-modal="true" data-testid="akun-perkiraan-form-modal" onClick={closeForm}>
           <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h3>Tambah Akun</h3>
-              <button type="button" className="icon-button" onClick={() => !saving && setFormOpen(false)} aria-label="Tutup">
+              <h3>{editing ? "Edit Akun" : "Tambah Akun"}</h3>
+              <button type="button" className="icon-button" onClick={closeForm} aria-label="Tutup">
                 <X size={16} />
               </button>
             </header>
-            <form className="emp-form" onSubmit={submitCreate} data-testid="akun-perkiraan-form">
+            <form className="emp-form" onSubmit={submitForm} data-testid="akun-perkiraan-form">
               <label>
                 Kode Perkiraan
                 <input
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
-                  required
-                  autoFocus
+                  required={!editing}
+                  disabled={Boolean(editing)}
+                  autoFocus={!editing}
                   data-testid="akun-form-code"
                 />
               </label>
@@ -212,12 +270,27 @@ export default function AkunPerkiraan() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
+                  autoFocus={Boolean(editing)}
                   data-testid="akun-form-name"
                 />
               </label>
+              <label>
+                Tipe Akun
+                <select
+                  value={accountType}
+                  onChange={(e) => setAccountType(e.target.value)}
+                  required
+                  data-testid="akun-form-account-type"
+                >
+                  <option value="">Pilih tipe</option>
+                  {ACCOUNT_TYPE_CODES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </label>
               {formError && <p className="error" data-testid="akun-form-error">{formError}</p>}
               <div className="delete-modal-actions">
-                <button type="button" className="ghost" disabled={saving} onClick={() => setFormOpen(false)}>Batal</button>
+                <button type="button" className="ghost" disabled={saving} onClick={closeForm}>Batal</button>
                 <button type="submit" className="primary" disabled={saving} data-testid="akun-form-submit">
                   {saving ? "Menyimpan…" : "Simpan"}
                 </button>
