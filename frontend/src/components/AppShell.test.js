@@ -112,6 +112,7 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/id="sidebar-flyout-purchasing"/);
     expect(shell).toMatch(/id="sidebar-flyout-inventory"/);
     expect(shell).toMatch(/id="sidebar-flyout-ledger"/);
+    expect(shell).toMatch(/id="sidebar-flyout-cash-bank"/);
     expect(shell).toMatch(/id="sidebar-flyout-reports"/);
     expect(shell).toMatch(/id="sidebar-flyout-employee-admin"/);
     expect(shell).toMatch(/id="sidebar-flyout-hr-payroll"/);
@@ -119,10 +120,11 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/purchasingOpen && purchasingItems\.length > 0/);
     expect(shell).toMatch(/inventoryOpen && inventoryItems\.length > 0/);
     expect(shell).toMatch(/ledgerOpen && ledgerItems\.length > 0/);
+    expect(shell).toMatch(/cashBankOpen && cashBankItems\.length > 0/);
     expect(shell).toMatch(/reportsOpen && reportsItems\.length > 0/);
     expect(shell).toMatch(/employeeAdminOpen && employeeAdminItems\.length > 0/);
     expect(shell).toMatch(/hrPayrollOpen && hrPayrollItems\.length > 0/);
-    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(8);
+    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(9);
     expect(grid).toMatch(/if \(!blocks\.length\) return null/);
   });
 

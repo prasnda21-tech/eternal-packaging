@@ -12,6 +12,8 @@ export const UI_MODULES = {
   route: "route",
   settings: "settings",
   reports: "reports",
+  ledger: "ledger",
+  cashBank: "cashBank",
 };
 
 export function moduleFromPath(pathname = "") {
@@ -19,6 +21,8 @@ export function moduleFromPath(pathname = "") {
   if (path.startsWith("/penjualan") || path.startsWith("/admin/import")) return UI_MODULES.sales;
   if (path.startsWith("/pembelian")) return UI_MODULES.purchasing;
   if (path.startsWith("/persediaan")) return UI_MODULES.inventory;
+  if (path.startsWith("/kas-bank")) return UI_MODULES.cashBank;
+  if (path.startsWith("/buku-besar")) return UI_MODULES.ledger;
   if (path.startsWith("/hr-payroll/penggajian") || path.startsWith("/hr-payroll/slip-gaji") || path.startsWith("/hr-payroll/komponen-gaji") || path.startsWith("/hr-payroll/riwayat")) {
     return UI_MODULES.payroll;
   }
@@ -27,7 +31,6 @@ export function moduleFromPath(pathname = "") {
   if (path.startsWith("/optimasi-rute")) return UI_MODULES.route;
   if (path.startsWith("/settings")) return UI_MODULES.settings;
   if (path.startsWith("/laporan")) return UI_MODULES.reports;
-  if (path.startsWith("/buku-besar")) return UI_MODULES.reports;
   if (
     path.startsWith("/produksi")
     || path.startsWith("/tasks")

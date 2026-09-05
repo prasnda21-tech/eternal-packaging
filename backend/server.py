@@ -157,6 +157,7 @@ from services.customer_pricing_public_http import register_public_customer_prici
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.chart_of_accounts_http import register_chart_of_accounts_routes
+from services.cash_bank_http import register_cash_bank_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
 from services.sales_activity.http import register_sales_activity_routes
 from services.independent_route.http import register_independent_route_routes
@@ -8218,6 +8219,13 @@ register_chart_of_accounts_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+register_cash_bank_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_hr_payroll_routes(
     api_router,
     get_db=lambda: db,
@@ -9664,6 +9672,12 @@ async def seed():
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
+    from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes
+    from services.cash_bank_vouchers import ensure_indexes as _cash_bank_voucher_ensure_indexes
+    from services.journal_core import ensure_indexes as _journal_core_ensure_indexes
+    await _cash_bank_master_ensure_indexes(db)
+    await _cash_bank_voucher_ensure_indexes(db)
+    await _journal_core_ensure_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()

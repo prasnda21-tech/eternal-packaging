@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api from "./api";
 import { loginThenLoadUser } from "./authSession";
+import { clearCashBankWorkspaceTabs } from "./cashBankWorkspace";
 
 const AuthContext = createContext(null);
 
@@ -38,8 +39,14 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
-    await api.logout();
-    setUser(null);
+    const previous = user;
+    try {
+      await api.logout();
+    } finally {
+      clearCashBankWorkspaceTabs(previous);
+      clearCashBankWorkspaceTabs(null);
+      setUser(null);
+    }
   };
 
   return (

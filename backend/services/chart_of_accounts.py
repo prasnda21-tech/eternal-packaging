@@ -24,6 +24,10 @@ _REFERENCE_SPECS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("journal_lines", ("account_id",)),
     ("ledger_transactions", ("account_id",)),
     ("accounting_transactions", ("account_id", "lines.account_id")),
+    ("cash_bank_accounts", ("account_id",)),
+    ("cash_bank_receipts", ("cash_bank_account_id", "counter_account_id")),
+    ("cash_bank_payments", ("cash_bank_account_id", "counter_account_id")),
+    ("cash_bank_transfers", ("source_account_id", "dest_account_id")),
 )
 
 SEED_JSON = Path(__file__).resolve().parents[1] / "data" / "chart_of_accounts_seed.json"

@@ -18,6 +18,10 @@ import Settings from "./pages/Settings";
 import MasterBarangJasa from "./pages/MasterBarangJasa";
 import StockSaatIni from "./pages/StockSaatIni";
 import AkunPerkiraan from "./pages/AkunPerkiraan";
+import DaftarKasBank from "./pages/DaftarKasBank";
+import PenerimaanKasBank from "./pages/PenerimaanKasBank";
+import PembayaranKasBank from "./pages/PembayaranKasBank";
+import TransferKasBank from "./pages/TransferKasBank";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
 import PermintaanPembelian from "./pages/PermintaanPembelian";
 import PesananPembelian from "./pages/PesananPembelian";
@@ -34,7 +38,7 @@ import PoWorkView from "./pages/PoWorkView";
 import PublicCustomerApproval from "./pages/PublicCustomerApproval";
 import CustomerTrackingPage from "./pages/CustomerTrackingPage";
 import PublicHargaPage from "./pages/PublicHargaPage";
-import { NAV_KEYS, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
+import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
 import DeliverySchedulePage from "./pages/DeliverySchedulePage";
 import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
@@ -106,6 +110,16 @@ function BukuBesarIndex() {
   const { hasPerm } = useAuth();
   const v = ledgerNavVisible(hasPerm);
   if (v.accounts) return <Navigate to="/buku-besar/akun-perkiraan" replace />;
+  return <Navigate to="/" replace />;
+}
+
+function KasBankIndex() {
+  const { hasPerm } = useAuth();
+  const v = cashBankNavVisible(hasPerm);
+  if (v.accounts) return <Navigate to="/kas-bank/daftar" replace />;
+  if (v.receipts) return <Navigate to="/kas-bank/penerimaan" replace />;
+  if (v.payments) return <Navigate to="/kas-bank/pembayaran" replace />;
+  if (v.transfers) return <Navigate to="/kas-bank/transfer" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -186,6 +200,11 @@ export default function App() {
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />
             <Route path="/buku-besar" element={<BukuBesarIndex />} />
+            <Route path="/kas-bank/daftar" element={<PermGate anyOf={[NAV_KEYS.cashBankAccounts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><DaftarKasBank /></PermGate>} />
+            <Route path="/kas-bank/penerimaan" element={<PermGate anyOf={[NAV_KEYS.cashBankReceipts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PenerimaanKasBank /></PermGate>} />
+            <Route path="/kas-bank/pembayaran" element={<PermGate anyOf={[NAV_KEYS.cashBankPayments, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PembayaranKasBank /></PermGate>} />
+            <Route path="/kas-bank/transfer" element={<PermGate anyOf={[NAV_KEYS.cashBankTransfers, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><TransferKasBank /></PermGate>} />
+            <Route path="/kas-bank" element={<KasBankIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
