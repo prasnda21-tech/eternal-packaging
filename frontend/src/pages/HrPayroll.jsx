@@ -33,10 +33,29 @@ function PageHead({ title, action }) {
 }
 
 function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalAccount = false, startWithAccountCreate = false }) {
-  const [form, setForm] = useState(() => ({ ...emptyEmployee, ...initial, salary_profile: { ...emptyEmployee.salary_profile, ...(initial?.salary_profile || {}) } }));
+  const isCreateProfileFromUser = Boolean(initial?.has_hr_profile === false && initial?.user_id);
+  const [form, setForm] = useState(() => {
+    if (isCreateProfileFromUser) {
+      return {
+        ...emptyEmployee,
+        name: initial?.name || "",
+        email: initial?.email || "",
+        role: initial?.role || "",
+        role_label: initial?.role_label || "",
+        phone: initial?.phone || "",
+        user_id: initial?.user_id || "",
+        salary_profile: { ...emptyEmployee.salary_profile },
+      };
+    }
+    return {
+      ...emptyEmployee,
+      ...initial,
+      salary_profile: { ...emptyEmployee.salary_profile, ...(initial?.salary_profile || {}) },
+    };
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [createAccount, setCreateAccount] = useState(() => Boolean(startWithAccountCreate));
+  const [createAccount, setCreateAccount] = useState(() => Boolean(startWithAccountCreate && !isCreateProfileFromUser));
   const [account, setAccount] = useState({
     name: initial?.name || "",
     email: initial?.email || "",
@@ -46,10 +65,10 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
     phone: initial?.phone || "",
   });
   const linkedFromSettings = Boolean(form.user_id || initial?.linked_from_settings);
-  const isVirtualDirectory = initial?.has_hr_profile === false;
-  const isCreate = !initial?.id && !isVirtualDirectory;
+  const isVirtualDirectory = initial?.has_hr_profile === false && !isCreateProfileFromUser;
+  const isCreate = !initial?.id;
   const isHrOnlyUnlinked = Boolean(initial?.id && !initial?.user_id && initial?.has_hr_profile !== false);
-  const accountMode = isCreate ? createAccount : (isHrOnlyUnlinked && createAccount);
+  const accountMode = isCreate && !isCreateProfileFromUser ? createAccount : (isHrOnlyUnlinked && createAccount);
   const hasHrProfile = Boolean(initial?.id) || isCreate;
   const set = (key, value) => setForm((cur) => ({ ...cur, [key]: value }));
   const setAccountField = (key, value) => setAccount((cur) => ({ ...cur, [key]: value }));
@@ -122,7 +141,7 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
       } else {
         const payload = {
           ...form,
-          user_id: form.user_id || null,
+          user_id: form.user_id || initial?.user_id || null,
           salary_profile: { ...form.salary_profile, base_salary: Number(form.salary_profile.base_salary) || 0 },
         };
         if (linkedFromSettings && initial?.id) {
@@ -131,7 +150,7 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
           delete payload.email;
           delete payload.active;
         }
-        if (isCreate && createAccount) {
+        if (isCreate && createAccount && !isCreateProfileFromUser) {
           payload.create_account = {
             name: account.name || form.name,
             email: account.email.trim().toLowerCase(),
@@ -149,7 +168,12 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
       }
       await onSaved();
       onClose();
-    } catch (ex) { setErr(errorText(ex)); } finally { setBusy(false); }
+    } catch (ex) {
+      setErr(errorText(ex));
+      if (ex?.response?.status === 409) {
+        onSaved().catch(() => {});
+      }
+    } finally { setBusy(false); }
   };
   const fields = [
     ["name", "Nama lengkap"], ["employee_number", "Nomor karyawan"], ["role", "Jabatan HR"], ["division", "Divisi"],
@@ -159,12 +183,12 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
   ];
   if (!accountMode && !linkedFromSettings) fields.push(["user_id", "User ID (opsional)"]);
   const lockedKeys = linkedFromSettings ? new Set(["name", "role", "email", "user_id"]) : new Set();
-  const showAccountToggle = (isCreate || isHrOnlyUnlinked) && canCreateEternalAccount;
+  const showAccountToggle = (isCreate || isHrOnlyUnlinked) && canCreateEternalAccount && !isCreateProfileFromUser;
   return (
     <div className="modal" data-testid="hr-employee-modal" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-inner modal-wide hr-employee-modal" onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
-          <h3>{isCreate ? "Tambah Karyawan" : isHrOnlyUnlinked && createAccount ? "Buat Akun Eternal" : hasHrProfile ? "Edit Karyawan" : "Detail Karyawan (Settings)"}</h3>
+          <h3>{isCreateProfileFromUser ? `Buat Profil HR · ${form.name || initial?.name}` : isCreate ? "Tambah Karyawan" : isHrOnlyUnlinked && createAccount ? "Buat Akun Eternal" : hasHrProfile ? "Edit Karyawan" : "Detail Karyawan (Settings)"}</h3>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Tutup"><X size={16} /></button>
         </header>
         <form className="emp-form hr-employee-form" onSubmit={save} data-testid="hr-employee-form">
@@ -177,7 +201,8 @@ function EmployeeForm({ initial, onClose, onSaved, roles = [], canCreateEternalA
             {linkedFromSettings && (
               <p className="muted small" data-testid="hr-employee-settings-authority">
                 Nama, email, role, dan status akun dikelola melalui Settings → Karyawan (canonical user ID: {form.user_id}).
-                {!hasHrProfile && " Profil HR belum dibuat — tidak ada mutasi HR dari baris directory ini."}
+                {isCreateProfileFromUser && " Melengkapi form ini akan membuat profil HR persisten untuk akun tersebut."}
+                {!hasHrProfile && !isCreateProfileFromUser && " Profil HR belum dibuat — tidak ada mutasi HR dari baris directory ini."}
               </p>
             )}
             {showAccountToggle && (
@@ -292,6 +317,7 @@ function Employees({ employment = false }) {
   const canCreateEternalAccount = hasPerm("users.manage") && hasPerm("hr.employee.manage");
   const rowKey = (row) => row?.directory_key || row?.id || row?.user_id;
   const canEditHr = (row) => Boolean(row?.has_hr_profile !== false && row?.id);
+  const canCreateHrProfile = (row) => Boolean(row?.has_hr_profile === false && row?.user_id);
   const canCreateAccountFor = (row) => Boolean(canCreateEternalAccount && canEditHr(row) && !row?.user_id);
   const load = useCallback(async () => {
     try {
@@ -318,6 +344,11 @@ function Employees({ employment = false }) {
                 <h3>{selected.name}</h3>
                 <div className="hr-actions">
                   {hasPerm("hr.employee.manage") && canEditHr(selected) && <button className="ghost sm" onClick={() => setEditing(selected)}><Edit3 size={13} /> Edit</button>}
+                  {hasPerm("hr.employee.manage") && canCreateHrProfile(selected) && (
+                    <button className="ghost sm" data-testid="hr-create-profile-action" onClick={() => setEditing(selected)}>
+                      Buat Profil HR
+                    </button>
+                  )}
                   {hasPerm("hr.employee.manage") && canCreateAccountFor(selected) && <button className="ghost sm" data-testid="hr-create-account-action" onClick={() => setAccountFor(selected)}>Buat Akun Eternal</button>}
                 </div>
               </div>
@@ -333,7 +364,7 @@ function Employees({ employment = false }) {
             </>}
           </div>
         </div>
-        {editing && canEditHr(editing) && <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />}
+        {editing && <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />}
         {accountFor && canCreateAccountFor(accountFor) && <EmployeeForm initial={accountFor} onClose={() => setAccountFor(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} startWithAccountCreate />}
       </div>
     );
@@ -360,13 +391,18 @@ function Employees({ employment = false }) {
             <td>{moneyFormat(row.salary_profile?.base_salary)}</td>
             <td>
               {hasPerm("hr.employee.manage") && canEditHr(row) && <button className="ghost sm" onClick={() => setEditing(row)}>Edit</button>}
+              {hasPerm("hr.employee.manage") && canCreateHrProfile(row) && (
+                <button className="ghost sm" data-testid="hr-create-profile-action" onClick={() => setEditing(row)}>
+                  Buat Profil HR
+                </button>
+              )}
               {hasPerm("hr.employee.manage") && canCreateAccountFor(row) && <button className="ghost sm" data-testid="hr-create-account-action" onClick={() => setAccountFor(row)}>Buat Akun Eternal</button>}
             </td>
           </tr>
         ))}</tbody>
       </table></div>
-      {editing && (editing.id || editing.has_hr_profile !== false) && (
-        <EmployeeForm initial={editing.id ? editing : null} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />
+      {editing && (
+        <EmployeeForm initial={editing} onClose={() => setEditing(null)} onSaved={load} roles={roles} canCreateEternalAccount={canCreateEternalAccount} />
       )}
       {accountFor && canCreateAccountFor(accountFor) && (
         <EmployeeForm initial={accountFor} onClose={() => setAccountFor(null)} onSaved={async () => { setAccountFor(null); await load(); }} roles={roles} canCreateEternalAccount={canCreateEternalAccount} startWithAccountCreate />

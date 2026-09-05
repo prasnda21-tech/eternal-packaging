@@ -114,4 +114,61 @@ describe("HR & Payroll UI source", () => {
     expect(css).toMatch(/\.hr-employee-form-footer\s*\{[^}]*flex-shrink\s*:\s*0/s);
     expect(css).toMatch(/\.hr-employee-form-footer\s*\{[^}]*background\s*:\s*var\(--surface\)/s);
   });
+
+  test("buat profil HR flow for virtual directory users", () => {
+    expect(page).toMatch(/const canCreateHrProfile = \(row\) => Boolean\(row\?\.has_hr_profile === false && row\?\.user_id\)/);
+    expect(page).toMatch(/data-testid="hr-create-profile-action"/);
+    expect(page).toMatch(/Buat Profil HR/);
+    expect(page).toMatch(/canCreateHrProfile\(row\) && \(\s*<button className="ghost sm" data-testid="hr-create-profile-action"/);
+    expect(page).toMatch(/isCreateProfileFromUser/);
+    expect(page).toMatch(/Buat Profil HR ·/);
+    expect(page).toMatch(/hrPayrollCreateEmployee\(payload\)/);
+    expect(page).toMatch(/user_id:\s*form\.user_id\s*\|\|\s*initial\?\.user_id/);
+    expect(page).not.toMatch(/hrPayrollCreateEmployee\(\s*null/);
+    expect(page).not.toMatch(/hrPayrollCreateEmployee\(\s*undefined/);
+  });
+
+  test("buat profil HR flow adheres strictly to requirements 1-12", () => {
+    // 1. has_hr_profile=false shows "Buat Profil HR"
+    expect(page).toMatch(/canCreateHrProfile\(row\) && \(\s*<button className="ghost sm" data-testid="hr-create-profile-action"/);
+    expect(page).toMatch(/Buat Profil HR/);
+
+    // 2. has_hr_profile=false does NOT show Edit
+    expect(page).toMatch(/const canEditHr = \(row\) => Boolean\(row\?\.has_hr_profile !== false && row\?\.id\)/);
+
+    // 3. has_hr_profile=true shows Edit
+    expect(page).toMatch(/canEditHr\(row\) && <button className="ghost sm" onClick=\{\(\) => setEditing\(row\)\}>Edit<\/button>/);
+
+    // 4. has_hr_profile=true does NOT show Buat Profil HR
+    expect(page).toMatch(/const canCreateHrProfile = \(row\) => Boolean\(row\?\.has_hr_profile === false && row\?\.user_id\)/);
+
+    // 5. clicking Buat Profil HR opens form
+    expect(page).toMatch(/onClick=\{\(\) => setEditing\(row\)\}/);
+    expect(page).toMatch(/isCreateProfileFromUser/);
+
+    // 6. canonical user ID is retained for submit
+    expect(page).toMatch(/user_id:\s*form\.user_id\s*\|\|\s*initial\?\.user_id\s*\|\|\s*null/);
+    expect(page).toMatch(/user_id:\s*initial\?\.user_id/);
+
+    // 7. known user fields prefilled where available
+    expect(page).toMatch(/name:\s*initial\?\.name\s*\|\|\s*""/);
+    expect(page).toMatch(/email:\s*initial\?\.email\s*\|\|\s*""/);
+    expect(page).toMatch(/role:\s*initial\?\.role\s*\|\|\s*""/);
+    expect(page).toMatch(/phone:\s*initial\?\.phone\s*\|\|\s*""/);
+
+    // 8. cancel creates nothing / calls no create API
+    expect(page).toMatch(/<button type="button" className="ghost" onClick=\{onClose\}>Batal<\/button>/);
+
+    // 9. successful create refreshes list
+    expect(page).toMatch(/await onSaved\(\);/);
+    expect(page).toMatch(/onClose\(\);/);
+
+    // 10. duplicate conflict shows safe message and refreshes list
+    expect(page).toMatch(/ex\?\.response\?\.status === 409/);
+    expect(page).toMatch(/onSaved\(\)\.catch/);
+
+    // 11. no request contains /employees/null or /employees/undefined
+    expect(page).not.toMatch(/\/employees\/null/);
+    expect(page).not.toMatch(/\/employees\/undefined/);
+  });
 });
