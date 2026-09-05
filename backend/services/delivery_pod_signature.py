@@ -97,11 +97,13 @@ def normalize_signature_image_for_pdf(body: bytes) -> Optional[bytes]:
 
     Canvas exports are often RGBA with transparency; ReportLab may fail or render blank.
     Failures return None so callers can surface a clear error instead of blank lines.
+    Trims near-white margins so strokes sit tightly above the name on the PDF.
     """
     if not body:
         return None
     try:
         from PIL import Image as PILImage
+        from PIL import ImageOps
     except Exception:
         logger.warning("PIL unavailable for signature normalize")
         return body if body.startswith(PNG_MAGIC) or body.startswith(JPEG_MAGIC) else None
@@ -115,6 +117,17 @@ def normalize_signature_image_for_pdf(body: bytes) -> Optional[bytes]:
             im = background
         else:
             im = im.convert("RGB")
+        # Trim empty canvas margins (common with square signature pads)
+        gray = ImageOps.invert(im.convert("L"))
+        bbox = gray.point(lambda p: 255 if p > 12 else 0).getbbox()
+        if bbox:
+            pad = 6
+            left = max(0, bbox[0] - pad)
+            top = max(0, bbox[1] - pad)
+            right = min(im.width, bbox[2] + pad)
+            bottom = min(im.height, bbox[3] + pad)
+            if right > left and bottom > top:
+                im = im.crop((left, top, right, bottom))
         # Ensure a readable footprint on A4 signature cell
         w, h = im.size
         if w < 40 or h < 20:
