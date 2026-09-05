@@ -11,6 +11,7 @@ from services import cash_bank_attachment as attachment_svc
 from services.cash_bank_master import (
     PERM_MANAGE,
     PERM_POST,
+    PERM_RECONCILE,
     PERM_REVERSE,
     PERM_VIEW,
     CashBankConflictError,
@@ -41,6 +42,21 @@ from services.cash_bank_vouchers import (
     update_draft,
 )
 from services.journal_core import ensure_indexes as ensure_journal_indexes
+from services.cash_bank_mutasi import MutasiValidationError, get_mutasi
+from services.cash_bank_reconciliation import (
+    ReconConflictError,
+    ReconValidationError,
+    create_reconciliation,
+    delete_draft_reconciliation,
+    ensure_indexes as ensure_recon_indexes,
+    finalize_reconciliation,
+    get_reconciliation,
+    get_reconciliation_workspace,
+    list_reconciliations,
+    list_unmatched_movements,
+    set_matches,
+    update_draft_reconciliation,
+)
 
 
 class CashBankCreatePayload(BaseModel):
@@ -99,16 +115,40 @@ class AttachmentPayload(BaseModel):
     filename: Optional[str] = "lampiran"
 
 
+class ReconciliationCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cash_bank_id: str = Field(..., min_length=1)
+    reconciliation_date: str = Field(..., min_length=1)
+    statement_balance: Any
+    notes: Optional[str] = ""
+    journal_line_ids: Optional[list] = None
+
+
+class ReconciliationUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cash_bank_id: Optional[str] = None
+    reconciliation_date: Optional[str] = None
+    statement_balance: Optional[Any] = None
+    notes: Optional[str] = None
+    journal_line_ids: Optional[list] = None
+
+
+class ReconciliationMatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    journal_line_ids: list = Field(default_factory=list)
+
+
 def _dump(payload) -> dict:
     if hasattr(payload, "model_dump"):
-        return payload.model_dump()
-    return payload.dict()
-
+        return payload.model_dump(exclude_unset=True)
+    data = payload.dict(exclude_unset=True) if hasattr(payload, "dict") else payload.dict()
+    return data
 
 async def _ensure_all(db) -> None:
     await ensure_master_indexes(db)
     await ensure_voucher_indexes(db)
     await ensure_journal_indexes(db)
+    await ensure_recon_indexes(db)
 
 
 async def _maybe_attach(db, kind: str, voucher: dict, raw: dict, user) -> dict:
@@ -563,4 +603,176 @@ def register_cash_bank_routes(
         except VoucherValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
         except VoucherConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    # ── Mutasi (Phase 2) — GET zero-write ───────────────────
+    @api_router.get("/cash-bank/mutasi")
+    async def get_cash_bank_mutasi(
+        cash_bank_id: str = Query(..., min_length=1),
+        start_date: str = Query(..., min_length=1),
+        end_date: str = Query(..., min_length=1),
+        q: Optional[str] = Query(None),
+        source_type: Optional[str] = Query(None),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """Mutasi / ledger from journal_lines. Zero-write."""
+        db = get_db()
+        try:
+            return await get_mutasi(
+                db,
+                cash_bank_id=cash_bank_id,
+                start_date=start_date,
+                end_date=end_date,
+                q=q,
+                source_type=source_type,
+            )
+        except MutasiValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    # ── Rekonsiliasi (Phase 2) ──────────────────────────────
+    @api_router.get("/cash-bank/reconciliations")
+    async def get_reconciliations(
+        cash_bank_id: Optional[str] = Query(None),
+        status: Optional[str] = Query(None),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """List reconciliations. Zero-write."""
+        db = get_db()
+        items = await list_reconciliations(db, cash_bank_id=cash_bank_id, status=status)
+        return {"items": items, "total": len(items)}
+
+    @api_router.get("/cash-bank/reconciliations/workspace")
+    async def get_recon_workspace(
+        cash_bank_id: str = Query(..., min_length=1),
+        reconciliation_date: str = Query(..., min_length=1),
+        reconciliation_id: Optional[str] = Query(None),
+        statement_balance: Optional[str] = Query(None),
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """Preview unmatched movements + book balance. Zero-write — no auto-create."""
+        db = get_db()
+        try:
+            return await get_reconciliation_workspace(
+                db,
+                cash_bank_id=cash_bank_id,
+                reconciliation_date=reconciliation_date,
+                reconciliation_id=reconciliation_id,
+                statement_balance=statement_balance,
+            )
+        except ReconValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @api_router.get("/cash-bank/reconciliations/{recon_id}")
+    async def get_reconciliation_detail(
+        recon_id: str,
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """Reconciliation detail. Zero-write."""
+        db = get_db()
+        doc = await get_reconciliation(db, recon_id)
+        if not doc:
+            raise HTTPException(404, "Rekonsiliasi tidak ditemukan")
+        return doc
+
+    @api_router.get("/cash-bank/reconciliations/{recon_id}/unmatched")
+    async def get_recon_unmatched(
+        recon_id: str,
+        user=Depends(require_perm(PERM_VIEW)),
+    ):
+        """Unmatched (+ own matched) movements for a reconciliation. Zero-write."""
+        db = get_db()
+        doc = await get_reconciliation(db, recon_id, with_matches=False)
+        if not doc:
+            raise HTTPException(404, "Rekonsiliasi tidak ditemukan")
+        try:
+            items = await list_unmatched_movements(
+                db,
+                cash_bank_id=doc["cash_bank_id"],
+                through_date=doc["reconciliation_date"],
+                reconciliation_id=recon_id,
+            )
+        except ReconValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"items": items, "total": len(items)}
+
+    @api_router.post("/cash-bank/reconciliations", status_code=201)
+    async def post_reconciliation(
+        payload: ReconciliationCreatePayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await create_reconciliation(db, _dump(payload), user=user)
+        except ReconValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except CashBankValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ReconConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.patch("/cash-bank/reconciliations/{recon_id}")
+    async def patch_reconciliation(
+        recon_id: str,
+        payload: ReconciliationUpdatePayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            return await update_draft_reconciliation(db, recon_id, _dump(payload), user=user)
+        except KeyError:
+            raise HTTPException(404, "Rekonsiliasi tidak ditemukan") from None
+        except ReconValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except CashBankValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ReconConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.put("/cash-bank/reconciliations/{recon_id}/matches")
+    async def put_reconciliation_matches(
+        recon_id: str,
+        payload: ReconciliationMatchPayload,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            return await set_matches(
+                db, recon_id, _dump(payload).get("journal_line_ids") or [], user=user
+            )
+        except KeyError:
+            raise HTTPException(404, "Rekonsiliasi tidak ditemukan") from None
+        except ReconValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ReconConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api_router.delete("/cash-bank/reconciliations/{recon_id}")
+    async def delete_reconciliation(
+        recon_id: str,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        try:
+            deleted = await delete_draft_reconciliation(db, recon_id)
+        except KeyError:
+            raise HTTPException(404, "Rekonsiliasi tidak ditemukan") from None
+        except ReconConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"ok": True, "deleted": deleted}
+
+    @api_router.post("/cash-bank/reconciliations/{recon_id}/finalize")
+    async def post_finalize_reconciliation(
+        recon_id: str,
+        user=Depends(require_perm(PERM_RECONCILE)),
+    ):
+        db = get_db()
+        await _ensure_all(db)
+        try:
+            return await finalize_reconciliation(db, recon_id, user=user)
+        except KeyError:
+            raise HTTPException(404, "Rekonsiliasi tidak ditemukan") from None
+        except ReconValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ReconConflictError as exc:
             raise HTTPException(409, str(exc)) from exc

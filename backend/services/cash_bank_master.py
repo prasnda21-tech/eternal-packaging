@@ -15,6 +15,7 @@ PERM_VIEW = "cash_bank.view"
 PERM_MANAGE = "cash_bank.manage"
 PERM_POST = "cash_bank.post"
 PERM_REVERSE = "cash_bank.reverse"
+PERM_RECONCILE = "cash_bank.reconcile"
 
 
 class CashBankValidationError(ValueError):

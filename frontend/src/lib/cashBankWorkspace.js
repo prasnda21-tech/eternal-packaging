@@ -5,6 +5,8 @@ export const CASH_BANK_WORKSPACE_TABS = [
   { id: "penerimaan", path: "/kas-bank/penerimaan", label: "Penerimaan" },
   { id: "pembayaran", path: "/kas-bank/pembayaran", label: "Pembayaran" },
   { id: "transfer", path: "/kas-bank/transfer", label: "Transfer" },
+  { id: "mutasi", path: "/kas-bank/mutasi", label: "Mutasi Kas & Bank" },
+  { id: "rekonsiliasi", path: "/kas-bank/rekonsiliasi", label: "Rekonsiliasi Bank" },
 ];
 
 const STORAGE_PREFIX = "ep.cashBank.workspaceTabs.";

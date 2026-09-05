@@ -1029,12 +1029,36 @@
   border-radius:4px;
   box-shadow:none !important;
 }
+/* Nested KbSearchField: kill field-input chrome (higher specificity than rules above). */
+.kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.content .kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]){
+  display:block !important;
+  flex:1 1 auto !important;
+  width:auto !important;
+  max-width:none !important;
+  min-width:0 !important;
+  height:100% !important;
+  min-height:0 !important;
+  margin:0 !important;
+  padding:0 !important;
+  border:0 !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  outline:none !important;
+}
+.content .kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 .content .kas-bank-page .kb-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 .content .kas-bank-page .kb-field select:focus,
 .content .kas-bank-page .kb-field textarea:focus{
   border-color:var(--mod) !important;
   box-shadow:0 0 0 3px var(--color-input-ring) !important;
   outline:none;
+}
+.content .kas-bank-page .kb-field .kb-search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus{
+  border:0 !important;
+  box-shadow:none !important;
+  outline:none !important;
 }
 .kas-bank-page .kb-field select:disabled,
 .kas-bank-page .kb-field input:disabled,
@@ -1084,6 +1108,51 @@
 .kas-bank-page .kb-workspace-form-body{display:flex;flex-direction:column;gap:0}
 .kas-bank-page .kb-workspace-form-body > .form-error{margin-top:12px}
 
+.kas-bank-page .kb-summary-strip{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px;
+  margin:0 0 14px;
+}
+.kas-bank-page .kb-summary-card{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  padding:10px 12px;
+  border:1.5px solid var(--kb-line-strong);
+  border-radius:6px;
+  background:color-mix(in srgb, var(--mod-soft) 40%, #fff);
+  min-width:0;
+}
+.kas-bank-page .kb-summary-card > span{
+  font:600 10.5px/1.2 'IBM Plex Mono',monospace;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+  color:var(--mod-ink);
+}
+.kas-bank-page .kb-summary-card > strong{
+  font-size:15px;
+  color:var(--ink);
+  text-align:right;
+}
+.kas-bank-page .kb-summary-emphasis{
+  background:color-mix(in srgb, var(--mod-soft) 75%, #fff);
+  border-color:var(--mod);
+}
+.kas-bank-page .kb-summary-diff{
+  background:#faece9;
+  border-color:#e8b4aa;
+}
+.kas-bank-page .kb-summary-diff > span{color:#a53f2b}
+.kas-bank-page tr.kb-row-matched td{background:color-mix(in srgb, var(--mod-soft) 45%, #fff)}
+.kas-bank-page tr.kb-row-unmatched td{background:#fff}
+@media (max-width:900px){
+  .kas-bank-page .kb-summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:560px){
+  .kas-bank-page .kb-summary-strip{grid-template-columns:1fr}
+}
+
 /* Toolbar */
 .kas-bank-page .kb-toolbar{
   display:flex;
@@ -1096,25 +1165,213 @@
   border-radius:8px;
   background:linear-gradient(180deg,#fff 0%, var(--mod-soft) 160%);
 }
-.kas-bank-page .kb-toolbar .search-inline{
+.kas-bank-page .kb-toolbar .search-inline,
+.kas-bank-page .kb-search-field,
+.content .kas-bank-page .kb-search-field{
+  display:flex;
+  align-items:center;
+  gap:8px;
   flex:1 1 220px;
-  min-width:180px;
-  border:1.5px solid var(--kb-line-strong);
+  min-width:0;
+  min-height:42px;
+  height:42px;
+  box-sizing:border-box;
+  margin:0;
+  border:2px solid var(--kb-line-strong);
   background:#fff;
-  border-radius:6px;
-  padding:0 10px;
+  border-radius:4px;
+  padding:0 10px 0 12px;
+  box-shadow:none;
+}
+.kas-bank-page .kb-search-field-icon,
+.content .kas-bank-page .kb-search-field-icon{
+  flex:0 0 14px;
+  width:14px;
+  height:14px;
+  color:var(--mod-ink);
+  display:block;
+  pointer-events:none;
+  border:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  padding:0;
+  margin:0;
+  opacity:.9;
+}
+.kas-bank-page .kb-toolbar .search-inline input,
+.kas-bank-page .kb-search-field input,
+.kas-bank-page .kb-field .kb-search-field input,
+.content .kas-bank-page .kb-field .kb-search-field input,
+.content .kas-bank-page .kb-search-field input{
+  display:block !important;
+  flex:1 1 auto !important;
+  min-width:0 !important;
+  width:auto !important;
+  max-width:none !important;
+  height:100% !important;
+  min-height:0 !important;
+  border:0 !important;
+  outline:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  padding:0 !important;
+  margin:0 !important;
+  font-size:13.5px;
+  line-height:1.2;
+  color:var(--ink);
+  font-family:inherit;
+  border-radius:0 !important;
+  -webkit-appearance:none;
+  appearance:none;
+}
+.kas-bank-page .kb-field .kb-search-field input:focus,
+.content .kas-bank-page .kb-field .kb-search-field input:focus,
+.content .kas-bank-page .kb-search-field input:focus{
+  border:0 !important;
+  box-shadow:none !important;
+  outline:none !important;
+}
+.kas-bank-page .kb-search-field input::-webkit-search-decoration,
+.kas-bank-page .kb-search-field input::-webkit-search-cancel-button,
+.kas-bank-page .kb-search-field input::-webkit-search-results-button,
+.kas-bank-page .kb-search-field input::-webkit-search-results-decoration{
+  -webkit-appearance:none;
+  appearance:none;
+  display:none;
+}
+.kas-bank-page .kb-toolbar .search-inline:focus-within,
+.kas-bank-page .kb-search-field:focus-within,
+.content .kas-bank-page .kb-search-field:focus-within{
+  border-color:var(--mod);
+  box-shadow:0 0 0 3px var(--color-input-ring);
+}
+.kas-bank-page .kb-search-field-clear,
+.content .kas-bank-page .kb-search-field-clear{
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:20px;
+  height:20px;
+  margin:0;
+  padding:0 !important;
+  border:0 !important;
+  border-radius:4px;
+  background:transparent !important;
+  box-shadow:none !important;
+  color:var(--soft);
+  cursor:pointer;
+  line-height:1;
+}
+.kas-bank-page .kb-search-field-clear:hover,
+.content .kas-bank-page .kb-search-field-clear:hover{
+  color:var(--ink);
+  background:color-mix(in srgb, var(--mod-soft) 70%, #fff) !important;
 }
 .kas-bank-page .kb-toolbar-status{
-  min-height:34px;
-  border:1.5px solid var(--kb-line-strong);
+  flex:0 0 auto;
+  min-width:160px;
+  min-height:36px;
+  height:36px;
+  box-sizing:border-box;
+  border:2px solid var(--kb-line-strong);
   border-radius:6px;
   background:#fff;
-  padding:6px 10px;
-  font-size:13px;
+  padding:0 10px;
+  font-size:13.5px;
   color:var(--ink);
+  font-family:inherit;
+}
+.kas-bank-page .kb-toolbar-status:focus{
+  border-color:var(--mod);
+  box-shadow:0 0 0 3px var(--color-input-ring);
+  outline:none;
 }
 .kas-bank-page .kb-toolbar-spacer{flex:1 1 auto}
 .kas-bank-page .kb-toolbar-count{font-size:12px;color:var(--soft);white-space:nowrap}
+
+/* Rekonsiliasi: status + search one compact row */
+.kas-bank-page .kb-recon-toolbar{
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:12px;
+}
+.kas-bank-page .kb-recon-toolbar .kb-recon-search,
+.kas-bank-page .kb-recon-toolbar .kb-search-field{
+  flex:1 1 auto;
+  min-width:0;
+}
+
+/* Mutasi: ~2-row filter grid */
+.kas-bank-page .kb-mutasi-toolbar{
+  align-items:stretch;
+  padding:12px;
+}
+.kas-bank-page .kb-mutasi-filters{
+  display:grid;
+  grid-template-columns:minmax(0,1.35fr) minmax(0,1.35fr) minmax(0,1.6fr);
+  gap:12px 14px;
+  width:100%;
+  align-items:end;
+}
+.kas-bank-page .kb-mutasi-bank{grid-column:1 / 3;grid-row:1}
+.kas-bank-page .kb-mutasi-source{grid-column:3;grid-row:1}
+.kas-bank-page .kb-mutasi-start{grid-column:1;grid-row:2}
+.kas-bank-page .kb-mutasi-end{grid-column:2;grid-row:2}
+.kas-bank-page .kb-mutasi-search{grid-column:3;grid-row:2}
+.kas-bank-page .kb-mutasi-filters .kb-field{width:100%}
+.kas-bank-page .kb-mutasi-search .kb-field-control,
+.kas-bank-page .kb-mutasi-search .kb-search-field{
+  width:100%;
+}
+.kas-bank-page .kb-mutasi-search .kb-search-field{
+  flex:1 1 auto;
+}
+
+@media (max-width:900px){
+  .kas-bank-page .kb-recon-toolbar{
+    flex-wrap:wrap;
+  }
+  .kas-bank-page .kb-recon-toolbar .kb-toolbar-status{
+    flex:1 1 160px;
+  }
+  .kas-bank-page .kb-recon-toolbar .kb-search-field{
+    flex:1 1 100%;
+  }
+  .kas-bank-page .kb-mutasi-filters{
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  }
+  .kas-bank-page .kb-mutasi-bank{grid-column:1;grid-row:1}
+  .kas-bank-page .kb-mutasi-source{grid-column:2;grid-row:1}
+  .kas-bank-page .kb-mutasi-start{grid-column:1;grid-row:2}
+  .kas-bank-page .kb-mutasi-end{grid-column:2;grid-row:2}
+  .kas-bank-page .kb-mutasi-search{grid-column:1 / -1;grid-row:3}
+}
+@media (max-width:560px){
+  .kas-bank-page .kb-recon-toolbar{
+    flex-direction:column;
+    align-items:stretch;
+    gap:10px;
+  }
+  .kas-bank-page .kb-recon-toolbar .kb-toolbar-status,
+  .kas-bank-page .kb-recon-toolbar .kb-search-field{
+    width:100%;
+    flex:1 1 auto;
+    min-width:0;
+  }
+  .kas-bank-page .kb-mutasi-filters{
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+  .kas-bank-page .kb-mutasi-bank,
+  .kas-bank-page .kb-mutasi-source,
+  .kas-bank-page .kb-mutasi-start,
+  .kas-bank-page .kb-mutasi-end,
+  .kas-bank-page .kb-mutasi-search{
+    grid-column:1;
+    grid-row:auto;
+  }
+}
 
 /* Accounting table */
 .kas-bank-page .kb-workspace-table-wrap{
