@@ -156,6 +156,10 @@ PERMISSION_CATALOG = [
     ("HR & Payroll", "payroll.adjustment", "Penyesuaian manual penggajian"),
     ("Buku Besar", "ledger.accounts.view", "Lihat Akun Perkiraan"),
     ("Buku Besar", "ledger.accounts.manage", "Kelola Akun Perkiraan"),
+    ("Kas & Bank", "cash_bank.view", "Lihat Kas & Bank"),
+    ("Kas & Bank", "cash_bank.manage", "Kelola Kas & Bank"),
+    ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
+    ("Kas & Bank", "cash_bank.reverse", "Reversal Kas & Bank"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -216,6 +220,11 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.route_optimizer", "Menu Optimasi Rute"),
     ("Akses Menu", "nav.ledger", "Menu Buku Besar"),
     ("Akses Menu", "nav.ledger.accounts", "Menu Akun Perkiraan"),
+    ("Akses Menu", "nav.cash_bank", "Menu Kas & Bank"),
+    ("Akses Menu", "nav.cash_bank.accounts", "Menu Daftar Kas & Bank"),
+    ("Akses Menu", "nav.cash_bank.receipts", "Menu Penerimaan Kas & Bank"),
+    ("Akses Menu", "nav.cash_bank.payments", "Menu Pembayaran Kas & Bank"),
+    ("Akses Menu", "nav.cash_bank.transfers", "Menu Transfer Kas & Bank"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -298,6 +307,11 @@ NAV_MENU_ITEMS = (
     ("nav.route_optimizer", "Optimasi Rute", None),
     ("nav.ledger", "Buku Besar", None),
     ("nav.ledger.accounts", "Akun Perkiraan", "nav.ledger"),
+    ("nav.cash_bank", "Kas & Bank", None),
+    ("nav.cash_bank.accounts", "Daftar Kas & Bank", "nav.cash_bank"),
+    ("nav.cash_bank.receipts", "Penerimaan", "nav.cash_bank"),
+    ("nav.cash_bank.payments", "Pembayaran", "nav.cash_bank"),
+    ("nav.cash_bank.transfers", "Transfer", "nav.cash_bank"),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -424,6 +438,17 @@ def derived_nav_permissions(existing: set) -> set:
     if "ledger.accounts.view" in existing or "ledger.accounts.manage" in existing:
         nav.add("nav.ledger")
         nav.add("nav.ledger.accounts")
+    if (
+        "cash_bank.view" in existing
+        or "cash_bank.manage" in existing
+        or "cash_bank.post" in existing
+        or "cash_bank.reverse" in existing
+    ):
+        nav.add("nav.cash_bank")
+        nav.add("nav.cash_bank.accounts")
+        nav.add("nav.cash_bank.receipts")
+        nav.add("nav.cash_bank.payments")
+        nav.add("nav.cash_bank.transfers")
     return nav
 
 

@@ -1,14 +1,16 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { moduleFromPath } from "../lib/uiModule";
 import BrandMark from "./BrandMark";
+import CashBankWorkspaceTabs from "./CashBankWorkspaceTabs";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
+import { useCashBankWorkspaceTabs } from "../hooks/useCashBankWorkspaceTabs";
 
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
 
@@ -43,6 +45,10 @@ const TILE_ICONS = {
   [NAV_KEYS.hrPayrollComponents]: Coins,
   [NAV_KEYS.hrPayrollHistory]: FileBarChart,
   [NAV_KEYS.ledgerAccounts]: BookOpen,
+  [NAV_KEYS.cashBankAccounts]: Landmark,
+  [NAV_KEYS.cashBankReceipts]: Receipt,
+  [NAV_KEYS.cashBankPayments]: CreditCard,
+  [NAV_KEYS.cashBankTransfers]: ArrowLeftRight,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,
@@ -98,11 +104,13 @@ export default function AppShell() {
   const { user, hasPerm, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const cashBankWorkspace = useCashBankWorkspaceTabs();
   const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
   const ledgerActive = location.pathname.startsWith("/buku-besar");
+  const cashBankActive = location.pathname.startsWith("/kas-bank");
   const employeeAdminActive = location.pathname.startsWith("/administrasi-karyawan");
   const hrPayrollActive = location.pathname.startsWith("/hr-payroll");
   const tasksActive = location.pathname.startsWith("/tasks");
@@ -215,6 +223,8 @@ export default function AppShell() {
   const hrPayrollItems = hrPayrollMenuItems(hasPerm);
   const ledgerNav = ledgerNavVisible(hasPerm);
   const ledgerItems = ledgerMenuItems(hasPerm);
+  const cashBankNav = cashBankNavVisible(hasPerm);
+  const cashBankItems = cashBankMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showRouteOptimizer = hasPerm(NAV_KEYS.routeOptimizer) || hasPerm("route_optimizer.view") || hasPerm("route_optimizer.create") || hasPerm("route_optimizer.manage");
@@ -229,6 +239,7 @@ export default function AppShell() {
   const employeeAdminOpen = activeSidebarMenu === "employeeAdmin";
   const hrPayrollOpen = activeSidebarMenu === "hrPayroll";
   const ledgerOpen = activeSidebarMenu === "ledger";
+  const cashBankOpen = activeSidebarMenu === "cashBank";
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
   const uiModule = moduleFromPath(location.pathname);
@@ -323,6 +334,21 @@ export default function AppShell() {
                 active={ledgerActive}
                 open={ledgerOpen}
                 onClick={() => toggleMenu("ledger")}
+              />
+            </div>
+          )}
+          {cashBankNav.parent && (
+            <div className="nav-group" data-testid="top-nav-kas-bank-group">
+              <RailButton
+                ref={(el) => { railRefs.current.cashBank = el; }}
+                testid="top-nav-kas-bank"
+                label="Kas & Bank"
+                icon={Landmark}
+                expanded={cashBankOpen}
+                controls="sidebar-flyout-cash-bank"
+                active={cashBankActive}
+                open={cashBankOpen}
+                onClick={() => toggleMenu("cashBank")}
               />
             </div>
           )}
@@ -475,6 +501,21 @@ export default function AppShell() {
         />
       )}
 
+      {cashBankOpen && cashBankItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
+          id="sidebar-flyout-cash-bank"
+          testid="sidebar-flyout-cash-bank"
+          title="Kas & Bank"
+          ariaLabel="Menu Kas & Bank"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={cashBankItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
+      )}
+
       {reportsOpen && reportsItems.length > 0 && (
         <SidebarFlyoutGrid
           innerRef={flyoutRef}
@@ -546,7 +587,15 @@ export default function AppShell() {
             </button>
           </div>
         </header>
-        <main className="content">
+        <main className={"content" + (cashBankWorkspace.visible || cashBankActive ? " content-kas-bank-workspace" : "")}>
+          {cashBankWorkspace.visible && (
+            <CashBankWorkspaceTabs
+              tabs={cashBankWorkspace.tabs}
+              activePath={cashBankWorkspace.activePath}
+              onActivate={cashBankWorkspace.activateTab}
+              onClose={cashBankWorkspace.closeTab}
+            />
+          )}
           <Outlet />
         </main>
       </div>
