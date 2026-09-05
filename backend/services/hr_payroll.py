@@ -468,9 +468,14 @@ def _employee_fields(payload: dict, existing: Optional[dict] = None) -> dict:
 
 
 async def create_employee(db, payload: dict, user: dict) -> dict:
-    linked = await _safe_user(db, str(payload.get("user_id") or "").strip())
-    if payload.get("user_id") and not linked:
+    raw_uid = str(payload.get("user_id") or "").strip()
+    linked = await _safe_user(db, raw_uid) if raw_uid else None
+    if raw_uid and not linked:
         raise HTTPException(404, "User yang ditautkan tidak ditemukan.")
+    if raw_uid:
+        existing_for_user = await db[EMPLOYEES].find_one({"user_id": raw_uid}, {"_id": 0, "id": 1})
+        if existing_for_user:
+            raise HTTPException(409, "Profil HR untuk user ini sudah ada.")
     number = str(payload.get("employee_number") or (linked or {}).get("employee_id") or "").strip()
     if not number:
         raise HTTPException(400, "Nomor karyawan wajib diisi.")
@@ -479,7 +484,7 @@ async def create_employee(db, payload: dict, user: dict) -> dict:
         "id": str(uuid.uuid4()),
         "employee_number": number[:80],
         "name": str(payload.get("name") or (linked or {}).get("name") or "").strip()[:200],
-        "user_id": str(payload.get("user_id") or "").strip() or None,
+        "user_id": raw_uid or None,
         "role": str(payload.get("role") or (linked or {}).get("role") or "").strip()[:120],
         "division": "",
         "employment_status": "permanent",
@@ -516,6 +521,8 @@ async def create_employee(db, payload: dict, user: dict) -> dict:
     try:
         await db[EMPLOYEES].insert_one(doc)
     except DuplicateKeyError:
+        if raw_uid and await db[EMPLOYEES].find_one({"user_id": raw_uid}):
+            raise HTTPException(409, "Profil HR untuk user ini sudah ada.")
         raise HTTPException(409, "Nomor karyawan atau tautan user sudah dipakai.")
     labels = await _role_label_map(db)
     return _present_employee(doc, linked_user=linked, role_labels=labels)
