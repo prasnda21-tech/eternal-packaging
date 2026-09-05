@@ -58,7 +58,10 @@ class TestPublicPayload:
             payment_status="Approved",
         ))
         assert {"order_number", "customer_name", "workflow", "delivery_proofs", "delivery_history"} <= set(payload.keys())
-        assert set(payload.keys()) <= {"order_number", "customer_name", "workflow", "delivery_proofs", "delivery_history", "delivery_reschedule"}
+        assert set(payload.keys()) <= {
+            "order_number", "customer_name", "workflow", "delivery_proofs", "delivery_history",
+            "delivery_reschedule", "documents", "shipments_evidence",
+        }
         assert payload["order_number"] == "PO/2026/TEST-A"
         assert payload["customer_name"] == "PT Contoh"
         assert isinstance(payload["workflow"], list)
@@ -132,7 +135,8 @@ class TestPublicPayload:
         assert "eternal-packaging" not in blob
         assert "secret/" not in blob
         for p in payload["delivery_proofs"]:
-            assert set(p.keys()) == {"id", "url"}
+            assert {"id", "url"} <= set(p.keys())
+            assert set(p.keys()) <= {"id", "url", "shipment_id"}
             assert p["url"].startswith("/api/public/tracking/")
             assert "/proofs/" in p["url"]
         assert is_public_payload_safe(payload)
@@ -192,7 +196,8 @@ class TestPartialWorkflow:
         assert _stage(payload, "Penjadwalan")["status"] == "completed"
         assert _stage(payload, "Screener")["status"] == "completed"
         assert _stage(payload, "Persiapan Helper")["status"] == "in_progress"
-        assert _stage(payload, "Operator")["status"] == "in_progress"
+        # Operator stays waiting until helper prep evidence exists (evidence-based, not stage-index)
+        assert _stage(payload, "Operator")["status"] == "waiting"
 
     def test_d_bypass_maps_to_completed_matching_alur(self):
         payload = public_payload(_print_po(design_bypassed=True, payment_bypassed=True))

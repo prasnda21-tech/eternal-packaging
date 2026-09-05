@@ -3256,16 +3256,28 @@ async def download_surat_jalan_file(
     filename = (entry.get("name") or (rec or {}).get("original_filename") or "surat-jalan")
     ct = (entry.get("content_type") or (rec or {}).get("content_type") or "").strip() or "application/octet-stream"
     storage_path = (entry.get("storage_path") or (rec or {}).get("storage_path") or "").strip()
-    if storage_path:
+    signed_path = (
+        str(entry.get("signed_storage_path") or "").strip()
+        or str((rec or {}).get("signed_storage_path") or "").strip()
+    )
+    # Customer-facing preference: signed rendition when available (still streams via proxy)
+    prefer_path = signed_path or storage_path
+    if prefer_path:
         if not rec:
-            rec = await db.files.find_one({"storage_path": storage_path, "is_deleted": {"$ne": True}}, {"_id": 0})
+            rec = await db.files.find_one({"storage_path": prefer_path, "is_deleted": {"$ne": True}}, {"_id": 0})
         try:
-            data, fetched_ct = obj_storage.get_object(storage_path)
+            data, fetched_ct = obj_storage.get_object(prefer_path)
             ct = (rec or {}).get("content_type") or fetched_ct or ct
         except FileNotFoundError:
             data = None
+            if signed_path and storage_path and signed_path != storage_path:
+                try:
+                    data, fetched_ct = obj_storage.get_object(storage_path)
+                    ct = (rec or {}).get("content_type") or fetched_ct or ct
+                except Exception:
+                    data = None
         except Exception:
-            logger.exception("Failed to fetch Surat Jalan object %s", storage_path)
+            logger.exception("Failed to fetch Surat Jalan object %s", prefer_path)
             raise HTTPException(502, "Gagal mengambil file Surat Jalan.")
     if data is None and str(entry.get("data_url") or "").startswith("data:"):
         try:
@@ -3953,11 +3965,16 @@ class ConfirmDeliveredPayload(BaseModel):
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
 async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPayload] = None, user=Depends(current_user)):
-    """Explicit Konfirmasi Terkirim after >= 2 bukti kirim. Upload alone does not deliver."""
+    """Explicit Konfirmasi Terkirim after >= 2 bukti kirim + recipient name + e-signature.
+
+    Upload alone / save signature alone does not deliver.
+    """
     await _require_perm(user, "delivery.update")
     action_id = (payload.action_id if payload else None) or None
     if action_id:
         action_id = str(action_id).strip() or None
+
+    frozen_sig_holder = {"sig": None, "driver_sig": None}
 
     def mutate(order: dict):
         ids = list(order.get("delivery_confirm_action_ids") or [])
@@ -3977,9 +3994,29 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         order["delivered_at"] = now
         order["delivered_by"] = user.get("email")
         order["delivered_by_name"] = user.get("name")
-        _append_delivery_confirmation(
+        conf = _append_delivery_confirmation(
             order, user, qty_increment=increment, now=now, action_id=action_id,
         )
+        try:
+            from services.delivery_pod_signature import (
+                freeze_active_signature,
+                freeze_active_driver_signature,
+            )
+            frozen = freeze_active_signature(order, confirmation_id=(conf or {}).get("id"))
+            frozen_driver = freeze_active_driver_signature(order, confirmation_id=(conf or {}).get("id"))
+            frozen_sig_holder["sig"] = frozen
+            frozen_sig_holder["driver_sig"] = frozen_driver
+            if conf and frozen:
+                conf["recipient_name"] = frozen.get("recipient_name")
+                conf["recipient_signature_id"] = frozen.get("id")
+                conf["recipient_signed_at"] = frozen.get("recipient_signed_at")
+                conf["sj_file_id"] = frozen.get("sj_file_id")
+            if conf and frozen_driver:
+                conf["driver_signature_id"] = frozen_driver.get("id")
+                conf["driver_signed_at"] = frozen_driver.get("driver_signed_at")
+                conf["driver_name"] = frozen_driver.get("driver_name") or conf.get("driver_name")
+        except Exception:
+            logging.getLogger(__name__).warning("freeze POD signatures failed", exc_info=True)
         _sync_dispatch_stage(order)
         required = evidence["required"] or evidence["qty_delivered"]
         if evidence["full"]:
@@ -3992,11 +4029,53 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 order, order.get("current_stage") or 13, user,
                 note=f"Terkirim sebagian: {evidence['qty_delivered']}/{required} pcs",
             )
+            # Keep frozen copies in history; clear active slots for next partial POD
+            if frozen_sig_holder["sig"]:
+                order.pop("delivery_recipient_signature", None)
+            if frozen_sig_holder["driver_sig"]:
+                order.pop("delivery_driver_signature", None)
         if action_id:
             ids.append(action_id)
             order["delivery_confirm_action_ids"] = ids[-20:]
 
     order = await _with_quantity_lock(order_id, mutate)
+    # Generate signed SJ after persist — document rendering only (no qty mutation)
+    sig = frozen_sig_holder.get("sig")
+    driver_sig = frozen_sig_holder.get("driver_sig")
+    if sig:
+        try:
+            from services.sales_deliveries import generate_signed_sj_pdf_for_order
+            packed_before = order.get("packing_info")
+            loading_before = order.get("loading_info")
+            qty_del_before = order.get("qty_delivered")
+            signed_path, err = await generate_signed_sj_pdf_for_order(
+                db, order, sig, obj_storage, user=user, driver_sig=driver_sig,
+            )
+            if err:
+                logging.getLogger(__name__).warning("signed SJ generation error: %s", err)
+            if signed_path and not err:
+                def attach_signed(o: dict):
+                    active = o.get("delivery_recipient_signature")
+                    if isinstance(active, dict) and str(active.get("id")) == str(sig.get("id")):
+                        active["signed_sj_storage_path"] = signed_path
+                        active["signed_sj_generated_at"] = now_iso()
+                    for s in o.get("delivery_recipient_signatures") or []:
+                        if str(s.get("id")) == str(sig.get("id")):
+                            s["signed_sj_storage_path"] = signed_path
+                            s["signed_sj_generated_at"] = now_iso()
+                    if o.get("packing_info") != packed_before:
+                        o["packing_info"] = packed_before
+                    if o.get("loading_info") != loading_before:
+                        o["loading_info"] = loading_before
+                    if o.get("qty_delivered") != qty_del_before:
+                        o["qty_delivered"] = qty_del_before
+                order = await _with_quantity_lock(order_id, attach_signed)
+                await _audit_po(
+                    order, "delivery.recipient_signature.signed_sj",
+                    user, note=f"signed_sj={sig.get('sj_file_id') or ''}",
+                )
+        except Exception:
+            logging.getLogger(__name__).warning("signed SJ generation failed", exc_info=True)
     on_confirmed = getattr(_delivery_route_api, "_hooks", {}).get("on_delivery_confirmed")
     if callable(on_confirmed):
         try:
@@ -4004,6 +4083,291 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         except Exception:
             logging.getLogger(__name__).warning("route stop progress update failed", exc_info=True)
     return {"order": order}
+
+
+class DeliveryRecipientSignaturePayload(BaseModel):
+    recipient_name: str
+    signature_data_url: Optional[str] = None
+    shipment_id: Optional[str] = None
+    sj_file_id: Optional[str] = None
+
+
+@api_router.post("/orders/{order_id}/delivery-recipient-signature")
+async def upload_delivery_recipient_signature(
+    order_id: str,
+    recipient_name: Optional[str] = Form(None),
+    shipment_id: Optional[str] = Form(None),
+    sj_file_id: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    signature_data_url: Optional[str] = Form(None),
+    user=Depends(current_user),
+):
+    """Save recipient electronic signature. Does NOT mark delivered."""
+    await _require_perm(user, "delivery.update")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    if (order.get("delivery_status") or "") == "Terkirim":
+        raise HTTPException(400, "Pengiriman sudah terkirim — tanda tangan tidak dapat diganti.")
+
+    from services.delivery_pod_signature import (
+        build_signature_record,
+        clear_active_signature,
+        decode_data_url_png,
+        get_active_signature,
+        normalize_recipient_name,
+        resolve_shipment_and_sj,
+        storage_key_for_signature,
+        validate_recipient_name,
+        validate_signature_bytes,
+        now_iso as sig_now,
+    )
+
+    name_err = validate_recipient_name(recipient_name)
+    if name_err:
+        raise HTTPException(400, name_err)
+    name = normalize_recipient_name(recipient_name)
+
+    existing = get_active_signature(order)
+    if existing and existing.get("frozen"):
+        raise HTTPException(400, "Tanda tangan sudah terkunci sebagai bukti pengiriman.")
+
+    body = None
+    media = None
+    if file is not None:
+        body = await file.read()
+        media, err = validate_signature_bytes(body, file.content_type)
+        if err:
+            raise HTTPException(400, err)
+    elif signature_data_url:
+        body, media_or_err = decode_data_url_png(signature_data_url)
+        if body is None:
+            raise HTTPException(400, media_or_err or "Tanda tangan tidak valid.")
+        media = media_or_err
+    else:
+        raise HTTPException(400, "File atau signature_data_url wajib.")
+
+    sid, sj_id = resolve_shipment_and_sj(order)
+    if shipment_id:
+        sid = str(shipment_id).strip() or sid
+    if sj_file_id:
+        sj_id = str(sj_file_id).strip() or sj_id
+
+    file_id = str(uuid.uuid4())
+    ext = "png" if media == "image/png" else ("jpg" if media in ("image/jpeg", "image/jpg") else "png")
+    path = storage_key_for_signature(order.get("po_number") or order_id, file_id, ext)
+    try:
+        result = obj_storage.put_object(path, body, media)
+        path = result.get("path") or path
+    except Exception:
+        logger.exception("Signature storage upload failed")
+        raise HTTPException(502, "Gagal menyimpan tanda tangan. Silakan coba lagi.")
+
+    signed_at = sig_now()  # server authoritative
+    clear_active_signature(order)
+    rec = build_signature_record(
+        recipient_name=name,
+        signature_file_id=file_id,
+        storage_path=path,
+        content_type=media,
+        size=len(body),
+        user=user,
+        shipment_id=sid,
+        sj_file_id=sj_id,
+        signed_at=signed_at,
+    )
+    order["delivery_recipient_signature"] = rec
+    file_doc = {
+        "id": file_id,
+        "storage_path": path,
+        "original_filename": f"recipient-signature.{ext}",
+        "content_type": media,
+        "size": len(body),
+        "kind": "delivery-signature",
+        "order_id": order["id"],
+        "po_number": order.get("po_number"),
+        "shipment_id": sid,
+        "sj_file_id": sj_id,
+        "uploaded_by": user.get("email"),
+        "uploaded_by_role": user.get("role"),
+        "uploaded_by_name": user.get("name"),
+        "uploaded_at": signed_at,
+        "is_deleted": False,
+    }
+    await db.files.insert_one(file_doc)
+    add_timeline(order, order.get("current_stage") or 13, user, note="Tanda tangan penerima disimpan")
+    await _persist_order(order)
+    await _audit_po(order, "delivery.recipient_signature.saved", user, note=f"sig={file_id}")
+    # Never echo storage path / raw bytes to client beyond metadata needed for UI
+    safe = {
+        "id": rec["id"],
+        "recipient_name": rec["recipient_name"],
+        "recipient_signed_at": rec["recipient_signed_at"],
+        "shipment_id": rec.get("shipment_id"),
+        "sj_file_id": rec.get("sj_file_id"),
+        "frozen": False,
+        "content_type": media,
+    }
+    return {"order": order, "signature": safe}
+
+
+@api_router.delete("/orders/{order_id}/delivery-recipient-signature")
+async def clear_delivery_recipient_signature(order_id: str, user=Depends(current_user)):
+    """Clear mutable recipient signature before Confirm Delivered. Frozen = rejected."""
+    await _require_perm(user, "delivery.update")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    from services.delivery_pod_signature import clear_active_signature, get_active_signature
+    active = get_active_signature(order)
+    if not active and not order.get("delivery_recipient_signature"):
+        return {"order": order, "cleared": True}
+    frozen = order.get("delivery_recipient_signature") or {}
+    if isinstance(frozen, dict) and frozen.get("frozen"):
+        raise HTTPException(400, "Tanda tangan sudah terkunci sebagai bukti pengiriman.")
+    if (order.get("delivery_status") or "") == "Terkirim":
+        raise HTTPException(400, "Pengiriman sudah terkirim — tanda tangan tidak dapat dihapus.")
+    clear_active_signature(order)
+    await _persist_order(order)
+    await _audit_po(order, "delivery.recipient_signature.cleared", user)
+    return {"order": order, "cleared": True}
+
+
+@api_router.post("/orders/{order_id}/delivery-driver-signature")
+async def upload_delivery_driver_signature(
+    order_id: str,
+    shipment_id: Optional[str] = Form(None),
+    sj_file_id: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    signature_data_url: Optional[str] = Form(None),
+    user=Depends(current_user),
+):
+    """Save driver/pengirim electronic signature. Does NOT mark delivered."""
+    await _require_perm(user, "delivery.update")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    if (order.get("delivery_status") or "") == "Terkirim":
+        raise HTTPException(400, "Pengiriman sudah terkirim — tanda tangan tidak dapat diganti.")
+
+    from services.delivery_pod_signature import (
+        authoritative_driver_name,
+        build_driver_signature_record,
+        clear_active_driver_signature,
+        decode_data_url_png,
+        get_active_driver_signature,
+        resolve_shipment_and_sj,
+        storage_key_for_driver_signature,
+        validate_signature_bytes,
+        now_iso as sig_now,
+    )
+
+    existing = get_active_driver_signature(order)
+    if existing and existing.get("frozen"):
+        raise HTTPException(400, "Tanda tangan driver sudah terkunci sebagai bukti pengiriman.")
+
+    body = None
+    media = None
+    if file is not None:
+        body = await file.read()
+        media, err = validate_signature_bytes(body, file.content_type, empty_message="Tanda tangan driver kosong.")
+        if err:
+            raise HTTPException(400, err)
+    elif signature_data_url:
+        body, media_or_err = decode_data_url_png(signature_data_url)
+        if body is None:
+            raise HTTPException(400, media_or_err or "Tanda tangan driver tidak valid.")
+        media = media_or_err
+    else:
+        raise HTTPException(400, "File atau signature_data_url wajib.")
+
+    sid, sj_id = resolve_shipment_and_sj(order)
+    if shipment_id:
+        sid = str(shipment_id).strip() or sid
+    if sj_file_id:
+        sj_id = str(sj_file_id).strip() or sj_id
+
+    file_id = str(uuid.uuid4())
+    ext = "png" if media == "image/png" else ("jpg" if media in ("image/jpeg", "image/jpg") else "png")
+    path = storage_key_for_driver_signature(order.get("po_number") or order_id, file_id, ext)
+    try:
+        result = obj_storage.put_object(path, body, media)
+        path = result.get("path") or path
+    except Exception:
+        logger.exception("Driver signature storage upload failed")
+        raise HTTPException(502, "Gagal menyimpan tanda tangan driver. Silakan coba lagi.")
+
+    signed_at = sig_now()
+    clear_active_driver_signature(order)
+    rec = build_driver_signature_record(
+        signature_file_id=file_id,
+        storage_path=path,
+        content_type=media,
+        size=len(body),
+        user=user,
+        order=order,
+        shipment_id=sid,
+        sj_file_id=sj_id,
+        signed_at=signed_at,
+    )
+    order["delivery_driver_signature"] = rec
+    file_doc = {
+        "id": file_id,
+        "storage_path": path,
+        "original_filename": f"driver-signature.{ext}",
+        "content_type": media,
+        "size": len(body),
+        "kind": "delivery-driver-signature",
+        "order_id": order["id"],
+        "po_number": order.get("po_number"),
+        "shipment_id": sid,
+        "sj_file_id": sj_id,
+        "uploaded_by": user.get("email"),
+        "uploaded_by_role": user.get("role"),
+        "uploaded_by_name": user.get("name"),
+        "uploaded_at": signed_at,
+        "is_deleted": False,
+    }
+    await db.files.insert_one(file_doc)
+    add_timeline(order, order.get("current_stage") or 13, user, note="Tanda tangan driver/pengirim disimpan")
+    await _persist_order(order)
+    await _audit_po(order, "delivery.driver_signature.saved", user, note=f"sig={file_id}")
+    safe = {
+        "id": rec["id"],
+        "driver_name": rec.get("driver_name") or authoritative_driver_name(order, user),
+        "driver_signed_at": rec["driver_signed_at"],
+        "shipment_id": rec.get("shipment_id"),
+        "sj_file_id": rec.get("sj_file_id"),
+        "frozen": False,
+        "content_type": media,
+    }
+    return {"order": order, "signature": safe}
+
+
+@api_router.delete("/orders/{order_id}/delivery-driver-signature")
+async def clear_delivery_driver_signature(order_id: str, user=Depends(current_user)):
+    """Clear mutable driver signature before Confirm Delivered. Frozen = rejected."""
+    await _require_perm(user, "delivery.update")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    from services.delivery_pod_signature import clear_active_driver_signature, get_active_driver_signature
+    active = get_active_driver_signature(order)
+    if not active and not order.get("delivery_driver_signature"):
+        return {"order": order, "cleared": True}
+    frozen = order.get("delivery_driver_signature") or {}
+    if isinstance(frozen, dict) and frozen.get("frozen"):
+        raise HTTPException(400, "Tanda tangan driver sudah terkunci sebagai bukti pengiriman.")
+    if (order.get("delivery_status") or "") == "Terkirim":
+        raise HTTPException(400, "Pengiriman sudah terkirim — tanda tangan tidak dapat dihapus.")
+    clear_active_driver_signature(order)
+    await _persist_order(order)
+    await _audit_po(order, "delivery.driver_signature.cleared", user)
+    return {"order": order, "cleared": True}
 
 
 class DeliveryReschedulePayload(BaseModel):

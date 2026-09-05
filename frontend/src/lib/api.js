@@ -97,6 +97,25 @@ export const api = {
     }).then((r) => r.data);
   },
   deleteDeliveryProof: (id, proofId) => client.delete(`/orders/${id}/delivery-proof/${proofId}`).then((r) => r.data),
+  uploadDeliveryRecipientSignature: (id, { recipientName, signatureDataUrl, shipmentId, sjFileId }) => {
+    const form = new FormData();
+    form.append("recipient_name", recipientName || "");
+    if (signatureDataUrl) form.append("signature_data_url", signatureDataUrl);
+    if (shipmentId) form.append("shipment_id", shipmentId);
+    if (sjFileId) form.append("sj_file_id", sjFileId);
+    return client.post(`/orders/${id}/delivery-recipient-signature`, form).then((r) => r.data);
+  },
+  clearDeliveryRecipientSignature: (id) =>
+    client.delete(`/orders/${id}/delivery-recipient-signature`).then((r) => r.data),
+  uploadDeliveryDriverSignature: (id, { signatureDataUrl, shipmentId, sjFileId }) => {
+    const form = new FormData();
+    if (signatureDataUrl) form.append("signature_data_url", signatureDataUrl);
+    if (shipmentId) form.append("shipment_id", shipmentId);
+    if (sjFileId) form.append("sj_file_id", sjFileId);
+    return client.post(`/orders/${id}/delivery-driver-signature`, form).then((r) => r.data);
+  },
+  clearDeliveryDriverSignature: (id) =>
+    client.delete(`/orders/${id}/delivery-driver-signature`).then((r) => r.data),
   analyticsOperators: () => client.get(`/analytics/operators`).then((r) => r.data),
   analyticsOperatorKpis: (params = {}) => client.get(`/analytics/operators/kpis`, { params }).then((r) => r.data),
   analyticsOperatorDetail: (operatorId, params = {}) =>

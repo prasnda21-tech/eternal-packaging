@@ -4,11 +4,20 @@ import api, { fileUrl } from "../lib/api";
 import { compressImage } from "../lib/imageCompress";
 import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
 import { useAuth } from "../lib/auth";
-import { confirmableProofCount, canConfirmDelivered, MIN_DELIVERY_PROOFS, proofUploadUserError } from "../lib/deliveryProof";
+import {
+  confirmableProofCount,
+  canConfirmDelivered,
+  canSubmitConfirmDelivered,
+  confirmDeliveredBlockReason,
+  authoritativeDriverDisplayName,
+  MIN_DELIVERY_PROOFS,
+  proofUploadUserError,
+} from "../lib/deliveryProof";
 import { deliveryHistoryEntries, displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 import { newActionId } from "../lib/workflowEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
 import RescheduleDeliveryModal from "./RescheduleDeliveryModal";
+import SignaturePad from "./SignaturePad";
 
 const MAX_PHOTOS = 5;
 
@@ -30,19 +39,45 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const [confirming, setConfirming] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [previewId, setPreviewId] = useState(null);
+  const [recipientName, setRecipientName] = useState(
+    () => order.delivery_recipient_signature?.recipient_name || ""
+  );
+  const [signatureDataUrl, setSignatureDataUrl] = useState(null);
+  const [driverSignatureDataUrl, setDriverSignatureDataUrl] = useState(null);
+  const [savingSig, setSavingSig] = useState(false);
+  const [sigPadKey, setSigPadKey] = useState(0);
+  const [driverPadKey, setDriverPadKey] = useState(0);
+
+  useEffect(() => {
+    const n = order.delivery_recipient_signature?.recipient_name;
+    if (n && !recipientName) setRecipientName(n);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.delivery_recipient_signature?.id]);
 
   const canUpload = hasPerm("delivery.update");
   const canDelete = hasPerm("delivery.update");
   const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
   const canSetDate = hasPerm("delivery.reschedule.set_date");
   const proofs = order.delivery_proofs || [];
+  const orderSig = order.delivery_recipient_signature;
+  const driverSig = order.delivery_driver_signature;
+  const driverDisplayName = authoritativeDriverDisplayName(order, user);
   const history = deliveryHistoryEntries(order);
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
   const stagedNotYetUploaded = staged.filter((s) => s.status !== "done");
   const freeSlotsForNewSelection = Math.max(0, remainingSlots - stagedNotYetUploaded.length);
   const readyCount = confirmableProofCount(staged);
   const doneCount = staged.filter((s) => s.status === "done").length;
-  const deliverEnabled = canUpload && canConfirmDelivered(proofs) && order.delivery_status !== "Terkirim";
+  // Button APPEARS after existing 2-photo rule; submit still needs name + both signatures.
+  const deliverButtonVisible = canUpload && canConfirmDelivered(proofs) && order.delivery_status !== "Terkirim";
+  const deliverEnabled = deliverButtonVisible && canSubmitConfirmDelivered(
+    proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+  );
+  const deliverBlockReason = deliverButtonVisible
+    ? confirmDeliveredBlockReason(
+      proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+    )
+    : null;
 
   // Load proof images as blob URLs (cookie auth on same origin)
   useEffect(() => {
@@ -205,27 +240,112 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const anyErrors = staged.some((s) => s.status === "error");
 
   const openDeliverConfirm = () => {
-    if (!deliverEnabled || confirming) return;
+    if (!deliverButtonVisible || confirming) return;
+    const blocked = confirmDeliveredBlockReason(
+      proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+    );
+    if (blocked) {
+      setErr(blocked);
+      return;
+    }
     setErr("");
     setConfirmDeliver({
       count: proofs.length,
       time: formatDisplayDateTime(new Date().toISOString()),
       actionId: newActionId(),
+      recipientName: (recipientName || orderSig?.recipient_name || "").trim(),
+      driverName: driverDisplayName,
     });
   };
 
+  const ensureSignaturesSaved = async () => {
+    let latest = order;
+    const name = (recipientName || orderSig?.recipient_name || "").trim();
+    const recipientSaved = orderSig && orderSig.id && orderSig.frozen !== true
+      && orderSig.recipient_name && (orderSig.signature_storage_path || orderSig.recipient_signed_at);
+    if (!(recipientSaved && (!signatureDataUrl || orderSig.recipient_name === name))) {
+      if (!signatureDataUrl) {
+        throw new Error("Tanda tangan penerima wajib sebelum Konfirmasi Terkirim.");
+      }
+      setSavingSig(true);
+      try {
+        const res = await api.uploadDeliveryRecipientSignature(latest.id, {
+          recipientName: name,
+          signatureDataUrl,
+        });
+        latest = res.order;
+        onUpdated(res.order);
+      } finally {
+        setSavingSig(false);
+      }
+    }
+    const driverSaved = latest.delivery_driver_signature
+      && latest.delivery_driver_signature.id
+      && latest.delivery_driver_signature.frozen !== true
+      && (latest.delivery_driver_signature.signature_storage_path
+        || latest.delivery_driver_signature.driver_signature_storage_path
+        || latest.delivery_driver_signature.driver_signed_at);
+    if (!driverSaved || driverSignatureDataUrl) {
+      if (!driverSignatureDataUrl && !driverSaved) {
+        throw new Error("Tanda tangan driver/pengirim wajib sebelum Konfirmasi Terkirim.");
+      }
+      if (driverSignatureDataUrl) {
+        setSavingSig(true);
+        try {
+          const res = await api.uploadDeliveryDriverSignature(latest.id, {
+            signatureDataUrl: driverSignatureDataUrl,
+          });
+          latest = res.order;
+          onUpdated(res.order);
+        } finally {
+          setSavingSig(false);
+        }
+      }
+    }
+    return latest;
+  };
+
   const executeDeliver = async () => {
-    if (!confirmDeliver || confirming || uploading) return;
+    if (!confirmDeliver || confirming || uploading || savingSig) return;
     setConfirming(true);
     setErr("");
     try {
+      await ensureSignaturesSaved();
       const res = await api.confirmDelivered(order.id, { action_id: confirmDeliver.actionId });
       onUpdated(res.order);
       setConfirmDeliver(null);
+      setSignatureDataUrl(null);
+      setDriverSignatureDataUrl(null);
     } catch (ex) {
       setErr(proofUploadUserError(ex));
     } finally {
       setConfirming(false);
+    }
+  };
+
+  const clearSignature = async () => {
+    setSignatureDataUrl(null);
+    setSigPadKey((k) => k + 1);
+    if (orderSig && orderSig.id && orderSig.frozen !== true) {
+      try {
+        const res = await api.clearDeliveryRecipientSignature(order.id);
+        onUpdated(res.order);
+      } catch (ex) {
+        setErr(proofUploadUserError(ex));
+      }
+    }
+  };
+
+  const clearDriverSignature = async () => {
+    setDriverSignatureDataUrl(null);
+    setDriverPadKey((k) => k + 1);
+    if (driverSig && driverSig.id && driverSig.frozen !== true) {
+      try {
+        const res = await api.clearDeliveryDriverSignature(order.id);
+        onUpdated(res.order);
+      } catch (ex) {
+        setErr(proofUploadUserError(ex));
+      }
     }
   };
 
@@ -443,16 +563,91 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
           )}
 
           {err && <div className="error" data-testid="proof-error">{err}</div>}
+
+          {canConfirmDelivered(proofs) && order.delivery_status !== "Terkirim" && (
+            <div className="recipient-signature-block" data-testid="recipient-signature-block" style={{ marginTop: 16 }}>
+              <h4 style={{ margin: "0 0 8px" }}>Tanda Tangan Penerima</h4>
+              <label className="field" style={{ display: "block", marginBottom: 10 }}>
+                <span className="lbl">Nama Penerima</span>
+                <input
+                  type="text"
+                  value={recipientName}
+                  onChange={(e) => setRecipientName(e.target.value)}
+                  placeholder="Nama penerima barang"
+                  disabled={confirming || uploading || savingSig}
+                  data-testid="recipient-name-input"
+                  autoComplete="name"
+                  style={{ width: "100%", marginTop: 4 }}
+                />
+              </label>
+              <SignaturePad
+                key={sigPadKey}
+                height={160}
+                disabled={confirming || uploading || savingSig}
+                onChange={setSignatureDataUrl}
+              />
+              {(signatureDataUrl || (orderSig && !orderSig.frozen)) && (
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={clearSignature}
+                  disabled={confirming || uploading || savingSig}
+                  data-testid="recipient-signature-clear"
+                  style={{ marginTop: 4 }}
+                >
+                  Hapus / Ulangi Tanda Tangan
+                </button>
+              )}
+              {orderSig?.recipient_signed_at && !orderSig.frozen && (
+                <p className="muted small" data-testid="recipient-signature-saved-hint">
+                  Tanda tangan tersimpan {formatDisplayDateTime(orderSig.recipient_signed_at)}
+                </p>
+              )}
+
+              <h4 style={{ margin: "16px 0 8px" }}>TTD Driver / Pengirim</h4>
+              <p className="muted small" data-testid="driver-name-display">
+                Nama driver: <strong>{driverDisplayName || "—"}</strong>
+              </p>
+              <div data-testid="driver-signature-block">
+                <SignaturePad
+                  key={driverPadKey}
+                  height={160}
+                  disabled={confirming || uploading || savingSig}
+                  onChange={setDriverSignatureDataUrl}
+                />
+              </div>
+              {(driverSignatureDataUrl || (driverSig && !driverSig.frozen)) && (
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={clearDriverSignature}
+                  disabled={confirming || uploading || savingSig}
+                  data-testid="driver-signature-clear"
+                  style={{ marginTop: 4 }}
+                >
+                  Hapus / Ulangi Tanda Tangan Driver
+                </button>
+              )}
+              {driverSig?.driver_signed_at && !driverSig.frozen && (
+                <p className="muted small" data-testid="driver-signature-saved-hint">
+                  Tanda tangan driver tersimpan {formatDisplayDateTime(driverSig.driver_signed_at)}
+                </p>
+              )}
+            </div>
+          )}
+
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-            <button
-              type="button"
-              className="primary"
-              onClick={openDeliverConfirm}
-              disabled={!deliverEnabled || confirming || uploading}
-              data-testid="confirm-delivered-button"
-            >
-              Konfirmasi Terkirim
-            </button>
+            {deliverButtonVisible && (
+              <button
+                type="button"
+                className="primary"
+                onClick={openDeliverConfirm}
+                disabled={!deliverEnabled || confirming || uploading || savingSig}
+                data-testid="confirm-delivered-button"
+              >
+                {confirming || savingSig ? "Memproses..." : "Konfirmasi Terkirim"}
+              </button>
+            )}
             {canReschedule && order.delivery_status !== "Terkirim" && (
               <button
                 type="button"
@@ -465,8 +660,11 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
               </button>
             )}
           </div>
+          {deliverButtonVisible && deliverBlockReason && (
+            <p className="muted small" data-testid="confirm-delivered-hint">{deliverBlockReason}</p>
+          )}
           <p className="muted small">
-            Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu Konfirmasi Terkirim.
+            Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu isi nama penerima + TTD penerima + TTD driver, kemudian Konfirmasi Terkirim.
             Batas {MAX_PHOTOS} foto per PO. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
             {remainingSlots > 0 ? ` Sisa slot: ${remainingSlots}.` : " Slot penuh — hapus foto untuk menambah."}
           </p>
@@ -493,11 +691,17 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         customer={order.customer_name || order.customer}
         name={user?.name || user?.email}
         time={confirmDeliver?.time}
-        extra={confirmDeliver ? <p className="muted small" data-testid="confirm-proof-count">Bukti Kirim: {confirmDeliver.count} foto</p> : null}
-        busy={confirming}
+        extra={confirmDeliver ? (
+          <div>
+            <p className="muted small" data-testid="confirm-proof-count">Bukti Kirim: {confirmDeliver.count} foto</p>
+            <p className="muted small" data-testid="confirm-recipient-name">Penerima: {confirmDeliver.recipientName}</p>
+            <p className="muted small" data-testid="confirm-driver-name">Driver: {confirmDeliver.driverName || "—"}</p>
+          </div>
+        ) : null}
+        busy={confirming || savingSig}
         error={err}
         confirmLabel="Konfirmasi Terkirim"
-        onCancel={() => { if (!confirming) setConfirmDeliver(null); }}
+        onCancel={() => { if (!confirming && !savingSig) setConfirmDeliver(null); }}
         onConfirm={executeDeliver}
       />
       <RescheduleDeliveryModal

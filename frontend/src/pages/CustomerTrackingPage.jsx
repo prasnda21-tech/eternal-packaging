@@ -5,6 +5,33 @@ import BrandMark from "../components/BrandMark";
 import { trackingDisplayLabel, trackingStatusClass } from "../lib/customerTracking";
 import { displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 
+function DocActions({ doc, testIdPrefix }) {
+  if (!doc) return null;
+  const preview = publicApiUrl(doc.preview_url);
+  const download = publicApiUrl(doc.download_url);
+  return (
+    <div className="tracking-doc-actions" data-testid={`${testIdPrefix}-actions`}>
+      <a
+        href={preview}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="ghost sm"
+        data-testid={`${testIdPrefix}-open`}
+      >
+        Buka
+      </a>
+      <a
+        href={download}
+        className="ghost sm"
+        download={doc.name || "file"}
+        data-testid={`${testIdPrefix}-download`}
+      >
+        Unduh
+      </a>
+    </div>
+  );
+}
+
 export default function CustomerTrackingPage() {
   const { token } = useParams();
   const [loading, setLoading] = useState(true);
@@ -31,6 +58,9 @@ export default function CustomerTrackingPage() {
   }, [token]);
 
   const proofs = (data?.delivery_proofs || []).slice(0, 5);
+  const designDocs = data?.documents?.design_approved || [];
+  const sjDocs = data?.documents?.surat_jalan || [];
+  const shipmentsEvidence = data?.shipments_evidence || [];
 
   return (
     <main className="tracking-page" data-testid="customer-tracking-page">
@@ -87,6 +117,36 @@ export default function CustomerTrackingPage() {
                 </tbody>
               </table>
             </section>
+
+            {(designDocs.length > 0 || sjDocs.length > 0) && (
+              <section className="tracking-docs" data-testid="tracking-documents">
+                <h2>Dokumen</h2>
+                {designDocs.length > 0 && (
+                  <div className="tracking-doc-group" data-testid="tracking-design-approved">
+                    <h3>Design Approved</h3>
+                    {designDocs.map((d) => (
+                      <article key={d.id} className="tracking-doc-row" data-testid={`tracking-design-${d.id}`}>
+                        <strong>{d.name || "Design"}</strong>
+                        <DocActions doc={d} testIdPrefix={`tracking-design-${d.id}`} />
+                      </article>
+                    ))}
+                  </div>
+                )}
+                {sjDocs.length > 0 && (
+                  <div className="tracking-doc-group" data-testid="tracking-surat-jalan">
+                    <h3>Surat Jalan</h3>
+                    {sjDocs.map((d) => (
+                      <article key={d.id} className="tracking-doc-row" data-testid={`tracking-sj-${d.id}`}>
+                        <strong>{d.sj_number || d.name || "Surat Jalan"}</strong>
+                        {d.has_signed && <span className="muted small"> (bertanda tangan)</span>}
+                        <DocActions doc={d} testIdPrefix={`tracking-sj-${d.id}`} />
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
             {(data.delivery_history || []).length > 0 && (
               <section className="tracking-proofs" data-testid="tracking-delivery-history">
                 <h2>Riwayat Pengiriman</h2>
@@ -117,32 +177,107 @@ export default function CustomerTrackingPage() {
                 ))}
               </section>
             )}
-            <section className="tracking-proofs" data-testid="tracking-proofs">
-              <h2>Bukti Pengiriman</h2>
-              {proofs.length === 0 ? (
-                <p className="muted small">Belum ada bukti kirim.</p>
-              ) : (
-                <div className="tracking-proof-grid">
-                  {proofs.map((p) => (
-                    <button
-                      type="button"
-                      key={p.id}
-                      className="tracking-proof-thumb"
-                      onClick={() => setPreview(publicApiUrl(p.url))}
-                      data-testid={`tracking-proof-${p.id}`}
+
+            {shipmentsEvidence.length > 0 && (
+              <section className="tracking-proofs" data-testid="tracking-shipments-evidence">
+                <h2>Bukti Pengiriman</h2>
+                {shipmentsEvidence.map((ev, i) => {
+                  const photos = (ev.photos || []).slice(0, 2);
+                  const rec = ev.recipient;
+                  const drv = ev.driver;
+                  return (
+                    <article
+                      key={ev.confirmation_id || ev.shipment_id || i}
+                      className="delivery-history-entry"
+                      data-testid={`tracking-evidence-${i}`}
                     >
-                      <img src={publicApiUrl(p.url)} alt="Bukti pengiriman" loading="lazy" />
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
+                      <dl className="delivery-history-dl">
+                        <dt>Nama Penerima</dt>
+                        <dd data-testid={`tracking-evidence-recipient-${i}`}>
+                          {displayOrDash(rec?.recipient_name)}
+                        </dd>
+                        <dt>Waktu Ditandatangani</dt>
+                        <dd data-testid={`tracking-evidence-signed-at-${i}`}>
+                          {historyTimeLabel(rec?.recipient_signed_at || ev.time)}
+                        </dd>
+                        {drv?.driver_name && (
+                          <>
+                            <dt>Nama Driver</dt>
+                            <dd data-testid={`tracking-evidence-driver-${i}`}>
+                              {displayOrDash(drv.driver_name)}
+                            </dd>
+                          </>
+                        )}
+                      </dl>
+                      {photos.length > 0 && (
+                        <div className="delivery-history-photos" data-testid={`tracking-evidence-photos-${i}`}>
+                          {photos.map((p, pi) => (
+                            <button
+                              type="button"
+                              key={p.id}
+                              onClick={() => setPreview(publicApiUrl(p.url))}
+                              data-testid={`tracking-evidence-photo-${i}-${pi}`}
+                            >
+                              <img src={publicApiUrl(p.url)} alt={`Foto bukti ${pi + 1}`} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {rec?.url && (
+                        <div className="tracking-signature-preview" data-testid={`tracking-evidence-signature-${i}`}>
+                          <span className="lbl">Tanda Tangan Penerima</span>
+                          <button type="button" onClick={() => setPreview(publicApiUrl(rec.url))}>
+                            <img src={publicApiUrl(rec.url)} alt="Tanda tangan penerima" />
+                          </button>
+                        </div>
+                      )}
+                      {drv?.url && (
+                        <div className="tracking-signature-preview" data-testid={`tracking-evidence-driver-signature-${i}`}>
+                          <span className="lbl">Tanda Tangan Driver</span>
+                          <button type="button" onClick={() => setPreview(publicApiUrl(drv.url))}>
+                            <img src={publicApiUrl(drv.url)} alt="Tanda tangan driver" />
+                          </button>
+                        </div>
+                      )}
+                      {ev.sj_file_id && (
+                        <p className="muted small" data-testid={`tracking-evidence-sj-${i}`}>
+                          Surat Jalan terkait: lihat bagian Dokumen
+                        </p>
+                      )}
+                    </article>
+                  );
+                })}
+              </section>
+            )}
+
+            {shipmentsEvidence.length === 0 && (
+              <section className="tracking-proofs" data-testid="tracking-proofs">
+                <h2>Bukti Pengiriman</h2>
+                {proofs.length === 0 ? (
+                  <p className="muted small">Belum ada bukti kirim.</p>
+                ) : (
+                  <div className="tracking-proof-grid">
+                    {proofs.map((p) => (
+                      <button
+                        type="button"
+                        key={p.id}
+                        className="tracking-proof-thumb"
+                        onClick={() => setPreview(publicApiUrl(p.url))}
+                        data-testid={`tracking-proof-${p.id}`}
+                      >
+                        <img src={publicApiUrl(p.url)} alt="Bukti pengiriman" loading="lazy" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
           </>
         )}
       </div>
       {preview && (
         <div className="tracking-lightbox" data-testid="tracking-lightbox" onClick={() => setPreview(null)}>
-          <img src={preview} alt="Bukti pengiriman" />
+          <img src={preview} alt="Pratinjau" />
         </div>
       )}
     </main>
