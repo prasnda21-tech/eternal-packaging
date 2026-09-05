@@ -107,6 +107,12 @@ describe("Customer tracking public page", () => {
     expect(panel).toMatch(/confirm-delivered-button/);
   });
 
+  test("driver signature pad input stays square via CSS", () => {
+    const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
+    expect(css).toMatch(/\.driver-signature-block \.signature-pad\{[^}]*width:200px/);
+    expect(css).toMatch(/\.driver-signature-block \.signature-pad > div:first-child\{[^}]*aspect-ratio:1 \/ 1/);
+  });
+
   test("tracking evidence can show driver signature", () => {
     expect(page).toMatch(/tracking-evidence-driver-signature/);
     expect(page).toMatch(/Tanda tangan driver/);

@@ -833,8 +833,8 @@ def generate_sales_delivery_pdf_bytes(
 
     _sig_tmp_paths: List[str] = []
 
-    def _sig_image_flowable(raw_png: Optional[bytes]):
-        """Fit signature into a square box, centered (no wide stretched rectangle)."""
+    def _normalize_sig_file(raw_png: Optional[bytes]):
+        """Write normalized PNG to temp; return (path, iw, ih) or None."""
         if not raw_png:
             return None
         normalized = normalize_signature_image_for_pdf(raw_png)
@@ -848,43 +848,32 @@ def generate_sales_delivery_pdf_bytes(
             fd, tmp_path = tempfile.mkstemp(suffix=".png")
             with os.fdopen(fd, "wb") as fh:
                 fh.write(normalized)
-            box = 3.2 * cm  # square signature frame
-            pad = 0.12 * cm
-            inner = box - (2 * pad)
             try:
                 from PIL import Image as PILImage
                 with PILImage.open(tmp_path) as pil:
                     iw, ih = pil.size
             except Exception:
                 iw, ih = 300, 300
-            scale = min(inner / max(iw, 1), inner / max(ih, 1))
-            draw_w = max(iw * scale, 0.4 * cm)
-            draw_h = max(ih * scale, 0.4 * cm)
-            img = Image(tmp_path, width=draw_w, height=draw_h)
-            img.hAlign = "CENTER"
             _sig_tmp_paths.append(tmp_path)
-            tmp_path = None
-            # Fixed square cell so the frame is square regardless of stroke aspect
-            frame = Table([[img]], colWidths=[box], rowHeights=[box])
-            frame.setStyle(TableStyle([
-                ('BOX', (0, 0), (-1, -1), 0.6, colors.HexColor('#94a3b8')),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('LEFTPADDING', (0, 0), (-1, -1), pad),
-                ('RIGHTPADDING', (0, 0), (-1, -1), pad),
-                ('TOPPADDING', (0, 0), (-1, -1), pad),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), pad),
-                ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-            ]))
-            return frame
+            return tmp_path, max(iw, 1), max(ih, 1)
         except Exception:
             logger.warning("signature Image embed failed", exc_info=True)
             if tmp_path:
                 try:
-                    os.unlink(tmp_path)
+                    import os as _os
+                    _os.unlink(tmp_path)
                 except Exception:
                     pass
             return None
+
+    def _sig_image_in_box(tmp_path: str, iw: int, ih: int, max_w: float, max_h: float):
+        """Fit stroke into max_w×max_h; preserve aspect — no stretch, no border."""
+        scale = min(max_w / iw, max_h / ih)
+        draw_w = max(iw * scale, 0.5 * cm)
+        draw_h = max(ih * scale, 0.5 * cm)
+        img = Image(tmp_path, width=draw_w, height=draw_h)
+        img.hAlign = "CENTER"
+        return img, draw_w, draw_h
 
     def _signed_at_label(raw_ts: Optional[str]) -> str:
         if not raw_ts:
@@ -964,6 +953,11 @@ def generate_sales_delivery_pdf_bytes(
     sig_center_style = ParagraphStyle(
         'SigCenter',
         parent=tbl_cell_style,
+        alignment=1,  # TA_CENTER
+    )
+    sig_header_style = ParagraphStyle(
+        'SigHeader',
+        parent=meta_label_style,
         alignment=1,  # TA_CENTER
     )
 
@@ -1131,14 +1125,59 @@ def generate_sales_delivery_pdf_bytes(
             sig_center_style,
         )
 
+    # Fixed-height signature slots so recipient/driver names share one baseline.
+    # Shared render box = recipient's current fit size (never enlarge recipient);
+    # driver is contained in that same box (aspect preserved).
+    _sig_col_w = 5.6 * cm
+    _sig_cap_w = 5.2 * cm
+    _sig_cap_h = 4.0 * cm
+
+    recip_file = _normalize_sig_file(recipient_signature_png)
+    driver_file = _normalize_sig_file(driver_signature_png)
+
+    if recip_file:
+        _rp, _riw, _rih = recip_file
+        _rs = min(_sig_cap_w / _riw, _sig_cap_h / _rih)
+        box_w = max(_riw * _rs, 0.5 * cm)
+        box_h = max(_rih * _rs, 0.5 * cm)
+    elif driver_file:
+        _dp, _diw, _dih = driver_file
+        _ds = min(_sig_cap_w / _diw, _sig_cap_h / _dih)
+        box_w = max(_diw * _ds, 0.5 * cm)
+        box_h = max(_dih * _ds, 0.5 * cm)
+    else:
+        box_w, box_h = _sig_cap_w, _sig_cap_h
+
+    _sig_slot_h = box_h
+
+    recipient_img = None
+    driver_img = None
+    if recip_file:
+        recipient_img, _, _ = _sig_image_in_box(*recip_file, box_w, box_h)
+    if driver_file:
+        driver_img, _, _ = _sig_image_in_box(*driver_file, box_w, box_h)
+
+    def _sig_slot(img):
+        """Borderless equal-height slot; stroke bottom-aligned above the name."""
+        cell = img if img is not None else Spacer(1, 0.1 * cm)
+        slot = Table([[cell]], colWidths=[_sig_col_w], rowHeights=[_sig_slot_h])
+        slot.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
+        return slot
+
     def _sig_column_cell(img, name: str, sublabel: str, signed_label: str):
         # Nested Table (not KeepTogether) — KeepTogether+Image inside Table cells
         # can explode row height on some ReportLab versions.
-        col_w = 5.6 * cm
         if img is not None:
             inner = Table(
-                [[img], [Spacer(1, 0.18 * cm)], [_sig_name_block(name, sublabel, signed_label)]],
-                colWidths=[col_w],
+                [[_sig_slot(img)], [Spacer(1, 0.12 * cm)], [_sig_name_block(name, sublabel, signed_label)]],
+                colWidths=[_sig_col_w],
             )
             inner.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
@@ -1156,8 +1195,6 @@ def generate_sales_delivery_pdf_bytes(
             sig_center_style,
         )
 
-    recipient_img = _sig_image_flowable(recipient_signature_png)
-    driver_img = _sig_image_flowable(driver_signature_png)
     recipient_cell = _sig_column_cell(
         recipient_img,
         display_recipient,
@@ -1170,21 +1207,35 @@ def generate_sales_delivery_pdf_bytes(
         "Logistik / Ekspedisi",
         driver_signed_label,
     )
+    hormat_name = Paragraph(
+        f"( <b>{delivery.get('created_by_name') or 'Eternal Packaging'}</b> )"
+        f"<br/><font size='7' color='#64748b'>Bagian Penjualan</font>",
+        sig_center_style,
+    )
+    # Same signature-slot height so Hormat Kami name stays on the shared baseline.
+    hormat_cell = Table(
+        [[_sig_slot(None)], [Spacer(1, 0.12 * cm)], [hormat_name]],
+        colWidths=[_sig_col_w],
+    )
+    hormat_cell.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
 
     sig_data = [
         [
-            Paragraph("Diterima Oleh,", meta_label_style),
-            Paragraph("Pengirim / Supir,", meta_label_style),
-            Paragraph("Hormat Kami,", meta_label_style),
+            Paragraph("Diterima Oleh,", sig_header_style),
+            Paragraph("Pengirim / Supir,", sig_header_style),
+            Paragraph("Hormat Kami,", sig_header_style),
         ],
         [
             recipient_cell,
             driver_cell,
-            Paragraph(
-                f"<br/><br/><br/>( <b>{delivery.get('created_by_name') or 'Eternal Packaging'}</b> )"
-                f"<br/><font size='7' color='#64748b'>Bagian Penjualan</font>",
-                tbl_cell_style,
-            ),
+            hormat_cell,
         ],
     ]
     sig_tbl = Table(sig_data, colWidths=[6.0 * cm, 6.0 * cm, 6.0 * cm])
