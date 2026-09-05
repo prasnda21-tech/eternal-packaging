@@ -111,8 +111,10 @@ async def client_for(user):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-async def _coa(code, name):
-    return await create_account(server.db, {"code": code, "name": name}, user=_user())
+async def _coa(code, name, account_type="BANK"):
+    return await create_account(
+        server.db, {"code": code, "name": name, "account_type": account_type}, user=_user()
+    )
 
 
 async def _bank(client, name, account_id):

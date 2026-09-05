@@ -26,6 +26,30 @@ class CashBankConflictError(Exception):
     pass
 
 
+BANK_ACCOUNT_TYPE = "BANK"
+
+
+def require_bank_coa(coa: Optional[dict]) -> dict:
+    """Kas/Bank may only link to a COA with account_type == BANK.
+
+    Unknown / missing COA and missing/null account_type are rejected.
+    Legacy masters already linked to non-BANK remain readable via get/list.
+    """
+    if not coa:
+        raise CashBankValidationError("Akun Perkiraan tidak ditemukan")
+    raw_type = coa.get("account_type")
+    account_type = str(raw_type).strip().upper() if raw_type is not None else ""
+    if not account_type:
+        raise CashBankValidationError(
+            "Akun Perkiraan harus bertipe BANK (tipe akun kosong)"
+        )
+    if account_type != BANK_ACCOUNT_TYPE:
+        raise CashBankValidationError(
+            f"Akun Perkiraan harus bertipe BANK (saat ini: {account_type})"
+        )
+    return coa
+
+
 async def ensure_indexes(db) -> None:
     col = db[COLLECTION]
     await col.create_index("id", unique=True)
@@ -118,9 +142,7 @@ async def create_cash_bank(db, raw: dict, *, user: Optional[dict] = None) -> dic
     if not account_id:
         raise CashBankValidationError("Akun Perkiraan wajib diisi")
 
-    coa = await get_account(db, account_id)
-    if not coa:
-        raise CashBankValidationError("Akun Perkiraan tidak ditemukan")
+    coa = require_bank_coa(await get_account(db, account_id))
 
     existing = await db[COLLECTION].find_one({"account_id": account_id}, {"_id": 0, "id": 1, "name": 1})
     if existing:
@@ -172,31 +194,44 @@ async def update_cash_bank(
     else:
         active = bool(doc.get("active", True))
 
-    # COA is immutable after create (1:1 integrity); reject change attempts.
+    updates: Dict[str, Any] = {
+        "name": name,
+        "description": description,
+        "active": active,
+    }
+
+    # Account link may change, but only to an unused BANK COA.
+    # Leaving the existing link unchanged is always allowed (legacy non-BANK readable/editable).
     if "account_id" in (raw or {}):
         new_aid = str((raw or {}).get("account_id") or "").strip()
-        if new_aid and new_aid != doc.get("account_id"):
-            raise CashBankValidationError(
-                "Akun Perkiraan tidak dapat diubah setelah dibuat"
+        if not new_aid:
+            raise CashBankValidationError("Akun Perkiraan wajib diisi")
+        if new_aid != doc.get("account_id"):
+            coa = require_bank_coa(await get_account(db, new_aid))
+            existing = await db[COLLECTION].find_one(
+                {"account_id": new_aid}, {"_id": 0, "id": 1, "name": 1}
             )
+            if existing and existing.get("id") != doc.get("id"):
+                raise CashBankConflictError(
+                    f"Akun Perkiraan sudah dipakai oleh Kas/Bank '{existing.get('name')}'"
+                )
+            updates["account_id"] = new_aid
+            updates["account_code"] = coa.get("code")
+            updates["account_name"] = coa.get("name")
 
     if not name:
         raise CashBankValidationError("Nama Kas / Bank wajib diisi")
 
     now = now_iso()
     actor = actor_snapshot(user)
-    await db[COLLECTION].update_one(
-        {"id": doc["id"]},
-        {
-            "$set": {
-                "name": name,
-                "description": description,
-                "active": active,
-                "updated_at": now,
-                "updated_by": actor,
-            }
-        },
-    )
+    updates["updated_at"] = now
+    updates["updated_by"] = actor
+    try:
+        await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": updates})
+    except DuplicateKeyError as exc:
+        raise CashBankConflictError(
+            "Akun Perkiraan sudah dipakai oleh Kas/Bank lain"
+        ) from exc
     return await get_cash_bank(db, doc["id"])
 
 

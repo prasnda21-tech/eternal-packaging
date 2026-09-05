@@ -43,10 +43,18 @@ export default function DaftarKasBank() {
     return set;
   }, [items, editRow]);
 
-  const availableCoa = useMemo(
-    () => coa.filter((a) => !usedAccountIds.has(a.id) || a.id === accountId),
-    [coa, usedAccountIds, accountId],
-  );
+  const availableCoa = useMemo(() => {
+    // Eligible new links: account_type === BANK only (never filter by name).
+    // Legacy non-BANK current link stays visible so edit/view does not crash or blank out.
+    return coa.filter((a) => {
+      const type = String(a?.account_type || "").trim().toUpperCase();
+      const isBank = type === "BANK";
+      const isCurrent = Boolean(accountId) && a.id === accountId;
+      if (!isBank && !isCurrent) return false;
+      if (usedAccountIds.has(a.id) && !isCurrent) return false;
+      return true;
+    });
+  }, [coa, usedAccountIds, accountId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -157,7 +165,11 @@ export default function DaftarKasBank() {
                     id="kb-account"
                     label="Akun Perkiraan"
                     required
-                    hint={editRow ? "Akun tidak dapat diubah setelah dibuat." : "Satu COA hanya untuk satu Kas/Bank."}
+                    hint={
+                      editRow
+                        ? "Akun tidak dapat diubah setelah dibuat. Hanya akun bertipe BANK yang dapat dipilih saat menambah."
+                        : "Hanya akun bertipe BANK. Satu COA hanya untuk satu Kas/Bank."
+                    }
                   >
                     <select
                       id="kb-account"
