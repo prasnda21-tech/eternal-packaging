@@ -1,10 +1,10 @@
-import { BarChart3, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, LayoutDashboard, LineChart, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { moduleFromPath } from "../lib/uiModule";
 import BrandMark from "./BrandMark";
@@ -42,6 +42,7 @@ const TILE_ICONS = {
   [NAV_KEYS.hrPayrollPayslips]: Receipt,
   [NAV_KEYS.hrPayrollComponents]: Coins,
   [NAV_KEYS.hrPayrollHistory]: FileBarChart,
+  [NAV_KEYS.ledgerAccounts]: BookOpen,
   [NAV_KEYS.schedule]: TableIcon,
   deliveryToday: ClipboardList,
   [NAV_KEYS.deliverySchedule]: Truck,
@@ -101,6 +102,7 @@ export default function AppShell() {
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
+  const ledgerActive = location.pathname.startsWith("/buku-besar");
   const employeeAdminActive = location.pathname.startsWith("/administrasi-karyawan");
   const hrPayrollActive = location.pathname.startsWith("/hr-payroll");
   const tasksActive = location.pathname.startsWith("/tasks");
@@ -211,6 +213,8 @@ export default function AppShell() {
   const employeeAdminItems = employeeAdminMenuItems(hasPerm);
   const hrPayrollNav = hrPayrollNavVisible(hasPerm);
   const hrPayrollItems = hrPayrollMenuItems(hasPerm);
+  const ledgerNav = ledgerNavVisible(hasPerm);
+  const ledgerItems = ledgerMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showRouteOptimizer = hasPerm(NAV_KEYS.routeOptimizer) || hasPerm("route_optimizer.view") || hasPerm("route_optimizer.create") || hasPerm("route_optimizer.manage");
@@ -224,6 +228,7 @@ export default function AppShell() {
   const reportsOpen = activeSidebarMenu === "reports";
   const employeeAdminOpen = activeSidebarMenu === "employeeAdmin";
   const hrPayrollOpen = activeSidebarMenu === "hrPayroll";
+  const ledgerOpen = activeSidebarMenu === "ledger";
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
   const uiModule = moduleFromPath(location.pathname);
@@ -303,6 +308,21 @@ export default function AppShell() {
                 active={inventoryActive}
                 open={inventoryOpen}
                 onClick={() => toggleMenu("inventory")}
+              />
+            </div>
+          )}
+          {ledgerNav.parent && (
+            <div className="nav-group" data-testid="top-nav-buku-besar-group">
+              <RailButton
+                ref={(el) => { railRefs.current.ledger = el; }}
+                testid="top-nav-buku-besar"
+                label="Buku Besar"
+                icon={BookOpen}
+                expanded={ledgerOpen}
+                controls="sidebar-flyout-ledger"
+                active={ledgerActive}
+                open={ledgerOpen}
+                onClick={() => toggleMenu("ledger")}
               />
             </div>
           )}
@@ -435,6 +455,21 @@ export default function AppShell() {
           placement={flyoutPos.placement}
           style={flyoutStyle}
           items={inventoryItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
+      )}
+
+      {ledgerOpen && ledgerItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
+          id="sidebar-flyout-ledger"
+          testid="sidebar-flyout-ledger"
+          title="Buku Besar"
+          ariaLabel="Menu Buku Besar"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={ledgerItems}
           icons={TILE_ICONS}
           onNavigate={closeFlyout}
         />

@@ -156,6 +156,8 @@ from services.customer_pricing_http import register_customer_pricing_routes
 from services.customer_pricing_public_http import register_public_customer_pricing_routes
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
+from services.chart_of_accounts_http import register_chart_of_accounts_routes
+from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
 from services.sales_activity.http import register_sales_activity_routes
 from services.independent_route.http import register_independent_route_routes
 from permissions import (
@@ -8209,6 +8211,13 @@ register_employee_admin_routes(
     user_permissions=user_permissions,
     Depends=Depends,
 )
+register_chart_of_accounts_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_hr_payroll_routes(
     api_router,
     get_db=lambda: db,
@@ -9578,6 +9587,9 @@ async def seed():
     await db.delivery_route_plans.create_index("status")
     await db.delivery_route_plans.create_index("routes.driver_user_id")
     await db.delivery_vehicles.create_index("id", unique=True)
+    # Chart of Accounts (Akun Perkiraan) — indexes only; seed is manual CLI
+    await db[LEDGER_ACCOUNTS_COLLECTION].create_index("id", unique=True)
+    await db[LEDGER_ACCOUNTS_COLLECTION].create_index("code", unique=True)
     # Sales Deliveries (Pengiriman Pesanan) indexes
     await db.sales_deliveries.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.sales_deliveries, "sj_number")

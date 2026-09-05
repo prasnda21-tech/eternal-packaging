@@ -53,6 +53,8 @@ export const NAV_KEYS = {
   hrPayrollComponents: "nav.hr_payroll.components",
   hrPayrollHistory: "nav.hr_payroll.history",
   routeOptimizer: "nav.route_optimizer",
+  ledger: "nav.ledger",
+  ledgerAccounts: "nav.ledger.accounts",
   settings: "nav.settings",
 };
 
@@ -108,6 +110,8 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.hrPayrollComponents, label: "Komponen Gaji", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.hrPayrollHistory, label: "Riwayat Payroll", parent: NAV_KEYS.hrPayroll },
   { key: NAV_KEYS.routeOptimizer, label: "Optimasi Rute", parent: null },
+  { key: NAV_KEYS.ledger, label: "Buku Besar", parent: null },
+  { key: NAV_KEYS.ledgerAccounts, label: "Akun Perkiraan", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.settings, label: "Pengaturan", parent: null },
 ];
 
@@ -681,5 +685,43 @@ export function hrPayrollMenuItems(hasPerm) {
     HR_PAYROLL_NAV_ROUTES,
     HR_PAYROLL_TILE_TONES,
     HR_PAYROLL_TILE_TESTIDS,
+  );
+}
+
+export const LEDGER_NAV_ROUTES = {
+  [NAV_KEYS.ledgerAccounts]: "/buku-besar/akun-perkiraan",
+};
+
+const LEDGER_VIS_FIELD = {
+  [NAV_KEYS.ledgerAccounts]: "accounts",
+};
+
+export const LEDGER_TILE_TONES = {
+  [NAV_KEYS.ledgerAccounts]: "emerald",
+};
+
+export const LEDGER_TILE_TESTIDS = {
+  [NAV_KEYS.ledgerAccounts]: "top-nav-akun-perkiraan",
+};
+
+export function ledgerNavVisible(hasPerm) {
+  const accounts = canSeeNav(hasPerm, NAV_KEYS.ledgerAccounts)
+    || canSeeNav(hasPerm, "ledger.accounts.view")
+    || canSeeNav(hasPerm, "ledger.accounts.manage");
+  return {
+    parent: Boolean(accounts),
+    accounts: Boolean(accounts),
+  };
+}
+
+export function ledgerMenuItems(hasPerm) {
+  return menuItemsFromFallback(
+    hasPerm,
+    NAV_KEYS.ledger,
+    ledgerNavVisible(hasPerm),
+    LEDGER_VIS_FIELD,
+    LEDGER_NAV_ROUTES,
+    LEDGER_TILE_TONES,
+    LEDGER_TILE_TESTIDS,
   );
 }

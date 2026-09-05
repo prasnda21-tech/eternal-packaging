@@ -173,6 +173,9 @@ export const api = {
   listSalesOrders: (params = {}) => client.get(`/sales-orders`, { params }).then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
+  ledgerAccounts: (params = {}) => client.get(`/ledger/accounts`, { params }).then((r) => r.data),
+  createLedgerAccount: (payload) => client.post(`/ledger/accounts`, payload).then((r) => r.data),
+  deleteLedgerAccount: (id) => client.delete(`/ledger/accounts/${encodeURIComponent(id)}`).then((r) => r.data),
   currentStock: (params = {}) => client.get(`/current-stock`, { params }).then((r) => r.data),
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>

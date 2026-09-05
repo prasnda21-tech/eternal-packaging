@@ -154,6 +154,8 @@ PERMISSION_CATALOG = [
     ("HR & Payroll", "payroll.payslip.view_own", "Lihat slip gaji sendiri"),
     ("HR & Payroll", "payroll.payslip.view_all", "Lihat semua slip gaji"),
     ("HR & Payroll", "payroll.adjustment", "Penyesuaian manual penggajian"),
+    ("Buku Besar", "ledger.accounts.view", "Lihat Akun Perkiraan"),
+    ("Buku Besar", "ledger.accounts.manage", "Kelola Akun Perkiraan"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -212,6 +214,8 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.hr_payroll.components", "Menu Komponen Gaji"),
     ("Akses Menu", "nav.hr_payroll.history", "Menu Riwayat Penggajian"),
     ("Akses Menu", "nav.route_optimizer", "Menu Optimasi Rute"),
+    ("Akses Menu", "nav.ledger", "Menu Buku Besar"),
+    ("Akses Menu", "nav.ledger.accounts", "Menu Akun Perkiraan"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -292,6 +296,8 @@ NAV_MENU_ITEMS = (
     ("nav.hr_payroll.components", "Komponen Gaji", "nav.hr_payroll"),
     ("nav.hr_payroll.history", "Riwayat Penggajian", "nav.hr_payroll"),
     ("nav.route_optimizer", "Optimasi Rute", None),
+    ("nav.ledger", "Buku Besar", None),
+    ("nav.ledger.accounts", "Akun Perkiraan", "nav.ledger"),
     ("nav.settings", "Pengaturan", None),
 )
 
@@ -415,6 +421,9 @@ def derived_nav_permissions(existing: set) -> set:
     ):
         nav.add("nav.sales")
         nav.add("nav.sales.sales_activity")
+    if "ledger.accounts.view" in existing or "ledger.accounts.manage" in existing:
+        nav.add("nav.ledger")
+        nav.add("nav.ledger.accounts")
     return nav
 
 
