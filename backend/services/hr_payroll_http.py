@@ -38,6 +38,8 @@ from services.hr_payroll import (
     can_view_payslip,
     create_component,
     create_employee,
+    create_employee_with_optional_account,
+    create_eternal_account_for_employee,
     create_period,
     ensure_indexes,
     ensure_kasbon_schedule,
@@ -67,7 +69,17 @@ class LoosePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
-def register_hr_payroll_routes(api_router, *, get_db, current_user, require_perm, require_any_perm, user_permissions, Depends):
+def register_hr_payroll_routes(
+    api_router,
+    *,
+    get_db,
+    current_user,
+    require_perm,
+    require_any_perm,
+    user_permissions,
+    Depends,
+    create_canonical_user=None,
+):
     def _dump(payload: LoosePayload) -> dict:
         if hasattr(payload, "model_dump"):
             return payload.model_dump()
@@ -82,6 +94,9 @@ def register_hr_payroll_routes(api_router, *, get_db, current_user, require_perm
         if not can_view_payslip(user, line, perms):
             raise HTTPException(403, "Anda tidak berhak melihat slip gaji ini.")
         return perms
+
+    async def _may_create_users(user: dict) -> bool:
+        return "users.manage" in await _perms(user)
 
     @api_router.get("/hr-payroll/meta")
     async def hr_payroll_meta(user=Depends(current_user)):
@@ -109,16 +124,59 @@ def register_hr_payroll_routes(api_router, *, get_db, current_user, require_perm
         }
 
     @api_router.get("/hr-payroll/employees")
-    async def employees(include_inactive: bool = True, q: Optional[str] = None, user=Depends(current_user)):
+    async def employees(
+        include_inactive: bool = True,
+        q: Optional[str] = None,
+        hr_profile_only: bool = False,
+        page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        user=Depends(current_user),
+    ):
         await require_any_perm(user, PERM_EMP_VIEW, PERM_EMP_MANAGE, PERM_PAY_VIEW)
-        rows = await list_employees(get_db(), include_inactive=include_inactive, q=q or "")
-        return {"employees": rows, "count": len(rows)}
+        return await list_employees(
+            get_db(),
+            include_inactive=include_inactive,
+            q=q or "",
+            hr_profile_only=hr_profile_only,
+            page=page,
+            page_size=page_size,
+        )
 
     @api_router.post("/hr-payroll/employees")
     async def employee_create(payload: LoosePayload, user=Depends(current_user)):
         await require_any_perm(user, PERM_EMP_MANAGE)
-        row = await create_employee(get_db(), _dump(payload), user)
+        body = _dump(payload)
+        flag = body.get("create_account")
+        wants_account = flag is True or isinstance(flag, dict)
+        if wants_account:
+            if create_canonical_user is None:
+                raise HTTPException(500, "Layanan pembuatan akun Eternal belum dikonfigurasi.")
+            row = await create_employee_with_optional_account(
+                get_db(),
+                body,
+                user,
+                create_canonical_user=create_canonical_user,
+                actor_may_create_users=await _may_create_users(user),
+            )
+        else:
+            clean = {k: v for k, v in body.items() if k not in ("create_account", "account")}
+            row = await create_employee(get_db(), clean, user)
         return {"employee": row, "message": "Data karyawan disimpan"}
+
+    @api_router.post("/hr-payroll/employees/{employee_id}/eternal-account")
+    async def employee_create_eternal_account(employee_id: str, payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_EMP_MANAGE)
+        if create_canonical_user is None:
+            raise HTTPException(500, "Layanan pembuatan akun Eternal belum dikonfigurasi.")
+        row = await create_eternal_account_for_employee(
+            get_db(),
+            employee_id,
+            _dump(payload),
+            user,
+            create_canonical_user=create_canonical_user,
+            actor_may_create_users=await _may_create_users(user),
+        )
+        return {"employee": row, "message": "Akun Eternal dibuat dan ditautkan"}
 
     @api_router.get("/hr-payroll/employees/{employee_id}")
     async def employee_detail(employee_id: str, user=Depends(current_user)):

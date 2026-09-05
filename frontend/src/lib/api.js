@@ -399,6 +399,7 @@ export const api = {
   hrPayrollEmployees: (params = {}) => client.get(`/hr-payroll/employees`, { params }).then((r) => r.data),
   hrPayrollEmployee: (id) => client.get(`/hr-payroll/employees/${encodeURIComponent(id)}`).then((r) => r.data),
   hrPayrollCreateEmployee: (payload) => client.post(`/hr-payroll/employees`, payload).then((r) => r.data),
+  hrPayrollCreateEternalAccount: (employeeId, payload) => client.post(`/hr-payroll/employees/${encodeURIComponent(employeeId)}/eternal-account`, payload).then((r) => r.data),
   hrPayrollUpdateEmployee: (id, payload) => client.put(`/hr-payroll/employees/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   hrPayrollComponents: (params = {}) => client.get(`/hr-payroll/components`, { params }).then((r) => r.data),
   hrPayrollCreateComponent: (payload) => client.post(`/hr-payroll/components`, payload).then((r) => r.data),

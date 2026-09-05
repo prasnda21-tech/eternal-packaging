@@ -5456,34 +5456,84 @@ async def get_user_admin(user_id: str, user=Depends(require_perm("users.view")))
 
 @api_router.post("/admin/users")
 async def create_user_admin(payload: EmployeeCreate, user=Depends(require_perm("users.manage"))):
-    email = payload.email.strip().lower()
-    if not await _role_slug_is_valid(payload.role):
-        raise HTTPException(400, f"Role '{payload.role}' tidak dikenal")
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(409, "Email sudah terdaftar")
+    saved = await create_canonical_user(
+        email=payload.email,
+        name=payload.name,
+        role=payload.role,
+        password=payload.password,
+        nickname=payload.nickname,
+        phone=payload.phone,
+        joined_at=payload.joined_at,
+        notes=payload.notes,
+        permissions_override=payload.permissions_override,
+        actor=user,
+        require_password=False,
+    )
+    return {"user": saved}
+
+
+async def create_canonical_user(
+    *,
+    email: str,
+    name: str,
+    role: str,
+    password: Optional[str] = None,
+    nickname: Optional[str] = None,
+    phone: Optional[str] = None,
+    joined_at: Optional[str] = None,
+    notes: Optional[str] = None,
+    permissions_override: Optional[Dict[str, bool]] = None,
+    actor: dict,
+    require_password: bool = False,
+) -> dict:
+    """Shared Settings Karyawan user provisioning. Does not create hr_employees."""
+    email_norm = (email or "").strip().lower()
+    name_clean = (name or "").strip()
+    role_slug = (role or "").strip()
+    if not email_norm:
+        raise HTTPException(400, "Email wajib diisi")
+    if not name_clean:
+        raise HTTPException(400, "Nama wajib diisi")
+    if not await _role_slug_is_valid(role_slug):
+        raise HTTPException(400, f"Role '{role_slug}' tidak dikenal")
+    if await db.users.find_one({"email": email_norm}):
+        raise HTTPException(409, "Email sudah digunakan oleh akun Eternal lain.")
+    if require_password:
+        if not password or len(str(password)) < 6:
+            raise HTTPException(400, "Password minimal 6 karakter")
+        raw_password = str(password)
+    else:
+        # Settings existing behavior: optional password falls back to trial default.
+        raw_password = password or os.environ.get("TRIAL_DEFAULT_PASSWORD", "Eternal123!")
     now = now_iso()
     doc = {
         "id": str(uuid.uuid4()),
         "employee_id": await _next_employee_id(),
-        "email": email,
-        "name": payload.name.strip(),
-        "nickname": (payload.nickname or "").strip() or None,
-        "phone": (payload.phone or "").strip() or None,
-        "role": payload.role,
+        "email": email_norm,
+        "name": name_clean,
+        "nickname": (nickname or "").strip() or None,
+        "phone": (phone or "").strip() or None,
+        "role": role_slug,
         "status": "active",
-        "joined_at": payload.joined_at,
+        "joined_at": joined_at,
         "deactivated_at": None,
-        "notes": payload.notes,
-        "permissions_override": payload.permissions_override or {},
-        "password_hash": hash_password(payload.password or os.environ.get("TRIAL_DEFAULT_PASSWORD", "Eternal123!")),
+        "notes": notes,
+        "permissions_override": permissions_override or {},
+        "password_hash": hash_password(raw_password),
         "created_at": now,
         "updated_at": now,
-        "created_by": user.get("email"),
+        "created_by": (actor or {}).get("email"),
     }
     await db.users.insert_one(doc)
-    await _write_audit("user.create", user, target_email=email, before=None, after=_sanitize_user(dict(doc)), note=f"Tambah karyawan {payload.name}")
-    saved = await db.users.find_one({"email": email}, {"password_hash": 0, "_id": 0})
-    return {"user": saved}
+    await _write_audit(
+        "user.create",
+        actor,
+        target_email=email_norm,
+        before=None,
+        after=_sanitize_user(dict(doc)),
+        note=f"Tambah karyawan {name_clean}",
+    )
+    return await db.users.find_one({"id": doc["id"]}, {"password_hash": 0, "_id": 0})
 
 
 @api_router.put("/admin/users/{user_id}")
@@ -7803,6 +7853,7 @@ register_hr_payroll_routes(
     require_any_perm=_require_any_perm,
     user_permissions=user_permissions,
     Depends=Depends,
+    create_canonical_user=create_canonical_user,
 )
 register_sales_activity_routes(
     api_router,
