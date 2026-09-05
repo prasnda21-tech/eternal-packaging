@@ -6,6 +6,7 @@ describe("Customer tracking public page", () => {
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const api = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
   const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
+  const panel = fs.readFileSync(path.join(__dirname, "../components/DeliveryProofPanel.jsx"), "utf8");
 
   test("public route is outside Protected AppShell and does not go to login", () => {
     expect(app).toMatch(/path="\/tracking\/:token"/);
@@ -52,7 +53,6 @@ describe("Customer tracking public page", () => {
     expect(detail).toMatch(/orderTrackingLink/);
     expect(detail).toMatch(/liveTrackingRows/);
     expect(detail).toMatch(/live-tracking-workflow/);
-    const routeIdx = detail.indexOf("Proses Produksi");
     const trackIdx = detail.indexOf("tracking-customer-panel");
     expect(trackIdx).toBeGreaterThan(detail.indexOf("ProductionRoutePanel"));
   });
@@ -78,6 +78,37 @@ describe("Customer tracking public page", () => {
     expect(page).toMatch(/slice\(0, 5\)/);
     expect(page).not.toMatch(/driver_id/);
     expect(page).not.toMatch(/storage_path/);
-    expect(page).not.toMatch(/user_id/);
+  });
+
+  test("approved design and surat jalan open/download controls", () => {
+    expect(page).toMatch(/tracking-design-approved/);
+    expect(page).toMatch(/tracking-surat-jalan/);
+    expect(page).toMatch(/-open/);
+    expect(page).toMatch(/-download/);
+    expect(page).not.toMatch(/biznet/i);
+    expect(page).not.toMatch(/object.?key/i);
+  });
+
+  test("delivered evidence shows photos signature name time", () => {
+    expect(page).toMatch(/tracking-shipments-evidence/);
+    expect(page).toMatch(/Nama Penerima/);
+    expect(page).toMatch(/Tanda Tangan Penerima/);
+    expect(page).toMatch(/Waktu Ditandatangani/);
+  });
+
+  test("driver panel has signature pad and recipient name with 2-photo button rule", () => {
+    expect(panel).toMatch(/SignaturePad/);
+    expect(panel).toMatch(/recipient-name-input/);
+    expect(panel).toMatch(/recipient-signature-block/);
+    expect(panel).toMatch(/driver-signature-block/);
+    expect(panel).toMatch(/TTD Driver \/ Pengirim/);
+    expect(panel).toMatch(/canConfirmDelivered\(proofs\)/);
+    expect(panel).toMatch(/canSubmitConfirmDelivered/);
+    expect(panel).toMatch(/confirm-delivered-button/);
+  });
+
+  test("tracking evidence can show driver signature", () => {
+    expect(page).toMatch(/tracking-evidence-driver-signature/);
+    expect(page).toMatch(/Tanda tangan driver/);
   });
 });

@@ -734,6 +734,14 @@ def confirm_delivery_block_reason(order: dict) -> Optional[str]:
             f"Wajib upload minimal {MIN_DELIVERY_PROOFS} foto bukti kirim "
             f"sebelum Konfirmasi Terkirim (saat ini {n})."
         )
+    # Electronic recipient signature + name (POD). Lazy import keeps this module pure for most callers.
+    try:
+        from services.delivery_pod_signature import signature_confirm_block_reason
+    except ImportError:
+        return "Tanda tangan penerima wajib sebelum Konfirmasi Terkirim."
+    sig_blocked = signature_confirm_block_reason(order)
+    if sig_blocked:
+        return sig_blocked
     return None
 
 

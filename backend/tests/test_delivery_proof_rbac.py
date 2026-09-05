@@ -77,4 +77,23 @@ def test_confirm_still_needs_two_photos_not_role():
     assert confirm_delivery_block_reason(order)
     order["delivery_proofs"].append({"id": "p2"})
     assert can_confirm_delivery(order) is True
+    # Appearance unlocked by photos; submit still blocked without signature/name
+    assert confirm_delivery_block_reason(order) is not None
+    order["delivery_recipient_signature"] = {
+        "id": "sig",
+        "signature_file_id": "sig",
+        "recipient_name": "Budi",
+        "signature_storage_path": "path.png",
+        "recipient_signed_at": "t",
+        "frozen": False,
+    }
+    assert confirm_delivery_block_reason(order) is not None  # still missing driver sig
+    order["delivery_driver_signature"] = {
+        "id": "dsig",
+        "signature_file_id": "dsig",
+        "driver_signature_storage_path": "dpath.png",
+        "driver_signed_at": "t",
+        "driver_name": "Driver",
+        "frozen": False,
+    }
     assert confirm_delivery_block_reason(order) is None

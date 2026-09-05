@@ -805,13 +805,95 @@ async def get_sales_delivery_detail(db, delivery_id: str) -> Dict[str, Any]:
     }
 
 
-def generate_sales_delivery_pdf_bytes(delivery: dict, po_summary: Optional[dict] = None) -> bytes:
-    """Generate official A4 / Letter PDF for Sales Delivery / Surat Jalan."""
+def generate_sales_delivery_pdf_bytes(
+    delivery: dict,
+    po_summary: Optional[dict] = None,
+    *,
+    recipient_signature_png: Optional[bytes] = None,
+    recipient_name: Optional[str] = None,
+    recipient_signed_at: Optional[str] = None,
+    driver_signature_png: Optional[bytes] = None,
+    driver_name: Optional[str] = None,
+    driver_signed_at: Optional[str] = None,
+) -> bytes:
+    """Generate official A4 / Letter PDF for Sales Delivery / Surat Jalan.
+
+    Optional signature PNGs enrich 'Diterima Oleh' and 'Pengirim / Supir' only.
+    This is document rendering — it MUST NOT mutate packed/loading/delivery qty.
+    """
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable, Image,
+    )
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
+    from reportlab.lib.utils import ImageReader
+    from services.delivery_pod_signature import normalize_signature_image_for_pdf
+
+    _sig_tmp_paths: List[str] = []
+
+    def _sig_image_flowable(raw_png: Optional[bytes]):
+        """Fit signature into a square box, centered (no wide stretched rectangle)."""
+        if not raw_png:
+            return None
+        normalized = normalize_signature_image_for_pdf(raw_png)
+        if not normalized:
+            logger.warning("signature image normalize failed — PDF will omit image")
+            return None
+        import os
+        import tempfile
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(normalized)
+            box = 3.2 * cm  # square signature frame
+            pad = 0.12 * cm
+            inner = box - (2 * pad)
+            try:
+                from PIL import Image as PILImage
+                with PILImage.open(tmp_path) as pil:
+                    iw, ih = pil.size
+            except Exception:
+                iw, ih = 300, 300
+            scale = min(inner / max(iw, 1), inner / max(ih, 1))
+            draw_w = max(iw * scale, 0.4 * cm)
+            draw_h = max(ih * scale, 0.4 * cm)
+            img = Image(tmp_path, width=draw_w, height=draw_h)
+            img.hAlign = "CENTER"
+            _sig_tmp_paths.append(tmp_path)
+            tmp_path = None
+            # Fixed square cell so the frame is square regardless of stroke aspect
+            frame = Table([[img]], colWidths=[box], rowHeights=[box])
+            frame.setStyle(TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.6, colors.HexColor('#94a3b8')),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), pad),
+                ('RIGHTPADDING', (0, 0), (-1, -1), pad),
+                ('TOPPADDING', (0, 0), (-1, -1), pad),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), pad),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+            ]))
+            return frame
+        except Exception:
+            logger.warning("signature Image embed failed", exc_info=True)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+            return None
+
+    def _signed_at_label(raw_ts: Optional[str]) -> str:
+        if not raw_ts:
+            return ""
+        try:
+            from services.pdf_date import format_pdf_date
+            return f"<br/><font size='7' color='#64748b'>Ditandatangani: {format_pdf_date(raw_ts)}</font>"
+        except Exception:
+            return f"<br/><font size='7' color='#64748b'>Ditandatangani: {raw_ts}</font>"
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -878,6 +960,11 @@ def generate_sales_delivery_pdf_bytes(delivery: dict, po_summary: Optional[dict]
         fontSize=8.5,
         leading=11,
         textColor=colors.HexColor('#0f172a'),
+    )
+    sig_center_style = ParagraphStyle(
+        'SigCenter',
+        parent=tbl_cell_style,
+        alignment=1,  # TA_CENTER
     )
 
     tbl_cell_bold = ParagraphStyle(
@@ -1031,6 +1118,59 @@ def generate_sales_delivery_pdf_bytes(delivery: dict, po_summary: Optional[dict]
         elements.append(Spacer(1, 0.4 * cm))
 
     # 5. Signatures Block
+    display_recipient = (recipient_name or delivery.get("recipient") or "").strip()
+    display_driver = (driver_name or delivery.get("driver_name") or "").strip()
+    recipient_signed_label = _signed_at_label(recipient_signed_at)
+    driver_signed_label = _signed_at_label(driver_signed_at)
+
+    def _sig_name_block(name: str, sublabel: str, signed_label: str) -> Paragraph:
+        name_hint = f"<b>{name}</b>" if name else "_____________________ "
+        return Paragraph(
+            f"( {name_hint} )<br/>"
+            f"<font size='7' color='#64748b'>{sublabel}</font>{signed_label}",
+            sig_center_style,
+        )
+
+    def _sig_column_cell(img, name: str, sublabel: str, signed_label: str):
+        # Nested Table (not KeepTogether) — KeepTogether+Image inside Table cells
+        # can explode row height on some ReportLab versions.
+        col_w = 5.6 * cm
+        if img is not None:
+            inner = Table(
+                [[img], [Spacer(1, 0.18 * cm)], [_sig_name_block(name, sublabel, signed_label)]],
+                colWidths=[col_w],
+            )
+            inner.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 1),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            return inner
+        name_hint = f"<b>{name}</b>" if name else "_____________________ "
+        return Paragraph(
+            f"<br/><br/><br/>( {name_hint} )<br/>"
+            f"<font size='7' color='#64748b'>{sublabel}</font>{signed_label}",
+            sig_center_style,
+        )
+
+    recipient_img = _sig_image_flowable(recipient_signature_png)
+    driver_img = _sig_image_flowable(driver_signature_png)
+    recipient_cell = _sig_column_cell(
+        recipient_img,
+        display_recipient,
+        "Tanda Tangan & Nama Terang",
+        recipient_signed_label,
+    )
+    driver_cell = _sig_column_cell(
+        driver_img,
+        display_driver,
+        "Logistik / Ekspedisi",
+        driver_signed_label,
+    )
+
     sig_data = [
         [
             Paragraph("Diterima Oleh,", meta_label_style),
@@ -1038,21 +1178,230 @@ def generate_sales_delivery_pdf_bytes(delivery: dict, po_summary: Optional[dict]
             Paragraph("Hormat Kami,", meta_label_style),
         ],
         [
-            Paragraph("<br/><br/><br/>(_____________________)<br/><font size='7' color='#64748b'>Tanda Tangan & Nama Terang</font>", tbl_cell_style),
-            Paragraph("<br/><br/><br/>(_____________________)<br/><font size='7' color='#64748b'>Logistik / Ekspedisi</font>", tbl_cell_style),
-            Paragraph(f"<br/><br/><br/>( <b>{delivery.get('created_by_name') or 'Eternal Packaging'}</b> )<br/><font size='7' color='#64748b'>Bagian Penjualan</font>", tbl_cell_style),
-        ]
+            recipient_cell,
+            driver_cell,
+            Paragraph(
+                f"<br/><br/><br/>( <b>{delivery.get('created_by_name') or 'Eternal Packaging'}</b> )"
+                f"<br/><font size='7' color='#64748b'>Bagian Penjualan</font>",
+                tbl_cell_style,
+            ),
+        ],
     ]
     sig_tbl = Table(sig_data, colWidths=[6.0 * cm, 6.0 * cm, 6.0 * cm])
     sig_tbl.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
-    elements.append(KeepTogether([sig_tbl]))
+    elements.append(sig_tbl)
 
-    doc.build(elements)
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
+    try:
+        doc.build(elements)
+        pdf_bytes = buffer.getvalue()
+    finally:
+        import os
+        for tmp in _sig_tmp_paths:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        buffer.close()
     return pdf_bytes
+
+
+async def generate_signed_sj_pdf_for_order(
+    db,
+    order: dict,
+    sig: dict,
+    obj_storage,
+    *,
+    user: Optional[dict] = None,
+    driver_sig: Optional[dict] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Render signed SJ PDF for exact delivery_note/shipment. Pure document write to storage.
+
+    Returns (signed_storage_path, error_code). Does not mutate packed/loading/delivered qty
+    or workflow stage. Preserves original SJ storage_path on the file entry.
+    """
+    from services.surat_jalan_files import find_file, find_generated_sj_file
+    from services.delivery_pod_signature import (
+        get_active_driver_signature,
+        get_frozen_driver_signatures,
+        resolve_pdf_driver_display_name,
+        storage_key_for_signed_sj,
+        now_iso as _now,
+    )
+
+    sj_file_id = str(sig.get("sj_file_id") or sig.get("delivery_note_id") or "").strip()
+    shipment_id = str(sig.get("shipment_id") or "").strip()
+    if not sj_file_id and shipment_id:
+        gen = find_generated_sj_file(order, shipment_id)
+        if gen:
+            sj_file_id = str(gen.get("id") or "")
+    entry = find_file(order, sj_file_id) if sj_file_id else None
+    if not entry and shipment_id:
+        entry = find_generated_sj_file(order, shipment_id)
+        if entry:
+            sj_file_id = str(entry.get("id") or "")
+
+    if driver_sig is None:
+        driver_sig = get_active_driver_signature(order)
+        if not driver_sig:
+            # Prefer frozen driver sig matching confirmation / shipment
+            conf_id = str(sig.get("confirmation_id") or "")
+            for ds in get_frozen_driver_signatures(order):
+                if conf_id and str(ds.get("confirmation_id") or "") == conf_id:
+                    driver_sig = ds
+                    break
+                if shipment_id and str(ds.get("shipment_id") or "") == shipment_id:
+                    driver_sig = ds
+                    break
+            if not driver_sig:
+                frozen = get_frozen_driver_signatures(order)
+                driver_sig = frozen[-1] if frozen else None
+
+    delivery = None
+    if shipment_id:
+        delivery = await db.sales_deliveries.find_one(
+            {"id": shipment_id, "is_cancelled": {"$ne": True}},
+            {"_id": 0},
+        )
+    if not delivery and sj_file_id:
+        delivery = await db.sales_deliveries.find_one(
+            {"generated_sj_file_id": sj_file_id, "is_cancelled": {"$ne": True}},
+            {"_id": 0},
+        )
+    if not delivery:
+        lines = (entry or {}).get("lines") or []
+        delivery = {
+            "id": shipment_id or sj_file_id or str(uuid.uuid4()),
+            "po_id": order.get("id"),
+            "po_number": order.get("po_number"),
+            "sj_number": (entry or {}).get("sj_number") or order.get("delivery_note_number"),
+            "customer": order.get("customer") or order.get("customer_name"),
+            "outlet": order.get("outlet"),
+            "address": order.get("address") or order.get("delivery_address"),
+            "recipient": sig.get("recipient_name") or order.get("recipient") or order.get("recipient_name"),
+            "driver_name": resolve_pdf_driver_display_name(order, driver_sig=driver_sig, user=user),
+            "sales": order.get("sales") or order.get("sales_name"),
+            "delivery_zone": order.get("delivery_zone") or order.get("zone"),
+            "expedition": order.get("expedition"),
+            "delivery_date": order.get("delivery_note_created_at") or order.get("deadline"),
+            "shipment_index": 1,
+            "line_items": [
+                {
+                    "name": ln.get("name"),
+                    "item_code": ln.get("item_code"),
+                    "production_process": ln.get("production_process"),
+                    "qty": ln.get("qty") if ln.get("qty") is not None else ln.get("quantity"),
+                    "unit": ln.get("unit") or "pcs",
+                    "notes": ln.get("notes"),
+                    "color": ln.get("color"),
+                    "line_idx": ln.get("line_idx"),
+                    "line_id": ln.get("line_id"),
+                }
+                for ln in lines
+            ] or [
+                {
+                    "name": li.get("name"),
+                    "item_code": li.get("item_code") or li.get("accurate_item_id"),
+                    "production_process": li.get("production_process"),
+                    "qty": li.get("quantity"),
+                    "unit": li.get("unit") or "pcs",
+                    "color": li.get("color"),
+                    "line_idx": idx,
+                    "line_id": li.get("line_id") or li.get("id"),
+                }
+                for idx, li in enumerate(order.get("line_items") or [])
+            ],
+            "notes": order.get("delivery_note_notes"),
+            "created_by_name": (user or {}).get("name") or order.get("delivery_note_created_by_name"),
+        }
+    else:
+        delivery = dict(delivery)
+        delivery["driver_name"] = resolve_pdf_driver_display_name(
+            order, driver_sig=driver_sig, delivery=delivery, user=user
+        )
+
+    sig_path = str(sig.get("signature_storage_path") or "").strip()
+    png_bytes = None
+    if sig_path and obj_storage:
+        try:
+            png_bytes, _ct = obj_storage.get_object(sig_path)
+        except Exception:
+            png_bytes = None
+    if not png_bytes:
+        return None, "signature_bytes_missing"
+
+    driver_png = None
+    driver_path = ""
+    if driver_sig:
+        driver_path = str(
+            driver_sig.get("driver_signature_storage_path")
+            or driver_sig.get("signature_storage_path")
+            or ""
+        ).strip()
+    if driver_path and obj_storage:
+        try:
+            driver_png, _ct = obj_storage.get_object(driver_path)
+        except Exception:
+            driver_png = None
+    if not driver_png:
+        return None, "driver_signature_bytes_missing"
+
+    try:
+        pdf_bytes = generate_sales_delivery_pdf_bytes(
+            delivery,
+            None,
+            recipient_signature_png=png_bytes,
+            recipient_name=sig.get("recipient_name"),
+            recipient_signed_at=sig.get("recipient_signed_at"),
+            driver_signature_png=driver_png,
+            driver_name=resolve_pdf_driver_display_name(
+                order, driver_sig=driver_sig, delivery=delivery, user=user
+            ),
+            driver_signed_at=(driver_sig or {}).get("driver_signed_at"),
+        )
+    except Exception:
+        logger.exception("signed SJ PDF generate failed")
+        return None, "pdf_generate_failed"
+
+    if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+        return None, "pdf_invalid"
+
+    po_id = str(order.get("id") or "")
+    signed_path = storage_key_for_signed_sj(po_id, sj_file_id or shipment_id or sig.get("id") or "sig")
+    try:
+        stored = obj_storage.put_object(signed_path, pdf_bytes, "application/pdf")
+        signed_path = stored.get("path") or signed_path
+    except Exception:
+        logger.exception("signed SJ storage write failed")
+        return None, "storage_failed"
+
+    stamp = _now()
+    if sj_file_id:
+        await db.orders.update_one(
+            {"id": po_id, "surat_jalan_files.id": sj_file_id},
+            {"$set": {
+                "surat_jalan_files.$.signed_storage_path": signed_path,
+                "surat_jalan_files.$.signed_at": stamp,
+                "surat_jalan_files.$.signed_recipient_name": sig.get("recipient_name"),
+                "surat_jalan_files.$.signed_driver_name": resolve_pdf_driver_display_name(
+                    order, driver_sig=driver_sig, delivery=delivery, user=user
+                ),
+                "surat_jalan_files.$.original_storage_path": (entry or {}).get("original_storage_path")
+                    or (entry or {}).get("storage_path"),
+            }},
+        )
+        await db.files.update_one(
+            {"id": sj_file_id, "kind": "surat_jalan"},
+            {"$set": {
+                "signed_storage_path": signed_path,
+                "signed_at": stamp,
+                "original_storage_path": (entry or {}).get("original_storage_path")
+                    or (entry or {}).get("storage_path"),
+            }},
+            upsert=False,
+        )
+    return signed_path, None
