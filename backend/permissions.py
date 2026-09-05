@@ -156,6 +156,10 @@ PERMISSION_CATALOG = [
     ("HR & Payroll", "payroll.adjustment", "Penyesuaian manual penggajian"),
     ("Buku Besar", "ledger.accounts.view", "Lihat Akun Perkiraan"),
     ("Buku Besar", "ledger.accounts.manage", "Kelola Akun Perkiraan"),
+    ("Buku Besar", "general_journal.view", "Lihat Jurnal Umum"),
+    ("Buku Besar", "general_journal.manage", "Kelola Jurnal Umum"),
+    ("Buku Besar", "general_journal.post", "Posting Jurnal Umum"),
+    ("Buku Besar", "general_journal.reverse", "Reversal Jurnal Umum"),
     ("Kas & Bank", "cash_bank.view", "Lihat Kas & Bank"),
     ("Kas & Bank", "cash_bank.manage", "Kelola Kas & Bank"),
     ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
@@ -221,6 +225,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.route_optimizer", "Menu Optimasi Rute"),
     ("Akses Menu", "nav.ledger", "Menu Buku Besar"),
     ("Akses Menu", "nav.ledger.accounts", "Menu Akun Perkiraan"),
+    ("Akses Menu", "nav.ledger.general_journal", "Menu Jurnal Umum"),
     ("Akses Menu", "nav.cash_bank", "Menu Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.accounts", "Menu Daftar Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.receipts", "Menu Penerimaan Kas & Bank"),
@@ -310,6 +315,7 @@ NAV_MENU_ITEMS = (
     ("nav.route_optimizer", "Optimasi Rute", None),
     ("nav.ledger", "Buku Besar", None),
     ("nav.ledger.accounts", "Akun Perkiraan", "nav.ledger"),
+    ("nav.ledger.general_journal", "Jurnal Umum", "nav.ledger"),
     ("nav.cash_bank", "Kas & Bank", None),
     ("nav.cash_bank.accounts", "Daftar Kas & Bank", "nav.cash_bank"),
     ("nav.cash_bank.receipts", "Penerimaan", "nav.cash_bank"),
@@ -441,6 +447,14 @@ def derived_nav_permissions(existing: set) -> set:
     if "ledger.accounts.view" in existing or "ledger.accounts.manage" in existing:
         nav.add("nav.ledger")
         nav.add("nav.ledger.accounts")
+    if (
+        "general_journal.view" in existing
+        or "general_journal.manage" in existing
+        or "general_journal.post" in existing
+        or "general_journal.reverse" in existing
+    ):
+        nav.add("nav.ledger")
+        nav.add("nav.ledger.general_journal")
     if (
         "cash_bank.view" in existing
         or "cash_bank.manage" in existing
