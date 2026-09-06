@@ -20,6 +20,7 @@ import StockSaatIni from "./pages/StockSaatIni";
 import AkunPerkiraan from "./pages/AkunPerkiraan";
 import JurnalUmum from "./pages/JurnalUmum";
 import SaldoAwal from "./pages/SaldoAwal";
+import BukuBesar from "./pages/BukuBesar";
 import DaftarKasBank from "./pages/DaftarKasBank";
 import PenerimaanKasBank from "./pages/PenerimaanKasBank";
 import PembayaranKasBank from "./pages/PembayaranKasBank";
@@ -116,6 +117,7 @@ function BukuBesarIndex() {
   if (v.accounts) return <Navigate to="/buku-besar/akun-perkiraan" replace />;
   if (v.generalJournal) return <Navigate to="/buku-besar/jurnal-umum" replace />;
   if (v.openingBalance) return <Navigate to="/buku-besar/saldo-awal" replace />;
+  if (v.generalLedger) return <Navigate to="/buku-besar/buku-besar" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -209,6 +211,7 @@ export default function App() {
             <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />
             <Route path="/buku-besar/jurnal-umum" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralJournal, NAV_KEYS.ledger, "general_journal.view", "general_journal.manage", "general_journal.post", "general_journal.reverse"]}><JurnalUmum /></PermGate>} />
             <Route path="/buku-besar/saldo-awal" element={<PermGate anyOf={[NAV_KEYS.ledgerOpeningBalance, NAV_KEYS.ledger, "opening_balance.view", "opening_balance.manage", "opening_balance.post", "opening_balance.reverse"]}><SaldoAwal /></PermGate>} />
+            <Route path="/buku-besar/buku-besar" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralLedger, NAV_KEYS.ledger, "general_ledger.view"]}><BukuBesar /></PermGate>} />
             <Route path="/buku-besar" element={<BukuBesarIndex />} />
             <Route path="/kas-bank/daftar" element={<PermGate anyOf={[NAV_KEYS.cashBankAccounts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><DaftarKasBank /></PermGate>} />
             <Route path="/kas-bank/penerimaan" element={<PermGate anyOf={[NAV_KEYS.cashBankReceipts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PenerimaanKasBank /></PermGate>} />
