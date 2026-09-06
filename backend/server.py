@@ -6613,6 +6613,10 @@ from services.sales_invoices import (
     finalize_sales_invoice as _finalize_sales_invoice,
     cancel_sales_invoice as _cancel_sales_invoice,
 )
+from services.sales_invoice_posting import (
+    PERM_POST as _SALES_ACCOUNTING_POST_PERM,
+    post_sales_invoice_accounting as _post_sales_invoice_accounting,
+)
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
@@ -7306,6 +7310,14 @@ async def cancel_sales_invoice_endpoint(id: str, user=Depends(current_user)):
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _cancel_sales_invoice(db, id, user)
     return {"invoice": inv, "message": "Faktur Penjualan dibatalkan"}
+
+
+@api_router.post("/sales-invoices/{id}/post-accounting")
+async def post_sales_invoice_accounting_endpoint(id: str, user=Depends(current_user)):
+    """Explicit journal post for one finalized invoice. Does not run on GET or finalize."""
+    await _require_perm(user, _SALES_ACCOUNTING_POST_PERM)
+    inv = await _post_sales_invoice_accounting(db, id, user)
+    return {"invoice": inv, "message": "Faktur Penjualan diposting ke accounting"}
 
 
 # ==================================================

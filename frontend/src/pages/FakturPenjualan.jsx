@@ -33,6 +33,27 @@ function invoiceFinancialStatus(inv) {
   return "draft";
 }
 
+function renderPostedAccountingBadge() {
+  return (
+    <span
+      data-testid="invoice-accounting-badge-posted"
+      style={{
+        display: "inline-block",
+        padding: "3px 10px",
+        borderRadius: 9999,
+        fontSize: 11,
+        fontWeight: 700,
+        backgroundColor: "#d1fae5",
+        color: "#065f46",
+        border: "1px solid #a7f3d0",
+        marginLeft: 6,
+      }}
+    >
+      Posted Accounting
+    </span>
+  );
+}
+
 function renderFinancialBadge(status) {
   const s = invoiceFinancialStatus({ financial_status: status });
   const map = {
@@ -144,6 +165,7 @@ export default function FakturPenjualan() {
   const [detailSaving, setDetailSaving] = useState(false);
   const [finalizeConfirm, setFinalizeConfirm] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
+  const [postAccountingConfirm, setPostAccountingConfirm] = useState(false);
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
 
   // Load Invoices List
@@ -576,6 +598,25 @@ export default function FakturPenjualan() {
     }
   };
 
+  const handlePostAccounting = async () => {
+    if (!selectedInvoiceId) return;
+    setLifecycleBusy(true);
+    setDetailErr("");
+    try {
+      const res = await api.postSalesInvoiceAccounting(selectedInvoiceId);
+      const updated = res.invoice || res;
+      setDetailData(updated);
+      setPostAccountingConfirm(false);
+      setSuccessMsg("Faktur diposting ke accounting.");
+      setTimeout(() => setSuccessMsg(""), 2500);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal posting accounting");
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
   const handleCancelInvoice = async () => {
     if (!selectedInvoiceId) return;
     setLifecycleBusy(true);
@@ -631,6 +672,19 @@ export default function FakturPenjualan() {
 
   const detailStatus = invoiceFinancialStatus(detailData);
   const financialLocked = Boolean(detailData) && detailStatus !== "draft";
+  const canPostAccounting =
+    hasPerm("sales_accounting.post") || user?.role === "admin";
+  const accountingStatus = String(detailData?.accounting_status || "not_posted").toLowerCase();
+  const isAccountingPosted = accountingStatus === "posted" || detailData?.accounting_posted === true;
+  const showPostAccounting =
+    canPostAccounting &&
+    detailStatus === "finalized" &&
+    !isAccountingPosted &&
+    detailData?.can_post_accounting === true;
+  const showAccountingUnconfigured =
+    detailStatus === "finalized" &&
+    !isAccountingPosted &&
+    detailData?.accounting_ready === false;
   const canEditFinancial = canEdit && !financialLocked;
 
   return (
@@ -983,6 +1037,7 @@ export default function FakturPenjualan() {
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {renderFinancialBadge(inv.financial_status)}
+                        {(inv.accounting_status === "posted" || inv.accounting_posted === true) && renderPostedAccountingBadge()}
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {renderPaymentBadge(inv.payment_status)}
@@ -1519,7 +1574,18 @@ export default function FakturPenjualan() {
                     <h2 style={{ margin: "2px 0 0", fontSize: "1.25rem", fontWeight: 700, color: "#9333ea" }} data-testid="detail-invoice-number">
                       {detailData.invoice_number || "-"}
                     </h2>
-                    <div style={{ marginTop: 8 }}>{renderFinancialBadge(detailStatus)}</div>
+                    <div style={{ marginTop: 8 }}>
+                      {renderFinancialBadge(detailStatus)}
+                      {isAccountingPosted && renderPostedAccountingBadge()}
+                    </div>
+                    {showAccountingUnconfigured && (
+                      <p data-testid="invoice-accounting-unconfigured" style={{ margin: "8px 0 0", fontSize: "0.85rem", color: "#b45309" }}>
+                        Accounting belum dikonfigurasi.{" "}
+                        <Link to="/settings?tab=sales-accounting" style={{ color: "#7c3aed", fontWeight: 600 }}>
+                          Buka Pengaturan Akuntansi Penjualan
+                        </Link>
+                      </p>
+                    )}
                   </div>
                   {detailData.outstanding_amount > 0 && canCreate && (
                     <button
@@ -1831,6 +1897,17 @@ export default function FakturPenjualan() {
                     Batalkan Faktur
                   </button>
                 )}
+                {showPostAccounting && (
+                  <button
+                    type="button"
+                    data-testid="btn-post-accounting"
+                    disabled={lifecycleBusy}
+                    onClick={() => setPostAccountingConfirm(true)}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: "#047857", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Post ke Accounting
+                  </button>
+                )}
                 {canEditFinancial && (
                   <button
                     type="submit"
@@ -1925,6 +2002,48 @@ export default function FakturPenjualan() {
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#1d4ed8", color: "#fff", fontWeight: 600, cursor: "pointer" }}
               >
                 {lifecycleBusy ? "Memproses..." : "Finalisasi"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {postAccountingConfirm && detailData && (
+        <div
+          className="modal-overlay"
+          data-testid="post-accounting-confirm-modal"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 80,
+          }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Post ke Accounting?</h3>
+            <dl data-testid="post-accounting-summary" style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
+              <dt>Piutang</dt>
+              <dd data-testid="post-accounting-receivable" style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailData.grand_total)}</dd>
+              <dt>Pendapatan</dt>
+              <dd data-testid="post-accounting-revenue" style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailData.after_discount)}</dd>
+              <dt>PPN Keluaran</dt>
+              <dd data-testid="post-accounting-ppn" style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailData.ppn_amount)}</dd>
+            </dl>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => setPostAccountingConfirm(false)} disabled={lifecycleBusy} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
+                Batal
+              </button>
+              <button
+                type="button"
+                data-testid="btn-confirm-post-accounting"
+                onClick={handlePostAccounting}
+                disabled={lifecycleBusy}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600, cursor: "pointer" }}
+              >
+                {lifecycleBusy ? "Memproses..." : "Post ke Accounting"}
               </button>
             </div>
           </div>
