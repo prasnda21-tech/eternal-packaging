@@ -145,4 +145,31 @@ describe("global workspace tabs", () => {
     expect(GLOBAL_WORKSPACE_TABS.find((t) => t.path === "/penjualan")).toBeFalsy();
     expect(GLOBAL_WORKSPACE_TABS.find((t) => t.path === "/kas-bank")).toBeFalsy();
   });
+
+  test("settings children are distinct tabs and query does not duplicate", () => {
+    const a = openOrActivateGlobalTab([], "/laporan/analitik-output");
+    expect(a.tabs.map((t) => t.id)).not.toContain("settings");
+    const b = openOrActivateGlobalTab(a.tabs, "/settings/sales-accounting");
+    const c = openOrActivateGlobalTab(b.tabs, "/settings/payroll-accounting");
+    const d = openOrActivateGlobalTab(c.tabs, "/settings/sales-accounting?x=1");
+    expect(d.tabs.map((t) => t.path)).toEqual([
+      "/laporan/analitik-output",
+      "/settings/sales-accounting",
+      "/settings/payroll-accounting",
+    ]);
+    expect(d.activated.path).toBe("/settings/sales-accounting");
+    expect(d.tabs.filter((t) => t.label === "Pengaturan")).toHaveLength(0);
+    expect(globalTabByPath("/settings?tab=sales-accounting").path).toBe("/settings");
+    expect(globalTabByPath("/settings/sales-accounting").label).toBe("Akuntansi Penjualan");
+  });
+
+  test("unauthorized settings child is hidden from restore", () => {
+    saveGlobalWorkspaceTabs(user, [
+      GLOBAL_WORKSPACE_TABS.find((t) => t.path === "/settings/sales-accounting"),
+      GLOBAL_WORKSPACE_TABS.find((t) => t.path === "/settings/payroll-accounting"),
+    ]);
+    const onlySales = (key) => key === NAV_KEYS.settings || key === "settings.sales_accounting.view";
+    expect(loadGlobalWorkspaceTabs(user, onlySales).map((t) => t.path)).toEqual(["/settings/sales-accounting"]);
+    expect(openOrActivateGlobalTab([], "/settings/payroll-accounting", onlySales).activated).toBe(null);
+  });
 });

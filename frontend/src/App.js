@@ -248,6 +248,7 @@ export default function App() {
             <Route path="/hr-payroll/slip-gaji" element={<PermGate anyOf={[NAV_KEYS.hrPayrollPayslips, NAV_KEYS.hrPayroll, "payroll.payslip.view_own", "payroll.payslip.view_all"]}><HrPayroll mode="payslips" /></PermGate>} />
             <Route path="/hr-payroll/komponen-gaji" element={<PermGate anyOf={[NAV_KEYS.hrPayrollComponents, NAV_KEYS.hrPayroll, "payroll.settings", "payroll.view"]}><HrPayroll mode="components" /></PermGate>} />
             <Route path="/hr-payroll/riwayat" element={<PermGate anyOf={[NAV_KEYS.hrPayrollHistory, NAV_KEYS.hrPayroll, "payroll.view", "payroll.payslip.view_all"]}><HrPayroll mode="history" /></PermGate>} />
+            <Route path="/settings/:tab" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/settings" element={<PermGate anyOf={[NAV_KEYS.settings]} alsoAnyOf={SETTINGS_PERMS}><Settings /></PermGate>} />
             <Route path="/po/:id/kerja" element={<PermGate anyOf={["work_panel.view", "operator.update", "po.view"]}><PoWorkView /></PermGate>} />
             <Route path="/po/:id" element={<PODetail />} />

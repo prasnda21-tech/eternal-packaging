@@ -1,4 +1,4 @@
-import { inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, TASK_NAV_ORDER } from "./navAccess";
+import { inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 
 const has = (...keys) => (k) => keys.includes(k);
@@ -444,6 +444,42 @@ describe("productionMenuItems", () => {
     expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi"]);
     expect(items.some((item) => item.label === "Tugas Produksi")).toBe(false);
     expect(productionMenuItems(has(NAV_KEYS.statusPo))).toEqual([]);
+  });
+});
+
+describe("settingsMenuItems", () => {
+  test("hides tiles without nav.settings even when a child perm is granted", () => {
+    expect(settingsMenuItems(has("settings.sales_accounting.view"))).toEqual([]);
+    expect(settingsNavVisible(has(NAV_KEYS.settings)).parent).toBe(false);
+  });
+
+  test("shows authorized settings children and hides the rest", () => {
+    const items = settingsMenuItems(has(
+      NAV_KEYS.settings,
+      "settings.sales_accounting.view",
+      "payroll_accounting.view",
+    ));
+    expect(items.map((item) => [item.label, item.to, item.testid])).toEqual([
+      ["Akuntansi Penjualan", "/settings/sales-accounting", "top-nav-settings-sales-accounting"],
+      ["Akuntansi Payroll", "/settings/payroll-accounting", "top-nav-settings-payroll-accounting"],
+    ]);
+    expect(items.map((item) => item.label)).not.toContain("Karyawan");
+    expect(items.map((item) => item.to)).not.toContain("/pengaturan");
+    expect(items.some((item) => item.label === "Pengaturan")).toBe(false);
+  });
+
+  test("does not invent placeholder settings", () => {
+    const items = settingsMenuItems(() => true);
+    expect(items.map((item) => item.key).sort()).toEqual([...SETTINGS_TAB_IDS].sort());
+    expect(items.some((item) => /placeholder|coming soon|akun tipe|account type/i.test(item.label))).toBe(false);
+  });
+
+  test("settingsTabFromPath reads child path and legacy query", () => {
+    expect(settingsTabFromPath("/settings/sales-accounting")).toBe("sales-accounting");
+    expect(settingsTabFromPath("/settings/sales-accounting?x=1")).toBe("sales-accounting");
+    expect(settingsTabFromPath("/settings", "?tab=payroll-accounting")).toBe("payroll-accounting");
+    expect(settingsTabFromPath("/settings", "?tab=not-a-real-tab")).toBe(null);
+    expect(settingsTabFromPath("/settings/not-a-real-tab")).toBe(null);
   });
 });
 
