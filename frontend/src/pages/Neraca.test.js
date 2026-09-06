@@ -111,7 +111,8 @@ describe("Neraca frontend contracts", () => {
     expect(nav).toMatch(/balance_sheet\.view/);
     expect(shell).toMatch(/top-nav-buku-besar/);
     expect(shell).toMatch(/NAV_KEYS\.ledgerBalanceSheet/);
-    expect(shell).toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
+    expect(shell).toMatch(/<WorkspaceTabs/);
   });
 
   test("mobile-safe compact filter CSS", () => {

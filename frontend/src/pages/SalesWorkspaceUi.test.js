@@ -18,10 +18,11 @@ describe("Penjualan workspace / UI contract", () => {
   const outlet = fs.readFileSync(path.join(__dirname, "SalesActivityOutletDetail.jsx"), "utf8");
 
   test("AppShell reuses shared workspace tabs for Penjualan", () => {
-    expect(shell).toMatch(/useSalesWorkspaceTabs/);
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
     expect(shell).toMatch(/<WorkspaceTabs/);
     expect(shell).toMatch(/content-penjualan-workspace/);
-    expect(shell).toMatch(/testid="sales-workspace-tabs"/);
+    expect(shell).toMatch(/testid="workspace-tabs"/);
+    expect(shell).not.toMatch(/testid="sales-workspace-tabs"/);
     expect(hook).toMatch(/useWorkspaceTabs/);
     expect(engine).toMatch(/createWorkspaceTabApi/);
     expect(tabs).toMatch(/kb-workspace-tabs/);
@@ -29,6 +30,8 @@ describe("Penjualan workspace / UI contract", () => {
   });
 
   test("logout clears Penjualan workspace tabs", () => {
+    expect(auth).toMatch(/clearGlobalWorkspaceTabs\(previous\)/);
+    expect(auth).toMatch(/clearGlobalWorkspaceTabs\(null\)/);
     expect(auth).toMatch(/clearSalesWorkspaceTabs\(previous\)/);
     expect(auth).toMatch(/clearSalesWorkspaceTabs\(null\)/);
   });
@@ -57,8 +60,9 @@ describe("Penjualan workspace / UI contract", () => {
   });
 
   test("does not invent a second tab primitive", () => {
-    expect(shell).toMatch(/CashBankWorkspaceTabs/);
-    expect(shell).toMatch(/useCashBankWorkspaceTabs/);
+    expect(shell).not.toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).not.toMatch(/useCashBankWorkspaceTabs/);
+    expect(shell).not.toMatch(/useSalesWorkspaceTabs/);
     expect(tabs).not.toMatch(/from "@radix-ui\/react-tabs"/);
   });
 });

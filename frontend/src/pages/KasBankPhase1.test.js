@@ -20,13 +20,16 @@ describe("Kas & Bank frontend contracts", () => {
     expect(shell).toMatch(/sidebar-flyout-cash-bank/);
     expect(shell).toMatch(/top-nav-kas-bank/);
     expect(shell).toMatch(/cashBankOpen && cashBankItems/);
-    expect(shell).toMatch(/CashBankWorkspaceTabs/);
-    expect(shell).toMatch(/useCashBankWorkspaceTabs/);
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
+    expect(shell).toMatch(/<WorkspaceTabs/);
     expect(shell).toMatch(/content-kas-bank-workspace/);
+    expect(shell).not.toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).not.toMatch(/useCashBankWorkspaceTabs/);
   });
 
   test("auth logout clears Kas & Bank workspace tabs", () => {
     const auth = fs.readFileSync(path.join(__dirname, "../lib/auth.jsx"), "utf8");
+    expect(auth).toMatch(/clearGlobalWorkspaceTabs/);
     expect(auth).toMatch(/clearCashBankWorkspaceTabs/);
   });
 

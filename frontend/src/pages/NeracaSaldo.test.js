@@ -73,7 +73,8 @@ describe("Neraca Saldo frontend contracts", () => {
     expect(nav).toMatch(/trial_balance\.view/);
     expect(shell).toMatch(/top-nav-buku-besar/);
     expect(shell).toMatch(/NAV_KEYS\.ledgerTrialBalance/);
-    expect(shell).toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
+    expect(shell).toMatch(/<WorkspaceTabs/);
   });
 
   test("mobile-safe compact filter CSS", () => {
