@@ -33,6 +33,10 @@ describe("Buku Besar frontend contracts", () => {
     expect(src).not.toMatch(/type === ["']BANK["']/);
     expect(src).toMatch(/ledgerAccounts/);
     expect(src).toMatch(/account_type/);
+    expect(src).toMatch(/useSearchParams/);
+    expect(src).toMatch(/account_id/);
+    expect(src).toMatch(/start_date/);
+    expect(src).toMatch(/end_date/);
   });
 
   test("summary, table alignment, running balance, empty state", () => {
