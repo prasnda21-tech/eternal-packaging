@@ -15,6 +15,8 @@ describe("Akun Perkiraan page", () => {
     expect(src).toMatch(/Tipe Akun/);
     expect(src).toMatch(/akun-form-account-type/);
     expect(src).toMatch(/ACCOUNT_TYPE_CODES/);
+    expect(src).toMatch(/account_type_label/);
+    expect(src).toMatch(/ledgerAccountTypes/);
     expect(src).toMatch(/Edit Akun|openEdit/);
     expect(src).toMatch(/Tambah Akun/);
     expect(src).toMatch(/Hapus/);

@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pymongo.errors import DuplicateKeyError
 
+from services.account_type_reporting import (
+    apply_derived_reporting_fields,
+    validate_account_type_reporting_map,
+)
+
 COLLECTION = "ledger_accounts"
 PERM_VIEW = "ledger.accounts.view"
 PERM_MANAGE = "ledger.accounts.manage"
@@ -37,6 +42,7 @@ ACCOUNT_TYPES = (
     "OASS",
 )
 ACCOUNT_TYPE_SET = frozenset(ACCOUNT_TYPES)
+validate_account_type_reporting_map(ACCOUNT_TYPES)
 
 # Future journal / accounting collections that may reference an account.
 # Checked on delete only — never cascade.
@@ -119,7 +125,7 @@ def public_account(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if raw_type is not None and str(raw_type).strip():
         normalized = normalize_account_type(raw_type)
         account_type = normalized if normalized else str(raw_type).strip().upper()
-    return {
+    return apply_derived_reporting_fields({
         "id": doc.get("id"),
         "code": normalize_code(doc.get("code")),
         "name": normalize_name(doc.get("name")),
@@ -128,7 +134,7 @@ def public_account(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "created_by": doc.get("created_by"),
         "updated_at": doc.get("updated_at"),
         "updated_by": doc.get("updated_by"),
-    }
+    })
 
 
 def validate_payload(raw: dict, *, require_account_type: bool = True) -> Tuple[str, str, Optional[str]]:

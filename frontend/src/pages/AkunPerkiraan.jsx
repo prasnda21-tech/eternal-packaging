@@ -26,6 +26,7 @@ export default function AkunPerkiraan() {
   const { hasPerm } = useAuth();
   const canManage = hasPerm("ledger.accounts.manage");
   const [items, setItems] = useState([]);
+  const [typeCatalog, setTypeCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
@@ -44,8 +45,13 @@ export default function AkunPerkiraan() {
     setLoading(true);
     setLoadError("");
     try {
-      const data = await api.ledgerAccounts();
+      const [data, types] = await Promise.all([
+        api.ledgerAccounts(),
+        api.ledgerAccountTypes().catch(() => null),
+      ]);
       setItems(Array.isArray(data?.items) ? data.items : []);
+      const catalog = Array.isArray(types?.items) ? types.items : [];
+      setTypeCatalog(catalog);
     } catch (ex) {
       setLoadError(errText(ex));
       setItems([]);
@@ -63,7 +69,8 @@ export default function AkunPerkiraan() {
       const codeS = String(row?.code || "").toLowerCase();
       const nameS = String(row?.name || "").toLowerCase();
       const typeS = String(row?.account_type || "").toLowerCase();
-      return codeS.includes(needle) || nameS.includes(needle) || typeS.includes(needle);
+      const labelS = String(row?.account_type_label || "").toLowerCase();
+      return codeS.includes(needle) || nameS.includes(needle) || typeS.includes(needle) || labelS.includes(needle);
     });
   }, [items, q]);
 
@@ -211,7 +218,7 @@ export default function AkunPerkiraan() {
                 <td className="mono">{row.code}</td>
                 <td>{row.name}</td>
                 <td className="mono" data-testid={`akun-type-${row.code}`}>
-                  {accountTypeLabel(row.account_type)}
+                  {row.account_type_label || accountTypeLabel(row.account_type)}
                 </td>
                 <td>
                   {canManage ? (
@@ -283,9 +290,15 @@ export default function AkunPerkiraan() {
                   data-testid="akun-form-account-type"
                 >
                   <option value="">Pilih tipe</option>
-                  {ACCOUNT_TYPE_CODES.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
+                  {ACCOUNT_TYPE_CODES.map((t) => {
+                    const hit = typeCatalog.find((x) => String(x?.code || "").toUpperCase() === t);
+                    const label = hit?.account_type_label || hit?.label;
+                    return (
+                      <option key={t} value={t}>
+                        {label ? `${t} — ${label}` : t}
+                      </option>
+                    );
+                  })}
                 </select>
               </label>
               {formError && <p className="error" data-testid="akun-form-error">{formError}</p>}
