@@ -27,6 +27,39 @@ function formatRupiah(num) {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
+function invoiceFinancialStatus(inv) {
+  const s = String(inv?.financial_status || "draft").toLowerCase();
+  if (s === "finalized" || s === "cancelled") return s;
+  return "draft";
+}
+
+function renderFinancialBadge(status) {
+  const s = invoiceFinancialStatus({ financial_status: status });
+  const map = {
+    draft: { label: "Draft", bg: "#f1f5f9", color: "#334155", border: "#cbd5e1" },
+    finalized: { label: "Finalized", bg: "#dbeafe", color: "#1e40af", border: "#93c5fd" },
+    cancelled: { label: "Cancelled", bg: "#fee2e2", color: "#991b1b", border: "#fecaca" },
+  };
+  const t = map[s];
+  return (
+    <span
+      data-testid={`invoice-financial-badge-${s}`}
+      style={{
+        display: "inline-block",
+        padding: "3px 10px",
+        borderRadius: 9999,
+        fontSize: 11,
+        fontWeight: 700,
+        backgroundColor: t.bg,
+        color: t.color,
+        border: `1px solid ${t.border}`,
+      }}
+    >
+      {t.label}
+    </span>
+  );
+}
+
 function formatDeleteError(det) {
   if (typeof det === "object" && det) {
     const blockers = det.blockers || [];
@@ -109,6 +142,9 @@ export default function FakturPenjualan() {
   const [detailDate, setDetailDate] = useState("");
   const [detailNotes, setDetailNotes] = useState("");
   const [detailSaving, setDetailSaving] = useState(false);
+  const [finalizeConfirm, setFinalizeConfirm] = useState(false);
+  const [cancelConfirm, setCancelConfirm] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
 
   // Load Invoices List
   const loadInvoices = useCallback(async () => {
@@ -141,11 +177,14 @@ export default function FakturPenjualan() {
       return next;
     });
   };
+  const draftInvoiceIds = invoices
+    .filter((inv) => invoiceFinancialStatus(inv) === "draft")
+    .map((inv) => inv.id);
   const toggleSelectAll = () => {
-    if (selectedIds.size === invoices.length && invoices.length > 0) {
+    if (selectedIds.size === draftInvoiceIds.length && draftInvoiceIds.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(invoices.map((inv) => inv.id)));
+      setSelectedIds(new Set(draftInvoiceIds));
     }
   };
 
@@ -518,6 +557,44 @@ export default function FakturPenjualan() {
     }
   };
 
+  const handleFinalizeInvoice = async () => {
+    if (!selectedInvoiceId) return;
+    setLifecycleBusy(true);
+    setDetailErr("");
+    try {
+      const res = await api.finalizeSalesInvoice(selectedInvoiceId);
+      const updated = res.invoice || res;
+      setDetailData(updated);
+      setFinalizeConfirm(false);
+      setSuccessMsg("Faktur berhasil difinalisasi. Field keuangan terkunci.");
+      setTimeout(() => setSuccessMsg(""), 2500);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal finalisasi faktur");
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
+  const handleCancelInvoice = async () => {
+    if (!selectedInvoiceId) return;
+    setLifecycleBusy(true);
+    setDetailErr("");
+    try {
+      const res = await api.cancelSalesInvoice(selectedInvoiceId);
+      const updated = res.invoice || res;
+      setDetailData(updated);
+      setCancelConfirm(false);
+      setSuccessMsg("Faktur dibatalkan.");
+      setTimeout(() => setSuccessMsg(""), 2500);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      setDetailErr(typeof det === "object" ? det.message : det || err.message || "Gagal membatalkan faktur");
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
   const renderPaymentBadge = (status) => {
     const s = String(status || "BELUM DIBAYAR").toUpperCase();
     let bg = "#fef3c7";
@@ -551,6 +628,10 @@ export default function FakturPenjualan() {
       </span>
     );
   };
+
+  const detailStatus = invoiceFinancialStatus(detailData);
+  const financialLocked = Boolean(detailData) && detailStatus !== "draft";
+  const canEditFinancial = canEdit && !financialLocked;
 
   return (
     <div
@@ -830,7 +911,7 @@ export default function FakturPenjualan() {
                       <input
                         type="checkbox"
                         data-testid="select-all-invoices"
-                        checked={invoices.length > 0 && selectedIds.size === invoices.length}
+                        checked={draftInvoiceIds.length > 0 && selectedIds.size === draftInvoiceIds.length}
                         onChange={toggleSelectAll}
                         aria-label="Pilih semua baris tampilan"
                       />
@@ -842,6 +923,7 @@ export default function FakturPenjualan() {
                   <th style={{ padding: "10px 12px" }}>Tanggal</th>
                   <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Faktur</th>
                   <th style={{ padding: "10px 12px", textAlign: "right" }}>Sisa Tagihan</th>
+                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Status Faktur</th>
                   <th style={{ padding: "10px 12px", textAlign: "center" }}>Status Pembayaran</th>
                   <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
                 </tr>
@@ -849,13 +931,13 @@ export default function FakturPenjualan() {
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 9 : 8} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
+                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
                       Memuat daftar Faktur Penjualan...
                     </td>
                   </tr>
                 ) : invoices.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 9 : 8} style={{ padding: "36px 20px", textAlign: "center", color: "#64748b" }} data-testid="empty-invoices">
+                    <td colSpan={canDelete ? 10 : 9} style={{ padding: "36px 20px", textAlign: "center", color: "#64748b" }} data-testid="empty-invoices">
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                         <FileText size={32} color="#94a3b8" />
                         <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Belum ada Faktur Penjualan</div>
@@ -900,6 +982,9 @@ export default function FakturPenjualan() {
                         {formatRupiah(inv.outstanding_amount)}
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                        {renderFinancialBadge(inv.financial_status)}
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {renderPaymentBadge(inv.payment_status)}
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
@@ -919,7 +1004,7 @@ export default function FakturPenjualan() {
                             fontWeight: 500,
                           }}
                         >
-                          Lihat / Edit
+                          {invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}
                         </button>
                         <button
                           type="button"
@@ -940,7 +1025,7 @@ export default function FakturPenjualan() {
                         >
                           {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
                         </button>
-                        {canDelete && (
+                        {canDelete && invoiceFinancialStatus(inv) === "draft" && (
                           <button
                             type="button"
                             data-testid={`btn-delete-invoice-${inv.id}`}
@@ -1434,6 +1519,7 @@ export default function FakturPenjualan() {
                     <h2 style={{ margin: "2px 0 0", fontSize: "1.25rem", fontWeight: 700, color: "#9333ea" }} data-testid="detail-invoice-number">
                       {detailData.invoice_number || "-"}
                     </h2>
+                    <div style={{ marginTop: 8 }}>{renderFinancialBadge(detailStatus)}</div>
                   </div>
                   {detailData.outstanding_amount > 0 && canCreate && (
                     <button
@@ -1492,7 +1578,7 @@ export default function FakturPenjualan() {
                       type="date"
                       value={detailDate}
                       onChange={(e) => setDetailDate(e.target.value)}
-                      disabled={!canEdit}
+                      disabled={!canEditFinancial}
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
@@ -1506,7 +1592,7 @@ export default function FakturPenjualan() {
                       min="0"
                       value={detailDiscount}
                       onChange={(e) => setDetailDiscount(e.target.value)}
-                      disabled={!canEdit}
+                      disabled={!canEditFinancial}
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
@@ -1522,7 +1608,7 @@ export default function FakturPenjualan() {
                       step="any"
                       value={detailPpn}
                       onChange={(e) => setDetailPpn(e.target.value)}
-                      disabled={!canEdit}
+                      disabled={!canEditFinancial}
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
@@ -1535,7 +1621,7 @@ export default function FakturPenjualan() {
                       type="text"
                       value={detailNotes}
                       onChange={(e) => setDetailNotes(e.target.value)}
-                      disabled={!canEdit}
+                      disabled={!canEditFinancial}
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
                     />
                   </div>
@@ -1588,7 +1674,7 @@ export default function FakturPenjualan() {
                                 const val = e.target.value;
                                 setDetailPrices((prev) => ({ ...prev, [li.line_idx]: val }));
                               }}
-                              disabled={!canEdit}
+                              disabled={!canEditFinancial}
                               style={{ width: "100%", padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 6, textAlign: "right", fontWeight: 600 }}
                             />
                           </td>
@@ -1723,7 +1809,29 @@ export default function FakturPenjualan() {
                   <FileText size={16} />
                   {pdfLoadingId === selectedInvoiceId ? "Memuat PDF..." : "Cetak PDF"}
                 </button>
-                {canEdit && (
+                {canEdit && detailStatus === "draft" && (
+                  <button
+                    type="button"
+                    data-testid="btn-finalize-invoice"
+                    disabled={lifecycleBusy}
+                    onClick={() => setFinalizeConfirm(true)}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: "#1d4ed8", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Finalisasi Invoice
+                  </button>
+                )}
+                {canEdit && detailStatus === "finalized" && detailData.can_cancel !== false && (
+                  <button
+                    type="button"
+                    data-testid="btn-cancel-invoice"
+                    disabled={lifecycleBusy}
+                    onClick={() => setCancelConfirm(true)}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Batalkan Faktur
+                  </button>
+                )}
+                {canEditFinancial && (
                   <button
                     type="submit"
                     className="primary"
@@ -1780,6 +1888,80 @@ export default function FakturPenjualan() {
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600, cursor: "pointer" }}
               >
                 {deleteLoading ? "Menghapus..." : "Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {finalizeConfirm && (
+        <div
+          className="modal-overlay"
+          data-testid="finalize-confirm-modal"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 80,
+          }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Finalisasi Invoice?</h3>
+            <p style={{ margin: "0 0 16px", color: "#334155", fontSize: "0.9rem" }}>
+              Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice untuk kebutuhan accounting.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => setFinalizeConfirm(false)} disabled={lifecycleBusy} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
+                Batal
+              </button>
+              <button
+                type="button"
+                data-testid="btn-confirm-finalize"
+                onClick={handleFinalizeInvoice}
+                disabled={lifecycleBusy}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#1d4ed8", color: "#fff", fontWeight: 600, cursor: "pointer" }}
+              >
+                {lifecycleBusy ? "Memproses..." : "Finalisasi"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cancelConfirm && (
+        <div
+          className="modal-overlay"
+          data-testid="cancel-confirm-modal"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 80,
+          }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Batalkan Faktur?</h3>
+            <p style={{ margin: "0 0 16px", color: "#64748b", fontSize: "0.9rem" }}>
+              Faktur finalized akan menjadi Cancelled dan tetap tidak dapat dihapus atau diubah. Tidak membuat jurnal.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" onClick={() => setCancelConfirm(false)} disabled={lifecycleBusy} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}>
+                Tutup
+              </button>
+              <button
+                type="button"
+                data-testid="btn-confirm-cancel-invoice"
+                onClick={handleCancelInvoice}
+                disabled={lifecycleBusy}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600, cursor: "pointer" }}
+              >
+                {lifecycleBusy ? "Memproses..." : "Batalkan Faktur"}
               </button>
             </div>
           </div>

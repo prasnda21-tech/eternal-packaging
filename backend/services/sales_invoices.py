@@ -17,7 +17,13 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from fastapi import HTTPException
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
+
+FINANCIAL_DRAFT = "draft"
+FINANCIAL_FINALIZED = "finalized"
+FINANCIAL_CANCELLED = "cancelled"
+FINANCIAL_STATUSES = frozenset({FINANCIAL_DRAFT, FINANCIAL_FINALIZED, FINANCIAL_CANCELLED})
 
 _invoice_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
@@ -91,6 +97,78 @@ def _parse_non_negative_price(raw: Any, field_name: str = "Harga satuan") -> flo
     return float(d)
 
 
+def _money2(raw: Any) -> Decimal:
+    try:
+        return Decimal(str(raw if raw is not None else 0)).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0.00")
+
+
+def _actor_public(user: Optional[dict]) -> Dict[str, str]:
+    user = user or {}
+    return {
+        "id": str(user.get("id") or user.get("_id") or ""),
+        "name": str(user.get("name") or user.get("email") or ""),
+        "role": str(user.get("role") or ""),
+    }
+
+
+def effective_financial_status(invoice: Optional[dict]) -> str:
+    """Legacy documents without the field are treated as draft. GET must not persist this."""
+    if not invoice:
+        return FINANCIAL_DRAFT
+    raw = invoice.get("financial_status")
+    if raw is None or str(raw).strip() == "":
+        return FINANCIAL_DRAFT
+    status = str(raw).strip().lower()
+    if status in FINANCIAL_STATUSES:
+        return status
+    return FINANCIAL_DRAFT
+
+
+def monetary_invariant_valid(invoice: Optional[dict]) -> bool:
+    invoice = invoice or {}
+    grand = _money2(invoice.get("grand_total"))
+    after = _money2(invoice.get("after_discount"))
+    ppn = _money2(invoice.get("ppn_amount"))
+    return grand == after + ppn
+
+
+def _draft_filter(invoice_id: str) -> Dict[str, Any]:
+    return {
+        "id": invoice_id,
+        "$or": [
+            {"financial_status": FINANCIAL_DRAFT},
+            {"financial_status": {"$exists": False}},
+            {"financial_status": None},
+            {"financial_status": ""},
+        ],
+    }
+
+
+async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Derived readiness only. Never writes invoices or journals."""
+    if not invoices:
+        return invoices
+    from services.sales_accounting_settings import mappings_configured
+
+    configured = await mappings_configured(db)
+    for inv in invoices:
+        status = effective_financial_status(inv)
+        receipt_count = int(inv.get("receipt_count") or 0)
+        if "receipts" in inv and isinstance(inv.get("receipts"), list):
+            receipt_count = len(inv["receipts"])
+        inv["financial_status"] = status
+        inv["accounting_posted"] = False
+        inv["accounting_ready"] = (
+            status == FINANCIAL_FINALIZED and configured and monetary_invariant_valid(inv)
+        )
+        inv["receipt_count"] = receipt_count
+        inv["can_cancel"] = status == FINANCIAL_FINALIZED and receipt_count == 0
+        inv["can_delete"] = status == FINANCIAL_DRAFT
+    return invoices
+
+
 async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Optional[str] = None) -> Dict[str, Any]:
     """Generates an invoice snapshot preview from exact PO data.
 
@@ -121,11 +199,15 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
     if exclude_invoice_id:
         invoice_filter["id"] = {"$ne": str(exclude_invoice_id)}
 
-    existing_invoices = await db.sales_invoices.find(invoice_filter, {"_id": 0, "lines": 1}).to_list(500)
+    existing_invoices = await db.sales_invoices.find(
+        invoice_filter, {"_id": 0, "lines": 1, "financial_status": 1}
+    ).to_list(500)
 
-    # Cumulative invoiced per exact line_idx
+    # Cumulative invoiced per exact line_idx (cancelled invoices do not consume qty)
     cumulative_by_line_idx: Dict[int, int] = {}
     for inv in existing_invoices:
+        if effective_financial_status(inv) == FINANCIAL_CANCELLED:
+            continue
         for l in inv.get("lines", []):
             try:
                 l_idx = int(l.get("line_idx", 0))
@@ -379,6 +461,7 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
             "paid_total": 0.0,
             "outstanding_amount": authoritative_grand_total,
             "payment_status": "BELUM DIBAYAR",
+            "financial_status": FINANCIAL_DRAFT,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "created_by": {
@@ -398,6 +481,7 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
             raise HTTPException(409, "Faktur Penjualan duplikat terdeteksi.")
 
         invoice_doc.pop("_id", None)
+        await attach_invoice_accounting_fields(db, [invoice_doc])
         return invoice_doc
 
 
@@ -443,7 +527,9 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
             inv["paid_total"] = paid
             inv["outstanding_amount"] = outstanding
             inv["payment_status"] = p_status
+            inv["receipt_count"] = len(inv_receipts)
 
+    await attach_invoice_accounting_fields(db, invoices)
     return invoices
 
 
@@ -472,6 +558,8 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     inv["outstanding_amount"] = outstanding
     inv["payment_status"] = p_status
     inv["receipts"] = receipts
+    inv["receipt_count"] = len(receipts)
+    await attach_invoice_accounting_fields(db, [inv])
     return inv
 
 
@@ -487,6 +575,13 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
         if not inv:
             raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+        status = effective_financial_status(inv)
+        if status != FINANCIAL_DRAFT:
+            raise HTTPException(
+                409,
+                "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat diubah field keuangannya.",
+            )
 
         existing_lines = inv.get("lines") or []
         input_lines = payload.get("lines") or payload.get("line_items") or []
@@ -585,6 +680,10 @@ async def delete_sales_invoice(db, invoice_id: str, user: dict) -> dict:
     if not inv:
         raise HTTPException(404, "Faktur Penjualan tidak ditemukan.")
 
+    status = effective_financial_status(inv)
+    if status != FINANCIAL_DRAFT:
+        raise HTTPException(409, "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus.")
+
     # Check PAY children
     pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
     if pay_count > 0:
@@ -609,6 +708,13 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         if not inv:
             blockers.append({"id": iid, "number": iid, "reason": "Faktur tidak ditemukan."})
             continue
+        if effective_financial_status(inv) != FINANCIAL_DRAFT:
+            blockers.append({
+                "id": inv["id"],
+                "number": inv.get("invoice_number", inv["id"]),
+                "reason": "Faktur yang sudah difinalisasi atau dibatalkan tidak dapat dihapus.",
+            })
+            continue
         pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
         if pay_count > 0:
             blockers.append({"id": inv["id"], "number": inv.get("invoice_number", inv["id"]), "reason": "Hapus Penerimaan Penjualan terlebih dahulu."})
@@ -626,6 +732,107 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         "deleted_count": len(to_delete),
         "deleted": [{"id": inv["id"], "invoice_number": inv.get("invoice_number", "")} for inv in to_delete],
     }
+
+
+async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, Any]:
+    """draft → finalized. Retry-safe. Does not post a journal or change order workflow."""
+    async with _get_invoice_lock():
+        inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
+        if not inv:
+            inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+        if not inv:
+            raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+        status = effective_financial_status(inv)
+        if status == FINANCIAL_CANCELLED:
+            raise HTTPException(409, "Faktur yang dibatalkan tidak dapat difinalisasi.")
+        if status == FINANCIAL_FINALIZED:
+            return await get_sales_invoice_detail(db, inv["id"])
+
+        if not monetary_invariant_valid(inv):
+            raise HTTPException(
+                400,
+                "Total faktur tidak valid: grand_total harus sama dengan after_discount + ppn_amount.",
+            )
+
+        now = now_iso()
+        claimed = await db.sales_invoices.find_one_and_update(
+            _draft_filter(inv["id"]),
+            {
+                "$set": {
+                    "financial_status": FINANCIAL_FINALIZED,
+                    "finalized_at": now,
+                    "finalized_by": _actor_public(user),
+                    "updated_at": now,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if claimed is None:
+            current = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+            if current and effective_financial_status(current) == FINANCIAL_FINALIZED:
+                return await get_sales_invoice_detail(db, inv["id"])
+            if current and effective_financial_status(current) == FINANCIAL_CANCELLED:
+                raise HTTPException(409, "Faktur yang dibatalkan tidak dapat difinalisasi.")
+            raise HTTPException(409, "Finalisasi faktur gagal karena perubahan bersamaan.")
+        return await get_sales_invoice_detail(db, inv["id"])
+
+
+async def cancel_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, Any]:
+    """finalized → cancelled only when no sales_receipts exist. Retry-safe. No journal reversal."""
+    async with _get_invoice_lock():
+        inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
+        if not inv:
+            inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+        if not inv:
+            raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+        status = effective_financial_status(inv)
+        if status == FINANCIAL_DRAFT:
+            raise HTTPException(409, "Hanya faktur yang sudah difinalisasi yang dapat dibatalkan.")
+        if status == FINANCIAL_CANCELLED:
+            return await get_sales_invoice_detail(db, inv["id"])
+
+        pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
+        if pay_count > 0:
+            raise HTTPException(
+                409,
+                "Faktur tidak dapat dibatalkan karena sudah memiliki Penerimaan Penjualan.",
+            )
+
+        now = now_iso()
+        claimed = await db.sales_invoices.find_one_and_update(
+            {"id": inv["id"], "financial_status": FINANCIAL_FINALIZED},
+            {
+                "$set": {
+                    "financial_status": FINANCIAL_CANCELLED,
+                    "cancelled_at": now,
+                    "cancelled_by": _actor_public(user),
+                    "updated_at": now,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if claimed is None:
+            current = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+            if current and effective_financial_status(current) == FINANCIAL_CANCELLED:
+                return await get_sales_invoice_detail(db, inv["id"])
+            raise HTTPException(409, "Pembatalan faktur gagal karena perubahan bersamaan.")
+
+        raced = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
+        if raced > 0:
+            await db.sales_invoices.update_one(
+                {"id": inv["id"], "financial_status": FINANCIAL_CANCELLED},
+                {
+                    "$set": {"financial_status": FINANCIAL_FINALIZED, "updated_at": now_iso()},
+                    "$unset": {"cancelled_at": "", "cancelled_by": ""},
+                },
+            )
+            raise HTTPException(
+                409,
+                "Faktur tidak dapat dibatalkan karena sudah memiliki Penerimaan Penjualan.",
+            )
+        return await get_sales_invoice_detail(db, inv["id"])
 
 
 def generate_sales_invoice_pdf_bytes(invoice: dict) -> bytes:

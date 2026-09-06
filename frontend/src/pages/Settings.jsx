@@ -4,6 +4,7 @@ import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route, Tags,
+  BookOpen,
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
@@ -13,6 +14,7 @@ import { NAV_MENU_FALLBACK } from "../lib/navAccess";
 import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload } from "../lib/settingsPermissionUi";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
+import SalesAccountingSettings from "./SalesAccountingSettings";
 import CustomerPricingSettings from "./CustomerPricingSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
@@ -1880,6 +1882,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "sidebar-access", label: "Akses Menu Sidebar", description: "Atur menu pengguna", Icon: PanelLeft, tone: "sky", testid: "settings-tab-sidebar-access" },
   { id: "operator-wage", label: "Sistem Upah Operator", description: "Atur skema upah", Icon: Coins, tone: "emerald", testid: "settings-tab-operator-wage" },
   { id: "hpp", label: "Pengaturan HPP", description: "Biaya & harga pokok", Icon: Scale, tone: "amber", testid: "settings-tab-hpp" },
+  { id: "sales-accounting", label: "Akuntansi Penjualan", description: "Pemetaan akun penjualan", Icon: BookOpen, tone: "violet", testid: "settings-tab-sales-accounting" },
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
   { id: "delivery-deadline", label: "Deadline Pengiriman", description: "Batas waktu kirim", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
@@ -1957,6 +1960,8 @@ export default function Settings() {
   const canEditWage = hasPerm("settings.operator_wage.manage");
   const canViewHpp = hasPerm("settings.hpp.view") || hasPerm("settings.hpp.manage") || hasPerm("permissions.manage");
   const canEditHpp = hasPerm("settings.hpp.manage");
+  const canViewSalesAccounting = hasPerm("settings.sales_accounting.view") || hasPerm("settings.sales_accounting.manage") || hasPerm("permissions.manage");
+  const canEditSalesAccounting = hasPerm("settings.sales_accounting.manage");
   const canViewCustomerPricing = hasPerm("settings.customer_pricing.view") || hasPerm("settings.customer_pricing.manage") || hasPerm("settings.customer_pricing.publish") || hasPerm("permissions.manage");
   const canEditCustomerPricing = hasPerm("settings.customer_pricing.manage");
   const canPublishCustomerPricing = hasPerm("settings.customer_pricing.publish");
@@ -1974,6 +1979,7 @@ export default function Settings() {
     "sidebar-access": canViewSidebarAccess,
     "operator-wage": canViewWage,
     hpp: canViewHpp,
+    "sales-accounting": canViewSalesAccounting,
     "customer-pricing": canViewCustomerPricing,
     "customer-approval": canViewCaSettings,
     "delivery-deadline": canViewDdSettings,
@@ -2045,6 +2051,9 @@ export default function Settings() {
       )}
       {tab === "operator-wage" && canViewWage && <OperatorWageTab notify={notify} canEdit={canEditWage}/>}
       {tab === "hpp" && canViewHpp && <HppSettings notify={notify} canEdit={canEditHpp}/>}
+      {tab === "sales-accounting" && canViewSalesAccounting && (
+        <SalesAccountingSettings notify={notify} canEdit={canEditSalesAccounting}/>
+      )}
       {tab === "customer-pricing" && canViewCustomerPricing && (
         <CustomerPricingSettings
           notify={notify}
