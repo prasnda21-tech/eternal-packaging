@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import api from "../lib/api";
 import "./masterItemSearchSelect.css";
 
 export const MASTER_ITEM_SEARCH_DEBOUNCE_MS = 300;
 export const MASTER_ITEM_SEARCH_PAGE_SIZE = 40;
+export const MASTER_ITEM_LIST_VISIBLE_ROWS = 5;
 
 export function formatMasterItemLabel(item) {
   if (!item) return "";
@@ -59,8 +61,10 @@ export default function MasterItemSearchSelect({
 }) {
   const listId = useId();
   const rootRef = useRef(null);
+  const listRef = useRef(null);
   const inputRef = useRef(null);
   const reqSeq = useRef(0);
+  const [listBox, setListBox] = useState(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [items, setItems] = useState([]);
@@ -118,14 +122,47 @@ export default function MasterItemSearchSelect({
     };
   }, [query, open, disabled, readOnly, runSearch]);
 
+  const placeList = useCallback(() => {
+    const anchor = rootRef.current;
+    if (!anchor || typeof window === "undefined") return;
+    const rect = anchor.getBoundingClientRect();
+    const gutter = 8;
+    const width = Math.min(rect.width, Math.max(window.innerWidth - gutter * 2, 0));
+    const left = Math.max(gutter, Math.min(rect.left, window.innerWidth - width - gutter));
+    const top = rect.bottom + 4;
+    setListBox({ top, left, width });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open || disabled || readOnly) {
+      setListBox(null);
+      return undefined;
+    }
+    placeList();
+    window.addEventListener("resize", placeList);
+    window.addEventListener("scroll", placeList, true);
+    return () => {
+      window.removeEventListener("resize", placeList);
+      window.removeEventListener("scroll", placeList, true);
+    };
+  }, [open, disabled, readOnly, placeList, view, items.length]);
+
   useEffect(() => {
     if (!open) return undefined;
     const onDoc = (event) => {
-      if (!rootRef.current?.contains(event.target)) setOpen(false);
+      const t = event.target;
+      if (rootRef.current?.contains(t) || listRef.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  useEffect(() => {
+    if (!open || view !== "results") return;
+    const active = listRef.current?.querySelector(".mis-option.is-active");
+    active?.scrollIntoView({ block: "nearest" });
+  }, [highlight, open, view]);
 
   const selectItem = (item) => {
     if (!item || disabled || readOnly || pending || loading) return;
@@ -210,13 +247,20 @@ export default function MasterItemSearchSelect({
           </button>
         )}
       </div>
-      {open && !disabled && !readOnly && (
+      {open && !disabled && !readOnly && listBox && createPortal(
         <ul
           id={listId}
+          ref={listRef}
           className="mis-list"
           role="listbox"
           data-testid={`${testId}-list`}
           data-view={view}
+          data-visible-rows={MASTER_ITEM_LIST_VISIBLE_ROWS}
+          style={{
+            top: listBox.top,
+            left: listBox.left,
+            width: listBox.width,
+          }}
         >
           {view === "loading" && (
             <li className="mis-status" data-testid={`${testId}-loading`}>Memuat…</li>
@@ -250,7 +294,8 @@ export default function MasterItemSearchSelect({
               </li>
             );
           })}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   );

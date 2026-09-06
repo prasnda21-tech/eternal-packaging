@@ -44,16 +44,19 @@
 }
 
 .mis-list {
-  position: absolute;
-  z-index: 40;
-  left: 0;
-  right: 0;
-  top: calc(100% + 4px);
+  /* Measured .mis-option height on Pesanan Penjualan: 53px. */
+  --mis-option-height: 53px;
+  --mis-list-pad-y: 4px;
+  --mis-list-max: calc((var(--mis-option-height) * 5) + (var(--mis-list-pad-y) * 2));
+  position: fixed;
+  z-index: 80;
   margin: 0;
   padding: 4px 0;
   list-style: none;
-  max-height: 240px;
-  overflow: auto;
+  box-sizing: border-box;
+  max-height: var(--mis-list-max);
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #fff;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -76,6 +79,8 @@
   align-items: flex-start;
   gap: 2px;
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   border: 0;
   background: transparent;
   text-align: left;
@@ -89,13 +94,23 @@
   background: #ecfeff;
 }
 
+.mis-option-name,
+.mis-option-meta {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mis-option-name {
   font-weight: 600;
   color: #0f172a;
+  line-height: 1.25;
 }
 
 .mis-option-meta {
   font-size: 12px;
+  line-height: 1.25;
   color: #64748b;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

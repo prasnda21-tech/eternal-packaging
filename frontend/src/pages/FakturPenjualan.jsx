@@ -36,6 +36,7 @@ function invoiceFinancialStatus(inv) {
 function renderPostedAccountingBadge() {
   return (
     <span
+      className="pj-status-badge"
       data-testid="invoice-accounting-badge-posted"
       style={{
         display: "inline-block",
@@ -45,7 +46,7 @@ function renderPostedAccountingBadge() {
         fontWeight: 700,
         backgroundColor: "#d1fae5",
         color: "#065f46",
-        border: "1px solid #a7f3d0",
+        border: "1.5px solid #a7f3d0",
         marginLeft: 6,
       }}
     >
@@ -64,6 +65,7 @@ function renderFinancialBadge(status) {
   const t = map[s];
   return (
     <span
+      className="pj-status-badge"
       data-testid={`invoice-financial-badge-${s}`}
       style={{
         display: "inline-block",
@@ -73,7 +75,7 @@ function renderFinancialBadge(status) {
         fontWeight: 700,
         backgroundColor: t.bg,
         color: t.color,
-        border: `1px solid ${t.border}`,
+        border: `1.5px solid ${t.border}`,
       }}
     >
       {t.label}
@@ -689,7 +691,7 @@ export default function FakturPenjualan() {
 
   return (
     <div
-      className="page-container"
+      className="page-container penjualan-page penjualan-workspace"
       data-testid="faktur-penjualan-page"
       style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
     >

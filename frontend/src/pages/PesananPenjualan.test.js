@@ -94,6 +94,24 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/po_number/);
     expect(src).toMatch(/selectedIds\.size === orders\.length/);
   });
+
+  test("Barang/Jasa live search uses shared picker with 5-row list capacity", () => {
+    const picker = fs.readFileSync(
+      path.join(__dirname, "../components/MasterItemSearchSelect.jsx"),
+      "utf8",
+    );
+    const pickerCss = fs.readFileSync(
+      path.join(__dirname, "../components/masterItemSearchSelect.css"),
+      "utf8",
+    );
+    expect(src).toMatch(/MasterItemSearchSelect/);
+    expect(src).toMatch(/line-item-search-\$\{originalIndex\}/);
+    expect(picker).toMatch(/MASTER_ITEM_LIST_VISIBLE_ROWS = 5/);
+    expect(picker).toMatch(/createPortal/);
+    expect(picker).toMatch(/onClick=\{\(\) => selectItem\(item\)\}/);
+    expect(pickerCss).toMatch(/--mis-list-max:\s*calc\(\(var\(--mis-option-height\) \* 5\)/);
+    expect(picker).not.toMatch(/Array\.from\(\s*\{\s*length:\s*5/);
+  });
 });
 
 describe("Pesanan Penjualan Nav Integration", () => {

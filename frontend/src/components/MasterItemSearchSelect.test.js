@@ -3,6 +3,7 @@ import {
   isDuplicateAccurateItem,
   listboxViewState,
   masterItemOptionKey,
+  MASTER_ITEM_LIST_VISIBLE_ROWS,
   MASTER_ITEM_SEARCH_DEBOUNCE_MS,
   shouldApplySearchResult,
 } from "./MasterItemSearchSelect";
@@ -11,6 +12,7 @@ import fs from "fs";
 import path from "path";
 
 const src = fs.readFileSync(path.join(__dirname, "MasterItemSearchSelect.jsx"), "utf8");
+const css = fs.readFileSync(path.join(__dirname, "masterItemSearchSelect.css"), "utf8");
 
 describe("MasterItemSearchSelect helpers", () => {
   test("formats label with name and code without using name as identity", () => {
@@ -83,6 +85,33 @@ describe("MasterItemSearchSelect helpers", () => {
     expect(src).toMatch(/view === "empty"/);
     expect(src).toMatch(/view === "results"/);
     expect(src).toMatch(/pending \|\| loading/);
+  });
+});
+
+describe("MasterItemSearchSelect 5-row list capacity", () => {
+  test("visible capacity is 5 existing option rows, not a fixed 5-row height", () => {
+    expect(MASTER_ITEM_LIST_VISIBLE_ROWS).toBe(5);
+    expect(css).toMatch(/--mis-option-height:/);
+    expect(css).toMatch(/--mis-list-max:\s*calc\(\(var\(--mis-option-height\) \* 5\)/);
+    expect(css).not.toMatch(/height:\s*calc\(\(var\(--mis-option-height\) \* 5\)/);
+    expect(css).toMatch(/overflow-y:\s*auto/);
+    expect(src).toMatch(/createPortal/);
+    expect(src).toMatch(/data-visible-rows=\{MASTER_ITEM_LIST_VISIBLE_ROWS\}/);
+  });
+
+  test("1–4 results stay content-sized; 5+ share the same max-height cap", () => {
+    expect(src).toMatch(/view === "results" && items\.map/);
+    expect(src).not.toMatch(/Array\.from\(\s*\{\s*length:\s*5/);
+    expect(src).not.toMatch(/fake empty/);
+    expect(css).not.toMatch(/min-height:\s*var\(--mis-list-max\)/);
+  });
+
+  test("click still selects the exact option identity; same name stays separate", () => {
+    expect(src).toMatch(/onClick=\{\(\) => selectItem\(item\)\}/);
+    expect(src).toMatch(/masterItemOptionKey\(item\)/);
+    const a = { item_name: "Cup Sama", accurate_item_id: "A1" };
+    const b = { item_name: "Cup Sama", accurate_item_id: "A2" };
+    expect(masterItemOptionKey(a)).not.toBe(masterItemOptionKey(b));
   });
 });
 

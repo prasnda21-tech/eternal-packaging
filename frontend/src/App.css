@@ -1,5 +1,5 @@
 /* -------- Shell & Topbar -------- */
-.app-shell{--sidebar-rail:64px;min-height:100vh;display:grid;grid-template-columns:var(--sidebar-rail) 1fr;background:var(--paper)}
+.app-shell{--sidebar-rail:64px;min-height:100vh;display:grid;grid-template-columns:var(--sidebar-rail) minmax(0,1fr);background:var(--paper)}
 .app-sidebar-slot{position:relative;z-index:56;width:var(--sidebar-rail);min-width:var(--sidebar-rail);max-width:var(--sidebar-rail);overflow:visible}
 .app-sidebar{background:var(--ep-dark);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;width:100%;overflow:visible;z-index:2;border-right:1px solid #0b2d22;box-sizing:border-box}
 .app-sidebar .brand{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.08);color:#fff;gap:0;justify-content:center}
@@ -1636,7 +1636,8 @@
 }
 
 /* Full workspace content */
-.content.content-kas-bank-workspace{
+.content.content-kas-bank-workspace,
+.content.content-penjualan-workspace{
   max-width:none;
   width:100%;
   margin:0;
@@ -1707,6 +1708,107 @@
   color:var(--ink);
 }
 .kb-workspace-tab.is-active .kb-workspace-tab-label{color:var(--mod-ink)}
+
+/* -------- Penjualan page chrome (Kas & Bank density / outlines) -------- */
+.penjualan-page{
+  --pj-line:#99f6e4;
+  --pj-line-strong:#0D9488;
+}
+[data-module="sales"] .penjualan-page{
+  --pj-line:#99f6e4;
+  --pj-line-strong:#0D9488;
+}
+.penjualan-page.penjualan-workspace{
+  width:100%;
+  max-width:none !important;
+  box-sizing:border-box;
+  padding:12px 14px 20px !important;
+  margin:0 !important;
+}
+.penjualan-page .page-heading{
+  border:2px solid var(--pj-line-strong);
+  border-radius:8px;
+  margin-bottom:10px;
+  padding:12px 14px 12px;
+  box-shadow:none;
+}
+.penjualan-page .page-heading::before{height:3px}
+.penjualan-page .page-heading h1{
+  font-size:clamp(17px,1.5vw,20px);
+  letter-spacing:-.02em;
+  color:var(--mod-ink);
+}
+.penjualan-page .panel,
+.penjualan-page .sa-form,
+.penjualan-page .import-ok,
+.penjualan-page .kb-workspace-panel{
+  border:2px solid var(--pj-line-strong) !important;
+  border-radius:8px;
+  box-shadow:none !important;
+}
+.penjualan-page .table-wrap,
+.penjualan-page .sa-table-wrap,
+.penjualan-page table{
+  border-color:var(--pj-line-strong);
+}
+.penjualan-page table{
+  width:100%;
+  border-collapse:collapse;
+}
+.penjualan-page table thead th,
+.penjualan-page thead tr[style]{
+  background:var(--mod-ink) !important;
+  color:#fff !important;
+  font:700 11px/1.2 'IBM Plex Sans',sans-serif;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  border-bottom:2px solid #0f172a !important;
+  border-right:1px solid rgba(255,255,255,.18);
+  white-space:nowrap;
+}
+.penjualan-page table thead th:last-child{border-right:0}
+.penjualan-page table tbody td{
+  border-bottom:1.5px solid var(--pj-line);
+  vertical-align:middle;
+}
+.penjualan-page table tbody tr:hover td{
+  background:color-mix(in srgb, var(--mod-soft) 70%, #fff);
+}
+.penjualan-page td[style*="text-align: right"],
+.penjualan-page .num,
+.penjualan-page .pj-money{
+  font-variant-numeric:tabular-nums;
+  text-align:right;
+}
+.penjualan-page .pj-status-badge{
+  border-width:1.5px;
+  font-weight:700;
+}
+.penjualan-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.penjualan-page select,
+.penjualan-page textarea{
+  border-color:var(--pj-line-strong);
+}
+.penjualan-page .sa-filters,
+.penjualan-page .import-search{
+  border:2px solid var(--pj-line-strong);
+  border-radius:8px;
+  background:linear-gradient(180deg,#fff 0%, var(--mod-soft) 160%);
+}
+.penjualan-page .import-tabs,
+.penjualan-page .prediksi-tabs.sa-tabs{
+  border:0;
+  border-bottom:2px solid var(--pj-line-strong);
+  border-radius:0;
+  background:transparent;
+  padding:0 0 2px;
+}
+.penjualan-page .prediksi-tabs.sa-tabs button.is-active,
+.penjualan-page .import-tabs button.active{
+  color:var(--mod-ink);
+  box-shadow:inset 0 -2px 0 var(--mod);
+}
+
 .kas-bank-workspace{
   width:100%;
   max-width:none;
@@ -1768,7 +1870,33 @@
   .kas-bank-page .kb-form-grid{grid-template-columns:1fr;gap:12px}
   .kas-bank-page .kb-journal-line{grid-template-columns:3.5rem minmax(0,1fr);gap:6px}
   .kas-bank-page .kb-journal-amt{grid-column:2;justify-self:end}
-  .kb-workspace-tabs{top:0;padding:0 4px}
+  .kb-workspace-tabs{top:0;padding:0 4px;max-width:100%;min-width:0}
+  .content.content-penjualan-workspace,
+  .content.content-kas-bank-workspace,
+  .penjualan-page,
+  .penjualan-page.penjualan-workspace{
+    max-width:100%;
+    min-width:0;
+  }
+  .penjualan-page.penjualan-workspace{padding:8px 8px 72px !important}
+  .penjualan-page .page-heading{
+    flex-wrap:wrap;
+    align-items:flex-start;
+    max-width:100%;
+    min-width:0;
+    box-sizing:border-box;
+  }
+  .penjualan-page .page-heading > *{
+    min-width:0;
+    max-width:100%;
+  }
+  .penjualan-page :has(> table){
+    max-width:100%;
+    min-width:0;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+  }
+  .penjualan-page table{min-width:640px}
   .kas-bank-workspace{padding:8px 8px 72px}
   .kb-workspace-panel{min-height:auto;border-radius:8px}
   .kb-workspace-form-foot{flex-wrap:wrap}
@@ -2606,7 +2734,7 @@
   .app-sidebar .brand{border-bottom:0;border-right:1px solid rgba(255,255,255,.08);padding:8px 10px;flex-shrink:0}
   .app-sidebar .brand-copy{display:none}
   .app-sidebar .brand-logo-symbol{width:36px;height:36px}
-  .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px;align-items:center}
+  .app-sidebar-nav{flex-direction:row;overflow-x:auto;padding:6px 8px;gap:4px;align-items:center;min-width:0}
   .app-sidebar .nav-group{flex-shrink:0}
   .rail-tooltip{display:none}
   .sidebar-flyout{width:min(280px,calc(100vw - 16px));max-width:calc(100vw - 16px)}

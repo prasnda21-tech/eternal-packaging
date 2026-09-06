@@ -352,7 +352,7 @@ export default function PenerimaanPenjualan() {
 
   return (
     <div
-      className="page-container"
+      className="page-container penjualan-page penjualan-workspace"
       data-testid="penerimaan-penjualan-page"
       style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
     >
@@ -625,6 +625,7 @@ export default function PenerimaanPenjualan() {
                     </td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <span
+                        className="pj-status-badge"
                         style={{
                           display: "inline-block",
                           padding: "3px 10px",
@@ -633,7 +634,7 @@ export default function PenerimaanPenjualan() {
                           fontWeight: 700,
                           backgroundColor: r.payment_state === "LUNAS" ? "#d1fae5" : "#e0e7ff",
                           color: r.payment_state === "LUNAS" ? "#065f46" : "#3730a3",
-                          border: `1px solid ${r.payment_state === "LUNAS" ? "#a7f3d0" : "#c7d2fe"}`,
+                          border: `1.5px solid ${r.payment_state === "LUNAS" ? "#a7f3d0" : "#c7d2fe"}`,
                         }}
                       >
                         {r.payment_state || "DP"}
