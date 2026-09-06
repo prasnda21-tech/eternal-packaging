@@ -12,7 +12,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
-os.environ.setdefault("DB_NAME", "eternal_packaging_test")
+_worker = os.environ.get("PYTEST_XDIST_WORKER") or "main"
+os.environ["DB_NAME"] = f"eternal_packaging_payroll_accounting_settings_test_{_worker}"
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 
