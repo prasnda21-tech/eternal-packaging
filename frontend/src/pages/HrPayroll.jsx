@@ -28,6 +28,38 @@ const emptyComponent = {
 const errorText = (ex) => ex?.response?.data?.detail || ex?.message || "Permintaan gagal";
 const employeeName = (row) => row?.employee_snapshot?.name || row?.employee?.name || row?.name || "-";
 
+const PREVIEW_TREATMENT_LABELS = {
+  expense_debit: "Beban / Cost",
+  expense_credit: "Pengurang Beban",
+  liability_credit: "Kewajiban",
+  asset_credit: "Pengurang Aset",
+};
+
+function previewIsPayable(row) {
+  const keys = row?.source_keys || [];
+  return keys.includes("payroll_payable") || row?.code === "PAYROLL_PAYABLE";
+}
+
+function previewSourceLabel(row) {
+  if (previewIsPayable(row)) return "Utang Gaji (net)";
+  const keys = row?.source_keys || [];
+  return keys[0] || row?.code || "—";
+}
+
+function previewTreatmentLabel(treatment) {
+  return PREVIEW_TREATMENT_LABELS[treatment] || treatment || "—";
+}
+
+function previewAccountLabel(row) {
+  const acc = row?.account || {};
+  const code = String(acc.code || "").trim();
+  const name = String(acc.name || "").trim();
+  if (code && name) return `${code} · ${name}`;
+  if (code) return code;
+  if (name) return name;
+  return "—";
+}
+
 function PageHead({ title, action }) {
   return <div className="page-heading"><div><p className="eyebrow">HR &amp; Payroll</p><h1>{title}</h1></div><div className="page-heading-actions">{action}</div></div>;
 }
@@ -464,6 +496,8 @@ function Payroll() {
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState([]);
   const [kasbon, setKasbon] = useState([]);
+  const [readiness, setReadiness] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, start_date: "", end_date: "" });
   const [err, setErr] = useState("");
   const loadPeriods = useCallback(async () => { const data = await api.hrPayrollPeriods(); setPeriods(data.periods || []); }, []);
@@ -471,6 +505,12 @@ function Payroll() {
     if (!period?.id) return;
     const [p, l, a, e, k] = await Promise.all([api.hrPayrollPeriod(period.id), api.hrPayrollLines(period.id), api.hrPayrollAttendance(period.id), api.hrPayrollEmployees({ hr_profile_only: true }), api.hrPayrollKasbonSchedules({ active_only: true })]);
     setSelected(p.period); setLines(l.lines || []); setAttendance(a.attendance || []); setEmployees((e.employees || []).filter((emp) => emp?.id && emp?.has_hr_profile !== false)); setKasbon(k.schedules || []);
+    try {
+      const ready = await api.hrPayrollAccountingReadiness(period.id);
+      setReadiness(ready.readiness || null);
+    } catch {
+      setReadiness(null);
+    }
   }, []);
   useEffect(() => { loadPeriods().catch((ex) => setErr(errorText(ex))); }, [loadPeriods]);
   const create = async (e) => { e.preventDefault(); try { const res = await api.hrPayrollCreatePeriod({ ...form, year: Number(form.year), month: Number(form.month) }); await loadPeriods(); await loadDetail(res.period); } catch (ex) { setErr(errorText(ex)); } };
@@ -487,11 +527,44 @@ function Payroll() {
     {hasPerm("payroll.calculate") && <form className="settings-card hr-period-form" onSubmit={create}><h3>Buat Periode</h3>{[["year", "Tahun", "number"], ["month", "Bulan", "number"], ["start_date", "Tanggal mulai", "date"], ["end_date", "Tanggal akhir", "date"]].map(([key, label, type]) => <label key={key}>{label}<input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} required /></label>)}<button className="primary"><Plus size={14} /> Buat</button></form>}
     <div className="hr-master-detail"><div className="settings-card"><h3>Periode</h3>{periods.map((p) => <button type="button" className={`hr-list-button ${selected?.id === p.id ? "active" : ""}`} key={p.id} onClick={() => loadDetail(p).catch((ex) => setErr(errorText(ex)))}><span>{p.period_number || `${p.month}/${p.year}`}</span><span className={`hr-status hr-status-${String(p.status).toLowerCase()}`}>{statusLabel(p.status)}</span></button>)}</div>
       <div className="hr-payroll-detail">{!selected ? <div className="settings-card"><p className="muted">Pilih periode payroll.</p></div> : <>
-        <div className="settings-card"><div className="hr-card-head"><div><h3>{selected.period_number || `${selected.month}/${selected.year}`}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span></div><div className="hr-actions">
+        <div className="settings-card"><div className="hr-card-head"><div><h3>{selected.period_number || `${selected.month}/${selected.year}`}</h3><span className={`hr-status hr-status-${String(selected.status).toLowerCase()}`}>{statusLabel(selected.status)}</span>
+          {readiness && <span className="muted small" data-testid="hr-payroll-accounting-ready">Accounting: {readiness.accounting_ready ? "Siap" : "Belum Siap"}</span>}
+        </div><div className="hr-actions">
           {selected.status === "DRAFT" && hasPerm("payroll.calculate") && <button className="primary" onClick={calculate} data-testid="hr-calc-btn">Hitung Payroll</button>}
           {transitionButtons.map(([target, perm, testid, label]) => canTransition(selected.status, target) && hasPerm(perm) ? <button key={target} className="primary" onClick={() => transition(target)} data-testid={testid}>{label}</button> : null)}
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} data-testid="hr-reopen-btn">Buka Ulang</button>}
+          {readiness && <button type="button" className="ghost" onClick={() => setShowPreview(true)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
         </div></div></div>
+        {showPreview && readiness && (
+          <div className="settings-card hr-payroll-accounting-preview" data-testid="hr-payroll-accounting-preview">
+            <h3>Preview Accounting</h3>
+            <p className="muted small">PREVIEW — BELUM MEMBUAT JURNAL</p>
+            <p>Status: {readiness.accounting_ready ? "Siap" : "Belum Siap"}</p>
+            <p className="muted small">{(readiness.reasons || []).join(" · ")}</p>
+            <div className="table-wrap"><table className="ship-table"><thead><tr><th>Sumber</th><th>Treatment</th><th>Akun</th><th className="num">Debit</th><th className="num">Kredit</th></tr></thead><tbody>
+              {(readiness.planned_lines || []).map((row, idx) => (
+                <tr key={`${row.account_id}-${(row.source_keys || []).join(",")}-${idx}`} data-testid={previewIsPayable(row) ? "hr-payroll-accounting-preview-payable" : "hr-payroll-accounting-preview-line"}>
+                  <td>
+                    <div>{previewSourceLabel(row)}</div>
+                    {previewIsPayable(row)
+                      ? <div className="muted small">Saldo utang dari net payroll — bukan komponen mapped</div>
+                      : row.name && row.name !== previewSourceLabel(row) ? <div className="muted small">{row.name}</div> : null}
+                  </td>
+                  <td>
+                    <div>{previewTreatmentLabel(row.treatment)}</div>
+                    {row.treatment ? <div className="muted small">{row.treatment}</div> : null}
+                  </td>
+                  <td className="mono">{previewAccountLabel(row)}</td>
+                  <td className="num">{moneyFormat(row.debit)}</td>
+                  <td className="num">{moneyFormat(row.credit)}</td>
+                </tr>
+              ))}
+            </tbody></table></div>
+            <p>Gross {moneyFormat(readiness.summary?.gross)} · Potongan {moneyFormat(readiness.summary?.deductions)} · Net {moneyFormat(readiness.summary?.net)}</p>
+            <p>Total debit {moneyFormat(readiness.summary?.total_debit)} · Total kredit {moneyFormat(readiness.summary?.total_credit)} · Selisih {moneyFormat(readiness.summary?.difference)}</p>
+            <button type="button" className="ghost" onClick={() => setShowPreview(false)}>Tutup</button>
+          </div>
+        )}
         <AttendanceEditor period={selected} employees={employees} attendance={attendance} onSaved={() => loadDetail(selected)} />
         <div className="settings-card" data-testid="hr-breakdown"><h3>Rincian Payroll</h3><div className="table-wrap"><table className="ship-table"><thead><tr><th>Karyawan</th><th>Pendapatan</th><th>Potongan</th><th>Gaji Bersih</th></tr></thead><tbody>{lines.map((line) => <tr key={line.id}><td>{employeeName(line)}</td><td>{moneyFormat(line.gross)}</td><td>{moneyFormat(line.total_deductions)}</td><td><strong>{moneyFormat(line.net)}</strong><div className="muted small">{(line.earnings || []).map((r) => `${r.name}: ${moneyFormat(r.amount)}`).join(" · ")}</div></td></tr>)}</tbody></table></div></div>
         <div className="settings-card"><h3>Jadwal Kasbon</h3><div className="table-wrap"><table className="ship-table"><tbody>{kasbon.map((row) => <tr key={row.id} data-testid="hr-kasbon-row"><td>{row.employee_name || row.employee_id}</td><td>{row.request_number || row.request_id}</td><td>{moneyFormat(row.outstanding)}</td></tr>)}</tbody></table></div></div>
