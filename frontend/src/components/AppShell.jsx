@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, Truck, Users, Wallet, Warehouse, ArrowLeftRight, Scale } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight, Scale } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
@@ -49,6 +49,7 @@ const TILE_ICONS = {
   [NAV_KEYS.ledgerOpeningBalance]: Scale,
   [NAV_KEYS.ledgerGeneralLedger]: ListOrdered,
   [NAV_KEYS.ledgerTrialBalance]: TableIcon,
+  [NAV_KEYS.ledgerProfitLoss]: TrendingUp,
   [NAV_KEYS.cashBankAccounts]: Landmark,
   [NAV_KEYS.cashBankReceipts]: Receipt,
   [NAV_KEYS.cashBankPayments]: CreditCard,
