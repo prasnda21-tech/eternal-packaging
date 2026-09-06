@@ -160,6 +160,7 @@ from services.chart_of_accounts_http import register_chart_of_accounts_routes
 from services.cash_bank_http import register_cash_bank_routes
 from services.general_journal_http import register_general_journal_routes
 from services.opening_balance_http import register_opening_balance_routes
+from services.general_ledger_http import register_general_ledger_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
 from services.sales_activity.http import register_sales_activity_routes
 from services.independent_route.http import register_independent_route_routes
@@ -8236,6 +8237,13 @@ register_general_journal_routes(
     Depends=Depends,
 )
 register_opening_balance_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_general_ledger_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,

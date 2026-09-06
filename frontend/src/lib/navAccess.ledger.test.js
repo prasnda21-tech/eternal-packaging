@@ -3,11 +3,11 @@ import { ledgerMenuItems, ledgerNavVisible, NAV_KEYS, NAV_MENU_FALLBACK } from "
 const has = (...keys) => (k) => keys.includes(k);
 
 describe("Buku Besar nav", () => {
-  test("sidebar catalog includes parent, Akun Perkiraan, Jurnal Umum, Saldo Awal", () => {
+  test("sidebar catalog includes parent, Akun Perkiraan, Jurnal Umum, Saldo Awal, Buku Besar", () => {
     const labels = NAV_MENU_FALLBACK
       .filter((m) => m.parent === NAV_KEYS.ledger || m.key === NAV_KEYS.ledger)
       .map((m) => m.label);
-    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan", "Jurnal Umum", "Saldo Awal"]);
+    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan", "Jurnal Umum", "Saldo Awal", "Buku Besar"]);
   });
 
   test("hidden without grants", () => {
@@ -22,6 +22,7 @@ describe("Buku Besar nav", () => {
     expect(v.accounts).toBe(true);
     expect(v.generalJournal).toBe(false);
     expect(v.openingBalance).toBe(false);
+    expect(v.generalLedger).toBe(false);
     expect(ledgerMenuItems(has("ledger.accounts.view")).map((i) => i.to)).toEqual([
       "/buku-besar/akun-perkiraan",
     ]);
@@ -42,6 +43,15 @@ describe("Buku Besar nav", () => {
     expect(v.openingBalance).toBe(true);
     expect(ledgerMenuItems(has("opening_balance.view")).map((i) => i.to)).toEqual([
       "/buku-besar/saldo-awal",
+    ]);
+  });
+
+  test("general_ledger.view shows Buku Besar under Buku Besar", () => {
+    const v = ledgerNavVisible(has("general_ledger.view"));
+    expect(v.parent).toBe(true);
+    expect(v.generalLedger).toBe(true);
+    expect(ledgerMenuItems(has("general_ledger.view")).map((i) => i.to)).toEqual([
+      "/buku-besar/buku-besar",
     ]);
   });
 

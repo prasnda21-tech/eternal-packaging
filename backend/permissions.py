@@ -164,6 +164,7 @@ PERMISSION_CATALOG = [
     ("Buku Besar", "opening_balance.manage", "Kelola Saldo Awal"),
     ("Buku Besar", "opening_balance.post", "Posting Saldo Awal"),
     ("Buku Besar", "opening_balance.reverse", "Reversal Saldo Awal"),
+    ("Buku Besar", "general_ledger.view", "Lihat Buku Besar"),
     ("Kas & Bank", "cash_bank.view", "Lihat Kas & Bank"),
     ("Kas & Bank", "cash_bank.manage", "Kelola Kas & Bank"),
     ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
@@ -231,6 +232,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.ledger.accounts", "Menu Akun Perkiraan"),
     ("Akses Menu", "nav.ledger.general_journal", "Menu Jurnal Umum"),
     ("Akses Menu", "nav.ledger.opening_balance", "Menu Saldo Awal"),
+    ("Akses Menu", "nav.ledger.general_ledger", "Menu Buku Besar"),
     ("Akses Menu", "nav.cash_bank", "Menu Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.accounts", "Menu Daftar Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.receipts", "Menu Penerimaan Kas & Bank"),
@@ -322,6 +324,7 @@ NAV_MENU_ITEMS = (
     ("nav.ledger.accounts", "Akun Perkiraan", "nav.ledger"),
     ("nav.ledger.general_journal", "Jurnal Umum", "nav.ledger"),
     ("nav.ledger.opening_balance", "Saldo Awal", "nav.ledger"),
+    ("nav.ledger.general_ledger", "Buku Besar", "nav.ledger"),
     ("nav.cash_bank", "Kas & Bank", None),
     ("nav.cash_bank.accounts", "Daftar Kas & Bank", "nav.cash_bank"),
     ("nav.cash_bank.receipts", "Penerimaan", "nav.cash_bank"),
@@ -469,6 +472,9 @@ def derived_nav_permissions(existing: set) -> set:
     ):
         nav.add("nav.ledger")
         nav.add("nav.ledger.opening_balance")
+    if "general_ledger.view" in existing:
+        nav.add("nav.ledger")
+        nav.add("nav.ledger.general_ledger")
     if (
         "cash_bank.view" in existing
         or "cash_bank.manage" in existing
