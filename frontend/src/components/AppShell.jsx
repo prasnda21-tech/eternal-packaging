@@ -50,6 +50,7 @@ const TILE_ICONS = {
   [NAV_KEYS.ledgerGeneralLedger]: ListOrdered,
   [NAV_KEYS.ledgerTrialBalance]: TableIcon,
   [NAV_KEYS.ledgerProfitLoss]: TrendingUp,
+  [NAV_KEYS.ledgerBalanceSheet]: Scale,
   [NAV_KEYS.cashBankAccounts]: Landmark,
   [NAV_KEYS.cashBankReceipts]: Receipt,
   [NAV_KEYS.cashBankPayments]: CreditCard,

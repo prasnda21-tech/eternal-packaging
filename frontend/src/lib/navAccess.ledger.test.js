@@ -7,7 +7,7 @@ describe("Buku Besar nav", () => {
     const labels = NAV_MENU_FALLBACK
       .filter((m) => m.parent === NAV_KEYS.ledger || m.key === NAV_KEYS.ledger)
       .map((m) => m.label);
-    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan", "Jurnal Umum", "Saldo Awal", "Buku Besar", "Neraca Saldo", "Laba/Rugi"]);
+    expect(labels).toEqual(["Buku Besar", "Akun Perkiraan", "Jurnal Umum", "Saldo Awal", "Buku Besar", "Neraca Saldo", "Laba/Rugi", "Neraca"]);
   });
 
   test("hidden without grants", () => {
@@ -25,6 +25,7 @@ describe("Buku Besar nav", () => {
     expect(v.generalLedger).toBe(false);
     expect(v.trialBalance).toBe(false);
     expect(v.profitLoss).toBe(false);
+    expect(v.balanceSheet).toBe(false);
     expect(ledgerMenuItems(has("ledger.accounts.view")).map((i) => i.to)).toEqual([
       "/buku-besar/akun-perkiraan",
     ]);
@@ -72,6 +73,15 @@ describe("Buku Besar nav", () => {
     expect(v.profitLoss).toBe(true);
     expect(ledgerMenuItems(has("profit_loss.view")).map((i) => i.to)).toEqual([
       "/buku-besar/laba-rugi",
+    ]);
+  });
+
+  test("balance_sheet.view shows Neraca under Buku Besar", () => {
+    const v = ledgerNavVisible(has("balance_sheet.view"));
+    expect(v.parent).toBe(true);
+    expect(v.balanceSheet).toBe(true);
+    expect(ledgerMenuItems(has("balance_sheet.view")).map((i) => i.to)).toEqual([
+      "/buku-besar/neraca",
     ]);
   });
 

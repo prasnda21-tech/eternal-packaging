@@ -195,6 +195,7 @@ export const api = {
   generalLedger: (params = {}) => client.get(`/ledger/general-ledger`, { params }).then((r) => r.data),
   trialBalance: (params = {}) => client.get(`/ledger/trial-balance`, { params }).then((r) => r.data),
   profitLoss: (params = {}) => client.get(`/ledger/profit-loss`, { params }).then((r) => r.data),
+  balanceSheet: (params = {}) => client.get(`/ledger/balance-sheet`, { params }).then((r) => r.data),
   cashBankAccounts: (params = {}) => client.get(`/cash-bank/accounts`, { params }).then((r) => r.data),
   getCashBankAccount: (id) => client.get(`/cash-bank/accounts/${encodeURIComponent(id)}`).then((r) => r.data),
   createCashBankAccount: (payload) => client.post(`/cash-bank/accounts`, payload).then((r) => r.data),
