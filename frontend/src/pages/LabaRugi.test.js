@@ -102,7 +102,8 @@ describe("Laba/Rugi frontend contracts", () => {
     expect(nav).toMatch(/profit_loss\.view/);
     expect(shell).toMatch(/top-nav-buku-besar/);
     expect(shell).toMatch(/NAV_KEYS\.ledgerProfitLoss/);
-    expect(shell).toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
+    expect(shell).toMatch(/<WorkspaceTabs/);
   });
 
   test("mobile-safe compact filter CSS", () => {

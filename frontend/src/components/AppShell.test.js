@@ -128,6 +128,17 @@ describe("sidebar flyout interaction", () => {
     expect(grid).toMatch(/if \(!blocks\.length\) return null/);
   });
 
+  test("one global workspace strip is rendered from the shared engine", () => {
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
+    expect(shell).toMatch(/<WorkspaceTabs/);
+    expect(shell).toMatch(/testid="workspace-tabs"/);
+    expect(shell).toMatch(/content-workspace/);
+    expect(shell.match(/<WorkspaceTabs/g).length).toBe(1);
+    expect(shell).not.toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).not.toMatch(/useSalesWorkspaceTabs/);
+    expect(shell).not.toMatch(/useCashBankWorkspaceTabs/);
+  });
+
   test("direct-link parents stay rail links without flyout", () => {
     expect(shell).toMatch(/to="\/dashboard"/);
     expect(shell).toMatch(/to="\/settings"/);

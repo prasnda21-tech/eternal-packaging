@@ -69,7 +69,8 @@ describe("Buku Besar frontend contracts", () => {
     expect(shell).toMatch(/top-nav-buku-besar/);
     expect(shell).toMatch(/ledgerOpen && ledgerItems/);
     expect(shell).toMatch(/NAV_KEYS\.ledgerGeneralLedger/);
-    expect(shell).toMatch(/CashBankWorkspaceTabs/);
+    expect(shell).toMatch(/useGlobalWorkspaceTabs/);
+    expect(shell).toMatch(/<WorkspaceTabs/);
   });
 
   test("mobile-safe compact filter CSS", () => {

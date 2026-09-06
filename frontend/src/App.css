@@ -1636,6 +1636,7 @@
 }
 
 /* Full workspace content */
+.content.content-workspace,
 .content.content-kas-bank-workspace,
 .content.content-penjualan-workspace{
   max-width:none;
@@ -1651,7 +1652,11 @@
   display:flex;
   align-items:stretch;
   gap:0;
-  flex-wrap:wrap;
+  flex-wrap:nowrap;
+  overflow-x:auto;
+  overflow-y:hidden;
+  max-width:100%;
+  min-width:0;
   background:linear-gradient(180deg, var(--mod-soft) 0%, #eef2f0 100%);
   border-bottom:2px solid var(--mod);
   padding:0 6px;
@@ -1663,6 +1668,7 @@
 .kb-workspace-tab{
   display:inline-flex;
   align-items:center;
+  flex:0 0 auto;
   max-width:min(240px,46vw);
   margin:4px 2px 0;
   border:1.5px solid transparent;
@@ -1871,6 +1877,7 @@
   .kas-bank-page .kb-journal-line{grid-template-columns:3.5rem minmax(0,1fr);gap:6px}
   .kas-bank-page .kb-journal-amt{grid-column:2;justify-self:end}
   .kb-workspace-tabs{top:0;padding:0 4px;max-width:100%;min-width:0}
+  .content.content-workspace,
   .content.content-penjualan-workspace,
   .content.content-kas-bank-workspace,
   .penjualan-page,
