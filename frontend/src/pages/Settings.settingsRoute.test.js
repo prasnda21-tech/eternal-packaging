@@ -25,5 +25,11 @@ describe("Settings child routes", () => {
   test("legacy query still resolves to the same section id", () => {
     expect(settingsTabFromPath("/settings", "?tab=sales-accounting")).toBe("sales-accounting");
     expect(settingsTabFromPath("/settings/sales-accounting", "?foo=1")).toBe("sales-accounting");
+    expect(settingsTabFromPath("/settings/not-a-real-tab")).toBe(null);
+  });
+
+  test("child routes hide the in-page category grid", () => {
+    expect(settingsSrc).toMatch(/showCategoryNav = location\.pathname === "\/settings" && !urlTab/);
+    expect(settingsSrc).toMatch(/\{showCategoryNav && \(/);
   });
 });

@@ -2003,8 +2003,12 @@ export default function Settings() {
   const visibleNavItems = SETTINGS_NAV_ITEMS.filter((item) => navVisibility[item.id]);
 
   const urlTab = settingsTabFromPath(location.pathname, location.search);
+  // Bare /settings keeps the existing hub. Child routes (/settings/:tab or ?tab=) show content only —
+  // Pengaturan flyout is now the navigation, so the in-page card grid must not duplicate it.
+  const showCategoryNav = location.pathname === "/settings" && !urlTab;
   const initialTab = urlTab || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
+  const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === tab);
   const [catalog, setCatalog] = useState(null);
   const [toast, setToast] = useState("");
 
@@ -2042,18 +2046,31 @@ export default function Settings() {
         <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
           <span className="page-heading-icon" aria-hidden="true"><SettingsIcon size={22} /></span>
           <div>
-          <p className="eyebrow">Pengaturan · Karyawan &amp; Hak Akses</p>
-          <h1>Karyawan &amp; Hak Akses</h1>
-          <p className="subhead">Kelola karyawan, atur role default, dan pantau audit log</p>
+          {showCategoryNav ? (
+            <>
+              <p className="eyebrow">Pengaturan · Karyawan &amp; Hak Akses</p>
+              <h1>Karyawan &amp; Hak Akses</h1>
+              <p className="subhead">Kelola karyawan, atur role default, dan pantau audit log</p>
+            </>
+          ) : (
+            <>
+              <p className="eyebrow">Pengaturan</p>
+              <h1>{activeNavItem?.label || "Pengaturan"}</h1>
+            </>
+          )}
           </div>
         </div>
       </div>
 
-      <InfoBanner testid="settings-intro">
-        <span><b>Role</b> menentukan hak akses default seorang karyawan. Bila ada kekhususan (mis. helper A hanya boleh Persiapan, helper B hanya Packing), atur <b>Hak akses per karyawan</b> di tab Karyawan sebagai override.</span>
-      </InfoBanner>
+      {showCategoryNav && (
+        <InfoBanner testid="settings-intro">
+          <span><b>Role</b> menentukan hak akses default seorang karyawan. Bila ada kekhususan (mis. helper A hanya boleh Persiapan, helper B hanya Packing), atur <b>Hak akses per karyawan</b> di tab Karyawan sebagai override.</span>
+        </InfoBanner>
+      )}
 
-      <SettingsCategoryNav items={visibleNavItems} activeId={tab} onSelect={selectTab} />
+      {showCategoryNav && (
+        <SettingsCategoryNav items={visibleNavItems} activeId={tab} onSelect={selectTab} />
+      )}
 
       <div className="settings-active-panel" data-testid="settings-active-panel">
       {canViewUsers && !canManageUsers && tab === "employees" && (
