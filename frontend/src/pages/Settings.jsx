@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
@@ -10,7 +10,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
-import { NAV_MENU_FALLBACK } from "../lib/navAccess";
+import { NAV_MENU_FALLBACK, settingsTabFromPath } from "../lib/navAccess";
 import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload } from "../lib/settingsPermissionUi";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
@@ -1941,6 +1941,8 @@ function SettingsCategoryNav({ items, activeId, onSelect }) {
 /* ---------------- Root ---------------- */
 export default function Settings() {
   const { user, hasPerm } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const canViewUsers = hasPerm("users.view") || hasPerm("users.manage");
   const canManageUsers = hasPerm("users.manage");
@@ -2000,14 +2002,34 @@ export default function Settings() {
 
   const visibleNavItems = SETTINGS_NAV_ITEMS.filter((item) => navVisibility[item.id]);
 
-  const initialTab = searchParams.get("tab") || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
+  const urlTab = settingsTabFromPath(location.pathname, location.search);
+  const initialTab = urlTab || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
   const [catalog, setCatalog] = useState(null);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
+    const next = settingsTabFromPath(location.pathname, location.search);
+    if (next) setTab(next);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    const q = searchParams.get("tab");
+    if (location.pathname !== "/settings" || !q || !settingsTabFromPath("/settings", location.search)) return;
+    const params = new URLSearchParams(location.search);
+    params.delete("tab");
+    const rest = params.toString();
+    navigate(`/settings/${q}${rest ? `?${rest}` : ""}`, { replace: true });
+  }, [location.pathname, location.search, navigate, searchParams]);
+
+  useEffect(() => {
     api.adminPermissionCatalog().then(setCatalog).catch(() => {});
   }, []);
+
+  const selectTab = (id) => {
+    setTab(id);
+    if (location.pathname !== `/settings/${id}`) navigate(`/settings/${id}`);
+  };
 
   const notify = (msg) => {
     setToast(msg);
@@ -2031,7 +2053,7 @@ export default function Settings() {
         <span><b>Role</b> menentukan hak akses default seorang karyawan. Bila ada kekhususan (mis. helper A hanya boleh Persiapan, helper B hanya Packing), atur <b>Hak akses per karyawan</b> di tab Karyawan sebagai override.</span>
       </InfoBanner>
 
-      <SettingsCategoryNav items={visibleNavItems} activeId={tab} onSelect={setTab} />
+      <SettingsCategoryNav items={visibleNavItems} activeId={tab} onSelect={selectTab} />
 
       <div className="settings-active-panel" data-testid="settings-active-panel">
       {canViewUsers && !canManageUsers && tab === "employees" && (

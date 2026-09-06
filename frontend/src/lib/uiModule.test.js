@@ -19,6 +19,7 @@ describe("moduleFromPath", () => {
     expect(moduleFromPath("/po/abc")).toBe(UI_MODULES.production);
     expect(moduleFromPath("/optimasi-rute/baru")).toBe(UI_MODULES.route);
     expect(moduleFromPath("/settings")).toBe(UI_MODULES.settings);
+    expect(moduleFromPath("/settings/sales-accounting")).toBe(UI_MODULES.settings);
     expect(moduleFromPath("/")).toBe(UI_MODULES.dashboard);
   });
 });

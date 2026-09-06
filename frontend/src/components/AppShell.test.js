@@ -124,7 +124,8 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/reportsOpen && reportsItems\.length > 0/);
     expect(shell).toMatch(/employeeAdminOpen && employeeAdminItems\.length > 0/);
     expect(shell).toMatch(/hrPayrollOpen && hrPayrollItems\.length > 0/);
-    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(9);
+    expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(10);
+    expect(shell).toMatch(/id="sidebar-flyout-settings"/);
     expect(grid).toMatch(/if \(!blocks\.length\) return null/);
   });
 
@@ -141,10 +142,20 @@ describe("sidebar flyout interaction", () => {
 
   test("direct-link parents stay rail links without flyout", () => {
     expect(shell).toMatch(/to="\/dashboard"/);
-    expect(shell).toMatch(/to="\/settings"/);
     expect(shell).not.toMatch(/sidebar-flyout-dashboard/);
-    expect(shell).not.toMatch(/sidebar-flyout-settings/);
     expect(shell).not.toMatch(/toggleMenu\("dashboard"\)/);
-    expect(shell).not.toMatch(/toggleMenu\("settings"\)/);
+  });
+
+  test("Pengaturan rail opens the shared tile flyout without navigating", () => {
+    expect(shell).toMatch(/testid="top-nav-settings"/);
+    expect(shell).toMatch(/label="Pengaturan"/);
+    expect(shell).toMatch(/toggleMenu\("settings"\)/);
+    expect(shell).toMatch(/settingsMenuItems\(hasPerm\)/);
+    expect(shell).toMatch(/settingsOpen && settingsItems\.length > 0/);
+    expect(shell).toMatch(/title="Pengaturan"/);
+    expect(shell).toMatch(/id="sidebar-flyout-settings"/);
+    expect(shell).not.toMatch(/to="\/settings"/);
+    expect(shell).not.toMatch(/Pengaturan Hub/);
+    expect(grid).toMatch(/to=\{item\.to\}/);
   });
 });

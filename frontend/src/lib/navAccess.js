@@ -883,3 +883,169 @@ export function cashBankMenuItems(hasPerm) {
     CASH_BANK_TILE_TESTIDS,
   );
 }
+
+/** Existing Settings page sections — same ids as Settings.jsx SETTINGS_NAV_ITEMS. */
+export const SETTINGS_TAB_IDS = [
+  "employees",
+  "roles",
+  "sidebar-access",
+  "operator-wage",
+  "hpp",
+  "sales-accounting",
+  "payroll-accounting",
+  "customer-pricing",
+  "customer-approval",
+  "delivery-deadline",
+  "operator-target",
+  "work-panel",
+  "employee-admin",
+  "hr-payroll",
+  "sales-activity",
+  "route-optimizer",
+  "accurate-creators",
+  "audit",
+];
+
+const SETTINGS_TAB_ID_SET = new Set(SETTINGS_TAB_IDS);
+
+export const SETTINGS_NAV_ROUTES = Object.fromEntries(
+  SETTINGS_TAB_IDS.map((id) => [id, `/settings/${id}`]),
+);
+
+export const SETTINGS_TILE_TONES = {
+  employees: "teal",
+  roles: "purple",
+  "sidebar-access": "blue",
+  "operator-wage": "green",
+  hpp: "orange",
+  "sales-accounting": "purple",
+  "payroll-accounting": "blue",
+  "customer-pricing": "green",
+  "customer-approval": "teal",
+  "delivery-deadline": "orange",
+  "operator-target": "blue",
+  "work-panel": "purple",
+  "employee-admin": "orange",
+  "hr-payroll": "blue",
+  "sales-activity": "green",
+  "route-optimizer": "blue",
+  "accurate-creators": "purple",
+  audit: "orange",
+};
+
+export const SETTINGS_TILE_TESTIDS = Object.fromEntries(
+  SETTINGS_TAB_IDS.map((id) => [id, `top-nav-settings-${id}`]),
+);
+
+export const SETTINGS_TILE_LABELS = {
+  employees: "Karyawan",
+  roles: "Role & Hak Akses",
+  "sidebar-access": "Akses Menu Sidebar",
+  "operator-wage": "Sistem Upah Operator",
+  hpp: "Pengaturan HPP",
+  "sales-accounting": "Akuntansi Penjualan",
+  "payroll-accounting": "Akuntansi Payroll",
+  "customer-pricing": "Harga Customer",
+  "customer-approval": "Customer Approval",
+  "delivery-deadline": "Deadline Pengiriman",
+  "operator-target": "Target Output Operator",
+  "work-panel": "Form Pekerjaan Divisi",
+  "employee-admin": "Administrasi Karyawan",
+  "hr-payroll": "HR & Payroll",
+  "sales-activity": "Sales Activity & Ownership",
+  "route-optimizer": "Optimasi Rute",
+  "accurate-creators": "Pembuat PO Accurate",
+  audit: "Audit Log",
+};
+
+/** Resolve an existing Settings section from path or legacy ?tab=. */
+export function settingsTabFromPath(pathname, search = "") {
+  const path = String(pathname || "").split("?")[0].replace(/\/$/, "") || "/";
+  const child = path.startsWith("/settings/") ? path.slice("/settings/".length) : "";
+  if (child && !child.includes("/") && SETTINGS_TAB_ID_SET.has(child)) return child;
+  const raw = String(search || "");
+  const query = raw.startsWith("?") ? raw.slice(1) : raw;
+  const tab = new URLSearchParams(query).get("tab");
+  if (tab && SETTINGS_TAB_ID_SET.has(tab)) return tab;
+  return null;
+}
+
+/** Same permission gates as Settings.jsx category cards. Requires nav.settings for the rail. */
+export function settingsNavVisible(hasPerm) {
+  const parentGranted = canSeeNav(hasPerm, NAV_KEYS.settings);
+  const employees = canSeeNav(hasPerm, "users.view") || canSeeNav(hasPerm, "users.manage");
+  const roles = canSeeNav(hasPerm, "permissions.manage");
+  const sidebarAccess = canSeeNav(hasPerm, "permissions.manage");
+  const operatorWage = canSeeNav(hasPerm, "settings.operator_wage.view")
+    || canSeeNav(hasPerm, "settings.operator_wage.manage")
+    || canSeeNav(hasPerm, "reports.gaji_operator.view");
+  const hpp = canSeeNav(hasPerm, "settings.hpp.view")
+    || canSeeNav(hasPerm, "settings.hpp.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const salesAccounting = canSeeNav(hasPerm, "settings.sales_accounting.view")
+    || canSeeNav(hasPerm, "settings.sales_accounting.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const payrollAccounting = canSeeNav(hasPerm, "payroll_accounting.view")
+    || canSeeNav(hasPerm, "payroll_accounting.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const customerPricing = canSeeNav(hasPerm, "settings.customer_pricing.view")
+    || canSeeNav(hasPerm, "settings.customer_pricing.manage")
+    || canSeeNav(hasPerm, "settings.customer_pricing.publish")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const customerApproval = canSeeNav(hasPerm, "customer_approval.view")
+    || canSeeNav(hasPerm, "customer_approval.settings");
+  const deliveryDeadline = canSeeNav(hasPerm, "delivery.deadline.settings")
+    || canSeeNav(hasPerm, "delivery.deadline.edit")
+    || canSeeNav(hasPerm, "dashboard.production.view");
+  const operatorTarget = canSeeNav(hasPerm, "schedule.edit") || canSeeNav(hasPerm, "users.manage");
+  const workPanel = canSeeNav(hasPerm, "settings.work_panel.view")
+    || canSeeNav(hasPerm, "settings.work_panel.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const employeeAdmin = canSeeNav(hasPerm, "employee_admin.settings");
+  const hrPayroll = canSeeNav(hasPerm, "payroll.settings");
+  const salesActivity = canSeeNav(hasPerm, "settings.sales_activity.view")
+    || canSeeNav(hasPerm, "settings.sales_activity.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const routeOptimizer = canSeeNav(hasPerm, "settings.route_optimizer.view")
+    || canSeeNav(hasPerm, "settings.route_optimizer.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const accurateCreators = employees
+    || canSeeNav(hasPerm, "accurate.import")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const audit = canSeeNav(hasPerm, "audit.view");
+  const children = {
+    employees: Boolean(parentGranted && employees),
+    roles: Boolean(parentGranted && roles),
+    "sidebar-access": Boolean(parentGranted && sidebarAccess),
+    "operator-wage": Boolean(parentGranted && operatorWage),
+    hpp: Boolean(parentGranted && hpp),
+    "sales-accounting": Boolean(parentGranted && salesAccounting),
+    "payroll-accounting": Boolean(parentGranted && payrollAccounting),
+    "customer-pricing": Boolean(parentGranted && customerPricing),
+    "customer-approval": Boolean(parentGranted && customerApproval),
+    "delivery-deadline": Boolean(parentGranted && deliveryDeadline),
+    "operator-target": Boolean(parentGranted && operatorTarget),
+    "work-panel": Boolean(parentGranted && workPanel),
+    "employee-admin": Boolean(parentGranted && employeeAdmin),
+    "hr-payroll": Boolean(parentGranted && hrPayroll),
+    "sales-activity": Boolean(parentGranted && salesActivity),
+    "route-optimizer": Boolean(parentGranted && routeOptimizer),
+    "accurate-creators": Boolean(parentGranted && accurateCreators),
+    audit: Boolean(parentGranted && audit),
+  };
+  return {
+    parent: Boolean(parentGranted && SETTINGS_TAB_IDS.some((id) => children[id])),
+    ...children,
+  };
+}
+
+export function settingsMenuItems(hasPerm) {
+  const visible = settingsNavVisible(hasPerm);
+  return SETTINGS_TAB_IDS.filter((id) => visible[id]).map((id) => ({
+    key: id,
+    label: SETTINGS_TILE_LABELS[id],
+    to: SETTINGS_NAV_ROUTES[id],
+    tone: SETTINGS_TILE_TONES[id] || "green",
+    testid: SETTINGS_TILE_TESTIDS[id],
+  }));
+}

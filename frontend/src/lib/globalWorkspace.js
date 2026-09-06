@@ -12,6 +12,7 @@ import {
   purchasingMenuItems,
   reportsMenuItems,
   salesMenuItems,
+  settingsMenuItems,
   taskMenuItems,
 } from "./navAccess";
 import { CASH_BANK_WORKSPACE_TABS } from "./cashBankWorkspace";
@@ -76,6 +77,8 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
       matchPrefix: true,
     });
   }
+
+  settingsMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
 
   if (canSeeNav(hasPerm, NAV_KEYS.settings)) {
     tabs.push({ id: "settings", path: "/settings", label: "Pengaturan" });

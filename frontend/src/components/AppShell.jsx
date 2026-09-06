@@ -1,10 +1,10 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, Package, PlusCircle, Receipt, RotateCcw, Route, ScanLine, Settings as SettingsIcon, ShoppingBag, ShoppingCart, Table as TableIcon, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight, Scale } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { moduleFromPath } from "../lib/uiModule";
 import BrandMark from "./BrandMark";
@@ -70,6 +70,24 @@ const TILE_ICONS = {
   surat_jalan: FileText,
   loading: Boxes,
   terkirim: Truck,
+  employees: Users,
+  roles: Shield,
+  "sidebar-access": PanelLeft,
+  "operator-wage": Coins,
+  hpp: Scale,
+  "sales-accounting": BookOpen,
+  "payroll-accounting": Wallet,
+  "customer-pricing": Tags,
+  "customer-approval": ClipboardCheck,
+  "delivery-deadline": Truck,
+  "operator-target": Target,
+  "work-panel": ClipboardList,
+  "employee-admin": IdCard,
+  "hr-payroll": Wallet,
+  "sales-activity": Contact,
+  "route-optimizer": Route,
+  "accurate-creators": Users,
+  audit: ScrollText,
 };
 
 const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, expanded, controls, active, open, onClick }, ref) {
@@ -113,6 +131,7 @@ export default function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const workspace = useGlobalWorkspaceTabs();
+  const settingsActive = location.pathname.startsWith("/settings");
   const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
@@ -233,6 +252,7 @@ export default function AppShell() {
   const ledgerItems = ledgerMenuItems(hasPerm);
   const cashBankNav = cashBankNavVisible(hasPerm);
   const cashBankItems = cashBankMenuItems(hasPerm);
+  const settingsItems = settingsMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showRouteOptimizer = hasPerm(NAV_KEYS.routeOptimizer) || hasPerm("route_optimizer.view") || hasPerm("route_optimizer.create") || hasPerm("route_optimizer.manage");
@@ -248,6 +268,7 @@ export default function AppShell() {
   const hrPayrollOpen = activeSidebarMenu === "hrPayroll";
   const ledgerOpen = activeSidebarMenu === "ledger";
   const cashBankOpen = activeSidebarMenu === "cashBank";
+  const settingsOpen = activeSidebarMenu === "settings";
   const flyoutStyle = { left: flyoutPos.left, top: flyoutPos.top };
 
   const uiModule = moduleFromPath(location.pathname);
@@ -415,13 +436,19 @@ export default function AppShell() {
             />
           )}
           {showSettings && (
-            <RailNavLink
-              to="/settings"
-              testid="top-nav-settings"
-              label="Pengaturan"
-              icon={SettingsIcon}
-              onNavigate={closeFlyout}
-            />
+            <div className="nav-group">
+              <RailButton
+                ref={(el) => { railRefs.current.settings = el; }}
+                testid="top-nav-settings"
+                label="Pengaturan"
+                icon={SettingsIcon}
+                expanded={settingsOpen}
+                controls="sidebar-flyout-settings"
+                active={settingsActive}
+                open={settingsOpen}
+                onClick={() => toggleMenu("settings")}
+              />
+            </div>
           )}
         </nav>
       </aside>
@@ -563,6 +590,20 @@ export default function AppShell() {
           placement={flyoutPos.placement}
           style={flyoutStyle}
           items={hrPayrollItems}
+          icons={TILE_ICONS}
+          onNavigate={closeFlyout}
+        />
+      )}
+      {settingsOpen && settingsItems.length > 0 && (
+        <SidebarFlyoutGrid
+          innerRef={flyoutRef}
+          id="sidebar-flyout-settings"
+          testid="sidebar-flyout-settings"
+          title="Pengaturan"
+          ariaLabel="Menu Pengaturan"
+          placement={flyoutPos.placement}
+          style={flyoutStyle}
+          items={settingsItems}
           icons={TILE_ICONS}
           onNavigate={closeFlyout}
         />
