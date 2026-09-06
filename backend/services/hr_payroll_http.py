@@ -288,7 +288,15 @@ def register_hr_payroll_routes(
         await require_any_perm(user, PERM_ADJUST)
         body = _dump(payload)
         row = await adjust_line(
-            get_db(), period_id, line_id, body.get("amount"), body.get("reason") or "", body.get("kind") or "", user
+            get_db(),
+            period_id,
+            line_id,
+            body.get("amount"),
+            body.get("reason") or "",
+            body.get("kind") or "",
+            user,
+            accounting_treatment=body.get("accounting_treatment"),
+            accounting_account_id=body.get("accounting_account_id"),
         )
         return {"line": row, "message": "Penyesuaian payroll disimpan"}
 

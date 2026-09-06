@@ -1206,19 +1206,36 @@ async def get_line(db, line_id: str) -> dict:
 def _apply_adjustment(line: dict, adjustment: dict) -> None:
     amount = to_money(adjustment.get("amount"))
     target = "earnings" if adjustment.get("kind") == "earning" else "deductions"
-    line[target].append({
+    row = {
         "code": "ADJUSTMENT",
         "name": str(adjustment.get("reason") or "Penyesuaian"),
         "amount": money_float(amount),
         "source": "adjustment",
         "adjustment_id": adjustment.get("id"),
-    })
+    }
+    treatment = str(adjustment.get("accounting_treatment") or "").strip()
+    account_id = str(adjustment.get("accounting_account_id") or "").strip()
+    if treatment:
+        row["accounting_treatment"] = treatment
+    if account_id:
+        row["accounting_account_id"] = account_id
+    line[target].append(row)
     gross = sum((to_money(row["amount"]) for row in line["earnings"]), Decimal("0"))
     deductions = sum((to_money(row["amount"]) for row in line["deductions"]), Decimal("0"))
     line.update({"gross": money_float(gross), "total_deductions": money_float(deductions), "net": money_float(gross - deductions)})
 
 
-async def adjust_line(db, period_id: str, line_id: str, amount: Any, reason: str, kind: str, user: dict) -> dict:
+async def adjust_line(
+    db,
+    period_id: str,
+    line_id: str,
+    amount: Any,
+    reason: str,
+    kind: str,
+    user: dict,
+    accounting_treatment: Any = None,
+    accounting_account_id: Any = None,
+) -> dict:
     period = await get_period(db, period_id)
     if period.get("status") != STATUS_DRAFT:
         raise HTTPException(409, "Penyesuaian hanya dapat dilakukan pada status DRAFT.")
@@ -1229,6 +1246,13 @@ async def adjust_line(db, period_id: str, line_id: str, amount: Any, reason: str
         raise HTTPException(400, "Nilai penyesuaian harus lebih besar dari 0.")
     if not str(reason or "").strip():
         raise HTTPException(400, "Alasan penyesuaian wajib diisi.")
+    from services.payroll_accounting_settings import validate_adjustment_accounting
+    accounting = await validate_adjustment_accounting(
+        db,
+        kind=kind,
+        treatment=accounting_treatment,
+        account_id=accounting_account_id,
+    )
     line = await get_line(db, line_id)
     if line.get("period_id") != period_id:
         raise HTTPException(404, "Baris payroll tidak ada pada periode ini.")
@@ -1237,6 +1261,8 @@ async def adjust_line(db, period_id: str, line_id: str, amount: Any, reason: str
         "kind": kind,
         "amount": money_float(value),
         "reason": str(reason).strip()[:1000],
+        "accounting_treatment": accounting["accounting_treatment"],
+        "accounting_account_id": accounting["accounting_account_id"],
         "actor": actor_snapshot(user),
         "created_at": now_iso(),
     }
@@ -1331,6 +1357,13 @@ async def reopen_period(db, period_id: str, reason: str, user: dict) -> dict:
         old = await get_period(db, period_id)
         if old.get("status") != STATUS_FINAL:
             raise HTTPException(409, "Hanya periode FINAL yang dapat dibuka ulang.")
+        from services.journal_core import STATUS_POSTED, find_primary_journal_for_source
+        existing_journal = await find_primary_journal_for_source(db, "payroll_period", old["id"])
+        if existing_journal and existing_journal.get("status") == STATUS_POSTED:
+            raise HTTPException(
+                409,
+                "Periode yang sudah memiliki jurnal accounting aktif tidak dapat dibuka ulang.",
+            )
         revision = int(old.get("revision") or 1) + 1
         if await db[PERIODS].find_one({"group_id": old["group_id"], "revision": revision}):
             raise HTTPException(409, "Revisi lanjutan periode ini sudah ada.")

@@ -19,7 +19,7 @@ describe("HR & Payroll UI source", () => {
   });
 
   test("payroll workflow controls and breakdown are present", () => {
-    ["hr-calc-btn", "hr-transition-review", "hr-transition-approval", "hr-transition-final", "hr-reopen-btn", "hr-breakdown", "hr-kasbon-row"].forEach((id) => expect(page).toMatch(new RegExp(id)));
+    ["hr-calc-btn", "hr-transition-review", "hr-transition-approval", "hr-transition-final", "hr-reopen-btn", "hr-breakdown", "hr-kasbon-row", "hr-payroll-accounting-ready", "hr-payroll-accounting-preview"].forEach((id) => expect(page).toMatch(new RegExp(id)));
     expect(page).toMatch(/hasPerm\("payroll\.reopen"\)/);
     expect(page).toMatch(/canTransition\(selected\.status, target\)/);
   });
@@ -170,5 +170,19 @@ describe("HR & Payroll UI source", () => {
     // 11. no request contains /employees/null or /employees/undefined
     expect(page).not.toMatch(/\/employees\/null/);
     expect(page).not.toMatch(/\/employees\/undefined/);
+  });
+
+  test("payroll accounting preview shows treatment, exact COA, and payable line", () => {
+    expect(page).toMatch(/PREVIEW — BELUM MEMBUAT JURNAL/);
+    expect(page).toMatch(/<th>Sumber<\/th><th>Treatment<\/th><th>Akun<\/th>/);
+    expect(page).toMatch(/previewTreatmentLabel\(row\.treatment\)/);
+    expect(page).toMatch(/previewAccountLabel\(row\)/);
+    expect(page).toMatch(/acc\.code/);
+    expect(page).toMatch(/acc\.name/);
+    expect(page).toMatch(/Utang Gaji \(net\)/);
+    expect(page).toMatch(/hr-payroll-accounting-preview-payable/);
+    expect(page).toMatch(/source_keys \|\| \[\]/);
+    expect(page).toMatch(/Selisih/);
+    expect(page).not.toMatch(/Posted Accounting/);
   });
 });

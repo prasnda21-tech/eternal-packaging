@@ -15,6 +15,7 @@ import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSaveP
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import SalesAccountingSettings from "./SalesAccountingSettings";
+import PayrollAccountingSettings from "./PayrollAccountingSettings";
 import CustomerPricingSettings from "./CustomerPricingSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
@@ -1883,6 +1884,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "operator-wage", label: "Sistem Upah Operator", description: "Atur skema upah", Icon: Coins, tone: "emerald", testid: "settings-tab-operator-wage" },
   { id: "hpp", label: "Pengaturan HPP", description: "Biaya & harga pokok", Icon: Scale, tone: "amber", testid: "settings-tab-hpp" },
   { id: "sales-accounting", label: "Akuntansi Penjualan", description: "Pemetaan akun penjualan", Icon: BookOpen, tone: "violet", testid: "settings-tab-sales-accounting" },
+  { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
   { id: "delivery-deadline", label: "Deadline Pengiriman", description: "Batas waktu kirim", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
@@ -1962,6 +1964,8 @@ export default function Settings() {
   const canEditHpp = hasPerm("settings.hpp.manage");
   const canViewSalesAccounting = hasPerm("settings.sales_accounting.view") || hasPerm("settings.sales_accounting.manage") || hasPerm("permissions.manage");
   const canEditSalesAccounting = hasPerm("settings.sales_accounting.manage");
+  const canViewPayrollAccounting = hasPerm("payroll_accounting.view") || hasPerm("payroll_accounting.manage") || hasPerm("permissions.manage");
+  const canEditPayrollAccounting = hasPerm("payroll_accounting.manage");
   const canViewCustomerPricing = hasPerm("settings.customer_pricing.view") || hasPerm("settings.customer_pricing.manage") || hasPerm("settings.customer_pricing.publish") || hasPerm("permissions.manage");
   const canEditCustomerPricing = hasPerm("settings.customer_pricing.manage");
   const canPublishCustomerPricing = hasPerm("settings.customer_pricing.publish");
@@ -1980,6 +1984,7 @@ export default function Settings() {
     "operator-wage": canViewWage,
     hpp: canViewHpp,
     "sales-accounting": canViewSalesAccounting,
+    "payroll-accounting": canViewPayrollAccounting,
     "customer-pricing": canViewCustomerPricing,
     "customer-approval": canViewCaSettings,
     "delivery-deadline": canViewDdSettings,
@@ -2053,6 +2058,9 @@ export default function Settings() {
       {tab === "hpp" && canViewHpp && <HppSettings notify={notify} canEdit={canEditHpp}/>}
       {tab === "sales-accounting" && canViewSalesAccounting && (
         <SalesAccountingSettings notify={notify} canEdit={canEditSalesAccounting}/>
+      )}
+      {tab === "payroll-accounting" && canViewPayrollAccounting && (
+        <PayrollAccountingSettings notify={notify} canEdit={canEditPayrollAccounting}/>
       )}
       {tab === "customer-pricing" && canViewCustomerPricing && (
         <CustomerPricingSettings

@@ -19,6 +19,7 @@ os.environ.setdefault("STORAGE_PROVIDER", "local")
 import server
 from permissions import ALL_PERMISSIONS, PERMISSION_CATALOG, ROLE_DEFAULT_PERMISSIONS, with_nav_defaults
 from server import app, current_user
+from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa_indexes
 from services.hr_payroll import (
     ATTENDANCE,
     COMPONENTS,
@@ -73,6 +74,7 @@ def bind_motor():
 @pytest.fixture(autouse=True)
 async def indexes(bind_motor):
     await ensure_indexes(server.db)
+    await ensure_coa_indexes(server.db)
 
 
 def _user(role="admin", **kw):
@@ -382,9 +384,20 @@ async def test_components_fixed_percentage_attendance_ot_kasbon_and_workflow():
             # Adjustment only in Draft of new revision
             await c.post(f"/api/hr-payroll/periods/{new_p['id']}/calculate")
             new_line = (await c.get(f"/api/hr-payroll/periods/{new_p['id']}/lines")).json()["lines"][0]
+            expense = await create_account(
+                server.db,
+                {"code": f"51{uuid.uuid4().int % 10**6:06d}", "name": "Beban Penyesuaian", "account_type": "EXPS"},
+                user=admin,
+            )
             adj = await c.post(
                 f"/api/hr-payroll/periods/{new_p['id']}/lines/{new_line['id']}/adjust",
-                json={"kind": "earning", "amount": 50000, "reason": "koreksi manual"},
+                json={
+                    "kind": "earning",
+                    "amount": 50000,
+                    "reason": "koreksi manual",
+                    "accounting_treatment": "expense_debit",
+                    "accounting_account_id": expense["id"],
+                },
             )
             assert adj.status_code == 200
             assert any(a.get("reason") == "koreksi manual" for a in adj.json()["line"]["adjustments"])

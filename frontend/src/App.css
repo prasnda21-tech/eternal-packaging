@@ -2892,6 +2892,14 @@ html:has(.ship-status-page) #root{
   letter-spacing:.04em;text-transform:uppercase;padding:7px 10px;text-align:left;white-space:nowrap;border-bottom:1px solid #5a7388;
 }
 .ship-table thead th.num{text-align:center}
+.hr-payroll-accounting-preview .table-wrap{overflow:auto;-webkit-overflow-scrolling:touch}
+.hr-payroll-accounting-preview .ship-table thead th.num,
+.hr-payroll-accounting-preview .ship-table tbody td.num{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+  font-family:'IBM Plex Mono',monospace;
+  white-space:nowrap;
+}
 .ship-table thead th.ship-check,.ship-table tbody td.ship-check{width:36px;text-align:center;padding-left:8px;padding-right:8px}
 .ship-table tbody td.ship-check input,.ship-table thead th.ship-check input{width:15px;height:15px;accent-color:var(--ep-primary)}
 .ship-table tbody tr.is-selected td{background:#e8f1f8}
