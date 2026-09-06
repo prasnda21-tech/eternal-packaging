@@ -459,6 +459,7 @@ export const api = {
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
   cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
+  postSalesInvoiceAccounting: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
   // ---- Sales Receipt (Penerimaan Penjualan) ----
   listSalesReceipts: (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),

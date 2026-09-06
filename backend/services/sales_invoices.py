@@ -147,24 +147,53 @@ def _draft_filter(invoice_id: str) -> Dict[str, Any]:
 
 
 async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Derived readiness only. Never writes invoices or journals."""
+    """Derived readiness + journal source status. Never writes invoices or journals."""
     if not invoices:
         return invoices
     from services.sales_accounting_settings import mappings_configured
+    from services.sales_invoice_posting import (
+        ACCOUNTING_NOT_POSTED,
+        ACCOUNTING_POSTED,
+        accounting_status_from_journal,
+        load_source_journals_by_invoice_ids,
+        posting_claim_is_active,
+    )
 
     configured = await mappings_configured(db)
+    journals = await load_source_journals_by_invoice_ids(
+        db, [inv.get("id") for inv in invoices if inv.get("id")]
+    )
     for inv in invoices:
         status = effective_financial_status(inv)
         receipt_count = int(inv.get("receipt_count") or 0)
         if "receipts" in inv and isinstance(inv.get("receipts"), list):
             receipt_count = len(inv["receipts"])
+        journal = journals.get(str(inv.get("id")))
+        accounting_status = accounting_status_from_journal(journal)
         inv["financial_status"] = status
-        inv["accounting_posted"] = False
+        inv["accounting_status"] = accounting_status
+        inv["accounting_posted"] = accounting_status == ACCOUNTING_POSTED
+        inv["accounting_journal_id"] = journal.get("id") if journal else None
         inv["accounting_ready"] = (
             status == FINANCIAL_FINALIZED and configured and monetary_invariant_valid(inv)
         )
         inv["receipt_count"] = receipt_count
-        inv["can_cancel"] = status == FINANCIAL_FINALIZED and receipt_count == 0
+        inv["can_cancel"] = (
+            status == FINANCIAL_FINALIZED
+            and receipt_count == 0
+            and accounting_status == ACCOUNTING_NOT_POSTED
+            and not posting_claim_is_active(inv)
+        )
+        inv.pop("accounting_posting_claim", None)
+        inv["can_post_accounting"] = (
+            status == FINANCIAL_FINALIZED
+            and accounting_status == ACCOUNTING_NOT_POSTED
+            and configured
+            and monetary_invariant_valid(inv)
+            and _money2(inv.get("grand_total")) > 0
+            and _money2(inv.get("after_discount")) >= 0
+            and _money2(inv.get("ppn_amount")) >= 0
+        )
         inv["can_delete"] = status == FINANCIAL_DRAFT
     return invoices
 
@@ -778,9 +807,21 @@ async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, A
         return await get_sales_invoice_detail(db, inv["id"])
 
 
-async def cancel_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, Any]:
-    """finalized → cancelled only when no sales_receipts exist. Retry-safe. No journal reversal."""
-    async with _get_invoice_lock():
+async def cancel_sales_invoice(
+    db, invoice_id: str, user: dict, *, serialize_in_process: bool = True
+) -> Dict[str, Any]:
+    """finalized → cancelled only when no receipts, no posting claim, and no journal."""
+    from services.sales_invoice_posting import (
+        CANCEL_CLAIM_MESSAGE,
+        cancel_unclaimed_filter,
+        find_sales_invoice_source_journal,
+        posting_claim_is_active,
+        raise_if_journal_blocks_cancel,
+        restore_finalized_after_cancel_race,
+        _optional_invoice_lock,
+    )
+
+    async with _optional_invoice_lock(serialize_in_process):
         inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
         if not inv:
             inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
@@ -800,9 +841,13 @@ async def cancel_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, Any
                 "Faktur tidak dapat dibatalkan karena sudah memiliki Penerimaan Penjualan.",
             )
 
+        raise_if_journal_blocks_cancel(await find_sales_invoice_source_journal(db, inv["id"]))
+        if posting_claim_is_active(inv):
+            raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+
         now = now_iso()
         claimed = await db.sales_invoices.find_one_and_update(
-            {"id": inv["id"], "financial_status": FINANCIAL_FINALIZED},
+            cancel_unclaimed_filter(inv["id"]),
             {
                 "$set": {
                     "financial_status": FINANCIAL_CANCELLED,
@@ -817,7 +862,16 @@ async def cancel_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, Any
             current = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
             if current and effective_financial_status(current) == FINANCIAL_CANCELLED:
                 return await get_sales_invoice_detail(db, inv["id"])
+            if current and posting_claim_is_active(current):
+                raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+            if current and await find_sales_invoice_source_journal(db, inv["id"]):
+                raise_if_journal_blocks_cancel(await find_sales_invoice_source_journal(db, inv["id"]))
             raise HTTPException(409, "Pembatalan faktur gagal karena perubahan bersamaan.")
+
+        raced_journal = await find_sales_invoice_source_journal(db, inv["id"])
+        if raced_journal:
+            await restore_finalized_after_cancel_race(db, inv["id"])
+            raise_if_journal_blocks_cancel(raced_journal)
 
         raced = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
         if raced > 0:

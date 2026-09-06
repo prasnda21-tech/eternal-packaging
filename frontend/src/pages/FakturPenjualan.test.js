@@ -76,6 +76,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
     expect(apiSrc).toMatch(/finalizeSalesInvoice:/);
     expect(apiSrc).toMatch(/cancelSalesInvoice:/);
+    expect(apiSrc).toMatch(/postSalesInvoiceAccounting:/);
     expect(apiSrc).toMatch(/deleteSalesInvoice:/);
     expect(apiSrc).toMatch(/bulkDeleteSalesInvoices:/);
   });
@@ -97,7 +98,12 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice/);
     expect(pageSrc).toMatch(/invoice-financial-badge-/);
     expect(pageSrc).toMatch(/btn-cancel-invoice/);
-    expect(pageSrc).not.toMatch(/accounting_posted\s*===\s*true/);
+    expect(pageSrc).toMatch(/btn-post-accounting/);
+    expect(pageSrc).toMatch(/Post ke Accounting/);
+    expect(pageSrc).toMatch(/Posted Accounting/);
+    expect(pageSrc).toMatch(/Accounting belum dikonfigurasi/);
+    expect(pageSrc).toMatch(/post-accounting-confirm-modal/);
+    expect(pageSrc).toMatch(/accounting_status === "posted"/);
   });
 
   test("FakturPenjualan create mode uses createCalculations safely without undefined invoiceLines", () => {
