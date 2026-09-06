@@ -1,4 +1,5 @@
-import { inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, TASK_NAV_ORDER } from "./navAccess";
+import { inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, TASK_NAV_ORDER } from "./navAccess";
+import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 
 const has = (...keys) => (k) => keys.includes(k);
 
@@ -186,6 +187,20 @@ describe("salesMenuItems", () => {
     const labels = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesOrder, NAV_KEYS.importPo)).map((item) => item.label);
     expect(labels).not.toEqual(expect.arrayContaining(["Penawaran", "Faktur", "Retur", "Komisi"]));
     expect(NAV_MENU_FALLBACK.some((m) => ["Penawaran", "Faktur", "Retur", "Komisi"].includes(m.label))).toBe(false);
+  });
+
+  test("workspace catalog covers reviewed Penjualan routes without dropping Data Pelanggan nav", () => {
+    const workspacePaths = SALES_WORKSPACE_TABS.map((t) => t.path);
+    expect(workspacePaths).toEqual(expect.arrayContaining([
+      SALES_NAV_ROUTES[NAV_KEYS.salesOrder],
+      SALES_NAV_ROUTES[NAV_KEYS.salesDeliveryOrder],
+      SALES_NAV_ROUTES[NAV_KEYS.salesInvoice],
+      SALES_NAV_ROUTES[NAV_KEYS.salesReceipt],
+      SALES_NAV_ROUTES[NAV_KEYS.importPo],
+      SALES_NAV_ROUTES[NAV_KEYS.salesActivity],
+    ]));
+    expect(NAV_KEYS.salesCustomers).toBe("nav.sales.customers");
+    expect(SALES_NAV_ROUTES[NAV_KEYS.salesCustomers]).toBe("/penjualan/data-pelanggan");
   });
 });
 

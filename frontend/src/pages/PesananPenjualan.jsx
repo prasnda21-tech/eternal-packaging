@@ -433,7 +433,7 @@ export default function PesananPenjualan() {
   }, [options.outlets_by_customer, formData.customer]);
 
   return (
-    <div className="sales-order-page" data-testid="sales-order-page" style={{ padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}>
+    <div className="sales-order-page penjualan-page penjualan-workspace" data-testid="sales-order-page" style={{ padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}>
       {/* Top Header */}
       <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
         <div>
@@ -1249,15 +1249,15 @@ export default function PesananPenjualan() {
                         </td>
                         <td style={{ padding: "10px 12px" }}>
                           {isCancelled ? (
-                            <span style={{ display: "inline-block", padding: "2px 8px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600 }}>
+                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fca5a5" }}>
                               Cancelled
                             </span>
                           ) : isHold ? (
-                            <span style={{ display: "inline-block", padding: "2px 8px", background: "#fef3c7", color: "#92400e", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600 }}>
+                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fef3c7", color: "#92400e", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fcd34d" }}>
                               HOLD
                             </span>
                           ) : (
-                            <span style={{ display: "inline-block", padding: "2px 8px", background: o.current_stage >= 14 ? "#dcfce7" : "#e0f2fe", color: o.current_stage >= 14 ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600 }}>
+                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: o.current_stage >= 14 ? "#dcfce7" : "#e0f2fe", color: o.current_stage >= 14 ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: o.current_stage >= 14 ? "1.5px solid #86efac" : "1.5px solid #7dd3fc" }}>
                               {stageLabel}
                             </span>
                           )}

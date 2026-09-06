@@ -34,7 +34,7 @@ export default function SalesActivityPage() {
   const notify = (m) => { setToast(m); setTimeout(() => setToast(""), 4000); };
 
   return (
-    <div className="sa-page" data-testid="sales-activity-page">
+    <div className="sa-page penjualan-page penjualan-workspace" data-testid="sales-activity-page">
       <div className="sa-page-chrome">
         <div className="sa-page-head page-heading">
           <div>

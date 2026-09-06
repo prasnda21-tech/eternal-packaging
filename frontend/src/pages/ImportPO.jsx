@@ -363,7 +363,7 @@ export default function ImportPO() {
   const isDup = !!preview?.duplicate;
 
   return (
-    <div className="import-page" data-testid="import-page">
+    <div className="import-page penjualan-page penjualan-workspace" data-testid="import-page">
       <div className="page-heading">
         <div>
           <p className="eyebrow">Admin · Integrasi &amp; Import PO</p>

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import api from "./api";
 import { loginThenLoadUser } from "./authSession";
 import { clearCashBankWorkspaceTabs } from "./cashBankWorkspace";
+import { clearSalesWorkspaceTabs } from "./salesWorkspace";
 
 const AuthContext = createContext(null);
 
@@ -45,6 +46,8 @@ export function AuthProvider({ children }) {
     } finally {
       clearCashBankWorkspaceTabs(previous);
       clearCashBankWorkspaceTabs(null);
+      clearSalesWorkspaceTabs(previous);
+      clearSalesWorkspaceTabs(null);
       setUser(null);
     }
   };

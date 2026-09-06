@@ -410,7 +410,7 @@ export default function PengirimanPesanan() {
   };
 
   return (
-    <div className="page-container" style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+    <div className="page-container penjualan-page penjualan-workspace" style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
       {/* HEADER SECTION */}
       <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -1035,6 +1035,7 @@ export default function PengirimanPesanan() {
                       </td>
                       <td style={{ padding: "10px 12px" }}>
                         <span
+                          className="pj-status-badge"
                           data-testid={`delivery-status-${d.id}`}
                           style={{
                             display: "inline-block",
@@ -1044,6 +1045,7 @@ export default function PengirimanPesanan() {
                             borderRadius: 12,
                             fontSize: "0.75rem",
                             fontWeight: 700,
+                            border: String(d.status).toUpperCase() === "SELESAI" ? "1.5px solid #86efac" : "1.5px solid #7dd3fc",
                           }}
                         >
                           {String(d.status).toUpperCase() === "SELESAI" ? "SELESAI" : "SEBAGIAN"}

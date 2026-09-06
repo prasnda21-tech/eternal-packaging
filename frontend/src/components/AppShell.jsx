@@ -10,7 +10,10 @@ import { moduleFromPath } from "../lib/uiModule";
 import BrandMark from "./BrandMark";
 import CashBankWorkspaceTabs from "./CashBankWorkspaceTabs";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
+import WorkspaceTabs from "./WorkspaceTabs";
 import { useCashBankWorkspaceTabs } from "../hooks/useCashBankWorkspaceTabs";
+import { useSalesWorkspaceTabs } from "../hooks/useSalesWorkspaceTabs";
+import { salesTabByPath } from "../lib/salesWorkspace";
 
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
 
@@ -113,6 +116,7 @@ export default function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const cashBankWorkspace = useCashBankWorkspaceTabs();
+  const salesWorkspace = useSalesWorkspaceTabs();
   const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
   const reportsActive = location.pathname.startsWith("/laporan");
   const inventoryActive = location.pathname.startsWith("/persediaan");
@@ -595,13 +599,25 @@ export default function AppShell() {
             </button>
           </div>
         </header>
-        <main className={"content" + (cashBankWorkspace.visible || cashBankActive ? " content-kas-bank-workspace" : "")}>
+        <main className={"content" + (cashBankWorkspace.visible || cashBankActive ? " content-kas-bank-workspace" : "") + (salesWorkspace.visible || salesActive ? " content-penjualan-workspace" : "")}>
           {cashBankWorkspace.visible && (
             <CashBankWorkspaceTabs
               tabs={cashBankWorkspace.tabs}
               activePath={cashBankWorkspace.activePath}
               onActivate={cashBankWorkspace.activateTab}
               onClose={cashBankWorkspace.closeTab}
+            />
+          )}
+          {salesWorkspace.visible && (
+            <WorkspaceTabs
+              tabs={salesWorkspace.tabs}
+              activePath={salesWorkspace.activePath}
+              onActivate={salesWorkspace.activateTab}
+              onClose={salesWorkspace.closeTab}
+              tabByPath={salesTabByPath}
+              ariaLabel="Workspace Penjualan"
+              testid="sales-workspace-tabs"
+              testidPrefix="sales-workspace-tab"
             />
           )}
           <Outlet />
