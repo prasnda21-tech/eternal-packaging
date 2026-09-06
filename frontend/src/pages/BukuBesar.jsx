@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, Eye } from "lucide-react";
 import api from "../lib/api";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
@@ -46,10 +46,11 @@ const accountOptionLabel = (row) => {
 
 export default function BukuBesar() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [accounts, setAccounts] = useState([]);
-  const [accountId, setAccountId] = useState("");
-  const [startDate, setStartDate] = useState(monthStart);
-  const [endDate, setEndDate] = useState(todayIso);
+  const [accountId, setAccountId] = useState(() => searchParams.get("account_id") || "");
+  const [startDate, setStartDate] = useState(() => searchParams.get("start_date") || monthStart());
+  const [endDate, setEndDate] = useState(() => searchParams.get("end_date") || todayIso());
   const [sourceType, setSourceType] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [data, setData] = useState(null);

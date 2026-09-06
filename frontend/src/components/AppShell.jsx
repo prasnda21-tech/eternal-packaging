@@ -48,6 +48,7 @@ const TILE_ICONS = {
   [NAV_KEYS.ledgerGeneralJournal]: FileText,
   [NAV_KEYS.ledgerOpeningBalance]: Scale,
   [NAV_KEYS.ledgerGeneralLedger]: ListOrdered,
+  [NAV_KEYS.ledgerTrialBalance]: TableIcon,
   [NAV_KEYS.cashBankAccounts]: Landmark,
   [NAV_KEYS.cashBankReceipts]: Receipt,
   [NAV_KEYS.cashBankPayments]: CreditCard,

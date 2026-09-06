@@ -193,6 +193,7 @@ export const api = {
   postOpeningBalance: (id) => client.post(`/ledger/opening-balances/${encodeURIComponent(id)}/post`).then((r) => r.data),
   reverseOpeningBalance: (id) => client.post(`/ledger/opening-balances/${encodeURIComponent(id)}/reverse`).then((r) => r.data),
   generalLedger: (params = {}) => client.get(`/ledger/general-ledger`, { params }).then((r) => r.data),
+  trialBalance: (params = {}) => client.get(`/ledger/trial-balance`, { params }).then((r) => r.data),
   cashBankAccounts: (params = {}) => client.get(`/cash-bank/accounts`, { params }).then((r) => r.data),
   getCashBankAccount: (id) => client.get(`/cash-bank/accounts/${encodeURIComponent(id)}`).then((r) => r.data),
   createCashBankAccount: (payload) => client.post(`/cash-bank/accounts`, payload).then((r) => r.data),

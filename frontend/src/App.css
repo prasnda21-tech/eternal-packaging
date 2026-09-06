@@ -1357,6 +1357,69 @@
 .kas-bank-page .kb-gl-search .kb-search-field{
   flex:1 1 auto;
 }
+
+/* Neraca Saldo: compact 1-row filter grid */
+.kas-bank-page .kb-tb-toolbar{
+  align-items:stretch;
+  padding:12px;
+}
+.kas-bank-page .kb-tb-filters{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:12px 14px;
+  width:100%;
+  align-items:end;
+  overflow-x:hidden;
+}
+.kas-bank-page .kb-tb-start{grid-column:1;grid-row:1}
+.kas-bank-page .kb-tb-end{grid-column:2;grid-row:1}
+.kas-bank-page .kb-tb-search{grid-column:1 / -1;grid-row:2}
+@media (min-width:901px){
+  .kas-bank-page .kb-tb-filters{
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.6fr);
+  }
+  .kas-bank-page .kb-tb-start{grid-column:1;grid-row:1}
+  .kas-bank-page .kb-tb-end{grid-column:2;grid-row:1}
+  .kas-bank-page .kb-tb-search{grid-column:3;grid-row:1}
+}
+.kas-bank-page .kb-tb-filters .kb-field{width:100%;min-width:0}
+.kas-bank-page .kb-tb-search .kb-field-control,
+.kas-bank-page .kb-tb-search .kb-search-field{
+  width:100%;
+}
+.kas-bank-page .kb-tb-search .kb-search-field{
+  flex:1 1 auto;
+}
+.kas-bank-page .kb-tb-summary{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin:12px 0;
+}
+.kas-bank-page .kb-tb-summary-group{
+  border:1px solid var(--kb-line-strong, #d7dde6);
+  border-radius:10px;
+  padding:10px 12px;
+  background:#fff;
+  min-width:0;
+}
+.kas-bank-page .kb-tb-summary-title{
+  display:block;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.02em;
+  text-transform:uppercase;
+  margin-bottom:8px;
+}
+.kas-bank-page .kb-tb-summary-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  gap:8px;
+  font-size:13px;
+}
+.kas-bank-page .kb-tb-summary-row + .kb-tb-summary-row{margin-top:4px}
+.kas-bank-page .kb-tb-summary-diff{font-weight:600}
 .kas-bank-page .kb-mutasi-search .kb-field-control,
 .kas-bank-page .kb-mutasi-search .kb-search-field{
   width:100%;
@@ -1419,6 +1482,19 @@
   .kas-bank-page .kb-gl-search{
     grid-column:1;
     grid-row:auto;
+  }
+  .kas-bank-page .kb-tb-filters{
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+  .kas-bank-page .kb-tb-start,
+  .kas-bank-page .kb-tb-end,
+  .kas-bank-page .kb-tb-search{
+    grid-column:1;
+    grid-row:auto;
+  }
+  .kas-bank-page .kb-tb-summary{
+    grid-template-columns:1fr;
   }
 }
 
