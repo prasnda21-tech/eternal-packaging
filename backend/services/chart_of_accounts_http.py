@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.account_type_reporting import catalog_items
 from services.chart_of_accounts import (
     ACCOUNT_TYPES,
     PERM_MANAGE,
@@ -53,8 +54,8 @@ def register_chart_of_accounts_routes(
     async def get_ledger_account_types(
         user=Depends(require_perm(PERM_VIEW)),
     ):
-        """Static Accurate account type catalog. Zero-write."""
-        items: List[dict] = [{"code": code, "label": code} for code in ACCOUNT_TYPES]
+        """Static Accurate account type catalog + reporting metadata. Zero-write."""
+        items: List[dict] = catalog_items(ACCOUNT_TYPES)
         return {"items": items, "total": len(items)}
 
     @api_router.get("/ledger/accounts")

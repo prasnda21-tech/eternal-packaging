@@ -98,6 +98,9 @@ async def test_create_code_name_type_success():
     assert doc["code"] == "99001"
     assert doc["name"] == "Kas Preview"
     assert doc["account_type"] == "BANK"
+    assert doc["account_type_label"] == "Kas/Bank"
+    assert doc["report_group"] == "asset"
+    assert doc["normal_balance"] == "debit"
     assert isinstance(doc["code"], str)
 
 
@@ -128,6 +131,9 @@ async def test_old_record_without_type_remains_readable():
     hit = next(i for i in items if i["code"] == "legacy01")
     assert hit["name"] == "Legacy"
     assert hit["account_type"] is None
+    assert hit["account_type_label"] is None
+    assert hit["report_group"] is None
+    assert hit["normal_balance"] is None
 
 
 @pytest.mark.anyio
