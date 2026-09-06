@@ -74,6 +74,8 @@ PERMISSION_CATALOG = [
     ("Pembelian", "purchase_payments.create", "Buat Pembayaran Pembelian"),
     ("Pengaturan", "settings.hpp.view", "Lihat Pengaturan HPP"),
     ("Pengaturan", "settings.hpp.manage", "Ubah Pengaturan HPP / hitung ulang"),
+    ("Pengaturan", "settings.sales_accounting.view", "Lihat Pengaturan Akuntansi Penjualan"),
+    ("Pengaturan", "settings.sales_accounting.manage", "Ubah Pengaturan Akuntansi Penjualan"),
     ("Pengaturan", "settings.customer_pricing.view", "Lihat Harga Customer"),
     ("Pengaturan", "settings.customer_pricing.manage", "Kelola Draft Harga Customer"),
     ("Pengaturan", "settings.customer_pricing.publish", "Publish Harga Customer"),

@@ -270,6 +270,8 @@ export const api = {
   createPurchasePayment: (payload) => client.post(`/purchase-payments`, payload).then((r) => r.data),
   hppSettings: () => client.get(`/settings/hpp`).then((r) => r.data),
   updateHppSettings: (payload) => client.put(`/settings/hpp`, payload).then((r) => r.data),
+  salesAccountingSettings: () => client.get(`/settings/sales-accounting`).then((r) => r.data),
+  updateSalesAccountingSettings: (payload) => client.put(`/settings/sales-accounting`, payload).then((r) => r.data),
   recalculateHpp: (payload = {}) => client.post(`/settings/hpp/recalculate`, payload).then((r) => r.data),
   hppCostQuery: (params = {}) => client.get(`/hpp/cost-query`, { params }).then((r) => r.data),
   customerPricingSettings: () => client.get(`/settings/customer-pricing`).then((r) => r.data),
@@ -455,6 +457,8 @@ export const api = {
   getPoInvoicePreview: (poId) => client.get(`/sales-invoices/po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   createSalesInvoice: (payload) => client.post(`/sales-invoices`, payload).then((r) => r.data),
   updateSalesInvoice: (id, payload) => client.put(`/sales-invoices/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
+  cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
   // ---- Sales Receipt (Penerimaan Penjualan) ----
   listSalesReceipts: (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),

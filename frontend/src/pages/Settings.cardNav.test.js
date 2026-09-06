@@ -22,6 +22,7 @@ describe("Settings category card navigation", () => {
       "sidebar-access",
       "operator-wage",
       "hpp",
+      "sales-accounting",
       "customer-pricing",
       "customer-approval",
       "delivery-deadline",
@@ -58,6 +59,7 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/"sales-activity":\s*canViewSalesActivity/);
     expect(settingsSrc).toMatch(/"route-optimizer":\s*canViewRouteOptimizer/);
     expect(settingsSrc).toMatch(/hpp:\s*canViewHpp/);
+    expect(settingsSrc).toMatch(/"sales-accounting":\s*canViewSalesAccounting/);
     expect(settingsSrc).toMatch(/"customer-pricing":\s*canViewCustomerPricing/);
   });
 

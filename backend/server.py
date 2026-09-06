@@ -153,6 +153,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.customer_pricing_http import register_customer_pricing_routes
+from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
 from services.customer_pricing_public_http import register_public_customer_pricing_routes
 from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
@@ -6609,6 +6610,8 @@ from services.sales_invoices import (
     update_sales_invoice as _update_sales_invoice,
     delete_sales_invoice as _delete_sales_invoice,
     bulk_delete_sales_invoices as _bulk_delete_sales_invoices,
+    finalize_sales_invoice as _finalize_sales_invoice,
+    cancel_sales_invoice as _cancel_sales_invoice,
 )
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
@@ -7287,6 +7290,22 @@ async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayl
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
     inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
+
+
+@api_router.post("/sales-invoices/{id}/finalize")
+async def finalize_sales_invoice_endpoint(id: str, user=Depends(current_user)):
+    """Lock financial fields. Does not post a journal or change production workflow."""
+    await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
+    inv = await _finalize_sales_invoice(db, id, user)
+    return {"invoice": inv, "message": "Faktur Penjualan berhasil difinalisasi"}
+
+
+@api_router.post("/sales-invoices/{id}/cancel")
+async def cancel_sales_invoice_endpoint(id: str, user=Depends(current_user)):
+    """Cancel a finalized invoice with no receipts. Does not reverse a journal."""
+    await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
+    inv = await _cancel_sales_invoice(db, id, user)
+    return {"invoice": inv, "message": "Faktur Penjualan dibatalkan"}
 
 
 # ==================================================
@@ -8199,6 +8218,13 @@ register_purchase_routes(
     Depends=Depends,
 )
 register_customer_pricing_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_sales_accounting_settings_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,

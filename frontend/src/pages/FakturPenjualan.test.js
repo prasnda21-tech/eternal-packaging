@@ -74,6 +74,8 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(apiSrc).toMatch(/getPoInvoicePreview:/);
     expect(apiSrc).toMatch(/createSalesInvoice:/);
     expect(apiSrc).toMatch(/updateSalesInvoice:/);
+    expect(apiSrc).toMatch(/finalizeSalesInvoice:/);
+    expect(apiSrc).toMatch(/cancelSalesInvoice:/);
     expect(apiSrc).toMatch(/deleteSalesInvoice:/);
     expect(apiSrc).toMatch(/bulkDeleteSalesInvoices:/);
   });
@@ -86,7 +88,16 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/delete-confirm-modal/);
     expect(pageSrc).toMatch(/delete-confirm-numbers/);
     expect(pageSrc).toMatch(/invoice_number/);
-    expect(pageSrc).toMatch(/selectedIds\.size === invoices\.length/);
+    expect(pageSrc).toMatch(/selectedIds\.size === draftInvoiceIds\.length/);
+  });
+
+  test("Faktur lifecycle UI has finalize confirmation and status badges", () => {
+    expect(pageSrc).toMatch(/btn-finalize-invoice/);
+    expect(pageSrc).toMatch(/finalize-confirm-modal/);
+    expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, dan total invoice/);
+    expect(pageSrc).toMatch(/invoice-financial-badge-/);
+    expect(pageSrc).toMatch(/btn-cancel-invoice/);
+    expect(pageSrc).not.toMatch(/accounting_posted\s*===\s*true/);
   });
 
   test("FakturPenjualan create mode uses createCalculations safely without undefined invoiceLines", () => {
