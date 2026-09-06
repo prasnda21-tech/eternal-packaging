@@ -19,6 +19,7 @@ import MasterBarangJasa from "./pages/MasterBarangJasa";
 import StockSaatIni from "./pages/StockSaatIni";
 import AkunPerkiraan from "./pages/AkunPerkiraan";
 import JurnalUmum from "./pages/JurnalUmum";
+import SaldoAwal from "./pages/SaldoAwal";
 import DaftarKasBank from "./pages/DaftarKasBank";
 import PenerimaanKasBank from "./pages/PenerimaanKasBank";
 import PembayaranKasBank from "./pages/PembayaranKasBank";
@@ -114,6 +115,7 @@ function BukuBesarIndex() {
   const v = ledgerNavVisible(hasPerm);
   if (v.accounts) return <Navigate to="/buku-besar/akun-perkiraan" replace />;
   if (v.generalJournal) return <Navigate to="/buku-besar/jurnal-umum" replace />;
+  if (v.openingBalance) return <Navigate to="/buku-besar/saldo-awal" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -206,6 +208,7 @@ export default function App() {
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />
             <Route path="/buku-besar/jurnal-umum" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralJournal, NAV_KEYS.ledger, "general_journal.view", "general_journal.manage", "general_journal.post", "general_journal.reverse"]}><JurnalUmum /></PermGate>} />
+            <Route path="/buku-besar/saldo-awal" element={<PermGate anyOf={[NAV_KEYS.ledgerOpeningBalance, NAV_KEYS.ledger, "opening_balance.view", "opening_balance.manage", "opening_balance.post", "opening_balance.reverse"]}><SaldoAwal /></PermGate>} />
             <Route path="/buku-besar" element={<BukuBesarIndex />} />
             <Route path="/kas-bank/daftar" element={<PermGate anyOf={[NAV_KEYS.cashBankAccounts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><DaftarKasBank /></PermGate>} />
             <Route path="/kas-bank/penerimaan" element={<PermGate anyOf={[NAV_KEYS.cashBankReceipts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PenerimaanKasBank /></PermGate>} />
