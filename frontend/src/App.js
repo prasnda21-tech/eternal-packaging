@@ -22,6 +22,7 @@ import JurnalUmum from "./pages/JurnalUmum";
 import SaldoAwal from "./pages/SaldoAwal";
 import BukuBesar from "./pages/BukuBesar";
 import NeracaSaldo from "./pages/NeracaSaldo";
+import LabaRugi from "./pages/LabaRugi";
 import DaftarKasBank from "./pages/DaftarKasBank";
 import PenerimaanKasBank from "./pages/PenerimaanKasBank";
 import PembayaranKasBank from "./pages/PembayaranKasBank";
@@ -120,6 +121,7 @@ function BukuBesarIndex() {
   if (v.openingBalance) return <Navigate to="/buku-besar/saldo-awal" replace />;
   if (v.generalLedger) return <Navigate to="/buku-besar/buku-besar" replace />;
   if (v.trialBalance) return <Navigate to="/buku-besar/neraca-saldo" replace />;
+  if (v.profitLoss) return <Navigate to="/buku-besar/laba-rugi" replace />;
   return <Navigate to="/" replace />;
 }
 
@@ -215,6 +217,7 @@ export default function App() {
             <Route path="/buku-besar/saldo-awal" element={<PermGate anyOf={[NAV_KEYS.ledgerOpeningBalance, NAV_KEYS.ledger, "opening_balance.view", "opening_balance.manage", "opening_balance.post", "opening_balance.reverse"]}><SaldoAwal /></PermGate>} />
             <Route path="/buku-besar/buku-besar" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralLedger, NAV_KEYS.ledger, "general_ledger.view"]}><BukuBesar /></PermGate>} />
             <Route path="/buku-besar/neraca-saldo" element={<PermGate anyOf={[NAV_KEYS.ledgerTrialBalance, NAV_KEYS.ledger, "trial_balance.view"]}><NeracaSaldo /></PermGate>} />
+            <Route path="/buku-besar/laba-rugi" element={<PermGate anyOf={[NAV_KEYS.ledgerProfitLoss, NAV_KEYS.ledger, "profit_loss.view"]}><LabaRugi /></PermGate>} />
             <Route path="/buku-besar" element={<BukuBesarIndex />} />
             <Route path="/kas-bank/daftar" element={<PermGate anyOf={[NAV_KEYS.cashBankAccounts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><DaftarKasBank /></PermGate>} />
             <Route path="/kas-bank/penerimaan" element={<PermGate anyOf={[NAV_KEYS.cashBankReceipts, NAV_KEYS.cashBank, "cash_bank.view", "cash_bank.manage"]}><PenerimaanKasBank /></PermGate>} />

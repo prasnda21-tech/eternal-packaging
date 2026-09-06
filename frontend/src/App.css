@@ -1498,6 +1498,46 @@
   }
 }
 
+.kas-bank-page .kb-pl-wrap{
+  overflow-x:auto;
+  max-width:100%;
+}
+.kas-bank-page .kb-pl-table{
+  width:100%;
+}
+.kas-bank-page .kb-pl-table .num{
+  text-align:right;
+  white-space:nowrap;
+}
+.kas-bank-page .kb-pl-section td{
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+  background:#f3f5f8;
+  padding:7px 10px;
+}
+.kas-bank-page .kb-pl-account td{
+  font-size:13px;
+}
+.kas-bank-page .kb-pl-group-total td{
+  font-weight:600;
+  background:#f8fafc;
+  font-size:13px;
+}
+.kas-bank-page .kb-pl-subtotal td{
+  font-weight:700;
+  background:#eef2f7;
+  font-size:13px;
+}
+.kas-bank-page .kb-pl-net td{
+  background:#e8f0ea;
+  font-weight:800;
+}
+.kas-bank-page .kb-pl-neg{
+  color:inherit;
+}
+
 /* Accounting table */
 .kas-bank-page .kb-workspace-table-wrap{
   width:100%;
