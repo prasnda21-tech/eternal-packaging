@@ -56,6 +56,7 @@ export const NAV_KEYS = {
   ledger: "nav.ledger",
   ledgerAccounts: "nav.ledger.accounts",
   ledgerGeneralJournal: "nav.ledger.general_journal",
+  ledgerOpeningBalance: "nav.ledger.opening_balance",
   cashBank: "nav.cash_bank",
   cashBankAccounts: "nav.cash_bank.accounts",
   cashBankReceipts: "nav.cash_bank.receipts",
@@ -121,6 +122,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.ledger, label: "Buku Besar", parent: null },
   { key: NAV_KEYS.ledgerAccounts, label: "Akun Perkiraan", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.ledgerGeneralJournal, label: "Jurnal Umum", parent: NAV_KEYS.ledger },
+  { key: NAV_KEYS.ledgerOpeningBalance, label: "Saldo Awal", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.cashBank, label: "Kas & Bank", parent: null },
   { key: NAV_KEYS.cashBankAccounts, label: "Daftar Kas & Bank", parent: NAV_KEYS.cashBank },
   { key: NAV_KEYS.cashBankReceipts, label: "Penerimaan", parent: NAV_KEYS.cashBank },
@@ -707,21 +709,25 @@ export function hrPayrollMenuItems(hasPerm) {
 export const LEDGER_NAV_ROUTES = {
   [NAV_KEYS.ledgerAccounts]: "/buku-besar/akun-perkiraan",
   [NAV_KEYS.ledgerGeneralJournal]: "/buku-besar/jurnal-umum",
+  [NAV_KEYS.ledgerOpeningBalance]: "/buku-besar/saldo-awal",
 };
 
 const LEDGER_VIS_FIELD = {
   [NAV_KEYS.ledgerAccounts]: "accounts",
   [NAV_KEYS.ledgerGeneralJournal]: "generalJournal",
+  [NAV_KEYS.ledgerOpeningBalance]: "openingBalance",
 };
 
 export const LEDGER_TILE_TONES = {
   [NAV_KEYS.ledgerAccounts]: "emerald",
   [NAV_KEYS.ledgerGeneralJournal]: "blue",
+  [NAV_KEYS.ledgerOpeningBalance]: "amber",
 };
 
 export const LEDGER_TILE_TESTIDS = {
   [NAV_KEYS.ledgerAccounts]: "top-nav-akun-perkiraan",
   [NAV_KEYS.ledgerGeneralJournal]: "top-nav-jurnal-umum",
+  [NAV_KEYS.ledgerOpeningBalance]: "top-nav-saldo-awal",
 };
 
 export function ledgerNavVisible(hasPerm) {
@@ -733,10 +739,16 @@ export function ledgerNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "general_journal.manage")
     || canSeeNav(hasPerm, "general_journal.post")
     || canSeeNav(hasPerm, "general_journal.reverse");
+  const openingBalance = canSeeNav(hasPerm, NAV_KEYS.ledgerOpeningBalance)
+    || canSeeNav(hasPerm, "opening_balance.view")
+    || canSeeNav(hasPerm, "opening_balance.manage")
+    || canSeeNav(hasPerm, "opening_balance.post")
+    || canSeeNav(hasPerm, "opening_balance.reverse");
   return {
-    parent: Boolean(accounts || generalJournal),
+    parent: Boolean(accounts || generalJournal || openingBalance),
     accounts: Boolean(accounts),
     generalJournal: Boolean(generalJournal),
+    openingBalance: Boolean(openingBalance),
   };
 }
 

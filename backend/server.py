@@ -159,6 +159,7 @@ from services.hr_payroll_http import register_hr_payroll_routes
 from services.chart_of_accounts_http import register_chart_of_accounts_routes
 from services.cash_bank_http import register_cash_bank_routes
 from services.general_journal_http import register_general_journal_routes
+from services.opening_balance_http import register_opening_balance_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
 from services.sales_activity.http import register_sales_activity_routes
 from services.independent_route.http import register_independent_route_routes
@@ -8234,6 +8235,13 @@ register_general_journal_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+register_opening_balance_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_hr_payroll_routes(
     api_router,
     get_db=lambda: db,
@@ -9685,11 +9693,13 @@ async def seed():
     from services.journal_core import ensure_indexes as _journal_core_ensure_indexes
     from services.cash_bank_reconciliation import ensure_indexes as _cash_bank_recon_ensure_indexes
     from services.general_journal import ensure_indexes as _general_journal_ensure_indexes
+    from services.opening_balance import ensure_indexes as _opening_balance_ensure_indexes
     await _cash_bank_master_ensure_indexes(db)
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
     await _cash_bank_recon_ensure_indexes(db)
     await _general_journal_ensure_indexes(db)
+    await _opening_balance_ensure_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
