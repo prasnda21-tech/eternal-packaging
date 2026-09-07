@@ -28,6 +28,8 @@ import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
 import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../lib/paymentProof";
 import { canViewSalesReceiptPaymentProof, receiptHasPaymentProof } from "../lib/salesReceiptPaymentProof";
+import { openPaymentProofSource, paymentProofIsImage, paymentProofIsPdf, paymentProofSource, proofErrorMessage } from "../lib/paymentProofOpen";
+import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
 
@@ -114,14 +116,16 @@ export default function PODetail() {
   const viewSalesReceiptProof = async (receiptId) => {
     if (!receiptId) return;
     setProofViewBusyId(receiptId);
+    const preview = window.open("", "_blank");
     try {
       const blob = await api.downloadSalesReceiptPaymentProof(receiptId, false);
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (preview) preview.location.href = url;
+      else window.open(url, "_blank", "noopener,noreferrer");
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (e) {
-      const d = e.response?.data?.detail;
-      showToast(typeof d === "string" ? d : (d?.message || "Gagal membuka Bukti Payment"));
+      if (preview) preview.close();
+      showToast(await proofErrorMessage(e, "Gagal membuka Bukti Payment"));
     } finally {
       setProofViewBusyId("");
     }
@@ -273,7 +277,7 @@ export default function PODetail() {
   const canViewReceiptProof = canViewSalesReceiptPaymentProof(hasPerm);
   const canUploadDesign = hasPerm("design.upload");
   const canUploadSample = hasPerm("operator.sample_upload");
-  const canManageUrgent = hasPerm("urgent.manage");
+  const canManageUrgent = canManageUrgentPerm(hasPerm);
   const canManageBufferStock = hasPerm("buffer_stock.manage");
   const canEditSchedule = hasPerm("schedule.edit");
   const canMarkPacked = hasPerm("packing.update");
@@ -1352,37 +1356,15 @@ function PaymentFilesList({ files, order }) {
 }
 
 function PaymentFileRow({ file, index }) {
-  const url = file.data_url || file.url;
-  const isImage = url && (url.startsWith("data:image/") || /\.(jpe?g|png|gif|webp)$/i.test(file.name || ""));
-  const isPdf = url && (url.startsWith("data:application/pdf") || /\.pdf$/i.test(file.name || ""));
+  const url = paymentProofSource(file);
+  const isImage = paymentProofIsImage(file, url);
+  const isPdf = paymentProofIsPdf(file, url);
 
-  const handlePdfOpen = (e) => {
-    if (!isPdf || !url?.startsWith("data:application/pdf")) return;
-
+  const handleOpen = (e) => {
     e.preventDefault();
-
-    try {
-      const commaIndex = url.indexOf(",");
-      if (commaIndex < 0) throw new Error("Invalid PDF data URL");
-
-      const encoded = url.slice(commaIndex + 1);
-      const binary = atob(encoded);
-      const bytes = new Uint8Array(binary.length);
-
-      for (let i = 0; i < binary.length; i += 1) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-
-      const blob = new Blob([bytes], { type: "application/pdf" });
-      const blobUrl = URL.createObjectURL(blob);
-
-      window.open(blobUrl, "_blank");
-
-      // Beri waktu tab baru selesai membaca Blob sebelum URL dilepas.
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-    } catch (err) {
-      console.error("Gagal membuka PDF:", err);
-      alert("PDF gagal dibuka. Silakan coba lagi.");
+    const result = openPaymentProofSource(url);
+    if (!result.ok) {
+      alert("File Bukti Payment gagal dibuka. Silakan coba lagi.");
     }
   };
 
@@ -1390,7 +1372,7 @@ function PaymentFileRow({ file, index }) {
     <li className="payment-file" data-testid={`payment-file-${file.id || file.name}`}>
       <div className="payment-file-thumb">
         {isImage ? (
-          <a href={url} target="_blank" rel="noreferrer">
+          <a href={url} target="_blank" rel="noreferrer" onClick={handleOpen} data-testid={`payment-file-open-${file.id || file.name}`}>
             <img src={url} alt={file.name} />
           </a>
         ) : isPdf ? (
@@ -1399,7 +1381,8 @@ function PaymentFileRow({ file, index }) {
             target="_blank"
             rel="noreferrer"
             className="pdf-thumb"
-            onClick={handlePdfOpen}
+            onClick={handleOpen}
+            data-testid={`payment-file-open-${file.id || file.name}`}
           >
             <FileText size={22} /> PDF
           </a>
