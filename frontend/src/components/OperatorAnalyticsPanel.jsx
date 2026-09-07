@@ -342,6 +342,7 @@ export default function OperatorAnalyticsPanel() {
   };
 
   const userFilterLabel = tab === "operator" ? "Semua operator" : tab === "helper" ? "Semua helper" : tab === "screener" ? "Semua screener" : "Semua designer";
+  const userFieldLabel = tab === "operator" ? "Operator" : tab === "helper" ? "Helper" : tab === "screener" ? "Screener" : "Designer";
 
   const operatorCols = [
     { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
@@ -408,52 +409,66 @@ export default function OperatorAnalyticsPanel() {
       </div>
 
       <section className="prod-filters op-an-filters" data-testid="op-an-filters">
-        <div className="prod-filter-row">
-          <span className="prod-filter-kicker">Periode</span>
-          <select value={period} onChange={(e) => setPeriod(e.target.value)} data-testid="op-an-period">
-            {PERIOD_OPTS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
-          <label className="prod-inline-date">
-            Dari tanggal
+        <div className="op-an-filter-bar">
+          <label className="op-an-field op-an-field-period">
+            <span>Periode</span>
+            <select value={period} onChange={(e) => setPeriod(e.target.value)} data-testid="op-an-period">
+              {PERIOD_OPTS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+            </select>
+          </label>
+          <label className="op-an-field op-an-field-date">
+            <span>Dari</span>
             <input type="date" value={period === "custom" ? dateFrom : (resolvedFrom || "")} onChange={(e) => { setPeriod("custom"); setDateFrom(e.target.value); }} data-testid="op-an-date-from" />
           </label>
-          <label className="prod-inline-date">
-            Sampai tanggal
+          <label className="op-an-field op-an-field-date">
+            <span>Sampai</span>
             <input type="date" value={period === "custom" ? dateTo : (resolvedTo || "")} onChange={(e) => { setPeriod("custom"); setDateTo(e.target.value); }} data-testid="op-an-date-to" />
           </label>
-        </div>
-        <div className="prod-filter-row">
-          <span className="prod-filter-kicker">Filter</span>
-          <select value={userId} onChange={(e) => setUserId(e.target.value)} data-testid="op-an-user">
-            <option value="all">{userFilterLabel}</option>
-            {userOptions.map((o) => <option key={o.id || o.email} value={o.id || o.email}>{o.name || o.id}</option>)}
-          </select>
-          <select value={customer} onChange={(e) => setCustomer(e.target.value)} data-testid="op-an-customer">
-            <option value="all">Semua outlet / customer</option>
-            {customers.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <FacetSearchSelect
-            testId="op-an-item"
-            options={items}
-            value={item === "all" ? "" : item}
-            onChange={(next) => setItem(next ? next : "all")}
-            emptyValue=""
-            emptyLabel="Semua item / cup"
-            placeholder="Cari item / cup…"
-            getOptionValue={(it) => String(it)}
-            getOptionLabel={(it) => String(it)}
-            getSearchText={(it) => String(it)}
-          />
-          <select value={po} onChange={(e) => setPo(e.target.value)} data-testid="op-an-po">
-            <option value="all">Semua PO</option>
-            {pos.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <label className="op-an-search">
-            <Search size={12} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama, PO, outlet, item" data-testid="op-an-search" />
+          <label className="op-an-field op-an-field-operator">
+            <span>{userFieldLabel}</span>
+            <select value={userId} onChange={(e) => setUserId(e.target.value)} data-testid="op-an-user">
+              <option value="all">{userFilterLabel}</option>
+              {userOptions.map((o) => <option key={o.id || o.email} value={o.id || o.email}>{o.name || o.id}</option>)}
+            </select>
           </label>
-          {!customDatesReady && <span className="muted small">Isi tanggal dari &amp; sampai untuk Custom.</span>}
+          <label className="op-an-field op-an-field-outlet">
+            <span>Outlet / Customer</span>
+            <select value={customer} onChange={(e) => setCustomer(e.target.value)} data-testid="op-an-customer">
+              <option value="all">Semua outlet / customer</option>
+              {customers.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <div className="op-an-field op-an-field-item">
+            <span>Item / Cup</span>
+            <FacetSearchSelect
+              testId="op-an-item"
+              options={items}
+              value={item === "all" ? "" : item}
+              onChange={(next) => setItem(next ? next : "all")}
+              emptyValue=""
+              emptyLabel="Semua item / cup"
+              placeholder="Cari item / cup…"
+              getOptionValue={(it) => String(it)}
+              getOptionLabel={(it) => String(it)}
+              getSearchText={(it) => String(it)}
+            />
+          </div>
+          <label className="op-an-field op-an-field-search">
+            <span>Cari</span>
+            <span className="op-an-search">
+              <Search size={12} />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama, PO, outlet, item" data-testid="op-an-search" />
+            </span>
+          </label>
+          <label className="op-an-field op-an-field-po">
+            <span>PO</span>
+            <select value={po} onChange={(e) => setPo(e.target.value)} data-testid="op-an-po">
+              <option value="all">Semua PO</option>
+              {pos.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
         </div>
+        {!customDatesReady && <span className="muted small">Isi tanggal dari &amp; sampai untuk Custom.</span>}
       </section>
 
       <div className="op-an-subnav" role="tablist" data-testid="op-an-subnav">
