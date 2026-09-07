@@ -1,9 +1,9 @@
 import { STAGES } from "../lib/constants";
 import { resolveStageState } from "../lib/stageState";
 
-export default function StageBar({ stage, order = null, onStageClick }) {
+export default function StageBar({ stage, order = null, onStageClick, showLabels = false }) {
   return (
-    <div className="stage-bar" data-testid="order-stage-progress" title={STAGES[stage]}>
+    <div className={"stage-bar" + (showLabels ? " has-labels" : "")} data-testid="order-stage-progress" title={STAGES[stage]}>
       {STAGES.map((s, i) => {
         const isFinal = stage >= STAGES.length - 1;
         let cls = "";
@@ -16,16 +16,27 @@ export default function StageBar({ stage, order = null, onStageClick }) {
         }
         const clickable = typeof onStageClick === "function";
         return (
-          <span
+          <div
             key={s}
-            className={cls + (clickable ? " clickable" : "")}
-            title={`${i + 1}. ${s}${clickable ? " · klik untuk lihat detail" : ""}`}
-            role={clickable ? "button" : undefined}
-            tabIndex={clickable ? 0 : undefined}
-            onClick={clickable ? () => onStageClick(i) : undefined}
-            onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onStageClick(i); } } : undefined}
-            data-testid={`stage-node-${i}`}
-          />
+            className={"stage-bar-col" + (cls ? ` is-${cls}` : "")}
+          >
+            <span
+              className={"stage-bar-seg " + cls + (clickable ? " clickable" : "")}
+              title={`${i + 1}. ${s}${clickable ? " · klik untuk lihat detail" : ""}`}
+              role={clickable ? "button" : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              onClick={clickable ? () => onStageClick(i) : undefined}
+              onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onStageClick(i); } } : undefined}
+              data-testid={`stage-node-${i}`}
+            >
+              {showLabels ? (
+                <>
+                  <span className="stage-bar-step-num">{i + 1}</span>
+                  <span className="stage-bar-label" title={`${i + 1}. ${s}`}>{s}</span>
+                </>
+              ) : null}
+            </span>
+          </div>
         );
       })}
     </div>

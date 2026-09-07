@@ -423,8 +423,10 @@ label { font-weight:600; }
   background:var(--mod-soft);
   box-shadow:inset 3px 0 0 var(--mod);
 }
-.stage-bar span.done { background:var(--green); }
-.stage-bar span.current { background:var(--amber); }
+.stage-bar:not(.has-labels) span.done,
+.stage-bar:not(.has-labels) .stage-bar-seg.done { background:var(--green); }
+.stage-bar:not(.has-labels) span.current,
+.stage-bar:not(.has-labels) .stage-bar-seg.current { background:var(--amber); }
 
 /* -------- Upload drop feel -------- */
 .proof-upload,

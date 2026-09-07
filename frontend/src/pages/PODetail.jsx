@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, Package, Printer, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
-import { liveTrackingRows } from "../lib/liveTracking";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
 import PackingPanel from "../components/PackingPanel";
@@ -296,7 +295,13 @@ export default function PODetail() {
   const canEditRoute = hasPerm("production.route.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
   const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
-  const canPrintDelivery = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
+  const salesDeliverySummary = order.sales_delivery_summary || {};
+  const salesDeliveryTotalOrdered = order.total_quantity || 0;
+  const salesDeliveryTotalShipped = salesDeliverySummary.total_shipped || 0;
+  const salesDeliveryTotalRemaining = salesDeliverySummary.total_remaining !== undefined
+    ? salesDeliverySummary.total_remaining
+    : Math.max(0, salesDeliveryTotalOrdered - salesDeliveryTotalShipped);
+  const canProcessSalesDelivery = !order.cancelled && salesDeliveryTotalRemaining > 0 && canCreateDelivery;
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -412,8 +417,13 @@ export default function PODetail() {
           <ArrowLeft size={16} /> Kembali
         </button>
         <div className="detail-title">
+          <h1 className="po-hero-customer" data-testid="detail-customer-name">
+            {order.customer || "Customer belum tersedia"}
+          </h1>
           <div className="po-line">
-            <h1 data-testid="detail-po-number">{order.po_number}</h1>
+            <p className="po-hero-number" data-testid="detail-po-number">{order.po_number}</p>
+            {order.outlet ? <span className="po-hero-dot" aria-hidden="true">·</span> : null}
+            <p className="po-hero-outlet" data-testid="detail-outlet">{order.outlet}</p>
             <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
               {order.priority === "urgent" ? "URGENT" : "NORMAL"}
             </span>
@@ -433,33 +443,32 @@ export default function PODetail() {
               </button>
             )}
           </div>
-          <h2 data-testid="detail-outlet">{order.outlet}</h2>
-          <p className="subhead">
+          <p className="subhead po-hero-stage-row">
             Sedang: <strong data-testid="detail-stage">{STAGES[order.current_stage]}</strong>
-            <span style={{ marginLeft: 12, color: "#7a6f52", fontSize: 12 }} data-testid="po-customer-line">
-              · Customer: {order.customer ? <strong>{order.customer}</strong> : <em>Customer belum tersedia</em>}
+            <span className="po-customer-line" data-testid="po-customer-line">
+              · {order.customer || "Customer belum tersedia"}
             </span>
-          </p>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, fontSize: 11.5, color: "#7a6f52" }}>
-            <button className="ghost sm" onClick={refreshPO} disabled={poIsPolling} data-testid="po-refresh-button" style={{ padding: "2px 8px", fontSize: 11 }}>
+            <button className="ghost sm po-hero-refresh" onClick={refreshPO} disabled={poIsPolling} data-testid="po-refresh-button">
               <RefreshCw size={11} /> Refresh
             </button>
-            <span data-testid="po-last-updated">
+            <span data-testid="po-last-updated" className="po-hero-updated">
               Terakhir diperbarui: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
             </span>
-          </div>
+          </p>
         </div>
       </div>
 
-      <StageBar stage={order.current_stage} order={order} onStageClick={(idx) => setStageDrawer(idx)} />
+      <div className="po-stage-bar-block">
+        <StageBar stage={order.current_stage} order={order} showLabels onStageClick={(idx) => setStageDrawer(idx)} />
+      </div>
 
       <section className="po-kpi-strip" data-testid="po-kpi-strip">
         <MetricRow columns={5}>
           <MetricCell label="Total PO" value={order.total_quantity} testid="kpi-total-po" />
-          <MetricCell label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
-          <MetricCell label="Selesai Cetak" value={order.print_completed_qty} testid="kpi-print-done" />
-          <MetricCell label="Sisa Cetak" value={order.print_qty_remaining} testid="kpi-print-remain" />
-          <MetricCell label="Packing" value={order.packing_info?.qty_packed || 0} testid="kpi-packed" />
+          <MetricCell className="kpi-accent-target" label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
+          <MetricCell className="kpi-accent-done" label="Selesai Cetak" value={order.print_completed_qty} testid="kpi-print-done" />
+          <MetricCell className="kpi-accent-remain" label="Sisa Cetak" value={order.print_qty_remaining} testid="kpi-print-remain" />
+          <MetricCell className="kpi-accent-packed" label="Packing" value={order.packing_info?.qty_packed || 0} testid="kpi-packed" />
         </MetricRow>
       </section>
 
@@ -498,242 +507,31 @@ export default function PODetail() {
         </div>
       )}
 
-      {/* Pengiriman Pesanan (Surat Jalan Penjualan) Panel */}
-      {(() => {
-        const sd = order.sales_delivery_summary || {};
-        const totalOrdered = order.total_quantity || 0;
-        const totalShipped = sd.total_shipped || 0;
-        const totalRemaining = sd.total_remaining !== undefined ? sd.total_remaining : Math.max(0, totalOrdered - totalShipped);
-        const delivStatus = sd.delivery_status || (order.cancelled ? "DIBATALKAN" : totalShipped === 0 ? "BELUM DIKIRIM" : totalRemaining > 0 ? "SEBAGIAN DIKIRIM" : "SELESAI PENGIRIMAN");
-        const canProcess = !order.cancelled && totalRemaining > 0 && canCreateDelivery;
-        const deliveries = sd.deliveries || [];
-
-        return (
-          <section className="panel" data-testid="sales-delivery-summary-panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 8, background: "#fef3c7", color: "#d97706", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Truck size={20} />
-                </div>
-                <div>
-                  <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Pengiriman Pesanan (Surat Jalan Penjualan)</h3>
-                  <span style={{ fontSize: "0.8rem", color: "#64748b" }}>Tahap lanjutan Penjualan untuk menerbitkan Surat Jalan pengiriman bertahap</span>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                {canProcess ? (
-                  <Link
-                    to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
-                    data-testid="btn-proses-pengiriman-pesanan"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 16px",
-                      background: "#0284c7",
-                      color: "#fff",
-                      borderRadius: 8,
-                      textDecoration: "none",
-                      fontWeight: 600,
-                      fontSize: "0.875rem",
-                    }}
-                  >
-                    <Truck size={16} /> PROSES KE PENGIRIMAN PESANAN
-                  </Link>
-                ) : totalRemaining <= 0 && totalOrdered > 0 ? (
-                  <span
-                    data-testid="badge-pengiriman-selesai"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "6px 12px",
-                      background: "#dcfce7",
-                      color: "#166534",
-                      borderRadius: 20,
-                      fontSize: "0.8rem",
-                      fontWeight: 600,
-                    }}
-                  >
-                    <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
-                  </span>
-                ) : null}
-                <Link
-                  to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`}
-                  data-testid="btn-buat-faktur-penjualan"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "8px 16px",
-                    background: "#7c3aed",
-                    color: "#fff",
-                    borderRadius: 8,
-                    textDecoration: "none",
-                    fontWeight: 600,
-                    fontSize: "0.875rem",
-                  }}
-                >
-                  <FileText size={16} /> BUAT FAKTUR
-                </Link>
-              </div>
-            </header>
-
-            {/* Summary KPIs */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 }}>
-              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>TOTAL ORDER</span>
-                <strong data-testid="kpi-delivery-total-order" style={{ fontSize: "1.1rem", color: "#0f172a" }}>
-                  {totalOrdered.toLocaleString("id-ID")} pcs
-                </strong>
-              </div>
-              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>TOTAL SUDAH DIPROSES PENGIRIMAN</span>
-                <strong data-testid="kpi-delivery-total-shipped" style={{ fontSize: "1.1rem", color: "#0284c7" }}>
-                  {totalShipped.toLocaleString("id-ID")} pcs
-                </strong>
-              </div>
-              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>SISA PENGIRIMAN</span>
-                <strong data-testid="kpi-delivery-total-remaining" style={{ fontSize: "1.1rem", color: totalRemaining > 0 ? "#d97706" : "#16a34a" }}>
-                  {totalRemaining.toLocaleString("id-ID")} pcs
-                </strong>
-              </div>
-              <div style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                <span style={{ fontSize: "0.75rem", color: "#64748b", display: "block", textTransform: "uppercase", fontWeight: 600 }}>STATUS PENGIRIMAN</span>
-                <strong
-                  data-testid="kpi-delivery-status"
-                  style={{
-                    display: "inline-block",
-                    marginTop: 2,
-                    fontSize: "0.85rem",
-                    padding: "2px 8px",
-                    borderRadius: 12,
-                    background: delivStatus === "SELESAI PENGIRIMAN" ? "#dcfce7" : delivStatus === "SEBAGIAN DIKIRIM" ? "#fef3c7" : "#f1f5f9",
-                    color: delivStatus === "SELESAI PENGIRIMAN" ? "#166534" : delivStatus === "SEBAGIAN DIKIRIM" ? "#92400e" : "#475569",
-                  }}
-                >
-                  {delivStatus}
-                </strong>
-              </div>
-            </div>
-
-            {/* List of generated SJs for this PO */}
-            {deliveries.length > 0 && (
-              <div>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#334155" }}>Dokumen Surat Jalan Terbit ({deliveries.length}):</h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {deliveries.map((deliv) => (
-                    <div
-                      key={deliv.id}
-                      data-testid={`po-delivery-item-${deliv.id}`}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        padding: "8px 12px",
-                        background: "#f8fafc",
-                        border: "1px solid #e2e8f0",
-                        borderRadius: 8,
-                        fontSize: "0.85rem",
-                        flexWrap: "wrap",
-                        gap: 8,
-                      }}
-                    >
-                      <div>
-                        <span style={{ fontWeight: 700, color: "#0369a1", marginRight: 8 }}>{deliv.sj_number}</span>
-                        <span style={{ color: "#64748b" }}>
-                          (Kirim #{deliv.shipment_index}) · {formatDisplayDate(deliv.delivery_date)} · {deliv.created_by_name || deliv.created_by}
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontWeight: 700, color: "#0f172a" }}>
-                          {Number(deliv.total_qty || 0).toLocaleString("id-ID")} pcs
-                        </span>
-                        {canPrintDelivery && (
-                          <a
-                            href={api.salesDeliveryPdfUrl(deliv.id)}
-                            target="_blank"
-                            rel="noreferrer"
-                            data-testid={`btn-print-po-delivery-${deliv.id}`}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              padding: "4px 8px",
-                              background: "#fff",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: 6,
-                              color: "#0284c7",
-                              textDecoration: "none",
-                              fontWeight: 600,
-                              fontSize: "0.75rem",
-                            }}
-                          >
-                            <Printer size={12} /> Cetak PDF
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-        );
-      })()}
-
-      {/* Aksi PO — Cancel / Delete / Rollback (admin, bukan stage production) */}
-      {(canCancel || canDelete || canRollback) && (
-        <section className="panel po-actions-panel" data-testid="po-actions-panel">
-          <header className="panel-head">
-            <h3>Aksi PO</h3>
-            <span className="muted small">Tindakan administratif untuk PO ini</span>
-          </header>
-          <div className="po-actions-row">
-            {canRollback && order.current_stage > 0 && (
-              <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
-                <RotateCcw size={14}/> Rollback
-              </button>
-            )}
-            {canCancel && !order.cancelled && (
-              <button className="ghost" onClick={doCancelPO} disabled={busy} data-testid="cancel-po-button" title="Butuh permission po.cancel">
-                <XCircle size={16}/> Batalkan PO
-              </button>
-            )}
-            {canDelete && (
-              <button className="ghost danger" onClick={openDeleteModal} disabled={busy || deleting} data-testid="delete-po-button" title="Butuh permission po.delete">
-                <Trash2 size={16}/> Hapus Permanen PO
-              </button>
-            )}
-          </div>
-          <p className="muted small po-actions-hint">
-            <b>Batalkan PO</b> menyimpan seluruh histori & audit — PO dipindah ke tab <em>Cancelled</em>.
-            <br/><b>Hapus Permanen</b> hanya untuk PO test/duplicate — data dihapus dari database, snapshot tetap ada di audit log.
-          </p>
-        </section>
-      )}
-
       <div className="po-workflow" data-testid="po-workflow">
       {/* 01 Order Masuk */}
       <div data-testid="workflow-slot-0" data-workflow-stage="0">
+      <div className="po-meta-aksi-row" data-testid="po-meta-aksi-row">
       {/* Order Info */}
-      <section className="panel info-grid" data-testid="detail-info">
+      <section className="panel po-info-panel" data-testid="detail-info">
+        <header className="panel-head">
+          <h3>Informasi PO</h3>
+        </header>
+        <div className="po-info-grid">
         <div>
           <span className="lbl">PO / Sales Order</span>
-          <strong>{order.po_number}</strong>
+          <strong>{order.po_number || <span className="po-info-empty">—</span>}</strong>
         </div>
         <div>
           <span className="lbl">Customer</span>
-          <strong>{order.customer}</strong>
+          <strong>{order.customer || <span className="po-info-empty">—</span>}</strong>
         </div>
         <div>
           <span className="lbl">Outlet</span>
-          <strong>{order.outlet}</strong>
+          <strong>{order.outlet || <span className="po-info-empty">—</span>}</strong>
           {canSetLocation && (
             <button
               type="button"
-              className="ghost sm"
+              className="ghost sm po-info-edit"
               data-testid="po-atur-lokasi"
               onClick={async () => {
                 const row = {
@@ -777,11 +575,7 @@ export default function PODetail() {
         </div>
         <div>
           <span className="lbl">Penerima</span>
-          <strong>{order.recipient}</strong>
-        </div>
-        <div className="span-2">
-          <span className="lbl"><MapPin size={12} /> Alamat</span>
-          <strong>{order.address}</strong>
+          <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
         </div>
         <div>
           <span className="lbl">Sales</span>
@@ -789,10 +583,40 @@ export default function PODetail() {
             {order.sales || order.sales_user || <em className="muted">Perlu verifikasi</em>}
           </strong>
         </div>
+        <div className="po-info-address">
+          <span className="lbl"><MapPin size={12} /> Alamat</span>
+          <strong>{order.address || <span className="po-info-empty">—</span>}</strong>
+        </div>
+        <div>
+          <span className="lbl">Ekspedisi</span>
+          <strong>{order.expedition || <span className="po-info-empty">—</span>}</strong>
+        </div>
+        <div>
+          <span className="lbl">Zona kirim</span>
+          <strong>{order.delivery_zone || <span className="po-info-empty">—</span>}</strong>
+        </div>
         <div>
           <span className="lbl">User / Pembuat PO</span>
           <strong data-testid="detail-created-by-user">
             {order.created_by_user || <em className="muted">Perlu verifikasi</em>}
+          </strong>
+        </div>
+        <div>
+          <span className="lbl">Termin bayar</span>
+          <strong>{order.payment_terms || <span className="po-info-empty">—</span>}</strong>
+        </div>
+        <div>
+          <span className="lbl">Status Payment</span>
+          <strong className={order.payment_status === "Approved" ? "status-ok" : "status-wait"} data-testid="payment-status">
+            {order.payment_status === "Approved" ? "Approved" : "Menunggu approval"}
+          </strong>
+        </div>
+        <div>
+          <span className="lbl">Status Design</span>
+          <strong className={order.design_status === "Approved" ? "status-ok" : "status-wait"} data-testid="design-status">
+            {order.design_status === "Approved"
+              ? "Approved"
+              : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
           </strong>
         </div>
         {order.imported_by && (
@@ -825,39 +649,82 @@ export default function PODetail() {
             </strong>
           </div>
         )}
-        <div>
-          <span className="lbl">Ekspedisi</span>
-          <strong>{order.expedition}</strong>
-        </div>
-        <div>
-          <span className="lbl">Zona kirim</span>
-          <strong>{order.delivery_zone}</strong>
-        </div>
-        <div>
-          <span className="lbl">Termin bayar</span>
-          <strong>{order.payment_terms}</strong>
-        </div>
-        <div>
-          <span className="lbl">Status Design</span>
-          <strong className={order.design_status === "Approved" ? "status-ok" : "status-wait"} data-testid="design-status">
-            {order.design_status === "Approved"
-              ? "Approved"
-              : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
-          </strong>
-        </div>
-        <div>
-          <span className="lbl">Status Payment</span>
-          <strong className={order.payment_status === "Approved" ? "status-ok" : "status-wait"} data-testid="payment-status">
-            {order.payment_status === "Approved" ? "Approved" : "Menunggu approval"}
-          </strong>
-        </div>
         {order.urgency_approved_by && (
           <div>
             <span className="lbl">Urgent disetujui oleh</span>
             <strong>{order.urgency_approved_by}</strong>
           </div>
         )}
+        </div>
       </section>
+
+      <section className="panel po-actions-panel" data-testid="po-actions-panel">
+        <header className="panel-head">
+          <h3>Aksi PO</h3>
+          <span className="muted small">Tindakan dokumen &amp; administratif untuk PO ini</span>
+        </header>
+        <div className="po-actions-ops" data-testid="po-actions-ops">
+          {canCopyTrackingLink && (
+            <div className="po-tracking-actions" data-testid="tracking-customer-panel">
+              <button
+                className="ghost sm"
+                onClick={copyTrackingLink}
+                disabled={trackingBusy || order.cancelled}
+                data-testid="copy-tracking-link"
+              >
+                <Copy size={14} /> Live Tracking
+              </button>
+              {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
+            </div>
+          )}
+          {canProcessSalesDelivery ? (
+            <Link
+              to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
+              className="po-action-primary"
+              data-testid="btn-proses-pengiriman-pesanan"
+            >
+              <Truck size={16} /> PROSES KE PENGIRIMAN PESANAN
+            </Link>
+          ) : salesDeliveryTotalRemaining <= 0 && salesDeliveryTotalOrdered > 0 ? (
+            <span className="po-action-done" data-testid="badge-pengiriman-selesai">
+              <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
+            </span>
+          ) : null}
+          <Link
+            to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`}
+            className="po-action-doc"
+            data-testid="btn-buat-faktur-penjualan"
+          >
+            <FileText size={16} /> BUAT FAKTUR
+          </Link>
+        </div>
+        {(canRollback || canCancel || canDelete) && (
+          <div className="po-actions-admin">
+            <div className="po-actions-row">
+              {canRollback && order.current_stage > 0 && (
+                <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
+                  <RotateCcw size={14}/> Rollback
+                </button>
+              )}
+              {canCancel && !order.cancelled && (
+                <button className="ghost" onClick={doCancelPO} disabled={busy} data-testid="cancel-po-button" title="Butuh permission po.cancel">
+                  <XCircle size={16}/> Batalkan PO
+                </button>
+              )}
+              {canDelete && (
+                <button className="ghost danger" onClick={openDeleteModal} disabled={busy || deleting} data-testid="delete-po-button" title="Butuh permission po.delete">
+                  <Trash2 size={16}/> Hapus Permanen PO
+                </button>
+              )}
+            </div>
+            <p className="muted small po-actions-hint">
+              <b>Batalkan PO</b> menyimpan histori &amp; audit (tab <em>Cancelled</em>).
+              {" "}<b>Hapus Permanen</b> hanya untuk PO test/duplicate.
+            </p>
+          </div>
+        )}
+      </section>
+      </div>
 
       <section className="panel" data-testid="line-items-panel">
         <header className="panel-head">
@@ -897,43 +764,6 @@ export default function PODetail() {
         </div>
       </section>
       <ProductionRoutePanel order={order} canEdit={canEditRoute} onUpdated={setOrder} />
-      <section className="panel tracking-customer-panel" data-testid="tracking-customer-panel">
-        <header className="panel-head"><h3>Live Tracking Customer</h3></header>
-        <p className="muted small">Link publik menampilkan nama customer, No PO, alur kerja, dan bukti kirim.</p>
-        {canCopyTrackingLink && (
-          <div className="tracking-customer-actions">
-            <button
-              className="ghost sm"
-              onClick={copyTrackingLink}
-              disabled={trackingBusy || order.cancelled}
-              data-testid="copy-tracking-link"
-            >
-              <Copy size={14} /> Salin Link Tracking
-            </button>
-            {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
-          </div>
-        )}
-        <table className="tracking-table" data-testid="live-tracking-workflow">
-          <thead>
-            <tr>
-              <th>Tahap</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {liveTrackingRows(order).map((row) => (
-              <tr key={row.idx} data-testid={`live-tracking-stage-${row.idx}`}>
-                <td>{row.stage}</td>
-                <td>
-                  <span className={`chip chip-${row.state}`} data-testid={`live-tracking-stage-${row.idx}-chip`}>
-                    {row.label}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
       </div>
 
       <div className="workflow-group" data-testid="workflow-group-2">
@@ -953,52 +783,62 @@ export default function PODetail() {
       />
       </div>
 
-      {/* 03 Approval Design */}
+      {/* 03 Approval Design + Customer Approval (visual pair only) */}
       <div data-testid="workflow-slot-2" data-workflow-stage="2">
-      <section className="panel" data-testid="approval-design-panel">
+      <section className="panel po-pair-card po-phase-design" data-testid="approval-design-panel">
         <header className="panel-head">
           <h3>Approval Design</h3>
           <DesignStatusBadge order={order} />
         </header>
-        <div className="workflow-stage-actions" data-testid="approval-design-actions">
-          {canApproveDesign && (order.design_files?.length || 0) > 0 && order.design_status !== "Approved" && !order.design_bypassed && (
-            <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
-              <FileCheck2 size={16} /> Approve Design
-            </button>
-          )}
-          {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
-            <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
-              Batalkan approve design
-            </button>
-          )}
-          {canBypassDesign && !order.design_bypassed && order.design_status !== "Approved" && (
-            <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
-              <ShieldOff size={14}/> Bypass Design
-            </button>
-          )}
-          {!canApproveDesign && !canBypassDesign && order.design_status !== "Approved" && !order.design_bypassed && (
-            <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
-          )}
+        <div className="po-pair-grid">
+          <div className="po-pair-col">
+            <h4 className="po-pair-col-title">Internal Approval</h4>
+            <div className="workflow-stage-actions" data-testid="approval-design-actions">
+              {canApproveDesign && (order.design_files?.length || 0) > 0 && order.design_status !== "Approved" && !order.design_bypassed && (
+                <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
+                  <FileCheck2 size={16} /> Approve Design
+                </button>
+              )}
+              {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
+                <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
+                  Batalkan approve design
+                </button>
+              )}
+              {canBypassDesign && !order.design_bypassed && order.design_status !== "Approved" && (
+                <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
+                  <ShieldOff size={14}/> Bypass Design
+                </button>
+              )}
+              {!canApproveDesign && !canBypassDesign && order.design_status !== "Approved" && !order.design_bypassed && (
+                <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
+              )}
+            </div>
+          </div>
+          <div className="po-pair-col">
+            <CustomerApprovalPanel
+              order={order}
+              canView={canViewCustomerApproval}
+              canManage={canManageCustomerApproval}
+              onOrderUpdated={setOrder}
+            />
+          </div>
         </div>
       </section>
-      <CustomerApprovalPanel
-        order={order}
-        canView={canViewCustomerApproval}
-        canManage={canManageCustomerApproval}
-        onOrderUpdated={setOrder}
-      />
       </div>
 
-      {/* 04 Payment */}
-      <div data-testid="workflow-slot-3" data-workflow-stage="3">
-      <section className="panel payment-panel" data-testid="payment-panel">
+      {/* 04–05 Payment + Approval Payment (visual pair only) */}
+      <section className="panel payment-panel po-pair-card po-phase-payment" data-testid="payment-approval-pair">
         <header className="panel-head">
-          <h3>Payment</h3>
+          <h3>Payment &amp; Approval</h3>
           <span className="muted small" data-testid="payment-proof-count">
             Bukti Payment {paymentProofCount(order.payment_files)} / {MAX_PAYMENT_PROOFS} file
           </span>
           <PaymentStatusBadge order={order} />
         </header>
+        <div className="po-pair-grid">
+        <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3">
+        <div data-testid="payment-panel">
+        <h4 className="po-pair-col-title">Bukti Payment</h4>
         <div className="payment-body">
           <div className="sales-receipts-payment" data-testid="sales-receipts-payment-section">
             <h4 style={{ margin: "0 0 8px 0", fontSize: 13 }}>Penerimaan Penjualan</h4>
@@ -1082,16 +922,12 @@ export default function PODetail() {
             )}
           </div>
         </div>
-      </section>
-      </div>
+        </div>
+        </div>
 
-      {/* 05 Approval Payment */}
-      <div data-testid="workflow-slot-4" data-workflow-stage="4">
-      <section className="panel" data-testid="approval-payment-panel">
-        <header className="panel-head">
-          <h3>Approval Payment</h3>
-          <PaymentStatusBadge order={order} />
-        </header>
+      <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4">
+      <div data-testid="approval-payment-panel">
+        <h4 className="po-pair-col-title">Approval Payment</h4>
         <div className="workflow-stage-actions" data-testid="approval-payment-actions">
           {canApprovePayment && order.payment_files?.length > 0 && order.payment_status !== "Approved" && !order.payment_bypassed && (
             <button className="primary" onClick={approvePayment} disabled={busy} data-testid="approve-payment-button">
@@ -1124,23 +960,30 @@ export default function PODetail() {
             </ul>
           </details>
         )}
+      </div>
+      </div>
+        </div>
       </section>
       </div>
-      </div>
 
-      {/* 06 Penjadwalan */}
+      {/* 06 Penjadwalan + Pembagian Jadwal (visual pair only) */}
       <div data-testid="workflow-slot-5" data-workflow-stage="5">
-      <section className="panel qty-ops-panel" data-testid="penjadwalan-panel">
+      <section className="panel qty-ops-panel po-pair-card po-phase-scheduling" data-testid="penjadwalan-panel">
         <QtyOpsHead icon={CalendarClock} title="Penjadwalan">
           <span className="muted small">Head of Production</span>
         </QtyOpsHead>
-        <div className="qty-ops-body">
-          <p className="qty-ops-note">
-            Simpan pembagian operator. Screener dan Persiapan Helper terbuka otomatis setelah save berhasil.
-          </p>
+        <div className="po-pair-grid po-pair-grid-schedule">
+          <div className="po-pair-col">
+            <h4 className="po-pair-col-title">Penjadwalan</h4>
+            <p className="qty-ops-note">
+              Simpan pembagian operator. Screener dan Persiapan Helper terbuka otomatis setelah save berhasil.
+            </p>
+          </div>
+          <div className="po-pair-col">
+            <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
+          </div>
         </div>
       </section>
-      <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
       <DeliveryDeadlinePanel order={order} canEdit={canEditDeliveryDeadline} onUpdated={setOrder} />
       </div>
 
@@ -1199,22 +1042,11 @@ export default function PODetail() {
 
       <div className="workflow-group" data-testid="workflow-group-5">
         <p className="workflow-group-label">5 · Cetak Sample &amp; Qty Selesai</p>
-      {/* A Cetak Sample */}
-      <div data-testid="workflow-slot-8" data-workflow-stage="8">
-      <AttachmentsPanel
-        order={order}
-        user={user}
-        onUpdated={setOrder}
-        section="sample"
-      />
-      </div>
-
-      {/* B Approval Cetak Sample */}
-      <div data-testid="workflow-slot-9" data-workflow-stage="9">
-      <section className="panel qty-ops-panel" data-testid="approval-sample-panel">
+      {/* A–B Cetak Sample + Approval (visual pair only) */}
+      <section className="panel po-pair-card po-phase-sample" data-testid="cetak-sample-pair">
         <header className="panel-head qty-ops-head">
           <div className="qty-ops-title">
-            <h3>Approval Cetak Sample</h3>
+            <h3>Cetak Sample</h3>
           </div>
           <div className="qty-ops-head-meta">
             {order.sample_approved ? (
@@ -1237,6 +1069,19 @@ export default function PODetail() {
             )}
           </div>
         </header>
+        <div className="po-pair-grid">
+        <div className="po-pair-col" data-testid="workflow-slot-8" data-workflow-stage="8">
+      <AttachmentsPanel
+        order={order}
+        user={user}
+        onUpdated={setOrder}
+        section="sample"
+      />
+        </div>
+
+      <div className="po-pair-col" data-testid="workflow-slot-9" data-workflow-stage="9">
+      <div className="qty-ops-panel" data-testid="approval-sample-panel">
+        <h4 className="po-pair-col-title">Approval Cetak Sample</h4>
         <div className="qty-ops-body">
         <div className="sample-actions" data-testid="sample-actions" style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
           {canApproveSample && (order.sample_files?.length || 0) > 0 && !order.sample_approved && (
@@ -1259,8 +1104,10 @@ export default function PODetail() {
           )}
         </div>
         </div>
-      </section>
       </div>
+      </div>
+        </div>
+      </section>
 
       {/* C Operator / Qty Selesai Cetak */}
       <div data-testid="workflow-slot-10" data-workflow-stage="10">
