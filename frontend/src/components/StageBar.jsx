@@ -22,7 +22,7 @@ export default function StageBar({ stage, order = null, onStageClick, showLabels
           >
             <span
               className={"stage-bar-seg " + cls + (clickable ? " clickable" : "")}
-              title={`${i + 1}. ${s}${clickable ? " · klik untuk lihat detail" : ""}`}
+              title={`${i + 1}. ${s}${clickable ? " · klik untuk ke bagian" : ""}`}
               role={clickable ? "button" : undefined}
               tabIndex={clickable ? 0 : undefined}
               onClick={clickable ? () => onStageClick(i) : undefined}
