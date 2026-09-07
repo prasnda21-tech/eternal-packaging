@@ -503,3 +503,197 @@ async def test_group_http_rbac_manage_cannot_publish():
         assert response.status_code == 200
         assert response.json()["version"]["status"] == cp.STATUS_PUBLISHED
     app.dependency_overrides.pop(current_user, None)
+
+
+async def _membership_cache(group_id: str):
+    row = await server.db.customer_pricing_groups.find_one(
+        {"id": group_id}, {"_id": 0, "active_accurate_item_ids": 1}
+    )
+    return list((row or {}).get("active_accurate_item_ids") or [])
+
+
+@pytest.mark.anyio
+async def test_membership_index_excludes_empty_arrays():
+    info = await server.db.customer_pricing_groups.index_information()
+    spec = info[cp.ACTIVE_MEMBERSHIP_INDEX]
+    assert spec["unique"] is True
+    assert spec["key"] == [("active_accurate_item_ids", 1)]
+    partial = dict(spec["partialFilterExpression"])
+    assert partial["enabled"] is True
+    exists = partial["active_accurate_item_ids.0"]
+    assert dict(exists) == {"$exists": True}
+
+
+@pytest.mark.anyio
+async def test_ensure_indexes_keeps_old_membership_index_on_populated_collection():
+    actor = user(cp.PERM_VIEW, cp.PERM_MANAGE, role="admin")
+    group = await cp.create_group(server.db, {"group_name": "Populated Old Index"}, actor)
+    groups = server.db.customer_pricing_groups
+    await groups.drop_index(cp.ACTIVE_MEMBERSHIP_INDEX)
+    await groups.create_index(
+        "active_accurate_item_ids",
+        unique=True,
+        partialFilterExpression={"enabled": True},
+        name=cp.ACTIVE_MEMBERSHIP_INDEX,
+    )
+    assert await groups.count_documents({}) >= 1
+    installed = dict(
+        (await groups.index_information())[cp.ACTIVE_MEMBERSHIP_INDEX]["partialFilterExpression"]
+    )
+    assert installed == {"enabled": True}
+    assert "active_accurate_item_ids.0" not in installed
+
+    await cp.ensure_indexes(server.db)
+
+    leftover = (await groups.index_information())[cp.ACTIVE_MEMBERSHIP_INDEX]
+    leftover_partial = dict(leftover["partialFilterExpression"])
+    assert leftover["unique"] is True
+    assert leftover["key"] == [("active_accurate_item_ids", 1)]
+    assert leftover_partial == {"enabled": True}
+    assert "active_accurate_item_ids.0" not in leftover_partial
+    assert await groups.find_one({"id": group["id"]}, {"_id": 0, "id": 1}) == {"id": group["id"]}
+    assert await _membership_cache(group["id"]) == []
+
+
+@pytest.mark.anyio
+async def test_multiple_enabled_empty_groups_allowed():
+    actor = user(cp.PERM_VIEW, cp.PERM_MANAGE, cp.PERM_PUBLISH, role="admin")
+    first = await cp.create_group(server.db, {"group_name": "Empty One"}, actor)
+    second = await cp.create_group(server.db, {"group_name": "Empty Two"}, actor)
+    assert await _membership_cache(first["id"]) == []
+    assert await _membership_cache(second["id"]) == []
+
+
+@pytest.mark.anyio
+async def test_empty_draft_clears_cache_and_releases_product():
+    await seed_master("cp-test-release-x", "Released")
+    actor, group_a, draft_a = await create_group_with_draft("Group A Occupied")
+    saved = await cp.update_draft(
+        server.db,
+        draft_a["id"],
+        manual_price_payload(
+            draft_a,
+            ["cp-test-release-x"],
+            prices={"cp-test-release-x": [100, 90]},
+        ),
+        actor,
+    )
+    assert await _membership_cache(group_a["id"]) == ["cp-test-release-x"]
+    await cp.create_group(server.db, {"group_name": "Sibling Empty"}, actor)
+
+    emptied = await cp.update_draft(
+        server.db,
+        saved["id"],
+        {
+            "revision": saved["revision"],
+            "group_name": saved["group_name"],
+            "pricing_mode": cp.MODE_MANUAL_TIER,
+            "tiers": [
+                {"min_qty": 1, "max_qty": 99},
+                {"min_qty": 100, "max_qty": None},
+            ],
+            "products": [],
+        },
+        actor,
+    )
+    assert emptied["revision"] == saved["revision"] + 1
+    assert emptied["products"] == []
+    assert await _membership_cache(group_a["id"]) == []
+
+    _actor_b, _group_b, draft_b = await create_group_with_draft("Group B Claim")
+    claimed = await cp.update_draft(
+        server.db,
+        draft_b["id"],
+        manual_price_payload(
+            draft_b,
+            ["cp-test-release-x"],
+            prices={"cp-test-release-x": [110, 95]},
+        ),
+        actor,
+    )
+    assert [product["accurate_item_id"] for product in claimed["products"]] == [
+        "cp-test-release-x"
+    ]
+
+
+@pytest.mark.anyio
+async def test_published_membership_still_reserves_after_draft_removal():
+    await seed_master("cp-test-published-keep", "Keep Published")
+    actor, group_a, draft_a = await create_group_with_draft("Published Owner")
+    draft_a = await cp.update_draft(
+        server.db,
+        draft_a["id"],
+        manual_price_payload(
+            draft_a,
+            ["cp-test-published-keep"],
+            prices={"cp-test-published-keep": [200, 180]},
+        ),
+        actor,
+    )
+    await cp.publish_version(
+        server.db, draft_a["id"], {"revision": draft_a["revision"]}, actor
+    )
+    draft_b = await cp.create_or_get_draft(server.db, group_a["id"], actor)
+    emptied = await cp.update_draft(
+        server.db,
+        draft_b["id"],
+        {
+            "revision": draft_b["revision"],
+            "group_name": draft_b["group_name"],
+            "pricing_mode": cp.MODE_MANUAL_TIER,
+            "tiers": [
+                {"min_qty": 1, "max_qty": 99},
+                {"min_qty": 100, "max_qty": None},
+            ],
+            "products": [],
+        },
+        actor,
+    )
+    assert emptied["products"] == []
+    assert await _membership_cache(group_a["id"]) == ["cp-test-published-keep"]
+
+    _actor2, _group_b, other_draft = await create_group_with_draft("Other Claim")
+    with pytest.raises(HTTPException) as error:
+        await cp.update_draft(
+            server.db,
+            other_draft["id"],
+            manual_price_payload(
+                other_draft,
+                ["cp-test-published-keep"],
+                prices={"cp-test-published-keep": [210, 190]},
+            ),
+            actor,
+        )
+    assert error.value.status_code == 409
+    assert "sudah digunakan kelompok Published Owner" in str(error.value.detail)
+
+
+@pytest.mark.anyio
+async def test_disabled_group_does_not_block_membership():
+    await seed_master("cp-test-disabled-x", "Disabled Owner")
+    actor, group_a, draft_a = await create_group_with_draft("Soon Disabled")
+    await cp.update_draft(
+        server.db,
+        draft_a["id"],
+        manual_price_payload(
+            draft_a,
+            ["cp-test-disabled-x"],
+            prices={"cp-test-disabled-x": [100, 90]},
+        ),
+        actor,
+    )
+    await cp.patch_group(server.db, group_a["id"], {"enabled": False}, actor)
+    _actor2, _group_b, draft_b = await create_group_with_draft("Takes Disabled Product")
+    claimed = await cp.update_draft(
+        server.db,
+        draft_b["id"],
+        manual_price_payload(
+            draft_b,
+            ["cp-test-disabled-x"],
+            prices={"cp-test-disabled-x": [120, 100]},
+        ),
+        actor,
+    )
+    assert [product["accurate_item_id"] for product in claimed["products"]] == [
+        "cp-test-disabled-x"
+    ]

@@ -26,6 +26,11 @@ GROUPS = "customer_pricing_groups"
 VERSIONS = "customer_pricing_versions"
 LEGACY_PRODUCTS = "customer_pricing_products"
 SETTINGS_KEY = "customer_pricing"
+ACTIVE_MEMBERSHIP_INDEX = "uniq_active_customer_pricing_product"
+ACTIVE_MEMBERSHIP_PARTIAL = {
+    "enabled": True,
+    "active_accurate_item_ids.0": {"$exists": True},
+}
 
 MAX_CUSTOMER_PRICING_QTY = 10_000_000
 MAX_PUBLIC_DESCRIPTION_LENGTH = 280
@@ -559,12 +564,23 @@ async def ensure_indexes(db) -> None:
                 await db[VERSIONS].drop_index(obsolete)
     await db[GROUPS].create_index("id", unique=True)
     await db[GROUPS].create_index("public_id", unique=True)
-    await db[GROUPS].create_index(
-        "active_accurate_item_ids",
-        unique=True,
-        partialFilterExpression={"enabled": True},
-        name="uniq_active_customer_pricing_product",
-    )
+    group_indexes = await db[GROUPS].index_information()
+    # Recreate the uniqueness index only while the collection is empty so tests
+    # pick up the corrected empty-array partial filter. Populated production
+    # collections keep the existing index until an explicit replacement.
+    if (
+        ACTIVE_MEMBERSHIP_INDEX in group_indexes
+        and await db[GROUPS].count_documents({}) == 0
+    ):
+        await db[GROUPS].drop_index(ACTIVE_MEMBERSHIP_INDEX)
+        group_indexes = await db[GROUPS].index_information()
+    if ACTIVE_MEMBERSHIP_INDEX not in group_indexes:
+        await db[GROUPS].create_index(
+            "active_accurate_item_ids",
+            unique=True,
+            partialFilterExpression=ACTIVE_MEMBERSHIP_PARTIAL,
+            name=ACTIVE_MEMBERSHIP_INDEX,
+        )
     await db[VERSIONS].create_index("id", unique=True)
     await db[VERSIONS].create_index(
         [("pricing_group_id", 1), ("version_number", 1)],
