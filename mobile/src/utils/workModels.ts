@@ -1,4 +1,13 @@
 import { fmtQty } from "./format";
+import {
+  cetakTaskReady,
+  helperTaskReady,
+  loadingTaskReady,
+  packingTaskReady,
+  pickSjFile,
+  screenerTaskReady,
+  sjFilesForLoading,
+} from "./taskEligibility";
 
 type AnyOrder = Record<string, any>;
 
@@ -73,15 +82,15 @@ export function screenerModel(order: AnyOrder) {
   const info = order?.screener_info || {};
   const entries = info.entries || [];
   const done = entries.length ? sumEntryQty(entries) : Number(info.screen_qty || 0);
-  const scheduled = Array.isArray(order?.operator_splits) && order.operator_splits.some((s: any) => Number(s.quantity || 0) > 0);
+  const ready = screenerTaskReady(order);
   return {
     title: "Pekerjaan Screener",
     target,
     done,
     remaining: Math.max(0, target - done),
     status: statusLabel(done, target),
-    gateLocked: !scheduled,
-    gateMsg: "Screener tersedia otomatis setelah Penjadwalan disimpan.",
+    gateLocked: !ready.actionable,
+    gateMsg: ready.lockedReason || "Menunggu Penjadwalan",
     itemLabel: printItems.length === 1 ? printItems[0].li.name : `${printItems.length} item`,
   };
 }
@@ -124,15 +133,15 @@ export function helperModel(order: AnyOrder) {
     ? splits.reduce((s: number, x: any) => s + Number(x.quantity || 0), 0)
     : lines.reduce((s: number, l: any) => s + l.target, 0);
   const headerDone = lines.reduce((s: number, l: any) => s + l.done, 0);
-  const scheduled = splits.some((s: any) => Number(s.quantity || 0) > 0);
+  const ready = helperTaskReady(order);
   return {
     title: "Pekerjaan Helper",
     target: headerTarget,
     done: headerDone,
     remaining: Math.max(0, headerTarget - headerDone),
     status: statusLabel(headerDone, headerTarget),
-    gateLocked: !scheduled,
-    gateMsg: "Persiapan Helper tersedia setelah Penjadwalan disimpan.",
+    gateLocked: !ready.actionable,
+    gateMsg: ready.lockedReason || "Menunggu Penjadwalan",
     lines,
   };
 }
@@ -158,21 +167,26 @@ export function packingModel(order: AnyOrder) {
   }).filter((l: any) => l.target > 0 || l.done > 0);
   const headerTarget = lines.reduce((s: number, l: any) => s + l.target, 0);
   const headerDone = lines.reduce((s: number, l: any) => s + l.done, 0);
-  const waiting = lines.length === 0 || lines.every((l: any) => l.remaining <= 0 && l.done <= 0);
+  const ready = packingTaskReady(order);
+  const hasQty = lines.some((l: any) => l.remaining > 0);
+  const waiting = !hasQty;
   return {
     title: "Pekerjaan Packing",
     target: headerTarget,
     done: headerDone,
     remaining: Math.max(0, headerTarget - headerDone),
     status: statusLabel(headerDone, headerTarget),
-    gateLocked: waiting,
-    gateMsg: "Qty Packing menunggu qty yang tersedia (Operator/non-cetak).",
+    gateLocked: !ready.actionable || waiting,
+    gateMsg: !ready.actionable
+      ? ready.lockedReason || "Belum siap Packing"
+      : "Qty Packing menunggu qty yang tersedia (Operator/non-cetak).",
     lines,
   };
 }
 
-export function loadingModel(order: AnyOrder) {
-  const files = (order?.surat_jalan_files || []).filter((f: any) => f && f.id);
+export function loadingModel(order: AnyOrder, preferredSjId?: string | null) {
+  const files = sjFilesForLoading(order);
+  const selected = pickSjFile(files, preferredSjId);
   const items = order?.line_items || [];
   const snapRows = order?.shipment_lines || [];
   const packLines = order?.packing_info?.lines || [];
@@ -197,15 +211,17 @@ export function loadingModel(order: AnyOrder) {
   });
   const headerTarget = lines.reduce((s: number, l: any) => s + l.target, 0);
   const headerDone = lines.reduce((s: number, l: any) => s + l.done, 0);
+  const ready = loadingTaskReady(order);
   return {
     title: "Pekerjaan Loading",
     target: headerTarget,
     done: headerDone,
     remaining: Math.max(0, headerTarget - headerDone),
     status: statusLabel(headerDone, headerTarget),
-    gateLocked: files.length === 0,
-    gateMsg: "Qty Loading dapat diisi setelah Surat Jalan dibuat.",
+    gateLocked: !ready.actionable,
+    gateMsg: ready.lockedReason || "Belum ada qty Packing",
     files,
+    selectedSjId: selected?.id || "",
     lines,
   };
 }
@@ -246,7 +262,7 @@ export function operatorPanelModel(order: AnyOrder, user: { email?: string; id?:
   const done = lines.reduce((s, l) => s + l.done, 0);
   const remaining = Math.max(0, target - done);
   return {
-    title: "Pekerjaan Operator",
+    title: "Pekerjaan Cetak",
     target,
     done,
     remaining,
@@ -256,9 +272,8 @@ export function operatorPanelModel(order: AnyOrder, user: { email?: string; id?:
 }
 
 export function operatorCanSubmit(order: AnyOrder): { ok: boolean; reason?: string } {
-  if (!order?.sample_approved && order?.requires_printing !== false) {
-    return { ok: false, reason: "Cetak Sample harus disetujui sebelum Qty Selesai Cetak dapat diisi." };
-  }
+  const ready = cetakTaskReady(order);
+  if (!ready.actionable) return { ok: false, reason: ready.lockedReason || undefined };
   return { ok: true };
 }
 

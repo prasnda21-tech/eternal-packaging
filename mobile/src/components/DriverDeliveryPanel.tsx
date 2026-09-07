@@ -20,6 +20,7 @@ import {
   signatureReadinessLabel,
 } from "../utils/deliverySignature";
 import { GhostButton, PrimaryButton } from "./Ui";
+import { SectionCardHeader } from "./SectionCardHeader";
 import SignaturePad from "./SignaturePad";
 
 type Props = {
@@ -206,8 +207,9 @@ export default function DriverDeliveryPanel({
   };
 
   return (
-    <View style={ui.card} testID="driver-panel">
-      <Text style={typography.title}>Pengiriman / Terkirim</Text>
+    <View style={ui.cardFlush} testID="driver-panel">
+      <SectionCardHeader tone="delivery" title="Pengiriman / Terkirim" />
+      <View style={ui.cardBody}>
       <Text style={typography.subtitle}>
         Bukti: {proofs.length} foto (min {MIN_DELIVERY_PROOFS}). Upload tidak otomatis menandai terkirim.
       </Text>
@@ -379,6 +381,7 @@ export default function DriverDeliveryPanel({
           <Text style={[ui.chipText, { color: colors.ok }]}>Sudah Terkirim</Text>
         </View>
       )}
+      </View>
     </View>
   );
 }

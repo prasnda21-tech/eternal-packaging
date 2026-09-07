@@ -1,6 +1,7 @@
 import { apiErrorMessage } from "./format";
 import { canUploadSample, type PermCheck } from "./permissions";
 import type { PickerResult } from "./mediaPicker";
+import { sampleUploadTaskReady } from "./taskEligibility";
 
 export const SAMPLE_KIND = "sample";
 export const SAMPLE_NOT_READY_MSG = "Upload sampel tersedia setelah tahap sebelumnya selesai.";
@@ -19,18 +20,12 @@ export function orderRequiresPrinting(order: AnyOrder | null | undefined): boole
 }
 
 export function sampleUploadReady(order: AnyOrder | null | undefined): boolean {
-  if (!order || !orderRequiresPrinting(order)) return false;
-  const ready = order.workflow_ready;
-  if (ready && typeof ready === "object" && typeof ready.sample_upload === "boolean") {
-    return ready.sample_upload;
-  }
-  const scheduled = Array.isArray(order.operator_splits) && order.operator_splits.length > 0;
-  const screenQty = order?.screener_info?.screen_qty;
-  const screenDone = screenQty != null && String(screenQty).trim() !== "";
-  return scheduled && screenDone;
+  return sampleUploadTaskReady(order).actionable;
 }
 
 export function sampleGateMessage(order: AnyOrder | null | undefined): string {
+  const ready = sampleUploadTaskReady(order);
+  if (ready.lockedReason) return ready.lockedReason;
   const reason = typeof order?.screener_gate_reason === "string" ? order.screener_gate_reason.trim() : "";
   return reason || SAMPLE_NOT_READY_MSG;
 }
