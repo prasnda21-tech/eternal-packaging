@@ -5,11 +5,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from permissions import ALL_PERMISSIONS, PERMISSION_CATALOG, ROLE_DEFAULT_PERMISSIONS, effective_permissions
-from quantity_rules import surat_jalan_created, surat_jalan_status_semantic
+from quantity_rules import (
+    find_sj_file,
+    qty_packed,
+    surat_jalan_created,
+    surat_jalan_status_semantic,
+    validate_loading_confirmation,
+)
 from services.surat_jalan_files import (
     PERM_DELETE_FILE,
     PERM_MANAGE,
     PERM_VIEW_FILE,
+    history_entries,
     remove_file_from_order,
 )
 
@@ -104,3 +111,66 @@ def test_endpoint_is_authenticated_permission_404():
     assert "Hapus File" in text
     assert "Hapus file Surat Jalan ini?" in text
     assert "SJ_DELETE_FILE_PERM" in text
+
+
+def test_delete_exact_file_does_not_resurface_via_shipment_or_history():
+    order = {
+        "id": "po-a",
+        "line_items": [
+            {"name": "Cup", "quantity": 100},
+            {"name": "Cup", "quantity": 50},
+        ],
+        "packing_info": {"qty_packed": 80, "lines": [{"line_idx": 0, "packed_qty": 80}, {"line_idx": 1, "packed_qty": 0}]},
+        "surat_jalan_files": [
+            {"id": "sj-keep", "name": "keep.pdf", "storage_path": "p-keep", "uploaded_at": "t1", "lines": [{"line_idx": 0, "qty": 10}]},
+            {"id": "sj-gone", "name": "gone.pdf", "storage_path": "p-gone", "shipment_id": "sh-gone", "sj_number": "SJ-GONE", "uploaded_at": "t2", "lines": [{"line_idx": 1, "qty": 5}]},
+        ],
+        "shipments": [
+            {"id": "sh-keep", "number": "SJ-KEEP", "file_id": "sj-keep", "lines": [{"line_idx": 0, "qty": 10}]},
+            {"id": "sh-gone", "number": "SJ-GONE", "file_id": "sj-gone", "sales_delivery_id": "sj-gone", "lines": [{"line_idx": 1, "qty": 5}]},
+        ],
+        "loading_confirmations": [{"id": "c1", "surat_jalan_id": "sj-keep", "lines": [{"line_idx": 0, "qty": 10}]}],
+    }
+    other = {
+        "id": "po-b",
+        "surat_jalan_files": [{"id": "other-sj", "name": "other.pdf", "storage_path": "p-o"}],
+        "shipments": [{"id": "other-sj", "file_id": "other-sj"}],
+    }
+    packed_before = qty_packed(order)
+    loading_before = list(order["loading_confirmations"])
+    removed = remove_file_from_order(order, "sj-gone")
+    assert removed["id"] == "sj-gone"
+    assert [f["id"] for f in order["surat_jalan_files"]] == ["sj-keep"]
+    assert find_sj_file(order, "sj-gone") is None
+    assert find_sj_file(order, "sj-keep")["id"] == "sj-keep"
+    assert all(e.get("file_id") != "sj-gone" and e.get("id") != "sj-gone" for e in history_entries(order))
+    assert any((e.get("file_id") or e.get("id")) == "sj-keep" for e in history_entries(order))
+    gone_ship = next(sh for sh in order["shipments"] if sh["id"] == "sh-gone")
+    assert gone_ship.get("file_id") in (None, "")
+    assert gone_ship["lines"][0]["qty"] == 5
+    assert qty_packed(order) == packed_before
+    assert order["loading_confirmations"] == loading_before
+    err = validate_loading_confirmation(
+        {**order, "packing_info": {"qty_packed": 80, "lines": [{"line_idx": 0, "packed_qty": 80}, {"line_idx": 1, "packed_qty": 50}]}},
+        "sj-gone",
+        [{"line_idx": 1, "qty": 1}],
+    )
+    assert err
+    assert "tidak ditemukan" in err.lower()
+    assert other["surat_jalan_files"][0]["id"] == "other-sj"
+    assert other["shipments"][0]["file_id"] == "other-sj"
+
+
+def test_delete_does_not_mix_same_name_lines():
+    order = {
+        "line_items": [{"name": "Same", "quantity": 10}, {"name": "Same", "quantity": 20}],
+        "surat_jalan_files": [
+            {"id": "a", "name": "a.pdf", "storage_path": "pa", "lines": [{"line_idx": 0, "qty": 10}]},
+            {"id": "b", "name": "b.pdf", "storage_path": "pb", "lines": [{"line_idx": 1, "qty": 20}]},
+        ],
+    }
+    remove_file_from_order(order, "a")
+    kept = order["surat_jalan_files"][0]
+    assert kept["id"] == "b"
+    assert kept["lines"][0]["line_idx"] == 1
+    assert kept["lines"][0]["qty"] == 20

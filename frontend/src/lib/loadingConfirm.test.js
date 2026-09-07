@@ -84,6 +84,14 @@ describe("Loading confirm helpers", () => {
           source: "SYSTEM_GENERATED",
           lines: [{ line_idx: 0, qty: 200 }],
         },
+        {
+          id: "sh-2",
+          shipment_id: "sh-2",
+          sj_number: "SJ-100-2",
+          name: "Surat Jalan SJ-100-2.pdf",
+          source: "SYSTEM_GENERATED",
+          lines: [{ line_idx: 0, qty: 150 }],
+        },
       ],
       shipments: [
         { id: "sh-1", number: "SJ-100", file_id: "sh-1", lines: [{ line_idx: 0, qty: 200 }] },
@@ -96,6 +104,17 @@ describe("Loading confirm helpers", () => {
     expect(files[0].has_file).toBe(true);
     expect(files[1].id).toBe("sh-2");
     expect(files[1].sj_number).toBe("SJ-100-2");
+  });
+
+  test("deleted Surat Jalan file is not offered from leftover shipment", () => {
+    const files = sjFilesForLoading({
+      surat_jalan_files: [{ id: "keep", name: "keep.pdf" }],
+      shipments: [
+        { id: "deleted-sj", number: "SJ-GONE", file_id: "deleted-sj", lines: [{ line_idx: 0, qty: 10 }] },
+        { id: "keep", number: "SJ-KEEP", file_id: "keep" },
+      ],
+    });
+    expect(files.map((f) => f.id)).toEqual(["keep"]);
   });
 
   test("manual and generated files coexist without merging shipments", () => {

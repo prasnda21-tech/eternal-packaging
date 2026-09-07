@@ -1176,7 +1176,7 @@ async def _with_quantity_lock(order_id: str, mutate):
     raise HTTPException(409, _CONFLICT_MSG)
 
 
-async def _persist_order(order, *, require_lock: bool = False):
+async def _persist_order(order, *, require_lock: bool = False, persist_keys: Optional[tuple] = None):
     expected_updated = order.pop("_expected_updated_at", None)
     if require_lock and not expected_updated:
         raise HTTPException(409, _CONFLICT_MSG)
@@ -1188,7 +1188,8 @@ async def _persist_order(order, *, require_lock: bool = False):
     _apply_hold_snapshot(order)
     # Never let a stripped API projection wipe Surat Jalan bytes on the next persist.
     incoming_files = order.get("surat_jalan_files")
-    if isinstance(incoming_files, list) and incoming_files:
+    merge_sj = persist_keys is None or "surat_jalan_files" in persist_keys
+    if merge_sj and isinstance(incoming_files, list) and incoming_files:
         existing = await db.orders.find_one({"id": order["id"]}, {"surat_jalan_files": 1, "_id": 0})
         old_by_id = {
             str(f.get("id") or ""): f
@@ -1210,6 +1211,9 @@ async def _persist_order(order, *, require_lock: bool = False):
             order["surat_jalan_files"] = merged
     # DB write pakai field yang persistable (skip yang derived).
     to_write = {k: v for k, v in order.items() if k not in _DERIVED_ORDER_KEYS}
+    if persist_keys is not None:
+        allowed = set(persist_keys) | {"updated_at"}
+        to_write = {k: v for k, v in to_write.items() if k in allowed}
     query = {"id": order["id"]}
     if expected_updated:
         query["updated_at"] = expected_updated
@@ -8560,7 +8564,9 @@ async def delete_delivery_proof(order_id: str, proof_id: str, user=Depends(requi
         {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_by": user.get("email")}},
     )
     add_timeline(order, order["current_stage"], user, note=f"Hapus bukti kirim {target.get('original_filename', proof_id)}")
-    await _persist_order(order)
+    # Write only proof/timeline fields. Full-document $set rewrote unrelated binaries
+    # (design/sample/SJ data_url) and made delete wait on a huge Mongo update.
+    await _persist_order(order, persist_keys=("delivery_proofs", "timeline"))
     return {"order": order}
 
 

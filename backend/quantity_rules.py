@@ -972,6 +972,7 @@ def cancel_loading_confirmation(
 
 
 def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
+    """Live Surat Jalan file only. Shipment leftovers after file delete are not a file."""
     want = str(file_id or "").strip()
     if not want:
         return None
@@ -984,13 +985,6 @@ def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
                 or str(f.get("sj_number") or "").strip() == want
             ):
                 return f
-    for sh in shipments_stored(order):
-        if isinstance(sh, dict) and (
-            str(sh.get("id") or "").strip() == want
-            or str(sh.get("number") or "").strip() == want
-            or str(sh.get("sales_delivery_id") or "").strip() == want
-        ):
-            return sh
     return None
 
 

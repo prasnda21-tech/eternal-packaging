@@ -60,6 +60,17 @@ describe("Surat Jalan item/qty helpers", () => {
     expect(hist[0].id).not.toBe(hist[1].id);
   });
 
+  test("ghost sj_files without a live file do not stay in Detail PO history", () => {
+    const hist = sjHistory({
+      sj_files: [
+        { id: "gone", file_id: null, has_file: false, name: "Surat Jalan SJ-GONE" },
+      ],
+      surat_jalan_files: [{ id: "keep", name: "keep.pdf" }],
+      shipments: [{ id: "gone", number: "SJ-GONE", file_id: null }],
+    });
+    expect(hist.map((f) => f.id || f.file_id)).toEqual(["keep"]);
+  });
+
   test("empty row helper", () => {
     expect(emptySjLine()).toEqual({ line_idx: "", qty: "" });
   });
