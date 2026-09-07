@@ -2697,47 +2697,22 @@ def _normalize_accurate_so(
     lines_raw = d.get("detailItem") or d.get("detailItems") or d.get("items") or []
     if not isinstance(lines_raw, list):
         lines_raw = []
+    valid_raw_lines = [li for li in lines_raw if isinstance(li, dict)]
+    # Header sablon text is SO-level. Copying it onto every line without its own
+    # color made LID / accessory rows inherit the cup print color (ORANGE).
+    # Keep header fallback only for single-line SOs (legacy Accurate notes).
+    allow_header_color_fallback = len(valid_raw_lines) == 1
     lines: List[Dict[str, Any]] = []
-    for li in lines_raw:
-        if not isinstance(li, dict):
-            continue
+    for li in valid_raw_lines:
         item = li.get("item") or {}
         if not isinstance(item, dict):
             item = {}
-        # Color: structured line field, then line notes, then header description.
-        explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
-        line_note_text = " ".join(
-            str(li.get(k) or "").strip()
-            for k in ("detailNotes", "notes", "memo", "description", "itemDesc")
-            if li.get(k)
-        ).strip()
-
-        color_val: Optional[str] = None
-        color_source: Optional[str] = None
-        color_candidates: List[str] = []
-        needs_verify: bool = False
-
-        if explicit_color and str(explicit_color).strip():
-            color_val = str(explicit_color).strip()
-            color_source = "item.color"
-        else:
-            colors_in_item = _detect_colors(line_note_text)
-            if len(colors_in_item) == 1:
-                color_val = colors_in_item[0]
-                color_source = "item.description"
-            elif len(colors_in_item) > 1:
-                color_candidates = colors_in_item
-                needs_verify = True
-                color_source = "item.description"
-            elif so_colors:
-                # Header description fallback. Never overwrites a line-level color.
-                if len(so_colors) == 1:
-                    color_val = so_colors[0]
-                    color_source = "so.description"
-                else:
-                    color_candidates = so_colors
-                    needs_verify = True
-                    color_source = "so.description"
+        color_val, color_source, color_candidates, needs_verify = _resolve_so_line_color(
+            item=item,
+            li=li,
+            so_colors=so_colors,
+            allow_header_fallback=allow_header_color_fallback,
+        )
 
         line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
         qty_raw = li.get("quantity") if li.get("quantity") not in (None, "") else li.get("qty")
@@ -2750,6 +2725,9 @@ def _normalize_accurate_so(
             "color": color_val,
             "notes": line_notes,
         }
+        raw_line_id = li.get("id")
+        if raw_line_id is not None and str(raw_line_id).strip() != "":
+            line["accurate_line_id"] = str(raw_line_id)
         if color_candidates:
             line["color_candidates"] = color_candidates
         if needs_verify:
@@ -2837,6 +2815,65 @@ def _detect_colors(text: str) -> List[str]:
                     found.append(canonical)
                 break
     return found
+
+
+def _so_line_note_text(li: Dict[str, Any]) -> str:
+    return " ".join(
+        str(li.get(k) or "").strip()
+        for k in ("detailNotes", "notes", "memo", "description", "itemDesc")
+        if li.get(k)
+    ).strip()
+
+
+def _so_line_name_text(item: Dict[str, Any], li: Dict[str, Any]) -> str:
+    return " ".join(
+        str(part).strip()
+        for part in (
+            item.get("name"),
+            li.get("itemName"),
+            li.get("detailName"),
+        )
+        if part
+    ).strip()
+
+
+def _apply_detected_colors(
+    detected: List[str], source: str
+) -> Tuple[Optional[str], Optional[str], List[str], bool]:
+    if len(detected) == 1:
+        return detected[0], source, [], False
+    if len(detected) > 1:
+        return None, source, detected, True
+    return None, None, [], False
+
+
+def _resolve_so_line_color(
+    *,
+    item: Dict[str, Any],
+    li: Dict[str, Any],
+    so_colors: List[str],
+    allow_header_fallback: bool,
+) -> Tuple[Optional[str], Optional[str], List[str], bool]:
+    """Per-line color. Never copies another line's color.
+
+    Priority: structured line field → line notes → item name → SO header
+    (header only when the SO has exactly one detail line).
+    """
+    explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
+    if explicit_color and str(explicit_color).strip():
+        return str(explicit_color).strip(), "item.color", [], False
+
+    note_result = _apply_detected_colors(_detect_colors(_so_line_note_text(li)), "item.description")
+    if note_result[1]:
+        return note_result
+
+    name_result = _apply_detected_colors(_detect_colors(_so_line_name_text(item, li)), "item.name")
+    if name_result[1]:
+        return name_result
+
+    if allow_header_fallback and so_colors:
+        return _apply_detected_colors(so_colors, "so.description")
+    return None, None, [], False
 
 
 def _extract_so_notes_text(d: Dict[str, Any]) -> str:

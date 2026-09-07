@@ -121,6 +121,15 @@ describe("ProductionRoutePanel - Strict Binary Classification & Neutral Initial 
     });
   });
 
+  describe("10b. Per-line color is line-specific", () => {
+    test("panel renders each line color independently from persisted line.color", () => {
+      expect(panelSrc).toMatch(/lis\.map\(\(li, idx\) =>/);
+      expect(panelSrc).toMatch(/\{li\.color && <div className="muted small">\{li\.color\}<\/div>\}/);
+      expect(panelSrc).not.toMatch(/order\.color/);
+      expect(panelSrc).not.toMatch(/line_items\[0\]\.color/);
+    });
+  });
+
   describe("11. Disabled and busy behavior preserved", () => {
     test("buttons have proper test IDs, handlers, and disabled guarding", () => {
       expect(panelSrc).toMatch(/data-testid=\{`route-print-\$\{idx\}`\}/);

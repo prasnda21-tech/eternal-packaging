@@ -26,4 +26,11 @@ describe("Import PO Accurate multi Sales Order", () => {
     expect(src).toMatch(/filter\(\(i\) => i\.ok && !i\.duplicate\)/);
     expect(src).toMatch(/accurateImportConfirmBulk\(numbers\)/);
   });
+
+  test("Accurate preview color is per line item, not a shared PO color", () => {
+    expect(src).toMatch(/preview\.preview\.line_items\.map\(\(li, i\) =>/);
+    expect(src).toMatch(/data-testid=\{`preview-item-\$\{i\}-color`\}/);
+    expect(src).toMatch(/\{li\.color \? \(/);
+    expect(src).not.toMatch(/preview\.preview\.color/);
+  });
 });
