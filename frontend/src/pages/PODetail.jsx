@@ -22,7 +22,7 @@ import StageBar from "../components/StageBar";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import { terkirimQtySummary } from "../lib/deliveryHistory";
 import useAutoRefresh from "../lib/useAutoRefresh";
-import StageDetailDrawer from "../components/StageDetailDrawer";
+import { scrollToPoDetailStageIndex } from "../lib/poDetailStageNav";
 import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
@@ -52,8 +52,6 @@ export default function PODetail() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
-  // Stage detail drawer (B3 — Req 8): clickable stages open a read-only drawer
-  const [stageDrawer, setStageDrawer] = useState(null); // stage index or null
   // Payment upload state (Req wiring)
   const [payUploading, setPayUploading] = useState(false);
   const [payUploadErr, setPayUploadErr] = useState("");
@@ -417,53 +415,60 @@ export default function PODetail() {
   return (
     <div className="po-detail" data-testid="po-detail-page">
       <div className="detail-header">
-        <button className="ghost sm" onClick={() => navigate(-1)} data-testid="back-button">
-          <ArrowLeft size={16} /> Kembali
-        </button>
-        <div className="detail-title">
+        <div className="po-hero-title-row">
           <h1 className="po-hero-customer" data-testid="detail-customer-name">
             {order.customer || "Customer belum tersedia"}
           </h1>
-          <div className="po-line">
-            <p className="po-hero-number" data-testid="detail-po-number">{order.po_number}</p>
-            {order.outlet ? <span className="po-hero-dot" aria-hidden="true">·</span> : null}
-            <p className="po-hero-outlet" data-testid="detail-outlet">{order.outlet}</p>
-            <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
-              {order.priority === "urgent" ? "URGENT" : "NORMAL"}
-            </span>
-            {canManageUrgent && (
-              <button className="ghost sm" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
-                <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
-              </button>
-            )}
-            {order.buffer_stock && (
-              <span className="pill sm" data-testid="buffer-stock-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
-                BUFFER STOCK
-              </span>
-            )}
-            {canManageBufferStock && (
-              <button className="ghost sm" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
-                {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
-              </button>
-            )}
-          </div>
-          <p className="subhead po-hero-stage-row">
-            Sedang: <strong data-testid="detail-stage">{STAGES[order.current_stage]}</strong>
-            <span className="po-customer-line" data-testid="po-customer-line">
-              · {order.customer || "Customer belum tersedia"}
-            </span>
-            <button className="ghost sm po-hero-refresh" onClick={refreshPO} disabled={poIsPolling} data-testid="po-refresh-button">
-              <RefreshCw size={11} /> Refresh
+          <button type="button" className="ghost sm po-hero-back" onClick={() => navigate(-1)} data-testid="back-button">
+            <ArrowLeft size={16} /> Kembali
+          </button>
+        </div>
+        <div className="po-hero-toolbar" data-testid="po-hero-toolbar">
+          <p className="po-hero-number" data-testid="detail-po-number">{order.po_number}</p>
+          {order.outlet ? <span className="po-hero-dot" aria-hidden="true">·</span> : null}
+          <p className="po-hero-outlet" data-testid="detail-outlet">{order.outlet}</p>
+          <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
+            {order.priority === "urgent" ? "URGENT" : "NORMAL"}
+          </span>
+          {canManageUrgent && (
+            <button type="button" className="ghost sm" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
+              <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
             </button>
-            <span data-testid="po-last-updated" className="po-hero-updated">
-              Terakhir diperbarui: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
+          )}
+          {order.buffer_stock && (
+            <span className="pill sm" data-testid="buffer-stock-badge" style={{ background: "#e6ecf3", color: "#3a4b60" }}>
+              BUFFER STOCK
             </span>
-          </p>
+          )}
+          {canManageBufferStock && (
+            <button type="button" className="ghost sm" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
+              {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
+            </button>
+          )}
+          <span className="po-hero-sedang">
+            Sedang: <strong data-testid="detail-stage">{STAGES[order.current_stage]}</strong>
+          </span>
+          <span className="po-customer-line" data-testid="po-customer-line">
+            · {order.customer || "Customer belum tersedia"}
+          </span>
+          <button type="button" className="ghost sm po-hero-refresh" onClick={refreshPO} disabled={poIsPolling} data-testid="po-refresh-button">
+            <RefreshCw size={11} /> Refresh
+          </button>
+          <span data-testid="po-last-updated" className="po-hero-updated">
+            Terakhir diperbarui: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
+          </span>
         </div>
       </div>
 
-      <div className="po-stage-bar-block">
-        <StageBar stage={order.current_stage} order={order} showLabels onStageClick={(idx) => setStageDrawer(idx)} />
+      <div className="po-stage-bar-sticky" data-testid="po-stage-bar-sticky">
+        <div className="po-stage-bar-block">
+          <StageBar
+            stage={order.current_stage}
+            order={order}
+            showLabels
+            onStageClick={(idx) => scrollToPoDetailStageIndex(idx)}
+          />
+        </div>
       </div>
 
       <section className="po-kpi-strip" data-testid="po-kpi-strip">
@@ -513,7 +518,7 @@ export default function PODetail() {
 
       <div className="po-workflow" data-testid="po-workflow">
       {/* 01 Order Masuk */}
-      <div data-testid="workflow-slot-0" data-workflow-stage="0">
+      <div id="po-stage-order-masuk" data-testid="workflow-slot-0" data-workflow-stage="0">
       <div className="po-meta-aksi-row" data-testid="po-meta-aksi-row">
       {/* Order Info */}
       <section className="panel po-info-panel" data-testid="detail-info">
@@ -779,7 +784,7 @@ export default function PODetail() {
       <div className="workflow-group" data-testid="workflow-group-2">
         <p className="workflow-group-label">2 · Design &amp; Payment (paralel)</p>
       {/* 02 Design */}
-      <div data-testid="workflow-slot-1" data-workflow-stage="1">
+      <div id="po-stage-design" data-testid="workflow-slot-1" data-workflow-stage="1">
       <AttachmentsPanel
         order={order}
         user={user}
@@ -794,7 +799,7 @@ export default function PODetail() {
       </div>
 
       {/* 03 Approval Design + Customer Approval (visual pair only) */}
-      <div data-testid="workflow-slot-2" data-workflow-stage="2">
+      <div id="po-stage-approval-design" data-testid="workflow-slot-2" data-workflow-stage="2">
       <section className="panel po-pair-card po-phase-design" data-testid="approval-design-panel">
         <header className="panel-head">
           <h3>Approval Design</h3>
@@ -837,7 +842,7 @@ export default function PODetail() {
       </div>
 
       {/* 04–05 Payment + Approval Payment (visual pair only) */}
-      <section className="panel payment-panel po-pair-card po-phase-payment" data-testid="payment-approval-pair">
+      <section id="po-stage-payment" className="panel payment-panel po-pair-card po-phase-payment" data-testid="payment-approval-pair">
         <header className="panel-head">
           <h3>Payment &amp; Approval</h3>
           <span className="muted small" data-testid="payment-proof-count">
@@ -977,7 +982,7 @@ export default function PODetail() {
       </div>
 
       {/* 06 Penjadwalan + Pembagian Jadwal (visual pair only) */}
-      <div data-testid="workflow-slot-5" data-workflow-stage="5">
+      <div id="po-stage-penjadwalan" data-testid="workflow-slot-5" data-workflow-stage="5">
       <section className="panel qty-ops-panel po-pair-card po-phase-scheduling" data-testid="penjadwalan-panel">
         <QtyOpsHead icon={CalendarClock} title="Penjadwalan">
           <span className="muted small">Head of Production</span>
@@ -1000,7 +1005,7 @@ export default function PODetail() {
       <div className="workflow-group" data-testid="workflow-group-4">
         <p className="workflow-group-label">4 · Screener &amp; Persiapan Helper (paralel)</p>
       {/* 07 Screener */}
-      <div data-testid="workflow-slot-6" data-workflow-stage="6">
+      <div id="po-stage-screener" data-testid="workflow-slot-6" data-workflow-stage="6">
       <section className="panel qty-ops-panel" data-testid="screener-panel">
         <QtyOpsHead icon={ScanLine} title="Screener">
           <span className={`qty-status ${statusClassFor(screenerLocked ? "IDLE" : (screenerFilled ? "SAVED" : "READY"))}`}>
@@ -1045,7 +1050,7 @@ export default function PODetail() {
       </div>
 
       {/* 08 Persiapan Helper */}
-      <div data-testid="workflow-slot-7" data-workflow-stage="7">
+      <div id="po-stage-persiapan-helper" data-testid="workflow-slot-7" data-workflow-stage="7">
       <HelperPrepPanel order={order} canEdit={canHelperPrep} onUpdated={setOrder} />
       </div>
       </div>
@@ -1080,7 +1085,7 @@ export default function PODetail() {
           </div>
         </header>
         <div className="po-pair-grid">
-        <div className="po-pair-col" data-testid="workflow-slot-8" data-workflow-stage="8">
+        <div id="po-stage-operator" className="po-pair-col" data-testid="workflow-slot-8" data-workflow-stage="8">
       <AttachmentsPanel
         order={order}
         user={user}
@@ -1089,7 +1094,7 @@ export default function PODetail() {
       />
         </div>
 
-      <div className="po-pair-col" data-testid="workflow-slot-9" data-workflow-stage="9">
+      <div id="po-stage-konfirmasi-sample" className="po-pair-col" data-testid="workflow-slot-9" data-workflow-stage="9">
       <div className="qty-ops-panel" data-testid="approval-sample-panel">
         <h4 className="po-pair-col-title">Approval Cetak Sample</h4>
         <div className="qty-ops-body">
@@ -1120,7 +1125,7 @@ export default function PODetail() {
       </section>
 
       {/* C Operator / Qty Selesai Cetak */}
-      <div data-testid="workflow-slot-10" data-workflow-stage="10">
+      <div id="po-stage-cetak" data-testid="workflow-slot-10" data-workflow-stage="10">
       <div data-testid="cetak-panel">
       <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="progress" />
       </div>
@@ -1128,7 +1133,7 @@ export default function PODetail() {
       </div>
 
       {/* 12 Packing */}
-      <div data-testid="workflow-slot-11" data-workflow-stage="11">
+      <div id="po-stage-packing" data-testid="workflow-slot-11" data-workflow-stage="11">
       <PackingPanel
         order={order}
         canManage={canMarkPacked}
@@ -1142,7 +1147,7 @@ export default function PODetail() {
       </div>
 
       {/* 13 Surat Jalan */}
-      <div data-testid="workflow-slot-12" data-workflow-stage="12">
+      <div id="po-stage-surat-jalan" data-testid="workflow-slot-12" data-workflow-stage="12">
       <SuratJalanPanel
         order={order}
         canManage={canManageSuratJalan}
@@ -1159,7 +1164,7 @@ export default function PODetail() {
       </div>
 
       {/* 14 Loading */}
-      <div data-testid="workflow-slot-13" data-workflow-stage="13">
+      <div id="po-stage-loading" data-testid="workflow-slot-13" data-workflow-stage="13">
       <LoadingPanel
         order={order}
         canManage={canLoadingUpdate}
@@ -1173,7 +1178,7 @@ export default function PODetail() {
       </div>
 
       {/* 15 Bukti Kirim then Terkirim */}
-      <div data-testid="workflow-slot-14" data-workflow-stage="14">
+      <div id="po-stage-pengiriman" data-testid="workflow-slot-14" data-workflow-stage="14">
       <DeliveryProofPanel order={order} onUpdated={setOrder} />
       <section className="panel" data-testid="terkirim-panel">
         <header className="panel-head">
@@ -1309,9 +1314,6 @@ export default function PODetail() {
             </div>
           </div>
         </div>
-      )}
-      {stageDrawer != null && (
-        <StageDetailDrawer order={order} stageIdx={stageDrawer} onClose={() => setStageDrawer(null)} />
       )}
       <OutletLocationModal
         open={!!locRow}
