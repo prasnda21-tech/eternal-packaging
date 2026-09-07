@@ -46,15 +46,18 @@ describe("Customer tracking public page", () => {
     expect(fn).not.toMatch(/credentials:\s*['"]include['"]/);
   });
 
-  test("internal detail has compact copy-link action and 15-stage preview", () => {
-    expect(detail).toMatch(/Live Tracking Customer/);
-    expect(detail).toMatch(/Salin Link Tracking/);
+  test("internal detail keeps document actions in Aksi PO not Pengiriman header", () => {
+    expect(detail).toMatch(/Live Tracking/);
     expect(detail).toMatch(/copy-tracking-link/);
     expect(detail).toMatch(/orderTrackingLink/);
-    expect(detail).toMatch(/liveTrackingRows/);
-    expect(detail).toMatch(/live-tracking-workflow/);
-    const trackIdx = detail.indexOf("tracking-customer-panel");
-    expect(trackIdx).toBeGreaterThan(detail.indexOf("ProductionRoutePanel"));
+    expect(detail).not.toMatch(/live-tracking-workflow/);
+    expect(detail).not.toMatch(/liveTrackingRows/);
+    const actions = detail.slice(detail.indexOf("po-actions-panel"), detail.indexOf("line-items-panel"));
+    expect(actions).toMatch(/copy-tracking-link/);
+    expect(actions).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(actions).toMatch(/btn-buat-faktur-penjualan/);
+    expect(detail).not.toMatch(/sales-delivery-summary-panel/);
+    expect(detail).not.toMatch(/Pengiriman Pesanan \(Surat Jalan Penjualan\)/);
   });
 
   test("public page shows customer name po and proofs", () => {
