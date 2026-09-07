@@ -638,6 +638,12 @@ export default function PODetail() {
             <strong className="mono" data-testid="detail-accurate-id">{order.accurate_id}</strong>
           </div>
         )}
+        {order.notes && (
+          <div className="po-info-address" data-testid="detail-keterangan">
+            <span className="lbl">Keterangan</span>
+            <strong style={{whiteSpace:"pre-wrap"}}>{order.notes}</strong>
+          </div>
+        )}
         {order.source_pdf?.storage_path && (
           <div>
             <span className="lbl">PDF asli import</span>

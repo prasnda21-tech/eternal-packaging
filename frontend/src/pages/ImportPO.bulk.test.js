@@ -33,4 +33,10 @@ describe("Import PO Accurate multi Sales Order", () => {
     expect(src).toMatch(/\{li\.color \? \(/);
     expect(src).not.toMatch(/preview\.preview\.color/);
   });
+
+  test("Accurate preview shows order-level Keterangan from preview.notes", () => {
+    expect(src).toMatch(/data-testid="preview-notes"/);
+    expect(src).toMatch(/preview\.preview\.notes/);
+    expect(src).toMatch(/Keterangan/);
+  });
 });

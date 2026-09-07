@@ -2694,6 +2694,7 @@ def _normalize_accurate_so(
     """
     so_notes = _extract_so_notes_text(d)
     so_colors = _detect_colors(so_notes)
+    header_keterangan = _extract_so_header_keterangan(d)
     lines_raw = d.get("detailItem") or d.get("detailItems") or d.get("items") or []
     if not isinstance(lines_raw, list):
         lines_raw = []
@@ -2769,6 +2770,7 @@ def _normalize_accurate_so(
         "estimated_ship_date": ship_date,
         "estimated_delivery": ship_date,
         "line_items": lines,
+        "notes": header_keterangan,
         "so_notes_raw": so_notes or None,
         _SO_INTERNAL_CREATED_BY_ID: _accurate_created_by_id(d),
         _SO_INTERNAL_BRANCH_ID: _accurate_branch_id(d),
@@ -2876,6 +2878,23 @@ def _resolve_so_line_color(
     return None, None, [], False
 
 
+def _extract_so_header_keterangan(d: Dict[str, Any]) -> str:
+    """Accurate Sales Order header Keterangan (OpenAPI `description`).
+
+    Order-level only. First non-empty header field wins — do not join
+    customer PO number or other unrelated keys into Keterangan.
+    Surrounding whitespace is stripped; inner line breaks are kept.
+    """
+    for key in ("description", "memo", "notes", "orderNotes", "note"):
+        v = d.get(key)
+        if v is None:
+            continue
+        text = str(v).strip()
+        if text:
+            return text
+    return ""
+
+
 def _extract_so_notes_text(d: Dict[str, Any]) -> str:
     """Aggregate SO-level free text where color hints may appear."""
     parts = []
@@ -2918,6 +2937,7 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         "line_items": [
             {"accurate_item_id": "101", "item_code": "PC-12", "name": "Paper cup 12oz", "quantity": 900, "unit": "pcs", "color": "Navy / putih", "notes": ""},
         ],
+        "notes": "",
     },
     {
         "accurate_id": "ACC-SO-1050",
@@ -2936,6 +2956,7 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
             {"accurate_item_id": "202", "item_code": "LB-M", "name": "Lunchbox medium", "quantity": 600, "unit": "pcs", "color": "Merah / krem", "notes": "Logo tengah, ukuran 60mm"},
             {"accurate_item_id": "203", "item_code": "JP-1L", "name": "Jumbo plastic 1L", "quantity": 400, "unit": "pcs", "color": "Krem", "notes": ""},
         ],
+        "notes": "",
     },
     {
         "accurate_id": "ACC-SO-2001",
@@ -2955,6 +2976,7 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
             {"accurate_item_id": "104", "item_code": "PC-16", "name": "Paper cup 16oz", "quantity": 2500, "unit": "pcs", "color": "Merah / kuning", "notes": "Logo pak Gino, tinta food-grade"},
             {"accurate_item_id": "105", "item_code": "PC-8", "name": "Paper cup 8oz", "quantity": 1500, "unit": "pcs", "color": "Merah / kuning", "notes": ""},
         ],
+        "notes": "",
     },
     {
         "accurate_id": "ACC-SO-2002",
@@ -2972,6 +2994,47 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         "order_date_offset_days": -1,
         "line_items": [
             {"accurate_item_id": "106", "item_code": "PB-M", "name": "Paper bag medium", "quantity": 3000, "unit": "pcs", "color": "Cokelat kraft", "notes": "Logo emboss di depan"},
+        ],
+        "notes": "",
+    },
+    {
+        "accurate_id": "ACC-SO-KET-001",
+        "po_number": "PO-KET-001",
+        "customer": "Merk TPP",
+        "outlet": "Merk TPP — Fixture",
+        "recipient": "Admin Fixture",
+        "address": "Jl. Fixture Keterangan 1",
+        "payment_terms": "Net 14",
+        "sales": "Vira",
+        "created_by_user": "Rina (Sales Admin)",
+        "expedition": "Internal fleet",
+        "delivery_zone": "Jakarta Utara",
+        "seller": "Vira",
+        "order_date_offset_days": 0,
+        "notes": (
+            "RETUR LID DARI MERK TPP KE SJP 1000PCS\n"
+            "KIRIM TANGGAL : 07/09/2026\n"
+            "(SEKALIAN NARIK MERK TPP 1000PCS)"
+        ),
+        "line_items": [
+            {
+                "accurate_item_id": "101",
+                "item_code": "PC-12",
+                "name": "14 oz Inject Datar Bening Klir",
+                "quantity": 500,
+                "unit": "pcs",
+                "color": "ORANGE",
+                "notes": "SABLON WARNA ORANGE",
+            },
+            {
+                "accurate_item_id": "202",
+                "item_code": "LB-M",
+                "name": "LID Connect Inject Bening Klir",
+                "quantity": 500,
+                "unit": "pcs",
+                "color": "BENING",
+                "notes": "",
+            },
         ],
     },
 ]
