@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   AlertCircle,
@@ -120,12 +120,14 @@ export default function PesananPenjualan() {
     [formData.line_items, lineSearchQuery]
   );
 
+  const loadOrdersAbortRef = useRef(null);
+
   const loadOptions = useCallback(async () => {
     setOptionsLoading(true);
     try {
       const data = await api.salesOrderOptions();
       setOptions(data || {});
-      if (data?.suggested_po_number && !formData.po_number) {
+      if (data?.suggested_po_number) {
         setFormData((prev) => ({
           ...prev,
           po_number: prev.po_number || data.suggested_po_number,
@@ -136,34 +138,48 @@ export default function PesananPenjualan() {
     } finally {
       setOptionsLoading(false);
     }
-  }, [formData.po_number]);
+  }, []);
 
   const loadOrders = useCallback(async () => {
+    loadOrdersAbortRef.current?.abort();
+    const ac = new AbortController();
+    loadOrdersAbortRef.current = ac;
     setListLoading(true);
     setListErr("");
     try {
       const params = {};
       if (searchQuery.trim()) params.q = searchQuery.trim();
       if (statusFilter !== "all") params.status = statusFilter;
-      const res = await api.listSalesOrders(params);
+      const res = await api.listSalesOrders(params, { signal: ac.signal });
+      if (ac.signal.aborted) return;
       setOrders(res.orders || []);
       setSelectedIds(new Set());
     } catch (e) {
+      if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
+        return;
+      }
       const det = e.response?.data?.detail;
       setListErr(typeof det === "object" ? det.message : (det || "Gagal memuat daftar Pesanan Penjualan"));
     } finally {
-      setListLoading(false);
+      if (!ac.signal.aborted) {
+        setListLoading(false);
+      }
     }
   }, [searchQuery, statusFilter]);
 
   useEffect(() => {
-    loadOptions();
-  }, [loadOptions]);
+    if (viewMode === "create") {
+      loadOptions();
+    }
+  }, [viewMode, loadOptions]);
 
   useEffect(() => {
     if (viewMode === "list") {
       loadOrders();
     }
+    return () => {
+      loadOrdersAbortRef.current?.abort();
+    };
   }, [viewMode, loadOrders]);
 
   // When customer changes, handle autofill suggestions for outlet/address/sales/payment_terms

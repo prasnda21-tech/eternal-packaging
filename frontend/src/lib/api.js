@@ -170,7 +170,7 @@ export const api = {
   updateSalesCustomer: (id, payload) => client.put(`/sales-customers/${id}`, payload).then((r) => r.data),
   salesOrderOptions: () => client.get(`/sales-orders/options`).then((r) => r.data),
   createSalesOrder: (payload) => client.post(`/sales-orders`, payload).then((r) => r.data),
-  listSalesOrders: (params = {}) => client.get(`/sales-orders`, { params }).then((r) => r.data),
+  listSalesOrders: (params = {}, config = {}) => client.get(`/sales-orders`, { params, ...config }).then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   ledgerAccounts: (params = {}) => client.get(`/ledger/accounts`, { params }).then((r) => r.data),

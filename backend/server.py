@@ -7096,6 +7096,53 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     return {"order": new_order, "message": "Pesanan Penjualan berhasil dibuat"}
 
 
+def _mongo_array_nonempty_expr(field: str) -> dict:
+    """True when `field` is a non-empty array, without returning array contents."""
+    return {
+        "$gt": [
+            {
+                "$size": {
+                    "$cond": [
+                        {"$isArray": f"${field}"},
+                        f"${field}",
+                        [],
+                    ]
+                }
+            },
+            0,
+        ]
+    }
+
+
+_SALES_ORDER_LIST_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "po_number": 1,
+    "order_date": 1,
+    "created_at": 1,
+    "customer": 1,
+    "outlet": 1,
+    "total_quantity": 1,
+    "sales": 1,
+    "sales_user": 1,
+    "status_label": 1,
+    "current_stage": 1,
+    "cancelled": 1,
+    "design_status": 1,
+    "design_bypassed": 1,
+    "payment_status": 1,
+    "payment_bypassed": 1,
+    "design_approved_at": 1,
+    "design_bypassed_at": 1,
+    "payment_approved_at": 1,
+    "payment_bypassed_at": 1,
+    "delivery_deadline_manual": 1,
+    "delivery_status": 1,
+    "_has_design_files": _mongo_array_nonempty_expr("design_files"),
+    "_has_payment_files": _mongo_array_nonempty_expr("payment_files"),
+}
+
+
 @api_router.get("/sales-orders")
 async def list_sales_orders(
     q: Optional[str] = None,
@@ -7127,7 +7174,12 @@ async def list_sales_orders(
             {"sales": {"$regex": needle, "$options": "i"}},
         ]
     
-    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    orders = await db.orders.aggregate([
+        {"$match": query},
+        {"$sort": {"created_at": -1}},
+        {"$limit": 1000},
+        {"$project": _SALES_ORDER_LIST_PROJECTION},
+    ]).to_list(1000)
     dd_settings = await _get_delivery_deadline_settings()
     
     # Batch calculate delivery status summary for all returned orders
@@ -7141,9 +7193,13 @@ async def list_sales_orders(
         shipped_aggregates = {doc["_id"]: doc async for doc in db.sales_deliveries.aggregate(pipe)}
 
     for o in orders:
+        o["design_files"] = [True] if o.pop("_has_design_files", False) else []
+        o["payment_files"] = [True] if o.pop("_has_payment_files", False) else []
         _apply_hold_snapshot(o)
         _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
         _strip_tracking_secret(o)
+        o.pop("design_files", None)
+        o.pop("payment_files", None)
         
         agg = shipped_aggregates.get(o.get("id"), {})
         tot_shipped = int(agg.get("total_shipped", 0))

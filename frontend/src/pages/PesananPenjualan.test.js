@@ -72,6 +72,14 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/Quantity harus angka lebih besar dari 0/);
   });
 
+  test("defers options fetch until create view and aborts duplicate list fetches", () => {
+    expect(src).toMatch(/if \(viewMode === "create"\) \{\s*loadOptions\(\);/);
+    expect(src).toMatch(/new AbortController/);
+    expect(src).toMatch(/signal: ac\.signal/);
+    expect(src).toMatch(/ERR_CANCELED/);
+    expect(src).toMatch(/loadOrdersAbortRef\.current\?\.abort\(\)/);
+  });
+
   test("includes both list and create views with Lihat PO link", () => {
     expect(src).toMatch(/viewMode === "create"/);
     expect(src).toMatch(/viewMode === "list"/);
