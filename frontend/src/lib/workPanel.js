@@ -52,6 +52,12 @@ export function schedulePoHref(orderId, hasPerm, preferredDivision) {
   return `/po/${orderId}`;
 }
 
+/** Jadwal Produksi PO click — always canonical Detail PO, never work panel / Status Pengiriman. */
+export function productionSchedulePoHref(orderId) {
+  if (!orderId) return "";
+  return `/po/${orderId}`;
+}
+
 export const ACTION_DIVISION = {
   design_upload: "designer",
   penjadwalan: "kepala_produksi",

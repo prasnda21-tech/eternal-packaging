@@ -3017,7 +3017,8 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
 
 @api_router.post("/orders/{order_id}/urgent")
-async def set_urgent(order_id: str, payload: UrgentPayload, user=Depends(require("admin", "head_production"))):
+async def set_urgent(order_id: str, payload: UrgentPayload, user=Depends(current_user)):
+    await _require_perm(user, "urgent.manage")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")

@@ -1,7 +1,9 @@
 import {
   canViewSalesReceiptPaymentProof,
   receiptHasPaymentProof,
+  salesReceiptProofFileUrl,
 } from "../lib/salesReceiptPaymentProof";
+import { paymentProofIsPresent, paymentProofSource } from "../lib/paymentProofOpen";
 
 /** Pure helpers mirroring Detail PO → Payment receipt proof UI decisions. */
 export function salesReceiptProofButtonVisible(receipt, canView) {
@@ -75,9 +77,15 @@ describe("PODetail sales receipt payment proof UI", () => {
 
   test("safe endpoint path uses receipt id not storage url", () => {
     const receiptId = "rec-123";
-    const path = `/api/sales-receipts/${encodeURIComponent(receiptId)}/payment-proof`;
-    expect(path).toContain("sales-receipts/rec-123/payment-proof");
+    const path = salesReceiptProofFileUrl(receiptId);
+    expect(path).toBe("/api/sales-receipts/rec-123/payment-proof");
     expect(path).not.toMatch(/eternal-packaging\//);
     expect(path).not.toMatch(/storage_path/);
+  });
+
+  test("legacy PO payment_files metadata still has an openable source", () => {
+    const stored = { id: "pf1", name: "bukti.png", data_url: "data:image/png;base64,abc" };
+    expect(paymentProofIsPresent(stored)).toBe(true);
+    expect(paymentProofSource(stored)).toBe("data:image/png;base64,abc");
   });
 });
