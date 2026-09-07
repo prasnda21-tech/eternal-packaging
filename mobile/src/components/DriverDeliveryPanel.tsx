@@ -19,9 +19,16 @@ import {
   recipientSignatureFormFields,
   signatureReadinessLabel,
 } from "../utils/deliverySignature";
+import {
+  applySavedSignature,
+  signatureCollapsedState,
+  signatureModalTitle,
+  signatureOpenButtonTitle,
+  type SignatureSlot,
+} from "../utils/signatureCapture";
 import { GhostButton, PrimaryButton } from "./Ui";
 import { SectionCardHeader } from "./SectionCardHeader";
-import SignaturePad from "./SignaturePad";
+import SignatureCaptureModal from "./SignatureCaptureModal";
 
 type Props = {
   order: any;
@@ -62,8 +69,7 @@ export default function DriverDeliveryPanel({
   );
   const [recipientDataUrl, setRecipientDataUrl] = useState<string | null>(null);
   const [driverDataUrl, setDriverDataUrl] = useState<string | null>(null);
-  const [recipientPadKey, setRecipientPadKey] = useState(0);
-  const [driverPadKey, setDriverPadKey] = useState(0);
+  const [openSlot, setOpenSlot] = useState<SignatureSlot | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
   const submitLock = useRef(false);
@@ -97,30 +103,28 @@ export default function DriverDeliveryPanel({
     )
     : null;
 
-  const clearRecipient = async () => {
-    setRecipientDataUrl(null);
-    setRecipientPadKey((k) => k + 1);
-    if (hasSavedRecipientSig(orderSig) && !recipientFrozen) {
-      try {
-        const res = await eternalApi.clearDeliveryRecipientSignature(order.id);
-        onUpdated(res.order);
-      } catch (e) {
-        onError(apiErrorMessage(e, "Gagal menghapus tanda tangan penerima"));
-      }
-    }
-  };
+  const recipientUi = signatureCollapsedState({
+    hasLocal: !!recipientDataUrl,
+    hasSaved: hasSavedRecipientSig(orderSig),
+    frozen: recipientFrozen || delivered,
+  });
+  const driverUi = signatureCollapsedState({
+    hasLocal: !!driverDataUrl,
+    hasSaved: hasSavedDriverSig(driverSig),
+    frozen: driverFrozen || delivered,
+  });
 
-  const clearDriver = async () => {
-    setDriverDataUrl(null);
-    setDriverPadKey((k) => k + 1);
-    if (hasSavedDriverSig(driverSig) && !driverFrozen) {
-      try {
-        const res = await eternalApi.clearDeliveryDriverSignature(order.id);
-        onUpdated(res.order);
-      } catch (e) {
-        onError(apiErrorMessage(e, "Gagal menghapus tanda tangan driver"));
-      }
-    }
+  const saveModalSignature = (dataUrl: string) => {
+    if (!openSlot) return;
+    const next = applySavedSignature(
+      { recipient: recipientDataUrl, driver: driverDataUrl },
+      openSlot,
+      dataUrl
+    );
+    setRecipientDataUrl(next.recipient);
+    setDriverDataUrl(next.driver);
+    setOpenSlot(null);
+    onDrawingChange?.(false);
   };
 
   const openConfirm = () => {
@@ -194,8 +198,6 @@ export default function DriverDeliveryPanel({
       }
       setRecipientDataUrl(null);
       setDriverDataUrl(null);
-      setRecipientPadKey((k) => k + 1);
-      setDriverPadKey((k) => k + 1);
       Alert.alert("Terkirim", "Pengiriman dikonfirmasi.");
     } catch (e) {
       onError(apiErrorMessage(e, "Gagal konfirmasi terkirim"));
@@ -263,91 +265,74 @@ export default function DriverDeliveryPanel({
 
       {showSignatureUi ? (
         <View style={{ marginTop: space.md }} testID="recipient-signature-block">
-          <Text style={typography.label}>Tanda Tangan Penerima</Text>
-          {recipientFrozen || delivered ? (
+          <Text style={typography.label}>Penerima</Text>
+          <Text style={[typography.body, { marginTop: 8, marginBottom: 6 }]}>Nama Penerima</Text>
+          <TextInput
+            testID="recipient-name-input"
+            value={recipientName}
+            onChangeText={setRecipientName}
+            placeholder="Nama penerima barang"
+            placeholderTextColor={colors.muted}
+            autoComplete="name"
+            editable={!locked}
+            maxLength={120}
+            style={ui.input}
+          />
+          <Text style={[typography.subtitle, { marginTop: 8 }]} testID="recipient-signature-status">
+            {recipientUi.status}
+          </Text>
+          {recipientDataUrl ? (
+            <Image source={{ uri: recipientDataUrl }} style={styles.sigPreview} resizeMode="contain" testID="recipient-signature-preview" />
+          ) : null}
+          {recipientUi.action !== "none" ? (
+            <GhostButton
+              title={signatureOpenButtonTitle("recipient", recipientUi.action)}
+              onPress={() => setOpenSlot("recipient")}
+              disabled={locked}
+              testID="recipient-signature-open"
+              style={{ marginTop: 8 }}
+            />
+          ) : (
             <Text style={[typography.subtitle, { marginTop: 6 }]} testID="recipient-signature-frozen">
               Tanda tangan penerima terkunci
             </Text>
-          ) : (
-            <>
-              <Text style={[typography.body, { marginTop: 8, marginBottom: 6 }]}>Nama Penerima</Text>
-              <TextInput
-                testID="recipient-name-input"
-                value={recipientName}
-                onChangeText={setRecipientName}
-                placeholder="Nama penerima barang"
-                placeholderTextColor={colors.muted}
-                autoComplete="name"
-                editable={!locked}
-                maxLength={120}
-                style={ui.input}
-              />
-              <View style={{ marginTop: space.sm }}>
-                <SignaturePad
-                  key={recipientPadKey}
-                  testID="recipient-signature-pad"
-                  disabled={locked}
-                  onChange={setRecipientDataUrl}
-                  onDrawingChange={onDrawingChange}
-                  showClear={false}
-                />
-              </View>
-              {(recipientDataUrl || hasSavedRecipientSig(orderSig)) && !recipientFrozen ? (
-                <GhostButton
-                  title="Hapus / Ulangi"
-                  onPress={() => { void clearRecipient(); }}
-                  disabled={locked}
-                  testID="recipient-signature-clear"
-                  style={{ marginTop: 4, alignSelf: "flex-end" }}
-                />
-              ) : null}
-              {hasSavedRecipientSig(orderSig) ? (
-                <Text style={[typography.subtitle, { marginTop: 6 }]} testID="recipient-signature-saved-hint">
-                  Tanda tangan penerima tersimpan
-                </Text>
-              ) : null}
-            </>
           )}
 
           <View style={{ marginTop: space.md }} testID="driver-signature-block">
-            <Text style={typography.label}>TTD Driver / Pengirim</Text>
+            <Text style={typography.label}>Driver</Text>
             <Text style={[typography.subtitle, { marginTop: 6 }]} testID="driver-name-display">
               Nama driver: <Text style={typography.mono}>{driverDisplayName || "—"}</Text>
             </Text>
-            {driverFrozen || delivered ? (
+            <Text style={[typography.subtitle, { marginTop: 8 }]} testID="driver-signature-status">
+              {driverUi.status}
+            </Text>
+            {driverDataUrl ? (
+              <Image source={{ uri: driverDataUrl }} style={styles.sigPreview} resizeMode="contain" testID="driver-signature-preview" />
+            ) : null}
+            {driverUi.action !== "none" ? (
+              <GhostButton
+                title={signatureOpenButtonTitle("driver", driverUi.action)}
+                onPress={() => setOpenSlot("driver")}
+                disabled={locked}
+                testID="driver-signature-open"
+                style={{ marginTop: 8 }}
+              />
+            ) : (
               <Text style={[typography.subtitle, { marginTop: 6 }]} testID="driver-signature-frozen">
                 Tanda tangan driver terkunci
               </Text>
-            ) : (
-              <>
-                <View style={styles.driverPad}>
-                  <SignaturePad
-                    key={driverPadKey}
-                    testID="driver-signature-pad"
-                    height={200}
-                    disabled={locked}
-                    onChange={setDriverDataUrl}
-                    onDrawingChange={onDrawingChange}
-                    showClear={false}
-                  />
-                </View>
-                {(driverDataUrl || hasSavedDriverSig(driverSig)) && !driverFrozen ? (
-                  <GhostButton
-                    title="Hapus / Ulangi"
-                    onPress={() => { void clearDriver(); }}
-                    disabled={locked}
-                    testID="driver-signature-clear"
-                    style={{ marginTop: 4, alignSelf: "flex-end" }}
-                  />
-                ) : null}
-                {hasSavedDriverSig(driverSig) ? (
-                  <Text style={[typography.subtitle, { marginTop: 6 }]} testID="driver-signature-saved-hint">
-                    Tanda tangan driver tersimpan
-                  </Text>
-                ) : null}
-              </>
             )}
           </View>
+
+          <SignatureCaptureModal
+            visible={openSlot != null}
+            title={openSlot ? signatureModalTitle(openSlot) : ""}
+            onSave={saveModalSignature}
+            onCancel={() => {
+              setOpenSlot(null);
+              onDrawingChange?.(false);
+            }}
+          />
         </View>
       ) : null}
 
@@ -403,10 +388,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   proofImg: { width: "100%", height: "100%" },
-  driverPad: {
-    width: 200,
-    maxWidth: "100%",
-    marginTop: space.sm,
-    alignSelf: "flex-start",
+  sigPreview: {
+    width: 160,
+    height: 64,
+    marginTop: 8,
+    borderRadius: 8,
+    backgroundColor: "#FDFAF3",
+    borderWidth: 1,
+    borderColor: colors.line,
   },
 });

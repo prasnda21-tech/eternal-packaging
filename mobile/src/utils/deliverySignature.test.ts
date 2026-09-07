@@ -198,6 +198,10 @@ const canvas = "data:image/png;base64,abc";
   assert(panelSrc.includes("confirmDelivered"), "15 panel uses confirm");
   assert(!/\/orders\/.+\bdelivered\b/.test(panelSrc.replace(/confirm-delivered/g, "")), "15 panel no legacy");
   assert(poSrc.includes("DriverDeliveryPanel"), "15 po uses panel");
+  assert(!panelSrc.includes("<SignaturePad"), "15 pad not inline");
+  assert(panelSrc.includes("SignatureCaptureModal"), "15 modal used");
+  assert(panelSrc.includes("recipient-signature-open"), "15 collapsed recipient action");
+  assert(panelSrc.includes("driver-signature-open"), "15 collapsed driver action");
 }
 
 {
