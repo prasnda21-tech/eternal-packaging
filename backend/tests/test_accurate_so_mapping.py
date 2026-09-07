@@ -76,6 +76,8 @@ def test_cake_in_love_mapping_from_accurate_detail_shape():
     assert line["name"] == "Plastik PE 15"
     assert line["quantity"] == 10000
     assert line["color"] == "HITAM"
+    assert so["notes"] == "SABLON WARNA HITAM"
+    assert line["notes"] == "SABLON WARNA HITAM"
     order_iso, est_iso = so_preview_dates(so, now=datetime(2026, 8, 28, tzinfo=timezone.utc))
     assert order_iso == "2026-08-28"
     assert est_iso == "2026-09-05"
@@ -311,6 +313,9 @@ def test_multiline_so_header_color_does_not_inherit_to_lid():
     assert lines[1]["color_source"] == "item.name"
     assert "production_process" not in lines[0]
     assert "production_process" not in lines[1]
+    assert so["notes"] == "SABLON WARNA ORANGE"
+    assert lines[0]["notes"] == "SABLON WARNA ORANGE"
+    assert not lines[1]["notes"]
 
 
 def test_multiline_color_mapping_is_order_independent():
@@ -510,3 +515,63 @@ def test_payment_term_name_string_and_nested_object():
     })
     assert a["payment_terms"] == "TRANSFER BANK"
     assert b["payment_terms"] == "TRANSFER BANK"
+
+
+HEADER_KETERANGAN = (
+    "RETUR LID DARI MERK TPP KE SJP 1000PCS\n"
+    "KIRIM TANGGAL : 07/09/2026\n"
+    "(SEKALIAN NARIK MERK TPP 1000PCS)"
+)
+
+
+def test_header_keterangan_present_is_order_notes():
+    raw = {
+        "id": 77,
+        "number": "SO-KET-1",
+        "customer": {"name": "A"},
+        "description": HEADER_KETERANGAN,
+        "poNumberFromCustomer": "CUST-PO-9",
+        "detailItem": [
+            {
+                "quantity": 500,
+                "detailNotes": "SABLON WARNA ORANGE",
+                "item": {"id": 1, "name": "14 oz Inject Datar Bening Klir"},
+            }
+        ],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["notes"] == HEADER_KETERANGAN
+    assert "CUST-PO-9" not in so["notes"]
+    assert so["line_items"][0]["notes"] == "SABLON WARNA ORANGE"
+    assert so["line_items"][0]["notes"] != so["notes"]
+
+
+def test_header_keterangan_blank_stays_blank():
+    raw = {
+        "id": 78,
+        "number": "SO-KET-BLANK",
+        "customer": {"name": "A"},
+        "description": "   ",
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["notes"] == ""
+    missing = {
+        "id": 79,
+        "number": "SO-KET-MISSING",
+        "customer": {"name": "A"},
+        "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
+    }
+    so2 = _normalize_accurate_so(missing)
+    assert so2["notes"] == ""
+
+
+def test_header_keterangan_not_copied_onto_multiline_items():
+    so = _normalize_accurate_so(_two_line_cup_lid_so(header=HEADER_KETERANGAN))
+    assert so["notes"] == HEADER_KETERANGAN
+    assert so["line_items"][0]["notes"] == "SABLON WARNA ORANGE"
+    assert so["line_items"][0]["color"] == "ORANGE"
+    assert so["line_items"][1]["notes"] in (None, "")
+    assert so["line_items"][1]["color"] == "BENING"
+    assert so["line_items"][0]["notes"] != HEADER_KETERANGAN
+    assert so["line_items"][1]["notes"] != HEADER_KETERANGAN

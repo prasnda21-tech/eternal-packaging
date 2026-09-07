@@ -17,4 +17,10 @@ describe("PO Detail line color display", () => {
     expect(route).toMatch(/\{li\.color && <div className="muted small">\{li\.color\}<\/div>\}/);
     expect(route).not.toMatch(/order\.color/);
   });
+
+  test("Informasi PO shows order-level Keterangan from order.notes", () => {
+    expect(detail).toMatch(/data-testid="detail-keterangan"/);
+    expect(detail).toMatch(/\{order\.notes\}/);
+    expect(detail).toMatch(/Keterangan/);
+  });
 });

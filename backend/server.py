@@ -6093,6 +6093,7 @@ def _build_preview(so: Dict[str, Any]) -> Dict[str, Any]:
         "order_date": order_date,
         "estimated_delivery": deadline,
         "deadline": deadline,
+        "notes": so.get("notes") or "",
         "line_items": so.get("line_items", []),
         "total_quantity": total_qty,
         "item_count": len(so.get("line_items", [])),

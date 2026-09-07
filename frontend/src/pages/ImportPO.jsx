@@ -835,6 +835,12 @@ export default function ImportPO() {
             <div><span className="lbl">Termin bayar</span><strong>{preview.preview.payment_terms || "-"}</strong></div>
             <div><span className="lbl">Estimasi kirim</span><strong>{formatDeadline(preview.preview.estimated_delivery)}</strong></div>
             <div><span className="lbl">Total kuantitas</span><strong className="mono">{(preview.preview.total_quantity || 0).toLocaleString("id-ID")} pcs</strong></div>
+            <div className="span-2">
+              <span className="lbl">Keterangan</span>
+              <strong data-testid="preview-notes" style={{whiteSpace:"pre-wrap"}}>
+                {preview.preview.notes || "-"}
+              </strong>
+            </div>
           </div>
 
           <div className="preview-items" data-testid="preview-items">
