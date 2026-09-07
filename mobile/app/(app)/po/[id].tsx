@@ -10,7 +10,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useFocusEffect } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import * as WebBrowser from "expo-web-browser";
@@ -27,14 +27,21 @@ import {
 } from "../../../src/components/Ui";
 import DriverDeliveryPanel from "../../../src/components/DriverDeliveryPanel";
 import { SectionCardHeader } from "../../../src/components/SectionCardHeader";
+import TaskWorkspaceMenu from "../../../src/components/TaskWorkspaceMenu";
 import { colors, space, typography, ui } from "../../../src/theme";
 import { apiErrorMessage, fmtQty, newActionId } from "../../../src/utils/format";
 import {
   canApproveDesign,
   canUploadSample,
   defaultWorkDivision,
-  permittedWorkDivisions,
 } from "../../../src/utils/permissions";
+import {
+  availableTaskWorkspaces,
+  persistSelectedWorkspace,
+  resolveNavTaskContext,
+  scopedWorkPanelIds,
+  taskContextBreadcrumb,
+} from "../../../src/utils/taskWorkspaces";
 import { assetFileMeta, pickFromCamera, pickFromGallery } from "../../../src/utils/mediaPicker";
 import { uriToDataUrl } from "../../../src/utils/dataUrl";
 import {
@@ -69,21 +76,11 @@ import {
   designStatusLabel,
 } from "../../../src/utils/designFiles";
 
-const WORK_PANEL_IDS = [
-  "screener",
-  "helper",
-  "operator",
-  "packing",
-  "loading",
-  "terkirim",
-  "design_approve",
-] as const;
-
 export default function PoWorkScreen() {
-  const { id, divisi } = useLocalSearchParams<{ id: string; divisi?: string }>();
+  const { id, divisi, from } = useLocalSearchParams<{ id: string; divisi?: string; from?: string }>();
   const { user, hasPerm, token } = useAuth();
   const preferredDiv = Array.isArray(divisi) ? divisi[0] : divisi || null;
-  const divisions = useMemo(() => permittedWorkDivisions(hasPerm), [hasPerm]);
+  const fromNav = Array.isArray(from) ? from[0] : from || null;
   const [activeDiv, setActiveDiv] = useState<string | null>(
     () => defaultWorkDivision(hasPerm, preferredDiv)
   );
@@ -121,17 +118,24 @@ export default function PoWorkScreen() {
     setActiveDiv(defaultWorkDivision(hasPerm, preferredDiv));
   }, [id, preferredDiv, hasPerm]);
 
-  const visiblePanelIds = useMemo(() => {
-    const ids: string[] = [];
-    for (const d of divisions) {
-      if ((WORK_PANEL_IDS as readonly string[]).includes(d.id)) ids.push(d.id);
-    }
-    if (canApproveDesign(hasPerm)) ids.push("design_approve");
-    if (canShowSamplePanel(hasPerm, order)) ids.push("sample_upload");
-    const focus = activeDiv && ids.includes(activeDiv) ? activeDiv : ids[0] || null;
-    if (!focus) return ids;
-    return [focus, ...ids.filter((x) => x !== focus)];
-  }, [divisions, activeDiv, hasPerm, order]);
+  const workspaces = useMemo(() => availableTaskWorkspaces(hasPerm), [hasPerm]);
+  const allowedWorkspaceIds = useMemo(() => workspaces.map((w) => w.id), [workspaces]);
+  const navTaskContext = useMemo(
+    () => resolveNavTaskContext(fromNav, preferredDiv, allowedWorkspaceIds),
+    [fromNav, preferredDiv, allowedWorkspaceIds]
+  );
+  const taskCrumb = taskContextBreadcrumb(navTaskContext);
+  const selectedWorkspace = persistSelectedWorkspace(activeDiv, allowedWorkspaceIds);
+  const visiblePanelIds = useMemo(
+    () => scopedWorkPanelIds(activeDiv, allowedWorkspaceIds),
+    [activeDiv, allowedWorkspaceIds]
+  );
+
+  const selectWorkspace = (id: string) => {
+    if (!allowedWorkspaceIds.includes(id)) return;
+    setActiveDiv(id);
+    router.setParams({ divisi: id });
+  };
 
   const onConfirmQty = async (payload: {
     kind: "screener" | "helper" | "operator" | "packing";
@@ -462,6 +466,12 @@ export default function PoWorkScreen() {
     >
       <Stack.Screen options={{ title: order.po_number || "Pekerjaan PO" }} />
 
+      {taskCrumb ? (
+        <Text style={styles.taskCrumb} testID="task-context-crumb" numberOfLines={1}>
+          {taskCrumb}
+        </Text>
+      ) : null}
+
       <View style={ui.cardFlush}>
         <SectionCardHeader tone="po" title="Informasi PO" />
         <View style={ui.cardBody}>
@@ -480,40 +490,13 @@ export default function PoWorkScreen() {
 
       <DesignFilesCard order={order} onOpen={openDesignFile} />
 
-      {visiblePanelIds.length > 1 ? (
-        <View style={styles.tabs}>
-          {divisions.filter((d) => (WORK_PANEL_IDS as readonly string[]).includes(d.id)).map((d) => {
-            const active = activeDiv === d.id;
-            return (
-              <Pressable
-                key={d.id}
-                onPress={() => setActiveDiv(d.id)}
-                style={[styles.tab, active && styles.tabActive]}
-              >
-                <Text style={[styles.tabText, active && styles.tabTextActive]}>{d.label}</Text>
-              </Pressable>
-            );
-          })}
-          {canApproveDesign(hasPerm) ? (
-            <Pressable
-              onPress={() => setActiveDiv("design_approve")}
-              style={[styles.tab, activeDiv === "design_approve" && styles.tabActive]}
-            >
-              <Text style={[styles.tabText, activeDiv === "design_approve" && styles.tabTextActive]}>
-                Approve Design
-              </Text>
-            </Pressable>
-          ) : null}
-          {canShowSamplePanel(hasPerm, order) ? (
-            <Pressable
-              onPress={() => setActiveDiv("sample_upload")}
-              style={[styles.tab, activeDiv === "sample_upload" && styles.tabActive]}
-            >
-              <Text style={[styles.tabText, activeDiv === "sample_upload" && styles.tabTextActive]}>
-                Upload Sampel Cetak
-              </Text>
-            </Pressable>
-          ) : null}
+      {workspaces.length ? (
+        <View style={{ marginBottom: space.sm }} testID="po-task-workspace-menu">
+          <TaskWorkspaceMenu
+            workspaces={workspaces}
+            selectedId={selectedWorkspace}
+            onSelect={selectWorkspace}
+          />
         </View>
       ) : null}
 
@@ -1049,6 +1032,12 @@ function OperatorPanel({
 }
 
 const styles = StyleSheet.create({
+  taskCrumb: {
+    ...typography.subtitle,
+    marginBottom: space.sm,
+    fontWeight: "700",
+    color: colors.ink,
+  },
   tabs: {
     flexDirection: "row",
     flexWrap: "wrap",

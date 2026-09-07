@@ -8,26 +8,27 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { router, Stack, useFocusEffect } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useAuth } from "../../src/auth/AuthContext";
 import { DivisionTask, eternalApi, ProductionRow } from "../../src/api/eternal";
 import { EmptyState, ErrorState, GhostButton, LoadingState } from "../../src/components/Ui";
 import { SectionCardHeader, workContextHeader } from "../../src/components/SectionCardHeader";
+import TaskWorkspaceMenu from "../../src/components/TaskWorkspaceMenu";
 import { colors, space, typography, ui } from "../../src/theme";
 import { apiErrorMessage, fmtDate, fmtQty } from "../../src/utils/format";
 import {
   canApproveDesign,
   canUploadSample,
   canViewSchedule,
-  defaultWorkDivision,
   permittedWorkDivisions,
 } from "../../src/utils/permissions";
+import { isActionableDivisionTask, taskBelongsToWorkspace } from "../../src/utils/taskEligibility";
 import {
-  defaultTaskWorkspace,
-  isActionableDivisionTask,
-  showsMergedTaskList,
-  taskBelongsToWorkspace,
-} from "../../src/utils/taskEligibility";
+  availableTaskWorkspaces,
+  persistSelectedWorkspace,
+  taskEmptyMessage,
+  tasksForSelectedWorkspace,
+} from "../../src/utils/taskWorkspaces";
 
 type TaskCard = {
   key: string;
@@ -145,20 +146,13 @@ function BodyCell({
 
 export default function ScheduleScreen() {
   const { user, hasPerm, logout } = useAuth();
+  const { ws } = useLocalSearchParams<{ ws?: string }>();
   const divisions = useMemo(() => permittedWorkDivisions(hasPerm), [hasPerm]);
-  const divisionIds = useMemo(() => divisions.map((d) => d.id), [divisions]);
-  const extraWorkspaces = useMemo(() => {
-    const extra: string[] = [];
-    if (canApproveDesign(hasPerm)) extra.push("design_approve");
-    if (canUploadSample(hasPerm)) extra.push("sample_upload");
-    return extra;
-  }, [hasPerm]);
-  const workspaceIds = useMemo(
-    () => [...divisionIds, ...extraWorkspaces],
-    [divisionIds, extraWorkspaces]
+  const workspaces = useMemo(() => availableTaskWorkspaces(hasPerm), [hasPerm]);
+  const workspaceIds = useMemo(() => workspaces.map((w) => w.id), [workspaces]);
+  const [activeDiv, setActiveDiv] = useState<string>(() =>
+    persistSelectedWorkspace(Array.isArray(ws) ? ws[0] : ws, workspaceIds)
   );
-  const allowMergedList = showsMergedTaskList(workspaceIds);
-  const [activeDiv, setActiveDiv] = useState<string>(() => defaultTaskWorkspace(workspaceIds));
   const [taskCards, setTaskCards] = useState<TaskCard[]>([]);
   const [scheduleRows, setScheduleRows] = useState<ScheduleRow[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
@@ -274,12 +268,8 @@ export default function ScheduleScreen() {
   );
 
   useEffect(() => {
-    setActiveDiv((prev) => {
-      const nextDefault = defaultTaskWorkspace(workspaceIds);
-      if (!prev || prev === "all" || !workspaceIds.includes(prev)) return nextDefault;
-      return prev;
-    });
-  }, [workspaceIds]);
+    setActiveDiv((prev) => persistSelectedWorkspace(prev || (Array.isArray(ws) ? ws[0] : ws), workspaceIds));
+  }, [workspaceIds, ws]);
 
   useFocusEffect(
     useCallback(() => {
@@ -289,8 +279,7 @@ export default function ScheduleScreen() {
 
   const filteredTasks = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return taskCards.filter((r) => {
-      if (!taskBelongsToWorkspace(r, activeDiv)) return false;
+    return tasksForSelectedWorkspace(taskCards, activeDiv).filter((r) => {
       if (!q) return true;
       return (
         r.po.toLowerCase().includes(q) ||
@@ -299,6 +288,11 @@ export default function ScheduleScreen() {
       );
     });
   }, [taskCards, query, activeDiv]);
+
+  const selectWorkspace = (id: string) => {
+    setActiveDiv(id);
+    router.setParams({ ws: id });
+  };
 
   const filteredSchedule = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -318,18 +312,17 @@ export default function ScheduleScreen() {
   };
 
   const openWork = (orderId: string, division?: string) => {
+    const task = division && workspaceIds.includes(division) ? division : activeDiv;
     router.push({
       pathname: "/(app)/po/[id]",
-      params: { id: orderId, divisi: division || defaultWorkDivision(hasPerm) || "" },
+      params: { id: orderId, divisi: task || "", from: "task", ws: activeDiv || "" },
     });
   };
 
   const openScheduleRow = (orderId: string) => {
-    // Opens work/detail route; panels inside remain permission + assignment gated.
-    const preferred = defaultWorkDivision(hasPerm);
     router.push({
       pathname: "/(app)/po/[id]",
-      params: { id: orderId, divisi: preferred || "" },
+      params: { id: orderId },
     });
   };
 
@@ -361,50 +354,6 @@ export default function ScheduleScreen() {
           <Text style={typography.subtitle}>
             {user?.name || user?.email} · {user?.role}
           </Text>
-          {(divisions.length > 0 || canApproveDesign(hasPerm) || canUploadSample(hasPerm)) ? (
-            <View style={styles.tabs}>
-              {allowMergedList ? (
-                <Pressable
-                  onPress={() => setActiveDiv("all")}
-                  style={[styles.tab, activeDiv === "all" && styles.tabActive]}
-                >
-                  <Text style={[styles.tabText, activeDiv === "all" && styles.tabTextActive]}>Semua</Text>
-                </Pressable>
-              ) : null}
-              {divisions.map((d) => {
-                const active = activeDiv === d.id;
-                return (
-                  <Pressable
-                    key={d.id}
-                    onPress={() => setActiveDiv(d.id)}
-                    style={[styles.tab, active && styles.tabActive]}
-                  >
-                    <Text style={[styles.tabText, active && styles.tabTextActive]}>{d.label}</Text>
-                  </Pressable>
-                );
-              })}
-              {canApproveDesign(hasPerm) ? (
-                <Pressable
-                  onPress={() => setActiveDiv("design_approve")}
-                  style={[styles.tab, activeDiv === "design_approve" && styles.tabActive]}
-                >
-                  <Text style={[styles.tabText, activeDiv === "design_approve" && styles.tabTextActive]}>
-                    Approve Design
-                  </Text>
-                </Pressable>
-              ) : null}
-              {canUploadSample(hasPerm) ? (
-                <Pressable
-                  onPress={() => setActiveDiv("sample_upload")}
-                  style={[styles.tab, activeDiv === "sample_upload" && styles.tabActive]}
-                >
-                  <Text style={[styles.tabText, activeDiv === "sample_upload" && styles.tabTextActive]}>
-                    Upload Sampel Cetak
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
           <TextInput
             testID="schedule-search"
             value={query}
@@ -421,37 +370,24 @@ export default function ScheduleScreen() {
             <Text style={typography.title}>Tugas Saya</Text>
             <GhostButton title="Refresh" onPress={() => loadAll(true)} style={styles.refreshBtn} />
           </View>
-          <Text style={[typography.subtitle, { marginBottom: space.sm }]}>
-            Tugas pribadi sesuai assignment & permission Anda.
+          <Text style={[typography.subtitle, { marginBottom: space.sm }]} testID="tugas-saya-context">
+            {workContextHeader(activeDiv).title
+              ? `Sedang di ${workContextHeader(activeDiv).title}`
+              : "Pilih menu tugas."}
           </Text>
+          <TaskWorkspaceMenu
+            workspaces={workspaces}
+            selectedId={activeDiv}
+            onSelect={selectWorkspace}
+          />
 
           {loadingTasks ? <LoadingState label="Memuat tugas…" /> : null}
           {!loadingTasks && taskErr ? <ErrorState message={taskErr} onRetry={() => loadAll()} /> : null}
           {!loadingTasks && !taskErr && !divisions.length && !canApproveDesign(hasPerm) && !canUploadSample(hasPerm) ? (
             <EmptyState message="Tidak ada divisi kerja yang diizinkan untuk akun ini." />
           ) : null}
-          {!loadingTasks && !taskErr && (divisions.length > 0 || canApproveDesign(hasPerm) || canUploadSample(hasPerm)) && filteredTasks.length === 0 ? (
-            <EmptyState
-              message={
-                activeDiv === "packing"
-                  ? "Tidak ada tugas Packing saat ini."
-                  : activeDiv === "helper"
-                    ? "Tidak ada tugas Persiapan Cup saat ini."
-                    : activeDiv === "loading"
-                      ? "Tidak ada tugas Loading saat ini."
-                      : activeDiv === "screener"
-                        ? "Tidak ada tugas Screener saat ini."
-                        : activeDiv === "operator"
-                          ? "Tidak ada tugas Cetak saat ini."
-                          : activeDiv === "terkirim"
-                            ? "Tidak ada tugas Pengiriman saat ini."
-                            : activeDiv === "sample_upload"
-                              ? "Tidak ada tugas Upload Sampel Cetak saat ini."
-                              : activeDiv === "design_approve"
-                                ? "Tidak ada tugas Approve Design saat ini."
-                                : "Tidak ada tugas untuk konteks ini."
-              }
-            />
+          {!loadingTasks && !taskErr && workspaces.length > 0 && filteredTasks.length === 0 ? (
+            <EmptyState message={taskEmptyMessage(activeDiv)} />
           ) : null}
 
           {!loadingTasks && !taskErr
@@ -583,31 +519,6 @@ const styles = StyleSheet.create({
   refreshBtn: {
     minHeight: 40,
     paddingHorizontal: 12,
-  },
-  tabs: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: space.sm,
-  },
-  tab: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: colors.bg,
-    minHeight: 44,
-    justifyContent: "center",
-  },
-  tabActive: {
-    backgroundColor: colors.primary,
-  },
-  tabText: {
-    fontWeight: "700",
-    color: colors.ink,
-    fontSize: 14,
-  },
-  tabTextActive: {
-    color: "#fff",
   },
   cardTop: {
     flexDirection: "row",
