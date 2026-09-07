@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Pressable,
   RefreshControl,
@@ -12,14 +12,22 @@ import { router, Stack, useFocusEffect } from "expo-router";
 import { useAuth } from "../../src/auth/AuthContext";
 import { DivisionTask, eternalApi, ProductionRow } from "../../src/api/eternal";
 import { EmptyState, ErrorState, GhostButton, LoadingState } from "../../src/components/Ui";
+import { SectionCardHeader, workContextHeader } from "../../src/components/SectionCardHeader";
 import { colors, space, typography, ui } from "../../src/theme";
 import { apiErrorMessage, fmtDate, fmtQty } from "../../src/utils/format";
 import {
   canApproveDesign,
+  canUploadSample,
   canViewSchedule,
   defaultWorkDivision,
   permittedWorkDivisions,
 } from "../../src/utils/permissions";
+import {
+  defaultTaskWorkspace,
+  isActionableDivisionTask,
+  showsMergedTaskList,
+  taskBelongsToWorkspace,
+} from "../../src/utils/taskEligibility";
 
 type TaskCard = {
   key: string;
@@ -138,7 +146,19 @@ function BodyCell({
 export default function ScheduleScreen() {
   const { user, hasPerm, logout } = useAuth();
   const divisions = useMemo(() => permittedWorkDivisions(hasPerm), [hasPerm]);
-  const [activeDiv, setActiveDiv] = useState<string>("all");
+  const divisionIds = useMemo(() => divisions.map((d) => d.id), [divisions]);
+  const extraWorkspaces = useMemo(() => {
+    const extra: string[] = [];
+    if (canApproveDesign(hasPerm)) extra.push("design_approve");
+    if (canUploadSample(hasPerm)) extra.push("sample_upload");
+    return extra;
+  }, [hasPerm]);
+  const workspaceIds = useMemo(
+    () => [...divisionIds, ...extraWorkspaces],
+    [divisionIds, extraWorkspaces]
+  );
+  const allowMergedList = showsMergedTaskList(workspaceIds);
+  const [activeDiv, setActiveDiv] = useState<string>(() => defaultTaskWorkspace(workspaceIds));
   const [taskCards, setTaskCards] = useState<TaskCard[]>([]);
   const [scheduleRows, setScheduleRows] = useState<ScheduleRow[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
@@ -163,25 +183,50 @@ export default function ScheduleScreen() {
           }
         })
       );
-      for (const res of results) {
-        cards.push(...mergeTaskCards(res.tasks || []));
-      }
-      if (canApproveDesign(hasPerm)) {
+      results.forEach((res, i) => {
+        const workspaceId = divisions[i]?.id;
+        cards.push(
+          ...mergeTaskCards(
+            (res.tasks || [])
+              .map((t) => (workspaceId ? { ...t, division: workspaceId } : t))
+              .filter((t) => isActionableDivisionTask(t) && taskBelongsToWorkspace(t, workspaceId))
+          )
+        );
+      });
+      if (canApproveDesign(hasPerm) || canUploadSample(hasPerm)) {
         try {
           const ac = await eternalApi.actionItems();
-          const design = (ac.actions || []).find((a) => a.key === "design_approve");
-          for (const o of design?.items || []) {
-            cards.push({
-              key: `design_approve:${o.id}`,
-              orderId: o.id,
-              po: o.po_number || "—",
-              customer: o.customer || "—",
-              item: o.item || "Approve Design",
-              qtyLabel: o.design_status || "Waiting",
-              status: o.design_status || "Waiting",
-              division: "design_approve",
-              actionLabel: "Approve Design",
-            });
+          if (canApproveDesign(hasPerm)) {
+            const design = (ac.actions || []).find((a) => a.key === "design_approve");
+            for (const o of design?.items || []) {
+              cards.push({
+                key: `design_approve:${o.id}`,
+                orderId: o.id,
+                po: o.po_number || "—",
+                customer: o.customer || "—",
+                item: o.item || "Approve Design",
+                qtyLabel: o.design_status || "Waiting",
+                status: o.design_status || "Waiting",
+                division: "design_approve",
+                actionLabel: "Approve Design",
+              });
+            }
+          }
+          if (canUploadSample(hasPerm)) {
+            const sample = (ac.actions || []).find((a) => a.key === "sample_upload");
+            for (const o of sample?.items || []) {
+              cards.push({
+                key: `sample_upload:${o.id}`,
+                orderId: o.id,
+                po: o.po_number || "—",
+                customer: o.customer || "—",
+                item: o.item || "Upload Sampel Cetak",
+                qtyLabel: "Sampel",
+                status: "Siap",
+                division: "sample_upload",
+                actionLabel: "Upload Sampel Cetak",
+              });
+            }
           }
         } catch {
           /* action-items optional; division tasks still shown */
@@ -228,6 +273,14 @@ export default function ScheduleScreen() {
     [loadTasks, loadSchedule]
   );
 
+  useEffect(() => {
+    setActiveDiv((prev) => {
+      const nextDefault = defaultTaskWorkspace(workspaceIds);
+      if (!prev || prev === "all" || !workspaceIds.includes(prev)) return nextDefault;
+      return prev;
+    });
+  }, [workspaceIds]);
+
   useFocusEffect(
     useCallback(() => {
       loadAll();
@@ -237,13 +290,12 @@ export default function ScheduleScreen() {
   const filteredTasks = useMemo(() => {
     const q = query.trim().toLowerCase();
     return taskCards.filter((r) => {
-      if (activeDiv && activeDiv !== "all" && r.division !== activeDiv) return false;
+      if (!taskBelongsToWorkspace(r, activeDiv)) return false;
       if (!q) return true;
       return (
         r.po.toLowerCase().includes(q) ||
         r.customer.toLowerCase().includes(q) ||
-        r.item.toLowerCase().includes(q) ||
-        (r.division || "").toLowerCase().includes(q)
+        r.item.toLowerCase().includes(q)
       );
     });
   }, [taskCards, query, activeDiv]);
@@ -309,14 +361,16 @@ export default function ScheduleScreen() {
           <Text style={typography.subtitle}>
             {user?.name || user?.email} · {user?.role}
           </Text>
-          {(divisions.length > 0 || canApproveDesign(hasPerm)) ? (
+          {(divisions.length > 0 || canApproveDesign(hasPerm) || canUploadSample(hasPerm)) ? (
             <View style={styles.tabs}>
-              <Pressable
-                onPress={() => setActiveDiv("all")}
-                style={[styles.tab, activeDiv === "all" && styles.tabActive]}
-              >
-                <Text style={[styles.tabText, activeDiv === "all" && styles.tabTextActive]}>Semua</Text>
-              </Pressable>
+              {allowMergedList ? (
+                <Pressable
+                  onPress={() => setActiveDiv("all")}
+                  style={[styles.tab, activeDiv === "all" && styles.tabActive]}
+                >
+                  <Text style={[styles.tabText, activeDiv === "all" && styles.tabTextActive]}>Semua</Text>
+                </Pressable>
+              ) : null}
               {divisions.map((d) => {
                 const active = activeDiv === d.id;
                 return (
@@ -336,6 +390,16 @@ export default function ScheduleScreen() {
                 >
                   <Text style={[styles.tabText, activeDiv === "design_approve" && styles.tabTextActive]}>
                     Approve Design
+                  </Text>
+                </Pressable>
+              ) : null}
+              {canUploadSample(hasPerm) ? (
+                <Pressable
+                  onPress={() => setActiveDiv("sample_upload")}
+                  style={[styles.tab, activeDiv === "sample_upload" && styles.tabActive]}
+                >
+                  <Text style={[styles.tabText, activeDiv === "sample_upload" && styles.tabTextActive]}>
+                    Upload Sampel Cetak
                   </Text>
                 </Pressable>
               ) : null}
@@ -363,21 +427,45 @@ export default function ScheduleScreen() {
 
           {loadingTasks ? <LoadingState label="Memuat tugas…" /> : null}
           {!loadingTasks && taskErr ? <ErrorState message={taskErr} onRetry={() => loadAll()} /> : null}
-          {!loadingTasks && !taskErr && !divisions.length && !canApproveDesign(hasPerm) ? (
+          {!loadingTasks && !taskErr && !divisions.length && !canApproveDesign(hasPerm) && !canUploadSample(hasPerm) ? (
             <EmptyState message="Tidak ada divisi kerja yang diizinkan untuk akun ini." />
           ) : null}
-          {!loadingTasks && !taskErr && (divisions.length > 0 || canApproveDesign(hasPerm)) && filteredTasks.length === 0 ? (
-            <EmptyState message="Tidak ada tugas untuk Anda saat ini." />
+          {!loadingTasks && !taskErr && (divisions.length > 0 || canApproveDesign(hasPerm) || canUploadSample(hasPerm)) && filteredTasks.length === 0 ? (
+            <EmptyState
+              message={
+                activeDiv === "packing"
+                  ? "Tidak ada tugas Packing saat ini."
+                  : activeDiv === "helper"
+                    ? "Tidak ada tugas Persiapan Cup saat ini."
+                    : activeDiv === "loading"
+                      ? "Tidak ada tugas Loading saat ini."
+                      : activeDiv === "screener"
+                        ? "Tidak ada tugas Screener saat ini."
+                        : activeDiv === "operator"
+                          ? "Tidak ada tugas Cetak saat ini."
+                          : activeDiv === "terkirim"
+                            ? "Tidak ada tugas Pengiriman saat ini."
+                            : activeDiv === "sample_upload"
+                              ? "Tidak ada tugas Upload Sampel Cetak saat ini."
+                              : activeDiv === "design_approve"
+                                ? "Tidak ada tugas Approve Design saat ini."
+                                : "Tidak ada tugas untuk konteks ini."
+              }
+            />
           ) : null}
 
           {!loadingTasks && !taskErr
-            ? filteredTasks.map((item) => (
+            ? filteredTasks.map((item) => {
+                const header = workContextHeader(item.division);
+                return (
                 <Pressable
                   key={item.key}
                   testID={`task-card-${item.orderId}`}
-                  style={ui.card}
+                  style={ui.cardFlush}
                   onPress={() => openWork(item.orderId, item.division)}
                 >
+                  <SectionCardHeader tone={header.tone} title={header.title} />
+                  <View style={ui.cardBody}>
                   <View style={styles.cardTop}>
                     <Text style={typography.mono}>{item.po}</Text>
                     <View style={[ui.chip, item.hold && { backgroundColor: colors.warnBg }]}>
@@ -389,17 +477,20 @@ export default function ScheduleScreen() {
                   <Text style={[typography.body, { marginTop: 4 }]} numberOfLines={1}>
                     {item.customer}
                   </Text>
-                  <Text style={[typography.subtitle, { marginTop: 2 }]} numberOfLines={2}>
-                    {item.division === "design_approve" ? "Approve Design" : item.division || ""}
-                    {item.item ? ` · ${item.item}` : ""}
-                  </Text>
+                  {item.item ? (
+                    <Text style={[typography.subtitle, { marginTop: 2 }]} numberOfLines={2}>
+                      {item.item}
+                    </Text>
+                  ) : null}
                   <View style={styles.cardMeta}>
                     <Text style={typography.subtitle}>Tgl {fmtDate(item.workDate)}</Text>
                     <Text style={typography.subtitle}>{item.qtyLabel}</Text>
                   </View>
                   <Text style={styles.actionHint}>{item.actionLabel || "Kerjakan"} →</Text>
+                  </View>
                 </Pressable>
-              ))
+                );
+              })
             : null}
         </View>
 

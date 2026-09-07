@@ -5,11 +5,10 @@ export type PermCheck = (perm: string) => boolean;
 export const DIVISION_SUBMIT_PERMS: [string, string, string][] = [
   ["screener", "screen.update", "Screener"],
   ["helper", "helper.prepare", "Persiapan Cup"],
+  ["operator", "operator.update", "Cetak"],
   ["packing", "packing.update", "Packing"],
-  ["operator", "operator.update", "Operator"],
-  ["surat_jalan", "delivery_note.manage", "Surat Jalan"],
   ["loading", "loading.update", "Loading"],
-  ["terkirim", "delivery.update", "Driver / Terkirim"],
+  ["terkirim", "delivery.update", "Pengiriman"],
 ];
 
 export function hasPerm(permissions: string[] | undefined | null, perm: string): boolean {

@@ -29,6 +29,14 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
 }
 
 {
+  const has = makeHasPerm(["delivery_note.manage", "loading.update"]);
+  const ids = permittedWorkDivisions(has).map((d) => d.id);
+  assertEqual(ids.includes("surat_jalan"), false, "SJ manage stays web-only");
+  assertEqual(ids.includes("loading"), true, "loading stays");
+  assertEqual(permittedWorkDivisions(has).find((d) => d.id === "loading")?.label, "Loading", "loading label");
+}
+
+{
   const has = makeHasPerm(["operator.sample_upload"]);
   assertEqual(defaultWorkDivision(has), "sample_upload", "sample-only default");
   assertEqual(defaultWorkDivision(has, "sample_upload"), "sample_upload", "sample preferred");

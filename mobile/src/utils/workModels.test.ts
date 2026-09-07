@@ -201,6 +201,16 @@ assertEqual(operatorStatusLabel(1, 1000), "Proses", "label proses");
 assertEqual(operatorStatusLabel(1000, 1000), "Selesai", "label selesai");
 
 assertEqual(operatorCanSubmit({ sample_approved: true }).ok, true, "gate ok");
+assertEqual(
+  operatorCanSubmit({ sample_approved: true, workflow_ready: { print_qty: false } }).ok,
+  false,
+  "print_qty flag wins"
+);
+assertEqual(
+  operatorCanSubmit({ sample_approved: false, workflow_ready: { print_qty: true } }).ok,
+  true,
+  "print_qty ready"
+);
 assertEqual(operatorConfirmEnabled({
   hasOperatorUpdate: true,
   workflowEligible: true,

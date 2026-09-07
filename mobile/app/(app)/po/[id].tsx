@@ -26,6 +26,7 @@ import {
   QtyField,
 } from "../../../src/components/Ui";
 import DriverDeliveryPanel from "../../../src/components/DriverDeliveryPanel";
+import { SectionCardHeader } from "../../../src/components/SectionCardHeader";
 import { colors, space, typography, ui } from "../../../src/theme";
 import { apiErrorMessage, fmtQty, newActionId } from "../../../src/utils/format";
 import {
@@ -56,12 +57,23 @@ import {
   packingModel,
   screenerModel,
 } from "../../../src/utils/workModels";
+import { deliveryTaskReady } from "../../../src/utils/taskEligibility";
+import {
+  canOpenDesignFile,
+  currentDesignFile,
+  designFileIsImage,
+  designFileLabel,
+  designFileOpenRef,
+  designFilePreviewUri,
+  designFiles,
+  designStatusLabel,
+} from "../../../src/utils/designFiles";
 
 const WORK_PANEL_IDS = [
   "screener",
   "helper",
-  "packing",
   "operator",
+  "packing",
   "loading",
   "terkirim",
   "design_approve",
@@ -218,6 +230,17 @@ export default function PoWorkScreen() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const openDesignFile = async (file: any) => {
+    const ref = designFileOpenRef(file);
+    if (!ref.kind) {
+      setActionErr("File desain tidak dapat dibuka.");
+      return;
+    }
+    const url =
+      ref.kind === "storage" ? eternalApi.fileUrl(ref.value, token) : ref.value;
+    await WebBrowser.openBrowserAsync(url);
   };
 
   const openSuratJalan = async (fileId: string) => {
@@ -392,6 +415,20 @@ export default function PoWorkScreen() {
       );
     }
     if (panelId === "terkirim" && hasPerm("delivery.update")) {
+      const delivery = deliveryTaskReady(order);
+      const delivered = order.delivery_status === "Terkirim" || !!order.terkirim_confirmed;
+      if (!delivery.actionable && !delivered) {
+        return (
+          <View key="terkirim" style={ui.cardFlush} testID="driver-panel-locked">
+            <SectionCardHeader tone="delivery" title="Pengiriman" />
+            <View style={ui.cardBody}>
+              <Text style={[typography.subtitle, { color: colors.warn }]}>
+                {delivery.lockedReason || "Belum ada qty eligible pengiriman"}
+              </Text>
+            </View>
+          </View>
+        );
+      }
       return (
         <DriverDeliveryPanel
           key="terkirim"
@@ -425,18 +462,23 @@ export default function PoWorkScreen() {
     >
       <Stack.Screen options={{ title: order.po_number || "Pekerjaan PO" }} />
 
-      <View style={ui.card}>
-        <Text style={typography.label}>No PO</Text>
-        <Text style={typography.title}>{order.po_number}</Text>
-        <Text style={[typography.subtitle, { marginTop: 4 }]}>
-          {order.customer_name || order.customer || "—"}
-        </Text>
-        {order.hold ? (
-          <View style={[ui.chip, { backgroundColor: colors.warnBg, marginTop: 8 }]}>
-            <Text style={[ui.chipText, { color: colors.warn }]}>HOLD</Text>
-          </View>
-        ) : null}
+      <View style={ui.cardFlush}>
+        <SectionCardHeader tone="po" title="Informasi PO" />
+        <View style={ui.cardBody}>
+          <Text style={typography.label}>No PO</Text>
+          <Text style={typography.title}>{order.po_number}</Text>
+          <Text style={[typography.subtitle, { marginTop: 4 }]}>
+            {order.customer_name || order.customer || "—"}
+          </Text>
+          {order.hold ? (
+            <View style={[ui.chip, { backgroundColor: colors.warnBg, marginTop: 8 }]}>
+              <Text style={[ui.chipText, { color: colors.warn }]}>HOLD</Text>
+            </View>
+          ) : null}
+        </View>
       </View>
+
+      <DesignFilesCard order={order} onOpen={openDesignFile} />
 
       {visiblePanelIds.length > 1 ? (
         <View style={styles.tabs}>
@@ -468,7 +510,7 @@ export default function PoWorkScreen() {
               style={[styles.tab, activeDiv === "sample_upload" && styles.tabActive]}
             >
               <Text style={[styles.tabText, activeDiv === "sample_upload" && styles.tabTextActive]}>
-                Sampel Cetak
+                Upload Sampel Cetak
               </Text>
             </Pressable>
           ) : null}
@@ -504,8 +546,9 @@ function ScreenerPanel({
 }) {
   const model = screenerModel(order);
   return (
-    <View style={ui.card} testID="screener-panel">
-      <Text style={typography.title}>{model.title}</Text>
+    <View style={ui.cardFlush} testID="screener-panel">
+      <SectionCardHeader tone="screener" title={model.title} />
+      <View style={ui.cardBody}>
       <Text style={typography.subtitle}>{model.itemLabel}</Text>
       <MetricStrip
         target={fmtQty(model.target)}
@@ -527,6 +570,7 @@ function ScreenerPanel({
           />
         </>
       )}
+      </View>
     </View>
   );
 }
@@ -546,8 +590,9 @@ function HelperPanel({
 }) {
   const model = helperModel(order);
   return (
-    <View style={ui.card} testID="helper-panel">
-      <Text style={typography.title}>{model.title}</Text>
+    <View style={ui.cardFlush} testID="helper-panel">
+      <SectionCardHeader tone="helper" title={model.title} />
+      <View style={ui.cardBody}>
       <MetricStrip
         target={fmtQty(model.target)}
         done={fmtQty(model.done)}
@@ -585,6 +630,7 @@ function HelperPanel({
         </View>
       ))}
       {!model.lines.length ? <Text style={typography.subtitle}>Tidak ada item cetak.</Text> : null}
+      </View>
     </View>
   );
 }
@@ -604,8 +650,9 @@ function PackingPanel({
 }) {
   const model = packingModel(order);
   return (
-    <View style={ui.card} testID="packing-panel">
-      <Text style={typography.title}>{model.title}</Text>
+    <View style={ui.cardFlush} testID="packing-panel">
+      <SectionCardHeader tone="packing" title={model.title} />
+      <View style={ui.cardBody}>
       <MetricStrip
         target={fmtQty(model.target)}
         done={fmtQty(model.done)}
@@ -642,6 +689,7 @@ function PackingPanel({
           ) : null}
         </View>
       ))}
+      </View>
     </View>
   );
 }
@@ -659,11 +707,20 @@ function LoadingPanel({
   busy: boolean;
   onConfirm: (suratJalanId: string, lines: { line_idx: number; qty: number }[]) => void;
 }) {
-  const model = loadingModel(order);
-  const sjId = model.files[0]?.id || "";
+  const [sjId, setSjId] = useState("");
+  const model = loadingModel(order, sjId);
+  const fileIds = model.files.map((f: any) => f.id).join("|");
+  useEffect(() => {
+    if (!sjId && model.selectedSjId) setSjId(model.selectedSjId);
+    if (sjId && !model.files.some((f: any) => f.id === sjId) && model.selectedSjId) {
+      setSjId(model.selectedSjId);
+    }
+  }, [sjId, model.selectedSjId, fileIds]);
+  const activeSj = model.files.find((f: any) => f.id === sjId) || model.files[0];
   return (
-    <View style={ui.card} testID="loading-panel">
-      <Text style={typography.title}>{model.title}</Text>
+    <View style={ui.cardFlush} testID="loading-panel">
+      <SectionCardHeader tone="loading" title={model.title} />
+      <View style={ui.cardBody}>
       <Text style={typography.subtitle}>Konfirmasi item & qty berdasarkan Surat Jalan</Text>
       <MetricStrip
         target={fmtQty(model.target)}
@@ -672,10 +729,34 @@ function LoadingPanel({
         status={model.status}
       />
       {model.gateLocked ? (
-        <Text style={[typography.subtitle, { color: colors.warn }]}>{model.gateMsg}</Text>
-      ) : (
-        <Text style={typography.subtitle}>SJ: {model.files[0]?.name || model.files[0]?.id}</Text>
-      )}
+        <Text style={[typography.subtitle, { color: colors.warn }]} testID="loading-gate-note">
+          {model.gateMsg}
+        </Text>
+      ) : null}
+      {model.files.length > 1 ? (
+        <View style={{ marginTop: space.sm }} testID="loading-sj-picker">
+          <Text style={typography.label}>Pilih Surat Jalan</Text>
+          <View style={styles.tabs}>
+            {model.files.map((f: any) => {
+              const active = (sjId || model.selectedSjId) === f.id;
+              return (
+                <Pressable
+                  key={f.id}
+                  onPress={() => setSjId(f.id)}
+                  style={[styles.tab, active && styles.tabActive]}
+                  testID={`loading-sj-${f.id}`}
+                >
+                  <Text style={[styles.tabText, active && styles.tabTextActive]}>
+                    {f.name || f.original_filename || f.id}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : activeSj ? (
+        <Text style={typography.subtitle}>SJ: {activeSj.name || activeSj.id}</Text>
+      ) : null}
       {model.lines.map((line: any) => (
         <View key={line.lineIdx} style={styles.lineBlock}>
           <Text style={typography.body}>
@@ -698,7 +779,7 @@ function LoadingPanel({
         <PrimaryButton
           title="Konfirmasi Loading"
           busy={busy}
-          disabled={model.remaining <= 0}
+          disabled={model.remaining <= 0 || !(sjId || model.selectedSjId)}
           onPress={() => {
             const lines = model.lines
               .map((line: any) => ({
@@ -706,11 +787,85 @@ function LoadingPanel({
                 qty: Number(drafts[`l-${line.lineIdx}`] || 0),
               }))
               .filter((l: any) => l.qty > 0);
-            onConfirm(sjId, lines);
+            onConfirm(sjId || model.selectedSjId, lines);
           }}
           style={{ marginTop: space.md }}
         />
       ) : null}
+      </View>
+    </View>
+  );
+}
+
+function DesignFilesCard({
+  order,
+  onOpen,
+}: {
+  order: any;
+  onOpen: (file: any) => void;
+}) {
+  const files = designFiles(order);
+  const current = currentDesignFile(order);
+  const status = designStatusLabel(order);
+  const older = files.length > 1 ? files.slice(0, -1) : [];
+  const preview = current && designFileIsImage(current) ? designFilePreviewUri(current) : null;
+
+  return (
+    <View style={ui.cardFlush} testID="design-files-card">
+      <SectionCardHeader tone="design" title="File Desain" />
+      <View style={ui.cardBody}>
+      <Text style={typography.label}>Referensi desain</Text>
+      {!current ? (
+        <Text style={[typography.subtitle, { marginTop: 6 }]} testID="design-files-empty">
+          File desain belum tersedia
+        </Text>
+      ) : (
+        <>
+          <Text style={[typography.body, { marginTop: 6 }]}>{designFileLabel(current)}</Text>
+          {status ? (
+            <Text style={typography.subtitle}>Status: {status}</Text>
+          ) : null}
+          {files.length > 1 ? (
+            <Text style={typography.subtitle}>Revisi: {files.length} file (terbaru di atas)</Text>
+          ) : null}
+          {preview ? (
+            <Image
+              source={{ uri: preview }}
+              style={styles.designPreview}
+              resizeMode="contain"
+              testID="design-file-preview"
+            />
+          ) : null}
+          {canOpenDesignFile(current) ? (
+            <PrimaryButton
+              title="Lihat Desain"
+              onPress={() => onOpen(current)}
+              style={{ marginTop: space.sm }}
+              testID="design-file-open"
+            />
+          ) : (
+            <Text style={[typography.subtitle, { marginTop: 6 }]}>
+              File desain tidak dapat dibuka di perangkat ini.
+            </Text>
+          )}
+          {older.length
+            ? older
+                .slice()
+                .reverse()
+                .map((file: any, i: number) => (
+                  <Pressable
+                    key={file.id || `older-${i}`}
+                    onPress={() => canOpenDesignFile(file) && onOpen(file)}
+                    style={styles.designOlder}
+                    testID={`design-file-older-${file.id || i}`}
+                  >
+                    <Text style={typography.subtitle}>{designFileLabel(file)}</Text>
+                  </Pressable>
+                ))
+            : null}
+        </>
+      )}
+      </View>
     </View>
   );
 }
@@ -728,8 +883,9 @@ function DesignApprovePanel({
   const approved = order?.design_status === "Approved" || order?.design_bypassed;
   const waiting = files.length > 0 && !approved;
   return (
-    <View style={ui.card} testID="design-approve-panel">
-      <Text style={typography.title}>Approve Design</Text>
+    <View style={ui.cardFlush} testID="design-approve-panel">
+      <SectionCardHeader tone="designApprove" title="Approve Design" />
+      <View style={ui.cardBody}>
       <Text style={typography.subtitle}>
         Status: {order?.design_status || "Waiting"} · File: {files.length}
       </Text>
@@ -745,6 +901,7 @@ function DesignApprovePanel({
           {approved ? "Design sudah di-approve." : "Upload design diperlukan sebelum approval."}
         </Text>
       )}
+      </View>
     </View>
   );
 }
@@ -764,8 +921,9 @@ function SamplePanel({
 }) {
   const files = sampleFiles(order);
   return (
-    <View style={ui.card} testID="sample-panel">
-      <Text style={typography.title}>Sampel Cetak</Text>
+    <View style={ui.cardFlush} testID="sample-panel">
+      <SectionCardHeader tone="sample" title="Upload Sampel Cetak" />
+      <View style={ui.cardBody}>
       <Text style={typography.subtitle}>Foto sampel cetak Operator — terpisah dari File Design.</Text>
       <View style={styles.proofGrid}>
         {files.map((f: any, i: number) => {
@@ -804,6 +962,7 @@ function SamplePanel({
           {sampleGateMessage(order)}
         </Text>
       )}
+      </View>
     </View>
   );
 }
@@ -826,8 +985,9 @@ function OperatorPanel({
   const model = operatorPanelModel(order, user);
   const gate = operatorCanSubmit(order);
   return (
-    <View style={ui.card} testID="operator-panel">
-      <Text style={typography.title}>{model.title}</Text>
+    <View style={ui.cardFlush} testID="operator-panel">
+      <SectionCardHeader tone="operator" title={model.title} />
+      <View style={ui.cardBody}>
       <Text style={typography.subtitle}>Assignment pribadi Anda</Text>
       <MetricStrip
         target={fmtQty(model.target)}
@@ -883,6 +1043,7 @@ function OperatorPanel({
           </View>
         );
       })}
+      </View>
     </View>
   );
 }
@@ -932,4 +1093,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   proofImg: { width: "100%", height: "100%" },
+  designPreview: {
+    width: "100%",
+    height: 160,
+    marginTop: 8,
+    borderRadius: 10,
+    backgroundColor: colors.bg,
+  },
+  designOlder: {
+    marginTop: 8,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    minHeight: 40,
+    justifyContent: "center",
+  },
 });

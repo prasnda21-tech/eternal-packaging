@@ -18,6 +18,23 @@ export const colors = {
   header: "#0F172A",
 };
 
+/** Solid card-header tones — dark enough for white title text. Not status colors. */
+export const cardHeader = {
+  po: "#6D28D9",
+  design: "#1D4ED8",
+  designApprove: "#7C3AED",
+  customer: "#15803D",
+  item: "#C2410C",
+  screener: "#0E7490",
+  helper: "#0F766E",
+  operator: "#C2410C",
+  sample: "#B45309",
+  packing: "#0D9488",
+  loading: "#4338CA",
+  delivery: "#0369A1",
+  generic: "#334155",
+} as const;
+
 export const space = {
   xs: 6,
   sm: 10,
@@ -79,6 +96,17 @@ export const ui = StyleSheet.create({
     borderColor: colors.line,
     padding: space.md,
     marginBottom: space.sm,
+  },
+  cardFlush: {
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    marginBottom: space.sm,
+    overflow: "hidden",
+  },
+  cardBody: {
+    padding: space.md,
   },
   btnPrimary: {
     backgroundColor: colors.primary,
