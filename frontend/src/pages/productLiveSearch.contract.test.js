@@ -55,6 +55,13 @@ describe("product live search wiring", () => {
     expect(gaji).toMatch(/gaji-filter-item/);
     expect(analytics).toMatch(/FacetSearchSelect/);
     expect(analytics).toMatch(/op-an-item/);
+    expect(analytics).toMatch(/op-an-period/);
+    expect(analytics).toMatch(/op-an-date-from/);
+    expect(analytics).toMatch(/op-an-date-to/);
+    expect(analytics).toMatch(/op-an-user/);
+    expect(analytics).toMatch(/op-an-customer/);
+    expect(analytics).toMatch(/op-an-search/);
+    expect(analytics).toMatch(/op-an-po/);
     expect(analytics).not.toMatch(/<select value=\{item\}/);
   });
 
