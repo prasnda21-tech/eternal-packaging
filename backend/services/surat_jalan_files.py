@@ -277,12 +277,15 @@ def history_entries(order: dict) -> List[dict]:
     seen = set()
     for sh in shipments_stored(order):
         f = file_for_shipment(order, sh)
+        has_file = bool(f and file_has_blob(f))
+        if not has_file:
+            # Deleted / missing file must not reappear as a live Surat Jalan row.
+            continue
         fid = _safe_str((f or {}).get("id") or sh.get("file_id") or sh.get("id"))
         if fid:
             seen.add(fid)
         lines = entry_lines(sh) or entry_lines(f)
         has_qty = has_valid_item_qty(f, sh)
-        has_file = bool(f and file_has_blob(f))
         out.append({
             "id": fid or f"sj-{len(out)}",
             "file_id": _safe_str((f or {}).get("id")) or None,
@@ -345,6 +348,13 @@ def remove_file_from_order(order: dict, file_id: str) -> Optional[dict]:
     if removed is None:
         return None
     order["surat_jalan_files"] = kept
+    for sh in shipments_stored(order):
+        if not isinstance(sh, dict):
+            continue
+        same_file = _safe_str(sh.get("file_id")) == want
+        same_id = _safe_str(sh.get("id")) == want or _safe_str(sh.get("sales_delivery_id")) == want
+        if same_file or same_id:
+            sh["file_id"] = None
     if not kept and not shipments_stored(order):
         order["delivery_note_number"] = None
         order["delivery_note_created_at"] = None

@@ -33,6 +33,15 @@ describe("PO Detail delivery cards", () => {
     expect(detail).toMatch(/terkirimQtySummary/);
   });
 
+  test("Bukti Kirim delete waits on the request and does not duplicate", () => {
+    expect(proof).toMatch(/deleteDeliveryProof/);
+    expect(proof).toMatch(/deletingId/);
+    expect(proof).toMatch(/if \(!p\?\.id \|\| deletingId \|\| uploading\) return;/);
+    expect(proof).toMatch(/disabled=\{\!\!deletingId\}/);
+    expect(proof).not.toMatch(/current_stage\s*=\s*13/);
+    expect(proof).not.toMatch(/setStage\(/);
+  });
+
   test("Bukti Kirim history shows driver item qty time plate photos", () => {
     expect(proof).toMatch(/<h3>Bukti Kirim<\/h3>/);
     expect(proof).toMatch(/delivery-history/);

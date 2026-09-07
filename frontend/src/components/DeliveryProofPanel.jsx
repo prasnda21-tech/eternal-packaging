@@ -38,6 +38,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   const [confirmDeliver, setConfirmDeliver] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [previewId, setPreviewId] = useState(null);
   const [recipientName, setRecipientName] = useState(
     () => order.delivery_recipient_signature?.recipient_name || ""
@@ -223,7 +224,10 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   };
 
   const remove = async (p) => {
+    if (!p?.id || deletingId || uploading) return;
     if (!window.confirm(`Hapus foto ${p.original_filename}?`)) return;
+    setDeletingId(p.id);
+    setErr("");
     try {
       const res = await api.deleteDeliveryProof(order.id, p.id);
       onUpdated(res.order);
@@ -233,7 +237,10 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         setProofBlobs(next);
       }
     } catch (ex) {
-      setErr(ex.response?.data?.detail || "Gagal menghapus");
+      const d = ex.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Gagal menghapus"));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -422,10 +429,11 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
                     type="button"
                     className="proof-delete"
                     onClick={() => remove(p)}
+                    disabled={!!deletingId}
                     aria-label="Hapus"
                     data-testid={`proof-delete-${p.id}`}
                   >
-                    <Trash2 size={13} />
+                    {deletingId === p.id ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />}
                   </button>
                 )}
               </figcaption>

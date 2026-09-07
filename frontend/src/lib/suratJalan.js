@@ -36,7 +36,8 @@ export function sjPoLines(order) {
 }
 
 export function sjHistory(order) {
-  if (Array.isArray(order?.sj_files) && order.sj_files.length) return order.sj_files;
+  const hist = Array.isArray(order?.sj_files) ? order.sj_files.filter((f) => f && f.has_file !== false) : [];
+  if (hist.length) return hist;
   const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
   if (files.length) {
     return files.map((f, i) => ({

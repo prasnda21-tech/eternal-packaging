@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Truck } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
@@ -39,6 +39,13 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const fileIdsKey = files.map((f) => f.id).join("|");
+  useEffect(() => {
+    if (!files.some((f) => f.id === sjId)) {
+      setSjId(files[0]?.id || "");
+    }
+  }, [fileIdsKey, sjId, files]);
 
   const activeSj = files.find((f) => f.id === sjId) || files[0] || null;
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);

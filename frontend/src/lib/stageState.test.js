@@ -76,6 +76,39 @@ describe("SJ / Loading / Terkirim chips", () => {
     expect(terkirim.label).toMatch(/parsial/i);
     expect(terkirim.state).not.toBe("done");
   });
+
+  test("Pengiriman complete follows persisted delivery, not leftover bukti kirim cache", () => {
+    const waiting = resolveStageState(14, {
+      delivery_proofs: [{ id: "p1" }, { id: "p2" }],
+      terkirim_confirmed: false,
+      delivery_status: "Belum Terkirim",
+      qty_delivered: 0,
+      eligible_delivery_qty: 100,
+      current_stage: 13,
+    }, 13);
+    expect(waiting.state).not.toBe("done");
+    expect(waiting.label).toMatch(/bukti/i);
+
+    const afterProofDelete = resolveStageState(14, {
+      delivery_proofs: [],
+      terkirim_confirmed: false,
+      delivery_status: "Belum Terkirim",
+      qty_delivered: 0,
+      eligible_delivery_qty: 100,
+      current_stage: 13,
+    }, 13);
+    expect(afterProofDelete.state).not.toBe("done");
+    expect(afterProofDelete.label).toMatch(/bukti/i);
+
+    const confirmed = resolveStageState(14, {
+      delivery_proofs: [],
+      terkirim_confirmed: true,
+      delivery_status: "Terkirim",
+      qty_delivered: 1000,
+      current_stage: 14,
+    }, 14);
+    expect(confirmed.state).toBe("done");
+  });
 });
 
 describe("PODetail / SuratJalan source: no generic next or checkboxes", () => {
