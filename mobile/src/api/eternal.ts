@@ -185,6 +185,43 @@ export const eternalApi = {
       { method: "POST", body: { action_id: actionId } }
     ),
 
+  uploadDeliveryRecipientSignature: (
+    id: string,
+    payload: { recipientName: string; signatureDataUrl: string }
+  ) => {
+    const form = new FormData();
+    form.append("recipient_name", payload.recipientName || "");
+    form.append("signature_data_url", payload.signatureDataUrl);
+    return apiRequest<{ order: Record<string, unknown>; signature?: unknown }>(
+      `/orders/${encodeURIComponent(id)}/delivery-recipient-signature`,
+      { method: "POST", formData: form }
+    );
+  },
+
+  clearDeliveryRecipientSignature: (id: string) =>
+    apiRequest<{ order: Record<string, unknown>; cleared?: boolean }>(
+      `/orders/${encodeURIComponent(id)}/delivery-recipient-signature`,
+      { method: "DELETE" }
+    ),
+
+  uploadDeliveryDriverSignature: (
+    id: string,
+    payload: { signatureDataUrl: string }
+  ) => {
+    const form = new FormData();
+    form.append("signature_data_url", payload.signatureDataUrl);
+    return apiRequest<{ order: Record<string, unknown>; signature?: unknown }>(
+      `/orders/${encodeURIComponent(id)}/delivery-driver-signature`,
+      { method: "POST", formData: form }
+    );
+  },
+
+  clearDeliveryDriverSignature: (id: string) =>
+    apiRequest<{ order: Record<string, unknown>; cleared?: boolean }>(
+      `/orders/${encodeURIComponent(id)}/delivery-driver-signature`,
+      { method: "DELETE" }
+    ),
+
   suratJalanFileUrl: (orderId: string, fileId: string, token: string | null) =>
     authenticatedFileUrl(
       `/orders/${encodeURIComponent(orderId)}/surat-jalan/files/${encodeURIComponent(fileId)}`,

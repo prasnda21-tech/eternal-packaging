@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,6 +25,7 @@ import {
   PrimaryButton,
   QtyField,
 } from "../../../src/components/Ui";
+import DriverDeliveryPanel from "../../../src/components/DriverDeliveryPanel";
 import { colors, space, typography, ui } from "../../../src/theme";
 import { apiErrorMessage, fmtQty, newActionId } from "../../../src/utils/format";
 import {
@@ -45,10 +48,8 @@ import {
   shouldUploadPicked,
 } from "../../../src/utils/sampleUpload";
 import {
-  canConfirmDelivered,
   helperModel,
   loadingModel,
-  MIN_DELIVERY_PROOFS,
   operatorCanSubmit,
   operatorConfirmEnabled,
   operatorPanelModel,
@@ -80,6 +81,7 @@ export default function PoWorkScreen() {
   const [busy, setBusy] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [actionErr, setActionErr] = useState("");
+  const [drawingSignature, setDrawingSignature] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -209,30 +211,10 @@ export default function PoWorkScreen() {
       setOrder(res.order);
       Alert.alert(
         "Foto terunggah",
-        "Upload foto tidak menandai terkirim. Tekan Konfirmasi Terkirim setelah minimal 2 foto."
+        "Upload foto tidak menandai terkirim. Setelah minimal 2 foto, isi nama penerima dan kedua tanda tangan, lalu Konfirmasi Terkirim."
       );
     } catch (e) {
       setActionErr(apiErrorMessage(e, "Gagal mengunggah foto"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onConfirmDelivered = async () => {
-    if (!order || busy) return;
-    const proofs = order.delivery_proofs || [];
-    if (!canConfirmDelivered(proofs)) {
-      setActionErr(`Minimal ${MIN_DELIVERY_PROOFS} foto bukti sebelum konfirmasi terkirim.`);
-      return;
-    }
-    setBusy(true);
-    setActionErr("");
-    try {
-      const res = await eternalApi.confirmDelivered(order.id, newActionId());
-      setOrder(res.order);
-      Alert.alert("Terkirim", "Pengiriman dikonfirmasi.");
-    } catch (e) {
-      setActionErr(apiErrorMessage(e, "Gagal konfirmasi terkirim"));
     } finally {
       setBusy(false);
     }
@@ -411,15 +393,18 @@ export default function PoWorkScreen() {
     }
     if (panelId === "terkirim" && hasPerm("delivery.update")) {
       return (
-        <DriverPanel
+        <DriverDeliveryPanel
           key="terkirim"
           order={order}
           token={token}
+          user={user}
           hasPerm={hasPerm}
           busy={busy}
           onPickProof={onPickProof}
-          onConfirmDelivered={onConfirmDelivered}
           onOpenSj={openSuratJalan}
+          onUpdated={(next) => setOrder(next)}
+          onError={setActionErr}
+          onDrawingChange={setDrawingSignature}
         />
       );
     }
@@ -427,7 +412,17 @@ export default function PoWorkScreen() {
   };
 
   return (
-    <ScrollView style={ui.screen} contentContainerStyle={{ padding: space.md, paddingBottom: 48 }}>
+    <KeyboardAvoidingView
+      style={ui.screen}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+    <ScrollView
+      style={ui.screen}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      scrollEnabled={!drawingSignature}
+      contentContainerStyle={{ padding: space.md, paddingBottom: 48 }}
+    >
       <Stack.Screen options={{ title: order.po_number || "Pekerjaan PO" }} />
 
       <View style={ui.card}>
@@ -490,6 +485,7 @@ export default function PoWorkScreen() {
 
       <GhostButton title="Muat ulang" onPress={load} style={{ marginTop: space.md }} />
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -887,98 +883,6 @@ function OperatorPanel({
           </View>
         );
       })}
-    </View>
-  );
-}
-
-function DriverPanel({
-  order,
-  token,
-  hasPerm,
-  busy,
-  onPickProof,
-  onConfirmDelivered,
-  onOpenSj,
-}: {
-  order: any;
-  token: string | null;
-  hasPerm: (p: string) => boolean;
-  busy: boolean;
-  onPickProof: () => void;
-  onConfirmDelivered: () => void;
-  onOpenSj: (fileId: string) => void;
-}) {
-  const proofs = order.delivery_proofs || [];
-  const sjFiles = Array.isArray(order.surat_jalan_files) ? order.surat_jalan_files : [];
-  const delivered = order.delivery_status === "Terkirim" || order.terkirim_confirmed;
-  return (
-    <View style={ui.card} testID="driver-panel">
-      <Text style={typography.title}>Pengiriman / Terkirim</Text>
-      <Text style={typography.subtitle}>
-        Bukti: {proofs.length} foto (min {MIN_DELIVERY_PROOFS}). Upload tidak otomatis menandai terkirim.
-      </Text>
-
-      {hasPerm("delivery_note.view") || hasPerm("delivery_note.view_file") ? (
-        <View style={{ marginTop: space.md }}>
-          <Text style={typography.label}>Surat Jalan</Text>
-          {!sjFiles.length ? (
-            <Text style={typography.subtitle}>Belum ada file Surat Jalan.</Text>
-          ) : (
-            sjFiles.map((f: any) => (
-              <GhostButton
-                key={f.id || f.storage_path}
-                title={f.name || f.original_filename || "Buka Surat Jalan"}
-                onPress={() => f.id && onOpenSj(f.id)}
-                disabled={!hasPerm("delivery_note.view_file") || !f.id}
-                style={{ marginTop: 8 }}
-              />
-            ))
-          )}
-        </View>
-      ) : null}
-
-      <View style={{ marginTop: space.md }}>
-        <Text style={typography.label}>Bukti Pengiriman</Text>
-        <View style={styles.proofGrid}>
-          {proofs.map((p: any, i: number) => {
-            const uri =
-              p.storage_path && token
-                ? eternalApi.fileUrl(p.storage_path, token)
-                : null;
-            return (
-              <View key={p.id || i} style={styles.proofThumb}>
-                {uri ? (
-                  <Image source={{ uri }} style={styles.proofImg} />
-                ) : (
-                  <Text style={typography.subtitle}>Foto {i + 1}</Text>
-                )}
-              </View>
-            );
-          })}
-        </View>
-        {!delivered ? (
-          <PrimaryButton
-            title="Upload Foto Bukti"
-            onPress={onPickProof}
-            busy={busy}
-            style={{ marginTop: space.sm }}
-          />
-        ) : null}
-      </View>
-
-      {!delivered ? (
-        <PrimaryButton
-          title="Konfirmasi Terkirim"
-          onPress={onConfirmDelivered}
-          busy={busy}
-          disabled={!canConfirmDelivered(proofs)}
-          style={{ marginTop: space.md }}
-        />
-      ) : (
-        <View style={[ui.chip, { backgroundColor: colors.okBg, marginTop: space.md }]}>
-          <Text style={[ui.chipText, { color: colors.ok }]}>Sudah Terkirim</Text>
-        </View>
-      )}
     </View>
   );
 }
