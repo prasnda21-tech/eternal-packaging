@@ -271,6 +271,108 @@ def test_header_description_does_not_overwrite_line_color():
     assert so["line_items"][1]["color"] == "MERAH"
 
 
+def _two_line_cup_lid_so(*, reverse: bool = False, header: str = "SABLON WARNA ORANGE"):
+    cup = {
+        "id": 501,
+        "quantity": 500,
+        "itemUnitName": "pcs",
+        "detailNotes": "SABLON WARNA ORANGE",
+        "item": {"id": 801, "no": "CUP-14", "name": "14 oz Inject Datar Bening Klir"},
+    }
+    lid = {
+        "id": 502,
+        "quantity": 500,
+        "itemUnitName": "pcs",
+        "item": {"id": 802, "no": "LID-CON", "name": "LID Connect Inject Bening Klir"},
+    }
+    detail = [lid, cup] if reverse else [cup, lid]
+    return {
+        "id": 9001,
+        "number": "SO-CUP-LID",
+        "customer": {"name": "Fixture Customer"},
+        "description": header,
+        "detailItem": detail,
+    }
+
+
+def test_multiline_so_header_color_does_not_inherit_to_lid():
+    so = _normalize_accurate_so(_two_line_cup_lid_so())
+    lines = so["line_items"]
+    assert len(lines) == 2
+    assert lines[0]["name"] == "14 oz Inject Datar Bening Klir"
+    assert lines[0]["color"] == "ORANGE"
+    assert lines[0]["quantity"] == 500
+    assert lines[0]["accurate_line_id"] == "501"
+    assert lines[1]["name"] == "LID Connect Inject Bening Klir"
+    assert lines[1]["color"] == "BENING"
+    assert lines[1]["quantity"] == 500
+    assert lines[1]["accurate_line_id"] == "502"
+    assert lines[1]["color"] != lines[0]["color"] or lines[1]["name"] != lines[0]["name"]
+    assert lines[1]["color_source"] == "item.name"
+    assert "production_process" not in lines[0]
+    assert "production_process" not in lines[1]
+
+
+def test_multiline_color_mapping_is_order_independent():
+    so = _normalize_accurate_so(_two_line_cup_lid_so(reverse=True))
+    by_name = {li["name"]: li for li in so["line_items"]}
+    assert so["line_items"][0]["name"] == "LID Connect Inject Bening Klir"
+    assert so["line_items"][0]["color"] == "BENING"
+    assert so["line_items"][1]["name"] == "14 oz Inject Datar Bening Klir"
+    assert so["line_items"][1]["color"] == "ORANGE"
+    assert by_name["LID Connect Inject Bening Klir"]["color"] == "BENING"
+    assert by_name["14 oz Inject Datar Bening Klir"]["color"] == "ORANGE"
+
+
+def test_same_name_lines_keep_distinct_colors_and_ids():
+    raw = {
+        "id": 2,
+        "number": "SO-SAME-NAME",
+        "customer": {"name": "A"},
+        "description": "SABLON WARNA ORANGE",
+        "detailItem": [
+            {
+                "id": 11,
+                "quantity": 100,
+                "detailNotes": "SABLON WARNA ORANGE",
+                "item": {"id": 1, "name": "Cup 14 oz"},
+            },
+            {
+                "id": 12,
+                "quantity": 200,
+                "detailNotes": "SABLON WARNA BENING",
+                "item": {"id": 1, "name": "Cup 14 oz"},
+            },
+        ],
+    }
+    so = _normalize_accurate_so(raw)
+    assert len(so["line_items"]) == 2
+    assert so["line_items"][0]["name"] == so["line_items"][1]["name"] == "Cup 14 oz"
+    assert so["line_items"][0]["color"] == "ORANGE"
+    assert so["line_items"][1]["color"] == "BENING"
+    assert so["line_items"][0]["accurate_line_id"] == "11"
+    assert so["line_items"][1]["accurate_line_id"] == "12"
+    assert so["line_items"][0]["quantity"] == 100
+    assert so["line_items"][1]["quantity"] == 200
+
+
+def test_multiline_header_only_does_not_stamp_every_line():
+    raw = {
+        "id": 3,
+        "number": "SO-HEADER-ONLY",
+        "customer": {"name": "A"},
+        "description": "SABLON WARNA ORANGE",
+        "detailItem": [
+            {"quantity": 500, "item": {"id": 1, "name": "Paper cup 12oz"}},
+            {"quantity": 500, "item": {"id": 2, "name": "Paper bag medium"}},
+        ],
+    }
+    so = _normalize_accurate_so(raw)
+    assert so["line_items"][0]["color"] is None
+    assert so["line_items"][1]["color"] is None
+    assert so["line_items"][0].get("color_source") is None
+
+
 def test_outlet_not_from_shipment_or_branchId():
     raw = {
         "id": 1,
