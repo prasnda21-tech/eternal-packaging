@@ -8,6 +8,10 @@ describe("mobile route wiring", () => {
   const layout = fs.readFileSync(path.join(__dirname, "../mobile/MobileOperationalLayout.jsx"), "utf8");
   const detail = fs.readFileSync(path.join(__dirname, "../mobile/MobileOrderDetailPage.jsx"), "utf8");
   const delivery = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobileDeliveryWorkspace.jsx"), "utf8");
+  const screener = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobileScreenerWorkspace.jsx"), "utf8");
+  const packing = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobilePackingWorkspace.jsx"), "utf8");
+  const print = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobilePrintWorkspace.jsx"), "utf8");
+  const loading = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobileLoadingWorkspace.jsx"), "utf8");
 
   test("mobile namespace is outside AppShell", () => {
     expect(app).toMatch(/path="\/m\/tasks"/);
@@ -47,6 +51,17 @@ describe("mobile route wiring", () => {
     expect(delivery).toMatch(/uploadDeliveryDriverSignature/);
     expect(delivery).toMatch(/confirmDelivered/);
     expect(delivery).not.toMatch(/\/delivered\?/);
+  });
+
+  test("screener metrics omit Sisa while other workspaces keep it", () => {
+    expect(screener).toMatch(/label: "Target"/);
+    expect(screener).toMatch(/label: "Selesai"/);
+    expect(screener).not.toMatch(/label: "Sisa"/);
+    expect(screener).toMatch(/mop-metrics--2col/);
+    expect(packing).toMatch(/label: "Sisa"/);
+    expect(print).toMatch(/label: "Sisa"/);
+    expect(loading).toMatch(/Remaining Qty/);
+    expect(loading).toMatch(/Sisa \{Number\(line\.available/);
   });
 
   test("auth redirect helpers used by router", () => {

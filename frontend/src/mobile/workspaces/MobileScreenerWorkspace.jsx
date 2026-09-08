@@ -44,11 +44,14 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
       <div className="mop-ws-header"><h2>SCREENER</h2></div>
       <MobileStatusBadge status={status} />
       <MobileDesignFile order={order} />
-      <MobileMetricStrip items={[
-        { label: "Target", value: model.headerTarget.toLocaleString("id-ID") },
-        { label: "Selesai", value: model.headerDone.toLocaleString("id-ID") },
-        { label: "Sisa", value: model.headerRemain.toLocaleString("id-ID") },
-      ]} />
+      <MobileMetricStrip
+        testid="mobile-screener-metrics"
+        className="mop-metrics--2col"
+        items={[
+          { label: "Target", value: model.headerTarget.toLocaleString("id-ID") },
+          { label: "Selesai", value: model.headerDone.toLocaleString("id-ID") },
+        ]}
+      />
       {locked && <p className="mop-card-meta">{model.gateMsg}</p>}
       {err && <div className="mop-error">{err}</div>}
       <MobileQtyStepper id="screener-qty" label="Qty Screener" value={qty} onChange={setQty} disabled={locked || busy} />

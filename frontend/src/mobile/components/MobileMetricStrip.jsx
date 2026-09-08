@@ -1,6 +1,6 @@
-export default function MobileMetricStrip({ items, testid }) {
+export default function MobileMetricStrip({ items, testid, className }) {
   return (
-    <div className="mop-metrics" data-testid={testid || "mobile-metrics"}>
+    <div className={`mop-metrics${className ? ` ${className}` : ""}`} data-testid={testid || "mobile-metrics"}>
       {items.map((item) => (
         <div className="mop-metric" key={item.label}>
           <span>{item.label}</span>

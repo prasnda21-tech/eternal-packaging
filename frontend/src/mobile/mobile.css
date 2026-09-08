@@ -290,6 +290,10 @@
   margin: 10px 0;
 }
 
+.mop-metrics--2col {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 .mop-metric {
   background: #fff;
   border: 1px solid var(--mop-line);
