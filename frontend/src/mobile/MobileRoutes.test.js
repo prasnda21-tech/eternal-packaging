@@ -13,6 +13,7 @@ describe("mobile route wiring", () => {
   const print = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobilePrintWorkspace.jsx"), "utf8");
   const loading = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobileLoadingWorkspace.jsx"), "utf8");
   const ordersPage = fs.readFileSync(path.join(__dirname, "../mobile/MobileOrdersPage.jsx"), "utf8");
+  const tasksPage = fs.readFileSync(path.join(__dirname, "../mobile/MobileTasksPage.jsx"), "utf8");
   const schedulePage = fs.readFileSync(path.join(__dirname, "../mobile/MobileProductionSchedulePage.jsx"), "utf8");
   const bottomNav = fs.readFileSync(path.join(__dirname, "../mobile/MobileBottomNav.jsx"), "utf8");
 
@@ -110,6 +111,13 @@ describe("mobile route wiring", () => {
     expect(appCss).toMatch(/\.urgent-badge,\.standard-badge,\.status\{font:10\.5px 'IBM Plex Mono'/);
     expect(appCss).not.toMatch(/mop-sched-zoom/);
     expect(appCss).not.toMatch(/mop-schedule-table/);
+  });
+
+  test("tasks page uses one division-tasks request and sorts without extra fetches", () => {
+    expect(tasksPage).toMatch(/api\.divisionTasks/);
+    expect(tasksPage).toMatch(/sortOperationalTasks/);
+    expect(tasksPage).not.toMatch(/api\.getOrder\(/);
+    expect(tasksPage).not.toMatch(/productionDashboard/);
   });
 
   test("auth redirect helpers used by router", () => {

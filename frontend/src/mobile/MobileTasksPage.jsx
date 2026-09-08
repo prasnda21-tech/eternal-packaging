@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
+import { sortOperationalTasks } from "../lib/mobileTaskCard";
 import { permittedMobileWorkspaces, taskSummaryFromList } from "../lib/mobileWorkspaces";
 import MobileTopBar from "./MobileTopBar";
 import MobileTaskCard from "./components/MobileTaskCard";
@@ -41,8 +42,12 @@ export default function MobileTasksPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selected?.division]);
 
-  const tasks = data?.tasks || [];
+  const tasks = useMemo(
+    () => (Array.isArray(data?.tasks) ? data.tasks : []),
+    [data?.tasks],
+  );
   const summary = taskSummaryFromList(tasks);
+  const sortedTasks = useMemo(() => sortOperationalTasks(tasks), [tasks]);
   const roleLabel = ROLES[user?.role] || user?.role || "";
 
   return (
@@ -76,7 +81,7 @@ export default function MobileTasksPage() {
         {busy && !tasks.length && <p className="mop-empty">Memuat tugas...</p>}
         {err && <div className="mop-error">{err}</div>}
         {!workspaces.length && <p className="mop-empty">Tidak ada workspace operasional untuk akun ini.</p>}
-        {selected && tasks.map((task) => (
+        {selected && sortedTasks.map((task) => (
           <MobileTaskCard key={task.task_id || task.order_id} task={task} workspaceId={selected.id} />
         ))}
         {selected && !busy && !tasks.length && !err && <p className="mop-empty">Tidak ada tugas.</p>}
