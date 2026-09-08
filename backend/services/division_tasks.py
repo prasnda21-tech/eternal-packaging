@@ -6,6 +6,7 @@ never PO print totals.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from quantity_rules import (
@@ -140,6 +141,12 @@ TASK_PROJECTION = {
     "current_stage": 1,
     "delivery_status": 1,
     "delivered_at": 1,
+    "work_date": 1,
+    "delivery_deadline_manual": 1,
+    "design_approved_at": 1,
+    "design_bypassed_at": 1,
+    "payment_approved_at": 1,
+    "payment_bypassed_at": 1,
     "line_items": 1,
     "operator_splits": 1,
     "screener_info": 1,
@@ -225,13 +232,88 @@ def _line_id(order: dict, idx: Optional[int]) -> Optional[str]:
     return li.get("id") or li.get("line_id")
 
 
+_DATE_KEY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+
+def _date_key(value) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = _DATE_KEY_RE.match(text)
+    return match.group(1) if match else None
+
+
+def _split_matches_line(order: dict, split: dict, line_idx: int) -> bool:
+    try:
+        split_idx = int(split.get("line_idx"))
+        want_idx = int(line_idx)
+    except (TypeError, ValueError):
+        return False
+    if split_idx != want_idx:
+        return False
+    split_line_id = split.get("line_id")
+    if split_line_id:
+        expected = _line_id(order, want_idx)
+        if expected and str(split_line_id) != str(expected):
+            return False
+    return True
+
+
+def _canonical_work_date(order: dict, *, line_idx=None, split=None):
+    """Authoritative Tgl Pengerjaan for one task row. Never invents a date."""
+    if split is not None:
+        raw = split.get("work_date")
+        return raw if _date_key(raw) else None
+    candidates = []
+    for s in order.get("operator_splits") or []:
+        if line_idx is not None and not _split_matches_line(order, s, line_idx):
+            continue
+        raw = s.get("work_date")
+        key = _date_key(raw)
+        if key:
+            candidates.append((key, raw))
+    if line_idx is not None:
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[0][1]
+        return None
+    own = order.get("work_date")
+    if _date_key(own):
+        return own
+    if candidates:
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+    return None
+
+
+def _operator_names_for_task(order: dict, *, line_idx=None, split=None) -> List[str]:
+    if split is not None:
+        name = str(split.get("operator_name") or "").strip()
+        return [name] if name else []
+    names: List[str] = []
+    seen = set()
+    for s in order.get("operator_splits") or []:
+        if line_idx is not None and not _split_matches_line(order, s, line_idx):
+            continue
+        name = str(s.get("operator_name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def _customer(order: dict) -> str:
     return order.get("customer") or order.get("customer_name") or ""
 
 
-def _base_row(order: dict, division: str, *, line_idx=None, split_id=None) -> dict:
+def _base_row(order: dict, division: str, *, line_idx=None, split_id=None, split=None) -> dict:
     cfg = DIVISION_DEFS[division]
     oid = order.get("id")
+    if split is not None:
+        split_id = split_id or split.get("id")
     tid = f"{division}:{oid}:{line_idx if line_idx is not None else 'po'}:{split_id or '-'}"
     return {
         "task_id": tid,
@@ -246,6 +328,11 @@ def _base_row(order: dict, division: str, *, line_idx=None, split_id=None) -> di
         "assigned_user_id": None,
         "assigned_user_email": None,
         "assigned_user_name": None,
+        "operator_names": _operator_names_for_task(order, line_idx=line_idx, split=split),
+        "work_date": _canonical_work_date(order, line_idx=line_idx, split=split),
+        "delivery_deadline": order.get("delivery_deadline_effective"),
+        "delivery_deadline_source": order.get("delivery_deadline_source"),
+        "delivery_deadline_status": order.get("delivery_deadline_status"),
         "target_qty": None,
         "completed_qty": None,
         "remaining_qty": None,
@@ -494,7 +581,7 @@ def build_operator_tasks(order: dict, user: dict, *, mine_only: bool) -> List[di
         if mine_only and not _split_is_mine(s, user):
             continue
         done = max(0, _safe_int(s.get("qty_completed")))
-        row = _base_row(order, "operator", line_idx=idx, split_id=s.get("id"))
+        row = _base_row(order, "operator", line_idx=idx, split_id=s.get("id"), split=s)
         row["assigned_user_id"] = s.get("operator_user_id") or s.get("operator_id")
         row["assigned_user_email"] = s.get("operator_email")
         row["assigned_user_name"] = s.get("operator_name")
