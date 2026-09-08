@@ -20,6 +20,8 @@ from operator_analytics import (
     _split_fallback_day,
     _timeline_qty_events,
     bucket_key,
+    canonical_customer_key,
+    canonical_customer_label,
     completed_in_period_for_split,
     design_line_identity,
     in_period,
@@ -41,6 +43,7 @@ from operator_analytics import (
     weeks_covering,
     wow_pct,
 )
+from quantity_rules import qty_delivered
 
 
 def periods_covering(start: date, end: date, grouping: str) -> List[dict]:
@@ -1056,12 +1059,274 @@ def iter_design_export_rows(
     return list(report.get("rows") or [])
 
 
+def _driver_group_key(driver_id: Optional[str], driver_name: Optional[str]) -> str:
+    did = str(driver_id or "").strip()
+    if did:
+        return f"id:{did}"
+    name = str(driver_name or "").strip()
+    if name:
+        return f"name:{name}"
+    return UNATTRIBUTED_ID
+
+
+def _driver_line_meta(order: dict, line_idx) -> Tuple[Any, Any, str]:
+    lis = order.get("line_items") or []
+    idx = None
+    try:
+        if line_idx is not None and str(line_idx).strip() != "":
+            idx = int(line_idx)
+    except (TypeError, ValueError):
+        idx = None
+    line_id = None
+    item_name = ""
+    if idx is not None and 0 <= idx < len(lis):
+        li = lis[idx] if isinstance(lis[idx], dict) else {}
+        line_id = li.get("id") or li.get("line_id")
+        item_name = (li.get("name") or li.get("item_code") or "").strip()
+    if not item_name:
+        item_name = line_item_name(order, idx if idx is not None else 0)
+    return idx, line_id, item_name
+
+
+def _driver_identity_from_rec(rec: dict, order: dict) -> Tuple[str, str]:
+    did = str(rec.get("driver_id") or "").strip()
+    name = str(rec.get("driver_name") or "").strip()
+    if not name:
+        lc = order.get("loading_checklist") or {}
+        name = str(lc.get("driver_name") or "").strip()
+    if not name:
+        name = UNATTRIBUTED_NAME if not did else did
+    return did, name
+
+
+def iter_driver_export_rows(
+    orders: Iterable[dict],
+    *,
+    date_from: date,
+    date_to: date,
+    user_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> List[dict]:
+    """Completed Pengiriman/Terkirim rows. Not packing, Surat Jalan, or loading."""
+    user_filter = (user_id or "").strip()
+    if user_filter in ("all", ""):
+        user_filter = ""
+    out: List[dict] = []
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        if not order_matches_customer(order, customer):
+            continue
+        if not order_matches_item(order, item) or not order_matches_po(order, po):
+            continue
+        po_id = order.get("id") or order.get("po_number")
+        po_num = _order_po_number(order) or str(po_id or "")
+        cust = canonical_customer_label(order)
+        cust_id = str(order.get("customer_id") or "").strip()
+        cust_key = canonical_customer_key(order)
+        recs = [r for r in (order.get("delivery_confirmations") or []) if isinstance(r, dict)]
+        events: List[dict] = []
+        if recs:
+            for rec in recs:
+                did, dname = _driver_identity_from_rec(rec, order)
+                group = _driver_group_key(did, dname)
+                day = parse_iso_datetime_date(rec.get("confirmed_at"))
+                items = [it for it in (rec.get("items") or []) if isinstance(it, dict)]
+                if items:
+                    for it in items:
+                        qty = max(0, safe_int(it.get("qty")))
+                        if qty <= 0:
+                            continue
+                        idx, line_id, fallback_name = _driver_line_meta(order, it.get("line_idx"))
+                        item_name = (it.get("name") or "").strip() or fallback_name
+                        events.append({
+                            "day": day,
+                            "driver_id": group,
+                            "driver_user_id": did,
+                            "driver_name": dname,
+                            "line_idx": idx,
+                            "line_id": line_id,
+                            "item_name": item_name,
+                            "qty": qty,
+                            "confirmation_id": rec.get("id"),
+                        })
+                else:
+                    qty = max(0, safe_int(rec.get("qty")))
+                    if qty <= 0:
+                        continue
+                    idx, line_id, item_name = _driver_line_meta(order, None)
+                    events.append({
+                        "day": day,
+                        "driver_id": group,
+                        "driver_user_id": did,
+                        "driver_name": dname,
+                        "line_idx": idx,
+                        "line_id": line_id,
+                        "item_name": item_name,
+                        "qty": qty,
+                        "confirmation_id": rec.get("id"),
+                    })
+        else:
+            delivered = qty_delivered(order)
+            if delivered <= 0:
+                continue
+            lc = order.get("loading_checklist") or {}
+            dname = str(lc.get("driver_name") or "").strip() or UNATTRIBUTED_NAME
+            did = ""
+            group = _driver_group_key(did, dname)
+            events.append({
+                "day": parse_iso_datetime_date(order.get("delivered_at")),
+                "driver_id": group,
+                "driver_user_id": did,
+                "driver_name": dname,
+                "line_idx": None,
+                "line_id": None,
+                "item_name": line_item_name(order, 0),
+                "qty": delivered,
+                "confirmation_id": None,
+            })
+        for ev in events:
+            if user_filter and ev["driver_id"] != user_filter and ev.get("driver_user_id") != user_filter:
+                continue
+            if not in_period(ev.get("day"), date_from, date_to):
+                continue
+            if not line_matches_item(order, ev.get("line_idx"), item):
+                continue
+            out.append({
+                "tanggal": ev["day"].isoformat() if ev.get("day") else "",
+                "minggu": iso_week_key(ev["day"]) if ev.get("day") else "",
+                "driver": ev["driver_name"],
+                "driver_id": ev["driver_id"],
+                "driver_user_id": ev.get("driver_user_id") or "",
+                "employee_id": ev["driver_id"],
+                "employee_name": ev["driver_name"],
+                "order_id": po_id,
+                "no_po": po_num,
+                "customer": cust,
+                "customer_id": cust_id,
+                "customer_key": cust_key,
+                "cup_item": ev["item_name"],
+                "item_name": ev["item_name"],
+                "line": _line_no(ev.get("line_idx")),
+                "line_idx": ev.get("line_idx"),
+                "line_id": ev.get("line_id"),
+                "qty_delivered": ev["qty"],
+                "qty": ev["qty"],
+                "confirmation_id": ev.get("confirmation_id"),
+                "date": ev["day"].isoformat() if ev.get("day") else "",
+                "_key": f"{po_id}:{ev.get('confirmation_id') or 'legacy'}:{ev.get('line_idx')}:{ev.get('line_id') or ''}:{ev.get('day')}",
+            })
+    out.sort(key=lambda r: (r.get("tanggal") or "", r.get("driver") or "", r.get("no_po") or "", r.get("line") or 0))
+    return out
+
+
+def summarize_drivers(rows: Sequence[dict]) -> List[dict]:
+    acc: Dict[str, dict] = {}
+    for r in rows:
+        eid = r.get("driver_id") or ""
+        rec = acc.setdefault(eid, {
+            "id": eid,
+            "email": eid,
+            "name": r.get("driver") or eid,
+            "qty": 0,
+            "po_ids": set(),
+            "customer_keys": set(),
+        })
+        if r.get("driver"):
+            rec["name"] = r["driver"]
+        rec["qty"] += max(0, safe_int(r.get("qty_delivered") if r.get("qty_delivered") is not None else r.get("qty")))
+        if r.get("order_id") or r.get("no_po"):
+            rec["po_ids"].add(r.get("order_id") or r.get("no_po"))
+        ckey = r.get("customer_key") or ""
+        if ckey:
+            rec["customer_keys"].add(ckey)
+    out = []
+    for rec in acc.values():
+        out.append({
+            "id": rec["id"],
+            "email": rec["email"],
+            "name": rec["name"],
+            "qty": rec["qty"],
+            "po_count": len(rec["po_ids"]),
+            "customer_count": len(rec["customer_keys"]),
+        })
+    out.sort(key=lambda r: (-r["qty"], r["name"] or r["id"]))
+    return out
+
+
+def compute_driver_report(
+    orders: Iterable[dict],
+    *,
+    date_from: date,
+    date_to: date,
+    user_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> dict:
+    rows = iter_driver_export_rows(
+        orders, date_from=date_from, date_to=date_to,
+        user_id=user_id, customer=customer, item=item, po=po,
+    )
+    people = summarize_drivers(rows)
+    week_meta = weeks_covering(date_from, date_to)
+    week_totals = {w["week"]: 0 for w in week_meta}
+    for r in rows:
+        wk = r.get("minggu")
+        if wk in week_totals:
+            week_totals[wk] += max(0, safe_int(r.get("qty_delivered")))
+    series = []
+    prev_qty = None
+    for meta in week_meta:
+        qty = week_totals.get(meta["week"], 0)
+        series.append({**meta, "qty": qty, "wow_pct": wow_pct(qty, prev_qty)})
+        prev_qty = qty
+    user_opts = [{"id": p["id"], "name": p["name"]} for p in people if p["id"] != UNATTRIBUTED_ID]
+    po_ids = {r.get("order_id") or r.get("no_po") for r in rows if r.get("order_id") or r.get("no_po")}
+    cust_keys = {r.get("customer_key") for r in rows if r.get("customer_key")}
+    return {
+        "kpis": {
+            "total_qty": sum(p["qty"] for p in people),
+            "user_count": len([p for p in people if p["id"] != UNATTRIBUTED_ID]),
+            "po_count": len(po_ids),
+            "customer_count": len(cust_keys),
+        },
+        "people": people,
+        "rows": rows,
+        "weekly_trend": {
+            "weeks": series,
+            "wow_pct": wow_pct(series[-1]["qty"], series[-2]["qty"]) if len(series) >= 2 else None,
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "filters": {
+            "users": user_opts,
+        },
+        "attribution": {
+            "model": "delivery_confirmation",
+            "qty_field": "delivery_confirmations.items.qty / qty_delivered",
+            "timestamp": "delivery_confirmations.confirmed_at / delivered_at",
+            "note": DATA_SOURCES["driver"],
+        },
+        "period": {
+            "from": date_from.isoformat(),
+            "to": date_to.isoformat(),
+            "week_definition": "ISO-8601 Senin–Minggu, zona WIB (UTC+7)",
+        },
+        "read_only": True,
+        "sources": DATA_SOURCES,
+        "index_recommendations": INDEX_RECOMMENDATIONS,
+    }
+
+
 def export_filename(tab: str, date_from: date, date_to: date, fmt: str) -> str:
     labels = {
         "operator": "Operator",
         "helper": "Helper",
         "screener": "Screener",
         "design": "Designer",
+        "driver": "Driver",
     }
     ext = "xlsx" if (fmt or "").strip().lower() == "xlsx" else "csv"
     return f"Laporan_{labels.get(tab, tab)}_{date_from.isoformat()}_{date_to.isoformat()}.{ext}"
@@ -1121,7 +1386,7 @@ EXPORT_COLUMNS = {
     "operator": [
         ("tanggal", "Tanggal"),
         ("operator", "Operator"),
-        ("customer", "Outlet / Customer"),
+        ("customer", "Customer"),
         ("no_po", "No PO"),
         ("cup_item", "Cup / Item"),
         ("design_line", "Design / Line"),
@@ -1132,7 +1397,7 @@ EXPORT_COLUMNS = {
     "helper": [
         ("tanggal", "Tanggal"),
         ("helper", "Helper"),
-        ("customer", "Outlet / Customer"),
+        ("customer", "Customer"),
         ("no_po", "No PO"),
         ("cup_item", "Cup / Item"),
         ("qty_prepared", "Qty Persiapan"),
@@ -1141,7 +1406,7 @@ EXPORT_COLUMNS = {
     "screener": [
         ("tanggal", "Tanggal"),
         ("screener", "Screener"),
-        ("customer", "Outlet / Customer"),
+        ("customer", "Customer"),
         ("no_po", "No PO"),
         ("cup_item", "Cup / Item"),
         ("qty_screener", "Qty Screener"),
@@ -1149,10 +1414,18 @@ EXPORT_COLUMNS = {
     "design": [
         ("tanggal", "Tanggal"),
         ("designer", "Designer"),
-        ("customer", "Outlet / Customer"),
+        ("customer", "Customer"),
         ("no_po", "No PO"),
         ("cup_item", "Cup / Item"),
         ("design_line", "Design / Line"),
         ("jumlah_design", "Jumlah Design"),
+    ],
+    "driver": [
+        ("tanggal", "Tanggal"),
+        ("driver", "Driver"),
+        ("customer", "Customer"),
+        ("no_po", "No PO"),
+        ("cup_item", "Item"),
+        ("qty_delivered", "Qty Terkirim"),
     ],
 }

@@ -1566,7 +1566,7 @@ def test_report_screener_structured_800():
     assert rows[0]["screener"] == "Screener A"
     assert rows[0]["cup_item"] == "Cup 12"
     assert rows[0]["qty_screener"] == 800
-    assert rows[0]["customer"] == "Outlet ABC"
+    assert rows[0]["customer"] == "Cust"
     assert rows[0]["order_id"] == "oid-1"
     assert ";" not in str(rows[0]["cup_item"])
     out = compute_screener_report([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
@@ -1660,17 +1660,34 @@ def test_export_filename_and_separate_columns():
     assert keys.count("operator") == 1
 
 
-def test_outlet_preferred_over_customer():
+def test_canonical_customer_not_outlet():
     op = "nanda@x.com"
-    order = _order("PO-O", customer="PT Customer", item="Cup 12",
+    order = _order("PO-O", customer="PT ABC", item="Cup 12",
                    splits=[{**_split(op, "Nanda", 100, 100, day=5), "line_idx": 0}],
                    timeline=[_qty_note("Nanda", 100, 100, 5, op)])
-    order["outlet"] = "Kopi Rumah — Kemang"
+    order["outlet"] = "Cabang Yogyakarta"
+    order["customer_id"] = "cust-abc"
     rows = iter_operator_export_rows([order], date_from=PERIOD_FROM, date_to=PERIOD_TO)
-    assert rows[0]["customer"] == "Kopi Rumah — Kemang"
-    filtered = iter_operator_export_rows(
-        [order], date_from=PERIOD_FROM, date_to=PERIOD_TO, customer="Kopi Rumah — Kemang",
+    assert rows[0]["customer"] == "PT ABC"
+    assert rows[0]["customer"] != "Cabang Yogyakarta"
+    by_outlet = iter_operator_export_rows(
+        [order], date_from=PERIOD_FROM, date_to=PERIOD_TO, customer="Cabang Yogyakarta",
     )
-    assert filtered and filtered[0]["qty_completed"] == 100
+    assert by_outlet == []
+    by_cust = iter_operator_export_rows(
+        [order], date_from=PERIOD_FROM, date_to=PERIOD_TO, customer="PT ABC",
+    )
+    assert by_cust and by_cust[0]["qty_completed"] == 100
+    other_outlet = dict(order)
+    other_outlet["id"] = "PO-O2"
+    other_outlet["po_number"] = "PO-O2"
+    other_outlet["outlet"] = "Cabang Solo"
+    both = iter_operator_export_rows([order, other_outlet], date_from=PERIOD_FROM, date_to=PERIOD_TO)
+    assert all(r["customer"] == "PT ABC" for r in both)
+    from output_reports import EXPORT_COLUMNS
+    for tab in ("operator", "helper", "screener", "driver"):
+        labels = [c[1] for c in EXPORT_COLUMNS[tab]]
+        assert "Customer" in labels
+        assert "Outlet / Customer" not in labels
 
 

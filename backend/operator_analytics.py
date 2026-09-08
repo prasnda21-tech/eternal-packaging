@@ -46,6 +46,8 @@ ANALYTICS_PROJECTION = {
     "id": 1,
     "po_number": 1,
     "customer": 1,
+    "customer_name": 1,
+    "customer_id": 1,
     "outlet": 1,
     "cancelled": 1,
     "created_at": 1,
@@ -87,6 +89,24 @@ ANALYTICS_PROJECTION = {
     "sample_approval_history.action": 1,
     "sample_approval_history.at": 1,
 }
+
+CUSTOMER_NAMES_FACET = [
+    {"$project": {
+        "names": {
+            "$filter": {
+                "input": ["$customer", "$customer_name"],
+                "as": "n",
+                "cond": {"$and": [
+                    {"$ne": ["$$n", None]},
+                    {"$ne": ["$$n", ""]},
+                ]},
+            }
+        }
+    }},
+    {"$unwind": "$names"},
+    {"$group": {"_id": "$names"}},
+    {"$sort": {"_id": 1}},
+]
 
 DESIGNER_ROLES = {"designer"}
 SAMPLE_DECISIONS = {"approve", "reject"}
@@ -426,21 +446,35 @@ def _order_po_number(order: dict) -> str:
     return (order.get("po_number") or order.get("id") or "").strip()
 
 
+def canonical_customer_label(order: dict) -> str:
+    """Canonical customer display name from the PO/order. Never outlet/branch/destination."""
+    return (order.get("customer") or order.get("customer_name") or "").strip()
+
+
+def canonical_customer_key(order: dict) -> str:
+    """Stable customer identity: customer_id, else normalized canonical name."""
+    cid = str(order.get("customer_id") or "").strip()
+    if cid:
+        return f"id:{cid}"
+    name = canonical_customer_label(order)
+    if not name:
+        return ""
+    return f"name:{' '.join(name.lower().split())}"
+
+
 def outlet_customer_label(order: dict) -> str:
-    """Display Outlet / Customer from existing order fields. Never invent a name."""
-    outlet = (order.get("outlet") or "").strip()
-    customer = (order.get("customer") or "").strip()
-    return outlet or customer
+    """Analitik Output customer column — canonical customer name only."""
+    return canonical_customer_label(order)
 
 
 def order_matches_customer(order: dict, customer: Optional[str]) -> bool:
-    """Match filter against order.customer or order.outlet (same dropdown)."""
+    """Match filter against canonical customer fields only (not outlet)."""
     if not customer or customer == "all":
         return True
     needle = customer.strip()
     if not needle:
         return True
-    return (order.get("customer") or "") == needle or (order.get("outlet") or "") == needle
+    return (order.get("customer") or "") == needle or (order.get("customer_name") or "") == needle
 
 
 def _doc_match_filters(
@@ -450,7 +484,7 @@ def _doc_match_filters(
     operator_id: Optional[str] = None,
     operator_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    """Mongo match for analytics doc facet. Combines customer/outlet + item $or safely."""
+    """Mongo match for analytics doc facet. Combines canonical customer + item $or safely."""
     clauses: List[dict] = []
     ids = [
         str(x).strip()
@@ -475,7 +509,7 @@ def _doc_match_filters(
             {"operator_splits.operator_user_id": {"$in": uniq}},
         ]})
     if customer and customer not in ("all", ""):
-        clauses.append({"$or": [{"customer": customer}, {"outlet": customer}]})
+        clauses.append({"$or": [{"customer": customer}, {"customer_name": customer}]})
     if po and po not in ("all", ""):
         clauses.append({"po_number": po})
     if item and item not in ("all", ""):
@@ -818,23 +852,7 @@ def build_operator_analytics_pipeline(
                 {"$match": {"_id": {"$nin": [None, ""]}}},
                 {"$sort": {"name": 1, "_id": 1}},
             ],
-            "customers": [
-                {"$project": {
-                    "names": {
-                        "$filter": {
-                            "input": ["$customer", "$outlet"],
-                            "as": "n",
-                            "cond": {"$and": [
-                                {"$ne": ["$$n", None]},
-                                {"$ne": ["$$n", ""]},
-                            ]},
-                        }
-                    }
-                }},
-                {"$unwind": "$names"},
-                {"$group": {"_id": "$names"}},
-                {"$sort": {"_id": 1}},
-            ],
+            "customers": CUSTOMER_NAMES_FACET,
             "items": [
                 {"$unwind": {"path": "$line_items", "preserveNullAndEmptyArrays": True}},
                 {"$project": {
@@ -869,6 +887,7 @@ DATA_SOURCES = {
     "screener_line": "Tidak ada qty screener per line. Cup/Item = line_items cetak pada PO yang sama; qty per cup tidak dipecah jika PO multi-line (tidak dikarang).",
     "design": "Tidak ada design_id per line. Unit = unique printable line (po_id + line_idx), dilabeli 'Design / Line Cetak'. Progress/upload berulang bukan design baru.",
     "designer": "Aktor Designer = design_files.uploaded_by (user yang upload file design). Bukan last_modified_by / opener PO. First uploader pada PO adalah pemilik attribution; upload berikutnya pada PO yang sama = update, bukan design baru. Tidak ada design_id per line — Jumlah Design = distinct printable line pada PO tersebut. Tanpa uploaded_by → N/A, tidak dikarang.",
+    "driver": "Qty Terkirim = delivery_confirmations[].items[].qty (delta konfirmasi Pengiriman), fallback qty_delivered + delivered_at untuk PO legacy tanpa konfirmasi. Bukan packing / Surat Jalan / loading. Driver = delivery_confirmations.driver_id + driver_name; grouping by stable driver_id.",
     "daily_target": "app_settings.key=operator_output_targets, keyed by operator_id (user id) + email. Achievement = actual avg/hari aktif vs target/hari. Tidak ada kalender kerja — tidak dikarang target mingguan 5/6/7 hari. Target yang dipakai = current target (tidak ada effective_from history pada settings).",
 }
 
@@ -1617,6 +1636,8 @@ ACTIVITY_PROJECTION = {
     "id": 1,
     "po_number": 1,
     "customer": 1,
+    "customer_name": 1,
+    "customer_id": 1,
     "outlet": 1,
     "cancelled": 1,
     "product_name": 1,
@@ -1663,23 +1684,7 @@ def build_activity_analytics_pipeline(
         {"$match": base_match},
         {"$facet": {
             "docs": docs_stage,
-            "customers": [
-                {"$project": {
-                    "names": {
-                        "$filter": {
-                            "input": ["$customer", "$outlet"],
-                            "as": "n",
-                            "cond": {"$and": [
-                                {"$ne": ["$$n", None]},
-                                {"$ne": ["$$n", ""]},
-                            ]},
-                        }
-                    }
-                }},
-                {"$unwind": "$names"},
-                {"$group": {"_id": "$names"}},
-                {"$sort": {"_id": 1}},
-            ],
+            "customers": CUSTOMER_NAMES_FACET,
             "items": [
                 {"$unwind": {"path": "$line_items", "preserveNullAndEmptyArrays": True}},
                 {"$project": {"name": {"$ifNull": ["$line_items.name", "$product_name"]}}},
@@ -1701,6 +1706,8 @@ DESIGN_PROJECTION = {
     "id": 1,
     "po_number": 1,
     "customer": 1,
+    "customer_name": 1,
+    "customer_id": 1,
     "outlet": 1,
     "cancelled": 1,
     "product_name": 1,
@@ -1734,23 +1741,80 @@ def build_design_analytics_pipeline(
         {"$match": base_match},
         {"$facet": {
             "docs": docs_stage,
-            "customers": [
-                {"$project": {
-                    "names": {
-                        "$filter": {
-                            "input": ["$customer", "$outlet"],
-                            "as": "n",
-                            "cond": {"$and": [
-                                {"$ne": ["$$n", None]},
-                                {"$ne": ["$$n", ""]},
-                            ]},
-                        }
-                    }
-                }},
-                {"$unwind": "$names"},
-                {"$group": {"_id": "$names"}},
+            "customers": CUSTOMER_NAMES_FACET,
+            "items": [
+                {"$unwind": {"path": "$line_items", "preserveNullAndEmptyArrays": True}},
+                {"$project": {"name": {"$ifNull": ["$line_items.name", "$product_name"]}}},
+                {"$match": {"name": {"$nin": [None, ""]}}},
+                {"$group": {"_id": "$name"}},
                 {"$sort": {"_id": 1}},
             ],
+            "pos": [
+                {"$group": {"_id": "$po_number"}},
+                {"$match": {"_id": {"$nin": [None, ""]}}},
+                {"$sort": {"_id": 1}},
+            ],
+        }},
+    ]
+
+
+DRIVER_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "po_number": 1,
+    "customer": 1,
+    "customer_name": 1,
+    "customer_id": 1,
+    "outlet": 1,
+    "cancelled": 1,
+    "product_name": 1,
+    "line_items.id": 1,
+    "line_items.line_id": 1,
+    "line_items.name": 1,
+    "line_items.item_code": 1,
+    "line_items.quantity": 1,
+    "line_items.production_process": 1,
+    "qty_delivered": 1,
+    "delivered_at": 1,
+    "delivery_status": 1,
+    "current_stage": 1,
+    "delivery_confirmations.id": 1,
+    "delivery_confirmations.confirmed_at": 1,
+    "delivery_confirmations.driver_id": 1,
+    "delivery_confirmations.driver_name": 1,
+    "delivery_confirmations.qty": 1,
+    "delivery_confirmations.items": 1,
+    "loading_checklist.driver_name": 1,
+}
+
+
+def build_driver_analytics_pipeline(
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+) -> List[dict]:
+    """Single scan for Driver output: confirmed Pengiriman/Terkirim only."""
+    base_match: Dict[str, Any] = {
+        "cancelled": {"$ne": True},
+        "$or": [
+            {"qty_delivered": {"$gt": 0}},
+            {"delivery_confirmations.0": {"$exists": True}},
+            {"$and": [
+                {"delivery_status": "Terkirim"},
+                {"current_stage": {"$gte": 14}},
+            ]},
+        ],
+    }
+    doc_match = _doc_match_filters(customer, item, po)
+    docs_stage: List[dict] = []
+    if doc_match:
+        docs_stage.append({"$match": doc_match})
+    docs_stage.append({"$project": DRIVER_PROJECTION})
+    return [
+        {"$match": base_match},
+        {"$facet": {
+            "docs": docs_stage,
+            "customers": CUSTOMER_NAMES_FACET,
             "items": [
                 {"$unwind": {"path": "$line_items", "preserveNullAndEmptyArrays": True}},
                 {"$project": {"name": {"$ifNull": ["$line_items.name", "$product_name"]}}},
