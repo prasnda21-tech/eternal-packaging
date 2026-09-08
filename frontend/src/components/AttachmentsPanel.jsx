@@ -19,12 +19,32 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
   const [preview, setPreview] = useState(null);
   const [pendingSample, setPendingSample] = useState(null);
   const [pendingDesign, setPendingDesign] = useState(null);
+  const [pendingDeleteDesign, setPendingDeleteDesign] = useState(null);
+  const [deletingDesign, setDeletingDesign] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
   const designInput = useRef(null);
   const sampleInput = useRef(null);
 
   const perms = user?.permissions || [];
   const canUploadDesign = perms.includes("design.upload") || (typeof hasPerm === "function" && hasPerm("design.upload"));
   const canUploadSample = perms.includes("operator.sample_upload") || (typeof hasPerm === "function" && hasPerm("operator.sample_upload"));
+
+  const handleDeleteDesign = async () => {
+    if (!pendingDeleteDesign) return;
+    setDeletingDesign(true);
+    setDeleteErr("");
+    try {
+      const res = await api.deleteDesignFile(order.id, pendingDeleteDesign.id);
+      onUpdated?.(res.order || res);
+      setPendingDeleteDesign(null);
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      setDeleteErr(typeof d === "string" ? d : (d?.message || "Gagal menghapus file design"));
+    } finally {
+      setDeletingDesign(false);
+    }
+  };
+
 
   const handleFile = async (file, kind) => {
     if (!file) return;
@@ -145,27 +165,58 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
     <div className="attachments-grid" data-testid={`${kind}-files`}>
       {(files || []).length === 0 && <p className="empty">Belum ada file.</p>}
       {(files || []).map((f) => (
-        <button
+        <div
           key={f.id}
           className="attachment-card"
-          type="button"
-          onClick={() => openAttachment(f)}
           data-testid={`${kind}-file-${f.id}`}
         >
-          {f.data_url?.startsWith("data:image") ? (
-            <img src={f.data_url} alt={f.name} />
-          ) : (
-            <div className="file-thumb"><ImageIcon size={22} /><span>{f.name.split(".").pop().toUpperCase()}</span></div>
-          )}
-          <div className="attachment-meta">
-            <strong>{f.name}</strong>
-            <span>{formatDate(f.uploaded_at)}</span>
-            <span className="role-tag">{ROLES[f.uploaded_by_role] || f.uploaded_by_role}</span>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => openAttachment(f)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") openAttachment(f); }}
+            style={{ cursor: "pointer" }}
+          >
+            {f.data_url?.startsWith("data:image") ? (
+              <img src={f.data_url} alt={f.name} />
+            ) : (
+              <div className="file-thumb"><ImageIcon size={22} /><span>{f.name.split(".").pop().toUpperCase()}</span></div>
+            )}
+            <div className="attachment-meta" style={{ marginTop: 6 }}>
+              <strong>{f.name}</strong>
+              <span>{formatDate(f.uploaded_at)}</span>
+              <span className="role-tag">{ROLES[f.uploaded_by_role] || f.uploaded_by_role}</span>
+            </div>
           </div>
-        </button>
+          <div className="attachment-actions" style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="ghost sm"
+              onClick={() => openAttachment(f)}
+              data-testid={`view-${kind}-file-${f.id}`}
+            >
+              Lihat
+            </button>
+            {kind === "design" && canUploadDesign && (
+              <button
+                type="button"
+                className="ghost sm danger"
+                onClick={() => {
+                  setDeleteErr("");
+                  setPendingDeleteDesign(f);
+                }}
+                data-testid={`delete-design-file-${f.id}`}
+                title="Hapus File Design"
+              >
+                Hapus File Design
+              </button>
+            )}
+          </div>
+        </div>
       ))}
     </div>
   );
+
 
   const showDesign = section === "all" || section === "design";
   const showSample = section === "all" || section === "sample";
@@ -272,6 +323,52 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
         onCancel={() => { if (!busy) setPendingDesign(null); }}
         onConfirm={() => uploadFile(pendingDesign?.file, "design")}
       />
+      {pendingDeleteDesign && (
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          data-testid="delete-design-confirm-modal"
+          onClick={deletingDesign ? undefined : () => { setPendingDeleteDesign(null); setDeleteErr(""); }}
+        >
+          <div className="modal-inner confirm-action-inner" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <div className="modal-head">
+              <h3>Hapus file design ini?</h3>
+            </div>
+            <div className="confirm-action-body" style={{ padding: "16px 20px" }}>
+              <p style={{ margin: "0 0 10px 0", fontSize: 14 }}>
+                File yang akan dihapus: <strong className="mono" data-testid="delete-design-filename">{pendingDeleteDesign.name}</strong>
+              </p>
+              <p className="muted small" style={{ margin: 0, lineHeight: 1.5 }}>
+                File attachment akan dihapus dari Design.<br />
+                Record revisi dan history tetap dipertahankan.
+              </p>
+              {deleteErr && <p className="error" data-testid="delete-design-error" style={{ marginTop: 12 }}>{deleteErr}</p>}
+            </div>
+            <div className="delete-modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => { setPendingDeleteDesign(null); setDeleteErr(""); }}
+                disabled={deletingDesign}
+                data-testid="cancel-delete-design-button"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={handleDeleteDesign}
+                disabled={deletingDesign}
+                data-testid="confirm-delete-design-button"
+              >
+                {deletingDesign ? "Menghapus…" : "Hapus File Design"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
+
   );
 }

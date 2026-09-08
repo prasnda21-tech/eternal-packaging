@@ -57,6 +57,9 @@ export const api = {
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
+  deleteDesignFile: (id, fileId) =>
+    client.delete(`/orders/${id}/design/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
+
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
   confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
   deleteLoadingConfirm: (id, confirmationId) =>

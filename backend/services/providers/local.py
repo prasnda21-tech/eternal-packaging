@@ -98,3 +98,13 @@ class LocalFilesystemStorageProvider(StorageProvider):
         if not dest.is_file():
             raise FileNotFoundError(path)
         return {"size": dest.stat().st_size, "content_type": "application/octet-stream"}
+
+    def delete_object(self, path: str) -> bool:
+        dest = self._disk_path(path)
+        if dest.is_file():
+            dest.unlink(missing_ok=True)
+            logger.info("Local storage deleted %s", sanitize_storage_key(path))
+            return True
+        if not dest.exists():
+            return True
+        return False
