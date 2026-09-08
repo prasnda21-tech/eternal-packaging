@@ -1,5 +1,12 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { loginPathForLocation, postLoginPath } from "./lib/mobileAuthRedirect";
+import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
+import MobileTasksPage from "./mobile/MobileTasksPage";
+import MobileOrdersPage from "./mobile/MobileOrdersPage";
+import MobileOrderDetailPage from "./mobile/MobileOrderDetailPage";
+import MobileNotificationsPage from "./mobile/MobileNotificationsPage";
+import MobileProfilePage from "./mobile/MobileProfilePage";
 import AppShell from "./components/AppShell";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -64,15 +71,17 @@ const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissio
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <div className="loading">Memuat...</div>;
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to={loginPathForLocation(location.pathname, location.search)} replace />;
   return children;
 }
 
 function PublicOnly({ children }) {
   const { user, loading } = useAuth();
+  const [params] = useSearchParams();
   if (loading) return <div className="loading">Memuat...</div>;
-  if (user) return <Navigate to="/" replace />;
+  if (user) return <Navigate to={postLoginPath(params.get("next"))} replace />;
   return children;
 }
 
@@ -172,6 +181,14 @@ export default function App() {
           <Route path="/tracking/:token" element={<CustomerTrackingPage />} />
           <Route path="/harga" element={<PublicHargaPage />} />
           <Route path="/harga/:groupPublicId" element={<PublicHargaPage />} />
+          <Route element={<Protected><MobileOperationalLayout /></Protected>}>
+            <Route path="/m" element={<Navigate to="/m/tasks" replace />} />
+            <Route path="/m/tasks" element={<MobileTasksPage />} />
+            <Route path="/m/orders" element={<MobileOrdersPage />} />
+            <Route path="/m/orders/:id" element={<MobileOrderDetailPage />} />
+            <Route path="/m/notifications" element={<MobileNotificationsPage />} />
+            <Route path="/m/profile" element={<MobileProfilePage />} />
+          </Route>
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />

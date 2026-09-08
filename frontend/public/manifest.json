@@ -1,0 +1,25 @@
+{
+  "name": "Eternal Packaging",
+  "short_name": "Eternal",
+  "description": "Eternal Packaging — operasional pabrik",
+  "start_url": "/m/tasks",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f7",
+  "theme_color": "#0b1f2a",
+  "icons": [
+    {
+      "src": "/eternal-favicon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/eternal-favicon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
