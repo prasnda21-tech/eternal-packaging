@@ -9,6 +9,7 @@ import {
   poCardPresentation,
   selectMobileWorkspace,
   taskSummaryFromList,
+  visibleMobileNavItems,
 } from "./mobileWorkspaces";
 import { canSubmitConfirmDelivered } from "./deliveryProof";
 
@@ -112,9 +113,21 @@ describe("mobile cards and nav", () => {
   test("bottom nav active state", () => {
     expect(activeMobileNav("/m/tasks")).toBe("tasks");
     expect(activeMobileNav("/m/orders/123?ws=print")).toBe("orders");
+    expect(activeMobileNav("/m/schedule")).toBe("schedule");
     expect(activeMobileNav("/m/notifications")).toBe("notifications");
     expect(activeMobileNav("/m/profile")).toBe("profile");
     expect(activeMobileNav("/po/123")).toBe(null);
+  });
+
+  test("Jadwal Produksi nav is permission gated, not role-name gated", () => {
+    expect(visibleMobileNavItems((p) => p === "schedule.view").map((i) => i.id))
+      .toEqual(["tasks", "orders", "schedule", "notifications", "profile"]);
+    expect(visibleMobileNavItems((p) => p === "nav.production_schedule").map((i) => i.id))
+      .toEqual(["tasks", "orders", "schedule", "notifications", "profile"]);
+    expect(visibleMobileNavItems((p) => p === "operator.update").map((i) => i.id))
+      .toEqual(["tasks", "orders", "notifications", "profile"]);
+    expect(visibleMobileNavItems((p) => p === "admin").map((i) => i.id))
+      .toEqual(["tasks", "orders", "notifications", "profile"]);
   });
 
   test("task counts come from loaded list only", () => {

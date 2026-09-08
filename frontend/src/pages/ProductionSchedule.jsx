@@ -14,6 +14,7 @@ import {
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
 import { formatIdQty, scheduledPrintQtyProgress, totalQtyScheduledCell } from "../lib/productionScheduleQty";
+import { PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS, productionDashboardRequestParams } from "../lib/productionScheduleTable";
 import { productionSchedulePoHref } from "../lib/workPanel";
 
 const STATUS_OPTS = [
@@ -22,29 +23,6 @@ const STATUS_OPTS = [
   { key: "hold", label: "HOLD" },
   { key: "selesai", label: "Selesai" },
   { key: "cancelled", label: "Cancelled" },
-];
-
-const TABLE_COLS = [
-  { key: "customer", label: "Customer", filter: "customer" },
-  { key: "deadline", label: "Deadline", fit: true, filter: "deadline", sort: "deadline" },
-  { key: "deadline_ship", label: "Deadline Pengiriman", testid: "prod-th-deadline-effective" },
-  { key: "work_date", label: "Tgl Pengerjaan", testid: "prod-th-work-date", filter: "work_date", sort: "work_date" },
-  { key: "prio", label: "Prio", fit: true, filter: "prio" },
-  { key: "buffer", label: "Buffer", fit: true, testid: "prod-th-buffer", filter: "buffer" },
-  { key: "po", label: "No PO", fit: true, filter: "po" },
-  { key: "outlet", label: "Outlet" },
-  { key: "qty", label: "Total Qty", num: true },
-  { key: "qty_cetak", label: "Qty Cetak", num: true },
-  { key: "operator", label: "Operator", filter: "operator" },
-  { key: "design", label: "Design", fit: true },
-  { key: "payment", label: "Payment", fit: true },
-  { key: "hold", label: "HOLD", fit: true, filter: "hold" },
-  { key: "screen", label: "Qty Screen", num: true, filter: "screener" },
-  { key: "helper", label: "Persiapan", fit: true, filter: "helper" },
-  { key: "packing", label: "Packing", fit: true, filter: "packing" },
-  { key: "sj", label: "Surat Jalan", fit: true },
-  { key: "driver", label: "Driver" },
-  { key: "status", label: "Status Akhir", fit: true, filter: "status" },
 ];
 
 function columnFilterActive(filter, s) {
@@ -136,7 +114,7 @@ export default function ProductionSchedule() {
     setBusy(true);
     setErr("");
     try {
-      const d = await api.productionDashboard({ include_cancelled: includeCancelled, include_completed: includeCompleted });
+      const d = await api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted }));
       setRows(d.rows || []);
       setTotal(d.total || 0);
     } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
@@ -144,7 +122,7 @@ export default function ProductionSchedule() {
   };
 
   const { lastUpdated: schedLastUpdated, isPolling: schedIsPolling, refreshNow: refreshSched } = useAutoRefresh(
-    () => api.productionDashboard({ include_cancelled: includeCancelled, include_completed: includeCompleted }),
+    () => api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted })),
     { intervalMs: 30_000, enabled: true, onData: (d) => { setRows(d.rows || []); setTotal(d.total || 0); } }
   );
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted]);

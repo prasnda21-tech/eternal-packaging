@@ -1,5 +1,7 @@
 /** Permission-driven mobile operational workspaces. Route/query never grants access. */
 
+import { NAV_KEYS } from "./navAccess";
+
 export const MOBILE_WORKSPACES = [
   { id: "screener", label: "Screener", permission: "screen.update", division: "screener" },
   { id: "prep", label: "Persiapan Cup", permission: "helper.prepare", division: "helper" },
@@ -13,6 +15,13 @@ export const MOBILE_WORKSPACES = [
 export const MOBILE_NAV_ITEMS = [
   { id: "tasks", label: "Tugas", to: "/m/tasks" },
   { id: "orders", label: "PO", to: "/m/orders" },
+  {
+    id: "schedule",
+    label: "Jadwal Produksi",
+    lines: ["Jadwal", "Produksi"],
+    to: "/m/schedule",
+    anyOf: ["schedule.view", NAV_KEYS.schedule],
+  },
   { id: "notifications", label: "Notifikasi", to: "/m/notifications" },
   { id: "profile", label: "Profil", to: "/m/profile" },
 ];
@@ -20,6 +29,14 @@ export const MOBILE_NAV_ITEMS = [
 export function permittedMobileWorkspaces(hasPerm) {
   if (typeof hasPerm !== "function") return [];
   return MOBILE_WORKSPACES.filter((ws) => hasPerm(ws.permission));
+}
+
+export function visibleMobileNavItems(hasPerm) {
+  return MOBILE_NAV_ITEMS.filter((item) => {
+    if (!item.anyOf?.length) return true;
+    if (typeof hasPerm !== "function") return false;
+    return item.anyOf.some((perm) => hasPerm(perm));
+  });
 }
 
 export function selectMobileWorkspace(hasPerm, requestedId) {
@@ -42,6 +59,7 @@ export function mobileTaskHref(orderId, workspaceId) {
 export function activeMobileNav(pathname) {
   const path = String(pathname || "");
   if (path.startsWith("/m/orders")) return "orders";
+  if (path.startsWith("/m/schedule")) return "schedule";
   if (path.startsWith("/m/notifications")) return "notifications";
   if (path.startsWith("/m/profile")) return "profile";
   if (path === "/m" || path.startsWith("/m/tasks")) return "tasks";
