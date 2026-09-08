@@ -13,6 +13,12 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
+from services.customer_identity import (
+    build_identity_context,
+    display_customer_name,
+    resolve_customer_identity,
+)
+
 logger = logging.getLogger(__name__)
 
 COLLECTION = "sales_customers"
@@ -85,6 +91,138 @@ async def list_sales_customers(db, q: Optional[str] = None) -> List[dict]:
         ]
     cursor = db[COLLECTION].find(query, {"_id": 0}).sort("name", 1)
     return await cursor.to_list(1000)
+
+
+_ORDER_IDENTITY_PROJECTION = {
+    "_id": 0,
+    "customer": 1,
+    "customer_name": 1,
+    "customer_id": 1,
+    "outlet": 1,
+    "cancelled": 1,
+    "is_test": 1,
+    "is_demo": 1,
+    "is_preview": 1,
+    "test_record": 1,
+    "po_number": 1,
+}
+
+_HISTORY_IDENTITY_PROJECTION = {
+    "_id": 0,
+    "customer": 1,
+    "customer_name": 1,
+    "customer_id": 1,
+    "outlet": 1,
+    "cancelled": 1,
+}
+
+
+def _public_master_row(doc: dict) -> dict:
+    return {
+        "id": doc.get("id"),
+        "name": doc.get("name") or "",
+        "normalized_name": doc.get("normalized_name") or normalize_customer_name(doc.get("name") or ""),
+        "phone": doc.get("phone") or "",
+        "address": doc.get("address") or "",
+        "pic": doc.get("pic") or "",
+        "email": doc.get("email") or "",
+        "city": doc.get("city") or "",
+        "notes": doc.get("notes") or "",
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+        "created_by": doc.get("created_by"),
+        "updated_by": doc.get("updated_by"),
+        "is_master": True,
+        "source": "master",
+        "customer_key": f"id:{doc.get('id')}" if doc.get("id") else "",
+    }
+
+
+def _discovered_row(resolved, *, source: str) -> dict:
+    return {
+        "id": None,
+        "name": resolved.display_name,
+        "normalized_name": resolved.normalized_name,
+        "phone": "",
+        "address": "",
+        "pic": "",
+        "email": "",
+        "city": "",
+        "notes": "",
+        "is_master": False,
+        "source": source,
+        "customer_key": resolved.key,
+        "identity_ambiguous": resolved.ambiguous,
+    }
+
+
+def _usable_identity_record(record: dict) -> bool:
+    if not record:
+        return False
+    if record.get("cancelled") is True:
+        return False
+    if record.get("is_test") or record.get("is_demo") or record.get("is_preview") or record.get("test_record"):
+        return False
+    return bool(display_customer_name(record))
+
+
+def _matches_customer_query(row: dict, term: str) -> bool:
+    if not term:
+        return True
+    q = term.lower()
+    blob = " ".join([
+        str(row.get("name") or ""),
+        str(row.get("phone") or ""),
+        str(row.get("pic") or ""),
+        str(row.get("email") or ""),
+        str(row.get("city") or ""),
+        str(row.get("address") or ""),
+        str(row.get("customer_key") or ""),
+    ]).lower()
+    return q in blob
+
+
+def _source_union(current: str, incoming: str) -> str:
+    if current == incoming:
+        return current
+    return "mixed"
+
+
+async def list_unified_sales_customers(db, q: Optional[str] = None) -> List[dict]:
+    """Read-only union of master + live PO customers + prediction history. Zero writes."""
+    masters = await db[COLLECTION].find({}, {"_id": 0}).to_list(1000)
+    orders = await db.orders.find({}, _ORDER_IDENTITY_PROJECTION).to_list(5000)
+    history = await db.order_prediction_history.find(
+        {"cancelled": {"$ne": True}}, _HISTORY_IDENTITY_PROJECTION,
+    ).to_list(10000)
+
+    live = [o for o in orders if _usable_identity_record(o)]
+    hist = [h for h in history if _usable_identity_record(h)]
+    context = build_identity_context(masters, live, hist)
+
+    buckets: dict = {}
+    for master in masters:
+        resolved = resolve_customer_identity(master, context, kind="master")
+        if not resolved.key:
+            continue
+        buckets[resolved.key] = _public_master_row(master)
+
+    for rec, src in [(o, "live_po") for o in live] + [(h, "prediction_history") for h in hist]:
+        resolved = resolve_customer_identity(rec, context)
+        if not resolved.key:
+            continue
+        existing = buckets.get(resolved.key)
+        if existing:
+            existing["source"] = _source_union(existing.get("source") or src, src)
+            continue
+        buckets[resolved.key] = _discovered_row(resolved, source=src)
+
+    rows = list(buckets.values())
+    term = str(q or "").strip()
+    if term:
+        rows = [r for r in rows if _matches_customer_query(r, term)]
+    rows.sort(key=lambda r: (str(r.get("name") or "").lower(), str(r.get("customer_key") or "")))
+    return rows[:1000]
 
 
 async def get_sales_customer(db, customer_id: str) -> Optional[dict]:

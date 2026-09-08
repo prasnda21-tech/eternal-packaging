@@ -213,7 +213,12 @@ export default function PrediksiOrder() {
                   onClick={() => openDetail(r)}
                 >
                   <td className="ship-cust">{r.customer || "-"}</td>
-                  <td>{r.outlet || "-"}</td>
+                  <td
+                    title={r.outlet || ""}
+                    style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {r.outlet || "-"}
+                  </td>
                   <td className="num mono">{r.total_orders}</td>
                   <td className="mono">{formatDisplayDate(r.last_order_date)}</td>
                   <td className="num mono">{dashValue(r.days_since_order)}</td>
@@ -258,7 +263,12 @@ export default function PrediksiOrder() {
               {orderRows.map((r) => (
                 <tr key={`${r.id}-${r.po_number}`} data-testid={`prediksi-order-row-${r.po_number}`}>
                   <td className="ship-cust">{r.customer || "-"}</td>
-                  <td>{r.outlet || "-"}</td>
+                  <td
+                    title={r.outlet || ""}
+                    style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {r.outlet || "-"}
+                  </td>
                   <td className="mono">{formatDisplayDate(r.order_date)}</td>
                   <td className="mono">{r.po_number || "-"}</td>
                   <td>{r.sales || "-"}</td>
@@ -282,9 +292,9 @@ export default function PrediksiOrder() {
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
             <header className="drawer-head">
               <div>
-                <p className="eyebrow">Detail customer + outlet</p>
+                <p className="eyebrow">Detail customer</p>
                 <h3 data-testid="prediksi-detail-title">{analysis.customer}</h3>
-                <p className="muted small">{analysis.outlet || "-"}</p>
+                <p className="muted small" data-testid="prediksi-detail-outlet">{analysis.outlet || "-"}</p>
               </div>
               <button className="icon-button" onClick={() => setDetail(null)} aria-label="Tutup" data-testid="prediksi-detail-close"><X size={18} /></button>
             </header>
@@ -292,6 +302,7 @@ export default function PrediksiOrder() {
               <div className="drawer-block">
                 <h4>Ringkasan</h4>
                 <dl className="kv-grid">
+                  <Field label="Outlet">{analysis.outlet || "-"}</Field>
                   <Field label="Total Order">{analysis.total_orders}</Field>
                   <Field label="Order Pertama">{formatDisplayDate(analysis.first_order_date)}</Field>
                   <Field label="Order Terakhir">{formatDisplayDate(analysis.last_order_date)}</Field>

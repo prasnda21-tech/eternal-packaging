@@ -1,6 +1,6 @@
 """Prediksi Order — workbook cases A–I. No live API required except optional I live skip."""
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -95,26 +95,25 @@ def test_case_b_less_than_three_orders():
     assert row["confidence"] == CONF_RENDAH
 
 
-def test_case_c_same_customer_different_outlet_separate():
+def test_case_c_same_customer_different_outlet_one_row():
     kemang = _group(["2026-01-01", "2026-01-10", "2026-01-19"], outlet="Kemang", id_prefix="k", po_prefix="PO-K")
     tebet = _group(["2026-01-02", "2026-01-20"], outlet="Tebet", id_prefix="t", po_prefix="PO-T")
     data = build_order_prediction(kemang + tebet, now=datetime(2026, 1, 21, tzinfo=timezone.utc))
-    keys = {(r["customer"], r["outlet"]) for r in data["rows"]}
-    assert ("ABC Coffee", "Kemang") in keys
-    assert ("ABC Coffee", "Tebet") in keys
-    assert customer_group_key(kemang[0]) != customer_group_key(tebet[0])
-    kemang_row = next(r for r in data["rows"] if r["outlet"] == "Kemang")
-    tebet_row = next(r for r in data["rows"] if r["outlet"] == "Tebet")
-    assert kemang_row["total_orders"] == 3
-    assert tebet_row["total_orders"] == 2
-    assert tebet_row["followup_status"] == STATUS_DATA_BELUM_CUKUP
+    assert data["summary"]["total_customers"] == 1
+    assert len(data["rows"]) == 1
+    row = data["rows"][0]
+    assert row["customer"] == "ABC Coffee"
+    assert row["total_orders"] == 5
+    assert row["outlet"] == "Kemang, Tebet"
+    assert row["outlets"] == ["Kemang", "Tebet"]
+    assert customer_group_key(kemang[0]) == customer_group_key(tebet[0])
 
 
-def test_case_c_stable_ids_preferred_over_name():
+def test_case_c_stable_ids_same_customer_different_outlet():
     a = _order(customer_id="cust-1", delivery_outlet_id="out-kemang", outlet="Kemang Lama")
     b = _order(customer_id="cust-1", delivery_outlet_id="out-tebet", outlet="Tebet")
-    assert customer_group_key(a) != customer_group_key(b)
-    assert customer_group_key(a).startswith("id:cust-1")
+    assert customer_group_key(a) == customer_group_key(b)
+    assert customer_group_key(a) == "id:cust-1"
 
 
 def test_case_d_cancelled_and_test_excluded():
@@ -291,3 +290,122 @@ def test_case_i_local_api_403():
     r = s.get(f"{base}/api/reports/order-prediction", timeout=10)
     assert r.status_code == 403, r.text
     assert PERM_VIEW in str(r.json().get("detail") or r.text)
+
+
+def test_same_stable_id_same_outlet_one_customer():
+    orders = _group(
+        ["2026-01-01", "2026-01-10", "2026-01-19"],
+        customer="PT ABC", outlet="Yogyakarta", customer_id="CUST-001",
+    )
+    data = build_order_prediction(orders, now=datetime(2026, 1, 21, tzinfo=timezone.utc))
+    assert data["summary"]["total_customers"] == 1
+    assert data["rows"][0]["customer_key"] == "id:CUST-001"
+    assert data["rows"][0]["outlet"] == "Yogyakarta"
+
+
+def test_different_stable_ids_same_outlet_remain_two():
+    a = _group(["2026-01-01", "2026-01-10", "2026-01-19"], customer="PT ABC", outlet="Yogyakarta", customer_id="CUSTOMER-A", id_prefix="a", po_prefix="PO-A")
+    b = _group(["2026-01-02"], customer="PT XYZ", outlet="Yogyakarta", customer_id="CUSTOMER-B", id_prefix="b", po_prefix="PO-B")
+    data = build_order_prediction(a + b, now=datetime(2026, 1, 21, tzinfo=timezone.utc))
+    assert data["summary"]["total_customers"] == 2
+    keys = {r["customer_key"] for r in data["rows"]}
+    assert keys == {"id:CUSTOMER-A", "id:CUSTOMER-B"}
+    assert all(r["outlet"] == "Yogyakarta" for r in data["rows"])
+
+
+def test_same_display_name_different_stable_ids_remain_two():
+    a = _order(id="a1", po_number="PO-A1", customer="TOKO MAKMUR", customer_id="CUSTOMER-A", outlet="Solo", order_date="2026-01-01")
+    b = _order(id="b1", po_number="PO-B1", customer="TOKO MAKMUR", customer_id="CUSTOMER-B", outlet="Solo", order_date="2026-01-08")
+    data = build_order_prediction([a, b], now=datetime(2026, 1, 21, tzinfo=timezone.utc))
+    assert data["summary"]["total_customers"] == 2
+    assert {r["customer_key"] for r in data["rows"]} == {"id:CUSTOMER-A", "id:CUSTOMER-B"}
+
+
+def test_ambiguous_same_name_legacy_history_not_attached():
+    a = _order(id="a1", po_number="PO-A1", customer="TOKO MAKMUR", customer_id="CUSTOMER-A", outlet="A", order_date="2026-01-01")
+    b = _order(id="b1", po_number="PO-B1", customer="TOKO MAKMUR", customer_id="CUSTOMER-B", outlet="B", order_date="2026-01-08")
+    hist = {
+        "id": "h1",
+        "po_number": "",
+        "customer": "TOKO MAKMUR",
+        "customer_name": "TOKO MAKMUR",
+        "customer_id": "TOKO MAKMUR|Yogyakarta",
+        "outlet": "Yogyakarta",
+        "order_date": "2025-12-01",
+    }
+    data = build_order_prediction([a, b], now=datetime(2026, 1, 21, tzinfo=timezone.utc), supplemental=[hist])
+    assert data["summary"]["total_customers"] == 3
+    keys = {r["customer_key"] for r in data["rows"]}
+    assert "id:CUSTOMER-A" in keys
+    assert "id:CUSTOMER-B" in keys
+    assert "ambiguous:toko makmur" in keys
+    amb = next(r for r in data["rows"] if r["customer_key"] == "ambiguous:toko makmur")
+    assert amb["total_orders"] == 1
+    assert amb["identity_ambiguous"] is True
+
+
+def test_kedai_tuman_13_plus_1_merges_to_one():
+    hist = []
+    for i in range(13):
+        hist.append({
+            "id": f"hist-tuman-{i+1}",
+            "po_number": "",
+            "customer": "KEDAI TUMAN",
+            "customer_name": "KEDAI TUMAN",
+            "customer_id": "KEDAI TUMAN|Yogyakarta",
+            "outlet": "Yogyakarta",
+            "order_date": (date(2026, 5, 18) + timedelta(days=7 * i)).isoformat(),
+        })
+    live = _order(
+        id="live-tuman-1",
+        po_number="PO/08/09/26/001",
+        customer="KEDAI TUMAN",
+        customer_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        outlet="Yogyakarta",
+        order_date="2026-09-08",
+    )
+    masters = [{"id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "name": "KEDAI TUMAN"}]
+    data = build_order_prediction(
+        [live],
+        now=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        supplemental=hist,
+        masters=masters,
+    )
+    assert data["summary"]["total_customers"] == 1
+    row = data["rows"][0]
+    assert row["customer"] == "KEDAI TUMAN"
+    assert row["total_orders"] == 14
+    assert row["last_order_date"] == "2026-09-08"
+    assert row["outlet"] == "Yogyakarta"
+    assert row["customer_key"] == "id:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    detail = build_order_prediction_detail(
+        [live], row["customer_key"], now=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        supplemental=hist, masters=masters,
+    )
+    assert detail["analysis"]["total_orders"] == 14
+    assert len(detail["history"]) == 14
+    assert detail["analysis"]["customer_key"] == row["customer_key"]
+
+
+def test_outlet_only_is_not_a_customer():
+    orphan = _order(id="out-only", po_number="PO-OUT", customer="", customer_name="", outlet="Yogyakarta", order_date="2026-01-01")
+    assert not is_valid_business_order(orphan)
+    data = build_order_prediction([orphan], now=datetime(2026, 1, 21, tzinfo=timezone.utc))
+    assert data["summary"]["total_customers"] == 0
+    assert data["rows"] == []
+
+
+def test_history_only_customer_appears():
+    hist = [{
+        "id": "h-only",
+        "customer": "Warung Sejarah",
+        "customer_name": "Warung Sejarah",
+        "customer_id": None,
+        "outlet": "Solo",
+        "order_date": "2026-01-15",
+        "po_number": "",
+    }]
+    data = build_order_prediction([], now=datetime(2026, 1, 21, tzinfo=timezone.utc), supplemental=hist)
+    assert data["summary"]["total_customers"] == 1
+    assert data["rows"][0]["customer"] == "Warung Sejarah"
+    assert data["rows"][0]["customer_key"] == "name:warung sejarah"

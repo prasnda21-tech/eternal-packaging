@@ -50,6 +50,10 @@ describe("Data Pelanggan UI & Architecture Invariants", () => {
 
   test("implements authoritative CRUD operations in DataPelanggan.jsx", () => {
     expect(src).toMatch(/api\.listSalesCustomers/);
+    expect(src).toMatch(/params\.view\s*=\s*"unified"/);
+    expect(src).toMatch(/is_master/);
+    expect(src).toMatch(/Ditemukan dari/);
+    expect(src).toMatch(/isPersistedMaster/);
     expect(src).toMatch(/api\.createSalesCustomer/);
     expect(src).toMatch(/api\.updateSalesCustomer/);
     expect(src).toMatch(/btn-add-customer/);

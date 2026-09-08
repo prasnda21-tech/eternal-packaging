@@ -7143,6 +7143,7 @@ from services.sales_receipt_payment_proof import (
 from services.sales_customers import (
     COLLECTION as _SALES_CUSTOMERS_COLLECTION,
     list_sales_customers as _list_sales_customers,
+    list_unified_sales_customers as _list_unified_sales_customers,
     get_sales_customer as _get_sales_customer,
     create_sales_customer as _create_sales_customer,
     update_sales_customer as _update_sales_customer,
@@ -7324,15 +7325,24 @@ async def _next_suggested_po_number(database, target_date: Optional[Union[dateti
 @api_router.get("/sales-customers")
 async def list_sales_customers_endpoint(
     q: Optional[str] = None,
+    view: Optional[str] = None,
     user=Depends(current_user),
 ):
-    """List sales customers with optional search term."""
+    """List sales customers with optional search term.
+
+    Default: persisted master only.
+    view=unified: read-only union of master + live PO + prediction history.
+    GET is zero-write in both modes.
+    """
     await _require_any_perm(
         user,
         "sales.customer.view",
         "sales.customer.manage",
     )
-    customers = await _list_sales_customers(db, q=q)
+    if str(view or "").strip().lower() == "unified":
+        customers = await _list_unified_sales_customers(db, q=q)
+    else:
+        customers = await _list_sales_customers(db, q=q)
     return {"customers": customers}
 
 
@@ -9839,6 +9849,12 @@ async def _load_prediction_history():
     ).to_list(10000)
 
 
+async def _load_prediction_masters():
+    return await db[_SALES_CUSTOMERS_COLLECTION].find(
+        {}, {"_id": 0, "id": 1, "name": 1},
+    ).to_list(1000)
+
+
 @api_router.get("/reports/order-prediction")
 async def order_prediction_report(
     search: Optional[str] = None,
@@ -9853,6 +9869,7 @@ async def order_prediction_report(
     await _require_order_prediction_view(user)
     raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
     supplemental = await _load_prediction_history()
+    masters = await _load_prediction_masters()
     data = build_order_prediction(
         raw,
         search=search or "",
@@ -9863,6 +9880,7 @@ async def order_prediction_report(
         skip=skip,
         limit=limit,
         supplemental=supplemental,
+        masters=masters,
     )
     data["generated_at"] = now_iso()
     return data
@@ -9931,7 +9949,8 @@ async def order_prediction_import_apply(
         note="Impor histori Prediksi Order",
     )
     supplemental = await _load_prediction_history()
-    data = build_order_prediction(live, supplemental=supplemental)
+    masters = await _load_prediction_masters()
+    data = build_order_prediction(live, supplemental=supplemental, masters=masters)
     data["generated_at"] = now
     return {
         "imported_count": len(docs),
@@ -9946,7 +9965,8 @@ async def order_prediction_detail(customer_key: str, user=Depends(current_user))
     await _require_order_prediction_view(user)
     raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
     supplemental = await _load_prediction_history()
-    data = build_order_prediction_detail(raw, customer_key, supplemental=supplemental)
+    masters = await _load_prediction_masters()
+    data = build_order_prediction_detail(raw, customer_key, supplemental=supplemental, masters=masters)
     if not data:
         raise HTTPException(404, "Customer/outlet tidak ditemukan pada Order Masuk yang valid")
     data["generated_at"] = now_iso()
