@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon, XCircle } from "lucide-react";
+import { Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import useAutoRefresh from "../lib/useAutoRefresh";
+import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
@@ -13,8 +15,14 @@ import {
   productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
-import { formatIdQty, scheduledPrintQtyProgress, totalQtyScheduledCell } from "../lib/productionScheduleQty";
-import { PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS, productionDashboardRequestParams } from "../lib/productionScheduleTable";
+import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
+import { scheduledPrintQtyProgress, totalQtyScheduledCell } from "../lib/productionScheduleQty";
+import {
+  PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS,
+  productionDashboardRequestParams,
+  productionSheetColumnStyle,
+} from "../lib/productionScheduleTable";
+import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import { productionSchedulePoHref } from "../lib/workPanel";
 
 const STATUS_OPTS = [
@@ -109,6 +117,7 @@ export default function ProductionSchedule() {
   const [includeCancelled, setIncludeCancelled] = useState(FILTER_DEFAULTS.includeCancelled);
   const [includeCompleted, setIncludeCompleted] = useState(FILTER_DEFAULTS.includeCompleted);
   const [exporting, setExporting] = useState(false);
+  const sheetZoom = useProductionSheetZoom();
 
   const load = async () => {
     setBusy(true);
@@ -183,6 +192,7 @@ export default function ProductionSchedule() {
   );
 
   const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
+  const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
   const filtersActive = productionFiltersAreActive(filterState);
 
   const cycleSort = (col) => {
@@ -380,14 +390,24 @@ export default function ProductionSchedule() {
       </div>
 
       {mode === "tabel" ? (
-        <div className="prod-table-wrap prod-schedule-grid" data-testid="prod-table">
-          <table className="prod-table">
-            <thead>
+        <div
+          className="prod-table-wrap prod-schedule-grid production-sheet production-sheet-viewport"
+          data-testid="prod-table"
+          ref={sheetZoom.setViewportRef}
+          style={productionSheetZoomStyle(sheetZoom.zoom)}
+        >
+          <table className="production-sheet-table" data-testid="production-sheet-table">
+            <colgroup>
+              {TABLE_COLS.map((c) => (
+                <col key={c.key} style={productionSheetColumnStyle(c)} />
+              ))}
+            </colgroup>
+            <thead className="production-sheet-header">
               <tr>
                 {TABLE_COLS.map((c) => {
                   const active = columnFilterActive(c.filter, filterState);
                   return (
-                    <th key={c.key} className={[c.num ? "num" : "", (c.num || c.fit) ? "col-fit" : "col-text"].filter(Boolean).join(" ")} data-testid={c.testid} scope="col">
+                    <th key={c.key} className={c.num || c.align === "right" || c.type === "qty" ? "num" : ""} data-testid={c.testid} scope="col" style={productionSheetColumnStyle(c)}>
                       {c.filter ? (
                         <HeaderFilter
                           label={c.label}
@@ -409,156 +429,25 @@ export default function ProductionSchedule() {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((r) => {
+              {displayRows.map((r) => {
                 const qtyProg = totalQtyScheduledCell(r);
                 const cetakProg = scheduledPrintQtyProgress(r);
                 const isToday = isScheduledToday(r);
                 return (
-                <tr key={r.id} data-testid={`prod-row-${r.po_number}`} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
-                  <td
-                    className={"prod-cell-wrap col-text" + (isToday ? " prod-cell-today" : "")}
-                    style={isToday ? { backgroundColor: "#fef08a", color: "#713f12" } : undefined}
-                    data-testid={`prod-customer-${r.po_number}`}
-                  >
-                    <strong>{r.customer || "-"}</strong>
-                  </td>
-                  <td className="mono small col-fit">{formatDate(r.deadline)}</td>
-                  <td className="mono small prod-cell-stack col-text" data-testid={`prod-deadline-effective-${r.po_number}`}>
-                    {r.delivery_deadline_effective ? (
-                      <>
-                        {formatDate(r.delivery_deadline_effective)}
-                        {" "}
-                        <span
-                          className="pill sm"
-                          title={r.delivery_deadline_source === "manual" ? "Manual override" : "Otomatis"}
-                          style={{
-                            background: r.delivery_deadline_source === "manual" ? "#ffe9b8" : "#e6ecf3",
-                            color: r.delivery_deadline_source === "manual" ? "#7a5a1e" : "#3a4b60",
-                          }}
-                          data-testid={`prod-deadline-source-${r.po_number}`}
-                        >
-                          {r.delivery_deadline_source === "manual" ? "Manual" : "Otomatis"}
-                        </span>
-                        {r.delivery_deadline_status === "overdue" && (
-                          <span className="urgent-badge" style={{ marginLeft: 4 }} data-testid={`prod-deadline-status-${r.po_number}`}>OVERDUE</span>
-                        )}
-                        {r.delivery_deadline_status === "h6" && (
-                          <span className="urgent-badge" style={{ marginLeft: 4 }} data-testid={`prod-deadline-status-${r.po_number}`}>≤6 JAM</span>
-                        )}
-                        {r.delivery_deadline_status === "h1" && (
-                          <span className="standard-badge" style={{ marginLeft: 4, background: "#fef4d6", color: "#7a5a1e" }} data-testid={`prod-deadline-status-${r.po_number}`}>H-1</span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="muted small">Menunggu approval</span>
-                    )}
-                  </td>
-                  <td className="mono small prod-cell-stack col-text" data-testid={`prod-work-date-${r.po_number}`}>
-                    {(r.operator_work_dates || []).length > 0 ? (
-                      (r.operator_work_dates || []).map((o, i) => (
-                        <div key={i} className="prod-date-line" data-testid={`prod-op-work-date-${r.po_number}-${i}`}>
-                          {o.work_date || "—"}
-                        </div>
-                      ))
-                    ) : r.work_date ? (
-                      <span data-testid={`prod-order-work-date-${r.po_number}`}>{r.work_date}</span>
-                    ) : (
-                      <span className="muted small">Belum Dijadwalkan</span>
-                    )}
-                  </td>
-                  <td className="col-fit">{r.urgent ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>}</td>
-                  <td className="col-fit" data-testid={`prod-buffer-${r.po_number}`}>
-                    {r.buffer_stock ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span> : <span className="muted small">—</span>}
-                  </td>
-                  <td className="mono col-fit"><Link to={productionSchedulePoHref(r.id)} data-testid={`prod-po-link-${r.po_number}`}>{r.po_number}</Link></td>
-                  <td className="muted small prod-cell-wrap col-text">{r.outlet || "-"}</td>
-                  <td
-                    className="num col-fit prod-qty-cell"
-                    data-testid={`prod-qty-${r.po_number}`}
-                    title={qtyProg.title}
-                  >
-                    {qtyProg.groups?.length ? (
-                      qtyProg.groups.map((g, i) => (
-                        <div
-                          key={g.key}
-                          className="prod-line-qty-block"
-                          style={{ minHeight: `${Math.max((g.operators || []).length, 1) * 1.35}em` }}
-                          data-testid={`prod-qty-line-${r.po_number}-${i}`}
-                        >
-                          {g.line_name ? (
-                            <span className="prod-line-qty-name">{g.line_name}</span>
-                          ) : null}
-                          <span className="prod-line-qty-value">{formatIdQty(g.total)}</span>
-                        </div>
-                      ))
-                    ) : qtyProg.text}
-                  </td>
-                  <td
-                    className={"num col-fit" + (cetakProg.over ? " prod-qty-over" : "")}
-                    data-testid={`prod-qty-cetak-${r.po_number}`}
-                    title={cetakProg.title}
-                  >
-                    {cetakProg.text}
-                  </td>
-                  <td className="prod-ops col-text">
-                    {qtyProg.groups?.length ? (
-                      qtyProg.groups.map((g) => (
-                        <div
-                          key={g.key}
-                          className="prod-line-ops-block"
-                          style={{ minHeight: `${Math.max((g.operators || []).length, 1) * 1.35}em` }}
-                          data-testid={`prod-ops-line-${r.po_number}-${g.key}`}
-                        >
-                          {(g.operators || []).map((op, i) => (
-                            <div key={`${op.operator_email || op.operator_user_id || i}`} className="prod-op-line">
-                              <span className="prod-op-name">{op.operator_name || "-"}</span>
-                              <span className="prod-op-qty muted small mono">{formatIdQty(op.quantity)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ))
-                    ) : (
-                      (r.operators || []).length === 0 ? <span className="muted small">-</span> :
-                      (r.operators || []).map((op, i) => (
-                        <div key={i} className="prod-op-line">
-                          <span className="prod-op-name">{op.operator_name || "-"}</span>
-                        </div>
-                      ))
-                    )}
-                  </td>
-                  <td className="col-fit">
-                    <span className={"pill sm " + ((r.design_status === "Approved") ? "pill-ok" : "pill-warn")}>{r.design_status || "-"}</span>
-                    {r.design_bypassed && <span className="pill sm pill-bypass" title="Bypass">BYPASS</span>}
-                  </td>
-                  <td className="col-fit">
-                    <span className={"pill sm " + ((r.payment_status === "Approved") ? "pill-ok" : "pill-warn")}>{r.payment_status || "-"}</span>
-                    {r.payment_bypassed && <span className="pill sm pill-bypass" title="Bypass">BYPASS</span>}
-                  </td>
-                  <td className="col-fit">{r.hold ? <span className="pill sm pill-hold" title={(r.hold_reasons || []).join("; ")}>HOLD</span> : <span className="muted small">-</span>}</td>
-                  <td className="num col-fit">{r.screen_qty ?? "-"}</td>
-                  <td className="small col-fit">
-                    {r.helper_required != null ? (
-                      <span className={r.helper_shortage_status === "Barang Kurang" ? "prod-helper-warn" : ""}>{r.helper_prepared ?? 0}/{r.helper_required} {r.helper_shortage ? `(-${r.helper_shortage})` : ""}</span>
-                    ) : <span className="muted">-</span>}
-                  </td>
-                  <td className="col-fit" data-testid={`prod-packing-${r.po_number}`}>
-                    {r.packing_status === "Sudah" ? <span className="pill sm pill-ok">Sudah</span> :
-                     r.packing_status === "Berjalan" ? <span className="pill sm">Berjalan</span> :
-                     <span className="pill sm">Belum</span>}
-                  </td>
-                  <td className="mono small col-fit">{r.delivery_note_number || "-"}</td>
-                  <td className="small col-text">{r.driver_name || "-"}</td>
-                  <td className="col-fit">
-                    {r.cancelled ? <span className="pill sm pill-cancel"><XCircle size={10}/> Cancelled</span> :
-                     r.status_final === "HOLD" ? <span className="pill sm pill-hold">HOLD</span> :
-                     r.status_final === "Terkirim" ? <span className="pill sm pill-ok">Terkirim</span> :
-                     <span className="pill sm">{r.status_final}</span>}
-                  </td>
+                <tr key={r.displayRowKey} data-testid={`prod-row-${r.po_number}`} data-row-key={r.displayRowKey} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
+                  <ProductionScheduleSheetCells
+                    row={r}
+                    variant="desktop"
+                    qtyProg={qtyProg}
+                    cetakProg={cetakProg}
+                    isToday={isToday}
+                    poHref={productionSchedulePoHref(r.id)}
+                  />
                 </tr>
                 );
               })}
               {!sorted.length && !busy && (
-                <tr><td colSpan={TABLE_COLS.length} className="empty-state">Tidak ada PO cocok dengan filter.</td></tr>
+                <tr><td colSpan={TABLE_COLS.length} className="production-sheet-empty">Tidak ada PO cocok dengan filter.</td></tr>
               )}
             </tbody>
           </table>

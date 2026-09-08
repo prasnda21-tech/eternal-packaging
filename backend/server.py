@@ -844,8 +844,124 @@ async def me(user=Depends(current_user)):
 
 
 # ---------- Orders ----------
+_ORDERS_SUMMARY_LIMIT = 500
+_ORDERS_SUMMARY_STRIP_KEYS = (
+    "design_files",
+    "payment_files",
+    "sample_files",
+    "surat_jalan_files",
+    "delivery_proofs",
+    "timeline",
+    "hold_reasons",
+    "_has_design_files",
+    "_has_payment_files",
+)
+
+
+def _orders_list_summary_projection() -> dict:
+    """Lean list fields plus file-existence flags. Never returns file bytes."""
+    return {
+        "_id": 0,
+        "id": 1,
+        "po_number": 1,
+        "customer": 1,
+        "customer_name": 1,
+        "outlet": 1,
+        "item": 1,
+        "product_name": 1,
+        "total_quantity": 1,
+        "current_stage": 1,
+        "status_label": 1,
+        "deadline": 1,
+        "work_date": 1,
+        "cancelled": 1,
+        "created_at": 1,
+        "design_status": 1,
+        "design_bypassed": 1,
+        "payment_status": 1,
+        "payment_bypassed": 1,
+        "_has_design_files": _mongo_array_nonempty_expr("design_files"),
+        "_has_payment_files": _mongo_array_nonempty_expr("payment_files"),
+        "line_items": {
+            "$map": {
+                "input": {"$ifNull": ["$line_items", []]},
+                "as": "li",
+                "in": {
+                    "name": "$$li.name",
+                    "quantity": "$$li.quantity",
+                    "color": "$$li.color",
+                },
+            }
+        },
+    }
+
+
+def _finalize_orders_summary_row(order: dict) -> dict:
+    """Apply canonical HOLD using existence flags, then drop helper blobs."""
+    order["design_files"] = [True] if order.get("_has_design_files") else []
+    order["payment_files"] = [True] if order.get("_has_payment_files") else []
+    _apply_hold_snapshot(order)
+    if not order.get("customer_name"):
+        order["customer_name"] = order.get("customer") or ""
+    for key in _ORDERS_SUMMARY_STRIP_KEYS:
+        order.pop(key, None)
+    return order
+
+
+def _orders_list_match(st: str) -> dict:
+    """Same Mongo filter as default GET /orders. Status extras stay post-filter."""
+    q: dict = {}
+    if st == "cancelled":
+        q["cancelled"] = True
+    else:
+        q["cancelled"] = {"$ne": True}
+    return q
+
+
+async def _list_orders_summary(st: str) -> dict:
+    """Mobile PO list: same status semantics, no file blobs, no stage_counts scan."""
+    q = _orders_list_match(st)
+    raw = await db.orders.aggregate([
+        {"$match": q},
+        {"$sort": {"created_at": -1}},
+        {"$limit": _ORDERS_SUMMARY_LIMIT},
+        {"$project": _orders_list_summary_projection()},
+    ]).to_list(_ORDERS_SUMMARY_LIMIT)
+    orders = [_finalize_orders_summary_row(o) for o in raw]
+    if st == "hold":
+        orders = [o for o in orders if o.get("hold")]
+    elif st == "aktif":
+        orders = [o for o in orders if not o.get("hold") and o.get("current_stage", 0) < 14]
+    elif st == "selesai":
+        orders = [o for o in orders if o.get("current_stage", 0) >= 14]
+    for o in orders:
+        o.pop("hold", None)
+        o.pop("design_status", None)
+        o.pop("design_bypassed", None)
+        o.pop("payment_status", None)
+        o.pop("payment_bypassed", None)
+        o.pop("cancelled", None)
+    counts = {
+        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}),
+        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}),
+        "cancelled": await db.orders.count_documents({"cancelled": True}),
+    }
+    return {
+        "orders": orders,
+        "last_sync": now_iso(),
+        "counts": counts,
+        "stage_counts": {},
+        "status": st,
+        "view": "summary",
+    }
+
+
 @api_router.get("/orders")
-async def list_orders(status: Optional[str] = None, user=Depends(current_user)):
+async def list_orders(
+    status: Optional[str] = None,
+    view: Optional[str] = None,
+    user=Depends(current_user),
+):
     """List orders. Optional `status` filter:
        - `aktif`   → non-cancelled, not HOLD, current_stage<14 (default)
        - `hold`    → non-cancelled, currently HOLD
@@ -854,9 +970,14 @@ async def list_orders(status: Optional[str] = None, user=Depends(current_user)):
        - `all`     → everything (used for admin/debug)
        - `stage_view` → non-cancelled ONLY (no HOLD/stage filter). Used by
          mobile workflow-shortcut list so `stage_counts` == filtered list.
+
+       Optional `view=summary` is additive: lean list rows for /m/orders.
+       Default (no view) keeps full documents + stage_counts for desktop.
     """
     q: dict = {}
     st = (status or "aktif").lower()
+    if (view or "").strip().lower() == "summary":
+        return await _list_orders_summary(st)
     if st == "cancelled":
         q["cancelled"] = True
     else:
@@ -5146,6 +5267,7 @@ def _production_row(o: dict) -> dict:
         "available_for_packing": _available_for_packing(o),
         "qty_delivered": _qr_qty_delivered(o),
         "operators": [{
+            "split_id": s.get("id"),
             "operator_name": s.get("operator_name"),
             "operator_email": s.get("operator_email"),
             "operator_user_id": s.get("operator_user_id") or s.get("operator_id"),
@@ -5156,6 +5278,7 @@ def _production_row(o: dict) -> dict:
             "line_printable": _split_printable(s),
             "stage": s.get("stage"),
             "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
+            "work_date": s.get("work_date"),
         } for s in splits],
         "design_status": o.get("design_status"),
         "design_bypassed": bool(o.get("design_bypassed")),
@@ -5201,18 +5324,104 @@ def _production_row(o: dict) -> dict:
     }
 
 
+_PRODUCTION_DASHBOARD_LIMIT = 1000
+# Lean fields for /m/schedule. Enough for canonical `_production_row`; no file bytes.
+_PRODUCTION_DASHBOARD_SUMMARY_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "po_number": 1,
+    "customer": 1,
+    "outlet": 1,
+    "deadline": 1,
+    "order_date": 1,
+    "work_date": 1,
+    "priority": 1,
+    "buffer_stock": 1,
+    "total_quantity": 1,
+    "quantity": 1,
+    "qty_packed": 1,
+    "current_stage": 1,
+    "status_label": 1,
+    "cancelled": 1,
+    "cancel_reason": 1,
+    "sales": 1,
+    "sales_user": 1,
+    "design_status": 1,
+    "design_bypassed": 1,
+    "design_approved_at": 1,
+    "design_bypassed_at": 1,
+    "payment_status": 1,
+    "payment_bypassed": 1,
+    "payment_approved_at": 1,
+    "payment_bypassed_at": 1,
+    "delivery_deadline_manual": 1,
+    "delivery_status": 1,
+    "qty_delivered": 1,
+    "delivery_note_number": 1,
+    "delivery_note_created_at": 1,
+    "delivery_note_created_by": 1,
+    "surat_jalan_created": 1,
+    "packing_status": 1,
+    "packing_info": 1,
+    "helper_prep": 1,
+    "screener_info": 1,
+    "loading_checklist": 1,
+    "loading_info": 1,
+    "loading_confirmations": 1,
+    "loading_completed": 1,
+    "line_items.id": 1,
+    "line_items.line_id": 1,
+    "line_items.name": 1,
+    "line_items.item_name": 1,
+    "line_items.quantity": 1,
+    "line_items.production_process": 1,
+    "line_items.accurate_item_id": 1,
+    "line_items.master_item_id": 1,
+    "line_items.item_id": 1,
+    "operator_splits.id": 1,
+    "operator_splits.operator_name": 1,
+    "operator_splits.operator_email": 1,
+    "operator_splits.operator_user_id": 1,
+    "operator_splits.operator_id": 1,
+    "operator_splits.quantity": 1,
+    "operator_splits.qty_completed": 1,
+    "operator_splits.line_idx": 1,
+    "operator_splits.stage": 1,
+    "operator_splits.work_date": 1,
+    "design_files.id": 1,
+    "payment_files.id": 1,
+    "surat_jalan_files.id": 1,
+    "surat_jalan_files.name": 1,
+    "surat_jalan_files.uploaded_at": 1,
+    "surat_jalan_files.storage_path": 1,
+    "delivery_proofs.uploaded_at": 1,
+    "shipments.id": 1,
+    "shipments.lines": 1,
+    "shipments.accurate_shipment_id": 1,
+}
+
+
 @api_router.get("/dashboard/production")
 async def production_dashboard(
     include_cancelled: bool = False,
     include_completed: bool = True,
+    view: Optional[str] = None,
     user=Depends(require_perm("schedule.view")),
 ):
     """Return Jadwal Produksi rows (real Mongo data). Filters/search happen on
-    the client. Excluding cancelled by default; explicit flag to include."""
+    the client. Excluding cancelled by default; explicit flag to include.
+
+    Optional `view=summary` is additive: same canonical rows via a lean
+    projection (no file bytes). Default (no view) keeps the full-document
+    load for desktop /produksi.
+    """
     q: dict = {}
     if not include_cancelled:
         q["cancelled"] = {"$ne": True}
-    orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(1000)
+    if (view or "").strip().lower() == "summary":
+        orders = await db.orders.find(q, _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
+    else:
+        orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
     _dd_settings = await _get_delivery_deadline_settings()
     for o in orders:
         _apply_hold_snapshot(o)

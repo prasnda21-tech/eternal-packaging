@@ -37,7 +37,7 @@ export default function MobileOrdersPage() {
       setLoading(true);
       setErr("");
       try {
-        const payload = await withTimeout(api.listOrders("aktif"), MOBILE_LOAD_TIMEOUT_MS);
+        const payload = await withTimeout(api.listOrders("aktif", { view: "summary" }), MOBILE_LOAD_TIMEOUT_MS);
         if (cancelled) return;
         setOrders(ordersFromListResponse(payload));
       } catch (e) {
