@@ -1,4 +1,4 @@
-import { formatIdQty, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell } from "./productionScheduleQty";
+import { formatIdQty, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell, operatorQtyCetakProgress, operatorPrintableItems, poTotalQtyDisplay } from "./productionScheduleQty";
 
 describe("Jadwal Produksi Total Qty print progress", () => {
   test("TEST 1: 5.000 / 10.000 not PO 15.000", () => {
@@ -258,5 +258,63 @@ describe("Jadwal Produksi Qty Cetak scheduled progress", () => {
       operators: [],
     });
     expect(p.text).toBe("—");
+  });
+});
+
+describe("operator Qty Cetak display", () => {
+  test("formats completed / PO total", () => {
+    expect(operatorQtyCetakProgress(
+      { total_quantity: 20000 },
+      [{ split_id: "s1", line_printable: true, qty_completed: 3000 }],
+    ).text).toBe("3.000 / 20.000");
+  });
+
+  test("zero progress still shows PO total", () => {
+    expect(operatorQtyCetakProgress(
+      { total_quantity: 20000 },
+      [{ split_id: "s1", line_printable: true, qty_completed: 0 }],
+    ).text).toBe("0 / 20.000");
+  });
+
+  test("sums completed qty across printable splits of one operator", () => {
+    expect(operatorQtyCetakProgress(
+      { total_quantity: 20000 },
+      [
+        { split_id: "s1", line_printable: true, qty_completed: 1000 },
+        { split_id: "s2", line_printable: true, qty_completed: 2000 },
+      ],
+    ).text).toBe("3.000 / 20.000");
+  });
+
+  test("does not treat assignment quantity as completed", () => {
+    expect(operatorQtyCetakProgress(
+      { total_quantity: 20000 },
+      [{ split_id: "s1", line_printable: true, quantity: 5000, qty_completed: 3000 }],
+    ).text).toBe("3.000 / 20.000");
+  });
+
+  test("excludes non-cetak splits from completed qty and items", () => {
+    const splits = [
+      { split_id: "s1", line_printable: true, line_name: "Cup", qty_completed: 3000 },
+      { split_id: "s2", line_printable: false, line_name: "Lid", qty_completed: 4000 },
+    ];
+    expect(operatorQtyCetakProgress({ total_quantity: 20000 }, splits).text).toBe("3.000 / 20.000");
+    expect(operatorPrintableItems(splits).map((item) => item.name)).toEqual(["Cup"]);
+  });
+
+  test("same-name items stay distinct by line identity", () => {
+    const items = operatorPrintableItems([
+      { split_id: "s1", line_printable: true, line_name: "Cup 16oz", line_id: "lid-a" },
+      { split_id: "s2", line_printable: true, line_name: "Cup 16oz", line_id: "lid-b" },
+    ]);
+    expect(items).toHaveLength(2);
+    expect(items[0].line_id).toBe("lid-a");
+    expect(items[1].line_id).toBe("lid-b");
+  });
+
+  test("Total Qty is PO total without item names", () => {
+    const cell = poTotalQtyDisplay({ total_quantity: 20000 });
+    expect(cell.text).toBe("20.000");
+    expect(cell.text).not.toMatch(/Cup|Item/);
   });
 });

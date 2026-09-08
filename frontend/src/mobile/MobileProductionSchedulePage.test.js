@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import api from "../lib/api";
 import { FILTER_DEFAULTS } from "../lib/productionScheduleFilters";
 import { PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/productionScheduleTable";
-import { formatIdQty } from "../lib/productionScheduleQty";
 import {
   PRODUCTION_SHEET_ZOOM_CSS_VAR,
   PRODUCTION_SHEET_ZOOM_DEFAULT,
@@ -199,16 +198,18 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(2);
     const opNames = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-name')].map((el) => el.textContent);
     expect(opNames).toEqual(["Budi", "Sari"]);
-    expect(opNames.every((name) => !name.includes("Budi") || name === "Budi")).toBe(true);
-    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-name').textContent).not.toMatch(/Budi.*Sari|Sari.*Budi/);
-    expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-0"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-0"]')).toBeFalsy();
+    expect(container.querySelectorAll('[data-testid="mobile-schedule-item-PO-1001"]').length).toBeGreaterThan(0);
     expect(container.textContent).toContain("Budi");
     expect(container.textContent).toContain("Sari");
     expect(container.textContent).toContain("Cup 16oz");
     expect(container.textContent).toContain("2026-08-25");
     expect(container.textContent).toContain("Belum Dijadwalkan");
-    expect(container.textContent).toContain(`${formatIdQty(10000)} / ${formatIdQty(20000)}`);
+    expect(container.textContent).toContain("0 / 25.000");
+    expect(container.textContent).toContain("25.000");
+    expect(container.querySelector('[data-testid="mobile-schedule-search"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-search-btn"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-ringkasan"]')).toBeTruthy();
     expect(container.textContent).toContain("OVERDUE");
     expect(container.querySelector(".production-sheet-table .urgent-badge")).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-count"]').textContent).toBe("2 / 2 entri");

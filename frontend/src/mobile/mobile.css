@@ -714,20 +714,23 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  padding: 8px 8px 10px;
-  gap: 8px;
+  padding: 4px 8px 8px;
+  gap: 4px;
 }
 
 .mop-schedule-toolbar {
+  --prod-sched-ctrl-h: 28px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 6px;
   flex: 0 0 auto;
   background: #fff;
   border: 1px solid var(--mop-line);
   border-radius: var(--mop-radius);
-  padding: 6px;
+  padding: 4px;
+  box-sizing: border-box;
+  overflow: visible;
 }
 
 .mop-schedule-search {
@@ -735,11 +738,14 @@
   align-items: center;
   gap: 6px;
   flex: 1 1 160px;
-  min-height: 44px;
+  min-height: 28px;
+  height: 28px;
+  box-sizing: border-box;
   border: 1px solid var(--mop-line);
   border-radius: 10px;
   padding: 0 10px;
   background: #fff;
+  overflow: hidden;
 }
 
 .mop-schedule-search input {
@@ -747,12 +753,19 @@
   border: 0;
   outline: none;
   background: transparent;
-  min-height: 42px;
+  height: 100%;
+  min-height: 0;
   font-size: 14px;
   min-width: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
 .mop-schedule-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  height: 28px;
   font-size: 12px;
   font-weight: 700;
   color: var(--mop-muted);
@@ -763,13 +776,21 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 44px;
+  min-height: 28px;
+  height: 28px;
+  box-sizing: border-box;
   font-size: 12px;
   font-weight: 700;
 }
 
-.mop-schedule-reset {
-  min-height: 44px;
+.mop-schedule-toolbar .mop-btn-ghost {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mop-schedule-error-detail {

@@ -4,7 +4,7 @@ import {
   sortProductionRows,
 } from "./productionScheduleFilters";
 import { PRODUCTION_SCHEDULE_TABLE_COLS, productionDashboardRequestParams } from "./productionScheduleTable";
-import { totalQtyScheduledCell, scheduledPrintQtyProgress, formatIdQty } from "./productionScheduleQty";
+import { operatorQtyCetakProgress, poTotalQtyDisplay, formatIdQty } from "./productionScheduleQty";
 import {
   canViewMobileSchedule,
   defaultProductionDashboardParams,
@@ -54,13 +54,14 @@ describe("mobile production schedule canonical helpers", () => {
       "Customer",
       "Tgl Pengerjaan",
       "Operator",
+      "Item",
       "Qty Cetak",
+      "Total Qty",
       "Prio",
       "Buffer",
       "Deadline",
       "Deadline Pengiriman",
       "Outlet",
-      "Total Qty",
       "Qty Screen",
       "Design",
       "Payment",
@@ -71,7 +72,7 @@ describe("mobile production schedule canonical helpers", () => {
       "Driver",
       "Status Akhir",
     ]);
-    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(20);
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(21);
   });
 
   test("one dashboard PO stays one filtered row even with same-name lines", () => {
@@ -89,21 +90,16 @@ describe("mobile production schedule canonical helpers", () => {
     const filtered = applyProductionFilters(rows, FILTER_DEFAULTS);
     expect(filtered).toHaveLength(1);
     expect(sortProductionRows(filtered, FILTER_DEFAULTS.sortBy)).toHaveLength(1);
-    const qty = totalQtyScheduledCell(rows[0]);
-    expect(qty.groups).toHaveLength(2);
-    expect(qty.groups[0].line_idx).toBe(0);
-    expect(qty.groups[1].line_idx).toBe(2);
-    expect(qty.groups[0].line_name).toBe("Cup 16oz");
-    expect(qty.groups[1].line_name).toBe("Cup 16oz");
+    const qty = poTotalQtyDisplay(rows[0]);
+    expect(qty.text).toBe(formatIdQty(rows[0].total_quantity || 0));
   });
 
-  test("qty cetak uses canonical scheduledPrintQtyProgress", () => {
-    const prog = scheduledPrintQtyProgress({
-      operator_assigned_qty: 10000,
-      print_qty_total: 20000,
-      total_quantity: 25000,
-    });
-    expect(prog.text).toBe(`${formatIdQty(10000)} / ${formatIdQty(20000)}`);
+  test("qty cetak uses operator completed / PO total", () => {
+    const prog = operatorQtyCetakProgress(
+      { total_quantity: 20000 },
+      [{ line_printable: true, qty_completed: 3000, split_id: "s1" }],
+    );
+    expect(prog.text).toBe("3.000 / 20.000");
   });
 
   test("search matches PO / customer / outlet like desktop", () => {
