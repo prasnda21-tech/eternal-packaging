@@ -185,6 +185,7 @@ from services.division_tasks import (
 from operator_analytics import (
     build_activity_analytics_pipeline,
     build_design_analytics_pipeline,
+    build_driver_analytics_pipeline,
     build_operator_analytics_pipeline,
     compute_operator_detail,
     compute_operator_kpis,
@@ -197,10 +198,12 @@ from operator_analytics import (
 from output_reports import (
     EXPORT_COLUMNS,
     compute_designer_report,
+    compute_driver_report,
     compute_output_series,
     compute_screener_report,
     export_filename,
     iter_design_export_rows,
+    iter_driver_export_rows,
     iter_helper_export_rows,
     iter_operator_export_rows,
     iter_screener_export_rows,
@@ -9328,6 +9331,45 @@ async def analytics_designs(
     return result
 
 
+@api_router.get("/analytics/driver")
+async def analytics_driver(
+    period: Optional[str] = Query("month"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    user_id: Optional[str] = None,
+    customer: Optional[str] = None,
+    item: Optional[str] = None,
+    po: Optional[str] = None,
+    user=Depends(require_perm("schedule.view")),
+):
+    """Read-only Driver output: confirmed Pengiriman/Terkirim qty, not loading."""
+    start, end, preset = resolve_period(period, date_from, date_to)
+    pipeline = build_driver_analytics_pipeline(customer, item, po)
+    facet_rows = await db.orders.aggregate(pipeline).to_list(1)
+    blob = facet_rows[0] if facet_rows else {}
+    result = compute_driver_report(
+        blob.get("docs") or [],
+        date_from=start,
+        date_to=end,
+        user_id=user_id,
+        customer=customer,
+        item=item,
+        po=po,
+    )
+    result["period"]["preset"] = preset
+    extra_customers = [x.get("_id") for x in (blob.get("customers") or []) if x.get("_id")]
+    extra_items = [x.get("_id") for x in (blob.get("items") or []) if x.get("_id")]
+    extra_pos = [x.get("_id") for x in (blob.get("pos") or []) if x.get("_id")]
+    result["filters"] = {
+        **(result.get("filters") or {}),
+        "customers": extra_customers,
+        "items": extra_items,
+        "pos": extra_pos,
+    }
+    result["generated_at"] = now_iso()
+    return result
+
+
 def _analytics_export_bytes(tab: str, rows: List[dict], fmt: str, date_from=None, date_to=None) -> Tuple[bytes, str, str]:
     cols = EXPORT_COLUMNS.get(tab) or EXPORT_COLUMNS["operator"]
     keys = [c[0] for c in cols]
@@ -9376,7 +9418,7 @@ async def analytics_output_export(
     start, end, _preset = resolve_period(period, date_from, date_to)
     key = (tab or "operator").strip().lower()
     if key not in EXPORT_COLUMNS:
-        raise HTTPException(400, "tab harus operator, helper, screener, atau design")
+        raise HTTPException(400, "tab harus operator, helper, screener, design, atau driver")
     who = user_id or operator_id
     if key == "operator":
         pipeline = build_operator_analytics_pipeline(who, customer, item, po)
@@ -9399,6 +9441,13 @@ async def analytics_output_export(
         rows = iter_screener_export_rows(
             blob.get("docs") or [], date_from=start, date_to=end,
             user_id=who, role=role, customer=customer, item=item, po=po,
+        )
+    elif key == "driver":
+        pipeline = build_driver_analytics_pipeline(customer, item, po)
+        blob = (await db.orders.aggregate(pipeline).to_list(1) or [{}])[0]
+        rows = iter_driver_export_rows(
+            blob.get("docs") or [], date_from=start, date_to=end,
+            user_id=who, customer=customer, item=item, po=po,
         )
     else:
         pipeline = build_design_analytics_pipeline(customer, item, po)

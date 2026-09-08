@@ -132,6 +132,7 @@ export const api = {
   analyticsPreparation: (params = {}) => client.get(`/analytics/preparation`, { params }).then((r) => r.data),
   analyticsScreener: (params = {}) => client.get(`/analytics/screener`, { params }).then((r) => r.data),
   analyticsDesigns: (params = {}) => client.get(`/analytics/designs`, { params }).then((r) => r.data),
+  analyticsDriver: (params = {}) => client.get(`/analytics/driver`, { params }).then((r) => r.data),
   analyticsOperatorTargets: () => client.get(`/analytics/operator-targets`).then((r) => r.data),
   updateOperatorTargets: (payload) => client.put(`/analytics/operator-targets`, payload).then((r) => r.data),
   analyticsOutputExport: (params = {}) =>
