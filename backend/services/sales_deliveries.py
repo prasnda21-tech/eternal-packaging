@@ -27,6 +27,14 @@ from services.surat_jalan_files import (
     generated_file_is_real,
     generated_sj_file_id,
 )
+from services.physical_stock_engine import (
+    handle_sales_delivery_created,
+    precheck_sales_delivery,
+    should_claim_sales_delivery_stock,
+    claim_sales_delivery_stock,
+    release_sales_delivery_stock,
+    finalize_sales_delivery_stock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -625,7 +633,17 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "item_count": len(validated_lines),
                 "status": "SELESAI" if (summary["total_remaining"] - total_delivery_qty <= 0) else "SEBAGIAN",
                 "is_cancelled": False,
+                "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
+
+            # Pre-check physical stock availability before persisting delivery
+            await precheck_sales_delivery(db, order, validated_lines)
+
+            claimed_stock = None
+            if await should_claim_sales_delivery_stock(db, order):
+                claimed_stock = await claim_sales_delivery_stock(
+                    db, order, validated_lines, delivery_id, user
+                )
 
             try:
                 await db.sales_deliveries.insert_one(delivery_doc)
@@ -689,14 +707,24 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                         pdf_err,
                     )
 
+                if claimed_stock:
+                    await finalize_sales_delivery_stock(db, claimed_stock, user)
+                else:
+                    await handle_sales_delivery_created(db, order, delivery_doc, user)
                 return delivery_doc
             except DuplicateKeyError:
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
                 # Concurrent submit detected: re-fetch summary and retry
                 fresh_summary = await get_po_delivery_summary(db, order)
                 if not fresh_summary["can_create_delivery"]:
                     raise HTTPException(400, "Kuantitas PO ini sudah dipenuhi oleh pengiriman lain yang selesai terlebih dahulu.")
                 if attempt == max_retries - 1:
                     raise HTTPException(409, "Terjadi konflik transaksi bersamaan. Silakan muat ulang dan coba lagi.")
+            except Exception:
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
+                raise
 
         raise HTTPException(500, "Gagal membuat Pengiriman Pesanan.")
 

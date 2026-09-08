@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AlertCircle, CheckCircle2, RefreshCw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -19,6 +20,7 @@ function typeLabel(raw) {
 }
 
 export default function MasterBarangJasa() {
+  const navigate = useNavigate();
   const { hasPerm } = useAuth();
   const canSync = hasPerm("master_items.sync");
   const [data, setData] = useState(null);
@@ -239,7 +241,21 @@ export default function MasterBarangJasa() {
               </tr>
             )}
             {tableView === "results" && items.map((it) => (
-              <tr key={it.id} data-testid={`master-item-${it.accurate_item_id}`}>
+              <tr
+                key={it.id}
+                data-testid={`master-item-${it.accurate_item_id}`}
+                onClick={() => navigate(`/persediaan/master-barang-jasa/${it.id || it.accurate_item_id}`)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate(`/persediaan/master-barang-jasa/${it.id || it.accurate_item_id}`);
+                  }
+                }}
+                tabIndex={0}
+                style={{ cursor: "pointer" }}
+                role="button"
+                aria-label={`Lihat detail ${it.item_name || it.item_code}`}
+              >
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{typeLabel(it.item_type)}</td>

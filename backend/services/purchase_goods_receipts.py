@@ -23,6 +23,10 @@ from services.purchase_common import (
     qty_le,
 )
 from services.purchase_orders import get_purchase_order
+from services.physical_stock_engine import (
+    handle_goods_receipt_created,
+    precheck_goods_receipt_lines,
+)
 
 COLLECTION = "purchase_goods_receipts"
 ALLOC_COLLECTION = "purchase_receipt_po_links"
@@ -71,6 +75,7 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
         if idem:
             existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
             if existing:
+                await handle_goods_receipt_created(db, existing, user)
                 return existing
 
         preview = await get_po_receipt_preview(db, po_id)
@@ -137,6 +142,11 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
         if idem:
             doc["idempotency_key"] = idem
 
+        po_doc = await db.purchase_orders.find_one({"id": preview["purchase_order_id"]}, {"_id": 0})
+        po_snapshot = (po_doc or {}).get("physical_stock_snapshot")
+        doc["physical_stock_snapshot"] = po_snapshot
+        await precheck_goods_receipt_lines(db, doc["lines"], po_snapshot)
+
         async def _alloc():
             idx = existing_count + 1
             candidate = derive_child_number(preview["po_number"], PREFIX_GOODS_RECEIPT, idx)
@@ -145,7 +155,9 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                 candidate = derive_child_number(preview["po_number"], PREFIX_GOODS_RECEIPT, idx)
             return candidate
 
-        return await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
+        saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
+        await handle_goods_receipt_created(db, saved, user)
+        return saved
 
 
 async def list_purchase_goods_receipts(

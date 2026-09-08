@@ -5,6 +5,7 @@ import {
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route, Tags,
   BookOpen,
+  Package,
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
@@ -14,6 +15,7 @@ import { NAV_MENU_FALLBACK, settingsTabFromPath } from "../lib/navAccess";
 import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload } from "../lib/settingsPermissionUi";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
+import PhysicalStockSettings from "./PhysicalStockSettings";
 import SalesAccountingSettings from "./SalesAccountingSettings";
 import PayrollAccountingSettings from "./PayrollAccountingSettings";
 import CustomerPricingSettings from "./CustomerPricingSettings";
@@ -1883,6 +1885,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "sidebar-access", label: "Akses Menu Sidebar", description: "Atur menu pengguna", Icon: PanelLeft, tone: "sky", testid: "settings-tab-sidebar-access" },
   { id: "operator-wage", label: "Sistem Upah Operator", description: "Atur skema upah", Icon: Coins, tone: "emerald", testid: "settings-tab-operator-wage" },
   { id: "hpp", label: "Pengaturan HPP", description: "Biaya & harga pokok", Icon: Scale, tone: "amber", testid: "settings-tab-hpp" },
+  { id: "physical-stock", label: "Stok Fisik", description: "Otomatisasi & trigger stok", Icon: Package, tone: "emerald", testid: "settings-tab-physical-stock" },
   { id: "sales-accounting", label: "Akuntansi Penjualan", description: "Pemetaan akun penjualan", Icon: BookOpen, tone: "violet", testid: "settings-tab-sales-accounting" },
   { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
@@ -1964,6 +1967,8 @@ export default function Settings() {
   const canEditWage = hasPerm("settings.operator_wage.manage");
   const canViewHpp = hasPerm("settings.hpp.view") || hasPerm("settings.hpp.manage") || hasPerm("permissions.manage");
   const canEditHpp = hasPerm("settings.hpp.manage");
+  const canViewPhysicalStock = hasPerm("current_stock.view") || hasPerm("current_stock.update") || hasPerm("permissions.manage");
+  const canEditPhysicalStock = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canViewSalesAccounting = hasPerm("settings.sales_accounting.view") || hasPerm("settings.sales_accounting.manage") || hasPerm("permissions.manage");
   const canEditSalesAccounting = hasPerm("settings.sales_accounting.manage");
   const canViewPayrollAccounting = hasPerm("payroll_accounting.view") || hasPerm("payroll_accounting.manage") || hasPerm("permissions.manage");
@@ -1985,6 +1990,7 @@ export default function Settings() {
     "sidebar-access": canViewSidebarAccess,
     "operator-wage": canViewWage,
     hpp: canViewHpp,
+    "physical-stock": canViewPhysicalStock,
     "sales-accounting": canViewSalesAccounting,
     "payroll-accounting": canViewPayrollAccounting,
     "customer-pricing": canViewCustomerPricing,
@@ -2095,6 +2101,9 @@ export default function Settings() {
       )}
       {tab === "operator-wage" && canViewWage && <OperatorWageTab notify={notify} canEdit={canEditWage}/>}
       {tab === "hpp" && canViewHpp && <HppSettings notify={notify} canEdit={canEditHpp}/>}
+      {tab === "physical-stock" && canViewPhysicalStock && (
+        <PhysicalStockSettings notify={notify} canEdit={canEditPhysicalStock}/>
+      )}
       {tab === "sales-accounting" && canViewSalesAccounting && (
         <SalesAccountingSettings notify={notify} canEdit={canEditSalesAccounting}/>
       )}
