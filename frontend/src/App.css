@@ -3101,17 +3101,23 @@ html:has(.prod-schedule-page) #root{
   overflow:hidden;
 }
 .app-main:has(.prod-schedule-page) .topbar{flex-shrink:0}
-.content:has(.prod-schedule-page){
+.content:has(.prod-schedule-page),
+.content.content-workspace:has(.prod-schedule-page){
   flex:1 1 auto;
   min-height:0;
   max-width:none;
   width:100%;
   margin:0;
-  padding:2px 8px 0;
+  padding:0;
   overflow:hidden;
   display:flex;
   flex-direction:column;
   box-sizing:border-box;
+}
+/* overflow:hidden makes .content the sticky CB; top:48px would sit the tab BELOW the purple divider. */
+.content:has(.prod-schedule-page) > .kb-workspace-tabs{
+  top:0;
+  flex:0 0 auto;
 }
 .prod-schedule-page{
   display:flex;
@@ -3120,17 +3126,58 @@ html:has(.prod-schedule-page) #root{
   min-height:0;
   height:100%;
   overflow:hidden;
+  padding:4px 8px 0;
+  box-sizing:border-box;
 }
 .prod-schedule-chrome{flex:0 0 auto;min-width:0}
-.prod-schedule-page .prod-heading{margin-bottom:2px;gap:6px;align-items:center}
-.prod-schedule-page .prod-heading .eyebrow{display:none}
-.prod-schedule-page .prod-heading h1{font-size:15px;line-height:1.1;margin:0}
-.prod-schedule-page .prod-heading .subhead{margin:1px 0 0;font-size:11px;line-height:1.2}
-.prod-schedule-page .prod-toolbar{margin:0 0 4px;gap:4px 6px}
-.prod-schedule-page .prod-toolbar .search-inline{min-height:24px;height:24px}
-.prod-schedule-page .prod-check{min-height:24px;font-size:12px}
+.prod-schedule-page .prod-schedule-sr-title{
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  white-space:nowrap;
+  border:0;
+}
+.prod-schedule-page .prod-toolbar{
+  --prod-sched-ctrl-h:28px;
+  margin:0 0 4px;
+  gap:4px 6px;
+  align-items:center;
+  box-sizing:border-box;
+}
+.prod-schedule-page .prod-toolbar .muted.small{
+  display:inline-flex;
+  align-items:center;
+  min-height:var(--prod-sched-ctrl-h);
+  height:var(--prod-sched-ctrl-h);
+  margin:0;
+  line-height:1;
+}
+.prod-schedule-page .prod-mode{
+  height:var(--prod-sched-ctrl-h);
+  min-height:var(--prod-sched-ctrl-h);
+  margin-left:auto;
+  align-items:stretch;
+}
+.prod-schedule-page .prod-toolbar .search-inline{min-height:var(--prod-sched-ctrl-h);height:var(--prod-sched-ctrl-h);box-sizing:border-box;overflow:hidden}
+.prod-schedule-page .prod-toolbar .search-inline input{padding:0;height:100%;min-height:0;box-sizing:border-box;line-height:var(--prod-sched-ctrl-h)}
+.prod-schedule-page .prod-check{display:inline-flex;align-items:center;gap:4px;min-height:var(--prod-sched-ctrl-h);height:var(--prod-sched-ctrl-h);font-size:12px;box-sizing:border-box;margin:0}
+.prod-schedule-page .prod-toolbar .ghost.sm,
+.prod-schedule-page .prod-toolbar .prod-filter-reset,
 .prod-schedule-page .prod-mode button,
-.prod-schedule-page .prod-mode .ghost.sm{min-height:24px;padding:3px 8px;font-size:11px}
+.prod-schedule-page .prod-mode .ghost.sm{
+  min-height:var(--prod-sched-ctrl-h);
+  height:var(--prod-sched-ctrl-h);
+  padding:0 8px;
+  font-size:12px;
+  box-sizing:border-box;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
 .prod-schedule-page .error{margin:0 0 4px;flex-shrink:0}
 .prod-schedule-page .prod-table-wrap,
 .prod-schedule-page .prod-schedule-grid,
@@ -3206,7 +3253,9 @@ html:has(.prod-schedule-page) #root{
   }
 }
 @media (max-width:700px){
-  .content:has(.prod-schedule-page){padding:2px 6px 0}
+  .content:has(.prod-schedule-page),
+  .content.content-workspace:has(.prod-schedule-page){padding:0}
+  .prod-schedule-page{padding:4px 6px 0}
 }
 
 /* -------- Stock Saat Ini -------- */

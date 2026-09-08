@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { XCircle } from "lucide-react";
 import { formatDate } from "../lib/constants";
-import { formatIdQty } from "../lib/productionScheduleQty";
+import { formatIdQty, operatorPrintableItems } from "../lib/productionScheduleQty";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
   productionSheetCellClassName,
@@ -76,23 +76,24 @@ function WorkDateCell({ row, variant }) {
   return <span className="muted small">Belum Dijadwalkan</span>;
 }
 
-function TotalQtyCell({ row, qtyProg, variant }) {
-  if (qtyProg.groups?.length) {
-    return qtyProg.groups.map((g, i) => (
-      <div
-        key={g.key}
-        className="prod-line-qty-block"
-        style={{ minHeight: `${Math.max((g.operators || []).length, 1) * 1.35}em` }}
-        data-testid={variant === "desktop"
-          ? `prod-qty-line-${row.po_number}-${i}`
-          : `mobile-schedule-qty-line-${row.po_number}-${i}`}
-      >
-        {g.line_name ? <span className="prod-line-qty-name">{g.line_name}</span> : null}
-        <span className="prod-line-qty-value">{formatIdQty(g.total)}</span>
-      </div>
-    ));
-  }
-  return qtyProg.text;
+function TotalQtyCell({ qtyProg }) {
+  return qtyProg?.text ?? "0";
+}
+
+function ItemCell({ row, variant }) {
+  const items = operatorPrintableItems(row.displayOperator?.splits || []);
+  if (!items.length) return <span className="muted small">—</span>;
+  return items.map((item) => (
+    <div
+      key={item.key}
+      className="prod-schedule-item-line"
+      data-testid={variant === "desktop"
+        ? `prod-item-line-${row.po_number}-${item.key}`
+        : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
+    >
+      {item.name}
+    </div>
+  ));
 }
 
 function OperatorCell({ row, qtyProg, variant }) {
@@ -164,8 +165,10 @@ function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref })
       return row.buffer_stock
         ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span>
         : <span className="muted small">—</span>;
+    case "item":
+      return <ItemCell row={row} variant={variant} />;
     case "qty":
-      return <TotalQtyCell row={row} qtyProg={qtyProg} variant={variant} />;
+      return <TotalQtyCell qtyProg={qtyProg} />;
     case "screen":
       return row.screen_qty ?? "-";
     case "qty_cetak":
@@ -228,6 +231,11 @@ function cellExtras(col, { row, variant, cetakProg, isToday }) {
   }
   if (col.key === "buffer" && variant === "desktop") {
     testids["data-testid"] = `prod-buffer-${row.po_number}`;
+  }
+  if (col.key === "item") {
+    extras.push("prod-schedule-item-cell");
+    if (variant === "desktop") testids["data-testid"] = `prod-item-${row.po_number}`;
+    else testids["data-testid"] = `mobile-schedule-item-${row.po_number}`;
   }
   if (col.key === "qty") {
     extras.push("prod-qty-cell");

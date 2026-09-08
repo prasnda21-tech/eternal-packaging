@@ -131,6 +131,77 @@ export function scheduledAssignedQty(row) {
   return total;
 }
 
+/** Authoritative Cetak split: backend `line_printable` from `is_print_line` (production_process != non_print). */
+export function isPrintableScheduleSplit(op) {
+  return op?.line_printable !== false;
+}
+
+export function scheduleSplitIdentity(op, index = 0) {
+  if (op?.split_id) return `split:${op.split_id}`;
+  if (op?.id) return `split:${op.id}`;
+  const lineId = op?.line_id != null && String(op.line_id).trim();
+  if (lineId) return `lid:${lineId}`;
+  if (op?.line_idx != null && op.line_idx !== "") return `idx:${op.line_idx}`;
+  return `unknown:${index}`;
+}
+
+export function printableCompletedQty(splits) {
+  const seen = new Set();
+  let total = 0;
+  (splits || []).forEach((op, index) => {
+    if (!isPrintableScheduleSplit(op)) return;
+    const key = scheduleSplitIdentity(op, index);
+    if (seen.has(key)) return;
+    seen.add(key);
+    total += Math.max(0, qtyInt(op?.qty_completed));
+  });
+  return total;
+}
+
+export function operatorPrintableItems(splits) {
+  const seen = new Set();
+  const items = [];
+  (splits || []).forEach((op, index) => {
+    if (!isPrintableScheduleSplit(op)) return;
+    const key = scheduleSplitIdentity(op, index);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const name = String(op?.line_name || "").trim();
+    items.push({
+      key,
+      name: name || "—",
+      line_id: op?.line_id || "",
+      line_idx: op?.line_idx,
+      split_id: op?.split_id || op?.id || "",
+    });
+  });
+  return items;
+}
+
+export function operatorQtyCetakProgress(row, splits) {
+  const actual = printableCompletedQty(splits);
+  const poTotal = qtyInt(row?.total_quantity);
+  return {
+    text: `${formatIdQty(actual)} / ${formatIdQty(poTotal)}`,
+    over: poTotal > 0 && actual > poTotal,
+    actual,
+    poTotal,
+    title: [
+      `Sudah dicetak operator: ${formatIdQty(actual)}`,
+      `Total Qty PO: ${formatIdQty(poTotal)}`,
+    ].join("\n"),
+  };
+}
+
+export function poTotalQtyDisplay(row) {
+  const poTotal = qtyInt(row?.total_quantity);
+  return {
+    text: formatIdQty(poTotal),
+    poTotal,
+    title: `Total Qty PO: ${formatIdQty(poTotal)}`,
+  };
+}
+
 export function scheduledPrintQtyProgress(row) {
   const scheduled = scheduledAssignedQty(row);
   const target = qtyInt(row?.print_qty_total);

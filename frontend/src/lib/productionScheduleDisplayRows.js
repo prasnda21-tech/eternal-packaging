@@ -5,6 +5,8 @@ Multiple splits for the same operator collapse to one visible row; split/line
 identities are retained on the display-row model.
 */
 
+import { isPrintableScheduleSplit } from "./productionScheduleQty";
+
 export function productionScheduleOperatorIdentity(op) {
   const userId = String(op?.operator_user_id || op?.operator_id || "").trim();
   if (userId) return `uid:${userId}`;
@@ -104,8 +106,13 @@ function buildGroupedDisplayOperator(splits) {
 export function buildProductionScheduleDisplayRows(rows) {
   const out = [];
   for (const row of rows || []) {
-    const ops = Array.isArray(row.operators) ? row.operators : [];
+    const rawOps = Array.isArray(row.operators) ? row.operators : [];
+    const ops = rawOps.filter(isPrintableScheduleSplit);
     if (!ops.length) {
+      if (rawOps.length) continue;
+      const printTarget = Number(row?.print_qty_total);
+      const nonPrint = Number(row?.non_print_qty_total);
+      if (printTarget === 0 && nonPrint > 0) continue;
       const operatorKey = "unassigned";
       out.push({
         ...row,

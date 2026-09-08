@@ -14,6 +14,7 @@ export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
   "outlet",
   "qty",
   "qty_cetak",
+  "item",
   "operator",
   "design",
   "payment",
@@ -28,20 +29,21 @@ export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
 
 /**
  * Spreadsheet column order shared by /produksi and /m/schedule.
- * After Qty Cetak: Prio, Buffer, Deadline, Deadline Pengiriman, Outlet, then remaining columns.
+ * Item sits after Operator; Total Qty sits after Qty Cetak.
  */
 export const PRODUCTION_SCHEDULE_TABLE_COLS = [
   { key: "po", id: "po", label: "No PO", group: "identity", align: "left", type: "id", baseWidth: 112, minWidth: 76, filter: "po" },
   { key: "customer", id: "customer", label: "Customer", group: "identity", align: "left", type: "text", baseWidth: 168, minWidth: 96, filter: "customer", wrap: true },
   { key: "work_date", id: "work_date", label: "Tgl Pengerjaan", group: "planning", align: "left", type: "date", baseWidth: 118, minWidth: 88, testid: "prod-th-work-date", filter: "work_date", sort: "work_date", wrap: true },
   { key: "operator", id: "operator", label: "Operator", group: "assignment", align: "left", type: "text", baseWidth: 168, minWidth: 96, filter: "operator", wrap: true },
-  { key: "qty_cetak", id: "qty_cetak", label: "Qty Cetak", group: "quantity", align: "right", type: "qty", baseWidth: 108, minWidth: 80, num: true },
+  { key: "item", id: "item", label: "Item", group: "identity", align: "left", type: "text", baseWidth: 168, minWidth: 96, wrap: true },
+  { key: "qty_cetak", id: "qty_cetak", label: "Qty Cetak", group: "quantity", align: "right", type: "qty", baseWidth: 128, minWidth: 88, num: true },
+  { key: "qty", id: "qty", label: "Total Qty", group: "quantity", align: "right", type: "qty", baseWidth: 104, minWidth: 72, num: true },
   { key: "prio", id: "prio", label: "Prio", group: "planning", align: "left", type: "status", baseWidth: 78, minWidth: 56, filter: "prio" },
   { key: "buffer", id: "buffer", label: "Buffer", group: "planning", align: "left", type: "status", baseWidth: 72, minWidth: 52, testid: "prod-th-buffer", filter: "buffer" },
   { key: "deadline", id: "deadline", label: "Deadline", group: "planning", align: "left", type: "date", baseWidth: 96, minWidth: 72, filter: "deadline", sort: "deadline" },
   { key: "deadline_ship", id: "deadline_ship", label: "Deadline Pengiriman", group: "planning", align: "left", type: "date", baseWidth: 168, minWidth: 110, testid: "prod-th-deadline-effective", wrap: true },
   { key: "outlet", id: "outlet", label: "Outlet", group: "identity", align: "left", type: "text", baseWidth: 140, minWidth: 88, wrap: true },
-  { key: "qty", id: "qty", label: "Total Qty", group: "quantity", align: "right", type: "qty", baseWidth: 104, minWidth: 72, num: true, wrap: true },
   { key: "screen", id: "screen", label: "Qty Screen", group: "quantity", align: "right", type: "qty", baseWidth: 84, minWidth: 64, num: true, filter: "screener" },
   { key: "design", id: "design", label: "Design", group: "assignment", align: "left", type: "status", baseWidth: 96, minWidth: 72 },
   { key: "payment", id: "payment", label: "Payment", group: "assignment", align: "left", type: "status", baseWidth: 96, minWidth: 72 },

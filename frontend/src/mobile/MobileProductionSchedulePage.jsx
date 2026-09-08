@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Download, Search } from "lucide-react";
+import { Download } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatApiError } from "../lib/errors";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
+import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
@@ -14,7 +15,8 @@ import {
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
-import { scheduledPrintQtyProgress, totalQtyScheduledCell } from "../lib/productionScheduleQty";
+import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
+import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
   productionSheetColumnStyle,
@@ -99,6 +101,7 @@ export default function MobileProductionSchedulePage() {
   );
   const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
   const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
+  const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
   const filtersActive = productionFiltersAreActive(filterState);
 
   const resetFilters = () => {
@@ -148,15 +151,13 @@ export default function MobileProductionSchedulePage() {
         {allowed && (
           <>
             <div className="mop-schedule-toolbar" data-testid="mobile-schedule-toolbar">
-              <label className="mop-schedule-search">
-                <Search size={13} />
-                <input
-                  placeholder="Cari PO / Customer / Outlet"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  data-testid="mobile-schedule-search"
-                />
-              </label>
+              <ProductionScheduleSearchCluster
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                inputTestId="mobile-schedule-search"
+                searchButtonTestId="mobile-schedule-search-btn"
+              />
+              <ProductionScheduleRingkasan metrics={summaryMetrics} testidPrefix="mobile-schedule" />
               <span className="mop-schedule-count" data-testid="mobile-schedule-count">
                 {filtered.length} / {rows.length} entri
               </span>
@@ -271,8 +272,8 @@ export default function MobileProductionSchedulePage() {
                   </thead>
                   <tbody>
                     {displayRows.map((row) => {
-                      const qtyProg = totalQtyScheduledCell(row);
-                      const cetakProg = scheduledPrintQtyProgress(row);
+                      const qtyProg = poTotalQtyDisplay(row);
+                      const cetakProg = operatorQtyCetakProgress(row, row.displayOperator?.splits);
                       const isToday = isScheduledToday(row);
                       const href = mobileScheduleHref(row.id);
                       const open = () => { if (href) navigate(href); };

@@ -132,6 +132,43 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-po-link-PO-1001"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-customer-PO-1001"]').textContent).toContain("PT Example");
     expect(container.textContent).toContain("Cup 16oz Extra Long Name");
+    expect(container.querySelector('[data-testid="prod-search"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-search-btn"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-ringkasan"]')).toBeTruthy();
+  });
+
+  test("Qty Cetak is operator completed over PO total and Item is standalone", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        operators: [{
+          split_id: "s-budi",
+          operator_email: "budi@x.com",
+          operator_name: "Budi",
+          quantity: 10000,
+          qty_completed: 3000,
+          line_idx: 0,
+          line_id: "lid-a",
+          line_name: "Cup 16oz Extra Long Name",
+          line_printable: true,
+          work_date: "2026-08-25",
+        }],
+      }],
+      total: 1,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="prod-qty-cetak-PO-1001"]').textContent).toBe("3.000 / 25.000");
+    expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).toBe("25.000");
+    expect(container.querySelector('[data-testid="prod-item-PO-1001"]').textContent).toContain("Cup 16oz Extra Long Name");
+    expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).not.toContain("Cup");
+    await act(async () => {
+      container.querySelector('[data-testid="prod-ringkasan"]').click();
+    });
+    expect(container.querySelector('[data-testid="prod-ringkasan-panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-ringkasan-po"]').textContent).toContain("1");
+    expect(container.querySelector('[data-testid="prod-ringkasan-qty"]').textContent).toContain("25.000");
+    expect(container.querySelector('[data-testid="prod-ringkasan-printed"]').textContent).toContain("3.000");
+    expect(container.querySelector('[data-testid="prod-ringkasan-remain"]').textContent).toContain("22.000");
   });
 
   test("Ctrl + wheel zooms the desktop sheet via CSS variable", async () => {

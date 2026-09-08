@@ -274,3 +274,184 @@
   max-height: none;
   width: 100%;
 }
+
+.production-sheet-table .prod-schedule-item-line {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.25;
+}
+
+.production-schedule-search-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 320px;
+  height: 28px;
+}
+
+.production-schedule-search-field {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  max-height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--line, #d7dee2);
+  border-radius: 2px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.prod-schedule-page .production-schedule-search-field input,
+.mop-schedule-toolbar .production-schedule-search-field input,
+.content .prod-schedule-page .production-schedule-search-field input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  height: 28px;
+  max-height: 28px;
+  min-height: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: none;
+  background: transparent !important;
+  padding: 0 8px !important;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 28px;
+  box-sizing: border-box;
+  box-shadow: none !important;
+}
+
+.prod-schedule-page .production-schedule-search-field input:hover,
+.prod-schedule-page .production-schedule-search-field input:focus,
+.mop-schedule-toolbar .production-schedule-search-field input:hover,
+.mop-schedule-toolbar .production-schedule-search-field input:focus,
+.content .prod-schedule-page .production-schedule-search-field input:hover,
+.content .prod-schedule-page .production-schedule-search-field input:focus {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+.production-schedule-search-btn {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  max-height: 28px;
+  min-height: 28px;
+  box-sizing: border-box;
+  border: 0;
+  border-left: 1px solid var(--line, #d7dee2);
+  border-radius: 0;
+  background: #f7f7f5;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.production-schedule-ringkasan {
+  position: relative;
+  flex: 0 0 auto;
+  height: 28px;
+}
+
+.production-schedule-ringkasan-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--line, #d7dee2);
+  border-radius: 2px;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.production-schedule-ringkasan-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid var(--line, #d7dee2);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(16, 32, 39, 0.12);
+}
+
+.production-schedule-ringkasan-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.production-schedule-ringkasan-row strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.prod-schedule-page .prod-toolbar {
+  align-items: center;
+  overflow: visible;
+}
+
+.prod-schedule-page .prod-toolbar .ghost.sm,
+.prod-schedule-page .prod-toolbar .prod-filter-reset {
+  min-height: 28px;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 8px;
+}
+
+.mop-schedule-toolbar .production-schedule-search-cluster {
+  flex: 1 1 140px;
+  max-width: none;
+  height: 28px;
+}
+
+.mop-schedule-toolbar .production-schedule-search-field,
+.mop-schedule-toolbar .production-schedule-search-btn,
+.mop-schedule-toolbar .production-schedule-ringkasan-btn {
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+}
+
+.mop-schedule-toolbar .production-schedule-search-btn {
+  flex-basis: 28px;
+  width: 28px;
+}
+
+.mop-schedule-toolbar .production-schedule-search-field {
+  border-radius: 10px;
+}
+
+.mop-schedule-toolbar .production-schedule-ringkasan-btn {
+  border-radius: 10px;
+}
+
+.mop-schedule-toolbar .production-schedule-ringkasan-panel {
+  right: 0;
+  left: auto;
+}

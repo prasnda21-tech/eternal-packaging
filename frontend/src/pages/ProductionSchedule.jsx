@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Download, Filter, LayoutGrid, RefreshCw, Search, Table as TableIcon } from "lucide-react";
+import { Download, Filter, LayoutGrid, RefreshCw, Table as TableIcon } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
@@ -8,6 +8,7 @@ import useAutoRefresh from "../lib/useAutoRefresh";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
+import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
@@ -16,7 +17,8 @@ import {
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
-import { scheduledPrintQtyProgress, totalQtyScheduledCell } from "../lib/productionScheduleQty";
+import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
+import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS,
   productionDashboardRequestParams,
@@ -193,6 +195,7 @@ export default function ProductionSchedule() {
 
   const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
   const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
+  const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
   const filtersActive = productionFiltersAreActive(filterState);
 
   const cycleSort = (col) => {
@@ -345,33 +348,21 @@ export default function ProductionSchedule() {
   return (
     <div className="prod-page prod-schedule-page" data-testid="production-schedule-page">
       <div className="prod-schedule-chrome">
-        <div className="page-heading prod-heading">
-          <div className="prod-heading-copy">
-            <p className="eyebrow">Produksi · Jadwal</p>
-            <h1>Jadwal Produksi</h1>
-            <p className="subhead">
-              {total} PO real-time · sumber MongoDB · sortir, filter, dan export satu arah
-              {schedLastUpdated && (
-                <span data-testid="prod-last-updated" style={{ marginLeft: 10, fontSize: 12, color: "#7a6f52" }}>
-                  · Terakhir diperbarui: {new Date(schedLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
-                </span>
-              )}
-            </p>
-          </div>
-          <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
-            <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
-              <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
-            </button>
-            <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
-            <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
-          </div>
-        </div>
+        <h1 className="prod-schedule-sr-title">Jadwal Produksi · {total} PO</h1>
+        {schedLastUpdated && (
+          <span data-testid="prod-last-updated" hidden>
+            {new Date(schedLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
 
         <div className="prod-toolbar" data-testid="prod-filters">
-          <div className="search-inline">
-            <Search size={13}/>
-            <input placeholder="Cari PO / Customer / Outlet" value={q} onChange={(e) => setQ(e.target.value)} data-testid="prod-search"/>
-          </div>
+          <ProductionScheduleSearchCluster
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            inputTestId="prod-search"
+            searchButtonTestId="prod-search-btn"
+          />
+          <ProductionScheduleRingkasan metrics={summaryMetrics} testidPrefix="prod" />
           <span className="muted small" data-testid="prod-total-visible">{filtered.length} / {rows.length} entri</span>
           <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
           <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
@@ -384,6 +375,13 @@ export default function ProductionSchedule() {
               <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
             </>
           )}
+          <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
+            <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
+              <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
+            </button>
+            <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
+            <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
+          </div>
         </div>
 
         {err && <div className="error" data-testid="prod-error">{err}</div>}
@@ -430,8 +428,8 @@ export default function ProductionSchedule() {
             </thead>
             <tbody>
               {displayRows.map((r) => {
-                const qtyProg = totalQtyScheduledCell(r);
-                const cetakProg = scheduledPrintQtyProgress(r);
+                const qtyProg = poTotalQtyDisplay(r);
+                const cetakProg = operatorQtyCetakProgress(r, r.displayOperator?.splits);
                 const isToday = isScheduledToday(r);
                 return (
                 <tr key={r.displayRowKey} data-testid={`prod-row-${r.po_number}`} data-row-key={r.displayRowKey} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>

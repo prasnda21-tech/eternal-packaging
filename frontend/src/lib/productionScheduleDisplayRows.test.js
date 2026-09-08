@@ -1,5 +1,5 @@
 import { FILTER_DEFAULTS, applyProductionFilters } from "./productionScheduleFilters";
-import { scheduledPrintQtyProgress, totalQtyScheduledCell } from "./productionScheduleQty";
+import { operatorQtyCetakProgress, poTotalQtyDisplay } from "./productionScheduleQty";
 import {
   buildProductionScheduleDisplayRows,
   productionScheduleAssignmentKey,
@@ -122,14 +122,17 @@ describe("buildProductionScheduleDisplayRows", () => {
     expect(productionScheduleOperatorIdentity(row.operators[1])).toBe("uid:u-2");
   });
 
-  test("Qty Cetak and Total Qty stay PO-level on every expanded row", () => {
-    const display = buildProductionScheduleDisplayRows([poThree]);
-    const canonicalCetak = scheduledPrintQtyProgress(poThree).text;
-    const canonicalQty = totalQtyScheduledCell(poThree);
+  test("Total Qty stays PO-level; Qty Cetak is operator completed / PO total", () => {
+    const display = buildProductionScheduleDisplayRows([{
+      ...poThree,
+      operators: poThree.operators.map((op, i) => ({ ...op, qty_completed: i === 0 ? 800 : i === 1 ? 1000 : 1200 })),
+    }]);
     display.forEach((row) => {
-      expect(scheduledPrintQtyProgress(row).text).toBe(canonicalCetak);
-      expect(totalQtyScheduledCell(row).groups).toHaveLength(canonicalQty.groups.length);
+      expect(poTotalQtyDisplay(row).text).toBe("3.000");
     });
+    expect(operatorQtyCetakProgress(display[0], display[0].displayOperator.splits).text).toBe("1.000 / 3.000");
+    expect(operatorQtyCetakProgress(display[1], display[1].displayOperator.splits).text).toBe("1.200 / 3.000");
+    expect(operatorQtyCetakProgress(display[2], display[2].displayOperator.splits).text).toBe("800 / 3.000");
   });
 
   test("search/filter runs on canonical rows before expansion", () => {
@@ -154,5 +157,35 @@ describe("buildProductionScheduleDisplayRows", () => {
     const display = buildProductionScheduleDisplayRows([row]);
     expect(display).toHaveLength(1);
     expect(display[0].displayWorkDate).toBe("2026-09-10");
+  });
+
+  test("non-cetak splits are excluded from operator rows and items", () => {
+    const row = {
+      id: "po-mix",
+      po_number: "PO-M",
+      print_qty_total: 1000,
+      operators: [
+        { split_id: "s-print", operator_email: "budi@x.com", operator_name: "Budi", line_name: "Cup", line_id: "lid-a", line_idx: 0, line_printable: true, quantity: 1000, qty_completed: 300 },
+        { split_id: "s-np", operator_email: "sari@x.com", operator_name: "Sari", line_name: "Lid Non Print", line_id: "lid-b", line_idx: 1, line_printable: false, quantity: 500, qty_completed: 500 },
+      ],
+    };
+    const display = buildProductionScheduleDisplayRows([row]);
+    expect(display).toHaveLength(1);
+    expect(display[0].displayOperator.operator_name).toBe("Budi");
+    expect(display[0].displayOperator.splits.every((op) => op.line_printable !== false)).toBe(true);
+  });
+
+  test("same-name items keep distinct line identities on one operator row", () => {
+    const row = {
+      id: "po-same-name",
+      operators: [
+        { split_id: "s1", operator_user_id: "u-1", operator_name: "Budi", line_name: "Cup 16oz", line_id: "lid-a", line_idx: 0, line_printable: true, qty_completed: 10 },
+        { split_id: "s2", operator_user_id: "u-1", operator_name: "Budi", line_name: "Cup 16oz", line_id: "lid-b", line_idx: 2, line_printable: true, qty_completed: 20 },
+      ],
+    };
+    const display = buildProductionScheduleDisplayRows([row]);
+    expect(display).toHaveLength(1);
+    expect(display[0].displayOperator.line_ids).toEqual(["lid-a", "lid-b"]);
+    expect(display[0].displayOperator.operator_split_ids).toEqual(["s1", "s2"]);
   });
 });
