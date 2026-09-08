@@ -23,13 +23,16 @@ di DB — plaintext tidak pernah disimpan (tidak di audit log juga).
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 
@@ -60,6 +63,86 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+PUBLIC_DESIGN_VIEW_STATUSES = ("active", "approved", "rejected")
+
+
+def public_design_file_path(token: str) -> str:
+    """Token-scoped design bytes. No file id — only the bound design_version."""
+    return f"/api/public/customer-approval/{token}/design"
+
+
+def bound_design_file(rec: dict, order: dict) -> Optional[dict]:
+    design_version = rec.get("design_version")
+    if not design_version:
+        return None
+    for file in order.get("design_files") or []:
+        if isinstance(file, dict) and file.get("id") == design_version:
+            return file
+    return None
+
+
+def design_content_type(file: dict) -> Optional[str]:
+    ct = file.get("content_type")
+    if ct:
+        return str(ct).lower()
+    data_url = str(file.get("data_url") or "")
+    if data_url.startswith("data:"):
+        try:
+            return data_url.split("data:", 1)[1].split(";", 1)[0].lower()
+        except Exception:
+            return None
+    return None
+
+
+def is_pdf_design(file: dict, ct: Optional[str] = None) -> bool:
+    media = (ct or design_content_type(file) or "").lower()
+    name = str(file.get("name") or "").lower()
+    data_url = str(file.get("data_url") or "")
+    return media == "application/pdf" or name.endswith(".pdf") or data_url.startswith("data:application/pdf")
+
+
+def public_design_media_type(file: dict, data: bytes, claimed: str) -> str:
+    """Preview-safe MIME for this approval design path only."""
+    name = str(file.get("name") or "").lower()
+    claimed = (claimed or "").lower()
+    if claimed == "application/pdf" or name.endswith(".pdf") or (data or b"").startswith(b"%PDF"):
+        return "application/pdf"
+    return claimed or "application/octet-stream"
+
+
+def load_bound_design_bytes(file: dict, obj_storage=None) -> Tuple[bytes, str]:
+    data = None
+    media = design_content_type(file) or "application/octet-stream"
+    storage_path = str(file.get("storage_path") or "").strip()
+    if storage_path and obj_storage is not None:
+        try:
+            data, ct = obj_storage.get_object(storage_path)
+            media = file.get("content_type") or ct or media
+        except FileNotFoundError:
+            data = None
+        except Exception:
+            data = None
+    if data is None:
+        data_url = str(file.get("data_url") or "")
+        if data_url.startswith("data:"):
+            header, b64 = data_url.split(",", 1)
+            if "data:" in header:
+                media = header.split("data:", 1)[1].split(";", 1)[0] or media
+            data = base64.b64decode(b64)
+    if not data:
+        raise FileNotFoundError("design file bytes unavailable")
+    return data, public_design_media_type(file, data, media)
+
+
+def _design_disposition_headers(filename: str) -> dict:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "design").strip("._") or "design"
+    return {
+        "Content-Disposition": f"inline; filename=\"{safe}\"; filename*=UTF-8''{quote(filename or safe)}",
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
 def _snapshot_for_order(rec: dict) -> dict:
     """Fields disimpan di order.customer_approval untuk display internal.
     JANGAN sertakan token/hash. Signature URL diserve via /api/files/<path>."""
@@ -81,7 +164,7 @@ def _snapshot_for_order(rec: dict) -> dict:
     }
 
 
-def _public_view(rec: dict, order: dict, settings: dict, allow_active_view: bool) -> dict:
+def _public_view(rec: dict, order: dict, settings: dict, allow_active_view: bool, token: Optional[str] = None) -> dict:
     """Data safe untuk customer publik. TIDAK mengekspos audit, ID mongo,
     permission, catatan internal, credentials, dsb."""
     line_items = [
@@ -94,24 +177,19 @@ def _public_view(rec: dict, order: dict, settings: dict, allow_active_view: bool
         for li in (order.get("line_items") or [])
     ]
     # Ambil hanya file design VERSI YANG DIAPPROVE (bukan seluruh riwayat).
-    design_version = rec.get("design_version")
-    files = order.get("design_files") or []
-    file = next((f for f in files if f.get("id") == design_version), None)
+    file = bound_design_file(rec, order)
     design_file_view = None
     if file:
-        # Content-type: gunakan yang tersimpan, fallback derive dari data URL header
-        # (backward compat untuk legacy files tanpa `content_type`).
-        ct = file.get("content_type")
-        if not ct and file.get("data_url", "").startswith("data:"):
-            try:
-                ct = file["data_url"].split("data:", 1)[1].split(";", 1)[0].lower()
-            except Exception:
-                ct = None
+        ct = design_content_type(file)
+        data_url = None
+        if allow_active_view and not is_pdf_design(file, ct):
+            data_url = file.get("data_url")
+        view_url = public_design_file_path(token) if (allow_active_view and token) else None
         design_file_view = {
             "id": file.get("id"),
             "name": file.get("name"),
-            "data_url": file.get("data_url") if allow_active_view else None,
-            "storage_path": file.get("storage_path"),
+            "data_url": data_url,
+            "view_url": view_url,
             "content_type": ct,
         }
     return {
@@ -415,8 +493,44 @@ def build_router(deps):
             await _mark_status_if_changed(rec, "invalidated",
                                           {"note": "Design di-upload ulang; link versi lama tidak berlaku"})
         settings = await get_settings()
-        allow_active_view = rec.get("status") in ("active", "approved", "rejected")
-        return {"view": _public_view(rec, order, settings, allow_active_view)}
+        allow_active_view = rec.get("status") in PUBLIC_DESIGN_VIEW_STATUSES
+        return {"view": _public_view(rec, order, settings, allow_active_view, token=token)}
+
+    @router.get("/public/customer-approval/{token}/design")
+    async def public_design_file(token: str):
+        rec = await _load_by_token(token)
+        if not rec:
+            raise HTTPException(404, "Link tidak ditemukan atau sudah tidak berlaku")
+        st = _derive_status(rec)
+        if st != rec.get("status"):
+            await _mark_status_if_changed(rec, st)
+        if rec.get("status") not in PUBLIC_DESIGN_VIEW_STATUSES:
+            raise HTTPException(404, "Link tidak ditemukan atau sudah tidak berlaku")
+        order = await db.orders.find_one({"id": rec["order_id"]}, {"_id": 0})
+        if not order:
+            raise HTTPException(404, "PO tidak ditemukan")
+        files = order.get("design_files") or []
+        current_version = files[-1].get("id") if files else None
+        if current_version and rec.get("design_version") != current_version and rec.get("status") == "active":
+            await _mark_status_if_changed(rec, "invalidated",
+                                          {"note": "Design di-upload ulang; link versi lama tidak berlaku"})
+            raise HTTPException(404, "Link tidak ditemukan atau sudah tidak berlaku")
+        file = bound_design_file(rec, order)
+        if not file:
+            raise HTTPException(404, "File design tidak ditemukan")
+        try:
+            data, media = load_bound_design_bytes(file, obj_storage)
+        except FileNotFoundError:
+            raise HTTPException(404, "File design tidak ditemukan")
+        except Exception:
+            logger.exception("Public approval design fetch failed")
+            raise HTTPException(404, "File design tidak ditemukan")
+        filename = file.get("name") or "design.pdf"
+        return Response(
+            content=data,
+            media_type=media,
+            headers=_design_disposition_headers(filename),
+        )
 
     @router.post("/public/customer-approval/{token}/submit")
     async def public_submit(token: str, payload: PublicSubmitPayload):
@@ -601,7 +715,7 @@ def build_router(deps):
                               "design_version": rec.get("design_version")},
                        note=note or "")
         settings = await get_settings()
-        return {"view": _public_view(rec, order, settings, True)}
+        return {"view": _public_view(rec, order, settings, True, token=token)}
 
     # ------ Order-side: invalidate on new design upload ------
     async def invalidate_on_design_reupload(order: dict, actor: dict) -> Optional[dict]:

@@ -393,6 +393,10 @@ export const api = {
     if (!r.ok) throw { response: { status: r.status, data: d } };
     return d;
   },
+  publicCustomerApprovalDesignUrl: (token) => {
+    if (!token) return "";
+    return `${API}/public/customer-approval/${encodeURIComponent(token)}/design`;
+  },
   publicCustomerApprovalSubmit: async (token, payload) => {
     const r = await fetch(`${API}/public/customer-approval/${encodeURIComponent(token)}/submit`, {
       method: "POST",
