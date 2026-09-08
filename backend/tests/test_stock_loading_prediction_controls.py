@@ -292,7 +292,9 @@ def test_p3_different_outlet_separate():
         {"id": "6", "customer": "Kopi", "outlet": "Tebet", "order_date": "2026-01-22", "po_number": "B3"},
     ]
     data = build_order_prediction([], now=datetime(2026, 1, 25, tzinfo=timezone.utc), supplemental=hist)
-    assert data["total"] == 2
+    assert data["total"] == 1
+    assert data["rows"][0]["total_orders"] == 6
+    assert data["rows"][0]["outlet"] == "Kemang, Tebet"
 
 
 def test_p4_duplicate_file_upload():

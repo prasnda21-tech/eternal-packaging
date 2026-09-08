@@ -12,6 +12,16 @@ from statistics import mean, median, stdev
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import quote, unquote
 
+from services.customer_identity import (
+    CustomerIdentityContext,
+    build_identity_context,
+    collect_outlet_names,
+    display_customer_name,
+    extract_stable_customer_id,
+    format_outlet_label,
+    resolve_customer_identity,
+)
+
 WIB = timezone(timedelta(hours=7))
 
 PERM_VIEW = "reports.order_prediction.view"
@@ -192,7 +202,7 @@ def normalize_name(value: Any) -> str:
 
 
 def _customer_name(order: dict) -> str:
-    return str(order.get("customer") or order.get("customer_name") or "").strip()
+    return display_customer_name(order)
 
 
 def _outlet_name(order: dict) -> str:
@@ -200,8 +210,7 @@ def _outlet_name(order: dict) -> str:
 
 
 def _customer_id(order: dict) -> Optional[str]:
-    text = str(order.get("customer_id") or "").strip()
-    return text or None
+    return extract_stable_customer_id(order)
 
 
 def _outlet_id(order: dict) -> Optional[str]:
@@ -213,17 +222,9 @@ def _sales_name(order: dict) -> str:
     return str(order.get("sales") or order.get("sales_user") or order.get("seller") or "").strip()
 
 
-def customer_group_key(order: dict) -> str:
-    """Stable identity: customer_id + outlet_id, else normalized names."""
-    cid = _customer_id(order)
-    oid = _outlet_id(order)
-    cname = normalize_name(_customer_name(order))
-    oname = normalize_name(_outlet_name(order))
-    if cid and oid:
-        return f"id:{cid}|oid:{oid}"
-    if cid:
-        return f"id:{cid}|out:{oname}"
-    return f"name:{cname}|out:{oname}"
+def customer_group_key(order: dict, context: Optional[CustomerIdentityContext] = None) -> str:
+    """Logical customer identity only. Outlet is never part of the key."""
+    return resolve_customer_identity(order, context).key
 
 
 def encode_customer_key(key: str) -> str:
@@ -401,7 +402,13 @@ def annotate_history(orders: Sequence[dict]) -> List[dict]:
     return rows
 
 
-def analyze_group(orders: Sequence[dict], today: date) -> dict:
+def analyze_group(
+    orders: Sequence[dict],
+    today: date,
+    *,
+    context: Optional[CustomerIdentityContext] = None,
+    customer_key: str = "",
+) -> dict:
     dated = []
     for o in orders:
         d = order_date_of(o)
@@ -426,9 +433,11 @@ def analyze_group(orders: Sequence[dict], today: date) -> dict:
     orders_90 = sum(1 for d in dates if d >= lookback)
 
     sample = src[-1] if src else {}
-    key = customer_group_key(sample) if sample else ""
-    customer = _customer_name(sample)
-    outlet = _outlet_name(sample)
+    resolved = resolve_customer_identity(sample, context) if sample else None
+    key = customer_key or (resolved.key if resolved else "")
+    customer = (resolved.display_name if resolved else "") or _customer_name(sample)
+    outlets = collect_outlet_names(src)
+    outlet = format_outlet_label(src)
     sales_values = sorted({_sales_name(o) for o in src if _sales_name(o)})
 
     pred_mid = None
@@ -464,8 +473,10 @@ def analyze_group(orders: Sequence[dict], today: date) -> dict:
         "customer_key": key,
         "customer": customer,
         "outlet": outlet,
-        "customer_id": _customer_id(sample),
-        "outlet_id": _outlet_id(sample),
+        "outlets": outlets,
+        "customer_id": (resolved.stable_id if resolved else None) or _customer_id(sample),
+        "outlet_id": None,
+        "identity_ambiguous": bool(resolved.ambiguous) if resolved else False,
         "sales": sales_values[0] if len(sales_values) == 1 else None,
         "sales_values": sales_values,
         "total_orders": total,
@@ -635,6 +646,8 @@ def build_order_prediction(
     skip: int = 0,
     limit: int = 500,
     supplemental: Optional[Sequence[dict]] = None,
+    masters: Optional[Sequence[dict]] = None,
+    identity_context: Optional[CustomerIdentityContext] = None,
 ) -> dict:
     today = wib_today(now)
     from services.order_prediction_import import merge_prediction_orders
@@ -648,11 +661,18 @@ def build_order_prediction(
             o.setdefault("source", "ORDER MASUK")
 
     valid = [o for o in combined if is_valid_business_order(o)]
+    context = identity_context or build_identity_context(masters, valid, [])
     groups: Dict[str, List[dict]] = {}
     for o in valid:
-        groups.setdefault(customer_group_key(o), []).append(o)
+        key = customer_group_key(o, context)
+        if not key:
+            continue
+        groups.setdefault(key, []).append(o)
 
-    analyzed = [analyze_group(items, today) for items in groups.values()]
+    analyzed = [
+        analyze_group(items, today, context=context, customer_key=key)
+        for key, items in groups.items()
+    ]
     analyzed = sort_rows(analyzed)
     summary = summarize(analyzed)
     sales_options = collect_sales_options(analyzed)
@@ -698,6 +718,8 @@ def build_order_prediction_detail(
     *,
     now: Optional[datetime] = None,
     supplemental: Optional[Sequence[dict]] = None,
+    masters: Optional[Sequence[dict]] = None,
+    identity_context: Optional[CustomerIdentityContext] = None,
 ) -> Optional[dict]:
     today = wib_today(now)
     from services.order_prediction_import import merge_prediction_orders
@@ -710,16 +732,16 @@ def build_order_prediction_detail(
             o.setdefault("history_source", "ORDER MASUK")
             o.setdefault("source", "ORDER MASUK")
 
+    valid = [o for o in combined if is_valid_business_order(o)]
+    context = identity_context or build_identity_context(masters, valid, [])
     key = decode_customer_key(customer_key)
     grouped: List[dict] = []
-    for o in combined:
-        if not is_valid_business_order(o):
-            continue
-        if customer_group_key(o) == key:
+    for o in valid:
+        if customer_group_key(o, context) == key:
             grouped.append(o)
     if not grouped:
         return None
-    row = analyze_group(grouped, today)
+    row = analyze_group(grouped, today, context=context, customer_key=key)
     return {
         "as_of": today.isoformat(),
         "parameters": report_parameters(),

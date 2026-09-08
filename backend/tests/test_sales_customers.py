@@ -507,3 +507,114 @@ async def test_ensure_sales_customer_indexes_raises_on_failure(monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         await ensure_sales_customer_indexes(MockDB())
     assert "Failed to ensure unique index" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_unified_sales_customers_read_model_and_zero_write():
+    import server
+    from services.sales_customers import list_unified_sales_customers
+    from services.order_prediction_import import COLLECTION as HISTORY_COLLECTION
+
+    await ensure_sales_customer_indexes(server.db)
+    suffix = uuid.uuid4().hex[:8]
+    master_name = f"Master Only {suffix}"
+    live_name = f"Live PO Only {suffix}"
+    hist_name = f"History Only {suffix}"
+    linked_name = f"Linked Mix {suffix}"
+    amb_name = f"Ambigu Nama {suffix}"
+    master_id = f"id-master-{suffix}"
+    linked_id = f"id-linked-{suffix}"
+    amb_a = f"id-amb-a-{suffix}"
+    amb_b = f"id-amb-b-{suffix}"
+    order_live_id = f"ord-live-{suffix}"
+    order_linked_id = f"ord-linked-{suffix}"
+    order_amb_a = f"ord-amb-a-{suffix}"
+    order_amb_b = f"ord-amb-b-{suffix}"
+    hist_id = f"hist-only-{suffix}"
+    hist_mix_id = f"hist-mix-{suffix}"
+    outlet_only_id = f"ord-outlet-{suffix}"
+
+    await server.db[COLLECTION].insert_many([
+        {"id": master_id, "name": master_name, "normalized_name": normalize_customer_name(master_name), "phone": "0811", "address": "Jl Master", "pic": "", "email": "", "city": "", "notes": ""},
+        {"id": linked_id, "name": linked_name, "normalized_name": normalize_customer_name(linked_name), "phone": "0822", "address": "Jl Mix", "pic": "", "email": "", "city": "", "notes": ""},
+        {"id": amb_a, "name": amb_name, "normalized_name": normalize_customer_name(amb_name) + "-a-unique-skip", "phone": "1", "address": "-", "pic": "", "email": "", "city": "", "notes": ""},
+        {"id": amb_b, "name": amb_name, "normalized_name": normalize_customer_name(amb_name) + "-b-unique-skip", "phone": "2", "address": "-", "pic": "", "email": "", "city": "", "notes": ""},
+    ])
+    # Force same display name on two master-like order identities (not unique master index)
+    await server.db.orders.insert_many([
+        {"id": order_live_id, "po_number": f"PO-LIVE-{suffix}", "customer": live_name, "customer_id": None, "outlet": "Yogyakarta", "cancelled": False},
+        {"id": order_linked_id, "po_number": f"PO-LINK-{suffix}", "customer": linked_name, "customer_id": linked_id, "outlet": "Yogyakarta", "cancelled": False},
+        {"id": order_amb_a, "po_number": f"PO-AMB-A-{suffix}", "customer": amb_name, "customer_id": amb_a, "outlet": "Yogyakarta", "cancelled": False},
+        {"id": order_amb_b, "po_number": f"PO-AMB-B-{suffix}", "customer": amb_name, "customer_id": amb_b, "outlet": "Yogyakarta", "cancelled": False},
+        {"id": outlet_only_id, "po_number": f"PO-OUT-{suffix}", "customer": "", "customer_name": "", "outlet": "Yogyakarta", "cancelled": False},
+    ])
+    await server.db[HISTORY_COLLECTION].insert_many([
+        {"id": hist_id, "customer": hist_name, "customer_name": hist_name, "customer_id": None, "outlet": "Solo", "order_date": "2026-01-01", "cancelled": False},
+        {"id": hist_mix_id, "customer": linked_name, "customer_name": linked_name, "customer_id": f"{linked_name}|Yogyakarta", "outlet": "Yogyakarta", "order_date": "2025-12-01", "cancelled": False},
+    ])
+
+    before_master = await server.db[COLLECTION].count_documents({})
+    before_orders = await server.db.orders.count_documents({})
+    before_hist = await server.db[HISTORY_COLLECTION].count_documents({})
+
+    app.dependency_overrides[current_user] = lambda: {
+        "email": "admin@eternalpackaging.com",
+        "name": "Admin",
+        "role": "admin",
+    }
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r_default = await client.get("/api/sales-customers", params={"q": suffix})
+            assert r_default.status_code == 200
+            default_names = {c["name"] for c in r_default.json()["customers"]}
+            assert master_name in default_names
+            assert live_name not in default_names
+            assert hist_name not in default_names
+
+            r = await client.get("/api/sales-customers", params={"view": "unified", "q": suffix})
+            assert r.status_code == 200
+            rows = r.json()["customers"]
+            by_name = {}
+            for row in rows:
+                by_name.setdefault(row["name"], []).append(row)
+
+            assert len(by_name[master_name]) == 1
+            assert by_name[master_name][0]["is_master"] is True
+            assert by_name[master_name][0]["source"] == "master"
+
+            assert len(by_name[live_name]) == 1
+            assert by_name[live_name][0]["is_master"] is False
+            assert by_name[live_name][0]["source"] == "live_po"
+            assert by_name[live_name][0]["id"] is None
+            assert by_name[live_name][0]["phone"] == ""
+
+            assert len(by_name[hist_name]) == 1
+            assert by_name[hist_name][0]["source"] == "prediction_history"
+            assert by_name[hist_name][0]["is_master"] is False
+
+            assert len(by_name[linked_name]) == 1
+            assert by_name[linked_name][0]["is_master"] is True
+            assert by_name[linked_name][0]["id"] == linked_id
+            assert by_name[linked_name][0]["source"] == "mixed"
+
+            assert len(by_name[amb_name]) == 2
+            assert {row["id"] for row in by_name[amb_name]} == {amb_a, amb_b}
+
+            assert not any(row.get("name") == "Yogyakarta" for row in rows)
+            assert not any((row.get("name") or "") == "" for row in rows)
+
+            after_master = await server.db[COLLECTION].count_documents({})
+            after_orders = await server.db.orders.count_documents({})
+            after_hist = await server.db[HISTORY_COLLECTION].count_documents({})
+            assert after_master == before_master
+            assert after_orders == before_orders
+            assert after_hist == before_hist
+
+            unified_direct = await list_unified_sales_customers(server.db, q=suffix)
+            assert len(unified_direct) == len(rows)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db[COLLECTION].delete_many({"id": {"$in": [master_id, linked_id, amb_a, amb_b]}})
+        await server.db.orders.delete_many({"id": {"$in": [order_live_id, order_linked_id, order_amb_a, order_amb_b, outlet_only_id]}})
+        await server.db[HISTORY_COLLECTION].delete_many({"id": {"$in": [hist_id, hist_mix_id]}})

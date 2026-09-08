@@ -53,6 +53,7 @@ export default function DataPelanggan() {
       if (searchQuery.trim()) {
         params.q = searchQuery.trim();
       }
+      params.view = "unified";
       const data = await api.listSalesCustomers(params);
       setCustomers(data.customers || []);
     } catch (err) {
@@ -74,7 +75,17 @@ export default function DataPelanggan() {
     setModalOpen(true);
   };
 
+  const isPersistedMaster = (cust) => Boolean(cust?.is_master) && Boolean(cust?.id);
+
+  const sourceLabel = (cust) => {
+    if (isPersistedMaster(cust)) return cust.source === "mixed" ? "Master" : "Master";
+    if (cust?.source === "prediction_history") return "Ditemukan dari Histori";
+    if (cust?.source === "live_po") return "Ditemukan dari PO";
+    return "Ditemukan dari PO/Histori";
+  };
+
   const handleOpenEdit = (cust) => {
+    if (!isPersistedMaster(cust)) return;
     setEditingCustomer(cust);
     setFormData({
       name: cust.name || "",
@@ -130,6 +141,10 @@ export default function DataPelanggan() {
       };
 
       if (editingCustomer) {
+        if (!isPersistedMaster(editingCustomer)) {
+          setFormError("Pelanggan ditemukan dari PO/histori belum bisa diedit di master.");
+          return;
+        }
         await api.updateSalesCustomer(editingCustomer.id, payload);
         setSuccessMsg("Data pelanggan berhasil diperbarui!");
       } else {
@@ -412,8 +427,8 @@ export default function DataPelanggan() {
               <tbody>
                 {filteredCustomers.map((cust) => (
                   <tr
-                    key={cust.id}
-                    data-testid={`customer-row-${cust.id}`}
+                    key={cust.customer_key || cust.id}
+                    data-testid={`customer-row-${cust.customer_key || cust.id}`}
                     style={{
                       borderBottom: "1px solid #f1f5f9",
                       transition: "background 0.1s ease",
@@ -422,9 +437,25 @@ export default function DataPelanggan() {
                     onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                   >
                     <td style={{ padding: "14px 16px", fontWeight: 600, color: "#0f172a" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <Building size={16} color="#64748b" />
                         <span>{cust.name}</span>
+                        <span
+                          data-testid={`customer-source-${cust.customer_key || cust.id}`}
+                          title={cust.source || ""}
+                          style={{
+                            fontSize: "0.7rem",
+                            fontWeight: 600,
+                            letterSpacing: "0.02em",
+                            padding: "2px 7px",
+                            borderRadius: 999,
+                            backgroundColor: isPersistedMaster(cust) ? "#ecfdf5" : "#f1f5f9",
+                            color: isPersistedMaster(cust) ? "#047857" : "#475569",
+                            border: `1px solid ${isPersistedMaster(cust) ? "#a7f3d0" : "#cbd5e1"}`,
+                          }}
+                        >
+                          {sourceLabel(cust)}
+                        </span>
                       </div>
                     </td>
                     <td style={{ padding: "14px 16px", color: "#334155" }}>
@@ -503,7 +534,7 @@ export default function DataPelanggan() {
                       {cust.notes || "—"}
                     </td>
                     <td style={{ padding: "14px 16px", textAlign: "center" }}>
-                      {canManage && (
+                      {canManage && isPersistedMaster(cust) && (
                         <button
                           type="button"
                           onClick={() => handleOpenEdit(cust)}

@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from services.import_parser import ImportParseError
 from services.order_prediction_import import (
     build_history_import_preview,
+    imported_customer_id_is_legacy_composite,
     read_history_rows,
     validate_history_apply_rows,
 )
@@ -254,6 +255,31 @@ def test_missing_history_headers_raises_clear_error():
             data, "bad.xlsx", live_orders=[], existing_imports=[], now=NOW,
         )
     assert "sheet" in str(ei.value).lower() or "header" in str(ei.value).lower() or "histori" in str(ei.value).lower()
+
+
+def test_template_auto_id_is_legacy_composite():
+    assert imported_customer_id_is_legacy_composite(
+        "KEDAI TUMAN|Yogyakarta", customer="KEDAI TUMAN", outlet="Yogyakarta",
+    )
+    assert imported_customer_id_is_legacy_composite(
+        "Kopi Nusantara|Kemang", customer="Kopi Nusantara", outlet="Kemang",
+    )
+    assert imported_customer_id_is_legacy_composite("KEDAI TUMAN|Yogyakarta")
+    assert not imported_customer_id_is_legacy_composite("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    assert not imported_customer_id_is_legacy_composite("CUST-001")
+    preview = build_history_import_preview(
+        (
+            "Nama Customer,Cabang,ID Customer (Otomatis),Tanggal Order\n"
+            "KEDAI TUMAN,Yogyakarta,KEDAI TUMAN|Yogyakarta,10/08/2026\n"
+        ).encode("utf-8"),
+        "tuman.csv",
+        live_orders=[],
+        existing_imports=[],
+        now=NOW,
+    )
+    assert preview["rows"][0]["status"] == "VALID"
+    assert preview["rows"][0]["customer_id"] == "KEDAI TUMAN|Yogyakarta"
+    assert imported_customer_id_is_legacy_composite(preview["rows"][0]["customer_id"])
 
 
 def test_apply_selected_only():

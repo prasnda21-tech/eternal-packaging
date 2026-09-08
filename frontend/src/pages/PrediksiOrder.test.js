@@ -36,6 +36,8 @@ describe("Prediksi Order page", () => {
     expect(src).toMatch(/prediksi-filter-pattern/);
     expect(src).toMatch(/prediksi-detail/);
     expect(src).toMatch(/prediksi-detail-history/);
+    expect(src).toMatch(/prediksi-detail-outlet/);
+    expect(src).toMatch(/textOverflow/);
     expect(src).toMatch(/prediksi-tab-orders/);
     expect(src).toMatch(/prediksi-refresh/);
   });

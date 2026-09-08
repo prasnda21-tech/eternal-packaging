@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from services.import_parser import ImportParseError
+from services.customer_identity import is_legacy_composite_customer_id
 from services.order_prediction import (
     WIB,
     normalize_name,
@@ -25,6 +26,11 @@ PERM_IMPORT = "reports.order_prediction.import"
 COLLECTION = "order_prediction_history"
 SOURCE_LIVE = "ORDER MASUK"
 SOURCE_IMPORT = "IMPORT HISTORIS"
+
+
+def imported_customer_id_is_legacy_composite(value, customer: str = "", outlet: str = "") -> bool:
+    """Read-time classifier. Does not rewrite stored import documents."""
+    return is_legacy_composite_customer_id(value, customer=customer, outlet=outlet)
 
 PREFERRED_SHEET = "DATA_ORDER"
 _EMPTY_STREAK_LIMIT = 40
