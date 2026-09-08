@@ -34,9 +34,13 @@ export function resolvePublicApprovalDesignUrl(token, designFile, { apiBase, sta
     const origin = String(apiBase).replace(/\/api\/?$/, "");
     return `${origin}${relative}`;
   }
-  if (!apiBase) return "";
-  const base = String(apiBase).replace(/\/$/, "");
-  return `${base}/public/customer-approval/${encodeURIComponent(token)}/design`;
+  if (relative) return relative;
+  if (fallback) return fallback;
+  if (apiBase) {
+    const base = String(apiBase).replace(/\/$/, "");
+    return `${base}/public/customer-approval/${encodeURIComponent(token)}/design`;
+  }
+  return `/api/public/customer-approval/${encodeURIComponent(token)}/design`;
 }
 
 export function resolvePublicApprovalDesignDownloadUrl(token, designFile, options = {}) {

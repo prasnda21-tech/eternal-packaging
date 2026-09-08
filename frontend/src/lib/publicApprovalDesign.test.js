@@ -39,6 +39,23 @@ describe("public approval design URL", () => {
     expect(url).toBe("http://localhost:8000/api/public/customer-approval/tok-abc/design");
   });
 
+  test("resolves relative fallbackUrl or view_url without apiBase in production proxy mode", () => {
+    const fromFallback = resolvePublicApprovalDesignUrl("tok-abc", file, {
+      status: "active",
+      fallbackUrl: "/api/public/customer-approval/tok-abc/design",
+    });
+    expect(fromFallback).toBe("/api/public/customer-approval/tok-abc/design");
+
+    const fromView = resolvePublicApprovalDesignUrl("tok-abc", {
+      ...file,
+      view_url: "/api/public/customer-approval/tok-abc/design",
+    }, { status: "active" });
+    expect(fromView).toBe("/api/public/customer-approval/tok-abc/design");
+
+    const fromDefault = resolvePublicApprovalDesignUrl("tok-abc", file, { status: "active" });
+    expect(fromDefault).toBe("/api/public/customer-approval/tok-abc/design");
+  });
+
   test("does not fall back to empty data_url", () => {
     const url = resolvePublicApprovalDesignUrl("tok-abc", { ...file, data_url: null }, {
       apiBase: "http://localhost:8000/api",

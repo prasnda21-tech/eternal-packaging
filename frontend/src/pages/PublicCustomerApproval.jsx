@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { CheckCircle2, XCircle, AlertTriangle, Clock, FileText } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, Clock, FileText, Download, ExternalLink, Eye, EyeOff } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 import SignaturePad from "../components/SignaturePad";
@@ -282,7 +282,7 @@ export default function PublicCustomerApproval() {
                 return <img src={previewSrc} alt={file.name} data-testid="public-approval-design-image" />;
               }
               if (isPdf) {
-                const canOpenPdf = canOpenPublicApprovalDesign(view.status) && !!designUrl;
+                const canOpenPdf = canOpenPublicApprovalDesign(view.status);
                 const effectivePdfSrc = pdfBlobUrl || designUrl;
                 const showInlineViewer = !compactPdf && canOpenPdf && showInline && !pdfLoadErr;
                 return (
@@ -341,16 +341,23 @@ export default function PublicCustomerApproval() {
 
                     {canOpenPdf && (
                       <div className="design-pdf-actions" data-testid="public-approval-design-pdf-actions">
-                        {!compactPdf && (
-                          <button
-                            type="button"
-                            className="ghost sm design-pdf-toggle"
-                            onClick={() => setShowInline((prev) => !prev)}
-                            data-testid="public-approval-design-pdf-toggle"
-                          >
-                            {showInline && !pdfLoadErr ? "Tutup Preview" : "Lihat PDF"}
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          className="ghost sm design-pdf-toggle"
+                          onClick={() => {
+                            if (showInlineViewer) {
+                              setShowInline(false);
+                            } else {
+                              setShowInline(true);
+                              setPdfLoadErr(false);
+                              setCompactPdf(false);
+                            }
+                          }}
+                          data-testid="public-approval-design-pdf-toggle"
+                        >
+                          {showInlineViewer ? <EyeOff size={14} /> : <Eye size={14} />}
+                          <span>{showInlineViewer ? "Tutup Preview" : "Lihat PDF"}</span>
+                        </button>
                         <a
                           href={designUrl}
                           target="_blank"
@@ -358,7 +365,8 @@ export default function PublicCustomerApproval() {
                           className="ghost sm design-pdf-open"
                           data-testid="public-approval-design-pdf-open"
                         >
-                          Buka Design PDF
+                          <ExternalLink size={14} />
+                          <span>Buka di Tab Baru</span>
                         </a>
                         <a
                           href={downloadUrl}
@@ -366,7 +374,8 @@ export default function PublicCustomerApproval() {
                           className="ghost sm design-pdf-download"
                           data-testid="public-approval-design-pdf-download"
                         >
-                          Download PDF
+                          <Download size={14} />
+                          <span>Download PDF</span>
                         </a>
                       </div>
                     )}
