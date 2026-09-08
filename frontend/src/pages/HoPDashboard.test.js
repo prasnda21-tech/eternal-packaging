@@ -56,7 +56,7 @@ describe("Dashboard auth-state contracts", () => {
 
   test("TEST 3 — unauthenticated keeps existing login redirect", () => {
     expect(appSrc).toMatch(/if \(loading\) return <div className="loading">Memuat\.\.\.<\/div>/);
-    expect(appSrc).toMatch(/if \(!user\) return <Navigate to="\/login" replace \/>/);
+    expect(appSrc).toMatch(/if \(!user\) return <Navigate to=\{loginPathForLocation\(location\.pathname, location\.search\)\} replace \/>/);
     expect(src).toMatch(/if \(pageView === "unauthenticated"\) return null/);
     expect(src).not.toMatch(/Silakan masuk terlebih dahulu/);
   });
