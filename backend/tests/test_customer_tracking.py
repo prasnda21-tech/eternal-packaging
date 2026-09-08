@@ -61,6 +61,7 @@ class TestPublicPayload:
         assert set(payload.keys()) <= {
             "order_number", "customer_name", "workflow", "delivery_proofs", "delivery_history",
             "delivery_reschedule", "documents", "shipments_evidence",
+            "summary", "design_approval",
         }
         assert payload["order_number"] == "PO/2026/TEST-A"
         assert payload["customer_name"] == "PT Contoh"
@@ -105,7 +106,8 @@ class TestPublicPayload:
         blob = json.dumps(payload)
         assert "employee" not in blob.lower()
         assert "alice@" not in blob
-        assert "qty" not in blob.lower()
+        assert "qty_" not in blob.lower()
+        assert "qty_packed" not in blob.lower()
         assert "price" not in blob.lower()
         assert "stock" not in blob.lower()
         assert "accurate" not in blob.lower()
@@ -139,6 +141,63 @@ class TestPublicPayload:
             assert set(p.keys()) <= {"id", "url", "shipment_id"}
             assert p["url"].startswith("/api/public/tracking/")
             assert "/proofs/" in p["url"]
+        assert is_public_payload_safe(payload)
+
+    def test_design_approval_omitted_when_no_link(self):
+        payload = public_payload(_print_po(), token="tok-public-aaaaaaaaaaaaaaaa")
+        assert "design_approval" not in payload
+        assert is_public_payload_safe(payload)
+
+    def test_design_approval_cta_uses_existing_path_without_raw_token(self):
+        payload = public_payload(_print_po(
+            tracking_token="tok-public-aaaaaaaaaaaaaaaa",
+            customer_approval={
+                "approval_id": "appr-1",
+                "status": "active",
+                "design_version": "df-1",
+            },
+            design_files=[{
+                "id": "df-1",
+                "name": "art.png",
+                "content_type": "image/png",
+                "storage_path": "internal/secret.png",
+            }],
+        ), token="tok-public-aaaaaaaaaaaaaaaa")
+        assert payload["design_approval"]["status"] == "active"
+        assert payload["design_approval"]["path"] == "/customer/design-approval/tok-public-aaaaaaaaaaaaaaaa"
+        assert payload["design_approval"]["preview_url"].endswith("/design")
+        blob = json.dumps(payload)
+        assert "appr-1" not in blob
+        assert "token_hash" not in blob
+        assert "internal/secret" not in blob
+        assert is_public_payload_safe(payload)
+
+    def test_design_approval_completed_has_no_cta_path(self):
+        payload = public_payload(_print_po(
+            customer_approval={"approval_id": "appr-1", "status": "approved"},
+        ), token="tok-public-aaaaaaaaaaaaaaaa")
+        assert payload["design_approval"]["status"] == "approved"
+        assert "path" not in payload["design_approval"]
+        assert is_public_payload_safe(payload)
+
+    def test_summary_keeps_same_name_lines_distinct(self):
+        payload = public_payload(_print_po(
+            line_items=[
+                {"name": "Kaos", "quantity": 100, "unit": "pcs", "line_id": "L1"},
+                {"name": "Kaos", "quantity": 50, "unit": "pcs", "line_id": "L2"},
+            ],
+            order_date="2026-01-02",
+            deadline="2026-01-20",
+            outlet="Yogyakarta",
+        ))
+        items = payload["summary"]["items"]
+        assert len(items) == 2
+        assert items[0]["quantity"] == 100
+        assert items[1]["quantity"] == 50
+        blob = json.dumps(payload)
+        assert "L1" not in blob
+        assert "line_id" not in blob
+        assert payload["summary"]["outlet"] == "Yogyakarta"
         assert is_public_payload_safe(payload)
 
 
@@ -284,3 +343,16 @@ def test_workflow_uses_shared_stage_rows():
     text = src.read_text(encoding="utf-8")
     assert "workflow_stage_rows" in text
     assert "idx < current_stage" not in text
+    get_block = text.split("async def public_tracking")[1].split("async def ")[0]
+    assert "update_one" not in get_block
+    assert "insert_one" not in get_block
+    assert "generate" not in get_block.lower()
+
+
+def test_approval_lookup_reuses_tracking_token_without_generate():
+    src = Path(__file__).resolve().parents[1] / "customer_approval.py"
+    text = src.read_text(encoding="utf-8")
+    assert 'find_one({"tracking_token": token}' in text or "tracking_token\": token" in text
+    load = text.split("async def _load_by_token")[1].split("async def ")[0]
+    assert "token_urlsafe" not in load
+    assert "insert_one" not in load
