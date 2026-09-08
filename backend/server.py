@@ -2716,6 +2716,10 @@ async def work_division_tasks(
         if email:
             query["operator_splits.operator_email"] = email
     raw = await db.orders.find(query, _DIVISION_TASK_PROJECTION).to_list(1000)
+    dd_settings = await _get_delivery_deadline_settings()
+    lead_days = dd_settings["lead_time_days"]
+    for o in raw:
+        _attach_deadline_snapshot(o, lead_days)
     tasks = _build_division_tasks(raw, div, user, mine_only=mine_only)
     return {
         "division": div,

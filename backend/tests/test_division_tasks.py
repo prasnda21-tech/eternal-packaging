@@ -13,6 +13,7 @@ from services.division_tasks import (
     build_kepala_produksi_tasks,
     build_operator_tasks,
     build_packing_tasks,
+    build_screener_tasks,
     build_surat_jalan_tasks,
     can_view_all_division,
     resolve_division,
@@ -388,3 +389,123 @@ def test_kepala_produksi_same_name_lines_not_merged():
     assert rows[0]["completed_qty"] == 4000
     assert rows[0]["remaining_qty"] == 1000
     assert rows[0]["completed_qty"] != 2000
+
+
+def test_operator_split_exposes_exact_work_date_and_name():
+    o = _print_po(operator_splits=[
+        {
+            "id": "sBudi",
+            "line_idx": 0,
+            "operator_email": "budi@x.com",
+            "operator_name": "Budi",
+            "quantity": 4000,
+            "qty_completed": 1500,
+            "work_date": "2026-09-08",
+        },
+        {
+            "id": "sAndi",
+            "line_idx": 0,
+            "operator_email": "andi@x.com",
+            "operator_name": "Andi",
+            "quantity": 1000,
+            "qty_completed": 0,
+            "work_date": "2026-09-10",
+        },
+    ])
+    rows = build_operator_tasks(o, {"email": "budi@x.com"}, mine_only=True)
+    assert len(rows) == 1
+    assert rows[0]["work_date"] == "2026-09-08"
+    assert rows[0]["assigned_user_name"] == "Budi"
+    assert rows[0]["operator_names"] == ["Budi"]
+    assert rows[0]["order_number"] == "PO-001"
+    assert rows[0]["line_idx"] == 0
+    assert rows[0]["line_id"] == "L1"
+
+
+def test_line_level_operators_stay_on_same_line_identity():
+    o = _print_po(
+        operator_splits=[
+            {"id": "a", "line_idx": 0, "operator_name": "Budi", "quantity": 5000, "work_date": "2026-09-08"},
+            {"id": "b", "line_idx": 1, "operator_name": "Sari", "quantity": 3000, "work_date": "2026-09-10"},
+        ],
+        helper_prep={"items": [
+            {"line_idx": 0, "qty_prepared": 1000},
+            {"line_idx": 1, "qty_prepared": 500},
+        ]},
+    )
+    rows = build_helper_tasks(o)
+    by = {r["line_idx"]: r for r in rows}
+    assert by[0]["item"] == by[1]["item"] == "Cup A"
+    assert by[0]["line_id"] == "L1"
+    assert by[1]["line_id"] == "L2"
+    assert by[0]["operator_names"] == ["Budi"]
+    assert by[1]["operator_names"] == ["Sari"]
+    assert by[0]["work_date"] == "2026-09-08"
+    assert by[1]["work_date"] == "2026-09-10"
+    assert "Sari" not in by[0]["operator_names"]
+    assert "Budi" not in by[1]["operator_names"]
+
+
+def test_po_level_uses_order_work_date_and_deadline_snapshot_fields():
+    o = _print_po(
+        work_date="2026-09-08",
+        delivery_deadline_effective="2026-09-09T03:00:00+00:00",
+        delivery_deadline_source="automatic",
+        delivery_deadline_status="overdue",
+    )
+    rows = build_screener_tasks(o)
+    assert len(rows) == 1
+    assert rows[0]["line_idx"] is None
+    assert rows[0]["work_date"] == "2026-09-08"
+    assert rows[0]["delivery_deadline"] == "2026-09-09T03:00:00+00:00"
+    assert rows[0]["delivery_deadline_source"] == "automatic"
+    assert set(rows[0]["operator_names"]) == {"Budi", "Andi"}
+
+
+def test_delivery_deadline_is_not_invented():
+    o = _print_po()
+    row = build_screener_tasks(o)[0]
+    assert row["delivery_deadline"] is None
+    assert row["work_date"] is None
+
+
+def test_existing_task_fields_remain_after_enrichment():
+    o = _print_po()
+    row = build_operator_tasks(o, {"email": "budi@x.com"}, mine_only=True)[0]
+    for key in (
+        "task_id", "order_id", "order_number", "customer_name", "line_id", "line_idx",
+        "item", "assigned_user_name", "assigned_user_email", "target_qty", "completed_qty",
+        "status", "status_label", "required_input",
+    ):
+        assert key in row
+
+
+def test_enrichment_does_not_change_task_eligibility_count():
+    o = _print_po()
+    before = len(build_operator_tasks(o, {"email": "budi@x.com"}, mine_only=True))
+    o["operator_splits"][0]["work_date"] = "2026-09-08"
+    o["delivery_deadline_effective"] = "2026-09-09T00:00:00+00:00"
+    after = len(build_operator_tasks(o, {"email": "budi@x.com"}, mine_only=True))
+    assert before == after == 1
+
+
+def test_projection_includes_schedule_read_fields_not_blobs():
+    assert "work_date" in TASK_PROJECTION
+    assert "delivery_deadline_manual" in TASK_PROJECTION
+    assert "design_approved_at" in TASK_PROJECTION
+    joined = " ".join(str(k) for k in TASK_PROJECTION)
+    assert "data_url" not in joined
+    assert "signature" not in joined
+
+
+def test_division_tasks_endpoint_is_read_only():
+    src = Path(__file__).resolve().parents[1].joinpath("server.py").read_text(encoding="utf-8")
+    start = src.index("async def work_division_tasks")
+    end = src.index("\n# ---- Screener info")
+    body = src[start:end]
+    assert "_attach_deadline_snapshot" in body
+    assert "_get_delivery_deadline_settings" in body
+    assert "update_one" not in body
+    assert "insert_one" not in body
+    assert "replace_one" not in body
+    assert ".find(" in body
