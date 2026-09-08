@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/productionScheduleTable";
 import { isScheduledToday } from "../lib/productionScheduleFilters";
 
 describe("ProductionSchedule: Nama Customer column & today yellow cell highlight", () => {
@@ -30,24 +31,13 @@ describe("ProductionSchedule: Nama Customer column & today yellow cell highlight
   ];
 
   test("1. Nama Customer is now the first normal data column in TABLE_COLS", () => {
-    // Extract TABLE_COLS array from source
-    const match = scheduleSrc.match(/const TABLE_COLS = \[([\s\S]*?)\];/);
-    expect(match).toBeTruthy();
-
-    const colsBlock = match[1];
-    const keyMatches = [...colsBlock.matchAll(/key:\s*"([^"]+)"/g)].map((m) => m[1]);
-
-    // Customer must be the first column (index 0)
-    expect(keyMatches[0]).toBe("customer");
-    expect(keyMatches.length).toBe(20);
+    expect(scheduleSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS/);
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS[0].key).toBe("customer");
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(20);
   });
 
   test("2. Every other column remains in its previous relative order exactly", () => {
-    const match = scheduleSrc.match(/const TABLE_COLS = \[([\s\S]*?)\];/);
-    const colsBlock = match[1];
-    const keyMatches = [...colsBlock.matchAll(/key:\s*"([^"]+)"/g)].map((m) => m[1]);
-
-    const otherCols = keyMatches.filter((k) => k !== "customer");
+    const otherCols = PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key).filter((k) => k !== "customer");
     expect(otherCols).toEqual(EXPECTED_OTHER_COLS);
   });
 

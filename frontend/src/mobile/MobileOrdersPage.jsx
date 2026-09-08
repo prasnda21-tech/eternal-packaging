@@ -1,32 +1,55 @@
 import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import api from "../lib/api";
+import { formatApiError } from "../lib/errors";
 import { taskMatchesQuery } from "../lib/divisionTasks";
+import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import MobileTopBar from "./MobileTopBar";
 import MobilePOCard from "./components/MobilePOCard";
+
+export function ordersFromListResponse(payload) {
+  if (Array.isArray(payload?.orders)) return payload.orders;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+export function ordersLoadErrorMessage(err) {
+  const status = err?.response?.status;
+  if (err?.code === "ETIMEDOUT" || err?.code === "ECONNABORTED") {
+    return "Gagal memuat pesanan.";
+  }
+  const msg = formatApiError(err, "Gagal memuat pesanan.");
+  if (status === 403) return msg || "Anda tidak punya akses untuk melihat pesanan.";
+  if (status === 401) return msg || "Sesi berakhir. Silakan masuk kembali.";
+  return msg || "Gagal memuat pesanan.";
+}
 
 export default function MobileOrdersPage() {
   const [orders, setOrders] = useState([]);
   const [q, setQ] = useState("");
   const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    let alive = true;
+    let cancelled = false;
     (async () => {
-      setBusy(true);
+      setLoading(true);
+      setErr("");
       try {
-        const d = await api.listOrders("aktif");
-        const list = Array.isArray(d?.orders) ? d.orders : (Array.isArray(d) ? d : []);
-        if (alive) setOrders(list);
+        const payload = await withTimeout(api.listOrders("aktif"), MOBILE_LOAD_TIMEOUT_MS);
+        if (cancelled) return;
+        setOrders(ordersFromListResponse(payload));
       } catch (e) {
-        if (alive) setErr(e.response?.data?.detail || "Gagal memuat PO.");
+        if (cancelled) return;
+        setOrders([]);
+        setErr(ordersLoadErrorMessage(e));
       } finally {
-        if (alive) setBusy(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-    return () => { alive = false; };
-  }, []);
+    return () => { cancelled = true; };
+  }, [reloadKey]);
 
   const rows = useMemo(() => {
     const list = Array.isArray(orders) ? orders : [];
@@ -52,10 +75,29 @@ export default function MobileOrdersPage() {
             data-testid="mobile-orders-search"
           />
         </label>
-        {busy && !rows.length && <p className="mop-empty">Memuat pesanan...</p>}
-        {err && <div className="mop-error">{err} Coba lagi.</div>}
-        {rows.map((order) => <MobilePOCard key={order.id} order={order} />)}
-        {!busy && !rows.length && !err && <p className="mop-empty">Tidak ada pesanan.</p>}
+        {loading && (
+          <p className="mop-empty" data-testid="mobile-orders-loading">Memuat pesanan...</p>
+        )}
+        {!loading && err && (
+          <div className="mop-error" data-testid="mobile-orders-error">
+            <p>Gagal memuat pesanan.</p>
+            {err !== "Gagal memuat pesanan." ? <p className="mop-card-meta">{err}</p> : null}
+            <button
+              type="button"
+              className="mop-btn-primary"
+              onClick={() => setReloadKey((n) => n + 1)}
+              data-testid="mobile-orders-retry"
+            >
+              Coba Lagi
+            </button>
+          </div>
+        )}
+        {!loading && !err && rows.map((order) => (
+          <MobilePOCard key={order.id || order.po_number} order={order} />
+        ))}
+        {!loading && !err && !rows.length && (
+          <p className="mop-empty" data-testid="mobile-orders-empty">Belum ada pesanan.</p>
+        )}
       </main>
     </>
   );
