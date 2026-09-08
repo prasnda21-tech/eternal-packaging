@@ -44,3 +44,7 @@ class StorageProvider(ABC):
         do a get. Providers should override for efficiency."""
         data, ct = self.get_object(path)
         return {"size": len(data), "content_type": ct}
+
+    def delete_object(self, path: str) -> bool:
+        """Delete exact object at path if supported. Return True if deleted or not found."""
+        return True

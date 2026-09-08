@@ -71,3 +71,16 @@ class EmergentStorageProvider(StorageProvider):
         )
         resp.raise_for_status()
         return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+    def delete_object(self, path: str) -> bool:
+        try:
+            key = self._require_key()
+            resp = requests.delete(
+                f"{self._url()}/objects/{path}",
+                headers={"X-Storage-Key": key},
+                timeout=30,
+            )
+            return resp.status_code in (200, 204, 404)
+        except Exception:
+            logger.warning("Emergent storage delete not available or failed for %s", path)
+            return False

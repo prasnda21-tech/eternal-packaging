@@ -63,4 +63,10 @@ describe("Customer approval public wording", () => {
     expect(src).toMatch(/action === "approve"/);
     expect(src).toMatch(/action === "reject"/);
   });
+
+  test("public approval design page hard lock: never shows delete or hapus button", () => {
+    expect(src).not.toMatch(/Hapus/i);
+    expect(src).not.toMatch(/delete/i);
+  });
+
 });

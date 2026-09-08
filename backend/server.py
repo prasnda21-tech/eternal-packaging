@@ -3,7 +3,7 @@ from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, base64, re, secrets, hashlib
+import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple, Union
@@ -3240,7 +3240,145 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
     return {"order": _strip_sj_bytes(order)}
 
 
+async def _safe_db_call(coro_or_val):
+    if inspect.isawaitable(coro_or_val):
+        return await coro_or_val
+    return None
+
+
+@api_router.delete("/orders/{order_id}/design/files/{file_id}")
+async def delete_design_file(order_id: str, file_id: str, user=Depends(current_user)):
+    """Delete an exact design file attachment from an order.
+
+    Requires design.upload permission.
+    Preserves order, design record, revisions, and approval history.
+    Invalidates any active approval link bound to this exact deleted file.
+    """
+    await _require_perm(user, "design.upload")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+
+    design_files = list(order.get("design_files") or [])
+    target = next((f for f in design_files if isinstance(f, dict) and f.get("id") == file_id), None)
+    if not target:
+        raise HTTPException(404, "File design tidak ditemukan")
+
+    order_snapshot = copy.deepcopy(order)
+    storage_path = str(target.get("storage_path") or "").strip()
+    original_bytes = None
+    original_ct = target.get("content_type") or "application/pdf"
+
+    orig_ca = None
+    try:
+        orig_ca = await _safe_db_call(db.customer_approvals.find_one(
+            {"order_id": order["id"], "design_version": file_id, "status": "active"},
+            {"_id": 0},
+        ))
+    except Exception:
+        pass
+
+    orig_file = None
+    if storage_path:
+        try:
+            orig_file = await _safe_db_call(db.files.find_one({"id": file_id, "order_id": order["id"]}, {"_id": 0}))
+        except Exception:
+            pass
+
+        try:
+            original_bytes, original_ct = obj_storage.get_object(storage_path)
+        except Exception:
+            logger.warning("Could not pre-fetch storage object bytes for %s", storage_path)
+
+        deleted = False
+        try:
+            deleted = bool(obj_storage.delete_object(storage_path))
+        except Exception:
+            logger.exception("Object storage cleanup failed for design file %s", file_id)
+            deleted = False
+        if not deleted:
+            raise HTTPException(500, "Gagal menghapus file design dari storage. Silakan coba lagi.")
+
+    # Protected DB persistence block with full snapshot rollback
+    try:
+        try:
+            inval_res = await _ca_router._invalidate_on_design_file_delete(order, file_id, user)
+            if not orig_ca and inval_res:
+                orig_ca = inval_res
+        except Exception:
+            logger.exception("Gagal invalidate customer approval link on design file delete")
+
+        if storage_path:
+            await _safe_db_call(db.files.update_one(
+                {"id": file_id, "order_id": order["id"]},
+                {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_by": user.get("email")}},
+            ))
+
+        order["design_files"] = [f for f in design_files if not (isinstance(f, dict) and f.get("id") == file_id)]
+        filename = target.get("name") or file_id
+        add_timeline(order, 1, user, note=f"Hapus file design: {filename}")
+        await _persist_order(order)
+        await _audit_po(order, "design.delete_file", user, note=str(filename))
+    except Exception as db_exc:
+        logger.exception("Database update failed during design file delete; executing full rollback")
+        put_ok = True
+        if storage_path and original_bytes:
+            try:
+                obj_storage.put_object(storage_path, original_bytes, original_ct)
+                logger.info("Compensating restore succeeded for storage object %s", storage_path)
+            except Exception:
+                put_ok = False
+                logger.exception("CRITICAL: Compensating storage restore failed for %s", storage_path)
+
+        if orig_ca:
+            try:
+                await _safe_db_call(db.customer_approvals.update_one(
+                    {"id": orig_ca["id"]},
+                    {"$set": {
+                        "status": "active",
+                        "revoke_reason": orig_ca.get("revoke_reason"),
+                        "revoked_by": orig_ca.get("revoked_by"),
+                        "revoked_by_name": orig_ca.get("revoked_by_name"),
+                        "revoked_at": orig_ca.get("revoked_at"),
+                    }},
+                ))
+                logger.info("Compensating restore succeeded for customer approval %s", orig_ca["id"])
+            except Exception:
+                logger.exception("CRITICAL: Failed to restore customer approval %s during rollback", orig_ca["id"])
+
+        if orig_file:
+            try:
+                await _safe_db_call(db.files.update_one(
+                    {"id": file_id, "order_id": order["id"]},
+                    {"$set": {
+                        "is_deleted": orig_file.get("is_deleted", False),
+                        "deleted_at": orig_file.get("deleted_at"),
+                        "deleted_by": orig_file.get("deleted_by"),
+                    }},
+                ))
+                logger.info("Compensating restore succeeded for db.files %s", file_id)
+            except Exception:
+                logger.exception("CRITICAL: Failed to restore db.files %s during rollback", file_id)
+
+        try:
+            to_restore = {k: v for k, v in order_snapshot.items() if k not in _DERIVED_ORDER_KEYS}
+            await _safe_db_call(db.orders.update_one({"id": order["id"]}, {"$set": to_restore}))
+            logger.info("Compensating restore succeeded for order %s", order["id"])
+        except Exception:
+            logger.exception("CRITICAL: Failed to restore order document %s during rollback", order["id"])
+
+        if storage_path and original_bytes and not put_ok:
+            raise HTTPException(500, "CRITICAL: Gagal memperbarui database dan gagal memulihkan file storage. Hubungi administrator sistem.")
+        if isinstance(db_exc, HTTPException):
+            raise
+        raise HTTPException(500, "Gagal memperbarui data order di database. Perubahan dibatalkan dan status telah dipulihkan.")
+
+    return {"order": _strip_sj_bytes(order)}
+
+
 @api_router.get("/orders/{order_id}/surat-jalan/files/{file_id}")
+
 async def download_surat_jalan_file(
     order_id: str,
     file_id: str,

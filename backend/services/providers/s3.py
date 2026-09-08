@@ -122,3 +122,10 @@ class S3StorageProvider(StorageProvider):
             "content_type": resp.get("ContentType") or "application/octet-stream",
             "etag": (resp.get("ETag") or "").strip('"'),
         }
+
+    def delete_object(self, path: str) -> bool:
+        self._require_ready()
+        key = self._key(path)
+        self._client.delete_object(Bucket=self._bucket, Key=key)
+        logger.info("S3 storage deleted %s", key)
+        return True

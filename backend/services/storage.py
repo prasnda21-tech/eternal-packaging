@@ -116,7 +116,12 @@ def head_object(path: str) -> dict:
     return _select_provider().head_object(path)
 
 
+def delete_object(path: str) -> bool:
+    return _select_provider().delete_object(path)
+
+
 MIME_TO_EXT = {
+
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
     "image/png": "png",
