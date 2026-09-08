@@ -101,7 +101,7 @@ function sortRows(rows, key, dir) {
 function matchesSearch(row, q) {
   if (!q) return true;
   const hay = [
-    row.operator, row.helper, row.screener, row.designer, row.employee_name,
+    row.operator, row.helper, row.screener, row.designer, row.driver, row.employee_name,
     row.no_po, row.customer, row.cup_item, row.item_name, row.design_line,
   ].filter(Boolean).join(" ").toLowerCase();
   return hay.includes(q);
@@ -257,6 +257,9 @@ export default function OperatorAnalyticsPanel() {
       } else if (tab === "screener") {
         if (userId && userId !== "all") params.user_id = userId;
         setData(await api.analyticsScreener(params));
+      } else if (tab === "driver") {
+        if (userId && userId !== "all") params.user_id = userId;
+        setData(await api.analyticsDriver(params));
       } else {
         if (userId && userId !== "all") params.user_id = userId;
         setData(await api.analyticsDesigns(params));
@@ -287,12 +290,13 @@ export default function OperatorAnalyticsPanel() {
     { key: "operator", label: "Operator" },
     { key: "helper", label: "Helper" },
     { key: "screener", label: "Screener" },
+    { key: "driver", label: "Driver" },
     { key: "design", label: tab === "design" && data && !designerValid ? "Jumlah Design" : "Designer" },
   ];
 
   const userOptions = useMemo(() => {
     if (tab === "operator") return data?.filters?.operators || [];
-    if (tab === "helper" || tab === "screener") return data?.filters?.users || [];
+    if (tab === "helper" || tab === "screener" || tab === "driver") return data?.filters?.users || [];
     return data?.filters?.users || (data?.designers || []).map((o) => ({ id: o.email, name: o.name }));
   }, [tab, data]);
 
@@ -328,7 +332,7 @@ export default function OperatorAnalyticsPanel() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      const label = { operator: "Operator", helper: "Helper", screener: "Screener", design: "Designer" }[tab] || tab;
+      const label = { operator: "Operator", helper: "Helper", screener: "Screener", driver: "Driver", design: "Designer" }[tab] || tab;
       a.download = `Laporan_${label}_${resolvedFrom || "from"}_${resolvedTo || "to"}.xlsx`;
       document.body.appendChild(a);
       a.click();
@@ -341,13 +345,13 @@ export default function OperatorAnalyticsPanel() {
     }
   };
 
-  const userFilterLabel = tab === "operator" ? "Semua operator" : tab === "helper" ? "Semua helper" : tab === "screener" ? "Semua screener" : "Semua designer";
-  const userFieldLabel = tab === "operator" ? "Operator" : tab === "helper" ? "Helper" : tab === "screener" ? "Screener" : "Designer";
+  const userFilterLabel = tab === "operator" ? "Semua operator" : tab === "helper" ? "Semua helper" : tab === "screener" ? "Semua screener" : tab === "driver" ? "Semua driver" : "Semua designer";
+  const userFieldLabel = tab === "operator" ? "Operator" : tab === "helper" ? "Helper" : tab === "screener" ? "Screener" : tab === "driver" ? "Driver" : "Designer";
 
   const operatorCols = [
     { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
     { key: "operator", label: "Operator" },
-    { key: "customer", label: "Outlet / Customer" },
+    { key: "customer", label: "Customer" },
     { key: "no_po", label: "No. PO", mono: true, render: (r) => <PoLink orderId={r.order_id} poNumber={r.no_po} /> },
     { key: "cup_item", label: "Cup / Item" },
     { key: "design_line", label: "Design / Line" },
@@ -356,7 +360,7 @@ export default function OperatorAnalyticsPanel() {
   const helperCols = [
     { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
     { key: "helper", label: "Helper" },
-    { key: "customer", label: "Outlet / Customer" },
+    { key: "customer", label: "Customer" },
     { key: "no_po", label: "No. PO", mono: true, render: (r) => <PoLink orderId={r.order_id} poNumber={r.no_po} /> },
     { key: "cup_item", label: "Cup / Item" },
     { key: "qty_prepared", label: "Qty Persiapan", num: true },
@@ -365,29 +369,37 @@ export default function OperatorAnalyticsPanel() {
   const screenerCols = [
     { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
     { key: "screener", label: "Screener" },
-    { key: "customer", label: "Outlet / Customer" },
+    { key: "customer", label: "Customer" },
     { key: "no_po", label: "No. PO", mono: true, render: (r) => <PoLink orderId={r.order_id} poNumber={r.no_po} /> },
     { key: "cup_item", label: "Cup / Item" },
     { key: "qty_screener", label: "Qty Screener", num: true },
   ];
+  const driverCols = [
+    { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
+    { key: "driver", label: "Driver" },
+    { key: "customer", label: "Customer" },
+    { key: "no_po", label: "No. PO", mono: true, render: (r) => <PoLink orderId={r.order_id} poNumber={r.no_po} /> },
+    { key: "cup_item", label: "Item" },
+    { key: "qty_delivered", label: "Qty Terkirim", num: true },
+  ];
   const designCols = designerValid ? [
     { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
     { key: "designer", label: "Designer" },
-    { key: "customer", label: "Outlet / Customer" },
+    { key: "customer", label: "Customer" },
     { key: "no_po", label: "No. PO", mono: true, render: (r) => <PoLink orderId={r.order_id} poNumber={r.no_po} /> },
     { key: "cup_item", label: "Cup / Item" },
     { key: "design_line", label: "Design / Line" },
     { key: "jumlah_design", label: "Jumlah Design", num: true },
   ] : [
     { key: "tanggal", label: "Tanggal", fit: true, render: (r) => fmtDate(r.tanggal) },
-    { key: "customer", label: "Outlet / Customer" },
+    { key: "customer", label: "Customer" },
     { key: "no_po", label: "No. PO", mono: true, render: (r) => <PoLink orderId={r.order_id} poNumber={r.no_po} /> },
     { key: "cup_item", label: "Cup / Item" },
     { key: "design_line", label: "Design / Line" },
     { key: "jumlah_design", label: "Jumlah Design", num: true },
   ];
 
-  const cols = tab === "operator" ? operatorCols : tab === "helper" ? helperCols : tab === "screener" ? screenerCols : designCols;
+  const cols = tab === "operator" ? operatorCols : tab === "helper" ? helperCols : tab === "screener" ? screenerCols : tab === "driver" ? driverCols : designCols;
   const cardFields = cols.map((c) => ({ key: c.key, label: c.label, num: c.num, render: c.render }));
   const empty = "Tidak ada aktivitas pada periode / filter ini.";
 
@@ -432,9 +444,9 @@ export default function OperatorAnalyticsPanel() {
             </select>
           </label>
           <label className="op-an-field op-an-field-outlet">
-            <span>Outlet / Customer</span>
+            <span>Customer</span>
             <select value={customer} onChange={(e) => setCustomer(e.target.value)} data-testid="op-an-customer">
-              <option value="all">Semua outlet / customer</option>
+              <option value="all">Semua customer</option>
               {customers.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </label>
@@ -457,7 +469,7 @@ export default function OperatorAnalyticsPanel() {
             <span>Cari</span>
             <span className="op-an-search">
               <Search size={12} />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama, PO, outlet, item" data-testid="op-an-search" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama, PO, customer, item" data-testid="op-an-search" />
             </span>
           </label>
           <label className="op-an-field op-an-field-po">
@@ -523,6 +535,14 @@ export default function OperatorAnalyticsPanel() {
           <KpiCard label="Avg / Hari Aktif" value={fmtQty(kpis.avg_daily_qty)} testid="op-an-screen-avg" />
         </div>
       )}
+      {tab === "driver" && (
+        <div className="op-an-kpi-row op-an-kpi-row-4" data-testid="op-an-driver-kpis">
+          <KpiCard label="Total Qty Terkirim" value={`${fmtQty(kpis.total_qty)} pcs`} testid="op-an-driver-total" />
+          <KpiCard label="Jumlah Driver" value={fmtQty(kpis.user_count)} testid="op-an-driver-users" />
+          <KpiCard label="Jumlah PO" value={fmtQty(kpis.po_count)} testid="op-an-driver-po" />
+          <KpiCard label="Jumlah Customer" value={fmtQty(kpis.customer_count)} testid="op-an-driver-cust" />
+        </div>
+      )}
       {tab === "design" && (
         <div className="op-an-kpi-row op-an-kpi-row-4" data-testid="op-an-design-kpis">
           <KpiCard label="Total Design" value={fmtQty(kpis.total_designs)} testid="op-an-design-total" />
@@ -535,7 +555,7 @@ export default function OperatorAnalyticsPanel() {
       {!!people.length && (
         <>
           <div className="op-an-section-label">
-            {tab === "operator" ? "Summary per Operator" : tab === "helper" ? "Summary per Helper" : tab === "screener" ? "Summary per Screener" : "Summary per Designer"}
+            {tab === "operator" ? "Summary per Operator" : tab === "helper" ? "Summary per Helper" : tab === "screener" ? "Summary per Screener" : tab === "driver" ? "Summary per Driver" : "Summary per Designer"}
             <span className="muted"> · klik nama untuk filter</span>
           </div>
           {tab === "operator" && (
@@ -583,6 +603,20 @@ export default function OperatorAnalyticsPanel() {
               ]}
             />
           )}
+          {tab === "driver" && (
+            <PeopleTable
+              testid="op-an-driver-people"
+              rows={people}
+              activeId={userId}
+              onPick={(id) => setUserId(userId === id ? "all" : id)}
+              columns={[
+                { key: "name", label: "Driver" },
+                { key: "qty", label: "Total Qty Terkirim", num: true },
+                { key: "po_count", label: "Jumlah PO", num: true },
+                { key: "customer_count", label: "Jumlah Customer", num: true },
+              ]}
+            />
+          )}
           {tab === "design" && designerValid && (
             <PeopleTable
               testid="op-an-design-people"
@@ -604,7 +638,7 @@ export default function OperatorAnalyticsPanel() {
       <ReportTable
         columns={cols}
         rows={paged}
-        testid={tab === "operator" ? "op-an-table" : tab === "helper" ? "op-an-prep-table" : tab === "screener" ? "op-an-screen-table" : "op-an-design-table"}
+        testid={tab === "operator" ? "op-an-table" : tab === "helper" ? "op-an-prep-table" : tab === "screener" ? "op-an-screen-table" : tab === "driver" ? "op-an-driver-table" : "op-an-design-table"}
         empty={busy ? "Memuat…" : empty}
         sortKey={sortKey}
         sortDir={sortDir}
@@ -613,7 +647,7 @@ export default function OperatorAnalyticsPanel() {
       <ReportCards
         rows={paged}
         fields={cardFields}
-        testid={tab === "operator" ? "op-an-cards" : tab === "helper" ? "op-an-prep-cards" : tab === "screener" ? "op-an-screen-cards" : "op-an-design-line-cards"}
+        testid={tab === "operator" ? "op-an-cards" : tab === "helper" ? "op-an-prep-cards" : tab === "screener" ? "op-an-screen-cards" : tab === "driver" ? "op-an-driver-cards" : "op-an-design-line-cards"}
       />
       <Pager page={page} pageSize={pageSize} total={filtered.length} onPage={setPage} onSize={(n) => { setPageSize(n); setPage(1); }} />
 
