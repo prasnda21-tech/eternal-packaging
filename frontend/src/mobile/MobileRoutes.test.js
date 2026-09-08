@@ -55,6 +55,15 @@ describe("mobile route wiring", () => {
     expect(bottomNav.indexOf("schedule")).toBeLessThan(bottomNav.indexOf("notifications"));
   });
 
+  test("PWA customer labels never fall back to outlet", () => {
+    expect(detail).toMatch(/getCanonicalCustomerName\(order\)/);
+    expect(detail).not.toMatch(/customer_name \|\| order\.outlet/);
+    expect(delivery).toMatch(/getCanonicalCustomerName\(order\)/);
+    expect(delivery).not.toMatch(/customer_name \|\| order\.outlet/);
+    expect(ordersPage).toMatch(/getCanonicalCustomerName\(o, ""\)/);
+    expect(ordersPage).not.toMatch(/customer_name \|\| o\.outlet/);
+  });
+
   test("delivery confirm uses existing contract", () => {
     expect(delivery).toMatch(/confirmDeliveredBlockReason/);
     expect(delivery).toMatch(/uploadDeliveryRecipientSignature/);

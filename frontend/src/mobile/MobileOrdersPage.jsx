@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
+import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import { taskMatchesQuery } from "../lib/divisionTasks";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import MobileTopBar from "./MobileTopBar";
@@ -57,7 +58,7 @@ export default function MobileOrdersPage() {
     if (!s) return list;
     return list.filter((o) => taskMatchesQuery({
       order_number: o.po_number,
-      customer_name: o.customer_name || o.outlet,
+      customer_name: getCanonicalCustomerName(o, ""),
       item: o.item,
     }, q));
   }, [orders, q]);

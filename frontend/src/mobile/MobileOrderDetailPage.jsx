@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import { formatDeadline } from "../lib/constants";
 import { poCardPresentation, selectMobileWorkspace } from "../lib/mobileWorkspaces";
 import MobileTopBar from "./MobileTopBar";
@@ -86,7 +87,7 @@ export default function MobileOrderDetailPage() {
         {order && (
           <>
             <div className="mop-meta-grid">
-              <div><span>Customer</span><strong>{order.customer_name || order.outlet || "—"}</strong></div>
+              <div data-testid="mobile-order-customer"><span>Customer</span><strong>{getCanonicalCustomerName(order)}</strong></div>
               <div><span>Product</span><strong>{card.product}</strong></div>
               <div><span>Qty</span><strong>{card.qty != null ? Number(card.qty).toLocaleString("id-ID") : (card.lines.length ? card.lines.map((l) => l.qty).join(" / ") : "—")}</strong></div>
               <div><span>Deadline</span><strong>{formatDeadline(order.deadline) !== "-" ? formatDeadline(order.deadline) : (order.work_date || "—")}</strong></div>
