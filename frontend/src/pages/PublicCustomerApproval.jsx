@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { CheckCircle2, XCircle, AlertTriangle, Clock } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, Clock, FileText } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 import SignaturePad from "../components/SignaturePad";
+import {
+  canOpenPublicApprovalDesign,
+  isPublicApprovalImage,
+  isPublicApprovalPdf,
+  preferCompactPdfPreview,
+  resolvePublicApprovalDesignUrl,
+} from "../lib/publicApprovalDesign";
 
 const STATUS_LABEL = {
   active: "Menunggu Approval Anda",
@@ -51,6 +58,7 @@ export default function PublicCustomerApproval() {
   const [signerName, setSignerName] = useState("");
   const [note, setNote] = useState("");
   const [signature, setSignature] = useState(null);
+  const [compactPdf, setCompactPdf] = useState(preferCompactPdfPreview);
 
   const load = () => {
     setLoading(true);
@@ -63,7 +71,28 @@ export default function PublicCustomerApproval() {
 
   useEffect(load, [token]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mq = window.matchMedia("(max-width: 768px)");
+    const sync = () => setCompactPdf(preferCompactPdfPreview());
+    sync();
+    if (mq.addEventListener) mq.addEventListener("change", sync);
+    else mq.addListener(sync);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", sync);
+      else mq.removeListener(sync);
+    };
+  }, []);
+
   const countdown = useCountdown(view?.expires_at);
+  const designFile = view?.design_file;
+  const designUrl = useMemo(
+    () => resolvePublicApprovalDesignUrl(token, designFile, {
+      status: view?.status,
+      fallbackUrl: api.publicCustomerApprovalDesignUrl(token),
+    }),
+    [token, designFile, view?.status],
+  );
   const settings = view?.settings || {};
   const canInteract = view?.status === "active";
   const showApprove = canInteract && settings.allow_approve !== false;
@@ -183,28 +212,61 @@ export default function PublicCustomerApproval() {
           <div className="design-preview" data-testid="public-approval-design-file">
             <div className="items-head">File design</div>
             {(() => {
-              const ct = (view.design_file.content_type || "").toLowerCase();
-              const url = view.design_file.data_url;
-              const isImg = ct.startsWith("image/") || (url && url.startsWith("data:image/"));
-              const isPdf = ct === "application/pdf" || (url && url.startsWith("data:application/pdf"));
-              if (isImg && url) return <img src={url} alt={view.design_file.name} data-testid="public-approval-design-image" />;
-              if (isPdf && url) {
+              const file = view.design_file;
+              const isImg = isPublicApprovalImage(file);
+              const isPdf = isPublicApprovalPdf(file);
+              const previewSrc = isImg ? (file.data_url || designUrl) : "";
+              if (isImg && previewSrc) {
+                return <img src={previewSrc} alt={file.name} data-testid="public-approval-design-image" />;
+              }
+              if (isPdf) {
+                const canOpen = canOpenPublicApprovalDesign(view.status) && !!designUrl;
                 return (
                   <div data-testid="public-approval-design-pdf">
-                    <object data={url} type="application/pdf" width="100%" style={{ height: 480, background: "#fff", border: "1px solid #e6dfc7", borderRadius: 8 }}>
-                      <p className="muted small">Browser Anda tidak mendukung preview PDF inline.</p>
-                    </object>
-                    <div style={{ marginTop: 8 }}>
-                      <a href={url} target="_blank" rel="noopener noreferrer" download={view.design_file.name} className="ghost sm" data-testid="public-approval-design-pdf-open">
-                        Buka Design PDF di tab baru
+                    {!compactPdf && canOpen && (
+                      <object
+                        data={designUrl}
+                        type="application/pdf"
+                        className="design-pdf-object"
+                        data-testid="public-approval-design-pdf-inline"
+                      >
+                        <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
+                          <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
+                          <div className="pdf-meta">
+                            <div className="pdf-name">{file.name}</div>
+                            <p className="muted small">Preview PDF tidak tersedia di browser ini.</p>
+                          </div>
+                        </div>
+                      </object>
+                    )}
+                    {compactPdf && (
+                      <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
+                        <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
+                        <div className="pdf-meta">
+                          <div className="pdf-name">{file.name}</div>
+                          <p className="muted small">Preview PDF tidak tersedia di browser ini.</p>
+                        </div>
+                      </div>
+                    )}
+                    {canOpen && (
+                      <a
+                        href={designUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ghost sm design-pdf-open"
+                        data-testid="public-approval-design-pdf-open"
+                      >
+                        Buka Design PDF
                       </a>
-                    </div>
+                    )}
                   </div>
                 );
               }
-              return <p className="muted">{view.design_file.name}</p>;
+              return <p className="muted">{file.name}</p>;
             })()}
-            <p className="muted small">{view.design_file.name}</p>
+            {!isPublicApprovalPdf(view.design_file) && (
+              <p className="muted small">{view.design_file.name}</p>
+            )}
           </div>
         )}
 
