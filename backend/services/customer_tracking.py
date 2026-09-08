@@ -279,6 +279,72 @@ def public_shipment_evidence(order: dict, token: str) -> List[Dict[str, Any]]:
     return out
 
 
+_DESIGN_APPROVAL_STATUSES = frozenset({
+    "active", "approved", "rejected", "expired", "revoked", "invalidated",
+})
+_DESIGN_PREVIEW_STATUSES = frozenset({"active", "approved", "rejected"})
+
+
+def public_order_summary(order: dict) -> Dict[str, Any]:
+    """Customer-safe PO facts only. No line_id, prices, or internal flags."""
+    items: List[Dict[str, Any]] = []
+    for li in order.get("line_items") or []:
+        if not isinstance(li, dict):
+            continue
+        name = str(li.get("name") or "").strip()
+        if not name:
+            continue
+        row: Dict[str, Any] = {"name": name}
+        color = str(li.get("color") or "").strip()
+        if color:
+            row["color"] = color
+        unit = str(li.get("unit") or "").strip()
+        if unit:
+            row["unit"] = unit
+        raw_q = li.get("quantity")
+        if raw_q is not None and str(raw_q).strip() != "":
+            try:
+                row["quantity"] = int(raw_q)
+            except (TypeError, ValueError):
+                row["quantity"] = str(raw_q).strip()
+        items.append(row)
+    out: Dict[str, Any] = {}
+    if items:
+        out["items"] = items
+    for key in ("order_date", "deadline", "estimated_delivery", "outlet"):
+        val = str(order.get(key) or "").strip()
+        if val:
+            out[key] = val
+    return out
+
+
+def public_design_approval(order: dict, token: str) -> Optional[Dict[str, Any]]:
+    """Read existing customer_approval snapshot only. Never generate a link."""
+    snap = order.get("customer_approval")
+    if not isinstance(snap, dict):
+        return None
+    status = str(snap.get("status") or "").strip()
+    if status not in _DESIGN_APPROVAL_STATUSES:
+        return None
+    if not str(snap.get("approval_id") or "").strip():
+        return None
+    t = (token or "").strip()
+    out: Dict[str, Any] = {"status": status}
+    if status == "active" and t:
+        out["path"] = f"/customer/design-approval/{t}"
+    if status in _DESIGN_PREVIEW_STATUSES and t:
+        version = snap.get("design_version")
+        files = order.get("design_files") or []
+        bound = next(
+            (f for f in files if isinstance(f, dict) and f.get("id") == version),
+            None,
+        )
+        ct = str((bound or {}).get("content_type") or "").lower()
+        if bound and ct.startswith("image/"):
+            out["preview_url"] = f"/api/public/customer-approval/{t}/design"
+    return out
+
+
 def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
     """Minimal public JSON: customer, order number, workflow, documents, bounded proofs."""
     tok = (token or order.get("tracking_token") or "").strip()
@@ -293,6 +359,12 @@ def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
         },
         "shipments_evidence": public_shipment_evidence(order, tok),
     }
+    summary = public_order_summary(order)
+    if summary:
+        payload["summary"] = summary
+    approval = public_design_approval(order, tok)
+    if approval:
+        payload["design_approval"] = approval
     proofs = payload["delivery_proofs"]
     allowed_photo_ids = {str(p.get("id")) for p in proofs if p.get("id")}
     try:
@@ -337,6 +409,9 @@ def is_public_payload_safe(payload: dict) -> bool:
         "shipments_evidence", "confirmation_id", "sj_file_id", "recipient",
         "recipient_name", "recipient_signed_at", "has_signed_sj",
         "driver", "driver_name", "driver_signed_at",
+        "design_approval", "path", "action",
+        "summary", "items", "color", "unit", "quantity",
+        "order_date", "deadline", "estimated_delivery", "outlet",
     }
     return collect_public_keys(payload) <= allowed
 
@@ -415,6 +490,40 @@ def build_router(deps: dict) -> APIRouter:
             "documents": {"design_approved": [], "surat_jalan": []},
             "shipments_evidence": [],
         }
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            clean_items = []
+            for it in summary.get("items") or []:
+                if not isinstance(it, dict) or not it.get("name"):
+                    continue
+                row = {"name": str(it.get("name"))}
+                if it.get("color"):
+                    row["color"] = str(it.get("color"))
+                if it.get("unit"):
+                    row["unit"] = str(it.get("unit"))
+                if it.get("quantity") is not None:
+                    row["quantity"] = it.get("quantity")
+                clean_items.append(row)
+            clean_sum = {}
+            if clean_items:
+                clean_sum["items"] = clean_items
+            for key in ("order_date", "deadline", "estimated_delivery", "outlet"):
+                if summary.get(key):
+                    clean_sum[key] = str(summary.get(key))
+            if clean_sum:
+                out["summary"] = clean_sum
+        approval = payload.get("design_approval")
+        if isinstance(approval, dict) and approval.get("status") in {
+            "active", "approved", "rejected", "expired", "revoked", "invalidated",
+        }:
+            clean_ap = {"status": approval.get("status")}
+            path = str(approval.get("path") or "")
+            if clean_ap["status"] == "active" and path.startswith("/customer/design-approval/"):
+                clean_ap["path"] = path
+            preview = str(approval.get("preview_url") or "")
+            if preview.startswith("/api/public/customer-approval/") and preview.endswith("/design"):
+                clean_ap["preview_url"] = preview
+            out["design_approval"] = clean_ap
         docs = payload.get("documents") or {}
         if isinstance(docs, dict):
             out["documents"] = {

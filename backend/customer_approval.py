@@ -540,7 +540,24 @@ def build_router(deps):
         if not token:
             return None
         h = _hash_token(token)
-        return await db.customer_approvals.find_one({"token_hash": h}, {"_id": 0})
+        rec = await db.customer_approvals.find_one({"token_hash": h}, {"_id": 0})
+        if rec:
+            return rec
+        # Existing Live Tracking token may open the same approval record.
+        # Does not generate a new approval token.
+        order = await db.orders.find_one(
+            {"tracking_token": token},
+            {"_id": 0, "id": 1, "customer_approval": 1},
+        )
+        if not order:
+            return None
+        snap = order.get("customer_approval") or {}
+        aid = str(snap.get("approval_id") or "").strip()
+        if aid:
+            by_id = await db.customer_approvals.find_one({"id": aid}, {"_id": 0})
+            if by_id:
+                return by_id
+        return await _load_latest_by_order(order.get("id"))
 
     @router.get("/public/customer-approval/{token}")
     async def public_view(token: str):
