@@ -2,6 +2,7 @@ import {
   canOpenPublicApprovalDesign,
   isPublicApprovalPdf,
   preferCompactPdfPreview,
+  resolvePublicApprovalDesignDownloadUrl,
   resolvePublicApprovalDesignUrl,
 } from "./publicApprovalDesign";
 
@@ -57,6 +58,14 @@ describe("public approval design URL", () => {
   test("detects PDF from name or content type", () => {
     expect(isPublicApprovalPdf(file)).toBe(true);
     expect(isPublicApprovalPdf({ name: "x.png", content_type: "image/png" })).toBe(false);
+  });
+
+  test("generates download URL with disposition=attachment", () => {
+    const dl = resolvePublicApprovalDesignDownloadUrl("tok-abc", file, {
+      apiBase: "http://localhost:8000/api",
+      status: "active",
+    });
+    expect(dl).toBe("http://localhost:8000/api/public/customer-approval/tok-abc/design?disposition=attachment");
   });
 });
 

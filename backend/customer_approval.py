@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 
@@ -134,12 +134,47 @@ def load_bound_design_bytes(file: dict, obj_storage=None) -> Tuple[bytes, str]:
     return data, public_design_media_type(file, data, media)
 
 
-def _design_disposition_headers(filename: str) -> dict:
+def _parse_byte_range(range_header: str, total_len: int) -> Optional[Tuple[int, int]]:
+    if not range_header or not range_header.startswith("bytes="):
+        return None
+    val = range_header.split("bytes=", 1)[1].strip()
+    if "," in val:
+        return None
+    parts = val.split("-")
+    if len(parts) != 2:
+        return None
+    start_str, end_str = parts[0].strip(), parts[1].strip()
+    if not start_str and not end_str:
+        return None
+    try:
+        if not start_str:
+            suffix = int(end_str)
+            if suffix <= 0:
+                return None
+            start = max(0, total_len - suffix)
+            end = total_len - 1
+        elif not end_str:
+            start = int(start_str)
+            end = total_len - 1
+        else:
+            start = int(start_str)
+            end = int(end_str)
+        if start > end or start >= total_len or start < 0:
+            return None
+        end = min(end, total_len - 1)
+        return (start, end)
+    except ValueError:
+        return None
+
+
+def _design_disposition_headers(filename: str, disposition: str = "inline") -> dict:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "design").strip("._") or "design"
+    mode = "attachment" if str(disposition or "").lower() in ("attachment", "download") else "inline"
     return {
-        "Content-Disposition": f"inline; filename=\"{safe}\"; filename*=UTF-8''{quote(filename or safe)}",
+        "Content-Disposition": f"{mode}; filename=\"{safe}\"; filename*=UTF-8''{quote(filename or safe)}",
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
+        "Accept-Ranges": "bytes",
     }
 
 
@@ -496,8 +531,8 @@ def build_router(deps):
         allow_active_view = rec.get("status") in PUBLIC_DESIGN_VIEW_STATUSES
         return {"view": _public_view(rec, order, settings, allow_active_view, token=token)}
 
-    @router.get("/public/customer-approval/{token}/design")
-    async def public_design_file(token: str):
+    @router.api_route("/public/customer-approval/{token}/design", methods=["GET", "HEAD"])
+    async def public_design_file(token: str, request: Request, disposition: str = "inline"):
         rec = await _load_by_token(token)
         if not rec:
             raise HTTPException(404, "Link tidak ditemukan atau sudah tidak berlaku")
@@ -526,10 +561,37 @@ def build_router(deps):
             logger.exception("Public approval design fetch failed")
             raise HTTPException(404, "File design tidak ditemukan")
         filename = file.get("name") or "design.pdf"
+        headers = _design_disposition_headers(filename, disposition=disposition)
+        total_len = len(data)
+
+        if request.method == "HEAD":
+            headers["Content-Length"] = str(total_len)
+            return Response(
+                content=b"",
+                media_type=media,
+                headers=headers,
+            )
+
+        range_header = request.headers.get("range")
+        if range_header:
+            parsed_range = _parse_byte_range(range_header, total_len)
+            if parsed_range is not None:
+                start, end = parsed_range
+                chunk_len = end - start + 1
+                headers["Content-Range"] = f"bytes {start}-{end}/{total_len}"
+                headers["Content-Length"] = str(chunk_len)
+                return Response(
+                    content=data[start:end + 1],
+                    status_code=206,
+                    media_type=media,
+                    headers=headers,
+                )
+
+        headers["Content-Length"] = str(total_len)
         return Response(
             content=data,
             media_type=media,
-            headers=_design_disposition_headers(filename),
+            headers=headers,
         )
 
     @router.post("/public/customer-approval/{token}/submit")
