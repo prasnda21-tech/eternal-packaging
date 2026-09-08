@@ -39,6 +39,13 @@ export function resolvePublicApprovalDesignUrl(token, designFile, { apiBase, sta
   return `${base}/public/customer-approval/${encodeURIComponent(token)}/design`;
 }
 
+export function resolvePublicApprovalDesignDownloadUrl(token, designFile, options = {}) {
+  const base = resolvePublicApprovalDesignUrl(token, designFile, options);
+  if (!base) return "";
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}disposition=attachment`;
+}
+
 export function preferCompactPdfPreview() {
   if (typeof navigator !== "undefined" && navigator.pdfViewerEnabled === false) return true;
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;

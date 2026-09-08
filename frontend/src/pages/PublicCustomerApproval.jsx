@@ -9,6 +9,7 @@ import {
   isPublicApprovalImage,
   isPublicApprovalPdf,
   preferCompactPdfPreview,
+  resolvePublicApprovalDesignDownloadUrl,
   resolvePublicApprovalDesignUrl,
 } from "../lib/publicApprovalDesign";
 
@@ -59,6 +60,10 @@ export default function PublicCustomerApproval() {
   const [note, setNote] = useState("");
   const [signature, setSignature] = useState(null);
   const [compactPdf, setCompactPdf] = useState(preferCompactPdfPreview);
+  const [showInline, setShowInline] = useState(true);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState("");
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfLoadErr, setPdfLoadErr] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -86,6 +91,8 @@ export default function PublicCustomerApproval() {
 
   const countdown = useCountdown(view?.expires_at);
   const designFile = view?.design_file;
+  const isPdf = isPublicApprovalPdf(designFile);
+  const canOpen = canOpenPublicApprovalDesign(view?.status);
   const designUrl = useMemo(
     () => resolvePublicApprovalDesignUrl(token, designFile, {
       status: view?.status,
@@ -93,6 +100,61 @@ export default function PublicCustomerApproval() {
     }),
     [token, designFile, view?.status],
   );
+  const downloadUrl = useMemo(
+    () => resolvePublicApprovalDesignDownloadUrl(token, designFile, {
+      status: view?.status,
+      fallbackUrl: api.publicCustomerApprovalDesignUrl(token),
+    }),
+    [token, designFile, view?.status],
+  );
+
+  useEffect(() => {
+    if (compactPdf || !canOpen || !designUrl || !isPdf || !showInline) {
+      setPdfBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return "";
+      });
+      setPdfLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let createdUrl = "";
+    setPdfLoading(true);
+    setPdfLoadErr(false);
+
+    fetch(designUrl, { credentials: "omit" })
+      .then((res) => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.includes("pdf") && !ct.includes("octet-stream")) {
+          throw new Error("Invalid content-type: " + ct);
+        }
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        if (!blob || blob.size === 0) throw new Error("Empty blob");
+        const safeBlob = blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" });
+        createdUrl = URL.createObjectURL(safeBlob);
+        setPdfBlobUrl(createdUrl);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPdfLoadErr(true);
+          setPdfBlobUrl("");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPdfLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [compactPdf, canOpen, designUrl, isPdf, showInline]);
+
   const settings = view?.settings || {};
   const canInteract = view?.status === "active";
   const showApprove = canInteract && settings.allow_approve !== false;
@@ -220,25 +282,43 @@ export default function PublicCustomerApproval() {
                 return <img src={previewSrc} alt={file.name} data-testid="public-approval-design-image" />;
               }
               if (isPdf) {
-                const canOpen = canOpenPublicApprovalDesign(view.status) && !!designUrl;
+                const canOpenPdf = canOpenPublicApprovalDesign(view.status) && !!designUrl;
+                const effectivePdfSrc = pdfBlobUrl || designUrl;
+                const showInlineViewer = !compactPdf && canOpenPdf && showInline && !pdfLoadErr;
                 return (
                   <div data-testid="public-approval-design-pdf">
-                    {!compactPdf && canOpen && (
+                    {pdfLoading && (
+                      <div className="design-pdf-loading" data-testid="public-approval-design-pdf-loading">
+                        <FileText size={16} />
+                        <span>Memuat preview PDF…</span>
+                      </div>
+                    )}
+
+                    {!compactPdf && canOpenPdf && showInlineViewer && !pdfLoading && (
                       <object
-                        data={designUrl}
+                        data={effectivePdfSrc}
                         type="application/pdf"
                         className="design-pdf-object"
                         data-testid="public-approval-design-pdf-inline"
                       >
-                        <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
-                          <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
-                          <div className="pdf-meta">
-                            <div className="pdf-name">{file.name}</div>
-                            <p className="muted small">Preview PDF tidak tersedia di browser ini.</p>
+                        <iframe
+                          src={`${effectivePdfSrc}#toolbar=1`}
+                          type="application/pdf"
+                          title={file.name || "Design PDF"}
+                          className="design-pdf-frame"
+                          data-testid="public-approval-design-pdf-frame"
+                        >
+                          <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
+                            <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
+                            <div className="pdf-meta">
+                              <div className="pdf-name">{file.name}</div>
+                              <p className="muted small">Preview PDF tidak tersedia di browser ini.</p>
+                            </div>
                           </div>
-                        </div>
+                        </iframe>
                       </object>
                     )}
+
                     {compactPdf && (
                       <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
                         <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
@@ -248,16 +328,47 @@ export default function PublicCustomerApproval() {
                         </div>
                       </div>
                     )}
-                    {canOpen && (
-                      <a
-                        href={designUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ghost sm design-pdf-open"
-                        data-testid="public-approval-design-pdf-open"
-                      >
-                        Buka Design PDF
-                      </a>
+
+                    {!compactPdf && (!showInlineViewer || pdfLoadErr) && !pdfLoading && (
+                      <div className="design-pdf-fallback" data-testid="public-approval-design-pdf-fallback">
+                        <span className="pdf-icon" aria-hidden="true"><FileText size={18} /></span>
+                        <div className="pdf-meta">
+                          <div className="pdf-name">{file.name}</div>
+                          <p className="muted small">PDF tidak dapat ditampilkan langsung di browser ini. Buka di tab baru atau download PDF.</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {canOpenPdf && (
+                      <div className="design-pdf-actions" data-testid="public-approval-design-pdf-actions">
+                        {!compactPdf && (
+                          <button
+                            type="button"
+                            className="ghost sm design-pdf-toggle"
+                            onClick={() => setShowInline((prev) => !prev)}
+                            data-testid="public-approval-design-pdf-toggle"
+                          >
+                            {showInline && !pdfLoadErr ? "Tutup Preview" : "Lihat PDF"}
+                          </button>
+                        )}
+                        <a
+                          href={designUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ghost sm design-pdf-open"
+                          data-testid="public-approval-design-pdf-open"
+                        >
+                          Buka Design PDF
+                        </a>
+                        <a
+                          href={downloadUrl}
+                          download={file.name || "design.pdf"}
+                          className="ghost sm design-pdf-download"
+                          data-testid="public-approval-design-pdf-download"
+                        >
+                          Download PDF
+                        </a>
+                      </div>
                     )}
                   </div>
                 );

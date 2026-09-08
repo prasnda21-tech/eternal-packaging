@@ -31,6 +31,25 @@ describe("Customer approval public wording", () => {
     expect(src).not.toMatch(/height:\s*480/);
   });
 
+  test("desktop viewer provides Lihat PDF toggle and download PDF fallback", () => {
+    expect(src).toMatch(/public-approval-design-pdf-toggle/);
+    expect(src).toMatch(/public-approval-design-pdf-download/);
+    expect(src).toMatch(/resolvePublicApprovalDesignDownloadUrl/);
+    expect(src).toMatch(/download=\{file\.name \|\| "design\.pdf"\}/);
+    expect(src).toMatch(/Download PDF/);
+    expect(src).toMatch(/Lihat PDF/);
+    expect(src).toMatch(/Tutup Preview/);
+  });
+
+  test("desktop fallback message informs user clearly when inline rendering fails", () => {
+    expect(src).toMatch(/PDF tidak dapat ditampilkan langsung di browser ini\. Buka di tab baru atau download PDF\./);
+  });
+
+  test("lifecycle manages blob URL with revokeObjectURL", () => {
+    expect(src).toMatch(/URL\.createObjectURL/);
+    expect(src).toMatch(/URL\.revokeObjectURL/);
+  });
+
   test("approval submit path is unchanged", () => {
     expect(src).toMatch(/publicCustomerApprovalSubmit\(token,/);
     expect(src).toMatch(/action === "approve"/);
