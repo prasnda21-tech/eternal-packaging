@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
 import MobileStatusBadge from "./MobileStatusBadge";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
-import { formatIdQty } from "../../lib/divisionTasks";
 import {
   taskDeadlineLabel,
   taskOperatorNames,
   taskOperatorLabel,
+  taskProductLabel,
+  taskScopeQtyLabel,
   taskWorkDateLabel,
 } from "../../lib/mobileTaskCard";
 
@@ -24,7 +25,6 @@ export default function MobileTaskCard({ task, workspaceId }) {
     >
       <div className="mop-card-kicker">{task.order_number}</div>
       <div className="mop-card-title">{task.customer_name || "—"}</div>
-      <div className="mop-card-sub">{task.item || "—"}</div>
       <div className="mop-task-facts">
         <div className="mop-task-fact" data-testid="mobile-task-operator">
           <span className="mop-task-fact-label">Operator</span>
@@ -43,8 +43,17 @@ export default function MobileTaskCard({ task, workspaceId }) {
           <span className="mop-task-fact-value">{taskDeadlineLabel(task)}</span>
         </div>
       </div>
+      <div className="mop-task-facts mop-task-facts-secondary">
+        <div className="mop-task-fact" data-testid="mobile-task-product">
+          <span className="mop-task-fact-label">Produk / Item</span>
+          <span className="mop-task-fact-value">{taskProductLabel(task)}</span>
+        </div>
+        <div className="mop-task-fact" data-testid="mobile-task-qty">
+          <span className="mop-task-fact-label">Jumlah Dikerjakan</span>
+          <span className="mop-task-fact-value">{taskScopeQtyLabel(task)}</span>
+        </div>
+      </div>
       <div className="mop-card-meta">
-        <span>{formatIdQty(task.target_qty)}</span>
         <MobileStatusBadge status={{ key: status.key, label: task.status_label || status.label }} />
       </div>
     </Link>
