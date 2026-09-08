@@ -1,11 +1,16 @@
 import {
   TASK_DEADLINE_EMPTY,
   TASK_OPERATOR_EMPTY,
+  TASK_PRODUCT_EMPTY,
+  TASK_QTY_EMPTY,
   TASK_WORK_DATE_EMPTY,
   formatTaskCardDate,
   sortOperationalTasks,
   taskDeadlineLabel,
+  taskHasPcsQty,
   taskOperatorLabel,
+  taskProductLabel,
+  taskScopeQtyLabel,
   taskWorkDateLabel,
 } from "./mobileTaskCard";
 
@@ -30,6 +35,35 @@ describe("formatTaskCardDate", () => {
   test("date-only YYYY-MM-DD does not timezone-shift", () => {
     expect(formatTaskCardDate("2026-09-08")).toBe("08/09/26");
     expect(formatTaskCardDate("2026-09-08T00:00:00Z")).toBe("08/09/26");
+  });
+});
+
+describe("task product and scope qty labels", () => {
+  test("uses canonical item text", () => {
+    expect(taskProductLabel({ item: "Standing Pouch 250g" })).toBe("Standing Pouch 250g");
+    expect(taskProductLabel({ item: "" })).toBe(TASK_PRODUCT_EMPTY);
+  });
+
+  test("formats Indonesian thousands with pcs", () => {
+    expect(taskScopeQtyLabel({ target_qty: 1000, required_input_type: "qty_cetak" })).toBe("1.000 pcs");
+    expect(taskScopeQtyLabel({ target_qty: 2500, division: "helper" })).toBe("2.500 pcs");
+    expect(taskScopeQtyLabel({ target_qty: 12500, required_input_type: "qty_packing" })).toBe("12.500 pcs");
+  });
+
+  test("Cetak uses split target_qty only", () => {
+    expect(taskScopeQtyLabel({
+      division: "operator",
+      required_input_type: "qty_cetak",
+      target_qty: 1000,
+      completed_qty: 200,
+    })).toBe("1.000 pcs");
+  });
+
+  test("photo/file tasks are not treated as pcs", () => {
+    expect(taskHasPcsQty({ division: "terkirim", required_input_type: "upload_foto", target_qty: 2 })).toBe(false);
+    expect(taskScopeQtyLabel({ division: "terkirim", required_input_type: "upload_foto", target_qty: 2 })).toBe(TASK_QTY_EMPTY);
+    expect(taskScopeQtyLabel({ division: "surat_jalan", required_input_type: "upload_sj", target_qty: null })).toBe(TASK_QTY_EMPTY);
+    expect(taskScopeQtyLabel({ division: "loading", required_input_type: "qty_loading", target_qty: null })).toBe(TASK_QTY_EMPTY);
   });
 });
 

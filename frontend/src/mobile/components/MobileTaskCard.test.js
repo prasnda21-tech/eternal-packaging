@@ -52,6 +52,11 @@ describe("MobileTaskCard schedule fields", () => {
     expect(container.textContent).toContain("08/09/26");
     expect(container.textContent).toContain("Deadline");
     expect(container.textContent).toContain("09/09/26");
+    expect(container.textContent).toContain("Produk / Item");
+    expect(container.textContent).toContain("Cup 16oz");
+    expect(container.querySelectorAll(".mop-card-sub")).toHaveLength(0);
+    expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).toContain("2.000 pcs");
+    expect(container.textContent).not.toContain("500 / 2.000");
     expect(container.textContent).toContain("Sebagian");
     expect(container.querySelector("a").getAttribute("href")).toBe("/m/orders/po-1?ws=print");
   });
@@ -134,5 +139,95 @@ describe("MobileTaskCard schedule fields", () => {
     expect(cards[0].textContent).toContain("Budi");
     expect(cards[1].textContent).toContain("Sari");
     expect(cards[0].textContent).not.toContain("Sari");
+    expect(cards[0].querySelector('[data-testid="mobile-task-product"]').textContent).toContain("Cup 16oz");
+    expect(cards[1].querySelector('[data-testid="mobile-task-product"]').textContent).toContain("Cup 16oz");
+    expect(cards[0].querySelector('[data-testid="mobile-task-qty"]').textContent).toContain("10 pcs");
+  });
+
+  test("Cetak uses split target_qty, not PO total", () => {
+    renderCard({
+      task_id: "operator:po-5:0:s1",
+      order_id: "po-5",
+      order_number: "PO-1005",
+      customer_name: "PT Example",
+      division: "operator",
+      required_input_type: "qty_cetak",
+      item: "Standing Pouch 250g",
+      line_idx: 0,
+      line_id: "L1",
+      operator_names: ["Budi"],
+      work_date: "2026-09-08",
+      delivery_deadline: "2026-09-10",
+      target_qty: 1000,
+      completed_qty: 200,
+      status: "sebagian",
+      status_label: "Sebagian",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).toContain("1.000 pcs");
+    expect(container.textContent).not.toContain("1.200");
+    expect(container.textContent).not.toContain("200 / 1.000");
+  });
+
+  test("long product names wrap inside the card", () => {
+    renderCard({
+      task_id: "packing:po-6:0:-",
+      order_id: "po-6",
+      order_number: "PO-1006",
+      division: "packing",
+      required_input_type: "qty_packing",
+      item: "Standing Pouch Kraft 250g Window Matte Laminating Custom Print Long Name",
+      line_idx: 0,
+      line_id: "L9",
+      operator_names: ["Budi"],
+      work_date: "2026-09-08",
+      target_qty: 12500,
+      completed_qty: 0,
+      status: "belum",
+      status_label: "Belum Mulai",
+    });
+    const product = container.querySelector('[data-testid="mobile-task-product"] .mop-task-fact-value');
+    expect(product.textContent).toContain("Standing Pouch Kraft 250g Window Matte Laminating Custom Print Long Name");
+    expect(product.className).toContain("mop-task-fact-value");
+    expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).toContain("12.500 pcs");
+  });
+
+  test("PO-level multi-item uses existing item summary, not an invented single name", () => {
+    renderCard({
+      task_id: "screener:po-7:po:-",
+      order_id: "po-7",
+      order_number: "PO-1007",
+      division: "screener",
+      required_input_type: "qty_screener",
+      item: "3 item",
+      operator_names: ["Budi"],
+      work_date: "2026-09-08",
+      target_qty: 2500,
+      completed_qty: 0,
+      status: "belum",
+      status_label: "Belum Mulai",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-product"]').textContent).toContain("3 item");
+    expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).toContain("2.500 pcs");
+  });
+
+  test("Pengiriman does not display photo-count target as pcs", () => {
+    renderCard({
+      task_id: "terkirim:po-8:po:-",
+      order_id: "po-8",
+      order_number: "PO-1008",
+      division: "terkirim",
+      required_input_type: "upload_foto",
+      item: "Cup 16oz",
+      operator_names: ["Driver A"],
+      work_date: "2026-09-08",
+      target_qty: 2,
+      completed_qty: 0,
+      status: "belum",
+      status_label: "Belum Mulai",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-product"]').textContent).toContain("Cup 16oz");
+    expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).toContain("—");
+    expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).not.toContain("pcs");
+    expect(container.textContent).toContain("Belum Mulai");
   });
 });

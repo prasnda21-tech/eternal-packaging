@@ -1,9 +1,20 @@
 import { formatDisplayDate } from "./constants";
+import { formatIdQty } from "./divisionTasks";
 import { toDateKey } from "./productionScheduleFilters";
 
 export const TASK_OPERATOR_EMPTY = "Belum ditentukan";
 export const TASK_WORK_DATE_EMPTY = "Belum Dijadwalkan";
 export const TASK_DEADLINE_EMPTY = "Menunggu approval";
+export const TASK_PRODUCT_EMPTY = "—";
+export const TASK_QTY_EMPTY = "—";
+
+const NON_PCS_INPUT_TYPES = new Set([
+  "upload_foto",
+  "confirm_terkirim",
+  "upload_sj",
+  "upload_design",
+]);
+const NON_PCS_DIVISIONS = new Set(["terkirim", "surat_jalan", "designer"]);
 
 export function formatTaskCardDate(value) {
   if (value === null || value === undefined || String(value).trim() === "") return "";
@@ -33,6 +44,29 @@ export function taskWorkDateLabel(task) {
 
 export function taskDeadlineLabel(task) {
   return formatTaskCardDate(task?.delivery_deadline) || TASK_DEADLINE_EMPTY;
+}
+
+export function taskProductLabel(task) {
+  const item = String(task?.item || "").trim();
+  return item || TASK_PRODUCT_EMPTY;
+}
+
+export function taskHasPcsQty(task) {
+  const type = String(task?.required_input_type || "").trim();
+  if (NON_PCS_INPUT_TYPES.has(type)) return false;
+  const division = String(task?.division || "").trim();
+  if (NON_PCS_DIVISIONS.has(division)) return false;
+  if (task?.target_qty === null || task?.target_qty === undefined || String(task?.target_qty).trim() === "") {
+    return false;
+  }
+  return Number.isFinite(Number(task.target_qty));
+}
+
+export function taskScopeQtyLabel(task) {
+  if (!taskHasPcsQty(task)) return TASK_QTY_EMPTY;
+  const formatted = formatIdQty(task.target_qty);
+  if (!formatted || formatted === "—") return TASK_QTY_EMPTY;
+  return `${formatted} pcs`;
 }
 
 function identityKey(task) {
