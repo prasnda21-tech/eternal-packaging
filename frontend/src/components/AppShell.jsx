@@ -75,6 +75,7 @@ const TILE_ICONS = {
   "sidebar-access": PanelLeft,
   "operator-wage": Coins,
   hpp: Scale,
+  "physical-stock": Package,
   "sales-accounting": BookOpen,
   "payroll-accounting": Wallet,
   "customer-pricing": Tags,

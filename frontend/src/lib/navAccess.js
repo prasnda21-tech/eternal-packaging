@@ -891,6 +891,7 @@ export const SETTINGS_TAB_IDS = [
   "sidebar-access",
   "operator-wage",
   "hpp",
+  "physical-stock",
   "sales-accounting",
   "payroll-accounting",
   "customer-pricing",
@@ -918,6 +919,7 @@ export const SETTINGS_TILE_TONES = {
   "sidebar-access": "blue",
   "operator-wage": "green",
   hpp: "orange",
+  "physical-stock": "emerald",
   "sales-accounting": "purple",
   "payroll-accounting": "blue",
   "customer-pricing": "green",
@@ -943,6 +945,7 @@ export const SETTINGS_TILE_LABELS = {
   "sidebar-access": "Akses Menu Sidebar",
   "operator-wage": "Sistem Upah Operator",
   hpp: "Pengaturan HPP",
+  "physical-stock": "Stok Fisik",
   "sales-accounting": "Akuntansi Penjualan",
   "payroll-accounting": "Akuntansi Payroll",
   "customer-pricing": "Harga Customer",
@@ -982,6 +985,9 @@ export function settingsNavVisible(hasPerm) {
   const hpp = canSeeNav(hasPerm, "settings.hpp.view")
     || canSeeNav(hasPerm, "settings.hpp.manage")
     || canSeeNav(hasPerm, "permissions.manage");
+  const physicalStock = canSeeNav(hasPerm, "current_stock.view")
+    || canSeeNav(hasPerm, "current_stock.update")
+    || canSeeNav(hasPerm, "permissions.manage");
   const salesAccounting = canSeeNav(hasPerm, "settings.sales_accounting.view")
     || canSeeNav(hasPerm, "settings.sales_accounting.manage")
     || canSeeNav(hasPerm, "permissions.manage");
@@ -1019,6 +1025,7 @@ export function settingsNavVisible(hasPerm) {
     "sidebar-access": Boolean(parentGranted && sidebarAccess),
     "operator-wage": Boolean(parentGranted && operatorWage),
     hpp: Boolean(parentGranted && hpp),
+    "physical-stock": Boolean(parentGranted && physicalStock),
     "sales-accounting": Boolean(parentGranted && salesAccounting),
     "payroll-accounting": Boolean(parentGranted && payrollAccounting),
     "customer-pricing": Boolean(parentGranted && customerPricing),

@@ -1,0 +1,512 @@
+/* Dense business UI for Product Detail & Stock Ledger */
+
+.product-detail-page {
+  padding: 16px 24px 40px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.product-detail-nav-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ep-primary, #0f766e);
+  text-decoration: none;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.product-detail-nav-back:hover {
+  text-decoration: underline;
+}
+
+.product-header-card {
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.product-title-group h1 {
+  margin: 0 0 6px 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink, #0f172a);
+}
+
+.product-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.badge-code {
+  font-family: 'IBM Plex Mono', monospace;
+  background: #f1f5f9;
+  color: #334155;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+}
+
+.badge-type {
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.badge-status {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.badge-status.active {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.badge-status.inactive {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.badge-accurate-ref {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* KPI Summary Cards */
+.stock-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stock-kpi-card {
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.stock-kpi-card .kpi-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.stock-kpi-card .kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink, #0f172a);
+}
+
+.stock-kpi-card .kpi-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+/* Tabs */
+.product-tabs-bar {
+  display: flex;
+  gap: 2px;
+  border-bottom: 2px solid var(--line, #e2e8f0);
+  margin-bottom: 20px;
+}
+
+.product-tab-btn {
+  background: none;
+  border: none;
+  padding: 10px 18px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #64748b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: all 0.15s ease;
+}
+
+.product-tab-btn:hover {
+  color: var(--ep-primary, #0f766e);
+}
+
+.product-tab-btn.is-active {
+  color: var(--ep-primary, #0f766e);
+  font-weight: 600;
+  border-bottom-color: var(--ep-primary, #0f766e);
+}
+
+/* Content cards */
+.product-tab-card {
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.card-section-title {
+  margin: 0 0 14px 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #334155;
+}
+
+/* Scoped table inside product detail page to override global min-width: 2480px from App.css */
+.product-detail-page .prod-table {
+  width: 100% !important;
+  max-width: 640px !important;
+  min-width: 0 !important;
+  table-layout: auto !important;
+  border-collapse: collapse;
+}
+
+.product-detail-page .prod-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line, #e2e8f0);
+}
+
+/* Form layout for Unit Conversion */
+.unit-setting-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-field label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #475569;
+}
+
+.form-field input,
+.form-field select {
+  padding: 8px 10px;
+  font-size: 13.5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.form-field input:focus,
+.form-field select:focus {
+  outline: none;
+  border-color: var(--ep-primary, #0f766e);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.15);
+}
+
+.conversion-preview-box {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 13.5px;
+  color: #334155;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conversion-preview-box strong {
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ep-primary, #0f766e);
+}
+
+/* Mutation Toolbar & Filters */
+.mutation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.mutation-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.date-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.date-range-inputs input[type="date"] {
+  padding: 6px 10px;
+  font-size: 12.5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+.filter-btn-group {
+  display: flex;
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 6px;
+}
+
+.filter-pill-btn {
+  background: transparent;
+  border: none;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #475569;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.filter-pill-btn.is-active {
+  background: #ffffff;
+  color: var(--ep-primary, #0f766e);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Mutation Ledger Table */
+.mutation-table-container {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.mutation-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.mutation-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.mutation-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  vertical-align: middle;
+}
+
+/* Whole Row Clickable UX */
+.mutation-row {
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.mutation-row:hover {
+  background-color: #f1f7f4;
+}
+
+.mutation-row:focus-visible {
+  outline: 2px solid var(--ep-primary, #0f766e);
+  outline-offset: -2px;
+}
+
+.mutation-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.mutation-tag.penerimaan {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.mutation-tag.pengiriman {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.mutation-tag.pemakaian_cetak {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.mutation-tag.koreksi {
+  background: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.qty-in {
+  color: #047857;
+  font-weight: 600;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.qty-out {
+  color: #b91c1c;
+  font-weight: 600;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.qty-saldo {
+  font-weight: 600;
+  font-family: 'IBM Plex Mono', monospace;
+  color: #0f172a;
+}
+
+.qty-dual {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.qty-dual .tx-qty {
+  font-size: 12.5px;
+}
+
+.qty-dual .base-qty {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.inner-entity-link {
+  color: var(--ep-primary, #0f766e);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.inner-entity-link:hover {
+  color: #0d5f58;
+}
+
+/* Detail Drawer */
+.mutation-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(2px);
+  z-index: 999;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mutation-drawer {
+  background: #ffffff;
+  width: 440px;
+  max-width: 90vw;
+  height: 100vh;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  animation: drawerSlideIn 0.2s ease-out;
+}
+
+@keyframes drawerSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.drawer-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.drawer-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.drawer-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.drawer-prop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drawer-prop-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13px;
+}
+
+.drawer-prop-row .prop-label {
+  color: #64748b;
+  font-weight: 500;
+  flex-shrink: 0;
+  width: 140px;
+}
+
+.drawer-prop-row .prop-value {
+  color: #0f172a;
+  text-align: right;
+  word-break: break-word;
+}
+
+.drawer-prop-row .prop-value.mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+}

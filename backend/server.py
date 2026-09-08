@@ -3068,6 +3068,38 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
     eff = await user_permissions(user)
     wage_doc = await db.app_settings.find_one({"key": OPERATOR_WAGE_SETTINGS_KEY}, {"_id": 0}) or {}
 
+    existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not existing_order:
+        raise HTTPException(404, "Order tidak ditemukan")
+    splits_pre = existing_order.get("operator_splits", [])
+    found_split_pre = next((s for s in splits_pre if s["id"] == payload.operator_id), None)
+    if found_split_pre:
+        inc_check = payload.qty
+        if inc_check is None and payload.qty_completed is not None and not found_split_pre.get("progress_entries"):
+            inc_check = int(payload.qty_completed)
+        if inc_check and int(inc_check) > 0:
+            from services.physical_stock_engine import precheck_operator_progress
+            await precheck_operator_progress(db, existing_order, found_split_pre, int(inc_check))
+
+    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
+    payload.action_id = act_id
+    claimed_stock = None
+    if found_split_pre:
+        inc_val = payload.qty
+        if inc_val is None and payload.qty_completed is not None and not found_split_pre.get("progress_entries"):
+            inc_val = int(payload.qty_completed)
+        if inc_val and int(inc_val) > 0:
+            from services.physical_stock_engine import (
+                should_claim_operator_stock,
+                claim_operator_stock,
+            )
+            if await should_claim_operator_stock(db, existing_order, found_split_pre):
+                claimed_stock = await claim_operator_stock(
+                    db, existing_order, found_split_pre, int(inc_val), act_id, user
+                )
+
+    op_applied = {}
+
     def mutate(order: dict):
         splits = order.get("operator_splits", [])
         found = next((s for s in splits if s["id"] == payload.operator_id), None)
@@ -3142,9 +3174,27 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         found["progress_entries"] = entries
         found["qty_completed"] = sum_entry_qty(entries)
         found["updated_at"] = now_iso()
+        op_applied["split"] = found
+        op_applied["increment"] = increment
+        op_applied["created"] = created
         add_timeline(order, order["current_stage"], user, note=f"Qty {found['operator_name']}: +{increment} (total {found['qty_completed']}/{found['quantity']})")
 
-    order = await _with_quantity_lock(order_id, mutate)
+    try:
+        order = await _with_quantity_lock(order_id, mutate)
+    except Exception:
+        if claimed_stock:
+            from services.physical_stock_engine import release_operator_stock
+            await release_operator_stock(db, claimed_stock)
+        raise
+
+    if claimed_stock:
+        from services.physical_stock_engine import finalize_operator_stock
+        await finalize_operator_stock(db, claimed_stock, user)
+    elif op_applied.get("created") and op_applied.get("increment", 0) > 0 and payload.action_id:
+        from services.physical_stock_engine import handle_operator_progress
+        await handle_operator_progress(
+            db, order, op_applied["split"], op_applied["increment"], payload.action_id, user
+        )
     return {"order": order}
 
 
@@ -3639,6 +3689,26 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
     """Confirm Item + Qty after reading the Surat Jalan file. Append-safe."""
     await _require_perm(user, "loading.update")
 
+    existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if existing_order and payload.lines:
+        from services.physical_stock_engine import precheck_loading_confirmed
+        await precheck_loading_confirmed(db, existing_order, [ln.model_dump() for ln in payload.lines])
+
+    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
+    payload.action_id = act_id
+    claimed_stock = None
+    if existing_order and payload.lines:
+        from services.physical_stock_engine import (
+            should_claim_loading_stock,
+            claim_loading_stock,
+        )
+        if await should_claim_loading_stock(db, existing_order):
+            claimed_stock = await claim_loading_stock(
+                db, existing_order, [ln.model_dump() for ln in payload.lines], act_id, user
+            )
+
+    record_holder = {}
+
     def _mutate(order):
         _ensure_not_cancelled(order)
         action_id = (payload.action_id or "").strip() or None
@@ -3663,11 +3733,25 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
         if not record.get("id"):
             record["id"] = str(uuid.uuid4())
             order["loading_confirmations"][-1]["id"] = record["id"]
+        record_holder["record"] = record
         names = ", ".join(f"{ln.get('name')} {ln.get('qty')}" for ln in record.get("lines") or [])
         add_timeline(order, 13, user, note=f"Konfirmasi Loading ({record.get('surat_jalan_name')}): {names}")
         _sync_workflow_stage(order)
 
-    order = await _with_quantity_lock(order_id, _mutate)
+    try:
+        order = await _with_quantity_lock(order_id, _mutate)
+    except Exception:
+        if claimed_stock:
+            from services.physical_stock_engine import release_loading_stock
+            await release_loading_stock(db, claimed_stock)
+        raise
+
+    if claimed_stock:
+        from services.physical_stock_engine import finalize_loading_stock
+        await finalize_loading_stock(db, claimed_stock, user)
+    elif record_holder.get("record"):
+        from services.physical_stock_engine import handle_loading_confirmed
+        await handle_loading_confirmed(db, order, record_holder["record"], user)
     await _audit_po(order, "loading.confirm", user, note=payload.surat_jalan_id)
     return {"order": _strip_sj_bytes(order)}
 
@@ -3783,7 +3867,23 @@ class PackingInfoPayload(BaseModel):
 async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Depends(current_user)):
     """Save Qty Packing per line. qty_packed total = SUM(lines) untuk downstream."""
     await _require_perm(user, "packing.update")
+    existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    line_incs = [{"line_idx": x.line_idx, "qty": x.qty, "action_id": x.action_id} for x in (payload.lines or []) if x.qty is not None]
+    if existing_order and line_incs:
+        from services.physical_stock_engine import precheck_packing_completed
+        await precheck_packing_completed(db, existing_order, line_incs)
+
+    claimed_stock = None
+    if existing_order and line_incs:
+        from services.physical_stock_engine import (
+            should_claim_packing_stock,
+            claim_packing_stock,
+        )
+        if await should_claim_packing_stock(db, existing_order):
+            claimed_stock = await claim_packing_stock(db, existing_order, line_incs, user)
+
     before_holder = {}
+    incs_holder = []
 
     def mutate(order: dict):
         pi = order.get("packing_info") or {}
@@ -3816,6 +3916,8 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
             if err:
                 raise HTTPException(400, err)
             merged, new_events = _qr_apply_packing_increments(order, incs)
+            incs_holder.clear()
+            incs_holder.extend(incs)
             stamped = []
             for ev in new_events:
                 if ev.get("created_at"):
@@ -3893,7 +3995,20 @@ async def save_packing_info(order_id: str, payload: PackingInfoPayload, user=Dep
         add_timeline(order, 11, user, note=f"Qty Packing: {total} pcs ({detail or 'per line'})")
         _qr_apply_confirmed_packing_progress(order)
 
-    order = await _with_quantity_lock(order_id, mutate)
+    try:
+        order = await _with_quantity_lock(order_id, mutate)
+    except Exception:
+        if claimed_stock:
+            from services.physical_stock_engine import release_packing_stock
+            await release_packing_stock(db, claimed_stock)
+        raise
+
+    if claimed_stock:
+        from services.physical_stock_engine import finalize_packing_stock
+        await finalize_packing_stock(db, claimed_stock, user)
+    elif incs_holder:
+        from services.physical_stock_engine import handle_packing_completed
+        await handle_packing_completed(db, order, incs_holder, user)
     await _audit_po(order, "packing.update", user,
                     before={"qty_packed": before_holder.get("qty_packed"), "lines": before_holder.get("lines")},
                     after={"qty_packed": (order.get("packing_info") or {}).get("qty_packed"),
@@ -4256,7 +4371,25 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     if action_id:
         action_id = str(action_id).strip() or None
 
+    existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if existing_order:
+        from services.physical_stock_engine import precheck_delivery_confirmed
+        await precheck_delivery_confirmed(db, existing_order, existing_order.get("line_items") or [])
+
+    act_id = action_id or str(uuid.uuid4())
+    claimed_stock = None
+    if existing_order:
+        from services.physical_stock_engine import (
+            should_claim_delivery_confirmed_stock,
+            claim_delivery_confirmed_stock,
+        )
+        if await should_claim_delivery_confirmed_stock(db, existing_order):
+            claimed_stock = await claim_delivery_confirmed_stock(
+                db, existing_order, existing_order.get("line_items") or [], act_id, user
+            )
+
     frozen_sig_holder = {"sig": None, "driver_sig": None}
+    conf_holder = {}
 
     def mutate(order: dict):
         ids = list(order.get("delivery_confirm_action_ids") or [])
@@ -4279,6 +4412,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         conf = _append_delivery_confirmation(
             order, user, qty_increment=increment, now=now, action_id=action_id,
         )
+        conf_holder["conf"] = conf
         try:
             from services.delivery_pod_signature import (
                 freeze_active_signature,
@@ -4320,7 +4454,20 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             ids.append(action_id)
             order["delivery_confirm_action_ids"] = ids[-20:]
 
-    order = await _with_quantity_lock(order_id, mutate)
+    try:
+        order = await _with_quantity_lock(order_id, mutate)
+    except Exception:
+        if claimed_stock:
+            from services.physical_stock_engine import release_delivery_confirmed_stock
+            await release_delivery_confirmed_stock(db, claimed_stock)
+        raise
+
+    if claimed_stock:
+        from services.physical_stock_engine import finalize_delivery_confirmed_stock
+        await finalize_delivery_confirmed_stock(db, claimed_stock, user)
+    elif conf_holder.get("conf"):
+        from services.physical_stock_engine import handle_delivery_confirmed
+        await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
     # Generate signed SJ after persist — document rendering only (no qty mutation)
     sig = frozen_sig_holder.get("sig")
     driver_sig = frozen_sig_holder.get("driver_sig")
@@ -6529,6 +6676,8 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "created_at": now,
         "updated_at": now,
     }
+    from services.physical_stock_engine import attach_order_stock_snapshot
+    await attach_order_stock_snapshot(db, new)
     await db.orders.insert_one(new)
     # If we have a source PDF uploaded during preview, record it in db.files
     # so the /api/files/{path} route (soft-delete aware) can serve it.
@@ -7434,6 +7583,9 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "updated_at": now,
     }
 
+    from services.physical_stock_engine import attach_order_stock_snapshot
+    await attach_order_stock_snapshot(db, new_order)
+
     try:
         await db.orders.insert_one(new_order)
     except DuplicateKeyError:
@@ -8191,6 +8343,152 @@ async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
             "Gagal sinkronisasi Barang/Jasa dari Accurate. Data existing tidak diubah.",
         )
     return result
+
+
+class UnitConversionPayload(BaseModel):
+    transaction_uom: Optional[str] = None
+    base_uom: Optional[str] = None
+    conversion_factor: Optional[float] = None
+
+
+@api_router.get("/master-items/{item_id}/detail")
+async def master_item_detail_get(
+    item_id: str,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Pure read. Returns product info, unit setting, and authoritative stock summary."""
+    item = await db.master_items.find_one({"$or": [{"id": item_id}, {"accurate_item_id": item_id}]}, {"_id": 0})
+    if not item:
+        raise HTTPException(404, f"Produk '{item_id}' tidak ditemukan")
+
+    mid = item["id"]
+    from services.product_unit_conversion import get_product_unit_setting
+    from services.product_stock_state import get_product_stock_state
+
+    unit_setting = await get_product_unit_setting(db, mid)
+    base_uom = (unit_setting or {}).get("base_uom") or item.get("unit") or "PCS"
+    tx_uom = (unit_setting or {}).get("transaction_uom") or base_uom
+    factor = (unit_setting or {}).get("conversion_factor") or 1.0
+
+    stock_state = await get_product_stock_state(db, mid)
+    if stock_state and stock_state.get("initialized") and stock_state.get("status") == "INITIALIZED":
+        stock_summary = {
+            "stock_total": stock_state.get("total_qty"),
+            "stock_unprinted_cup": stock_state.get("unprinted_qty"),
+            "stock_printed_cup": stock_state.get("printed_qty"),
+            "base_uom": stock_state.get("base_uom") or base_uom,
+            "transaction_uom": tx_uom,
+            "conversion_factor": factor,
+            "authority_status": "TERSEDIA",
+            "initialized_at": stock_state.get("initialized_at"),
+            "initialized_by": stock_state.get("initialized_by"),
+        }
+    else:
+        stock_summary = {
+            "stock_total": None,
+            "stock_unprinted_cup": None,
+            "stock_printed_cup": None,
+            "base_uom": base_uom,
+            "transaction_uom": tx_uom,
+            "conversion_factor": factor,
+            "authority_status": "BELUM_TERSEDIA",
+        }
+
+    return {
+        "item": item,
+        "unit_setting": unit_setting or {
+            "master_item_id": mid,
+            "accurate_item_id": item.get("accurate_item_id"),
+            "transaction_uom": tx_uom,
+            "base_uom": base_uom,
+            "conversion_factor": factor,
+        },
+        "stock_summary": stock_summary,
+        "stock_state": stock_state,
+    }
+
+
+@api_router.put("/master-items/{item_id}/unit-conversion")
+async def master_item_unit_conversion_put(
+    item_id: str,
+    payload: UnitConversionPayload,
+    user=Depends(current_user),
+):
+    """Save or update product unit conversion setting."""
+    await _require_any_perm(user, "current_stock.update", "master_items.sync")
+    from services.product_unit_conversion import save_product_unit_setting
+    setting = await save_product_unit_setting(db, item_id, payload.model_dump(), user)
+    return {"unit_setting": setting, "message": "Pengaturan konversi satuan berhasil disimpan"}
+
+
+@api_router.post("/master-items/{item_id}/opening-balance")
+async def master_item_opening_balance_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """Atomically initialize physical stock opening balance for an exact product."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.product_stock_state import initialize_opening_balance
+    res = await initialize_opening_balance(db, item_id, payload, user=user)
+    return res
+
+
+@api_router.get("/master-items/{item_id}/mutations")
+async def master_item_mutations_get(
+    item_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    movement_type: Optional[str] = None,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Pure read. Returns paginated stock movements for a product."""
+    from services.stock_ledger import list_product_mutations
+    return await list_product_mutations(
+        db,
+        item_id,
+        start_date=start_date,
+        end_date=end_date,
+        movement_type=movement_type,
+        q=q,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@api_router.get("/master-items/{item_id}/mutations/{mutation_id}")
+async def master_item_mutation_detail_get(
+    item_id: str,
+    mutation_id: str,
+    user=Depends(require_perm("master_items.view")),
+):
+    """Pure read. Returns detail of a single stock movement."""
+    from services.stock_ledger import get_mutation_detail
+    detail = await get_mutation_detail(db, mutation_id)
+    if not detail:
+        raise HTTPException(404, "Detail mutasi tidak ditemukan")
+    return {"mutation": detail}
+
+
+@api_router.get("/settings/physical-stock")
+async def physical_stock_settings_get(user=Depends(current_user)):
+    """Pure read. Returns physical stock configuration."""
+    await _require_any_perm(user, "current_stock.view", "current_stock.update", "permissions.manage")
+    from services.physical_stock_settings import get_physical_stock_settings
+    settings = await get_physical_stock_settings(db)
+    return {"settings": settings}
+
+
+@api_router.put("/settings/physical-stock")
+async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(current_user)):
+    """Update physical stock configuration."""
+    await _require_any_perm(user, "current_stock.update", "permissions.manage")
+    from services.physical_stock_settings import update_physical_stock_settings
+    settings = await update_physical_stock_settings(db, payload, user=user)
+    return {"settings": settings, "message": "Pengaturan stok fisik berhasil disimpan"}
 
 
 class CurrentStockPatch(BaseModel):

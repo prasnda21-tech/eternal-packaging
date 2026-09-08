@@ -26,6 +26,11 @@ from services.purchase_common import (
     next_dated_seq,
 )
 from services.purchase_requests import get_purchase_request
+from services.physical_stock_engine import (
+    attach_po_stock_snapshot,
+    handle_purchase_order_created,
+    precheck_purchase_order_lines,
+)
 
 COLLECTION = "purchase_orders"
 GR_COLLECTION = "purchase_goods_receipts"
@@ -171,6 +176,7 @@ async def create_purchase_order(db, payload: Dict[str, Any], user: dict) -> dict
         if idem:
             existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
             if existing:
+                await handle_purchase_order_created(db, existing, user)
                 return await enrich_purchase_order(db, existing)
 
         preview = await get_request_po_preview(db, request_id)
@@ -257,10 +263,14 @@ async def create_purchase_order(db, payload: Dict[str, Any], user: dict) -> dict
         if idem:
             doc["idempotency_key"] = idem
 
+        snapshot = await attach_po_stock_snapshot(db, doc)
+        await precheck_purchase_order_lines(db, doc["lines"], snapshot)
+
         async def _alloc():
             return await next_dated_seq(db, COLLECTION, "po_number", PREFIX_PURCHASE_ORDER)
 
         saved = await insert_with_unique_number(db, COLLECTION, "po_number", doc, _alloc)
+        await handle_purchase_order_created(db, saved, user)
         return await enrich_purchase_order(db, saved)
 
 
