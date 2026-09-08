@@ -29,6 +29,23 @@ describe("MobileTaskCard schedule fields", () => {
     });
   };
 
+  test("canonical customer wins over outlet", () => {
+    renderCard({
+      task_id: "screener:po-c:po:-",
+      order_id: "po-c",
+      order_number: "PO-C",
+      customer: "PT ABC",
+      customer_name: "",
+      outlet: "Yogyakarta",
+      item: "Cup",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector(".mop-card-title").textContent).toBe("PT ABC");
+    expect(container.textContent).not.toMatch(/Customer[\s\S]*Yogyakarta/);
+  });
+
   test("renders operator, work date, and deadline in dd/mm/yy", () => {
     renderCard({
       task_id: "operator:po-1:0:s1",

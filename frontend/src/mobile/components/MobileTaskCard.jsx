@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
 import MobileStatusBadge from "./MobileStatusBadge";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
 import {
@@ -24,7 +25,7 @@ export default function MobileTaskCard({ task, workspaceId }) {
       data-line-idx={task.line_idx ?? ""}
     >
       <div className="mop-card-kicker">{task.order_number}</div>
-      <div className="mop-card-title">{task.customer_name || "—"}</div>
+      <div className="mop-card-title">{getCanonicalCustomerName(task)}</div>
       <div className="mop-task-facts">
         <div className="mop-task-fact" data-testid="mobile-task-operator">
           <span className="mop-task-fact-label">Operator</span>

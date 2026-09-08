@@ -9,6 +9,7 @@ import {
   proofUploadUserError,
 } from "../../lib/deliveryProof";
 import { compressImage } from "../../lib/imageCompress";
+import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
 import { deliveryAddressFromOrder, mapsSearchUrl } from "../../lib/mobileWorkspaces";
 import { applyLocalSignature } from "../../lib/mobileSignature";
 import { fileUrl } from "../../lib/api";
@@ -95,7 +96,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
       <div className="mop-ws-header"><h2>PENGIRIMAN</h2></div>
       <div className="mop-file">
         <span>Customer</span>
-        <strong className="mop-card-title" style={{ display: "block" }}>{order.customer_name || order.outlet || "—"}</strong>
+        <strong className="mop-card-title" style={{ display: "block" }} data-testid="mobile-delivery-customer">{getCanonicalCustomerName(order)}</strong>
         <p>{address || "Alamat tidak tersedia"}</p>
         {maps ? (
           <a className="mop-btn-primary" style={{ display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }} href={maps} target="_blank" rel="noreferrer">

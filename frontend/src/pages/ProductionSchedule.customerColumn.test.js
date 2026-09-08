@@ -21,6 +21,13 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toContain("customer");
   });
 
+  test("customer cell stays canonical and outlet stays a separate column", () => {
+    expect(cellsSrc).toMatch(/case "customer":\s*return <strong>\{row\.customer \|\| "-"\}<\/strong>/);
+    expect(cellsSrc).toMatch(/case "outlet":\s*return row\.outlet \|\| "-"/);
+    expect(cellsSrc).not.toMatch(/row\.customer \|\| row\.outlet/);
+    expect(cellsSrc).not.toMatch(/row\.customer_name \|\| row\.outlet/);
+  });
+
   test("customer today highlight remains on the customer cell", () => {
     expect(cellsSrc).toMatch(/prod-customer-\$\{row\.po_number\}/);
     expect(cellsSrc).toMatch(/prod-cell-today/);
