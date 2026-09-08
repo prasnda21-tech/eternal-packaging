@@ -2012,7 +2012,7 @@ export default function Settings() {
   // Bare /settings keeps the existing hub. Child routes (/settings/:tab or ?tab=) show content only —
   // Pengaturan flyout is now the navigation, so the in-page card grid must not duplicate it.
   const showCategoryNav = location.pathname === "/settings" && !urlTab;
-  const initialTab = urlTab || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
+  const initialTab = urlTab || (canViewUsers ? "employees" : canManagePerms ? "roles" : canViewSidebarAccess ? "sidebar-access" : canViewWage ? "operator-wage" : canViewHpp ? "hpp" : canViewPhysicalStock ? "physical-stock" : canViewHrPayroll ? "hr-payroll" : canViewCaSettings ? "customer-approval" : canViewDdSettings ? "delivery-deadline" : canViewAudit ? "audit" : "employees");
   const [tab, setTab] = useState(initialTab);
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === tab);
   const [catalog, setCatalog] = useState(null);
