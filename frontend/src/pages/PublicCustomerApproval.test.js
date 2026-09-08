@@ -17,7 +17,7 @@ describe("Customer approval public wording", () => {
     expect(src).toMatch(/resolvePublicApprovalDesignUrl/);
     expect(src).toMatch(/href=\{designUrl\}/);
     expect(src).toMatch(/target="_blank"/);
-    expect(src).toMatch(/Buka Design PDF/);
+    expect(src).toMatch(/Buka di Tab Baru/);
     expect(src).not.toMatch(/download=\{view\.design_file\.name\}/);
     expect(src).not.toMatch(/href=\{url\}/);
   });
@@ -39,6 +39,14 @@ describe("Customer approval public wording", () => {
     expect(src).toMatch(/Download PDF/);
     expect(src).toMatch(/Lihat PDF/);
     expect(src).toMatch(/Tutup Preview/);
+  });
+
+  test("all 3 PDF action buttons (Lihat PDF, Buka di Tab Baru, Download PDF) are present together in actions row", () => {
+    expect(src).toMatch(/data-testid="public-approval-design-pdf-actions"/);
+    expect(src).toMatch(/data-testid="public-approval-design-pdf-toggle"/);
+    expect(src).toMatch(/data-testid="public-approval-design-pdf-open"/);
+    expect(src).toMatch(/data-testid="public-approval-design-pdf-download"/);
+    expect(src).toMatch(/Buka di Tab Baru/);
   });
 
   test("desktop fallback message informs user clearly when inline rendering fails", () => {
