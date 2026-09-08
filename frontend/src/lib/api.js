@@ -34,7 +34,12 @@ export const api = {
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
   me: () => client.get("/auth/me").then((r) => r.data),
   systemHealth: () => client.get("/system/health").then((r) => r.data),
-  listOrders: (status) => client.get("/orders", { params: status ? { status } : {} }).then((r) => r.data),
+  listOrders: (status, extra) => client.get("/orders", {
+    params: {
+      ...(status ? { status } : {}),
+      ...(extra && typeof extra === "object" ? extra : {}),
+    },
+  }).then((r) => r.data),
   cancelPO: (id, reason) => client.post(`/orders/${id}/cancel`, { reason }).then((r) => r.data),
   deleteImpact: (id) => client.get(`/orders/${id}/delete-impact`).then((r) => r.data),
   deletePO: (id, reason, confirm) => client.delete(`/orders/${id}`, { data: { reason, confirm } }).then((r) => r.data),

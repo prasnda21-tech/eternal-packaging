@@ -15,6 +15,7 @@ describe("mobile route wiring", () => {
   const ordersPage = fs.readFileSync(path.join(__dirname, "../mobile/MobileOrdersPage.jsx"), "utf8");
   const tasksPage = fs.readFileSync(path.join(__dirname, "../mobile/MobileTasksPage.jsx"), "utf8");
   const schedulePage = fs.readFileSync(path.join(__dirname, "../mobile/MobileProductionSchedulePage.jsx"), "utf8");
+  const mobileSchedule = fs.readFileSync(path.join(__dirname, "../lib/mobileSchedule.js"), "utf8");
   const bottomNav = fs.readFileSync(path.join(__dirname, "../mobile/MobileBottomNav.jsx"), "utf8");
 
   test("mobile namespace is outside AppShell", () => {
@@ -74,7 +75,7 @@ describe("mobile route wiring", () => {
   });
 
   test("orders list uses canonical listOrders and cannot stay loading after error", () => {
-    expect(ordersPage).toMatch(/api\.listOrders\("aktif"\)/);
+    expect(ordersPage).toMatch(/api\.listOrders\("aktif", \{ view: "summary" \}\)/);
     expect(ordersPage).not.toMatch(/api\.getOrder\(/);
     expect(ordersPage).toMatch(/formatApiError/);
     expect(ordersPage).toMatch(/Coba Lagi/);
@@ -84,13 +85,15 @@ describe("mobile route wiring", () => {
 
   test("schedule page uses production dashboard once and cannot stay loading after error", () => {
     expect(schedulePage).toMatch(/api\.productionDashboard/);
+    expect(schedulePage).toMatch(/mobileProductionDashboardParams/);
+    expect(mobileSchedule).toMatch(/view: "summary"/);
     expect(schedulePage).not.toMatch(/api\.getOrder\(/);
     expect(schedulePage).toMatch(/formatApiError/);
     expect(schedulePage).toMatch(/Coba Lagi/);
     expect(schedulePage).toMatch(/Belum ada jadwal produksi\./);
     expect(schedulePage).toMatch(/if \(!cancelled\) setLoading\(false\)/);
     expect(schedulePage).toMatch(/canViewMobileSchedule/);
-    expect(schedulePage).toMatch(/mop-schedule-table/);
+    expect(schedulePage).toMatch(/production-sheet-table/);
     expect(schedulePage).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS/);
     expect(schedulePage).toMatch(/applyProductionFilters/);
     expect(schedulePage).toMatch(/FILTER_DEFAULTS/);
@@ -100,17 +103,20 @@ describe("mobile route wiring", () => {
     expect(app).toMatch(/path="\/m" element=\{<Navigate to="\/m\/tasks"/);
   });
 
-  test("schedule badge zoom is scoped to mop-schedule-table and does not change desktop App.css", () => {
-    const css = fs.readFileSync(path.join(__dirname, "./mobile.css"), "utf8");
+  test("schedule badge zoom is shared spreadsheet CSS, not a page-zoom API", () => {
+    const css = fs.readFileSync(path.join(__dirname, "../productionSheet.css"), "utf8");
     const appCss = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
-    expect(css).toMatch(/\.mop-schedule-table \.urgent-badge/);
-    expect(css).toMatch(/\.mop-schedule-table \.standard-badge/);
-    expect(css).toMatch(/\.mop-schedule-table \.pill\.sm/);
-    expect(css).toMatch(/font-size:\s*calc\(10\.5px \* var\(--mop-sched-zoom\)\)/);
-    expect(css).toMatch(/padding:\s*calc\(3px \* var\(--mop-sched-zoom\)\) calc\(7px \* var\(--mop-sched-zoom\)\)/);
+    const mobileCss = fs.readFileSync(path.join(__dirname, "./mobile.css"), "utf8");
+    expect(css).toMatch(/\.production-sheet-table \.urgent-badge/);
+    expect(css).toMatch(/\.production-sheet-table \.standard-badge/);
+    expect(css).toMatch(/\.production-sheet-table \.pill\.sm/);
+    expect(css).toMatch(/font-size:\s*calc\(9px \* var\(--production-sheet-zoom/);
+    expect(css).toMatch(/padding:\s*calc\(1px \* var\(--production-sheet-zoom/);
+    expect(css).not.toMatch(/transform:\s*scale\(/);
     expect(appCss).toMatch(/\.urgent-badge,\.standard-badge,\.status\{font:10\.5px 'IBM Plex Mono'/);
     expect(appCss).not.toMatch(/mop-sched-zoom/);
-    expect(appCss).not.toMatch(/mop-schedule-table/);
+    expect(mobileCss).not.toMatch(/mop-schedule-zoom-btn/);
+    expect(mobileCss).not.toMatch(/--mop-sched-zoom/);
   });
 
   test("tasks page uses one division-tasks request and sorts without extra fetches", () => {

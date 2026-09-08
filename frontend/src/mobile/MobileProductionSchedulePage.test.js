@@ -5,11 +5,14 @@ import { FILTER_DEFAULTS } from "../lib/productionScheduleFilters";
 import { PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/productionScheduleTable";
 import { formatIdQty } from "../lib/productionScheduleQty";
 import {
-  MOBILE_SCHEDULE_ZOOM_DEFAULT,
-  MOBILE_SCHEDULE_ZOOM_FIT,
-  MOBILE_SCHEDULE_ZOOM_MAX,
-  MOBILE_SCHEDULE_ZOOM_MIN,
-} from "../lib/mobileSchedule";
+  PRODUCTION_SHEET_ZOOM_CSS_VAR,
+  PRODUCTION_SHEET_ZOOM_DEFAULT,
+  PRODUCTION_SHEET_ZOOM_MAX,
+  PRODUCTION_SHEET_ZOOM_MIN,
+  PRODUCTION_SHEET_ZOOM_STORAGE_KEY,
+  productionSheetZoomFromPinch,
+  productionSheetZoomFromWheel,
+} from "../lib/productionSheetZoom";
 import MobileProductionSchedulePage, { scheduleLoadErrorMessage } from "./MobileProductionSchedulePage";
 
 const mockHasPerm = jest.fn(() => false);
@@ -17,6 +20,7 @@ const mockNavigate = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
+  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
@@ -66,8 +70,8 @@ const sampleRows = [
     payment_status: "Approved",
     packing_status: "Belum",
     operators: [
-      { line_idx: 0, line_id: "lid-a", line_name: "Cup 16oz", operator_name: "Budi", quantity: 10000, line_printable: true },
-      { line_idx: 2, line_id: "lid-b", line_name: "Cup 16oz", operator_name: "Sari", quantity: 500, line_printable: true },
+      { split_id: "s1", line_idx: 0, line_id: "lid-a", line_name: "Cup 16oz", operator_name: "Budi", quantity: 10000, line_printable: true, work_date: "2026-08-25" },
+      { split_id: "s2", line_idx: 2, line_id: "lid-b", line_name: "Cup 16oz", operator_name: "Sari", quantity: 500, line_printable: true, work_date: "2026-08-26" },
     ],
   },
   {
@@ -97,6 +101,7 @@ describe("scheduleLoadErrorMessage", () => {
 describe("MobileProductionSchedulePage", () => {
   let container;
   let root;
+  let rafNow = 0;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -109,11 +114,22 @@ describe("MobileProductionSchedulePage", () => {
     api.productionExport.mockReset();
     api.getOrder.mockReset();
     api.listOrders.mockReset();
+    window.localStorage.clear();
+    rafNow = 0;
+    jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => (
+      window.setTimeout(() => {
+        rafNow += 1000 / 120;
+        cb(rafNow);
+      }, 0)
+    ));
+    jest.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => window.clearTimeout(id));
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    window.requestAnimationFrame.mockRestore();
+    window.cancelAnimationFrame.mockRestore();
   });
 
   const renderPage = async () => {
@@ -121,8 +137,42 @@ describe("MobileProductionSchedulePage", () => {
     await flush();
   };
 
-  const zoomVar = () => container.querySelector('[data-testid="mobile-schedule-table"]')
-    ?.style.getPropertyValue("--mop-sched-zoom");
+  const zoomVar = () => container.querySelector('[data-testid="mobile-schedule-scroll"]')
+    ?.style.getPropertyValue(PRODUCTION_SHEET_ZOOM_CSS_VAR);
+
+  const flushRaf = async () => {
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    });
+  };
+
+  const flushZoom = async () => {
+    for (let i = 0; i < 40; i += 1) await flushRaf();
+  };
+
+  const wheelCtrl = async (viewport, deltaY, times = 1) => {
+    for (let i = 0; i < times; i += 1) {
+      await act(async () => {
+        viewport.dispatchEvent(new WheelEvent("wheel", {
+          ctrlKey: true, deltaY, bubbles: true, cancelable: true,
+        }));
+      });
+      await flushRaf();
+    }
+  };
+
+  const dispatchTouches = (viewport, type, points) => {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "touches", {
+      value: points.map((point, identifier) => ({
+        identifier,
+        clientX: point.x,
+        clientY: point.y,
+      })),
+    });
+    viewport.dispatchEvent(event);
+    return event;
+  };
 
   test("initial loading state renders", async () => {
     let resolveDash;
@@ -139,13 +189,18 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.productionDashboard).toHaveBeenCalledWith({
       include_cancelled: FILTER_DEFAULTS.includeCancelled,
       include_completed: FILTER_DEFAULTS.includeCompleted,
+      view: "summary",
     });
     expect(container.querySelector('[data-testid="mobile-schedule-prev"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-today"]')).toBeFalsy();
     expect(container.textContent).not.toContain("pada tanggal ini");
     const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
     expect(headers).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
-    expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(2);
+    const opNames = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-name')].map((el) => el.textContent);
+    expect(opNames).toEqual(["Budi", "Sari"]);
+    expect(opNames.every((name) => !name.includes("Budi") || name === "Budi")).toBe(true);
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-name').textContent).not.toMatch(/Budi.*Sari|Sari.*Budi/);
     expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-0"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-1"]')).toBeTruthy();
     expect(container.textContent).toContain("Budi");
@@ -155,12 +210,13 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.textContent).toContain("Belum Dijadwalkan");
     expect(container.textContent).toContain(`${formatIdQty(10000)} / ${formatIdQty(20000)}`);
     expect(container.textContent).toContain("OVERDUE");
-    expect(container.querySelector(".mop-schedule-table .urgent-badge")).toBeTruthy();
+    expect(container.querySelector(".production-sheet-table .urgent-badge")).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-count"]').textContent).toBe("2 / 2 entri");
     expect(container.querySelector('[data-testid="mobile-schedule-include-completed"]').checked).toBe(true);
     expect(container.querySelector('[data-testid="mobile-schedule-include-cancelled"]').checked).toBe(false);
     expect(api.getOrder).not.toHaveBeenCalled();
     expect(api.listOrders).not.toHaveBeenCalled();
+    expect(api.productionExport).not.toHaveBeenCalled();
   });
 
   test("empty canonical dataset shows Belum ada jadwal produksi", async () => {
@@ -168,7 +224,7 @@ describe("MobileProductionSchedulePage", () => {
     await renderPage();
     expect(container.textContent).toContain("Belum ada jadwal produksi.");
     expect(container.textContent).not.toContain("pada tanggal ini");
-    expect(container.querySelector("table.mop-schedule-table")).toBeFalsy();
+    expect(container.querySelector("table.production-sheet-table")).toBeFalsy();
   });
 
   test("API error shows Gagal memuat and Coba Lagi", async () => {
@@ -178,7 +234,7 @@ describe("MobileProductionSchedulePage", () => {
     await renderPage();
     expect(container.textContent).toContain("Gagal memuat jadwal produksi.");
     expect(container.textContent).toContain("Coba Lagi");
-    expect(container.querySelector("table.mop-schedule-table")).toBeFalsy();
+    expect(container.querySelector("table.production-sheet-table")).toBeFalsy();
   });
 
   test("Coba Lagi retries and then renders data", async () => {
@@ -218,6 +274,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.productionDashboard).toHaveBeenLastCalledWith({
       include_cancelled: false,
       include_completed: false,
+      view: "summary",
     });
   });
 
@@ -230,6 +287,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.productionDashboard).toHaveBeenLastCalledWith({
       include_cancelled: true,
       include_completed: true,
+      view: "summary",
     });
   });
 
@@ -253,9 +311,10 @@ describe("MobileProductionSchedulePage", () => {
   test("row click opens mobile PO detail without workspace query", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
-    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
-    expect(row.getAttribute("data-to")).toBe("/m/orders/po-1");
-    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const rows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')];
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.getAttribute("data-to") === "/m/orders/po-1")).toBe(true);
+    await act(async () => { rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
   });
 
@@ -264,64 +323,123 @@ describe("MobileProductionSchedulePage", () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
     expect(container.querySelector('[data-testid="mobile-schedule-forbidden"]')).toBeTruthy();
-    expect(container.querySelector("table.mop-schedule-table")).toBeFalsy();
+    expect(container.querySelector("table.production-sheet-table")).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-zoom"]')).toBeFalsy();
     expect(api.productionDashboard).not.toHaveBeenCalled();
   });
 
-  test("zoom default is 100% and plus/minus/fit only change the grid", async () => {
+  test("default spreadsheet zoom is applied without +/- Fit controls", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe(`${MOBILE_SCHEDULE_ZOOM_DEFAULT}%`);
-    expect(zoomVar()).toBe("1");
-    const poBefore = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]').textContent;
-    await act(async () => {
-      container.querySelector('[data-testid="mobile-schedule-zoom-in"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe("110%");
-    await act(async () => {
-      container.querySelector('[data-testid="mobile-schedule-zoom-fit"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe(`${MOBILE_SCHEDULE_ZOOM_FIT}%`);
-    expect(zoomVar()).toBe("0.7");
-    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]').textContent).toBe(poBefore);
+    expect(zoomVar()).toBe(String(PRODUCTION_SHEET_ZOOM_DEFAULT));
+    expect(container.querySelector('[data-testid="mobile-schedule-zoom"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-zoom-in"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-zoom-out"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-zoom-fit"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]')).toBeFalsy();
+    expect(container.textContent).not.toMatch(/\bFit\b/);
     expect(container.querySelector('[data-testid="mobile-topbar"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom"]').style.getPropertyValue("--mop-sched-zoom")).toBe("");
   });
 
-  test("zoom clamps at minimum and maximum", async () => {
+  test("Ctrl + wheel changes sheet zoom and plain wheel does not", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
-    const minus = container.querySelector('[data-testid="mobile-schedule-zoom-out"]');
-    const plus = container.querySelector('[data-testid="mobile-schedule-zoom-in"]');
-    for (let i = 0; i < 8; i += 1) {
-      await act(async () => { minus.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    }
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe(`${MOBILE_SCHEDULE_ZOOM_MIN}%`);
-    await act(async () => { minus.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe(`${MOBILE_SCHEDULE_ZOOM_MIN}%`);
-    for (let i = 0; i < 12; i += 1) {
-      await act(async () => { plus.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    }
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe(`${MOBILE_SCHEDULE_ZOOM_MAX}%`);
-    expect(zoomVar()).toBe("1.5");
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    const before = zoomVar();
+    await act(async () => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { ctrlKey: false, deltaY: 120, bubbles: true, cancelable: true }));
+    });
+    await flushRaf();
+    expect(zoomVar()).toBe(before);
+    await act(async () => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { ctrlKey: true, deltaY: -80, bubbles: true, cancelable: true }));
+    });
+    await flushRaf();
+    await flushRaf();
+    expect(window.localStorage.getItem(PRODUCTION_SHEET_ZOOM_STORAGE_KEY)).toBeNull();
+    const afterOne = Number(zoomVar());
+    const target = productionSheetZoomFromWheel(PRODUCTION_SHEET_ZOOM_DEFAULT, -80);
+    expect(afterOne).toBeGreaterThan(Number(before));
+    expect(afterOne).toBeLessThan(target);
+    await flushZoom();
+    expect(Number(zoomVar())).toBe(target);
+  });
+
+  test("sheet zoom clamps at min and max", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    await wheelCtrl(viewport, 800, 20);
+    await flushZoom();
+    expect(zoomVar()).toBe(String(PRODUCTION_SHEET_ZOOM_MIN));
+    await wheelCtrl(viewport, 800, 4);
+    expect(zoomVar()).toBe(String(PRODUCTION_SHEET_ZOOM_MIN));
+    await wheelCtrl(viewport, -800, 30);
+    await flushZoom();
+    expect(zoomVar()).toBe(String(PRODUCTION_SHEET_ZOOM_MAX));
+    await wheelCtrl(viewport, -800, 4);
+    expect(zoomVar()).toBe(String(PRODUCTION_SHEET_ZOOM_MAX));
+  });
+
+  test("Ctrl+wheel preserves scroll position instead of resetting", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    viewport.scrollLeft = 120;
+    viewport.scrollTop = 48;
+    await wheelCtrl(viewport, -80, 1);
+    expect(viewport.scrollLeft).not.toBe(0);
+    expect(viewport.scrollTop).not.toBe(0);
+  });
+
+  test("pinch uses initial distance and suppresses row click after movement", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    await act(async () => {
+      dispatchTouches(viewport, "touchstart", [{ x: 10, y: 10 }, { x: 110, y: 10 }]);
+      dispatchTouches(viewport, "touchmove", [{ x: 10, y: 10 }, { x: 160, y: 10 }]);
+    });
+    await flushZoom();
+    expect(Number(zoomVar())).toBe(productionSheetZoomFromPinch(PRODUCTION_SHEET_ZOOM_DEFAULT, 100, 150));
+    await act(async () => {
+      dispatchTouches(viewport, "touchend", []);
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  test("localStorage preference restores spreadsheet zoom", async () => {
+    window.localStorage.setItem(PRODUCTION_SHEET_ZOOM_STORAGE_KEY, "1.2");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    expect(zoomVar()).toBe("1.2");
   });
 
   test("deadline badges stay inside the zoomed schedule table", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
     const table = container.querySelector('[data-testid="mobile-schedule-table"]');
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
     const overdue = [...table.querySelectorAll(".urgent-badge")].find((el) => el.textContent === "OVERDUE");
     expect(overdue).toBeTruthy();
     expect(table.contains(overdue)).toBe(true);
-    const minus = container.querySelector('[data-testid="mobile-schedule-zoom-out"]');
-    for (let i = 0; i < 8; i += 1) {
-      await act(async () => { minus.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    }
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom-value"]').textContent).toBe("50%");
-    expect(zoomVar()).toBe("0.5");
-    expect(table.getAttribute("style")).toContain("--mop-sched-zoom");
-    expect(table.querySelector(".urgent-badge").textContent).toBe("OVERDUE");
-    expect(container.querySelector('[data-testid="mobile-schedule-zoom"]').querySelector(".urgent-badge")).toBeFalsy();
+    await act(async () => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { ctrlKey: true, deltaY: 4000, bubbles: true, cancelable: true }));
+    });
+    await flushRaf();
+    await flushRaf();
+    expect(Number(zoomVar())).toBeLessThan(PRODUCTION_SHEET_ZOOM_DEFAULT);
+    expect(viewport.getAttribute("style")).toContain(PRODUCTION_SHEET_ZOOM_CSS_VAR);
+    expect([...table.querySelectorAll(".urgent-badge")].some((el) => el.textContent === "OVERDUE")).toBe(true);
+  });
+
+  test("row navigation remains available outside a zoom gesture", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
   });
 });

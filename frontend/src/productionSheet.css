@@ -1,0 +1,276 @@
+/* Shared Production Schedule spreadsheet — used by /produksi and /m/schedule. */
+
+.production-sheet {
+  --production-sheet-zoom: 1;
+  --production-sheet-grid: #c7c7c7;
+  --production-sheet-header-bg: #f1f3f4;
+  --production-sheet-header-fg: #202124;
+  --production-sheet-cell-bg: #fff;
+  min-width: 0;
+  min-height: 0;
+}
+
+.production-sheet-viewport {
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  background: #fff;
+  border: 1px solid var(--production-sheet-grid);
+  border-radius: 0;
+  box-shadow: none;
+  min-width: 0;
+  min-height: 0;
+  touch-action: pan-x pan-y;
+}
+
+.production-sheet-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  width: max-content;
+  max-width: none;
+  margin: 0;
+  color: #202124;
+  background: var(--production-sheet-cell-bg);
+  font-family: "IBM Plex Sans", Arial, sans-serif;
+  font-size: calc(11px * var(--production-sheet-zoom, 1));
+  line-height: 1.25;
+}
+
+.production-sheet-table col {
+  box-sizing: border-box;
+}
+
+.production-sheet-header,
+.production-sheet-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--production-sheet-header-bg);
+  color: var(--production-sheet-header-fg);
+  font-family: "IBM Plex Sans", Arial, sans-serif;
+  font-size: max(9.5px, calc(13px * var(--production-sheet-zoom, 1)));
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.3;
+  vertical-align: middle;
+  border-right: 1px solid var(--production-sheet-grid);
+  border-bottom: 1px solid #9aa0a6;
+  padding: calc(5px * var(--production-sheet-zoom, 1)) calc(6px * var(--production-sheet-zoom, 1));
+  box-shadow: none;
+}
+
+.production-sheet-table thead th.num,
+.production-sheet-table tbody td.num,
+.production-sheet-cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.production-sheet-cell,
+.production-sheet-table tbody td {
+  background: var(--production-sheet-cell-bg);
+  border-right: 1px solid var(--production-sheet-grid);
+  border-bottom: 1px solid var(--production-sheet-grid);
+  padding: calc(2px * var(--production-sheet-zoom, 1)) calc(5px * var(--production-sheet-zoom, 1));
+  vertical-align: middle;
+  box-sizing: border-box;
+  font-size: calc(11px * var(--production-sheet-zoom, 1));
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-overflow: clip;
+}
+
+.production-sheet-cell-wrap {
+  white-space: normal;
+}
+
+.production-sheet-table tbody td.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.production-sheet-table tbody td.small,
+.production-sheet-table tbody td .muted.small,
+.production-sheet-table tbody td .small {
+  font-size: calc(10.5px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-table tbody tr:hover td {
+  background: #eef7f1;
+}
+
+.production-sheet-table tbody tr.hold td,
+.production-sheet-table tbody tr.mop-schedule-row.hold td {
+  background: #fff8e1;
+}
+
+.production-sheet-table tbody tr.cancelled td {
+  background: #faece9;
+  opacity: 0.78;
+  text-decoration: line-through;
+}
+
+.production-sheet-table tbody tr.cancelled td .pill {
+  text-decoration: none;
+}
+
+.production-sheet-table tbody td.prod-cell-today,
+.production-sheet-table tbody tr:hover td.prod-cell-today,
+.production-sheet-table tbody tr.hold td.prod-cell-today {
+  background-color: #fef08a !important;
+  color: #713f12 !important;
+}
+
+.production-sheet-table .prod-qty-cell,
+.production-sheet-table .prod-ops {
+  vertical-align: top;
+  min-width: 0;
+  max-width: none;
+}
+
+.production-sheet-table .prod-line-qty-name {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  max-width: none;
+  font-size: calc(9.5px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-table .prod-op-line {
+  margin-bottom: calc(2px * var(--production-sheet-zoom, 1));
+  gap: calc(6px * var(--production-sheet-zoom, 1));
+  line-height: 1.2;
+}
+
+.production-sheet-table .prod-op-name {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.production-sheet-table .prod-date-line {
+  white-space: normal;
+  padding: 0;
+}
+
+.production-sheet-table .pill,
+.production-sheet-table .pill.sm,
+.production-sheet-table .urgent-badge,
+.production-sheet-table .standard-badge {
+  display: inline-block;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: calc(9px * var(--production-sheet-zoom, 1));
+  line-height: 1.15;
+  padding: calc(1px * var(--production-sheet-zoom, 1)) calc(4px * var(--production-sheet-zoom, 1));
+  border-radius: calc(2px * var(--production-sheet-zoom, 1));
+  vertical-align: middle;
+  white-space: nowrap;
+  box-sizing: border-box;
+  letter-spacing: 0.02em;
+}
+
+.production-sheet-table .pill-bypass {
+  margin-left: calc(3px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-table .prod-cell-stack .urgent-badge,
+.production-sheet-table .prod-cell-stack .standard-badge {
+  margin-left: calc(3px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-table .pill svg,
+.production-sheet-table .urgent-badge svg,
+.production-sheet-table .standard-badge svg {
+  width: calc(9px * var(--production-sheet-zoom, 1));
+  height: calc(9px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-table .prod-qty-over {
+  color: var(--red, #dc2626);
+  font-weight: 650;
+}
+
+.production-sheet-table a {
+  color: var(--ep-primary, #0f7a4a);
+  text-decoration: none;
+}
+
+.production-sheet-table a:hover {
+  text-decoration: underline;
+}
+
+.production-sheet-table .prod-th-inner {
+  gap: calc(2px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-table .prod-th-label {
+  color: inherit;
+  white-space: normal;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.production-sheet-table .prod-th-label.is-sort:hover {
+  color: #137333;
+}
+
+.production-sheet-table .prod-th-filter {
+  width: calc(14px * var(--production-sheet-zoom, 1));
+  height: calc(14px * var(--production-sheet-zoom, 1));
+  color: #5f6368;
+}
+
+.production-sheet-table .prod-th-filter:hover {
+  color: #202124;
+  background: rgba(32, 33, 36, 0.08);
+}
+
+.production-sheet-table .prod-th-filter.is-active {
+  color: #137333;
+}
+
+.production-sheet-table .prod-th-filter svg {
+  width: calc(10px * var(--production-sheet-zoom, 1));
+  height: calc(10px * var(--production-sheet-zoom, 1));
+}
+
+.production-sheet-th-sort {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.production-sheet-empty {
+  text-align: center;
+  color: var(--soft, #64748b);
+  padding: 16px 8px !important;
+}
+
+.production-sheet-table .muted {
+  color: var(--soft, #64748b);
+}
+
+.production-sheet-row {
+  cursor: pointer;
+}
+
+.mop-schedule-page .production-sheet-viewport {
+  flex: 1 1 auto;
+  min-height: 140px;
+}
+
+.prod-schedule-page .production-sheet-viewport {
+  flex: 1 1 0;
+  max-height: none;
+  width: 100%;
+}

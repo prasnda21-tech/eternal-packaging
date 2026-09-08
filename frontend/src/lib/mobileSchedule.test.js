@@ -6,17 +6,11 @@ import {
 import { PRODUCTION_SCHEDULE_TABLE_COLS, productionDashboardRequestParams } from "./productionScheduleTable";
 import { totalQtyScheduledCell, scheduledPrintQtyProgress, formatIdQty } from "./productionScheduleQty";
 import {
-  MOBILE_SCHEDULE_ZOOM_DEFAULT,
-  MOBILE_SCHEDULE_ZOOM_FIT,
-  MOBILE_SCHEDULE_ZOOM_MAX,
-  MOBILE_SCHEDULE_ZOOM_MIN,
   canViewMobileSchedule,
-  clampMobileScheduleZoom,
   defaultProductionDashboardParams,
-  fitMobileScheduleZoom,
+  mobileProductionDashboardParams,
   mobileScheduleHref,
   rowsFromProductionDashboard,
-  stepMobileScheduleZoom,
 } from "./mobileSchedule";
 
 describe("mobile production schedule canonical helpers", () => {
@@ -46,25 +40,31 @@ describe("mobile production schedule canonical helpers", () => {
       include_cancelled: false,
       include_completed: true,
     });
+    expect(mobileProductionDashboardParams(FILTER_DEFAULTS)).toEqual({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+    });
+    expect(defaultProductionDashboardParams()).not.toHaveProperty("view");
   });
 
   test("canonical columns are PO-level and match desktop order", () => {
     expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toEqual([
+      "No PO",
       "Customer",
-      "Deadline",
-      "Deadline Pengiriman",
       "Tgl Pengerjaan",
+      "Operator",
+      "Qty Cetak",
       "Prio",
       "Buffer",
-      "No PO",
+      "Deadline",
+      "Deadline Pengiriman",
       "Outlet",
       "Total Qty",
-      "Qty Cetak",
-      "Operator",
+      "Qty Screen",
       "Design",
       "Payment",
       "HOLD",
-      "Qty Screen",
       "Persiapan",
       "Packing",
       "Surat Jalan",
@@ -122,12 +122,4 @@ describe("mobile production schedule canonical helpers", () => {
     expect(mobileScheduleHref("")).toBe("/m/orders");
   });
 
-  test("zoom steps clamp between 50 and 150", () => {
-    expect(clampMobileScheduleZoom(100)).toBe(MOBILE_SCHEDULE_ZOOM_DEFAULT);
-    expect(stepMobileScheduleZoom(100, 1)).toBe(110);
-    expect(stepMobileScheduleZoom(100, -1)).toBe(90);
-    expect(stepMobileScheduleZoom(50, -1)).toBe(MOBILE_SCHEDULE_ZOOM_MIN);
-    expect(stepMobileScheduleZoom(150, 1)).toBe(MOBILE_SCHEDULE_ZOOM_MAX);
-    expect(fitMobileScheduleZoom()).toBe(MOBILE_SCHEDULE_ZOOM_FIT);
-  });
 });

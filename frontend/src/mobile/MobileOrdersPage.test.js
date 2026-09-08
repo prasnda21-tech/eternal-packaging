@@ -109,7 +109,7 @@ describe("MobileOrdersPage", () => {
     expect(container.textContent).not.toContain("Memuat pesanan...");
     expect(container.querySelector('[data-testid="mobile-po-PO-1001"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-po-PO-1002"]')).toBeTruthy();
-    expect(api.listOrders).toHaveBeenCalledWith("aktif");
+    expect(api.listOrders).toHaveBeenCalledWith("aktif", { view: "summary" });
     expect(api.getOrder).not.toHaveBeenCalled();
   });
 
@@ -171,6 +171,24 @@ describe("MobileOrdersPage", () => {
     });
     expect(container.querySelector('[data-testid="mobile-po-PO-1001"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-po-PO-1002"]')).toBeFalsy();
+    expect(api.getOrder).not.toHaveBeenCalled();
+  });
+
+  test("canonical summary rows with line_items still render product text", async () => {
+    api.listOrders.mockResolvedValue({
+      orders: [{
+        id: "po-3",
+        po_number: "PO-1003",
+        customer_name: "Gimboo",
+        current_stage: 8,
+        line_items: [{ name: "12 oz Inject", quantity: 1000 }],
+      }],
+    });
+    await act(async () => { root.render(<MobileOrdersPage />); });
+    await flush();
+    expect(container.textContent).toContain("12 oz Inject");
+    expect(container.querySelector('[data-testid="mobile-po-PO-1003"]').getAttribute("href")).toBe("/m/orders/po-3");
+    expect(api.listOrders).toHaveBeenCalledWith("aktif", { view: "summary" });
     expect(api.getOrder).not.toHaveBeenCalled();
   });
 });
