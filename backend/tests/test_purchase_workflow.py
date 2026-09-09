@@ -254,3 +254,53 @@ async def test_get_does_not_mutate_and_unauthorized_hpp():
             assert res.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_manual_purchase_receipt_http_create_get_zero_write_unauthorized():
+    """Requires Mongo. Not executed in cloud VMs without MONGO_URL/mongod."""
+    marker = f"TASK-PREVIEW-GR-{uuid.uuid4().hex[:8]}"
+    async with await client_ctx() as c:
+        try:
+            before = await c.get("/api/purchase-receipts", params={"q": marker})
+            assert before.status_code == 200
+            created = await c.post("/api/purchase-receipts", json={
+                "supplier": "PT Task Preview Supplier",
+                "receipt_date": "2026-09-09",
+                "notes": marker,
+                "lines": [{
+                    "item_name": "Preview Cup",
+                    "item_code": "PV-CUP",
+                    "unit": "pcs",
+                    "received_qty": 2,
+                    "master_item_id": "preview-item-1",
+                }],
+            })
+            assert created.status_code == 200, created.text
+            rec = created.json()["receipt"]
+            assert rec["source"] == "manual"
+            assert rec["receipt_number"].startswith("GR-")
+            assert str(rec["accurate_receipt_id"]).startswith("manual:")
+            assert rec["last_synced_at"] in (None, "")
+            listed = await c.get("/api/purchase-receipts", params={"q": marker})
+            assert listed.status_code == 200
+            ids = [i["accurate_receipt_id"] for i in listed.json().get("items") or []]
+            assert rec["accurate_receipt_id"] in ids
+            n = await server.db.accurate_purchase_receipts.count_documents({})
+            again = await c.get("/api/purchase-receipts")
+            assert again.status_code == 200
+            assert await server.db.accurate_purchase_receipts.count_documents({}) == n
+        finally:
+            app.dependency_overrides.pop(current_user, None)
+
+    app.dependency_overrides[current_user] = lambda: {"role": "helper", "email": "h@x", "name": "H"}
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+            res = await c.post("/api/purchase-receipts", json={
+                "supplier": "X",
+                "receipt_date": "2026-09-09",
+                "lines": [{"item_name": "A", "received_qty": 1}],
+            })
+            assert res.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
