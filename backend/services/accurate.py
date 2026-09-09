@@ -2936,6 +2936,41 @@ def _resolve_so_line_color(
     return None, None, [], False
 
 
+def enrich_line_item_color_from_own_notes(li: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-model only: fill empty line color from that line's own notes.
+
+    Used for legacy imports that still store Accurate Warna Cetak in
+    ``line_items[].notes`` but left ``line_items[].color`` null (pre-#178
+    multi-color → blank). Never copies another line, never uses item name,
+    never writes Mongo. Persisted ``color`` always wins when present.
+    """
+    if not isinstance(li, dict):
+        return li
+    existing = li.get("color")
+    if existing is not None and str(existing).strip():
+        return li
+    notes = li.get("notes")
+    if notes is None or not str(notes).strip():
+        return li
+    color_val, _source, _cands, _needs = _color_from_free_text(str(notes), "item.description")
+    if not color_val:
+        return li
+    out = dict(li)
+    out["color"] = color_val
+    return out
+
+
+def enrich_order_line_item_colors(order: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Apply per-line notes→color read enrichment on an order document."""
+    if not isinstance(order, dict):
+        return order
+    lines = order.get("line_items")
+    if not isinstance(lines, list) or not lines:
+        return order
+    order["line_items"] = [enrich_line_item_color_from_own_notes(li) for li in lines]
+    return order
+
+
 def _extract_so_header_keterangan(d: Dict[str, Any]) -> str:
     """Accurate Sales Order header Keterangan (OpenAPI `description`).
 

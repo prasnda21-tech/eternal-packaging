@@ -23,6 +23,7 @@ import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components
 import { terkirimQtySummary } from "../lib/deliveryHistory";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import { scrollToPoDetailStageIndex } from "../lib/poDetailStageNav";
+import { salesOrderLineColor } from "../lib/salesOrderLineColor";
 import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
@@ -763,7 +764,7 @@ export default function PODetail() {
                 </div>
                 <div className="li-meta">
                   <span><Package size={13} /> {(li.quantity ?? 0).toLocaleString("id-ID")} {li.unit}</span>
-                  <span>Warna: {li.color}</span>
+                  <span data-testid={`line-item-color-${i}`}>Warna: {salesOrderLineColor(li) || "—"}</span>
                   <span
                     className="pill sm"
                     data-testid={`line-item-process-${i}`}
