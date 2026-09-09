@@ -361,4 +361,149 @@ describe("MobileTaskCard schedule fields", () => {
     expect(cards[1].querySelector('[data-testid="mobile-task-priority-h1"]')).toBeTruthy();
     expect(cards[1].querySelector('[data-testid="mobile-task-priority-urgent"]')).toBeNull();
   });
+
+  test("CASE 1 — screen_size large shows Screen Besar", () => {
+    renderCard({
+      task_id: "operator:po-s:0:s1",
+      order_id: "po-s",
+      order_number: "PO-S",
+      item: "Preview Cup",
+      line_idx: 0,
+      line_id: "L0",
+      screen_size: "large",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen");
+    expect(container.querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
+  });
+
+  test("CASE 2 — screen_size small shows Screen Kecil", () => {
+    renderCard({
+      task_id: "helper:po-s:1:-",
+      order_id: "po-s",
+      order_number: "PO-S",
+      item: "Preview Cup",
+      line_idx: 1,
+      line_id: "L1",
+      screen_size: "small",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Kecil");
+  });
+
+  test("CASE 3 — missing screen_size shows em dash", () => {
+    renderCard({
+      task_id: "screener:po-s:po:-",
+      order_id: "po-s",
+      order_number: "PO-S",
+      item: "3 item",
+      line_idx: null,
+      screen_size: null,
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-screen"] .mop-task-fact-value').textContent).toBe("—");
+  });
+
+  test("CASE 4 — same-name lines keep independent screen values", () => {
+    const lineA = {
+      task_id: "helper:po-4:0:-",
+      order_id: "po-4",
+      order_number: "PO-1004",
+      item: "Preview Cup",
+      line_idx: 0,
+      line_id: "task-screen-line-a",
+      screen_size: "large",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    };
+    const lineB = {
+      ...lineA,
+      task_id: "helper:po-4:1:-",
+      line_idx: 1,
+      line_id: "task-screen-line-b",
+      screen_size: "small",
+    };
+    act(() => {
+      root.render(
+        <>
+          <MobileTaskCard task={lineA} workspaceId="prep" />
+          <MobileTaskCard task={lineB} workspaceId="prep" />
+        </>,
+      );
+    });
+    const cards = container.querySelectorAll("a.mop-card");
+    expect(cards[0].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
+    expect(cards[1].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Kecil");
+    expect(cards[0].querySelector('[data-testid="mobile-task-product"]').textContent).toContain("Preview Cup");
+    expect(cards[1].querySelector('[data-testid="mobile-task-product"]').textContent).toContain("Preview Cup");
+  });
+
+  test("CASE 5 — URGENT/H-1 badges stay with Screen info", () => {
+    renderCard({
+      task_id: "operator:po-both:0:s1",
+      order_id: "po-both",
+      order_number: "PO-BOTH",
+      urgent: true,
+      delivery_deadline_status: "h1",
+      item: "Preview Cup",
+      line_idx: 0,
+      screen_size: "large",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    const badges = [...container.querySelectorAll("[data-testid^='mobile-task-priority-']")].map((el) => el.textContent);
+    expect(badges).toEqual(["URGENT", "H-1"]);
+    expect(container.querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
+  });
+
+  test("CASE 6 — shared card shows screen for operator and packing payloads", () => {
+    act(() => {
+      root.render(
+        <>
+          <MobileTaskCard
+            task={{
+              task_id: "operator:po-x:0:s1",
+              order_id: "po-x",
+              order_number: "PO-X",
+              division: "operator",
+              item: "Preview Cup",
+              line_idx: 0,
+              screen_size: "small",
+              target_qty: 8,
+              completed_qty: 0,
+              status: "belum",
+            }}
+            workspaceId="print"
+          />
+          <MobileTaskCard
+            task={{
+              task_id: "packing:po-x:0:-",
+              order_id: "po-x",
+              order_number: "PO-X",
+              division: "packing",
+              item: "Preview Cup",
+              line_idx: 0,
+              screen_size: "small",
+              target_qty: 8,
+              completed_qty: 0,
+              status: "belum",
+            }}
+            workspaceId="pack"
+          />
+        </>,
+      );
+    });
+    const screens = [...container.querySelectorAll('[data-testid="mobile-task-screen"]')];
+    expect(screens).toHaveLength(2);
+    expect(screens[0].textContent).toContain("Screen Kecil");
+    expect(screens[1].textContent).toContain("Screen Kecil");
+  });
 });

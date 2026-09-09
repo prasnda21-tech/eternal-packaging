@@ -515,9 +515,50 @@ def test_projection_includes_schedule_read_fields_not_blobs():
     assert "delivery_deadline_manual" in TASK_PROJECTION
     assert "design_approved_at" in TASK_PROJECTION
     assert "priority" in TASK_PROJECTION
+    assert "line_items" in TASK_PROJECTION
     joined = " ".join(str(k) for k in TASK_PROJECTION)
     assert "data_url" not in joined
     assert "signature" not in joined
+
+
+def test_line_tasks_copy_exact_line_screen_size():
+    o = _print_po()
+    o["line_items"][0]["screen_size"] = "large"
+    o["line_items"][1]["screen_size"] = "small"
+    o["operator_splits"] = [
+        {"id": "a", "line_idx": 0, "quantity": 5000, "qty_completed": 0, "operator_email": "budi@x.com", "operator_name": "Budi"},
+        {"id": "b", "line_idx": 1, "quantity": 3000, "qty_completed": 0, "operator_email": "andi@x.com", "operator_name": "Andi"},
+    ]
+    o["helper_prep"] = {
+        "qty_prepared": 1000,
+        "items": [{"line_idx": 0, "qty_prepared": 500}, {"line_idx": 1, "qty_prepared": 500}],
+    }
+    helpers = {r["line_idx"]: r for r in build_helper_tasks(o)}
+    assert helpers[0]["item"] == helpers[1]["item"] == "Cup A"
+    assert helpers[0]["screen_size"] == "large"
+    assert helpers[1]["screen_size"] == "small"
+    ops = {r["line_idx"]: r for r in build_operator_tasks(o, {"email": "budi@x.com"}, mine_only=False)}
+    assert ops[0]["screen_size"] == "large"
+    assert ops[1]["screen_size"] == "small"
+
+
+def test_po_level_task_does_not_guess_screen_size():
+    o = _print_po()
+    o["line_items"][0]["screen_size"] = "large"
+    o["line_items"][1]["screen_size"] = "small"
+    row = build_screener_tasks(o)[0]
+    assert row["line_idx"] is None
+    assert row["screen_size"] is None
+    designer = build_designer_tasks(o)
+    if designer:
+        assert designer[0]["screen_size"] is None
+
+
+def test_missing_line_screen_size_is_null():
+    o = _print_po()
+    helper = build_helper_tasks(o)[0]
+    assert helper["line_idx"] == 0
+    assert helper["screen_size"] is None
 
 
 def test_division_tasks_endpoint_is_read_only():

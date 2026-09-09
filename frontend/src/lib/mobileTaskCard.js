@@ -2,6 +2,7 @@ import { formatDisplayDate } from "./constants";
 import { formatIdQty } from "./divisionTasks";
 import { toDateKey } from "./productionScheduleFilters";
 import { productionSchedulePriorityRank } from "./productionSchedulePriority";
+import { screenSizeLabel } from "./screenSize";
 
 export const TASK_OPERATOR_EMPTY = "Belum ditentukan";
 export const TASK_WORK_DATE_EMPTY = "Belum Dijadwalkan";
@@ -50,6 +51,10 @@ export function taskDeadlineLabel(task) {
 export function taskProductLabel(task) {
   const item = String(task?.item || "").trim();
   return item || TASK_PRODUCT_EMPTY;
+}
+
+export function taskScreenSizeLabel(task) {
+  return screenSizeLabel(task?.screen_size);
 }
 
 export function taskHasPcsQty(task) {

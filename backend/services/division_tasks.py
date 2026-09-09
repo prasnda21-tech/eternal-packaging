@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from services.screen_size import line_screen_size
 from quantity_rules import (
     can_confirm_delivery,
     eligible_delivery_qty,
@@ -324,6 +325,7 @@ def _base_row(order: dict, division: str, *, line_idx=None, split_id=None, split
         "line_id": _line_id(order, line_idx),
         "line_idx": line_idx,
         "item": _line_name(order, line_idx),
+        "screen_size": line_screen_size(order, line_idx),
         "division": division,
         "work_type": division,
         "assigned_user_id": None,

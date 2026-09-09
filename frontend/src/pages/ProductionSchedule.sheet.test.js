@@ -303,4 +303,24 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelectorAll('[data-testid="prod-po-link-PO-1001"]')).toHaveLength(3);
     expect(container.querySelector('[href*="po-1"]')).toBeTruthy();
   });
+
+  test("Screen column shows line-level Screen Besar / Screen Kecil / em dash", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        operators: [
+          { split_id: "s-a", operator_name: "Budi", quantity: 4000, line_idx: 0, line_id: "lid-a", line_name: "Cup 16oz", line_printable: true, screen_size: "large" },
+          { split_id: "s-b", operator_name: "Andi", quantity: 1000, line_idx: 0, line_id: "lid-a", line_name: "Cup 16oz", line_printable: true, screen_size: "large" },
+          { split_id: "s-c", operator_name: "Sari", quantity: 500, line_idx: 2, line_id: "lid-b", line_name: "Cup 16oz", line_printable: true, screen_size: "small" },
+          { split_id: "s-d", operator_name: "Cici", quantity: 200, line_idx: 3, line_id: "lid-c", line_name: "Box", line_printable: true },
+        ],
+      }],
+      total: 1,
+    });
+    await renderPage();
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toContain("Screen");
+    const texts = [...container.querySelectorAll('[data-testid="prod-row-PO-1001"] [data-testid^="prod-screen-size-PO-1001-"]')]
+      .map((el) => el.textContent.trim());
+    expect(texts).toEqual(["Screen Besar", "Screen Besar", "—", "Screen Kecil"]);
+  });
 });

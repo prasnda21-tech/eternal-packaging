@@ -25,6 +25,7 @@ export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
   "sj",
   "driver",
   "status",
+  "screen_size",
 ];
 
 /**
@@ -44,6 +45,7 @@ export const PRODUCTION_SCHEDULE_TABLE_COLS = [
   { key: "deadline", id: "deadline", label: "Deadline", group: "planning", align: "left", type: "date", baseWidth: 96, minWidth: 72, filter: "deadline", sort: "deadline" },
   { key: "deadline_ship", id: "deadline_ship", label: "Deadline Pengiriman", group: "planning", align: "left", type: "date", baseWidth: 168, minWidth: 110, testid: "prod-th-deadline-effective", wrap: true },
   { key: "outlet", id: "outlet", label: "Outlet", group: "identity", align: "left", type: "text", baseWidth: 140, minWidth: 88, wrap: true },
+  { key: "screen_size", id: "screen_size", label: "Screen", group: "assignment", align: "left", type: "status", baseWidth: 108, minWidth: 80, wrap: true },
   { key: "screen", id: "screen", label: "Qty Screen", group: "quantity", align: "right", type: "qty", baseWidth: 84, minWidth: 64, num: true, filter: "screener" },
   { key: "design", id: "design", label: "Design", group: "assignment", align: "left", type: "status", baseWidth: 96, minWidth: 72 },
   { key: "payment", id: "payment", label: "Payment", group: "assignment", align: "left", type: "status", baseWidth: 96, minWidth: 72 },

@@ -61,6 +61,7 @@ from services.operator_schedule import (
     cancel_split_remaining as _cancel_split_remaining,
     pending_splits_for_user as _pending_splits_for_user,
 )
+from services.screen_size import line_screen_size as _line_screen_size
 from services.operator_payroll import (
     PAYROLL_EXPORT_COLUMNS,
     PAYROLL_REKAP_COLUMNS,
@@ -535,6 +536,8 @@ class OperatorSplitInput(BaseModel):
     # Fix: tanggal pengerjaan per assignment. Optional; ISO date "YYYY-MM-DD"
     # atau None untuk membiarkan kosong. Additive & tidak mengubah stage.
     work_date: Optional[str] = None
+    # Planning metadata only (Screen Besar / Screen Kecil). Omit preserves existing.
+    screen_size: Optional[str] = None
 
 
 class CancelSplitPayload(BaseModel):
@@ -2939,14 +2942,18 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
             wd = s.work_date
             if wd is not None:
                 wd = _parse_work_date(wd)
-            rows.append({
+            dumped = s.model_dump(exclude_unset=True)
+            row = {
                 "id": s.id,
                 "operator_email": s.operator_email,
                 "operator_name": s.operator_name,
                 "quantity": int(s.quantity),
                 "line_idx": s.line_idx,
                 "work_date": wd,
-            })
+            }
+            if "screen_size" in dumped:
+                row["screen_size"] = dumped.get("screen_size")
+            rows.append(row)
         try:
             new_splits, cancel_notes = _apply_operator_assignments(
                 order, rows, user, now_iso(), new_id_fn=lambda: str(uuid.uuid4()),
@@ -5430,6 +5437,7 @@ def _production_row(o: dict) -> dict:
             "stage": s.get("stage"),
             "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
             "work_date": s.get("work_date"),
+            "screen_size": _line_screen_size(o, s.get("line_idx")) or s.get("screen_size") or None,
         } for s in splits],
         "design_status": o.get("design_status"),
         "design_bypassed": bool(o.get("design_bypassed")),

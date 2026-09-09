@@ -173,6 +173,7 @@ export function operatorPrintableItems(splits) {
       line_id: op?.line_id || "",
       line_idx: op?.line_idx,
       split_id: op?.split_id || op?.id || "",
+      screen_size: op?.screen_size || null,
     });
   });
   return items;
