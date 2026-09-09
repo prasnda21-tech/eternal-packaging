@@ -33,7 +33,7 @@ export default function WorkspaceTabs({
               type="button"
               className="kb-workspace-tab-label"
               onClick={() => onActivate?.(tab)}
-              title={tab.label}
+              title={tab.title || tab.label}
             >
               {tab.label}
             </button>

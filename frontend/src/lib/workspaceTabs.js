@@ -56,9 +56,13 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
     const key = storageKey(user);
     if (!key || typeof sessionStorage === "undefined") return;
     try {
-      const payload = (openTabs || []).map((t) => (
-        t?.dynamic ? { id: t.id, path: t.path, label: t.label } : t.id
-      ));
+      const payload = (openTabs || []).map((t) => {
+        if (!t?.dynamic) return t.id;
+        const row = { id: t.id, path: t.path, label: t.label };
+        if (t.title) row.title = t.title;
+        if (Number.isFinite(t.labelPriority)) row.labelPriority = t.labelPriority;
+        return row;
+      });
       sessionStorage.setItem(key, JSON.stringify(payload));
     } catch {
       /* ignore quota / private mode */
@@ -91,10 +95,36 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
     const idx = list.findIndex((t) => t.id === entry.id);
     if (idx >= 0) {
       const existing = list[idx];
-      if (entry.dynamic && entry.label && entry.label !== existing.label && meta?.po_number) {
-        const updated = { ...existing, label: entry.label, path: entry.path };
-        list[idx] = updated;
-        return { tabs: list, activated: updated };
+      // Dynamic tabs: upgrade label only when navigation meta carries richer
+      // info. Null/empty meta (tab click, refresh, back/forward) must keep the
+      // existing customer label — never downgrade to PO <order_id>.
+      if (entry.dynamic && entry.label && entry.label !== existing.label) {
+        const info = meta && typeof meta === "object" ? meta : null;
+        const hasCustomer = Boolean(String(info?.customer || "").trim());
+        const hasPoNumber = Boolean(String(info?.po_number || "").trim());
+        const newPri = Number.isFinite(entry.labelPriority) ? entry.labelPriority : 0;
+        let oldPri = Number.isFinite(existing.labelPriority) ? existing.labelPriority : null;
+        if (oldPri == null) {
+          const text = String(existing.label || "").trim();
+          if (!text) oldPri = 0;
+          else if (/^PO(\s|$)/i.test(text)) oldPri = 1;
+          else oldPri = 2; // non-PO label = treat as customer-tier; never downgrade
+        }
+        const canUpgrade = Boolean(info) && (
+          (hasCustomer && newPri >= oldPri)
+          || (hasPoNumber && !hasCustomer && newPri > oldPri)
+        );
+        if (canUpgrade) {
+          const updated = {
+            ...existing,
+            label: entry.label,
+            path: entry.path,
+            ...(entry.title ? { title: entry.title } : {}),
+            labelPriority: newPri,
+          };
+          list[idx] = updated;
+          return { tabs: list, activated: updated };
+        }
       }
       return { tabs: list, activated: existing };
     }
