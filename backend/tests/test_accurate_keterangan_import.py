@@ -73,8 +73,8 @@ def test_preview_includes_header_keterangan():
     assert preview["notes"] == HEADER_KETERANGAN
     assert preview["line_items"][0]["notes"] == "SABLON WARNA ORANGE"
     assert preview["line_items"][1]["notes"] in (None, "")
-    assert preview["line_items"][0]["color"] == "ORANGE"
-    assert preview["line_items"][1]["color"] == "BENING"
+    assert preview["line_items"][0]["color"] is None
+    assert preview["line_items"][1]["color"] is None
 
 
 def test_preview_blank_keterangan_does_not_invent():
@@ -107,8 +107,8 @@ async def test_preview_http_returns_header_keterangan(monkeypatch):
             body = res.json()
             assert body["preview"]["notes"] == HEADER_KETERANGAN
             lines = body["preview"]["line_items"]
-            assert lines[0]["color"] == "ORANGE"
-            assert lines[1]["color"] == "BENING"
+            assert lines[0]["color"] is None
+            assert lines[1]["color"] is None
             assert lines[0]["notes"] != HEADER_KETERANGAN
             assert lines[1]["notes"] != HEADER_KETERANGAN
     finally:
@@ -122,8 +122,8 @@ async def test_confirm_persists_and_get_returns_header_keterangan():
     preview["po_number"] = f"PO-KET-{uuid.uuid4().hex[:8].upper()}"
     saved = await _persist_imported_po(preview, source="accurate_mock", user=ADMIN)
     assert saved["notes"] == HEADER_KETERANGAN
-    assert saved["line_items"][0]["color"] == "ORANGE"
-    assert saved["line_items"][1]["color"] == "BENING"
+    assert saved["line_items"][0]["color"] is None
+    assert saved["line_items"][1]["color"] is None
     assert saved["line_items"][0]["quantity"] == 500
     assert saved["line_items"][1]["quantity"] == 500
 
@@ -136,8 +136,8 @@ async def test_confirm_persists_and_get_returns_header_keterangan():
             order = res.json()["order"]
             assert order["notes"] == HEADER_KETERANGAN
             assert order["notes"] == preview["notes"]
-            assert order["line_items"][0]["color"] == "ORANGE"
-            assert order["line_items"][1]["color"] == "BENING"
+            assert order["line_items"][0]["color"] is None
+            assert order["line_items"][1]["color"] is None
             assert order["line_items"][0]["notes"] == "SABLON WARNA ORANGE"
             assert order["line_items"][1]["notes"] in (None, "")
     finally:

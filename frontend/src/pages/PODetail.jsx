@@ -764,7 +764,7 @@ export default function PODetail() {
                 </div>
                 <div className="li-meta">
                   <span><Package size={13} /> {(li.quantity ?? 0).toLocaleString("id-ID")} {li.unit}</span>
-                  <span data-testid={`line-item-color-${i}`}>Warna: {salesOrderLineColor(li) || "—"}</span>
+                  <span data-testid={`line-item-color-${i}`}>Warna: {salesOrderLineColor(li) || "-"}</span>
                   <span
                     className="pill sm"
                     data-testid={`line-item-process-${i}`}

@@ -2693,29 +2693,18 @@ def _normalize_accurate_so(
     detail expansions (`*.name`, `userName`, `salesmanList`). Unknown fields
     stay None so the UI shows 'Perlu verifikasi' rather than guessing.
     """
-    so_notes = _extract_so_notes_text(d)
-    so_colors = _detect_colors(so_notes)
     header_keterangan = _extract_so_header_keterangan(d)
+    so_notes = _extract_so_notes_text(d)
     lines_raw = d.get("detailItem") or d.get("detailItems") or d.get("items") or []
     if not isinstance(lines_raw, list):
         lines_raw = []
     valid_raw_lines = [li for li in lines_raw if isinstance(li, dict)]
-    # Header sablon text is SO-level. Copying it onto every line without its own
-    # color made LID / accessory rows inherit the cup print color (ORANGE).
-    # Keep header fallback only for single-line SOs (legacy Accurate notes).
-    allow_header_color_fallback = len(valid_raw_lines) == 1
     lines: List[Dict[str, Any]] = []
     for li in valid_raw_lines:
         item = li.get("item") or {}
         if not isinstance(item, dict):
             item = {}
-        color_val, color_source, color_candidates, needs_verify = _resolve_so_line_color(
-            item=item,
-            li=li,
-            so_colors=so_colors,
-            allow_header_fallback=allow_header_color_fallback,
-            so_notes_text=so_notes,
-        )
+        color_val, color_source = _resolve_so_line_color(li)
 
         line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
         qty_raw = li.get("quantity") if li.get("quantity") not in (None, "") else li.get("qty")
@@ -2731,10 +2720,6 @@ def _normalize_accurate_so(
         raw_line_id = li.get("id")
         if raw_line_id is not None and str(raw_line_id).strip() != "":
             line["accurate_line_id"] = str(raw_line_id)
-        if color_candidates:
-            line["color_candidates"] = color_candidates
-        if needs_verify:
-            line["color_needs_verify"] = True
         if color_source:
             line["color_source"] = color_source
         lines.append(line)
@@ -2853,34 +2838,10 @@ def _detect_colors(text: str) -> List[str]:
     return [name for _pos, name in hits]
 
 
-def _so_line_note_text(li: Dict[str, Any]) -> str:
-    return " ".join(
-        str(li.get(k) or "").strip()
-        for k in ("detailNotes", "notes", "memo", "description", "itemDesc")
-        if li.get(k)
-    ).strip()
-
-
-def _so_line_name_text(item: Dict[str, Any], li: Dict[str, Any]) -> str:
-    return " ".join(
-        str(part).strip()
-        for part in (
-            item.get("name"),
-            li.get("itemName"),
-            li.get("detailName"),
-        )
-        if part
-    ).strip()
-
-
 def _apply_detected_colors(
     detected: List[str], source: str
 ) -> Tuple[Optional[str], Optional[str], List[str], bool]:
-    """Map palette hits to a persisted color string.
-
-    Multiple colors are joined (appearance order) so Import PO / Detail PO
-    keep the full Warna Cetak value instead of blank + needs_verify.
-    """
+    """Map palette hits to a color string. Unused by Sales Order import."""
     if len(detected) == 1:
         return detected[0], source, [], False
     if len(detected) > 1:
@@ -2891,84 +2852,66 @@ def _apply_detected_colors(
 def _color_from_free_text(
     text: str, source: str
 ) -> Tuple[Optional[str], Optional[str], List[str], bool]:
-    """Resolve Warna Cetak from Accurate free text (line or header notes)."""
+    """Parse Warna Cetak from free text. Not used for Accurate SO line color."""
     if not text or not str(text).strip():
         return None, None, [], False
     label_value = _extract_warna_cetak_label_value(text)
     if label_value:
-        # Prefer the exact Accurate label value (preserves Merah, Hitam, Putih).
         return label_value, source, [], False
     return _apply_detected_colors(_detect_colors(text), source)
 
 
-def _resolve_so_line_color(
-    *,
-    item: Dict[str, Any],
-    li: Dict[str, Any],
-    so_colors: List[str],
-    allow_header_fallback: bool,
-    so_notes_text: str = "",
-) -> Tuple[Optional[str], Optional[str], List[str], bool]:
-    """Per-line color. Never copies another line's color.
-
-    Priority: structured line field → line notes (Warna Cetak / palette) →
-    item name → SO header (header only when the SO has exactly one detail line).
-    """
-    explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
-    if explicit_color and str(explicit_color).strip():
-        return str(explicit_color).strip(), "item.color", [], False
-
-    note_text = _so_line_note_text(li)
-    note_result = _color_from_free_text(note_text, "item.description")
-    if note_result[1]:
-        return note_result
-
-    name_result = _apply_detected_colors(_detect_colors(_so_line_name_text(item, li)), "item.name")
-    if name_result[1]:
-        return name_result
-
-    if allow_header_fallback:
-        header_result = _color_from_free_text(so_notes_text, "so.description")
-        if header_result[1]:
-            return header_result
-        if so_colors:
-            return _apply_detected_colors(so_colors, "so.description")
-    return None, None, [], False
+def _structured_warna_scalar(value: Any) -> Optional[str]:
+    """Scalar / lookup object for Accurate line Warna. Never parse notes."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return None
+    if isinstance(value, str):
+        return _blank_to_none(value)
+    if isinstance(value, dict):
+        return _accurate_code_or_name(value)
+    if isinstance(value, list):
+        parts: List[str] = []
+        for el in value:
+            text = _structured_warna_scalar(el)
+            if text:
+                parts.append(text)
+        return ", ".join(parts) if parts else None
+    return None
 
 
-def enrich_line_item_color_from_own_notes(li: Dict[str, Any]) -> Dict[str, Any]:
-    """Read-model only: fill empty line color from that line's own notes.
+def _structured_so_line_warna(li: Dict[str, Any]) -> Optional[str]:
+    """Accurate Sales Order line-level UI column Warna.
 
-    Used for legacy imports that still store Accurate Warna Cetak in
-    ``line_items[].notes`` but left ``line_items[].color`` null (pre-#178
-    multi-color → blank). Never copies another line, never uses item name,
-    never writes Mongo. Persisted ``color`` always wins when present.
+    Proven GET shape for tenant custom character fields matches zona:
+    ``searchCharFieldN.name`` then ``charFieldN``. Header zona uses slot 3;
+    line Warna uses slot 1 (Kustom Karakter 1 on Rincian Barang). Direct
+    ``color`` / ``itemColor`` / ``warna`` keys are also accepted when the
+    payload already exposes them on the detail row.
+
+    Nested item-master fields, notes, header Keterangan, and sibling lines
+    are ignored.
     """
     if not isinstance(li, dict):
-        return li
-    existing = li.get("color")
-    if existing is not None and str(existing).strip():
-        return li
-    notes = li.get("notes")
-    if notes is None or not str(notes).strip():
-        return li
-    color_val, _source, _cands, _needs = _color_from_free_text(str(notes), "item.description")
-    if not color_val:
-        return li
-    out = dict(li)
-    out["color"] = color_val
-    return out
+        return None
+    for key in ("color", "itemColor", "warna", "Warna", "detailColor"):
+        text = _structured_warna_scalar(li.get(key))
+        if text:
+            return text
+    nested = li.get("searchCharField1")
+    text = _structured_warna_scalar(nested)
+    if text:
+        return text
+    return _structured_warna_scalar(li.get("charField1"))
 
 
-def enrich_order_line_item_colors(order: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Apply per-line notes→color read enrichment on an order document."""
-    if not isinstance(order, dict):
-        return order
-    lines = order.get("line_items")
-    if not isinstance(lines, list) or not lines:
-        return order
-    order["line_items"] = [enrich_line_item_color_from_own_notes(li) for li in lines]
-    return order
+def _resolve_so_line_color(li: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """SO line color: structured line Warna only, else null."""
+    color_val = _structured_so_line_warna(li)
+    if color_val:
+        return color_val, "line.warna"
+    return None, None
 
 
 def _extract_so_header_keterangan(d: Dict[str, Any]) -> str:
@@ -3009,6 +2952,8 @@ _MOCK_ITEMS: List[Dict[str, Any]] = [
     {"id": 203, "no": "JP-1L", "name": "Jumbo plastic 1L", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
     {"id": 301, "no": "SVC-CETAK", "name": "Jasa cetak sablon", "itemType": "SERVICE", "unit1Name": "pcs", "suspended": False},
     {"id": 302, "no": "PC-12-OLD", "name": "Paper cup 12oz (nonaktif)", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": True},
+    {"id": 100003, "no": "100003", "name": "12 oz PET Datar 11 gr SJP", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
+    {"id": 100123, "no": "100123", "name": "LID PET Strawless Starindo", "itemType": "INVENTORY", "unit1Name": "pcs", "suspended": False},
 ]
 
 
@@ -3126,6 +3071,46 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
                 "quantity": 500,
                 "unit": "pcs",
                 "color": "BENING",
+                "notes": "",
+            },
+        ],
+    },
+    {
+        "accurate_id": "91290",
+        "po_number": "PO/2026/09/09/000018",
+        "customer": "WELCOME TO PLEASURE",
+        "outlet": None,
+        "recipient": "WELCOME TO PLEASURE",
+        "address": "",
+        "payment_terms": None,
+        "sales": None,
+        "created_by_user": None,
+        "expedition": None,
+        "delivery_zone": None,
+        "seller": None,
+        "order_date_offset_days": 0,
+        "notes": "SABLON WARNA PUTIH, HIJAU, PINK\nBUFFER STOCK",
+        "line_items": [
+            {
+                "accurate_item_id": "100003",
+                "accurate_line_id": "91290-1",
+                "item_code": "100003",
+                "name": "12 oz PET Datar 11 gr SJP",
+                "quantity": 1,
+                "unit": "pcs",
+                "color": "PUTIH, HIJAU, PINK",
+                "color_source": "line.warna",
+                "notes": "",
+            },
+            {
+                "accurate_item_id": "100123",
+                "accurate_line_id": "91290-2",
+                "item_code": "100123",
+                "name": "LID PET Strawless Starindo",
+                "quantity": 1,
+                "unit": "pcs",
+                "color": "BENING",
+                "color_source": "line.warna",
                 "notes": "",
             },
         ],

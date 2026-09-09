@@ -1,10 +1,9 @@
 /**
  * Canonical Sales Order / PO line color for web display.
  *
- * Source of truth is the exact line's `color` field (persisted as
- * orders.line_items[].color, optionally enriched by the order detail API
- * from that same line's notes). Never borrow from another line, product
- * master, or header-level color.
+ * Source of truth is the exact line's persisted `color` field
+ * (orders.line_items[].color from Accurate line-level Warna).
+ * Never parse notes or Keterangan. Never borrow from another line.
  */
 export function salesOrderLineColor(line) {
   if (!line || typeof line !== "object") return "";

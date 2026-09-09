@@ -1,7 +1,6 @@
-"""Warna Cetak regression for Accurate Sales Order → Import PO mapping.
+"""Accurate SO line color mapping from structured Warna (charField1).
 
-Covers label extraction, multi-color preservation, same-name line identity,
-header-vs-line precedence, and empty color. No live Accurate calls.
+Free-text helpers remain unit-tested but are not used for SO import color.
 """
 import sys
 from pathlib import Path
@@ -20,11 +19,10 @@ def test_warna_cetak_label_variants():
     assert _extract_warna_cetak_label_value("Warna Cetak : Merah") == "Merah"
     assert _extract_warna_cetak_label_value("WARNA CETAK: Merah") == "Merah"
     assert _extract_warna_cetak_label_value("Warna: Merah") == "Merah"
-    # Proven fixture phrasing without colon still uses palette path, not label.
     assert _extract_warna_cetak_label_value("SABLON WARNA HITAM") is None
 
 
-def test_case1_single_warna_cetak_merah():
+def test_case1_structured_warna_merah():
     raw = {
         "id": 101,
         "number": "SO-COLOR-1",
@@ -33,7 +31,8 @@ def test_case1_single_warna_cetak_merah():
             {
                 "id": 1,
                 "quantity": 10,
-                "detailNotes": "Warna Cetak: Merah",
+                "charField1": "Merah",
+                "detailNotes": "Warna Cetak: ignored",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
@@ -53,7 +52,7 @@ def test_case2_multiple_colors_preserved_in_full():
             {
                 "id": 1,
                 "quantity": 10,
-                "detailNotes": "Warna Cetak: Merah, Hitam, Putih",
+                "charField1": "Merah, Hitam, Putih",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
@@ -63,7 +62,7 @@ def test_case2_multiple_colors_preserved_in_full():
     assert so["line_items"][0].get("color_needs_verify") is not True
 
 
-def test_case2_palette_multi_color_keeps_appearance_order():
+def test_case2_structured_multi_color_keeps_appearance_order():
     raw = {
         "id": 1022,
         "number": "SO-COLOR-2B",
@@ -72,13 +71,13 @@ def test_case2_palette_multi_color_keeps_appearance_order():
             {
                 "id": 1,
                 "quantity": 10,
-                "detailNotes": "SABLON WARNA MERAH / HITAM / PUTIH",
+                "charField1": "PUTIH, HIJAU, PINK",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
     }
     so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["color"] == "MERAH / HITAM / PUTIH"
+    assert so["line_items"][0]["color"] == "PUTIH, HIJAU, PINK"
     assert _detect_colors("SABLON WARNA MERAH / HITAM / PUTIH") == ["MERAH", "HITAM", "PUTIH"]
 
 
@@ -91,13 +90,13 @@ def test_case3_same_name_lines_keep_distinct_colors():
             {
                 "id": 11,
                 "quantity": 100,
-                "detailNotes": "Warna Cetak: Merah",
+                "charField1": "Merah",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 12,
                 "quantity": 200,
-                "detailNotes": "Warna Cetak: Biru",
+                "charField1": "Biru",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],
@@ -111,7 +110,7 @@ def test_case3_same_name_lines_keep_distinct_colors():
     assert so["line_items"][1]["accurate_line_id"] == "12"
 
 
-def test_case4_line_warna_cetak_beats_header():
+def test_case4_structured_beats_header_and_notes():
     raw = {
         "id": 104,
         "number": "SO-COLOR-4",
@@ -121,13 +120,14 @@ def test_case4_line_warna_cetak_beats_header():
             {
                 "id": 21,
                 "quantity": 10,
-                "detailNotes": "Warna Cetak: Merah",
+                "charField1": "Merah",
+                "detailNotes": "Warna Cetak: Hitam",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 22,
                 "quantity": 10,
-                "detailNotes": "Warna Cetak: Biru",
+                "charField1": "Biru",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],
@@ -138,15 +138,17 @@ def test_case4_line_warna_cetak_beats_header():
     assert so["notes"] == "Warna Cetak: Putih"
 
 
-def test_case5_no_color_stays_empty():
+def test_case5_no_structured_warna_stays_empty():
     raw = {
         "id": 105,
         "number": "SO-COLOR-5",
         "customer": {"name": "A"},
+        "description": "SABLON WARNA HITAM",
         "detailItem": [
             {
                 "id": 31,
                 "quantity": 10,
+                "detailNotes": "Warna Cetak: Merah",
                 "item": {"id": 7, "name": "Paper bag medium"},
             }
         ],

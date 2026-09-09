@@ -59,7 +59,7 @@ def test_createdBy_1248273_with_verified_mapping():
     assert so["recipient"] == "CAKE IN LOVE"
     assert so["expedition"] == "OUTLET"
     assert so["delivery_zone"] == "JS"
-    assert so["line_items"][0]["color"] == "HITAM"
+    assert so["line_items"][0]["color"] is None
     assert so["estimated_ship_date"] == "2026-09-05"
 
 

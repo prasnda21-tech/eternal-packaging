@@ -1,21 +1,48 @@
-"""Warna Cetak read-model enrichment + persistence regression.
+"""Sales Order color persistence and GET read-model.
 
-Covers import mapping (new), same-line notes enrichment for legacy rows
-(color null but notes still hold Warna Cetak), and API-shaped read output.
+Structured Accurate Warna is persisted as line_items[].color.
+GET /orders/{id} returns that persisted value and does not parse notes.
 """
+import os
 import sys
+import uuid
 from pathlib import Path
+
+import httpx
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.accurate import (
-    _normalize_accurate_so,
-    enrich_line_item_color_from_own_notes,
-    enrich_order_line_item_colors,
-)
+os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+os.environ.setdefault("DB_NAME", "eternal_packaging_test")
+os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
+os.environ.setdefault("CORS_ORIGINS", "*")
+
+from server import app, current_user, _persist_imported_po
+from services.accurate import _normalize_accurate_so
 
 
-def test_case1_single_color_persisted_exactly():
+ADMIN = {
+    "email": "admin@eternalpackaging.com",
+    "name": "Admin Tester",
+    "role": "admin",
+}
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def bind_motor():
+    import server
+    from motor.motor_asyncio import AsyncIOMotorClient
+    server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    server.db = server.client[os.environ["DB_NAME"]]
+
+
+def test_case1_structured_color_persisted_exactly():
     raw = {
         "id": 201,
         "number": "SO-SYNC-1",
@@ -24,7 +51,8 @@ def test_case1_single_color_persisted_exactly():
             {
                 "id": 1,
                 "quantity": 10,
-                "detailNotes": "Warna Cetak: RED",
+                "charField1": "RED",
+                "detailNotes": "Warna Cetak: BLUE",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
@@ -33,7 +61,7 @@ def test_case1_single_color_persisted_exactly():
     assert so["line_items"][0]["color"] == "RED"
 
 
-def test_case2_same_name_lines_independent_red_blue():
+def test_case2_same_name_lines_independent():
     raw = {
         "id": 202,
         "number": "SO-SYNC-2",
@@ -42,26 +70,25 @@ def test_case2_same_name_lines_independent_red_blue():
             {
                 "id": 11,
                 "quantity": 100,
-                "detailNotes": "Warna Cetak: RED",
+                "charField1": "RED",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 12,
                 "quantity": 200,
-                "detailNotes": "Warna Cetak: BLUE",
+                "charField1": "BLUE",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],
     }
     so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["name"] == so["line_items"][1]["name"] == "Preview Cup"
     assert so["line_items"][0]["color"] == "RED"
     assert so["line_items"][1]["color"] == "BLUE"
     assert so["line_items"][0]["accurate_line_id"] == "11"
     assert so["line_items"][1]["accurate_line_id"] == "12"
 
 
-def test_case3_multi_color_preserves_order():
+def test_case3_multi_color_preserves_source_order():
     raw = {
         "id": 203,
         "number": "SO-SYNC-3",
@@ -70,16 +97,16 @@ def test_case3_multi_color_preserves_order():
             {
                 "id": 1,
                 "quantity": 10,
-                "detailNotes": "Warna Cetak: RED / WHITE / BLACK",
+                "charField1": "PUTIH, HIJAU, PINK",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
     }
     so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["color"] == "RED / WHITE / BLACK"
+    assert so["line_items"][0]["color"] == "PUTIH, HIJAU, PINK"
 
 
-def test_case4_line_level_beats_header():
+def test_notes_do_not_become_color():
     raw = {
         "id": 204,
         "number": "SO-SYNC-4",
@@ -101,109 +128,42 @@ def test_case4_line_level_beats_header():
         ],
     }
     so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["color"] == "RED"
-    assert so["line_items"][1]["color"] == "BLUE"
-
-
-def test_case5_missing_color_stays_empty_no_cross_line():
-    raw = {
-        "id": 205,
-        "number": "SO-SYNC-5",
-        "customer": {"name": "A"},
-        "detailItem": [
-            {
-                "id": 31,
-                "quantity": 10,
-                "detailNotes": "Warna Cetak: RED",
-                "item": {"id": 1, "name": "Preview Cup"},
-            },
-            {
-                "id": 32,
-                "quantity": 10,
-                "item": {"id": 7, "name": "Preview Cup"},
-            },
-        ],
-    }
-    so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["color"] == "RED"
+    assert so["line_items"][0]["color"] is None
     assert so["line_items"][1]["color"] is None
 
 
-def test_case6_api_read_model_returns_exact_line_colors():
-    """Simulate GET /orders/{id} payload after persist + enrichment."""
-    order = {
-        "id": "task-so-color-sync-01",
-        "po_number": "TASK-SO-COLOR-SYNC-01",
-        "line_items": [
-            {
-                "name": "Preview Cup",
-                "color": "RED",
-                "notes": "Warna Cetak: RED",
-                "accurate_line_id": "sync-1",
-            },
-            {
-                "name": "Preview Cup",
-                "color": "BLUE",
-                "notes": "Warna Cetak: BLUE",
-                "accurate_line_id": "sync-2",
-            },
-            {
-                "name": "Preview Cup",
-                "color": "RED / WHITE / BLACK",
-                "notes": "Warna Cetak: RED / WHITE / BLACK",
-                "accurate_line_id": "sync-3",
-            },
-        ],
-    }
-    enrich_order_line_item_colors(order)
-    assert [li["color"] for li in order["line_items"]] == [
-        "RED",
-        "BLUE",
-        "RED / WHITE / BLACK",
-    ]
-
-
-def test_legacy_null_color_enriched_from_own_notes_only():
-    """Pre-#178 style: color null, Warna Cetak still in notes → read enrichment."""
-    legacy = {
-        "name": "Preview Cup",
-        "color": None,
-        "notes": "Warna Cetak: Merah, Hitam, Putih",
-        "accurate_line_id": "legacy-1",
-    }
-    other = {
-        "name": "Preview Cup",
-        "color": None,
-        "notes": "Warna Cetak: Biru",
-        "accurate_line_id": "legacy-2",
-    }
-    empty = {
-        "name": "Preview Cup",
-        "color": None,
+@pytest.mark.anyio
+async def test_get_orders_id_returns_persisted_null_not_notes_color():
+    preview = {
+        "accurate_id": f"acc-{uuid.uuid4().hex[:8]}",
+        "po_number": f"PO-NULL-{uuid.uuid4().hex[:8].upper()}",
+        "customer": "A",
+        "order_date": "2026-09-09",
+        "estimated_delivery": "2026-09-12",
+        "deadline": "2026-09-12",
         "notes": "",
-        "accurate_line_id": "legacy-3",
-    }
-    assert enrich_line_item_color_from_own_notes(legacy)["color"] == "Merah, Hitam, Putih"
-    assert enrich_line_item_color_from_own_notes(other)["color"] == "Biru"
-    assert enrich_line_item_color_from_own_notes(empty)["color"] is None
-
-
-def test_enrichment_does_not_override_persisted_color():
-    li = {
-        "name": "Preview Cup",
-        "color": "RED",
-        "notes": "Warna Cetak: BLUE",
-    }
-    assert enrich_line_item_color_from_own_notes(li)["color"] == "RED"
-
-
-def test_enrichment_never_copies_sibling_line_color():
-    order = {
         "line_items": [
-            {"name": "Preview Cup", "color": "RED", "notes": "Warna Cetak: RED"},
-            {"name": "Preview Cup", "color": None, "notes": ""},
-        ]
+            {
+                "name": "Preview Cup",
+                "color": None,
+                "notes": "Warna Cetak: HITAM",
+                "quantity": 1,
+                "unit": "pcs",
+                "accurate_item_id": "9",
+            }
+        ],
+        "total_quantity": 1,
+        "item_count": 1,
     }
-    enrich_order_line_item_colors(order)
-    assert order["line_items"][0]["color"] == "RED"
-    assert order["line_items"][1]["color"] is None
+    saved = await _persist_imported_po(preview, source="accurate_mock", user=ADMIN)
+    app.dependency_overrides[current_user] = lambda: ADMIN
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.get(f"/api/orders/{saved['id']}")
+            assert res.status_code == 200, res.text
+            line = res.json()["order"]["line_items"][0]
+            assert line["color"] is None
+            assert line["notes"] == "Warna Cetak: HITAM"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
