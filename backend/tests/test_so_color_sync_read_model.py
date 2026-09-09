@@ -51,7 +51,7 @@ def test_case1_structured_color_persisted_exactly():
             {
                 "id": 1,
                 "quantity": 10,
-                "charField1": "RED",
+                "charField2": "RED",
                 "detailNotes": "Warna Cetak: BLUE",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
@@ -70,13 +70,13 @@ def test_case2_same_name_lines_independent():
             {
                 "id": 11,
                 "quantity": 100,
-                "charField1": "RED",
+                "charField2": "RED",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 12,
                 "quantity": 200,
-                "charField1": "BLUE",
+                "charField2": "BLUE",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],
@@ -97,7 +97,7 @@ def test_case3_multi_color_preserves_source_order():
             {
                 "id": 1,
                 "quantity": 10,
-                "charField1": "PUTIH, HIJAU, PINK",
+                "charField2": "PUTIH, HIJAU, PINK",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],

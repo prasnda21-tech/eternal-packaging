@@ -27,6 +27,7 @@ import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import copy
 
 import httpx
 
@@ -1171,7 +1172,7 @@ class AccurateClient:
         """Bulk sync is intentionally disabled in live mode."""
         if self.is_live:
             raise NotImplementedError("Bulk sync disabled — use single-PO import.")
-        return _MOCK_SALES_ORDERS
+        return [_materialize_mock_sales_order(so) for so in _MOCK_SALES_ORDERS]
 
     async def fetch_single_sales_order(self, so_number: str) -> Optional[Dict[str, Any]]:
         """Fetch ONE Sales Order (READ-ONLY). Returns None if not found."""
@@ -1182,10 +1183,8 @@ class AccurateClient:
             return await self._live_fetch_so(so_number)
         key = so_number.upper()
         for so in _MOCK_SALES_ORDERS:
-            if so.get("po_number", "").upper() == key or so.get("accurate_id", "").upper() == key:
-                found = dict(so)
-                validate_normalized_so(found)
-                return found
+            if key in _mock_so_lookup_keys(so):
+                return _materialize_mock_sales_order(so)
         return None
 
     async def fetch_sales_order_results(
@@ -1319,18 +1318,18 @@ class AccurateClient:
                 kw = keyword.lower()
                 all_mock = [
                     so for so in all_mock
-                    if kw in (so.get("po_number") or "").lower()
-                    or kw in (so.get("customer") or "").lower()
+                    if kw in _mock_so_list_number(so).lower()
+                    or kw in _mock_so_list_customer(so).lower()
                 ]
             start = (page - 1) * limit
             page_rows = all_mock[start:start + limit]
             rows = []
             for so in page_rows:
                 rows.append({
-                    "accurate_id": so.get("accurate_id"),
-                    "number": so.get("po_number"),
-                    "transDate": so.get("order_date"),
-                    "customer": so.get("customer"),
+                    "accurate_id": _mock_so_list_accurate_id(so),
+                    "number": _mock_so_list_number(so),
+                    "transDate": so.get("order_date") or so.get("transDate"),
+                    "customer": _mock_so_list_customer(so),
                     "totalAmount": so.get("total"),
                     "statusName": so.get("status_label", "Mock"),
                 })
@@ -2884,14 +2883,15 @@ def _structured_warna_scalar(value: Any) -> Optional[str]:
 def _structured_so_line_warna(li: Dict[str, Any]) -> Optional[str]:
     """Accurate Sales Order line-level UI column Warna.
 
-    Proven GET shape for tenant custom character fields matches zona:
-    ``searchCharFieldN.name`` then ``charFieldN``. Header zona uses slot 3;
-    line Warna uses slot 1 (Kustom Karakter 1 on Rincian Barang). Direct
-    ``color`` / ``itemColor`` / ``warna`` keys are also accepted when the
-    payload already exposes them on the detail row.
+    Production-proven GET shape for SO 91290 (PO/2026/09/09/000018):
+    ``searchCharField2.name`` then ``charField2``. Header zona remains
+    ``searchCharField3`` / ``charField3``. Direct ``color`` / ``itemColor`` /
+    ``warna`` keys are also accepted when the payload already exposes them
+    on the detail row.
 
-    Nested item-master fields, notes, header Keterangan, and sibling lines
-    are ignored.
+    Nested item-master fields, notes, header Keterangan, sibling lines,
+    and charField1 / searchCharField1 are ignored (charField1 is null on
+    the proven production lines).
     """
     if not isinstance(li, dict):
         return None
@@ -2899,11 +2899,11 @@ def _structured_so_line_warna(li: Dict[str, Any]) -> Optional[str]:
         text = _structured_warna_scalar(li.get(key))
         if text:
             return text
-    nested = li.get("searchCharField1")
+    nested = li.get("searchCharField2")
     text = _structured_warna_scalar(nested)
     if text:
         return text
-    return _structured_warna_scalar(li.get("charField1"))
+    return _structured_warna_scalar(li.get("charField2"))
 
 
 def _resolve_so_line_color(li: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -2939,6 +2939,49 @@ def _extract_so_notes_text(d: Dict[str, Any]) -> str:
         if v:
             parts.append(str(v))
     return " ".join(parts).strip()
+
+
+def _mock_so_lookup_keys(so: Dict[str, Any]) -> List[str]:
+    keys: List[str] = []
+    for value in (so.get("po_number"), so.get("accurate_id"), so.get("number"), so.get("id")):
+        text = str(value or "").strip().upper()
+        if text and text not in keys:
+            keys.append(text)
+    return keys
+
+
+def _mock_so_list_number(so: Dict[str, Any]) -> str:
+    return str(so.get("po_number") or so.get("number") or "").strip()
+
+
+def _mock_so_list_accurate_id(so: Dict[str, Any]) -> str:
+    return str(so.get("accurate_id") or so.get("id") or "").strip()
+
+
+def _mock_so_list_customer(so: Dict[str, Any]) -> str:
+    customer = so.get("customer")
+    if isinstance(customer, dict):
+        return str(
+            customer.get("name")
+            or customer.get("customerName")
+            or ""
+        ).strip()
+    return str(customer or "").strip()
+
+
+def _materialize_mock_sales_order(so: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn a mock fixture into the normalized SO import contract.
+
+    Production Accurate uses GET detail.do body ``d`` (``detailItem`` +
+    header fields). Mock fetch used to copy pre-normalized ``line_items``
+    and skip ``_normalize_accurate_so``. A raw ``detailItem`` fixture
+    therefore produced header-only preview with ``line_items: []``.
+    """
+    found = copy.deepcopy(so)
+    if isinstance(found.get("detailItem"), list) or isinstance(found.get("detailItems"), list):
+        found = _normalize_accurate_so(found)
+    validate_normalized_so(found)
+    return found
 
 
 # ---- Mock data ----
@@ -3076,42 +3119,46 @@ _MOCK_SALES_ORDERS: List[Dict[str, Any]] = [
         ],
     },
     {
-        "accurate_id": "91290",
-        "po_number": "PO/2026/09/09/000018",
-        "customer": "WELCOME TO PLEASURE",
-        "outlet": None,
-        "recipient": "WELCOME TO PLEASURE",
-        "address": "",
-        "payment_terms": None,
-        "sales": None,
-        "created_by_user": None,
-        "expedition": None,
-        "delivery_zone": None,
-        "seller": None,
-        "order_date_offset_days": 0,
-        "notes": "SABLON WARNA PUTIH, HIJAU, PINK\nBUFFER STOCK",
-        "line_items": [
+        # Production-proven GET sales-order/detail.do ``d`` shape for SO 91290.
+        # Mock fetch materializes this via ``_normalize_accurate_so``.
+        "id": 91290,
+        "number": "PO/2026/09/09/000018",
+        "customer": {"name": "WELCOME TO PLEASURE"},
+        "description": "SABLON WARNA PUTIH, HIJAU, PINK\nBUFFER STOCK",
+        "detailItem": [
             {
-                "accurate_item_id": "100003",
-                "accurate_line_id": "91290-1",
-                "item_code": "100003",
-                "name": "12 oz PET Datar 11 gr SJP",
-                "quantity": 1,
-                "unit": "pcs",
-                "color": "PUTIH, HIJAU, PINK",
-                "color_source": "line.warna",
-                "notes": "",
+                "id": 99990,
+                "quantity": 2000,
+                "itemUnitName": "pcs",
+                "detailName": "12 oz PET Datar 11 gr SJP",
+                "charField1": None,
+                "charField2": "PUTIH, HIJAU, PINK",
+                "searchCharField2": {
+                    "id": "PUTIH, HIJAU, PINK",
+                    "name": "PUTIH, HIJAU, PINK",
+                },
+                "item": {
+                    "id": 100003,
+                    "no": "100003",
+                    "name": "12 oz PET Datar 11 gr SJP",
+                },
             },
             {
-                "accurate_item_id": "100123",
-                "accurate_line_id": "91290-2",
-                "item_code": "100123",
-                "name": "LID PET Strawless Starindo",
-                "quantity": 1,
-                "unit": "pcs",
-                "color": "BENING",
-                "color_source": "line.warna",
-                "notes": "",
+                "id": 99991,
+                "quantity": 2000,
+                "itemUnitName": "pcs",
+                "detailName": "LID PET Strawless Starindo",
+                "charField1": None,
+                "charField2": "BENING",
+                "searchCharField2": {
+                    "id": "BENING",
+                    "name": "BENING",
+                },
+                "item": {
+                    "id": 100123,
+                    "no": "100123",
+                    "name": "LID PET Strawless Starindo",
+                },
             },
         ],
     },

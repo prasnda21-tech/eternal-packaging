@@ -1,4 +1,4 @@
-"""Accurate SO line color mapping from structured Warna (charField1).
+"""Accurate SO line color mapping from structured Warna (charField2).
 
 Free-text helpers remain unit-tested but are not used for SO import color.
 """
@@ -31,7 +31,7 @@ def test_case1_structured_warna_merah():
             {
                 "id": 1,
                 "quantity": 10,
-                "charField1": "Merah",
+                "charField2": "Merah",
                 "detailNotes": "Warna Cetak: ignored",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
@@ -52,7 +52,7 @@ def test_case2_multiple_colors_preserved_in_full():
             {
                 "id": 1,
                 "quantity": 10,
-                "charField1": "Merah, Hitam, Putih",
+                "charField2": "Merah, Hitam, Putih",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
@@ -71,7 +71,7 @@ def test_case2_structured_multi_color_keeps_appearance_order():
             {
                 "id": 1,
                 "quantity": 10,
-                "charField1": "PUTIH, HIJAU, PINK",
+                "charField2": "PUTIH, HIJAU, PINK",
                 "item": {"id": 9, "name": "Preview Cup"},
             }
         ],
@@ -90,13 +90,13 @@ def test_case3_same_name_lines_keep_distinct_colors():
             {
                 "id": 11,
                 "quantity": 100,
-                "charField1": "Merah",
+                "charField2": "Merah",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 12,
                 "quantity": 200,
-                "charField1": "Biru",
+                "charField2": "Biru",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],
@@ -120,14 +120,14 @@ def test_case4_structured_beats_header_and_notes():
             {
                 "id": 21,
                 "quantity": 10,
-                "charField1": "Merah",
+                "charField2": "Merah",
                 "detailNotes": "Warna Cetak: Hitam",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 22,
                 "quantity": 10,
-                "charField1": "Biru",
+                "charField2": "Biru",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],

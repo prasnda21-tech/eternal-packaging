@@ -214,7 +214,7 @@ def test_mock_fetch_all_succeeds():
     c = AccurateClient()
     if c.is_live:
         pytest.skip("live credentials present — unit tests must not call Accurate")
-    numbers = [so["po_number"] for so in _MOCK_SALES_ORDERS]
+    numbers = [so.get("po_number") or so.get("number") for so in _MOCK_SALES_ORDERS]
     rows = _await(c.fetch_sales_order_results(numbers))
     assert all(r["success"] for r in rows)
     assert len(rows) == len(numbers)

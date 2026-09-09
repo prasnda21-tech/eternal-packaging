@@ -17,6 +17,7 @@ from services.accurate import (
     _MOCK_SALES_ORDERS,
     _ITEM_DETAIL_CONCURRENCY,
     _extract_accurate_item_id,
+    _materialize_mock_sales_order,
     _normalize_accurate_so,
     get_last_list_error,
     item_list_row_incomplete,
@@ -608,8 +609,9 @@ def test_mock_client_lists_and_details():
 
 def test_mock_so_lines_have_accurate_item_ids():
     for so in _MOCK_SALES_ORDERS:
-        for li in so["line_items"]:
-            assert li.get("accurate_item_id"), so["po_number"]
+        materialized = _materialize_mock_sales_order(so)
+        for li in materialized["line_items"]:
+            assert li.get("accurate_item_id"), materialized["po_number"]
 
 
 # ---------- RBAC ----------

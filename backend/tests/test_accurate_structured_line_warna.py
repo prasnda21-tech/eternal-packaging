@@ -19,6 +19,8 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 
 from server import app, current_user, _build_preview, _persist_imported_po
 from services.accurate import (
+    AccurateClient,
+    _MOCK_SALES_ORDERS,
     _normalize_accurate_so,
     _structured_so_line_warna,
 )
@@ -36,25 +38,27 @@ PROD_HEADER = "SABLON WARNA PUTIH, HIJAU, PINK\nBUFFER STOCK"
 def _prod_raw(*, header=PROD_HEADER, line1_warna="PUTIH, HIJAU, PINK", line2_warna="BENING",
               line1_notes="", line2_notes=""):
     line1 = {
-        "id": 1,
+        "id": 99990,
         "quantity": 10000,
         "itemUnitName": "pcs",
         "detailNotes": line1_notes,
+        "charField1": None,
         "item": {"id": 100003, "no": "100003", "name": "12 oz PET Datar 11 gr SJP"},
     }
     line2 = {
-        "id": 2,
+        "id": 99991,
         "quantity": 10000,
         "itemUnitName": "pcs",
         "detailNotes": line2_notes,
+        "charField1": None,
         "item": {"id": 100123, "no": "100123", "name": "LID PET Strawless Starindo"},
     }
     if line1_warna is not None:
-        line1["searchCharField1"] = {"name": line1_warna}
-        line1["charField1"] = line1_warna
+        line1["searchCharField2"] = {"id": line1_warna, "name": line1_warna}
+        line1["charField2"] = line1_warna
     if line2_warna is not None:
-        line2["searchCharField1"] = {"name": line2_warna}
-        line2["charField1"] = line2_warna
+        line2["searchCharField2"] = {"id": line2_warna, "name": line2_warna}
+        line2["charField2"] = line2_warna
     return {
         "id": 91290,
         "number": "PO/2026/09/09/000018",
@@ -79,11 +83,35 @@ def bind_motor():
 
 def test_structured_extractor_preserves_multi_color_order():
     li = {
-        "searchCharField1": {"name": "PUTIH, HIJAU, PINK"},
-        "charField1": "PUTIH, HIJAU, PINK",
+        "searchCharField2": {"name": "PUTIH, HIJAU, PINK"},
+        "charField2": "PUTIH, HIJAU, PINK",
+        "charField1": None,
         "detailNotes": "Warna Cetak: HITAM",
     }
     assert _structured_so_line_warna(li) == "PUTIH, HIJAU, PINK"
+
+
+def test_searchCharField2_name_preferred_over_charField2():
+    li = {
+        "searchCharField2": {"id": "PUTIH, HIJAU, PINK", "name": "PUTIH, HIJAU, PINK"},
+        "charField2": "BENING",
+        "charField1": None,
+    }
+    assert _structured_so_line_warna(li) == "PUTIH, HIJAU, PINK"
+
+
+def test_charField2_fallback_when_searchCharField2_missing():
+    li = {"charField1": None, "charField2": "BENING"}
+    assert _structured_so_line_warna(li) == "BENING"
+
+
+def test_charField1_does_not_populate_color():
+    li = {
+        "charField1": "HITAM",
+        "searchCharField1": {"name": "HITAM"},
+        "charField2": None,
+    }
+    assert _structured_so_line_warna(li) is None
 
 
 def test_structured_extractor_ignores_notes_and_nested_item():
@@ -99,7 +127,7 @@ def test_case_a_100003_multi_color():
     cup = so["line_items"][0]
     assert cup["item_code"] == "100003"
     assert cup["color"] == "PUTIH, HIJAU, PINK"
-    assert cup["accurate_line_id"] == "1"
+    assert cup["accurate_line_id"] == "99990"
 
 
 def test_case_b_100123_bening():
@@ -107,7 +135,7 @@ def test_case_b_100123_bening():
     lid = so["line_items"][1]
     assert lid["item_code"] == "100123"
     assert lid["color"] == "BENING"
-    assert lid["accurate_line_id"] == "2"
+    assert lid["accurate_line_id"] == "99991"
 
 
 def test_case_c_header_sablon_does_not_override_structured():
@@ -152,13 +180,13 @@ def test_header_merah_vs_structured_mixed():
             {
                 "id": 1,
                 "quantity": 1,
-                "charField1": "MERAH",
+                "charField2": "MERAH",
                 "item": {"id": 1, "no": "A", "name": "Cup"},
             },
             {
                 "id": 2,
                 "quantity": 1,
-                "charField1": "BENING",
+                "charField2": "BENING",
                 "item": {"id": 2, "no": "B", "name": "Lid"},
             },
         ],
@@ -178,13 +206,13 @@ def test_same_name_different_structured_warna():
             {
                 "id": 11,
                 "quantity": 100,
-                "charField1": "PUTIH, HIJAU, PINK",
+                "charField2": "PUTIH, HIJAU, PINK",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
             {
                 "id": 12,
                 "quantity": 200,
-                "charField1": "BENING",
+                "charField2": "BENING",
                 "item": {"id": 1, "name": "Preview Cup"},
             },
         ],
@@ -201,6 +229,55 @@ def test_preview_copies_structured_colors():
     preview = _build_preview(_normalize_accurate_so(_prod_raw()))
     assert preview["line_items"][0]["color"] == "PUTIH, HIJAU, PINK"
     assert preview["line_items"][1]["color"] == "BENING"
+
+
+@pytest.mark.anyio
+async def test_mock_fixture_po_000018_preview_has_two_warna_lines():
+    """Local mock SO 91290 must normalize detailItem into 2 preview lines."""
+    client = AccurateClient()
+    if client.is_live:
+        pytest.skip("live Accurate credentials present")
+    raw = next(
+        so for so in _MOCK_SALES_ORDERS
+        if so.get("id") == 91290 or so.get("number") == "PO/2026/09/09/000018"
+    )
+    assert "detailItem" in raw
+    assert "line_items" not in raw
+    assert raw["detailItem"][0]["charField1"] is None
+    assert raw["detailItem"][1]["charField1"] is None
+    assert raw["description"].startswith("SABLON WARNA PUTIH, HIJAU, PINK")
+
+    so = await client.fetch_single_sales_order("PO/2026/09/09/000018")
+    assert so is not None
+    assert so["accurate_id"] == "91290"
+    assert so["notes"].startswith("SABLON WARNA PUTIH, HIJAU, PINK")
+    assert len(so["line_items"]) == 2
+
+    cup, lid = so["line_items"]
+    assert cup["item_code"] == "100003"
+    assert cup["name"] == "12 oz PET Datar 11 gr SJP"
+    assert cup["quantity"] == 2000
+    assert cup["accurate_line_id"] == "99990"
+    assert cup["color"] == "PUTIH, HIJAU, PINK"
+    assert lid["item_code"] == "100123"
+    assert lid["name"] == "LID PET Strawless Starindo"
+    assert lid["quantity"] == 2000
+    assert lid["accurate_line_id"] == "99991"
+    assert lid["color"] == "BENING"
+
+    preview = _build_preview(so)
+    assert preview["item_count"] == 2
+    assert len(preview["line_items"]) == 2
+    assert preview["line_items"][0]["color"] == "PUTIH, HIJAU, PINK"
+    assert preview["line_items"][1]["color"] == "BENING"
+    # Header Keterangan is not a color source.
+    assert "BUFFER STOCK" in preview["notes"]
+    assert cup["color"] == "PUTIH, HIJAU, PINK"
+    assert lid["color"] == "BENING"
+    assert "SABLON" not in (cup["color"] or "")
+    assert "SABLON" not in (lid["color"] or "")
+    assert "BUFFER" not in (cup["color"] or "")
+    assert "BUFFER" not in (lid["color"] or "")
 
 
 @pytest.mark.anyio
