@@ -14,11 +14,13 @@ export default function PermintaanPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_requests.create");
+  const canCreatePo = hasPerm("purchase_orders.create");
   const initial = searchParams.get("action") === "create" ? "create" : "list";
   const [view, setView] = useState(initial);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
   const [q, setQ] = useState("");
   const [detail, setDetail] = useState(null);
 
@@ -62,8 +64,10 @@ export default function PermintaanPembelian() {
   };
 
   const save = async () => {
+    if (busy) return;
     setBusy(true);
     setErr("");
+    setOk("");
     try {
       const res = await api.createPurchaseRequest({
         request_date: requestDate,
@@ -72,6 +76,7 @@ export default function PermintaanPembelian() {
       });
       setView("detail");
       setDetail(res.request);
+      setOk(`Permintaan ${res.request?.request_number || ""} berhasil disimpan.`);
     } catch (ex) {
       setErr(errDetail(ex));
     } finally {
@@ -106,6 +111,7 @@ export default function PermintaanPembelian() {
         )}
       </div>
       {err && <div className="signal-strip" role="alert"><AlertCircle size={16} /><span>{err}</span></div>}
+      {ok && <p className="muted small" data-testid="permintaan-success">{ok}</p>}
 
       {view === "list" && (
         <>
@@ -137,7 +143,7 @@ export default function PermintaanPembelian() {
                     <td className="num mono">{fmtQty(r.total_remaining_order_qty)}</td>
                     <td>
                       <button className="ghost sm" onClick={() => openDetail(r.id)}>Detail</button>
-                      {canCreate && Number(r.total_remaining_order_qty) > 0 && (
+                      {canCreatePo && Number(r.total_remaining_order_qty) > 0 && (
                         <button className="primary sm" data-testid={`btn-buat-po-${r.id}`} onClick={() => navigate(`/pembelian/pesanan-pembelian?request_id=${r.id}&action=create`)}>Buat Pesanan Pembelian</button>
                       )}
                     </td>
@@ -239,7 +245,7 @@ export default function PermintaanPembelian() {
               ))}
             </tbody>
           </table>
-          {canCreate && Number(detail.total_remaining_order_qty) > 0 && (
+          {canCreatePo && Number(detail.total_remaining_order_qty) > 0 && (
             <Link className="primary" data-testid="btn-buat-pesanan-pembelian" to={`/pembelian/pesanan-pembelian?request_id=${detail.id}&action=create`}>Buat Pesanan Pembelian</Link>
           )}
         </div>

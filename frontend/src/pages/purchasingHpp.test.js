@@ -30,7 +30,11 @@ describe("Pembelian workflow UI", () => {
   });
 
   test("PO list/create/detail and create from Permintaan", () => {
+    expect(permintaan).toMatch(/canCreatePo/);
+    expect(permintaan).toMatch(/purchase_orders\.create/);
     expect(permintaan).toMatch(/btn-buat-pesanan-pembelian/);
+    expect(permintaan).toMatch(/canCreatePo && Number\(r\.total_remaining_order_qty\) > 0/);
+    expect(permintaan).toMatch(/canCreatePo && Number\(detail\.total_remaining_order_qty\) > 0/);
     expect(po).toMatch(/pesanan-pembelian-page/);
     expect(po).toMatch(/request-selector/);
     expect(po).toMatch(/unit-price-input/);
@@ -39,11 +43,15 @@ describe("Pembelian workflow UI", () => {
     expect(appSrc).toMatch(/path="\/pembelian\/pesanan-pembelian"/);
   });
 
-  test("Faktur from PO with partial qty", () => {
+  test("Faktur from PO with partial qty and rich detail", () => {
     expect(inv).toMatch(/faktur-pembelian-page/);
     expect(inv).toMatch(/po-selector/);
     expect(inv).toMatch(/qty-input/);
     expect(inv).toMatch(/save-invoice-btn/);
+    expect(inv).toMatch(/invoice-detail-lines/);
+    expect(inv).toMatch(/invoice-detail-summary/);
+    expect(inv).toMatch(/invoice-payment-history/);
+    expect(inv).toMatch(/detail-outstanding/);
     expect(po).toMatch(/btn-buat-faktur/);
   });
 
@@ -53,6 +61,7 @@ describe("Pembelian workflow UI", () => {
     expect(pay).toMatch(/outstanding/);
     expect(pay).toMatch(/paid-total/);
     expect(pay).toMatch(/save-payment/);
+    expect(pay).toMatch(/validatePurchasePaymentAmount/);
   });
 
   test("HPP settings FIFO/RATA-RATA recognition confirmation status", () => {
@@ -74,6 +83,9 @@ describe("Pembelian workflow UI", () => {
     expect(penerimaan).toMatch(/Sinkronkan dari Accurate/);
     expect(penerimaan).toMatch(/btn-buat-penerimaan/);
     expect(penerimaan).toMatch(/penerimaan-create-form/);
+    expect(penerimaan).toMatch(/accurate-receipts-heading/);
+    expect(penerimaan).toMatch(/po-receipts-heading/);
+    expect(penerimaan).toMatch(/Penerimaan terhadap Pesanan Pembelian/);
   });
 
   test("api and login route untouched", () => {
