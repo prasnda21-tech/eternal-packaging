@@ -29,13 +29,17 @@ export function compactPoWorkspaceLabel(poNumber, orderId) {
   return id ? `PO ${id}` : "PO";
 }
 
-export function poDetailWorkspaceTab(pathname, meta = {}) {
+export function poDetailWorkspaceTab(pathname, meta) {
   const orderId = poDetailOrderIdFromPath(pathname);
   if (!orderId) return null;
+  // React Router sets location.state to null (not undefined) on tab/direct
+  // navigation. Default-param `meta = {}` does not apply to null and would
+  // throw, white-screening AppShell when reopening a PO workspace tab.
+  const info = meta && typeof meta === "object" ? meta : {};
   return {
     id: `${PO_DETAIL_TAB_PREFIX}${orderId}`,
     path: `/po/${orderId}`,
-    label: compactPoWorkspaceLabel(meta.po_number, orderId),
+    label: compactPoWorkspaceLabel(info.po_number, orderId),
     dynamic: true,
   };
 }

@@ -269,6 +269,17 @@ describe("global workspace tabs", () => {
     expect(r.activated.id).toBe("pesanan-penjualan");
   });
 
+  test("CASE 12 — returning to a PO tab with null location.state still activates", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    r = openOrActivateGlobalTab(r.tabs, "/penjualan/pesanan-penjualan");
+    expect(() => openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, null)).not.toThrow();
+    const back = openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, null);
+    expect(back.activated.id).toBe("po-detail:ord-a");
+    expect(back.activated.path).toBe("/po/ord-a");
+    expect(back.tabs.filter((t) => t.id === "po-detail:ord-a")).toHaveLength(1);
+  });
+
   test("CASE 11 — direct /po/:id route opens a tab and nested kerja does not", () => {
     const direct = openOrActivateGlobalTab([], "/po/ord-a");
     expect(direct.activated.path).toBe("/po/ord-a");
@@ -276,6 +287,14 @@ describe("global workspace tabs", () => {
     const nested = openOrActivateGlobalTab(direct.tabs, "/po/ord-a/kerja");
     expect(nested.activated).toBe(null);
     expect(nested.tabs.map((t) => t.id)).toEqual(["po-detail:ord-a"]);
+  });
+
+  test("CASE 6 — catalog Dashboard / Pesanan Penjualan / Jadwal Produksi stay distinct", () => {
+    let r = openOrActivateGlobalTab([], "/dashboard");
+    r = openOrActivateGlobalTab(r.tabs, "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/produksi");
+    expect(r.tabs.map((t) => t.id)).toEqual(["dashboard", "pesanan-penjualan", "produksi"]);
+    expect(r.activated.path).toBe("/produksi");
   });
 
   test("PO workspace tabs persist with catalog tabs in sessionStorage", () => {
