@@ -166,9 +166,9 @@ def test_production_row_keeps_same_name_line_identity():
         "design_files": [{"id": "d1"}],
         "payment_files": [{"id": "p1"}],
         "line_items": [
-            {"id": "lid-a", "name": "Cup 16oz", "quantity": 1000, "production_process": "print"},
+            {"id": "lid-a", "name": "Cup 16oz", "quantity": 1000, "production_process": "print", "screen_size": "large"},
             {"id": "lid-x", "name": "Lid", "quantity": 100, "production_process": "non_print"},
-            {"id": "lid-b", "name": "Cup 16oz", "quantity": 500, "production_process": "print"},
+            {"id": "lid-b", "name": "Cup 16oz", "quantity": 500, "production_process": "print", "screen_size": "small"},
         ],
         "operator_splits": [
             {"id": "s1", "line_idx": 0, "operator_name": "Budi", "quantity": 1000, "qty_completed": 0, "stage": 8},
@@ -181,6 +181,7 @@ def test_production_row_keeps_same_name_line_identity():
     assert [op["line_id"] for op in row["operators"]] == ["lid-a", "lid-b"]
     assert [op["line_name"] for op in row["operators"]] == ["Cup 16oz", "Cup 16oz"]
     assert [op["split_id"] for op in row["operators"]] == ["s1", "s2"]
+    assert [op["screen_size"] for op in row["operators"]] == ["large", "small"]
     assert row["print_qty_total"] == 1500
     assert row["total_quantity"] == 1600
 

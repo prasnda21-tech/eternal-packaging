@@ -505,4 +505,22 @@ describe("MobileProductionSchedulePage", () => {
     await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
   });
+
+  test("PWA Screen column matches desktop labels for the same row payload", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        operators: [
+          { split_id: "s1", line_idx: 0, line_id: "lid-a", line_name: "Cup 16oz", operator_name: "Budi", quantity: 10000, line_printable: true, screen_size: "large" },
+          { split_id: "s2", line_idx: 2, line_id: "lid-b", line_name: "Cup 16oz", operator_name: "Sari", quantity: 500, line_printable: true, screen_size: "small" },
+        ],
+      }],
+    });
+    await renderPage();
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toContain("Screen");
+    const cells = [...container.querySelectorAll('[data-testid^="mobile-schedule-screen-size-PO-1001-"]')];
+    const labels = cells.map((el) => el.textContent.trim());
+    expect(labels).toEqual(expect.arrayContaining(["Screen Besar", "Screen Kecil"]));
+  });
 });

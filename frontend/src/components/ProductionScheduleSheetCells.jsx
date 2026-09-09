@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { XCircle } from "lucide-react";
 import { formatDate, formatDisplayDate } from "../lib/constants";
 import { formatIdQty, operatorPrintableItems } from "../lib/productionScheduleQty";
+import { screenSizeLabel } from "../lib/screenSize";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
   productionSheetCellClassName,
@@ -107,6 +108,22 @@ function ItemCell({ row, variant }) {
   ));
 }
 
+function ScreenSizeCell({ row, variant }) {
+  const items = operatorPrintableItems(row.displayOperator?.splits || []);
+  if (!items.length) return <span className="muted small">—</span>;
+  return items.map((item) => (
+    <div
+      key={item.key}
+      className="prod-schedule-item-line"
+      data-testid={variant === "desktop"
+        ? `prod-screen-size-${row.po_number}-${item.key}`
+        : `mobile-schedule-screen-size-${row.po_number}-${item.key}`}
+    >
+      {screenSizeLabel(item.screen_size)}
+    </div>
+  ));
+}
+
 function OperatorCell({ row, qtyProg, variant }) {
   if (row.displayOperatorKey) {
     const op = row.displayOperator;
@@ -180,6 +197,8 @@ function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref })
       return <ItemCell row={row} variant={variant} />;
     case "qty":
       return <TotalQtyCell qtyProg={qtyProg} />;
+    case "screen_size":
+      return <ScreenSizeCell row={row} variant={variant} />;
     case "screen":
       return row.screen_qty ?? "-";
     case "qty_cetak":
@@ -247,6 +266,11 @@ function cellExtras(col, { row, variant, cetakProg, isToday }) {
     extras.push("prod-schedule-item-cell");
     if (variant === "desktop") testids["data-testid"] = `prod-item-${row.po_number}`;
     else testids["data-testid"] = `mobile-schedule-item-${row.po_number}`;
+  }
+  if (col.key === "screen_size") {
+    extras.push("prod-schedule-item-cell");
+    if (variant === "desktop") testids["data-testid"] = `prod-screen-size-${row.po_number}`;
+    else testids["data-testid"] = `mobile-schedule-screen-size-${row.po_number}`;
   }
   if (col.key === "qty") {
     extras.push("prod-qty-cell");

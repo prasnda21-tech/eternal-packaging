@@ -17,6 +17,7 @@ const UNIFIED_ORDER = [
   "deadline",
   "deadline_ship",
   "outlet",
+  "screen_size",
   "screen",
   "design",
   "payment",
@@ -41,6 +42,7 @@ const UNIFIED_LABELS = [
   "Deadline",
   "Deadline Pengiriman",
   "Outlet",
+  "Screen",
   "Qty Screen",
   "Design",
   "Payment",
@@ -56,7 +58,7 @@ describe("productionScheduleTable canonical columns", () => {
   test("keeps every previously legitimate column id plus Item", () => {
     expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS.length);
     expect(new Set(PRODUCTION_SCHEDULE_COLUMN_IDS)).toEqual(new Set(PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS));
-    expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toHaveLength(21);
+    expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toHaveLength(22);
   });
 
   test("uses one workflow-oriented order for desktop and PWA", () => {
@@ -75,7 +77,7 @@ describe("productionScheduleTable canonical columns", () => {
       "Buffer",
       "Deadline",
     ]);
-    expect(new Set(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).size).toBe(21);
+    expect(new Set(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).size).toBe(22);
   });
 
   test("qty columns are numeric/right-aligned", () => {

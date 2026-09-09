@@ -8,6 +8,7 @@ import {
   taskOperatorLabel,
   taskProductLabel,
   taskScopeQtyLabel,
+  taskScreenSizeLabel,
   taskWorkDateLabel,
 } from "../../lib/mobileTaskCard";
 import ProductionSchedulePriorityBadges from "../../components/ProductionSchedulePriorityBadges";
@@ -56,6 +57,10 @@ export default function MobileTaskCard({ task, workspaceId }) {
         <div className="mop-task-fact" data-testid="mobile-task-qty">
           <span className="mop-task-fact-label">Jumlah Dikerjakan</span>
           <span className="mop-task-fact-value">{taskScopeQtyLabel(task)}</span>
+        </div>
+        <div className="mop-task-fact" data-testid="mobile-task-screen">
+          <span className="mop-task-fact-label">Screen</span>
+          <span className="mop-task-fact-value">{taskScreenSizeLabel(task)}</span>
         </div>
       </div>
       <div className="mop-card-meta">

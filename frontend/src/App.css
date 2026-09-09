@@ -893,7 +893,17 @@
   .delivery-block .span-2{grid-column:span 1}
   .panel{padding:16px 14px}
   .split-edit-row{grid-template-columns:1fr !important;gap:6px}
-  .split-edit-row input{grid-column:1}
+  .split-edit-row.qty-assign-card.ind-assign-row{
+    grid-template-columns:minmax(0,1fr) !important;
+    grid-template-areas:
+      "barang"
+      "operator"
+      "qty"
+      "screen"
+      "tanggal"
+      "remove";
+  }
+  .split-edit-row input{grid-column:auto}
   .advance-actions{flex-direction:column;align-items:stretch}
   .advance-actions button{justify-content:center}
   .attachments-grid{grid-template-columns:repeat(2,1fr)}
@@ -3034,17 +3044,26 @@
 .ind-table tbody tr:hover td{background:#EEF7F2}
 .ind-table .ind-item strong{display:block;font-size:13px;font-weight:650}
 .qty-print-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
-.qty-ops-panel .atur-pembagian-card{margin-top:4px}
+.qty-ops-panel .atur-pembagian-card{margin-top:4px;min-width:0;overflow-x:auto}
 .qty-progress-track{height:3px;background:var(--muted);border:0;border-radius:0;overflow:hidden;margin-top:4px}
 .qty-progress-fill{height:100%;background:var(--blue);border-radius:0;transition:width .3s}
 
 .ind-assign-row,.split-edit-row.qty-assign-card{
-  display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) 180px 150px 36px;
-  gap:8px 12px;align-items:end;
+  display:grid;
+  grid-template-columns:minmax(0,1.15fr) minmax(0,1.15fr) minmax(104px,128px) minmax(118px,140px) minmax(128px,150px) 36px;
+  grid-template-areas:
+    "barang operator qty screen tanggal remove";
+  gap:8px 10px;align-items:end;
   padding:10px 0;margin:0;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent
 }
-.qty-assign-card .qty-control{max-width:none;min-width:0}
-.qty-assign-remove{align-self:end;min-height:36px;width:36px;padding:0;justify-content:center}
+.split-assign-barang{grid-area:barang;min-width:0}
+.split-assign-operator{grid-area:operator;min-width:0}
+.qty-assign-card .qty-control{grid-area:qty;max-width:none;min-width:0}
+.split-assign-screen{grid-area:screen;min-width:0}
+.split-assign-screen select{width:100%;min-width:0;max-width:100%}
+.split-assign-date{grid-area:tanggal;min-width:0}
+.qty-assign-remove{grid-area:remove;align-self:end;min-height:36px;width:36px;padding:0;justify-content:center}
+.split-assign-extra{grid-column:1 / -1;justify-self:start}
 
 .ind-op-row,.qty-ops-panel .split-row.qty-line-card{
   display:grid;grid-template-columns:minmax(140px,1.5fr) 88px 88px 88px minmax(168px,.9fr) auto;
@@ -3082,8 +3101,14 @@
 @media (max-width:900px){
   .ind-metrics,.packing-panel .pack-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ind-metric:nth-child(2),.pack-stat:nth-child(2){border-right:0}
-  .ind-assign-row,.split-edit-row.qty-assign-card{grid-template-columns:1fr 1fr}
-  .qty-assign-card .qty-control{grid-column:1 / -1;max-width:280px}
+  .ind-assign-row,.split-edit-row.qty-assign-card{
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    grid-template-areas:
+      "barang operator"
+      "qty screen"
+      "tanggal remove";
+  }
+  .qty-assign-card .qty-control{grid-column:auto;max-width:none}
   .ind-op-row,.qty-ops-panel .split-row.qty-line-card,.ind-op-head{grid-template-columns:1fr 1fr}
 }
 @media (max-width:640px){
@@ -3091,7 +3116,16 @@
   .qty-ops-head-meta{justify-content:flex-start}
   .ind-metrics,.packing-panel .pack-summary{grid-template-columns:1fr}
   .ind-metric,.pack-stat{border-right:0;border-bottom:1px solid var(--line)}
-  .ind-assign-row,.split-edit-row.qty-assign-card{grid-template-columns:1fr}
+  .ind-assign-row,.split-edit-row.qty-assign-card{
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:
+      "barang"
+      "operator"
+      "qty"
+      "screen"
+      "tanggal"
+      "remove";
+  }
   .qty-control{max-width:none}
   .qty-ops-foot .primary,.packing-panel .primary{width:100%;justify-content:center}
 }

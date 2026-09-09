@@ -7,6 +7,7 @@ from quantity_rules import (
     print_qty_total,
     validate_operator_assignment_total,
 )
+from services.screen_size import line_screen_size, normalize_screen_size
 
 
 def _safe_int(v, default: int = 0) -> int:
@@ -124,6 +125,53 @@ def _match_existing(existing: List[dict], payload_row: dict) -> Optional[dict]:
     )
 
 
+_SCREEN_UNSET = object()
+
+
+def _payload_screen_token(raw: dict):
+    if not isinstance(raw, dict) or "screen_size" not in raw:
+        return _SCREEN_UNSET
+    return normalize_screen_size(raw.get("screen_size"))
+
+
+def apply_line_screen_sizes(order: dict, payload_splits: List[dict]) -> None:
+    """Canonical screen_size lives on the exact line_item. Optional; omit preserves."""
+    line_items = order.get("line_items") or []
+    by_line: Dict[int, List[Any]] = {}
+    for raw in payload_splits or []:
+        if raw.get("line_idx") is None or raw.get("line_idx") == "":
+            continue
+        idx = int(raw["line_idx"])
+        by_line.setdefault(idx, []).append(_payload_screen_token(raw))
+    for idx, tokens in by_line.items():
+        if idx < 0 or idx >= len(line_items):
+            continue
+        explicit = [t for t in tokens if t is not _SCREEN_UNSET]
+        if not explicit:
+            continue
+        chosen = {t for t in explicit if t is not None}
+        if len(chosen) > 1:
+            name = (line_items[idx] or {}).get("name") or f"line {idx}"
+            raise ValueError(
+                f"Screen Besar/Kecil harus sama untuk satu line item ('{name}')."
+            )
+        li = line_items[idx] if isinstance(line_items[idx], dict) else {}
+        if chosen:
+            li["screen_size"] = next(iter(chosen))
+        else:
+            li.pop("screen_size", None)
+        line_items[idx] = li
+
+
+def stamp_split_screen_size(order: dict, split: dict) -> dict:
+    val = line_screen_size(order, split.get("line_idx"))
+    if val:
+        split["screen_size"] = val
+    else:
+        split.pop("screen_size", None)
+    return split
+
+
 def apply_operator_assignments(
     order: dict,
     payload_splits: List[dict],
@@ -135,7 +183,7 @@ def apply_operator_assignments(
     """Replace active assignment list without deleting completed history.
 
     payload_splits: dicts with operator_email, operator_name, quantity, line_idx,
-    optional id / work_date.
+    optional id / work_date / screen_size.
     Returns (new_splits, cancel_events_this_save).
     """
     helper_before = helper_prep_snapshot(order)
@@ -203,6 +251,10 @@ def apply_operator_assignments(
         }
         new_splits.append(row)
 
+    apply_line_screen_sizes(order, payload_splits)
+    for row in new_splits:
+        stamp_split_screen_size(order, row)
+
     for prev in existing:
         if prev.get("id") in used_ids:
             continue
@@ -218,6 +270,7 @@ def apply_operator_assignments(
             prev = {**prev, "quantity": completed, "qty_cancelled": _safe_int(prev.get("qty_cancelled")) + remaining, "cancel_events": events, "updated_at": now}
             if not prev.get("original_quantity"):
                 prev["original_quantity"] = completed + _safe_int(prev.get("qty_cancelled"))
+        stamp_split_screen_size(order, prev)
         new_splits.append(prev)
         used_ids.add(prev.get("id"))
 

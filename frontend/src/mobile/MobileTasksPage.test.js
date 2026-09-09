@@ -83,4 +83,21 @@ describe("MobileTasksPage sorting", () => {
     const ids = [...container.querySelectorAll("a.mop-card")].map((el) => el.getAttribute("data-testid"));
     expect(ids).toEqual(["mobile-task-U", "mobile-task-H", "mobile-task-N"]);
   });
+
+  test("screen_size does not change URGENT/H-1 sort and is visible on each card", async () => {
+    api.divisionTasks.mockResolvedValue({
+      tasks: [
+        { task_id: "N", order_id: "n", order_number: "PO-N", work_date: "2026-09-07", urgent: false, delivery_deadline_status: "normal", item: "Preview Cup", line_idx: 0, screen_size: "large", target_qty: 1, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+        { task_id: "H", order_id: "h", order_number: "PO-H", work_date: "2026-09-10", urgent: false, delivery_deadline_status: "h1", item: "Preview Cup", line_idx: 1, screen_size: "small", target_qty: 1, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+        { task_id: "U", order_id: "u", order_number: "PO-U", work_date: "2026-09-11", urgent: true, delivery_deadline_status: "normal", item: "Preview Cup", line_idx: 0, screen_size: "large", target_qty: 1, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+      ],
+    });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    const cards = [...container.querySelectorAll("a.mop-card")];
+    expect(cards.map((el) => el.getAttribute("data-testid"))).toEqual(["mobile-task-U", "mobile-task-H", "mobile-task-N"]);
+    expect(cards[0].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
+    expect(cards[1].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Kecil");
+    expect(cards[2].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
+  });
 });

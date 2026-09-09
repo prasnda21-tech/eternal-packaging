@@ -322,7 +322,7 @@
 }
 
 .mop-task-facts-secondary {
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.9fr);
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 0.85fr);
 }
 
 @media (max-width: 420px) {

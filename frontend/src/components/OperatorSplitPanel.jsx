@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDateTime } from "../lib/constants";
 import { newActionId } from "../lib/workflowEntries";
 import { getWorkflowReady } from "../lib/stageState";
+import { lineItemScreenSize, SCREEN_SIZE_OPTIONS } from "../lib/screenSize";
 import { MetricCell, MetricRow, QuantityInput, QtyOpsHead, statusClassFor } from "./qtyUi";
 import AppendQtyEntries from "./AppendQtyEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
@@ -52,9 +53,10 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         work_date: s.work_date || "",
         qty_completed: Number(s.qty_completed || 0),
         qty_cancelled: Number(s.qty_cancelled || 0),
+        screen_size: lineItemScreenSize({ line_items: order.line_items }, s.line_idx) || s.screen_size || "",
       }))
     );
-  }, [order.operator_splits]);
+  }, [order.operator_splits, order.line_items]);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -107,12 +109,36 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
 
   const addRow = () => {
     const defaultLine = focusedIdx != null ? focusedIdx : (visiblePrintLines[0]?.idx ?? printLines[0]?.idx ?? "");
-    setSplits([...splits, { operator_email: "", operator_name: "", quantity: 0, line_idx: defaultLine, work_date: "" }]);
+    const inherited = defaultLine === "" || defaultLine == null
+      ? ""
+      : (splits.find((s) => Number(s.line_idx) === Number(defaultLine) && s.screen_size)?.screen_size
+        || lineItemScreenSize({ line_items: lineItems }, defaultLine)
+        || "");
+    setSplits([...splits, { operator_email: "", operator_name: "", quantity: 0, line_idx: defaultLine, work_date: "", screen_size: inherited }]);
   };
 
   const updateRow = (i, patch) => {
     const next = [...splits];
-    next[i] = { ...next[i], ...patch };
+    const merged = { ...next[i], ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "line_idx")) {
+      const idx = merged.line_idx;
+      merged.screen_size = idx === "" || idx == null
+        ? ""
+        : (next.find((s, j) => j !== i && Number(s.line_idx) === Number(idx) && s.screen_size)?.screen_size
+          || lineItemScreenSize({ line_items: lineItems }, idx)
+          || "");
+    }
+    next[i] = merged;
+    if (Object.prototype.hasOwnProperty.call(patch, "screen_size")) {
+      const idx = merged.line_idx;
+      if (idx !== "" && idx != null) {
+        for (let j = 0; j < next.length; j += 1) {
+          if (Number(next[j].line_idx) === Number(idx)) {
+            next[j] = { ...next[j], screen_size: patch.screen_size };
+          }
+        }
+      }
+    }
     setSplits(next);
   };
 
@@ -180,6 +206,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         quantity: Number(s.quantity),
         line_idx: Number(s.line_idx),
         work_date: s.work_date ? s.work_date : null,
+        screen_size: s.screen_size ? s.screen_size : null,
       })));
       onUpdated(res.order);
     } catch (e) {
@@ -400,8 +427,8 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
             const lineAssigned = perLineAssigned[Number(s.line_idx)] || 0;
             const overLine = s.line_idx !== "" && lineAssigned > lineQty;
             return (
-              <div key={i} className="split-edit-row qty-assign-card ind-assign-row">
-                <label className="qty-field">
+              <div key={i} className="split-edit-row qty-assign-card ind-assign-row" data-testid={`split-assign-row-${i}`}>
+                <label className="qty-field split-assign-barang">
                   <span className="qty-field-label">Barang</span>
                   <select
                     value={s.line_idx}
@@ -417,7 +444,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                     ))}
                   </select>
                 </label>
-                <label className="qty-field">
+                <label className="qty-field split-assign-operator">
                   <span className="qty-field-label">Operator</span>
                   <select
                     value={s.operator_email}
@@ -443,21 +470,20 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                   className={overLine ? "is-invalid" : ""}
                   title={overLine ? `Total ${lineAssigned} melebihi qty line ${lineQty}` : undefined}
                 />
-                {s.id && Number(s.qty_completed || 0) > 0 && (
-                  <span className="muted small" data-testid={`split-completed-${i}`}>Selesai {Number(s.qty_completed).toLocaleString("id-ID")}</span>
-                )}
-                {s.id && Math.max(0, Number(s.quantity || 0) - Number(s.qty_completed || 0)) > 0 && (
-                  <button
-                    type="button"
-                    className="ghost sm"
-                    disabled={busy || scheduleLocked}
-                    onClick={() => cancelRemaining(s)}
-                    data-testid={`split-cancel-remaining-${i}`}
+                <label className="qty-field split-assign-screen">
+                  <span className="qty-field-label">Screen</span>
+                  <select
+                    value={s.screen_size || ""}
+                    onChange={(e) => updateRow(i, { screen_size: e.target.value })}
+                    data-testid={`split-screen-size-${i}`}
                   >
-                    Lepas sisa
-                  </button>
-                )}
-                <label className="qty-field">
+                    <option value="">Pilih Screen</option>
+                    {SCREEN_SIZE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="qty-field split-assign-date">
                   <span className="qty-field-label">Tanggal</span>
                   <input
                     type="date"
@@ -470,6 +496,24 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
                 <button className="ghost qty-assign-remove" onClick={() => removeRow(i)} aria-label="Hapus baris" data-testid={`split-remove-${i}`}>
                   <Trash2 size={14} />
                 </button>
+                {(s.id && Number(s.qty_completed || 0) > 0) || (s.id && Math.max(0, Number(s.quantity || 0) - Number(s.qty_completed || 0)) > 0) ? (
+                  <div className="split-assign-extra">
+                    {s.id && Number(s.qty_completed || 0) > 0 && (
+                      <span className="muted small" data-testid={`split-completed-${i}`}>Selesai {Number(s.qty_completed).toLocaleString("id-ID")}</span>
+                    )}
+                    {s.id && Math.max(0, Number(s.quantity || 0) - Number(s.qty_completed || 0)) > 0 && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        disabled={busy || scheduleLocked}
+                        onClick={() => cancelRemaining(s)}
+                        data-testid={`split-cancel-remaining-${i}`}
+                      >
+                        Lepas sisa
+                      </button>
+                    )}
+                  </div>
+                ) : null}
               </div>
             );
           })}

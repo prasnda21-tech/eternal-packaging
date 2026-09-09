@@ -62,6 +62,7 @@ describe("mobile production schedule canonical helpers", () => {
       "Deadline",
       "Deadline Pengiriman",
       "Outlet",
+      "Screen",
       "Qty Screen",
       "Design",
       "Payment",
@@ -72,7 +73,7 @@ describe("mobile production schedule canonical helpers", () => {
       "Driver",
       "Status Akhir",
     ]);
-    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(21);
+    expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(22);
   });
 
   test("one dashboard PO stays one filtered row even with same-name lines", () => {

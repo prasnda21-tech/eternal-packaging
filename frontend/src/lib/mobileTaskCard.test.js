@@ -11,6 +11,7 @@ import {
   taskOperatorLabel,
   taskProductLabel,
   taskScopeQtyLabel,
+  taskScreenSizeLabel,
   taskWorkDateLabel,
 } from "./mobileTaskCard";
 
@@ -42,6 +43,14 @@ describe("task product and scope qty labels", () => {
   test("uses canonical item text", () => {
     expect(taskProductLabel({ item: "Standing Pouch 250g" })).toBe("Standing Pouch 250g");
     expect(taskProductLabel({ item: "" })).toBe(TASK_PRODUCT_EMPTY);
+  });
+
+  test("screen_size uses shared Screen Besar / Screen Kecil labels", () => {
+    expect(taskScreenSizeLabel({ screen_size: "large" })).toBe("Screen Besar");
+    expect(taskScreenSizeLabel({ screen_size: "small" })).toBe("Screen Kecil");
+    expect(taskScreenSizeLabel({ screen_size: null })).toBe("—");
+    expect(taskScreenSizeLabel({})).toBe("—");
+    expect(taskScreenSizeLabel({ item: "Preview Cup" })).toBe("—");
   });
 
   test("formats Indonesian thousands with pcs", () => {

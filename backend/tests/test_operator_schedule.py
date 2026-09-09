@@ -205,3 +205,139 @@ def test_tugas_operator_a_does_not_see_b():
     }
     assert pending_splits_for_user(o, "a@x.com") == []
     assert pending_splits_for_user(o, "b@x.com")[0]["id"] == "b"
+
+
+def _ids():
+    n = {"i": 0}
+
+    def next_id():
+        n["i"] += 1
+        return f"id-{n['i']}"
+
+    return next_id
+
+
+def test_screen_size_large_persists_on_line_and_all_splits():
+    o = _order()
+    apply_operator_assignments(
+        o,
+        [
+            {"operator_email": "a@x.com", "operator_name": "A", "quantity": 4000, "line_idx": 0, "screen_size": "large"},
+            {"operator_email": "b@x.com", "operator_name": "B", "quantity": 5000, "line_idx": 0, "screen_size": "large"},
+        ],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    assert o["line_items"][0]["screen_size"] == "large"
+    assert {s["screen_size"] for s in o["operator_splits"]} == {"large"}
+
+
+def test_screen_size_small_single_line():
+    o = _order()
+    apply_operator_assignments(
+        o,
+        [{"operator_email": "a@x.com", "operator_name": "A", "quantity": 2000, "line_idx": 0, "screen_size": "small"}],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    assert o["line_items"][0]["screen_size"] == "small"
+    assert o["operator_splits"][0]["screen_size"] == "small"
+
+
+def test_screen_size_same_name_lines_stay_independent():
+    o = _order()
+    o["line_items"] = [
+        {"id": "L1", "name": "Cup 16oz", "quantity": 5000, "production_process": "print"},
+        {"id": "L2", "name": "Cup 16oz", "quantity": 3000, "production_process": "print"},
+    ]
+    apply_operator_assignments(
+        o,
+        [
+            {"operator_email": "a@x.com", "operator_name": "A", "quantity": 5000, "line_idx": 0, "screen_size": "large"},
+            {"operator_email": "b@x.com", "operator_name": "B", "quantity": 3000, "line_idx": 1, "screen_size": "small"},
+        ],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    assert o["line_items"][0]["screen_size"] == "large"
+    assert o["line_items"][1]["screen_size"] == "small"
+    by_line = {s["line_idx"]: s["screen_size"] for s in o["operator_splits"]}
+    assert by_line[0] == "large"
+    assert by_line[1] == "small"
+
+
+def test_screen_size_edit_only_intended_line():
+    o = _order()
+    o["line_items"] = [
+        {"id": "L1", "name": "Cup 16oz", "quantity": 5000, "production_process": "print", "screen_size": "large"},
+        {"id": "L2", "name": "Cup 16oz", "quantity": 3000, "production_process": "print", "screen_size": "small"},
+    ]
+    o["operator_splits"] = [
+        {"id": "a", "operator_email": "a@x.com", "operator_name": "A", "quantity": 5000, "qty_completed": 0, "line_idx": 0, "screen_size": "large"},
+        {"id": "b", "operator_email": "b@x.com", "operator_name": "B", "quantity": 3000, "qty_completed": 0, "line_idx": 1, "screen_size": "small"},
+    ]
+    apply_operator_assignments(
+        o,
+        [
+            {"id": "a", "operator_email": "a@x.com", "operator_name": "A", "quantity": 5000, "line_idx": 0, "screen_size": "small"},
+            {"id": "b", "operator_email": "b@x.com", "operator_name": "B", "quantity": 3000, "line_idx": 1, "screen_size": "small"},
+        ],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    assert o["line_items"][0]["screen_size"] == "small"
+    assert o["line_items"][1]["screen_size"] == "small"
+
+
+def test_screen_size_omit_preserves_legacy_and_existing():
+    o = _order()
+    o["line_items"][0]["screen_size"] = "large"
+    o["operator_splits"] = [{
+        "id": "a", "operator_email": "a@x.com", "operator_name": "A",
+        "quantity": 2000, "qty_completed": 0, "line_idx": 0, "screen_size": "large",
+    }]
+    apply_operator_assignments(
+        o,
+        [{"id": "a", "operator_email": "a@x.com", "operator_name": "A", "quantity": 2000, "line_idx": 0}],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    assert o["line_items"][0]["screen_size"] == "large"
+    assert o["operator_splits"][0]["screen_size"] == "large"
+
+
+def test_screen_size_legacy_missing_is_valid():
+    o = _order()
+    apply_operator_assignments(
+        o,
+        [{"operator_email": "a@x.com", "operator_name": "A", "quantity": 1000, "line_idx": 0}],
+        {"email": "s"},
+        "t",
+        new_id_fn=_ids(),
+    )
+    assert "screen_size" not in o["line_items"][0]
+    assert "screen_size" not in o["operator_splits"][0]
+
+
+def test_screen_size_conflict_on_same_line_rejected():
+    o = _order()
+    try:
+        apply_operator_assignments(
+            o,
+            [
+                {"operator_email": "a@x.com", "operator_name": "A", "quantity": 1000, "line_idx": 0, "screen_size": "large"},
+                {"operator_email": "b@x.com", "operator_name": "B", "quantity": 1000, "line_idx": 0, "screen_size": "small"},
+            ],
+            {"email": "s"},
+            "t",
+            new_id_fn=_ids(),
+        )
+        assert False, "should reject mixed screen_size on one line"
+    except ValueError as e:
+        assert "Screen Besar/Kecil" in str(e)
+        assert o["helper_prep"]["qty_prepared"] == 10000
