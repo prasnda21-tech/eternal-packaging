@@ -114,15 +114,17 @@ export default function PODetail() {
     setScreenerNotes(order?.screener_info?.notes || "");
   }, [order?.id, order?.screener_info?.updated_at]);
 
+  // Start with route id (parallel to getOrder) — do not wait for order payload.
+  // Payment stamps still trigger refetch after order hydrate / payment changes.
   useEffect(() => {
-    if (!order?.id) {
+    if (!id) {
       setSalesReceipts([]);
       return;
     }
     let cancelled = false;
     setSalesReceiptsLoading(true);
     setSalesReceiptsErr("");
-    api.listSalesReceipts({ po_id: order.id })
+    api.listSalesReceipts({ po_id: id })
       .then((res) => {
         if (!cancelled) setSalesReceipts(res.receipts || []);
       })
@@ -136,7 +138,7 @@ export default function PODetail() {
         if (!cancelled) setSalesReceiptsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [order?.id, order?.payment_fact?.updated_at, order?.payment_approved_at]);
+  }, [id, order?.payment_fact?.updated_at, order?.payment_approved_at]);
 
   const viewSalesReceiptProof = async (receiptId) => {
     if (!receiptId) return;
@@ -331,6 +333,7 @@ export default function PODetail() {
     ? salesDeliverySummary.total_remaining
     : Math.max(0, salesDeliveryTotalOrdered - salesDeliveryTotalShipped);
   const canProcessSalesDelivery = !order.cancelled && salesDeliveryTotalRemaining > 0 && canCreateDelivery;
+  const terkirimSummary = terkirimQtySummary(order);
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -1215,9 +1218,9 @@ export default function PODetail() {
           </span>
         </header>
         <MetricRow testid="terkirim-summary">
-          <MetricCell label="Total PO" value={terkirimQtySummary(order).total} testid="terkirim-total-po" />
-          <MetricCell label="Sudah Terkirim" value={terkirimQtySummary(order).delivered} testid="terkirim-delivered-qty" />
-          <MetricCell label="Belum Terkirim" value={terkirimQtySummary(order).remaining} testid="terkirim-remaining-qty" />
+          <MetricCell label="Total PO" value={terkirimSummary.total} testid="terkirim-total-po" />
+          <MetricCell label="Sudah Terkirim" value={terkirimSummary.delivered} testid="terkirim-delivered-qty" />
+          <MetricCell label="Belum Terkirim" value={terkirimSummary.remaining} testid="terkirim-remaining-qty" />
         </MetricRow>
         <p className="muted small">
           Status Terkirim hanya setelah minimal 2 foto bukti kirim di-upload, lalu Konfirmasi Terkirim.

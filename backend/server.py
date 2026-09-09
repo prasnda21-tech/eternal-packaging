@@ -3,7 +3,7 @@ from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect
+import os, logging, uuid, base64, re, secrets, hashlib, copy, inspect, asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any, Dict, Tuple, Union
@@ -1064,13 +1064,15 @@ async def get_order(order_id: str, user=Depends(current_user)):
     order["terkirim_ready"] = len(order["terkirim_prereq_reasons"]) == 0
     order["terkirim_confirmed"] = _terkirim_confirmed(order)
     _attach_quantity_snapshot(order)
-    _attach_workflow_snapshot(order)
-    # Batch 1: delivery deadline effective/source/status
-    _dd_settings = await _get_delivery_deadline_settings()
+    # quantity snapshot already attaches workflow_ready flags
+    # Batch 1: delivery deadline + sales delivery summary are independent reads
+    _dd_settings, _sales_delivery_summary = await asyncio.gather(
+        _get_delivery_deadline_settings(),
+        _get_po_delivery_summary(db, order),
+    )
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
     attach_schedule_snapshot(order)
-    # Sales Delivery summary (Pengiriman Pesanan)
-    order["sales_delivery_summary"] = await _get_po_delivery_summary(db, order)
+    order["sales_delivery_summary"] = _sales_delivery_summary
     _strip_tracking_secret(order)
     return {"order": _strip_sj_bytes(order)}
 

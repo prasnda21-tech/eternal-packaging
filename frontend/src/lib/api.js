@@ -1,5 +1,6 @@
 import axios from "axios";
 import { resolveBackendOrigin } from "./backendOrigin";
+import { dedupeInflight } from "./dedupeInflight";
 
 const pageHost = typeof window !== "undefined" ? window.location.hostname : "";
 const API = `${resolveBackendOrigin(process.env.REACT_APP_BACKEND_URL, pageHost)}/api`;
@@ -155,7 +156,8 @@ export const api = {
     client.post(`/reports/order-prediction/import/apply`, { rows }).then((r) => r.data),
   operatorWageSettings: () => client.get(`/settings/operator-wage`).then((r) => r.data),
   updateOperatorWageSettings: (payload) => client.put(`/settings/operator-wage`, payload).then((r) => r.data),
-  listOperators: () => client.get(`/users/operators`).then((r) => r.data),
+  // Detail PO mounts two OperatorSplitPanels; collapse concurrent identical GETs.
+  listOperators: dedupeInflight(() => client.get(`/users/operators`).then((r) => r.data)),
   dashboardSummary: () => client.get(`/dashboard/summary`).then((r) => r.data),
   dashboardToday: () => client.get(`/dashboard/today`).then((r) => r.data),
   updateOperatorProgress: (id, operatorId, qtyCompleted, extra = {}) =>
