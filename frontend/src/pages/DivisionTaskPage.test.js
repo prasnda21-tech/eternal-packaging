@@ -49,6 +49,10 @@ describe("Division task UI", () => {
     expect(packing).not.toMatch(/complete-packing-button/);
   });
 
+  test("shows Production Schedule H-1 / URGENT badges on task rows", () => {
+    expect(page).toMatch(/ProductionSchedulePriorityBadges/);
+  });
+
   test("Lihat PO gated by can_view_po", () => {
     expect(page).toMatch(/canViewPo/);
     expect(page).toMatch(/Lihat PO/);

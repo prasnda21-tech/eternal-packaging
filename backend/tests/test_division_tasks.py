@@ -459,7 +459,28 @@ def test_po_level_uses_order_work_date_and_deadline_snapshot_fields():
     assert rows[0]["work_date"] == "2026-09-08"
     assert rows[0]["delivery_deadline"] == "2026-09-09T03:00:00+00:00"
     assert rows[0]["delivery_deadline_source"] == "automatic"
+    assert rows[0]["delivery_deadline_status"] == "overdue"
     assert set(rows[0]["operator_names"]) == {"Budi", "Andi"}
+
+
+def test_task_row_copies_schedule_urgent_flag():
+    o = _print_po(priority="urgent", delivery_deadline_status="h1")
+    row = build_screener_tasks(o)[0]
+    assert row["priority"] == "urgent"
+    assert row["urgent"] is True
+    assert row["delivery_deadline_status"] == "h1"
+    helper = build_helper_tasks(o)[0]
+    assert helper["urgent"] is True
+    op = build_operator_tasks(o, {"email": "budi@x.com"}, mine_only=True)[0]
+    assert op["urgent"] is True
+    assert op["task_id"] != helper["task_id"]
+
+
+def test_normal_priority_is_not_urgent():
+    o = _print_po(priority="normal", delivery_deadline_status="normal")
+    row = build_screener_tasks(o)[0]
+    assert row["urgent"] is False
+    assert row["priority"] == "normal"
 
 
 def test_delivery_deadline_is_not_invented():
@@ -493,6 +514,7 @@ def test_projection_includes_schedule_read_fields_not_blobs():
     assert "work_date" in TASK_PROJECTION
     assert "delivery_deadline_manual" in TASK_PROJECTION
     assert "design_approved_at" in TASK_PROJECTION
+    assert "priority" in TASK_PROJECTION
     joined = " ".join(str(k) for k in TASK_PROJECTION)
     assert "data_url" not in joined
     assert "signature" not in joined

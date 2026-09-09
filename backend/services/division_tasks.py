@@ -171,6 +171,7 @@ TASK_PROJECTION = {
     "customer_approval_history": 1,
     "payment_status": 1,
     "payment_bypassed": 1,
+    "priority": 1,
 }
 
 
@@ -333,6 +334,8 @@ def _base_row(order: dict, division: str, *, line_idx=None, split_id=None, split
         "delivery_deadline": order.get("delivery_deadline_effective"),
         "delivery_deadline_source": order.get("delivery_deadline_source"),
         "delivery_deadline_status": order.get("delivery_deadline_status"),
+        "priority": order.get("priority") or "normal",
+        "urgent": order.get("priority") == "urgent",
         "target_qty": None,
         "completed_qty": None,
         "remaining_qty": None,

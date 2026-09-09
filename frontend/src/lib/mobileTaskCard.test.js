@@ -116,4 +116,23 @@ describe("sortOperationalTasks", () => {
     ]);
     expect(sorted.map((t) => t.task_id)).toEqual(["a", "b"]);
   });
+
+  test("CASE 7 — URGENT before H-1 before normal, then existing work_date tie-break", () => {
+    const sorted = sortOperationalTasks([
+      { task_id: "n-late", work_date: "2026-09-08", delivery_deadline: "2026-09-20", urgent: false, delivery_deadline_status: "normal" },
+      { task_id: "h-late", work_date: "2026-09-10", urgent: false, delivery_deadline_status: "h1" },
+      { task_id: "u-late", work_date: "2026-09-11", urgent: true, delivery_deadline_status: "normal" },
+      { task_id: "n-early", work_date: "2026-09-07", urgent: false, delivery_deadline_status: "normal" },
+      { task_id: "h-early", work_date: "2026-09-09", urgent: false, delivery_deadline_status: "h1" },
+      { task_id: "u-early", work_date: "2026-09-10", urgent: true, delivery_deadline_status: "h1" },
+    ]);
+    expect(sorted.map((t) => t.task_id)).toEqual([
+      "u-early",
+      "u-late",
+      "h-early",
+      "h-late",
+      "n-early",
+      "n-late",
+    ]);
+  });
 });

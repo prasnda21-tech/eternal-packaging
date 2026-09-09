@@ -224,10 +224,49 @@
   overflow-x: hidden;
 }
 
+.mop-card-kicker-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
 .mop-card-kicker {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.01em;
+  min-width: 0;
+}
+
+.mop-card .prod-priority-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mop-card .urgent-badge,
+.mop-card .standard-badge {
+  font: 10.5px "IBM Plex Mono", ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 4px;
+  padding: 2px 6px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.mop-card .urgent-badge {
+  color: #b42318;
+  border: 1px solid #b42318;
+  background: #fdf3f1;
+}
+
+.mop-card .prod-h1-badge {
+  color: #7a5a1e;
+  border: 1px solid #efd9a1;
+  background: #fef4d6;
 }
 
 .mop-card-title {
