@@ -18,6 +18,7 @@ from services.accurate import (
     ACCURATE_DELIVERY_ENDPOINT_AVAILABLE,
     ACCURATE_DELIVERY_ENDPOINT_REASON,
     coerce_accurate_quantity,
+    enrich_order_line_item_colors,
     fetch_delivery_notes,
     get_last_list_error,
     get_mock_delivery_note,
@@ -1070,6 +1071,10 @@ async def get_order(order_id: str, user=Depends(current_user)):
     attach_schedule_snapshot(order)
     # Sales Delivery summary (Pengiriman Pesanan)
     order["sales_delivery_summary"] = await _get_po_delivery_summary(db, order)
+    # Legacy Accurate imports may still have Warna Cetak only in line notes
+    # while color is null — enrich read model from each line's own notes.
+    # Does not write Mongo; persisted color always wins when present.
+    enrich_order_line_item_colors(order)
     _strip_tracking_secret(order)
     return {"order": _strip_sj_bytes(order)}
 
