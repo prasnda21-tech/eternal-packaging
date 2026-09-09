@@ -1,12 +1,19 @@
 import { useRef, useState } from "react";
+import { Camera, ImagePlus } from "lucide-react";
 import api from "../../lib/api";
 import { formatApiError } from "../../lib/errors";
 import { newActionId } from "../../lib/workflowEntries";
 import {
   MIN_DELIVERY_PROOFS,
+  MAX_PHOTOS,
+  DELIVERY_PROOF_ACCEPT,
   canSubmitConfirmDelivered,
   confirmDeliveredBlockReason,
   proofUploadUserError,
+  deliveryProofClientError,
+  deliveryProofCompressedSizeError,
+  isDeliveryProofUploadBusy,
+  emptyDeliveryPhotoSlotCount,
 } from "../../lib/deliveryProof";
 import { compressImage } from "../../lib/imageCompress";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
@@ -15,20 +22,35 @@ import { applyLocalSignature } from "../../lib/mobileSignature";
 import { fileUrl } from "../../lib/api";
 import MobileSignatureModal from "../components/MobileSignatureModal";
 
+function newClientId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random()}`;
+}
+
 export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
   const delivered = order?.delivery_status === "Terkirim" || !!order?.terkirim_confirmed;
   const proofs = order?.delivery_proofs || [];
   const address = deliveryAddressFromOrder(order);
   const maps = mapsSearchUrl(address);
-  const inputRef = useRef(null);
+  const cameraRef = useRef(null);
+  const galleryRef = useRef(null);
+  const pickerIntentRef = useRef({ type: "add" });
+  const pickingRef = useRef(false);
   const [recipientName, setRecipientName] = useState(order?.delivery_recipient_signature?.recipient_name || "");
   const [localSig, setLocalSig] = useState({ recipient: null, driver: null });
   const [modal, setModal] = useState({ open: false, role: null });
+  const [picker, setPicker] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [localSlots, setLocalSlots] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const orderSig = order?.delivery_recipient_signature;
   const driverSig = order?.delivery_driver_signature;
+  const canMutate = canEdit && !delivered;
+  const photoBusy = isDeliveryProofUploadBusy(localSlots);
   const canConfirm = canSubmitConfirmDelivered(
     proofs,
     recipientName,
@@ -36,21 +58,121 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     orderSig,
     localSig.driver,
     driverSig,
-  ) && Number(order?.eligible_delivery_qty || 0) > 0 && canEdit && !delivered;
+  ) && Number(order?.eligible_delivery_qty || 0) > 0 && canMutate && !photoBusy;
+  const emptySlots = canMutate ? emptyDeliveryPhotoSlotCount(proofs.length, localSlots.length) : 0;
 
-  const addPhoto = async (file) => {
-    if (!file || !canEdit || delivered) return;
+  const closePicker = () => setPicker(null);
+
+  const openPicker = (intent) => {
+    if (!canMutate || photoBusy) return;
+    pickerIntentRef.current = intent || { type: "add" };
+    setPicker(pickerIntentRef.current);
+  };
+
+  const triggerInput = (kind) => {
+    closePicker();
+    const el = kind === "gallery" ? galleryRef.current : cameraRef.current;
+    if (el) {
+      el.value = "";
+      el.click();
+    }
+  };
+
+  const patchSlot = (clientId, patch) => {
+    setLocalSlots((prev) => prev.map((s) => (s.id === clientId ? { ...s, ...patch } : s)));
+  };
+
+  const dropSlot = (clientId) => {
+    setLocalSlots((prev) => {
+      const found = prev.find((s) => s.id === clientId);
+      if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
+      return prev.filter((s) => s.id !== clientId);
+    });
+  };
+
+  const addPhoto = async (file, intent) => {
+    if (!file || !canMutate) return;
+    if (pickingRef.current) return;
+    pickingRef.current = true;
+    const clientId = newClientId();
+    const previewUrl = URL.createObjectURL(file);
+    const replaceId = intent?.type === "replace" ? intent.proofId : null;
+    setLocalSlots((prev) => [...prev, {
+      id: clientId,
+      previewUrl,
+      status: "selecting",
+      error: "",
+      file,
+      replaceId,
+    }]);
+    setErr("");
+    const clientErr = deliveryProofClientError(file);
+    if (clientErr) {
+      patchSlot(clientId, { status: "error", error: clientErr });
+      pickingRef.current = false;
+      return;
+    }
+    patchSlot(clientId, { status: "uploading" });
+    try {
+      const compressed = await compressImage(file);
+      const uploadFile = compressed?.file || file;
+      const sizeErr = deliveryProofCompressedSizeError(uploadFile);
+      if (sizeErr) {
+        patchSlot(clientId, { status: "error", error: sizeErr });
+        return;
+      }
+      const currentProofs = order?.delivery_proofs || [];
+      let latestOrder = order;
+      if (replaceId && currentProofs.length >= MAX_PHOTOS) {
+        const del = await api.deleteDeliveryProof(order.id, replaceId);
+        latestOrder = del.order;
+        onUpdated(latestOrder);
+        patchSlot(clientId, { replaceId: null });
+      }
+      const res = await api.uploadDeliveryProof(order.id, uploadFile);
+      latestOrder = res.order;
+      onUpdated(latestOrder);
+      if (replaceId && currentProofs.length < MAX_PHOTOS) {
+        const del = await api.deleteDeliveryProof(order.id, replaceId);
+        latestOrder = del.order;
+        onUpdated(latestOrder);
+      }
+      dropSlot(clientId);
+    } catch (e) {
+      const msg = proofUploadUserError(e);
+      patchSlot(clientId, { status: "error", error: msg });
+      setErr(msg);
+    } finally {
+      pickingRef.current = false;
+      if (cameraRef.current) cameraRef.current.value = "";
+      if (galleryRef.current) galleryRef.current.value = "";
+    }
+  };
+
+  const onFileChange = (event) => {
+    const file = event.target.files?.[0];
+    const intent = pickerIntentRef.current;
+    pickerIntentRef.current = { type: "add" };
+    addPhoto(file, intent);
+  };
+
+  const retrySlot = (slot) => {
+    if (!slot?.file || photoBusy) return;
+    dropSlot(slot.id);
+    addPhoto(slot.file, slot.replaceId ? { type: "replace", proofId: slot.replaceId } : { type: "add" });
+  };
+
+  const removeProof = async (proof) => {
+    if (!proof?.id || !canMutate || photoBusy) return;
     setBusy(true);
     setErr("");
     try {
-      const compressed = await compressImage(file);
-      const res = await api.uploadDeliveryProof(order.id, compressed.file);
+      const res = await api.deleteDeliveryProof(order.id, proof.id);
       onUpdated(res.order);
     } catch (e) {
       setErr(proofUploadUserError(e));
     } finally {
       setBusy(false);
-      if (inputRef.current) inputRef.current.value = "";
     }
   };
 
@@ -58,7 +180,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     const blocked = confirmDeliveredBlockReason(
       proofs, recipientName, localSig.recipient, orderSig, localSig.driver, driverSig,
     );
-    if (blocked || !canConfirm) {
+    if (blocked || !canConfirm || photoBusy) {
       setErr(blocked || "Konfirmasi terkirim belum memenuhi syarat.");
       return;
     }
@@ -91,6 +213,8 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     }
   };
 
+  const pickerTitle = picker?.type === "replace" ? "Ganti Bukti Pengiriman" : "Tambah Bukti Pengiriman";
+
   return (
     <section data-testid="mobile-ws-delivery">
       <div className="mop-ws-header"><h2>PENGIRIMAN</h2></div>
@@ -107,39 +231,132 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
       <h3>Bukti Pengiriman</h3>
       <div className="mop-photos">
         {proofs.map((p, i) => (
-          <div className="mop-photo" key={p.id || i}>
-            {p.storage_path ? <img src={fileUrl(p.storage_path)} alt={`Foto ${i + 1}`} /> : `Foto ${i + 1}`}
+          <div className="mop-photo" key={p.id || i} data-testid={`mobile-delivery-proof-${p.id || i}`}>
+            {p.storage_path ? (
+              <img src={fileUrl(p.storage_path)} alt={`Bukti pengiriman ${i + 1}`} />
+            ) : (
+              <span>Foto {i + 1}</span>
+            )}
+            <div className="mop-photo-actions">
+              <button type="button" onClick={() => setPreview({ src: fileUrl(p.storage_path), alt: `Bukti pengiriman ${i + 1}` })} data-testid={`mobile-proof-view-${p.id || i}`}>
+                Lihat
+              </button>
+              {canMutate && (
+                <>
+                  <button type="button" disabled={photoBusy || busy} onClick={() => openPicker({ type: "replace", proofId: p.id })} data-testid={`mobile-proof-replace-${p.id}`}>
+                    Ganti
+                  </button>
+                  <button type="button" disabled={photoBusy || busy} onClick={() => removeProof(p)} data-testid={`mobile-proof-delete-${p.id}`}>
+                    Hapus
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         ))}
-        {canEdit && !delivered && proofs.length < 5 && (
-          <button type="button" className="mop-photo-add" onClick={() => inputRef.current?.click()} data-testid="mobile-add-photo">
-            {proofs.length < MIN_DELIVERY_PROOFS ? `Foto ${proofs.length + 1}` : "Tambah Foto"}
-          </button>
-        )}
+        {localSlots.map((slot) => (
+          <div className={`mop-photo mop-photo-local mop-photo-${slot.status}`} key={slot.id} data-testid={`mobile-delivery-local-${slot.id}`}>
+            {slot.previewUrl ? <img src={slot.previewUrl} alt="Pratinjau bukti pengiriman" /> : null}
+            <span className="mop-photo-status">
+              {slot.status === "selecting" && "Memilih..."}
+              {slot.status === "uploading" && "Mengunggah..."}
+              {slot.status === "error" && (slot.error || "Gagal unggah")}
+            </span>
+            {slot.status === "error" && canMutate && (
+              <div className="mop-photo-actions">
+                <button type="button" onClick={() => setPreview({ src: slot.previewUrl, alt: "Pratinjau bukti pengiriman" })}>Lihat</button>
+                <button type="button" onClick={() => retrySlot(slot)} data-testid={`mobile-proof-retry-${slot.id}`}>Coba lagi</button>
+                <button type="button" onClick={() => dropSlot(slot.id)}>Hapus</button>
+              </div>
+            )}
+          </div>
+        ))}
+        {Array.from({ length: emptySlots }, (_, i) => {
+          const n = proofs.length + localSlots.length + i + 1;
+          return (
+            <button
+              type="button"
+              className="mop-photo-add"
+              key={`empty-${n}`}
+              onClick={() => openPicker({ type: "add" })}
+              disabled={photoBusy || busy}
+              data-testid={i === 0 ? "mobile-add-photo" : `mobile-add-photo-${n}`}
+              aria-label="Tambah Foto"
+            >
+              <span className="mop-photo-add-plus" aria-hidden="true">+</span>
+              <span>Tambah Foto</span>
+            </button>
+          );
+        })}
       </div>
-      <input ref={inputRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => addPhoto(e.target.files?.[0])} />
+      <input
+        ref={cameraRef}
+        type="file"
+        accept={DELIVERY_PROOF_ACCEPT}
+        capture="environment"
+        hidden
+        onChange={onFileChange}
+        data-testid="mobile-delivery-camera-input"
+        aria-hidden="true"
+      />
+      <input
+        ref={galleryRef}
+        type="file"
+        accept={DELIVERY_PROOF_ACCEPT}
+        hidden
+        onChange={onFileChange}
+        data-testid="mobile-delivery-gallery-input"
+        aria-label="Pilih foto dari galeri"
+      />
       <label className="mop-field">
         <span>Nama Penerima</span>
-        <input value={recipientName} onChange={(e) => setRecipientName(e.target.value)} disabled={!canEdit || delivered} data-testid="mobile-recipient-name" />
+        <input value={recipientName} onChange={(e) => setRecipientName(e.target.value)} disabled={!canMutate} data-testid="mobile-recipient-name" />
       </label>
       <div className="mop-file">
         <strong>TTD PENERIMA</strong>
         {(localSig.recipient || orderSig?.signature_storage_path) ? <p>TTD Tersimpan ✓</p> : null}
-        <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled={!canEdit || delivered} onClick={() => setModal({ open: true, role: "recipient" })}>
+        <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled={!canMutate} onClick={() => setModal({ open: true, role: "recipient" })}>
           Buat TTD Penerima
         </button>
       </div>
       <div className="mop-file">
         <strong>TTD DRIVER</strong>
         {(localSig.driver || driverSig?.signature_storage_path || driverSig?.driver_signature_storage_path) ? <p>TTD Tersimpan ✓</p> : null}
-        <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled={!canEdit || delivered} onClick={() => setModal({ open: true, role: "driver" })}>
+        <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled={!canMutate} onClick={() => setModal({ open: true, role: "driver" })}>
           Buat TTD Driver
         </button>
       </div>
-      {err && <div className="mop-error">{err}</div>}
-      <button type="button" className="mop-btn-primary" disabled={!canConfirm || busy} onClick={confirm} data-testid="mobile-confirm-delivered">
+      {err && (
+        <div className="mop-error" data-testid="mobile-delivery-error">
+          {err}
+        </div>
+      )}
+      <button type="button" className="mop-btn-primary" disabled={!canConfirm || busy || photoBusy} onClick={confirm} data-testid="mobile-confirm-delivered">
         Konfirmasi Terkirim
       </button>
+      {picker && canMutate && (
+        <div className="mop-sheet-backdrop" data-testid="mobile-photo-picker-sheet" onClick={closePicker}>
+          <div className="mop-sheet" role="dialog" aria-modal="true" aria-label={pickerTitle} onClick={(e) => e.stopPropagation()}>
+            <h3>{pickerTitle}</h3>
+            <button type="button" className="mop-sheet-choice" onClick={() => triggerInput("camera")} data-testid="mobile-photo-camera">
+              <Camera size={20} aria-hidden="true" />
+              Ambil Foto
+            </button>
+            <button type="button" className="mop-sheet-choice" onClick={() => triggerInput("gallery")} data-testid="mobile-photo-gallery">
+              <ImagePlus size={20} aria-hidden="true" />
+              Pilih dari Galeri
+            </button>
+            <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} onClick={closePicker} data-testid="mobile-photo-picker-cancel">
+              Batal
+            </button>
+          </div>
+        </div>
+      )}
+      {preview?.src && (
+        <div className="mop-photo-lightbox" data-testid="mobile-delivery-photo-preview" onClick={() => setPreview(null)}>
+          <img src={preview.src} alt={preview.alt || "Pratinjau bukti pengiriman"} />
+        </div>
+      )}
       <MobileSignatureModal
         open={modal.open}
         role={modal.role}

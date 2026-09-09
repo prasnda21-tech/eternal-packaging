@@ -72,6 +72,17 @@ describe("mobile route wiring", () => {
     expect(delivery).not.toMatch(/\/delivered\?/);
   });
 
+  test("delivery proof offers camera and gallery without capture on gallery", () => {
+    expect(delivery).toMatch(/mobile-delivery-camera-input/);
+    expect(delivery).toMatch(/mobile-delivery-gallery-input/);
+    expect(delivery).toMatch(/Pilih dari Galeri/);
+    expect(delivery).toMatch(/Ambil Foto/);
+    expect(delivery).toMatch(/capture="environment"/);
+    const galleryIdx = delivery.indexOf("mobile-delivery-gallery-input");
+    const galleryBlock = delivery.slice(galleryIdx - 220, galleryIdx + 80);
+    expect(galleryBlock).not.toMatch(/capture=/);
+  });
+
   test("screener metrics omit Sisa while other workspaces keep it", () => {
     expect(screener).toMatch(/label: "Target"/);
     expect(screener).toMatch(/label: "Selesai"/);

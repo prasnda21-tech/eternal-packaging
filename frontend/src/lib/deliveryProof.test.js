@@ -3,10 +3,16 @@ import {
   canSubmitConfirmDelivered,
   confirmDeliveredBlockReason,
   MIN_DELIVERY_PROOFS,
+  MAX_PHOTOS,
   proofUploadUserError,
   confirmableProofCount,
   hasValidRecipientName,
   authoritativeDriverDisplayName,
+  deliveryProofClientError,
+  deliveryProofCompressedSizeError,
+  isDeliveryProofUploadBusy,
+  emptyDeliveryPhotoSlotCount,
+  DELIVERY_PROOF_FORMAT_MESSAGE,
 } from "./deliveryProof";
 
 describe("deliveryProof helpers", () => {
@@ -111,5 +117,27 @@ describe("deliveryProof helpers", () => {
       response: { status: 403, data: { detail: "Permission 'delivery.update' diperlukan" } },
     });
     expect(msg).toBe("Permission 'delivery.update' diperlukan");
+  });
+
+  test("rejects HEIC/HEIF before upload and lists backend-accepted formats", () => {
+    expect(deliveryProofClientError({ name: "a.heic", type: "image/heic", size: 100 })).toBe(DELIVERY_PROOF_FORMAT_MESSAGE);
+    expect(deliveryProofClientError({ name: "a.HEIF", type: "", size: 100 })).toBe(DELIVERY_PROOF_FORMAT_MESSAGE);
+    expect(deliveryProofClientError({ name: "a.jpg", type: "image/jpeg", size: 100 })).toBeNull();
+    expect(deliveryProofClientError({ name: "a.webp", type: "image/webp", size: 100 })).toBeNull();
+    expect(deliveryProofClientError({ name: "a.gif", type: "image/gif", size: 100 })).toBeNull();
+  });
+
+  test("failed or in-progress local slots do not count as stored proof", () => {
+    expect(canConfirmDelivered([{ id: "a" }])).toBe(false);
+    expect(isDeliveryProofUploadBusy([{ status: "uploading" }])).toBe(true);
+    expect(isDeliveryProofUploadBusy([{ status: "error" }])).toBe(false);
+    expect(emptyDeliveryPhotoSlotCount(0, 0)).toBe(MIN_DELIVERY_PROOFS);
+    expect(emptyDeliveryPhotoSlotCount(2, 0)).toBe(1);
+    expect(emptyDeliveryPhotoSlotCount(MAX_PHOTOS, 0)).toBe(0);
+  });
+
+  test("compressed file over backend limit surfaces the existing 5MB message", () => {
+    expect(deliveryProofCompressedSizeError({ size: 5 * 1024 * 1024 + 1 })).toMatch(/5MB/);
+    expect(deliveryProofCompressedSizeError({ size: 100 })).toBeNull();
   });
 });
