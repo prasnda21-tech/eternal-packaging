@@ -3,24 +3,46 @@
 Pembelian Barang = SUM received_qty of valid receipts per accurate_item_id.
 Never Purchase Order qty. Never name matching. Never unitPrice/amount.
 Upsert by accurate_receipt_id (idempotent). Failed fetch does not truncate.
+Manual (source=manual) documents coexist in the same collection; Accurate sync
+must not overwrite or deactivate them. Manual receipts are excluded from
+Pembelian Barang / current-stock aggregation.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from fastapi import HTTPException
+
 from services.accurate import AccurateClient
 from services.current_stock import qty_num
+from services.purchase_common import (
+    PREFIX_GOODS_RECEIPT,
+    actor_snapshot,
+    get_named_lock,
+    next_dated_seq,
+    now_iso as purchase_now_iso,
+    parse_qty,
+)
 
 COLLECTION = "accurate_purchase_receipts"
 SYNC_META_COLLECTION = "accurate_receipt_sync_meta"
 SYNC_META_ID = "receive-item"
 PURCHASE_SOURCE_ACCURATE = "ACCURATE"
 PURCHASE_SOURCE_MANUAL = "MANUAL_FALLBACK"
+RECEIPT_SOURCE_ACCURATE = "accurate"
+RECEIPT_SOURCE_MANUAL = "manual"
+MANUAL_RECEIPT_ID_PREFIX = "manual:"
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_accurate_receipt_source(doc: Optional[dict]) -> bool:
+    src = str((doc or {}).get("source") or RECEIPT_SOURCE_ACCURATE).strip().lower()
+    return src == RECEIPT_SOURCE_ACCURATE
 
 
 def receipt_doc_from_normalized(norm: Dict[str, Any], *, now: Optional[str] = None) -> Dict[str, Any]:
@@ -32,18 +54,24 @@ def receipt_doc_from_normalized(norm: Dict[str, Any], *, now: Optional[str] = No
         "approval_status": norm.get("approval_status") or "",
         "valid": bool(norm.get("valid")),
         "lines": list(norm.get("lines") or []),
-        "source": "accurate",
+        "source": RECEIPT_SOURCE_ACCURATE,
         "last_synced_at": ts,
         "updated_at": ts,
     }
 
 
 def aggregate_received_qty(receipts: Iterable[dict]) -> Tuple[Dict[str, float], Dict[str, str]]:
-    """Sum valid receipt line quantity per accurate_item_id. Skip lines without ID."""
+    """Sum valid Accurate receipt line quantity per accurate_item_id.
+
+    Skip lines without ID. Skip manual receipts so local documents do not
+    change Pembelian Barang / Stock Saat Ini.
+    """
     bucket: Dict[str, float] = {}
     aliases: Dict[str, str] = {}
     for rec in receipts:
         if rec.get("valid") is False:
+            continue
+        if not is_accurate_receipt_source(rec):
             continue
         for li in (rec.get("lines") or []):
             aid = str(li.get("accurate_item_id") or "").strip()
@@ -76,6 +104,8 @@ def upsert_receipts(existing: List[dict], incoming: List[dict], *, complete: boo
         incoming_ids.add(rid)
         doc = receipt_doc_from_normalized(norm, now=ts)
         prev = by_id.get(rid)
+        if prev is not None and not is_accurate_receipt_source(prev):
+            continue
         if prev is None:
             doc["created_at"] = ts
             by_id[rid] = doc
@@ -99,6 +129,8 @@ def upsert_receipts(existing: List[dict], incoming: List[dict], *, complete: boo
     deactivated = 0
     if complete:
         for rid, prev in list(by_id.items()):
+            if not is_accurate_receipt_source(prev):
+                continue
             if rid not in incoming_ids and prev.get("valid") is not False:
                 prev = dict(prev)
                 prev["valid"] = False
@@ -190,6 +222,8 @@ async def sync_purchase_receipts(db, client: AccurateClient) -> Dict[str, Any]:
                 line["master_item_id"] = id_map[aid]
     result = upsert_receipts(existing, receipts, complete=complete, now=now)
     for doc in result["docs"]:
+        if not is_accurate_receipt_source(doc):
+            continue
         rid = doc["accurate_receipt_id"]
         to_set = {k: v for k, v in doc.items() if k != "created_at"}
         await db[COLLECTION].update_one(
@@ -243,27 +277,36 @@ def public_receipt(rec: dict, masters_by_aid: Optional[Dict[str, dict]] = None) 
         aid = str(li.get("accurate_item_id") or "").strip()
         master = masters_by_aid.get(aid) or {}
         lines.append({
-            "accurate_line_id": li.get("accurate_line_id") or "",
+            "accurate_line_id": li.get("accurate_line_id") or li.get("line_id") or "",
             "accurate_item_id": aid,
-            "master_item_id": li.get("master_item_id") or master.get("id"),
-            "item_code": master.get("item_code") or "",
-            "item_name": master.get("item_name") or "",
+            "master_item_id": li.get("master_item_id") or master.get("id") or "",
+            "purchase_order_line_id": li.get("purchase_order_line_id") or "",
+            "item_code": master.get("item_code") or li.get("item_code") or "",
+            "item_name": master.get("item_name") or li.get("item_name") or "",
             "unit": li.get("unit") or master.get("unit") or "",
+            "line_notes": li.get("notes") or li.get("line_notes") or "",
             "received_qty": qty_num(li.get("received_qty")),
         })
     status = rec.get("approval_status") or ""
     if not status:
         status = "VALID" if rec.get("valid") is not False else "INVALID"
+    source = rec.get("source") or RECEIPT_SOURCE_ACCURATE
+    last_synced = rec.get("last_synced_at") if is_accurate_receipt_source(rec) else None
     return {
         "accurate_receipt_id": rec.get("accurate_receipt_id"),
         "receipt_number": rec.get("receipt_number") or "",
         "receipt_date": rec.get("receipt_date") or "",
         "status": status,
         "valid": rec.get("valid") is not False,
-        "source": rec.get("source") or "accurate",
+        "source": source,
+        "supplier": rec.get("supplier") or "",
+        "notes": rec.get("notes") or "",
+        "purchase_order_id": rec.get("purchase_order_id") or "",
+        "po_number": rec.get("po_number") or "",
+        "goods_receipt_id": rec.get("goods_receipt_id") or "",
         "line_count": len(lines),
         "total_qty": sum(li["received_qty"] for li in lines),
-        "last_synced_at": rec.get("last_synced_at"),
+        "last_synced_at": last_synced,
         "created_at": rec.get("created_at"),
         "updated_at": rec.get("updated_at"),
         "lines": lines,
@@ -280,6 +323,10 @@ def filter_public_receipts(rows: List[dict], q: str = "") -> List[dict]:
             str(r.get("receipt_number") or ""),
             str(r.get("accurate_receipt_id") or ""),
             str(r.get("status") or ""),
+            str(r.get("supplier") or ""),
+            str(r.get("notes") or ""),
+            str(r.get("po_number") or ""),
+            str(r.get("source") or ""),
         ]).lower()
         if needle in blob:
             out.append(r)
@@ -306,3 +353,140 @@ def page_public_receipts(rows: List[dict], *, page: int = 1, page_size: int = 50
         "page_size": page_size,
         "page_count": max(1, (total + page_size - 1) // page_size) if total else 1,
     }
+
+
+def _normalize_manual_lines(raw_lines: Any) -> List[dict]:
+    if not isinstance(raw_lines, list) or not raw_lines:
+        raise HTTPException(400, "Minimal satu baris penerimaan wajib diisi.")
+    lines = []
+    for idx, raw in enumerate(raw_lines):
+        if not isinstance(raw, dict):
+            raise HTTPException(400, f"Baris penerimaan ke-{idx + 1} tidak valid.")
+        item_name = str(raw.get("item_name") or raw.get("name") or "").strip()
+        master_item_id = str(raw.get("master_item_id") or "").strip()
+        accurate_item_id = str(raw.get("accurate_item_id") or "").strip()
+        if not item_name and not master_item_id and not accurate_item_id:
+            raise HTTPException(400, f"Item baris ke-{idx + 1} wajib diisi.")
+        if not item_name:
+            item_name = master_item_id or accurate_item_id
+        qty = parse_qty(raw.get("received_qty", raw.get("quantity")), f"Qty diterima '{item_name}'")
+        line_id = str(raw.get("line_id") or raw.get("accurate_line_id") or "").strip() or str(uuid.uuid4())
+        lines.append({
+            "line_idx": idx,
+            "line_id": line_id,
+            "accurate_line_id": line_id,
+            "purchase_order_line_id": str(raw.get("purchase_order_line_id") or "").strip(),
+            "master_item_id": master_item_id,
+            "accurate_item_id": accurate_item_id,
+            "item_code": str(raw.get("item_code") or "").strip(),
+            "item_name": item_name,
+            "unit": str(raw.get("unit") or "pcs").strip() or "pcs",
+            "received_qty": qty,
+            "notes": str(raw.get("notes") or raw.get("line_notes") or "").strip(),
+        })
+    return lines
+
+
+def _lines_from_goods_receipt(gr: dict) -> List[dict]:
+    lines = []
+    for idx, li in enumerate(gr.get("lines") or []):
+        line_id = str(li.get("line_id") or "").strip() or str(uuid.uuid4())
+        lines.append({
+            "line_idx": idx,
+            "line_id": line_id,
+            "accurate_line_id": line_id,
+            "purchase_order_line_id": str(li.get("purchase_order_line_id") or "").strip(),
+            "master_item_id": str(li.get("master_item_id") or "").strip(),
+            "accurate_item_id": str(li.get("accurate_item_id") or "").strip(),
+            "item_code": str(li.get("item_code") or "").strip(),
+            "item_name": str(li.get("item_name") or "").strip(),
+            "unit": str(li.get("unit") or "pcs").strip() or "pcs",
+            "received_qty": qty_num(li.get("received_qty")),
+            "notes": str(li.get("notes") or "").strip(),
+        })
+    if not lines:
+        raise HTTPException(400, "Minimal satu baris penerimaan wajib diisi.")
+    return lines
+
+
+async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict) -> dict:
+    """Create a local Penerimaan Barang document in accurate_purchase_receipts.
+
+    Does not write journals or call HPP. Does not update Accurate.
+    Standalone (no PO): document-only — excluded from stock aggregation.
+    With PO: reuses official create_purchase_goods_receipt (PO remaining + physical
+    stock engine), then stores a list projection with source=manual.
+    """
+    async with get_named_lock("purchase_receipt_manual"):
+        idem = str(payload.get("idempotency_key") or "").strip()
+        if idem:
+            existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
+            if existing:
+                return existing
+
+        po_id = str(payload.get("purchase_order_id") or "").strip()
+        goods_receipt = None
+        if po_id:
+            from services.purchase_goods_receipts import create_purchase_goods_receipt
+            goods_receipt = await create_purchase_goods_receipt(db, payload, user)
+            if goods_receipt and goods_receipt.get("id"):
+                listed = await db[COLLECTION].find_one(
+                    {"goods_receipt_id": goods_receipt["id"]}, {"_id": 0}
+                )
+                if listed:
+                    return listed
+            lines = _lines_from_goods_receipt(goods_receipt)
+            supplier = str(goods_receipt.get("supplier") or payload.get("supplier") or "").strip()
+            receipt_date = str(goods_receipt.get("receipt_date") or payload.get("receipt_date") or "").strip()[:10]
+            notes = str(payload.get("notes") or goods_receipt.get("notes") or "").strip()
+            po_number = goods_receipt.get("po_number") or ""
+            receipt_number = goods_receipt.get("receipt_number") or ""
+        else:
+            lines = _normalize_manual_lines(payload.get("lines") or payload.get("line_items"))
+            supplier = str(payload.get("supplier") or payload.get("supplier_name") or "").strip()
+            if not supplier:
+                raise HTTPException(400, "Supplier wajib diisi.")
+            ts_date = purchase_now_iso()[:10]
+            receipt_date = str(payload.get("receipt_date") or ts_date).strip()[:10]
+            if not receipt_date:
+                raise HTTPException(400, "Tanggal penerimaan wajib diisi.")
+            notes = str(payload.get("notes") or "").strip()
+            po_number = str(payload.get("po_number") or payload.get("reference") or "").strip()
+            receipt_number = ""
+
+        ts = now_iso()
+        doc_id = str(uuid.uuid4())
+        accurate_receipt_id = f"{MANUAL_RECEIPT_ID_PREFIX}{doc_id}"
+        if goods_receipt and goods_receipt.get("id"):
+            accurate_receipt_id = f"{MANUAL_RECEIPT_ID_PREFIX}{goods_receipt['id']}"
+
+        collision = await db[COLLECTION].find_one({"accurate_receipt_id": accurate_receipt_id}, {"_id": 1})
+        if collision:
+            raise HTTPException(409, "Identitas penerimaan bentrok dengan dokumen yang sudah ada.")
+
+        doc = {
+            "accurate_receipt_id": accurate_receipt_id,
+            "receipt_number": receipt_number,
+            "receipt_date": receipt_date,
+            "approval_status": "",
+            "valid": True,
+            "lines": lines,
+            "source": RECEIPT_SOURCE_MANUAL,
+            "supplier": supplier,
+            "notes": notes,
+            "purchase_order_id": po_id or (goods_receipt or {}).get("purchase_order_id") or "",
+            "po_number": po_number,
+            "goods_receipt_id": (goods_receipt or {}).get("id") or "",
+            "created_at": ts,
+            "updated_at": ts,
+            "created_by": actor_snapshot(user),
+        }
+        if idem:
+            doc["idempotency_key"] = idem
+
+        if not doc["receipt_number"]:
+            doc["receipt_number"] = await next_dated_seq(db, COLLECTION, "receipt_number", PREFIX_GOODS_RECEIPT)
+
+        await db[COLLECTION].insert_one(dict(doc))
+        doc.pop("_id", None)
+        return doc

@@ -72,6 +72,8 @@ describe("Pembelian workflow UI", () => {
     expect(penerimaan).toMatch(/po-linked-receipts/);
     expect(penerimaan).toMatch(/save-po-receipt/);
     expect(penerimaan).toMatch(/Sinkronkan dari Accurate/);
+    expect(penerimaan).toMatch(/btn-buat-penerimaan/);
+    expect(penerimaan).toMatch(/penerimaan-create-form/);
   });
 
   test("api and login route untouched", () => {

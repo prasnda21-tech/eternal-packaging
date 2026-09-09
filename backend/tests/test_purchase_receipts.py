@@ -1,9 +1,13 @@
 """Accurate Penerimaan Barang → Pembelian Barang. Mock / fake HTTP only."""
 import asyncio
+import inspect
+import re
 import sys
 from pathlib import Path
 
 import httpx
+import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,8 +24,12 @@ from services.accurate import (
 from services.current_stock import PURCHASE_SOURCE_ACCURATE, build_stock_rows, compute_stock_current
 from services.purchase_receipts import (
     COLLECTION,
+    RECEIPT_SOURCE_MANUAL,
     SYNC_META_COLLECTION,
     aggregate_received_qty,
+    create_manual_purchase_receipt,
+    filter_public_receipts,
+    load_receipts,
     public_receipt,
     purchase_source_from_meta,
     sync_purchase_receipts,
@@ -57,11 +65,16 @@ class _Cursor:
 class MemCol:
     def __init__(self):
         self.docs = []
+        self.insert_calls = 0
 
     def _match(self, doc, query):
         if not query:
             return True
         for k, v in query.items():
+            if isinstance(v, dict) and "$regex" in v:
+                if not re.search(v["$regex"], str(doc.get(k) or "")):
+                    return False
+                continue
             if doc.get(k) != v:
                 return False
         return True
@@ -96,6 +109,10 @@ class MemCol:
         new.update(update.get("$setOnInsert") or {})
         new.update(update.get("$set") or {})
         self.docs.append(new)
+
+    async def insert_one(self, doc):
+        self.insert_calls += 1
+        self.docs.append(dict(doc))
 
     async def count_documents(self, query):
         return sum(1 for d in self.docs if self._match(d, query))
@@ -476,3 +493,199 @@ def test_live_list_page_timeout_does_not_return_partial_as_complete(monkeypatch)
     out = _await(sync_purchase_receipts(db, FakeClient(exc=RuntimeError("timeout"))))
     assert out["preserved"] is True
     assert db[COLLECTION].docs[0]["lines"][0]["received_qty"] == 3500
+
+
+def _manual_payload(**over):
+    base = {
+        "supplier": "PT Task Preview Supplier",
+        "receipt_date": "2026-09-09",
+        "notes": "TASK-PREVIEW-RECEIPT",
+        "lines": [
+            {
+                "master_item_id": "m-preview-1",
+                "accurate_item_id": "101",
+                "item_code": "PC-12",
+                "item_name": "Paper cup 12oz",
+                "unit": "pcs",
+                "received_qty": 3,
+            }
+        ],
+    }
+    base.update(over)
+    return base
+
+
+def test_manual_create_authorized_fields_and_identity():
+    db = FakeDB()
+    user = {"id": "u1", "email": "admin@eternalpackaging.com", "role": "admin"}
+    doc = _await(create_manual_purchase_receipt(db, _manual_payload(), user))
+    assert doc["source"] == RECEIPT_SOURCE_MANUAL
+    assert str(doc["accurate_receipt_id"]).startswith("manual:")
+    assert doc["receipt_number"].startswith("GR-")
+    assert doc.get("last_synced_at") in (None, "")
+    assert doc["valid"] is True
+    assert doc["supplier"] == "PT Task Preview Supplier"
+    assert len(doc["lines"]) == 1
+    assert doc["lines"][0]["master_item_id"] == "m-preview-1"
+    assert doc["lines"][0]["accurate_item_id"] == "101"
+    pub = public_receipt(doc)
+    assert pub["source"] == "manual"
+    assert pub["last_synced_at"] is None
+    assert pub["status"] == "VALID"
+    assert pub["lines"][0]["item_name"] == "Paper cup 12oz"
+
+
+def test_manual_create_required_and_qty_validation():
+    db = FakeDB()
+    user = {"id": "u1", "role": "admin"}
+    with pytest.raises(HTTPException) as no_sup:
+        _await(create_manual_purchase_receipt(db, _manual_payload(supplier=""), user))
+    assert no_sup.value.status_code == 400
+    with pytest.raises(HTTPException) as no_lines:
+        _await(create_manual_purchase_receipt(db, _manual_payload(lines=[]), user))
+    assert no_lines.value.status_code == 400
+    with pytest.raises(HTTPException) as bad_qty:
+        _await(create_manual_purchase_receipt(db, _manual_payload(lines=[{
+            "item_name": "X", "received_qty": 0,
+        }]), user))
+    assert bad_qty.value.status_code == 400
+    with pytest.raises(HTTPException) as neg:
+        _await(create_manual_purchase_receipt(db, _manual_payload(lines=[{
+            "item_name": "X", "received_qty": -2,
+        }]), user))
+    assert neg.value.status_code == 400
+
+
+def test_manual_duplicate_name_lines_not_merged():
+    db = FakeDB()
+    user = {"id": "u1", "role": "admin"}
+    doc = _await(create_manual_purchase_receipt(db, _manual_payload(lines=[
+        {"item_name": "Material A", "master_item_id": "m1", "received_qty": 2, "unit": "pcs"},
+        {"item_name": "Material A", "master_item_id": "m1", "received_qty": 5, "unit": "pcs"},
+    ]), user))
+    assert len(doc["lines"]) == 2
+    assert doc["lines"][0]["line_id"] != doc["lines"][1]["line_id"]
+    assert doc["lines"][0]["received_qty"] == 2
+    assert doc["lines"][1]["received_qty"] == 5
+
+
+def test_manual_create_ignores_client_accurate_id_and_skips_stock_aggregate():
+    db = FakeDB()
+    user = {"id": "u1", "role": "admin"}
+    doc = _await(create_manual_purchase_receipt(db, _manual_payload(accurate_receipt_id="999"), user))
+    assert doc["accurate_receipt_id"] != "999"
+    assert not str(doc["accurate_receipt_id"]).isdigit()
+    accurate = [_norm(100, "R1", [(101, 2000)])]
+    mixed = [receipt_doc_from_incoming(accurate[0]), doc]
+    bucket, _ = aggregate_received_qty(mixed)
+    assert bucket.get("a:101") == 2000
+
+
+def receipt_doc_from_incoming(norm):
+    from services.purchase_receipts import receipt_doc_from_normalized
+    return receipt_doc_from_normalized(norm)
+
+
+def test_accurate_sync_preserves_manual_records():
+    db = FakeDB()
+    user = {"id": "u1", "role": "admin"}
+    manual = _await(create_manual_purchase_receipt(db, _manual_payload(), user))
+    incoming = [_norm(100, "R1", [(101, 2000)]), _norm(101, "R2", [(101, 1500)])]
+    r1 = _await(sync_purchase_receipts(db, FakeClient(incoming)))
+    assert r1["ok"] is True
+    ids = {d["accurate_receipt_id"] for d in db[COLLECTION].docs}
+    assert manual["accurate_receipt_id"] in ids
+    kept = next(d for d in db[COLLECTION].docs if d["accurate_receipt_id"] == manual["accurate_receipt_id"])
+    assert kept["source"] == RECEIPT_SOURCE_MANUAL
+    assert kept["valid"] is True
+    assert kept["receipt_number"] == manual["receipt_number"]
+    r2 = _await(sync_purchase_receipts(db, FakeClient(incoming, complete=True)))
+    kept2 = next(d for d in db[COLLECTION].docs if d["accurate_receipt_id"] == manual["accurate_receipt_id"])
+    assert kept2["valid"] is True
+    assert kept2["source"] == RECEIPT_SOURCE_MANUAL
+    assert r2["created"] >= 0
+
+
+def test_complete_sync_does_not_deactivate_manual():
+    existing_manual = {
+        "accurate_receipt_id": "manual:keep-me",
+        "receipt_number": "GR-LOCAL-1",
+        "source": "manual",
+        "valid": True,
+        "lines": [{"accurate_item_id": "101", "received_qty": 9}],
+    }
+    incoming = [_norm(100, "R1", [(202, 1)])]
+    out = upsert_receipts([existing_manual], incoming, complete=True)
+    manuals = [d for d in out["docs"] if d["accurate_receipt_id"] == "manual:keep-me"]
+    assert manuals[0]["valid"] is True
+    assert manuals[0]["source"] == "manual"
+
+
+def test_get_load_receipts_is_zero_write():
+    db = FakeDB()
+    user = {"id": "u1", "role": "admin"}
+    _await(create_manual_purchase_receipt(db, _manual_payload(), user))
+    inserts = db[COLLECTION].insert_calls
+    n = len(db[COLLECTION].docs)
+    loaded = _await(load_receipts(db))
+    assert len(loaded) == n
+    assert db[COLLECTION].insert_calls == inserts
+
+
+def test_manual_create_does_not_touch_accounting_or_hpp():
+    src = Path(__file__).resolve().parents[1] / "services" / "purchase_receipts.py"
+    text = src.read_text(encoding="utf8")
+    assert "journal_core" not in text
+    assert "hpp_valuation" not in text
+    assert "handle_goods_receipt_created" not in inspect.getsource(create_manual_purchase_receipt)
+    db = FakeDB()
+    _await(create_manual_purchase_receipt(db, _manual_payload(), {"id": "u1", "role": "admin"}))
+    assert db["journals"].docs == []
+    assert db["journal_entries"].docs == []
+
+
+def test_filter_finds_manual_supplier_and_notes():
+    pub = public_receipt({
+        "accurate_receipt_id": "manual:1",
+        "receipt_number": "GR-20260909-001",
+        "source": "manual",
+        "supplier": "PT Task Preview Supplier",
+        "notes": "TASK-PREVIEW-RECEIPT",
+        "valid": True,
+        "lines": [{"item_name": "Cup", "received_qty": 1}],
+    })
+    found = filter_public_receipts([pub], "task-preview")
+    assert found and found[0]["receipt_number"] == "GR-20260909-001"
+
+
+def test_create_http_requires_receive_not_sync():
+    server_src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf8")
+    create_fn = server_src.split("async def purchase_receipts_create", 1)[1].split("async def ", 1)[0]
+    assert 'require_perm("purchase_receipts.receive")' in create_fn
+    assert "purchase_receipts.sync" not in create_fn
+    assert 'async def purchase_receipts_sync(user=Depends(require_perm("purchase_receipts.sync")))' in server_src
+
+
+def test_po_list_projection_is_not_physical_or_hpp_or_journal_source():
+    projection = {
+        "accurate_receipt_id": "manual:gr-uuid-1",
+        "receipt_number": "GR-PB-TASK-1",
+        "source": "manual",
+        "valid": True,
+        "goods_receipt_id": "gr-uuid-1",
+        "purchase_order_id": "po-task-1",
+        "last_synced_at": "should-be-ignored",
+        "lines": [{"accurate_item_id": "101", "received_qty": 50, "master_item_id": "m1", "item_name": "Board"}],
+    }
+    accurate = receipt_doc_from_incoming(_norm(100, "R1", [(101, 2000)]))
+    bucket, _ = aggregate_received_qty([accurate, projection])
+    assert bucket["a:101"] == 2000
+    pub = public_receipt(projection)
+    assert pub["goods_receipt_id"] == "gr-uuid-1"
+    assert pub["source"] == "manual"
+    assert pub["last_synced_at"] is None
+    hpp_src = (Path(__file__).resolve().parents[1] / "services" / "hpp_valuation.py").read_text(encoding="utf8")
+    assert "accurate_purchase_receipts" not in hpp_src
+    journal_src = (Path(__file__).resolve().parents[1] / "services" / "journal_core.py").read_text(encoding="utf8")
+    assert "accurate_purchase_receipts" not in journal_src
+    assert "create_manual_purchase_receipt" not in journal_src

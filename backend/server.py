@@ -142,6 +142,7 @@ from services.purchase_receipts import (
     COLLECTION as RECEIPT_COLLECTION,
     PURCHASE_SOURCE_ACCURATE as STOCK_PURCHASE_ACCURATE,
     SYNC_META_COLLECTION as RECEIPT_SYNC_META_COLLECTION,
+    create_manual_purchase_receipt,
     filter_public_receipts,
     last_success_at as receipt_last_success_at,
     load_receipts,
@@ -8909,6 +8910,21 @@ async def purchase_receipts_list(
     payload["purchase_source"] = purchase_source_from_meta(meta)
     payload["source"] = "accurate"
     return payload
+
+
+class PurchaseReceiptCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+@api_router.post("/purchase-receipts")
+async def purchase_receipts_create(
+    payload: PurchaseReceiptCreatePayload,
+    user=Depends(require_perm("purchase_receipts.receive")),
+):
+    """Manual Penerimaan Barang. Receive permission only — sync is Accurate ingest, not create."""
+    data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    doc = await create_manual_purchase_receipt(db, data or {}, user)
+    return {"receipt": public_receipt(doc), "message": "Penerimaan Barang berhasil dibuat"}
 
 
 @api_router.get("/purchase-receipts/export")
