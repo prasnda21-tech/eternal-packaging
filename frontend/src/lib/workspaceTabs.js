@@ -4,17 +4,19 @@ export function normalizeWorkspacePath(pathname) {
   return String(pathname || "").split("?")[0].replace(/\/$/, "") || "/";
 }
 
-export function createWorkspaceTabApi({ catalog, storagePrefix }) {
+export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath, resolveStoredTab }) {
   const tabs = Array.isArray(catalog) ? catalog : [];
 
-  function tabByPath(pathname) {
+  function tabByPath(pathname, meta) {
     const path = normalizeWorkspacePath(pathname);
     const exact = tabs.find((t) => t.path === path);
     if (exact) return exact;
     const prefixed = tabs
       .filter((t) => t.matchPrefix && (path === t.path || path.startsWith(`${t.path}/`)))
       .sort((a, b) => b.path.length - a.path.length);
-    return prefixed[0] || null;
+    if (prefixed[0]) return prefixed[0];
+    if (typeof dynamicFromPath === "function") return dynamicFromPath(pathname, meta) || null;
+    return null;
   }
 
   function storageKey(user) {
@@ -34,7 +36,16 @@ export function createWorkspaceTabApi({ catalog, storagePrefix }) {
       const allowed = new Set(tabs.map((t) => t.id));
       const byId = Object.fromEntries(tabs.map((t) => [t.id, t]));
       return parsed
-        .map((id) => (allowed.has(id) ? byId[id] : null))
+        .map((item) => {
+          if (typeof item === "string") {
+            if (allowed.has(item)) return byId[item];
+            return typeof resolveStoredTab === "function" ? resolveStoredTab(item) : null;
+          }
+          if (item && typeof item === "object") {
+            return typeof resolveStoredTab === "function" ? resolveStoredTab(item) : null;
+          }
+          return null;
+        })
         .filter(Boolean);
     } catch {
       return [];
@@ -45,8 +56,10 @@ export function createWorkspaceTabApi({ catalog, storagePrefix }) {
     const key = storageKey(user);
     if (!key || typeof sessionStorage === "undefined") return;
     try {
-      const ids = (openTabs || []).map((t) => t.id);
-      sessionStorage.setItem(key, JSON.stringify(ids));
+      const payload = (openTabs || []).map((t) => (
+        t?.dynamic ? { id: t.id, path: t.path, label: t.label } : t.id
+      ));
+      sessionStorage.setItem(key, JSON.stringify(payload));
     } catch {
       /* ignore quota / private mode */
     }
@@ -71,12 +84,20 @@ export function createWorkspaceTabApi({ catalog, storagePrefix }) {
     }
   }
 
-  function openOrActivate(openTabs, pathname) {
-    const entry = tabByPath(pathname);
+  function openOrActivate(openTabs, pathname, meta) {
+    const entry = tabByPath(pathname, meta);
     if (!entry) return { tabs: openTabs || [], activated: null };
     const list = Array.isArray(openTabs) ? [...openTabs] : [];
-    const existing = list.find((t) => t.id === entry.id);
-    if (existing) return { tabs: list, activated: existing };
+    const idx = list.findIndex((t) => t.id === entry.id);
+    if (idx >= 0) {
+      const existing = list[idx];
+      if (entry.dynamic && entry.label && entry.label !== existing.label && meta?.po_number) {
+        const updated = { ...existing, label: entry.label, path: entry.path };
+        list[idx] = updated;
+        return { tabs: list, activated: updated };
+      }
+      return { tabs: list, activated: existing };
+    }
     list.push(entry);
     return { tabs: list, activated: entry };
   }

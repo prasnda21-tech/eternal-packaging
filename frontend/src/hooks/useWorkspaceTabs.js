@@ -14,6 +14,8 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
   const hydratedUser = useRef(null);
   const pathRef = useRef(location.pathname);
   pathRef.current = location.pathname;
+  const stateRef = useRef(location.state);
+  stateRef.current = location.state;
 
   useEffect(() => {
     const uid = user?.id || user?.email || user?.sub || null;
@@ -25,18 +27,20 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
     if (hydratedUser.current === uid) return;
     hydratedUser.current = uid;
     const restored = load(user);
-    setTabs(openOrActivate(restored, pathRef.current).tabs);
+    setTabs(openOrActivate(restored, pathRef.current, stateRef.current).tabs);
   }, [user, load, openOrActivate]);
 
   useEffect(() => {
     if (!user || !hydratedUser.current) return;
     setTabs((cur) => {
-      const { tabs: next, activated } = openOrActivate(cur, location.pathname);
+      const { tabs: next, activated } = openOrActivate(cur, location.pathname, location.state);
       if (!activated) return cur;
-      const same = next.length === cur.length && next.every((t, i) => t.id === cur[i]?.id);
+      const same = next.length === cur.length && next.every((t, i) => (
+        t.id === cur[i]?.id && t.path === cur[i]?.path && t.label === cur[i]?.label
+      ));
       return same ? cur : next;
     });
-  }, [location.pathname, user, openOrActivate]);
+  }, [location.pathname, location.state, user, openOrActivate]);
 
   useEffect(() => {
     if (!user || !hydratedUser.current) return;
