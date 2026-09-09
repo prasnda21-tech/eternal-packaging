@@ -22,6 +22,7 @@ import hmac
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
@@ -2713,6 +2714,7 @@ def _normalize_accurate_so(
             li=li,
             so_colors=so_colors,
             allow_header_fallback=allow_header_color_fallback,
+            so_notes_text=so_notes,
         )
 
         line_notes = (li.get("detailNotes") or li.get("description") or li.get("notes") or None)
@@ -2798,25 +2800,57 @@ _COLOR_PATTERNS: List[Tuple[str, List[str]]] = [
     ("MAROON", ["maroon", "marun"]),
 ]
 
+# Accurate free-text labels proven in Import PO / detailNotes fixtures.
+# Prefer "Warna Cetak" over bare "Warna". Require a colon so
+# "SABLON WARNA HITAM" still falls through to palette detection.
+_WARNA_CETAK_LABEL_RE = re.compile(
+    r"(?is)\bwarna\s+cetak\s*[:：]\s*(.+)$"
+)
+_WARNA_LABEL_RE = re.compile(
+    r"(?is)\bwarna\s*[:：]\s*(.+)$"
+)
+
+
+def _extract_warna_cetak_label_value(text: str) -> Optional[str]:
+    """Return the exact value after a Warna Cetak / Warna label, if present."""
+    if not text or not str(text).strip():
+        return None
+    raw = str(text).strip()
+    for pattern in (_WARNA_CETAK_LABEL_RE, _WARNA_LABEL_RE):
+        m = pattern.search(raw)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if "\n" in value:
+            value = value.split("\n", 1)[0].strip()
+        if value:
+            return value
+    return None
+
 
 def _detect_colors(text: str) -> List[str]:
-    """Detect explicit color mentions in the given text. Returns a
-    de-duplicated list of canonical color names (uppercase Indonesian).
-    Returns empty list when no color word is present.
+    """Detect explicit color mentions in appearance order.
+
+    Returns de-duplicated canonical color names (uppercase Indonesian).
+    Empty when no palette word is present.
     """
     if not text:
         return []
-    import re
-    hay = text.lower()
-    found: List[str] = []
+    hay = str(text).lower()
+    hits: List[Tuple[int, str]] = []
+    seen = set()
     for canonical, variants in _COLOR_PATTERNS:
+        best_pos = None
         for v in variants:
             # word boundary — avoid matching 'pink' inside 'pinkusan' etc.
-            if re.search(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", hay):
-                if canonical not in found:
-                    found.append(canonical)
-                break
-    return found
+            for m in re.finditer(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", hay):
+                if best_pos is None or m.start() < best_pos:
+                    best_pos = m.start()
+        if best_pos is not None and canonical not in seen:
+            hits.append((best_pos, canonical))
+            seen.add(canonical)
+    hits.sort(key=lambda row: row[0])
+    return [name for _pos, name in hits]
 
 
 def _so_line_note_text(li: Dict[str, Any]) -> str:
@@ -2842,11 +2876,29 @@ def _so_line_name_text(item: Dict[str, Any], li: Dict[str, Any]) -> str:
 def _apply_detected_colors(
     detected: List[str], source: str
 ) -> Tuple[Optional[str], Optional[str], List[str], bool]:
+    """Map palette hits to a persisted color string.
+
+    Multiple colors are joined (appearance order) so Import PO / Detail PO
+    keep the full Warna Cetak value instead of blank + needs_verify.
+    """
     if len(detected) == 1:
         return detected[0], source, [], False
     if len(detected) > 1:
-        return None, source, detected, True
+        return " / ".join(detected), source, list(detected), False
     return None, None, [], False
+
+
+def _color_from_free_text(
+    text: str, source: str
+) -> Tuple[Optional[str], Optional[str], List[str], bool]:
+    """Resolve Warna Cetak from Accurate free text (line or header notes)."""
+    if not text or not str(text).strip():
+        return None, None, [], False
+    label_value = _extract_warna_cetak_label_value(text)
+    if label_value:
+        # Prefer the exact Accurate label value (preserves Merah, Hitam, Putih).
+        return label_value, source, [], False
+    return _apply_detected_colors(_detect_colors(text), source)
 
 
 def _resolve_so_line_color(
@@ -2855,17 +2907,19 @@ def _resolve_so_line_color(
     li: Dict[str, Any],
     so_colors: List[str],
     allow_header_fallback: bool,
+    so_notes_text: str = "",
 ) -> Tuple[Optional[str], Optional[str], List[str], bool]:
     """Per-line color. Never copies another line's color.
 
-    Priority: structured line field → line notes → item name → SO header
-    (header only when the SO has exactly one detail line).
+    Priority: structured line field → line notes (Warna Cetak / palette) →
+    item name → SO header (header only when the SO has exactly one detail line).
     """
     explicit_color = item.get("color") or li.get("color") or li.get("itemColor") or item.get("itemColor") or None
     if explicit_color and str(explicit_color).strip():
         return str(explicit_color).strip(), "item.color", [], False
 
-    note_result = _apply_detected_colors(_detect_colors(_so_line_note_text(li)), "item.description")
+    note_text = _so_line_note_text(li)
+    note_result = _color_from_free_text(note_text, "item.description")
     if note_result[1]:
         return note_result
 
@@ -2873,8 +2927,12 @@ def _resolve_so_line_color(
     if name_result[1]:
         return name_result
 
-    if allow_header_fallback and so_colors:
-        return _apply_detected_colors(so_colors, "so.description")
+    if allow_header_fallback:
+        header_result = _color_from_free_text(so_notes_text, "so.description")
+        if header_result[1]:
+            return header_result
+        if so_colors:
+            return _apply_detected_colors(so_colors, "so.description")
     return None, None, [], False
 
 
