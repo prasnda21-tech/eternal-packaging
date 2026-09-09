@@ -46,6 +46,9 @@ describe("Data Pelanggan UI & Architecture Invariants", () => {
     expect(apiSrc).toMatch(/getSalesCustomer/);
     expect(apiSrc).toMatch(/createSalesCustomer/);
     expect(apiSrc).toMatch(/updateSalesCustomer/);
+    expect(apiSrc).toMatch(/updateSalesCustomerByKey/);
+    expect(apiSrc).toMatch(/setSalesCustomerStatus/);
+    expect(apiSrc).toMatch(/setSalesCustomerStatusByKey/);
   });
 
   test("implements authoritative CRUD operations in DataPelanggan.jsx", () => {
@@ -61,6 +64,36 @@ describe("Data Pelanggan UI & Architecture Invariants", () => {
     expect(src).toMatch(/btn-cancel-customer/);
   });
 
+  test("Lihat / Edit / status actions and RBAC gates", () => {
+    expect(src).toMatch(/btn-view-customer-/);
+    expect(src).toMatch(/customer-view-modal/);
+    expect(src).toMatch(/sales\.customer\.edit/);
+    expect(src).toMatch(/sales\.customer\.manage_status/);
+    expect(src).toMatch(/canEdit/);
+    expect(src).toMatch(/canManageStatus/);
+    expect(src).toMatch(/Aktif/);
+    expect(src).toMatch(/Nonaktif/);
+    expect(src).toMatch(/btn-deactivate-customer-/);
+    expect(src).toMatch(/btn-activate-customer-/);
+    expect(src).toMatch(/riwayat penjualan\/PO\/pembayaran tetap utuh/);
+    expect(src).toMatch(/api\.updateSalesCustomerByKey/);
+    expect(src).toMatch(/api\.setSalesCustomerStatus/);
+    expect(src).toMatch(/api\.setSalesCustomerStatusByKey/);
+    expect(src).not.toMatch(/Hapus Pelanggan/);
+    expect(src).not.toMatch(/deleteSalesCustomer/);
+    expect(src).not.toMatch(/api\.delete/);
+  });
+
+  test("view modal shows all required fields and dash fallback", () => {
+    expect(src).toMatch(/Nama Pelanggan/);
+    expect(src).toMatch(/No\. HP \/ WhatsApp/);
+    expect(src).toMatch(/PIC \/ Kontak/);
+    expect(src).toMatch(/Alamat Lengkap/);
+    expect(src).toMatch(/Catatan/);
+    expect(src).toMatch(/displayOrDash/);
+    expect(src).toMatch(/customer-view-fields/);
+  });
+
   test("registers /penjualan/data-pelanggan in App.js router with PermGate", () => {
     expect(appSrc).toMatch(/path="\/penjualan\/data-pelanggan"/);
     expect(appSrc).toMatch(/<DataPelanggan \/>/);
@@ -74,6 +107,40 @@ describe("Data Pelanggan UI & Architecture Invariants", () => {
     expect(ppSrc).toMatch(/badge-customer-registered/);
     expect(ppSrc).toMatch(/badge-customer-new/);
     expect(ppSrc).toMatch(/input-customer-phone/);
+  });
+});
+
+describe("Data Pelanggan customer actions UI coverage", () => {
+  const src = fs.readFileSync(path.join(__dirname, "DataPelanggan.jsx"), "utf8");
+  const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
+  const permsSrc = fs.readFileSync(
+    path.join(__dirname, "../../../backend/permissions.py"),
+    "utf8"
+  );
+
+  test("Edit hidden without sales.customer.edit; status uses manage_status for both directions", () => {
+    expect(src).toMatch(/hasPerm\("sales\.customer\.edit"\)/);
+    expect(src).toMatch(/hasPerm\("sales\.customer\.manage_status"\)/);
+    expect(src).toMatch(/openStatusConfirm\(cust, false\)/);
+    expect(src).toMatch(/openStatusConfirm\(cust, true\)/);
+    expect(src).toMatch(/canToggleStatus/);
+  });
+
+  test("inactive customers remain rendered and history source supported", () => {
+    expect(src).toMatch(/data-customer-active/);
+    expect(src).toMatch(/prediction_history/);
+    expect(src).toMatch(/Ditemukan dari Histori/);
+    expect(src).not.toMatch(/filter\(\(c\) => .*is_active/);
+  });
+
+  test("backend permission labels registered for Settings Roles", () => {
+    expect(permsSrc).toMatch(/sales\.customer\.edit.*Edit Pelanggan/);
+    expect(permsSrc).toMatch(/sales\.customer\.manage_status.*Kelola Status Pelanggan/);
+  });
+
+  test("no hard-delete customer API client", () => {
+    expect(apiSrc).not.toMatch(/deleteSalesCustomer/);
+    expect(apiSrc).not.toMatch(/DELETE.*sales-customers/);
   });
 });
 

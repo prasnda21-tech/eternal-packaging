@@ -7163,12 +7163,19 @@ from services.sales_customers import (
     get_sales_customer as _get_sales_customer,
     create_sales_customer as _create_sales_customer,
     update_sales_customer as _update_sales_customer,
+    upsert_sales_customer_by_key as _upsert_sales_customer_by_key,
+    set_sales_customer_active_status as _set_sales_customer_active_status,
+    set_sales_customer_active_status_by_key as _set_sales_customer_active_status_by_key,
+    customer_is_active as _customer_is_active,
     prepare_customer_for_po as _prepare_customer_for_po,
     link_or_create_customer_for_po as _link_or_create_customer_for_po,
     resolve_or_create_customer_for_po as _resolve_or_create_customer_for_po,
     ensure_sales_customer_indexes as _ensure_sales_customer_indexes,
     SalesCustomerCreatePayload,
     SalesCustomerUpdatePayload,
+    SalesCustomerByKeyUpdatePayload,
+    SalesCustomerStatusPayload,
+    SalesCustomerStatusByKeyPayload,
 )
 
 # ---------- Manual Sales Order (Pesanan Penjualan) ----------
@@ -7354,11 +7361,15 @@ async def list_sales_customers_endpoint(
         user,
         "sales.customer.view",
         "sales.customer.manage",
+        "sales.customer.edit",
+        "sales.customer.manage_status",
     )
     if str(view or "").strip().lower() == "unified":
         customers = await _list_unified_sales_customers(db, q=q)
     else:
         customers = await _list_sales_customers(db, q=q)
+        for c in customers:
+            c["is_active"] = _customer_is_active(c)
     return {"customers": customers}
 
 
@@ -7373,6 +7384,31 @@ async def create_sales_customer_endpoint(
     return {"customer": cust, "message": "Data pelanggan berhasil disimpan"}
 
 
+@api_router.put("/sales-customers/by-key")
+async def upsert_sales_customer_by_key_endpoint(
+    payload: SalesCustomerByKeyUpdatePayload,
+    user=Depends(current_user),
+):
+    """Update or materialize customer profile by canonical customer_key."""
+    await _require_any_perm(user, "sales.customer.edit")
+    cust = await _upsert_sales_customer_by_key(db, payload, user_email=user.get("email"))
+    return {"customer": cust, "message": "Data pelanggan berhasil diperbarui"}
+
+
+@api_router.patch("/sales-customers/by-key/status")
+async def set_sales_customer_status_by_key_endpoint(
+    payload: SalesCustomerStatusByKeyPayload,
+    user=Depends(current_user),
+):
+    """Set Aktif/Nonaktif by canonical customer_key (materialize if needed)."""
+    await _require_any_perm(user, "sales.customer.manage_status")
+    cust = await _set_sales_customer_active_status_by_key(db, payload, user_email=user.get("email"))
+    return {
+        "customer": cust,
+        "message": "Pelanggan diaktifkan kembali" if payload.is_active else "Pelanggan dinonaktifkan",
+    }
+
+
 @api_router.get("/sales-customers/{customer_id}")
 async def get_sales_customer_endpoint(
     customer_id: str,
@@ -7383,10 +7419,13 @@ async def get_sales_customer_endpoint(
         user,
         "sales.customer.view",
         "sales.customer.manage",
+        "sales.customer.edit",
+        "sales.customer.manage_status",
     )
     cust = await _get_sales_customer(db, customer_id)
     if not cust:
         raise HTTPException(404, "Pelanggan tidak ditemukan.")
+    cust["is_active"] = _customer_is_active(cust)
     return {"customer": cust}
 
 
@@ -7396,10 +7435,27 @@ async def update_sales_customer_endpoint(
     payload: SalesCustomerUpdatePayload,
     user=Depends(current_user),
 ):
-    """Update sales customer by id."""
-    await _require_any_perm(user, "sales.customer.manage")
+    """Update sales customer by id. Requires Edit Pelanggan permission."""
+    await _require_any_perm(user, "sales.customer.edit")
     cust = await _update_sales_customer(db, customer_id, payload, user_email=user.get("email"))
     return {"customer": cust, "message": "Data pelanggan berhasil diperbarui"}
+
+
+@api_router.patch("/sales-customers/{customer_id}/status")
+async def set_sales_customer_status_endpoint(
+    customer_id: str,
+    payload: SalesCustomerStatusPayload,
+    user=Depends(current_user),
+):
+    """Set Aktif/Nonaktif. Same permission for deactivate and reactivate."""
+    await _require_any_perm(user, "sales.customer.manage_status")
+    cust = await _set_sales_customer_active_status(
+        db, customer_id, payload.is_active, user_email=user.get("email"),
+    )
+    return {
+        "customer": cust,
+        "message": "Pelanggan diaktifkan kembali" if payload.is_active else "Pelanggan dinonaktifkan",
+    }
 
 
 @api_router.get("/sales-orders/options")
