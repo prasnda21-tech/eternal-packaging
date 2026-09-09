@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { firstTaskNavPath } from "../lib/navAccess";
 import {
   DIVISION_TASK_PAGES,
+  formatCurrentStock,
   formatIdQty,
   statusTone,
   taskMatchesQuery,
@@ -66,6 +67,9 @@ export default function DivisionTaskPage() {
   const canViewAll = !!data?.can_view_all;
   const canViewPo = !!data?.can_view_po;
   const qty = cfg.qtyCols !== false;
+  const showStock = !!cfg.showCurrentStock;
+  const extraCol = cfg.extra === "design" || cfg.extra === "sj" || cfg.extra === "driver" ? 1 : 0;
+  const emptyCols = 6 + (qty ? 3 : 0) + (showStock ? 1 : 0) + extraCol;
 
   return (
     <div className="prod-page division-task-page" data-testid="division-task-page">
@@ -120,6 +124,7 @@ export default function DivisionTaskPage() {
               <th>No PO</th>
               <th>Customer</th>
               <th>Item</th>
+              {showStock && <th className="num">Stock Saat Ini</th>}
               {cfg.extra === "design" && <th>Status Design</th>}
               {cfg.extra === "sj" && <th>Status SJ</th>}
               {cfg.extra === "driver" && <th>Bukti Foto</th>}
@@ -134,7 +139,7 @@ export default function DivisionTaskPage() {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={10} className="muted" data-testid="division-task-empty">Tidak ada tugas.</td>
+                <td colSpan={emptyCols} className="muted" data-testid="division-task-empty">Tidak ada tugas.</td>
               </tr>
             )}
             {rows.map((t) => (
@@ -146,6 +151,11 @@ export default function DivisionTaskPage() {
                 </td>
                 <td>{t.customer_name || "—"}</td>
                 <td>{t.item || "—"}</td>
+                {showStock && (
+                  <td className="num mono" data-testid={`division-task-stock-${t.task_id || t.order_number}`}>
+                    {formatCurrentStock(t.current_stock)}
+                  </td>
+                )}
                 {cfg.extra === "design" && <td data-testid={`division-task-design-${t.order_number}`}>{t.design_status_label || t.design_status || "—"}</td>}
                 {cfg.extra === "sj" && <td>{t.sj_status || "—"}</td>}
                 {cfg.extra === "driver" && <td className="mono">{t.photo_count ?? 0} foto</td>}

@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from services.screen_size import line_screen_size
+from services.current_stock import identity_keys
 from quantity_rules import (
     can_confirm_delivery,
     eligible_delivery_qty,
@@ -492,6 +493,58 @@ def active_scheduled_qty_for_line(order: dict, line_idx: int) -> int:
     return total
 
 
+def _line_item_ids(li: Optional[dict]) -> Dict[str, Optional[str]]:
+    """Stable inventory identity from a PO line. Never uses display name."""
+    if not li:
+        return {"accurate_item_id": None, "master_item_id": None}
+    aid = str(li.get("accurate_item_id") or "").strip() or None
+    mid = str(li.get("master_item_id") or "").strip() or None
+    return {"accurate_item_id": aid, "master_item_id": mid}
+
+
+def stock_lookup_from_rows(stock_rows: Iterable[dict]) -> Dict[str, Any]:
+    """One-shot map: identity key (a:/m:) → Persediaan stock_current.
+
+    Built once and reused for all task rows (no per-row inventory queries).
+    """
+    lookup: Dict[str, Any] = {}
+    for row in stock_rows or []:
+        keys = identity_keys(row)
+        if not keys:
+            continue
+        # Canonical Persediaan field; preserve exact 0 (do not coerce to None).
+        val = row.get("stock_current")
+        for k in keys:
+            if k not in lookup:
+                lookup[k] = val
+    return lookup
+
+
+def resolve_current_stock(identity_doc: dict, lookup: Dict[str, Any]) -> Optional[Any]:
+    """Resolve current stock for one item identity.
+
+    Returns:
+      - number (including 0) when inventory identity maps to a stock row
+      - None when the line has no stable identity, or identity is absent from
+        the Persediaan read model (frontend must show —, not 0)
+    """
+    keys = identity_keys(identity_doc or {})
+    if not keys:
+        return None
+    for k in keys:
+        if k in lookup:
+            return lookup[k]
+    return None
+
+
+def enrich_tasks_current_stock(tasks: List[dict], stock_rows: Iterable[dict]) -> List[dict]:
+    """Additive read-model enrichment. Mutates tasks in place; no DB writes."""
+    lookup = stock_lookup_from_rows(stock_rows)
+    for task in tasks or []:
+        task["current_stock"] = resolve_current_stock(task, lookup)
+    return tasks
+
+
 def build_kepala_produksi_tasks(order: dict) -> List[dict]:
     if not requires_printing(order):
         return []
@@ -507,6 +560,11 @@ def build_kepala_produksi_tasks(order: dict) -> List[dict]:
         scheduled = max(0, active_scheduled_qty_for_line(order, idx))
         remaining = max(0, printable - scheduled)
         row = _base_row(order, "kepala_produksi", line_idx=idx)
+        ids = _line_item_ids(li)
+        row["accurate_item_id"] = ids["accurate_item_id"]
+        row["master_item_id"] = ids["master_item_id"]
+        # Populated later via enrich_tasks_current_stock (batch Persediaan lookup).
+        row["current_stock"] = None
         row["target_qty"] = printable
         row["completed_qty"] = scheduled
         row["remaining_qty"] = remaining

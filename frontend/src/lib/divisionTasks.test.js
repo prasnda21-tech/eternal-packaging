@@ -1,4 +1,4 @@
-import { formatIdQty, taskMatchesQuery, taskWorkHref } from "./divisionTasks";
+import { formatCurrentStock, formatIdQty, taskMatchesQuery, taskWorkHref } from "./divisionTasks";
 
 describe("division task helpers", () => {
   test("kerja href is focused work panel not full PO", () => {
@@ -16,5 +16,12 @@ describe("division task helpers", () => {
 
   test("qty format", () => {
     expect(formatIdQty(4000)).toBe("4.000");
+  });
+
+  test("current stock format preserves zero and dashes unresolved", () => {
+    expect(formatCurrentStock(3250)).toBe("3.250");
+    expect(formatCurrentStock(0)).toBe("0");
+    expect(formatCurrentStock(null)).toBe("—");
+    expect(formatCurrentStock(undefined)).toBe("—");
   });
 });

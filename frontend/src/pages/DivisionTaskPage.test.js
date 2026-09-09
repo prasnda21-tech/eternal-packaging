@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { formatCurrentStock, formatIdQty, DIVISION_TASK_PAGES } from "../lib/divisionTasks";
 
 describe("Division task UI", () => {
   const page = fs.readFileSync(path.join(__dirname, "DivisionTaskPage.jsx"), "utf8");
@@ -61,5 +62,43 @@ describe("Division task UI", () => {
   test("Surat Jalan remains upload-only", () => {
     expect(sj).not.toMatch(/sj-accurate-import/);
     expect(page).toMatch(/Upload File Surat Jalan|sj_status/);
+  });
+
+  test("STOCK SAAT INI header and column order after ITEM before QTY ITEM CETAK", () => {
+    expect(page).toMatch(/Stock Saat Ini/);
+    expect(lib).toMatch(/showCurrentStock:\s*true/);
+    const itemIdx = page.indexOf("<th>Item</th>");
+    const stockIdx = page.indexOf("Stock Saat Ini");
+    const qtyIdx = page.indexOf('{cfg.targetLabel || "Target"}');
+    expect(itemIdx).toBeGreaterThan(-1);
+    expect(stockIdx).toBeGreaterThan(itemIdx);
+    expect(qtyIdx).toBeGreaterThan(stockIdx);
+    expect(DIVISION_TASK_PAGES["kepala-produksi"].showCurrentStock).toBe(true);
+    expect(DIVISION_TASK_PAGES["kepala-produksi"].targetLabel).toBe("Qty Item Cetak");
+  });
+
+  test("current stock formatting: positive, zero, unresolved dash", () => {
+    expect(formatCurrentStock(3250)).toBe("3.250");
+    expect(formatCurrentStock(0)).toBe("0");
+    expect(formatCurrentStock(null)).toBe("—");
+    expect(formatCurrentStock(undefined)).toBe("—");
+    expect(formatCurrentStock("")).toBe("—");
+    // null must not silently become 0 via Number(null)
+    expect(formatCurrentStock(null)).not.toBe("0");
+    expect(formatIdQty(2000)).toBe("2.000");
+  });
+
+  test("existing filters and scope buttons still rendered", () => {
+    expect(page).toMatch(/division-task-status-filters/);
+    expect(page).toMatch(/division-task-scope-mine/);
+    expect(page).toMatch(/division-task-scope-all/);
+    expect(page).toMatch(/Tugas Saya/);
+    expect(page).toMatch(/Semua Tugas Divisi/);
+  });
+
+  test("row still keyed by task_id and exposes line via work href", () => {
+    expect(page).toMatch(/key=\{t\.task_id\}/);
+    expect(page).toMatch(/formatCurrentStock\(t\.current_stock\)/);
+    expect(lib).toMatch(/line_idx/);
   });
 });
