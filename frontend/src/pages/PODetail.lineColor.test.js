@@ -41,7 +41,7 @@ describe("PO Detail line color display", () => {
         { name: "Preview Cup", color: "BLUE" },
       ],
     };
-    const rendered = (order.line_items || []).map((li) => `Warna: ${salesOrderLineColor(li) || "—"}`);
+    const rendered = (order.line_items || []).map((li) => `Warna: ${salesOrderLineColor(li) || "-"}`);
     expect(rendered[0]).toBe("Warna: RED");
     expect(rendered[1]).toBe("Warna: BLUE");
   });
@@ -53,6 +53,18 @@ describe("PO Detail line color display", () => {
     ]);
     expect(mapped[0].color).toBe("RED / WHITE / BLACK");
     expect(mapped[1].color).toBe("");
+  });
+
+  test("null persisted color renders Warna: -", () => {
+    const rendered = ([{ name: "Cup", color: null }]).map(
+      (li) => `Warna: ${salesOrderLineColor(li) || "-"}`
+    );
+    expect(rendered[0]).toBe("Warna: -");
+  });
+
+  test("structured Accurate Warna strings render as-is", () => {
+    expect(salesOrderLineColor({ color: "PUTIH, HIJAU, PINK" })).toBe("PUTIH, HIJAU, PINK");
+    expect(salesOrderLineColor({ color: "BENING" })).toBe("BENING");
   });
 
   test("CASE 6: re-fetch payload replaces displayed color", () => {

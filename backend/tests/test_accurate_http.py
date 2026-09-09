@@ -702,7 +702,7 @@ def test_partial_failure_still_resolves_successful_so_branch(monkeypatch):
     assert by["SO-OK1"]["data"]["delivery_zone"] == "JS"
     assert by["SO-OK1"]["data"]["sales"] == "Bukan Creator"
     assert by["SO-OK1"]["data"]["expedition"] == "OUTLET"
-    assert by["SO-OK1"]["data"]["line_items"][0]["color"] == "HITAM"
+    assert by["SO-OK1"]["data"]["line_items"][0]["color"] is None
     branch_gets = [g for g in _FakeHTTP.gets if "branch/detail.do" in g["url"]]
     assert len(branch_gets) == 1
 

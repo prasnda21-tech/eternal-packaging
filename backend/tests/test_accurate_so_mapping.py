@@ -75,7 +75,7 @@ def test_cake_in_love_mapping_from_accurate_detail_shape():
     assert so["order_date"] == "2026-08-28"
     assert line["name"] == "Plastik PE 15"
     assert line["quantity"] == 10000
-    assert line["color"] == "HITAM"
+    assert line["color"] is None
     assert so["notes"] == "SABLON WARNA HITAM"
     assert line["notes"] == "SABLON WARNA HITAM"
     order_iso, est_iso = so_preview_dates(so, now=datetime(2026, 8, 28, tzinfo=timezone.utc))
@@ -237,7 +237,7 @@ def test_zone_searchCharField3_beats_charField3_and_classification():
     assert so["delivery_zone"] == "JS"
 
 
-def test_color_from_header_description():
+def test_color_not_from_header_description():
     raw = {
         "id": 1,
         "number": "SO-1",
@@ -246,7 +246,7 @@ def test_color_from_header_description():
         "detailItem": [{"quantity": 1, "item": {"id": 1, "name": "Item"}}],
     }
     so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["color"] == "PUTIH"
+    assert so["line_items"][0]["color"] is None
 
 
 def test_header_description_does_not_overwrite_line_color():
@@ -269,7 +269,7 @@ def test_header_description_does_not_overwrite_line_color():
         ],
     }
     so = _normalize_accurate_so(raw)
-    assert so["line_items"][0]["color"] == "HITAM"
+    assert so["line_items"][0]["color"] is None
     assert so["line_items"][1]["color"] == "MERAH"
 
 
@@ -302,15 +302,14 @@ def test_multiline_so_header_color_does_not_inherit_to_lid():
     lines = so["line_items"]
     assert len(lines) == 2
     assert lines[0]["name"] == "14 oz Inject Datar Bening Klir"
-    assert lines[0]["color"] == "ORANGE"
+    assert lines[0]["color"] is None
     assert lines[0]["quantity"] == 500
     assert lines[0]["accurate_line_id"] == "501"
     assert lines[1]["name"] == "LID Connect Inject Bening Klir"
-    assert lines[1]["color"] == "BENING"
+    assert lines[1]["color"] is None
     assert lines[1]["quantity"] == 500
     assert lines[1]["accurate_line_id"] == "502"
-    assert lines[1]["color"] != lines[0]["color"] or lines[1]["name"] != lines[0]["name"]
-    assert lines[1]["color_source"] == "item.name"
+    assert lines[1].get("color_source") is None
     assert "production_process" not in lines[0]
     assert "production_process" not in lines[1]
     assert so["notes"] == "SABLON WARNA ORANGE"
@@ -322,11 +321,11 @@ def test_multiline_color_mapping_is_order_independent():
     so = _normalize_accurate_so(_two_line_cup_lid_so(reverse=True))
     by_name = {li["name"]: li for li in so["line_items"]}
     assert so["line_items"][0]["name"] == "LID Connect Inject Bening Klir"
-    assert so["line_items"][0]["color"] == "BENING"
+    assert so["line_items"][0]["color"] is None
     assert so["line_items"][1]["name"] == "14 oz Inject Datar Bening Klir"
-    assert so["line_items"][1]["color"] == "ORANGE"
-    assert by_name["LID Connect Inject Bening Klir"]["color"] == "BENING"
-    assert by_name["14 oz Inject Datar Bening Klir"]["color"] == "ORANGE"
+    assert so["line_items"][1]["color"] is None
+    assert by_name["LID Connect Inject Bening Klir"]["color"] is None
+    assert by_name["14 oz Inject Datar Bening Klir"]["color"] is None
 
 
 def test_same_name_lines_keep_distinct_colors_and_ids():
@@ -353,8 +352,8 @@ def test_same_name_lines_keep_distinct_colors_and_ids():
     so = _normalize_accurate_so(raw)
     assert len(so["line_items"]) == 2
     assert so["line_items"][0]["name"] == so["line_items"][1]["name"] == "Cup 14 oz"
-    assert so["line_items"][0]["color"] == "ORANGE"
-    assert so["line_items"][1]["color"] == "BENING"
+    assert so["line_items"][0]["color"] is None
+    assert so["line_items"][1]["color"] is None
     assert so["line_items"][0]["accurate_line_id"] == "11"
     assert so["line_items"][1]["accurate_line_id"] == "12"
     assert so["line_items"][0]["quantity"] == 100
@@ -499,7 +498,7 @@ def test_cake_in_love_keeps_live_ids_without_guessing_names():
     assert so["delivery_zone"] == "JS"
     assert so["sales"] == "Dimas Aji Prasetya"
     assert so["estimated_ship_date"] == "2026-09-05"
-    assert so["line_items"][0]["color"] == "HITAM"
+    assert so["line_items"][0]["color"] is None
 
 
 def test_payment_term_name_string_and_nested_object():
@@ -570,8 +569,8 @@ def test_header_keterangan_not_copied_onto_multiline_items():
     so = _normalize_accurate_so(_two_line_cup_lid_so(header=HEADER_KETERANGAN))
     assert so["notes"] == HEADER_KETERANGAN
     assert so["line_items"][0]["notes"] == "SABLON WARNA ORANGE"
-    assert so["line_items"][0]["color"] == "ORANGE"
+    assert so["line_items"][0]["color"] is None
     assert so["line_items"][1]["notes"] in (None, "")
-    assert so["line_items"][1]["color"] == "BENING"
+    assert so["line_items"][1]["color"] is None
     assert so["line_items"][0]["notes"] != HEADER_KETERANGAN
     assert so["line_items"][1]["notes"] != HEADER_KETERANGAN

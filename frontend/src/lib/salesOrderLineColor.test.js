@@ -50,4 +50,10 @@ describe("salesOrderLineColor", () => {
   test("does not invent color from product name", () => {
     expect(salesOrderLineColor({ name: "Cup Bening Klir", color: null })).toBe("");
   });
+
+  test("renders Accurate structured Warna exactly", () => {
+    expect(salesOrderLineColor({ color: "PUTIH, HIJAU, PINK" })).toBe("PUTIH, HIJAU, PINK");
+    expect(salesOrderLineColor({ color: "BENING" })).toBe("BENING");
+    expect(salesOrderLineColor({ color: null, notes: "Warna Cetak: HITAM" })).toBe("");
+  });
 });
