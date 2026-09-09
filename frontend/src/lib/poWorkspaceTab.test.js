@@ -20,6 +20,15 @@ describe("poWorkspaceTab", () => {
     expect(poDetailWorkspaceTab("/produksi")).toBe(null);
   });
 
+  test("null React Router location.state does not throw (workspace tab return)", () => {
+    expect(() => poDetailWorkspaceTab("/po/ord-a", null)).not.toThrow();
+    const tab = poDetailWorkspaceTab("/po/ord-a", null);
+    expect(tab.id).toBe("po-detail:ord-a");
+    expect(tab.path).toBe("/po/ord-a");
+    expect(tab.label).toBe("PO ord-a");
+    expect(poDetailWorkspaceTab("/po/ord-a", { po_number: "PO/2026/09/09/000018" }).label).toBe("PO 000018");
+  });
+
   test("hydrate restores stored dynamic tab without catalog id", () => {
     const hydrated = hydratePoDetailStoredTab({
       id: "po-detail:ord-a",
