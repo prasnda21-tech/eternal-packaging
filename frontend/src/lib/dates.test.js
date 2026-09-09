@@ -6,6 +6,12 @@ describe("display date formatter dd/mm/yy", () => {
     expect(formatDate("2026-08-26")).toBe("26/08/26");
   });
 
+  test("Tanggal Pengerjaan calendar examples stay dd/mm/yy", () => {
+    expect(formatDisplayDate("2026-09-09")).toBe("09/09/26");
+    expect(formatDisplayDate("2026-01-05")).toBe("05/01/26");
+    expect(formatDisplayDate("2025-12-31")).toBe("31/12/25");
+  });
+
   test("ISO datetime keeps hours as dd/mm/yy HH:mm", () => {
     const out = formatDisplayDateTime("2026-08-26T10:35:00+07:00");
     expect(out).toMatch(/^26\/08\/26 \d{2}:\d{2}$/);
@@ -14,6 +20,8 @@ describe("display date formatter dd/mm/yy", () => {
   test("date-only is not shifted by timezone", () => {
     expect(formatDisplayDate("2026-08-26")).toBe("26/08/26");
     expect(formatDisplayDateTime("2026-08-26")).toBe("26/08/26");
+    expect(formatDisplayDate("2026-09-09T00:00:00Z")).toBe("09/09/26");
+    expect(formatDisplayDate("2026-09-09T23:59:59Z")).toBe("09/09/26");
   });
 
   test("empty is dash", () => {

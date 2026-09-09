@@ -157,6 +157,7 @@ describe("buildProductionScheduleDisplayRows", () => {
     const display = buildProductionScheduleDisplayRows([row]);
     expect(display).toHaveLength(1);
     expect(display[0].displayWorkDate).toBe("2026-09-10");
+    expect(display[0].work_date).toBe("2026-09-10");
   });
 
   test("non-cetak splits are excluded from operator rows and items", () => {

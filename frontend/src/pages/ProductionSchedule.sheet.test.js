@@ -135,6 +135,69 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-search-btn"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-ringkasan"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-work-date-PO-1001"]').textContent).toContain("25/08/26");
+    expect(container.querySelector('[data-testid="prod-work-date-PO-1001"]').textContent).not.toContain("2026-08-25");
+  });
+
+  test("Tanggal Pengerjaan displays DD/MM/YY without mutating raw work_date", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          po_number: "PO-A",
+          work_date: "2026-09-09",
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2026-09-09" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-b",
+          po_number: "PO-B",
+          work_date: "2026-01-05",
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2026-01-05" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-c",
+          po_number: "PO-C",
+          work_date: "2025-12-31",
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2025-12-31" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-d",
+          po_number: "PO-D",
+          work_date: "2026-09-09T00:00:00Z",
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2026-09-09T00:00:00Z" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-e",
+          po_number: "PO-E",
+          work_date: null,
+          operators: [],
+        },
+      ],
+      total: 5,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="prod-work-date-PO-A"]').textContent).toContain("09/09/26");
+    expect(container.querySelector('[data-testid="prod-work-date-PO-B"]').textContent).toContain("05/01/26");
+    expect(container.querySelector('[data-testid="prod-work-date-PO-C"]').textContent).toContain("31/12/25");
+    expect(container.querySelector('[data-testid="prod-work-date-PO-D"]').textContent).toContain("09/09/26");
+    expect(container.querySelector('[data-testid="prod-work-date-PO-E"]').textContent).toContain("Belum Dijadwalkan");
+    expect(container.textContent).not.toContain("2026-09-09");
+    expect(container.textContent).not.toContain("2026-01-05");
+    expect(container.textContent).not.toContain("2025-12-31");
+    expect(container.textContent).not.toMatch(/Invalid Date|NaN\/NaN\/NaN|01\/01\/70/);
+    const payload = api.productionDashboard.mock.results[0].value;
+    const rows = await payload;
+    expect(rows.rows.map((r) => r.work_date)).toEqual([
+      "2026-09-09",
+      "2026-01-05",
+      "2025-12-31",
+      "2026-09-09T00:00:00Z",
+      null,
+    ]);
   });
 
   test("Qty Cetak is operator completed over PO total and Item is standalone", async () => {
