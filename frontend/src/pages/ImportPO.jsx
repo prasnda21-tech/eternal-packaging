@@ -4,6 +4,10 @@ import { AlertCircle, ArrowRight, CheckCircle2, Cloud, Copy, Download, FileSprea
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatDeadline } from "../lib/constants";
+import {
+  accuratePreviewLineItems,
+  wrapAccurateImportPreviewResponse,
+} from "../lib/accurateImportPreview";
 
 const statusMeta = {
   success: { label: "Berhasil", cls: "log-success", icon: CheckCircle2 },
@@ -157,7 +161,7 @@ export default function ImportPO() {
     setBusy(true);
     try {
       const d = await api.accurateImportPreview(soNumber.trim());
-      setPreview({ ...d, source: "accurate" });
+      setPreview(wrapAccurateImportPreviewResponse(d, "accurate"));
     } catch (ex) { setErr(ex.response?.data?.detail || "Gagal mengambil preview"); }
     finally { setBusy(false); }
   };
@@ -185,7 +189,7 @@ export default function ImportPO() {
     setBusy(true);
     try {
       const d = await api.accurateImportPreview(soNumberValue);
-      setPreview({ ...d, source: "accurate" });
+      setPreview(wrapAccurateImportPreviewResponse(d, "accurate"));
       // Scroll preview into view
       setTimeout(() => {
         const el = document.querySelector('[data-testid="preview-panel"]');
@@ -844,8 +848,8 @@ export default function ImportPO() {
           </div>
 
           <div className="preview-items" data-testid="preview-items">
-            <div className="preview-items-head">Line Item ({preview.preview.item_count})</div>
-            {preview.preview.line_items.map((li, i) => (
+            <div className="preview-items-head">Line Item ({accuratePreviewLineItems(preview).length})</div>
+            {accuratePreviewLineItems(preview).map((li, i) => (
               <div key={i} className="preview-item" data-testid={`preview-item-${i}`}>
                 <span className="mono">{li.item_code || "-"}</span>
                 <strong>{li.name}</strong>

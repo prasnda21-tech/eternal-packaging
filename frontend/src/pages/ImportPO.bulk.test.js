@@ -28,10 +28,16 @@ describe("Import PO Accurate multi Sales Order", () => {
   });
 
   test("Accurate preview color is per line item, not a shared PO color", () => {
-    expect(src).toMatch(/preview\.preview\.line_items\.map\(\(li, i\) =>/);
+    expect(src).toMatch(/accuratePreviewLineItems\(preview\)\.map\(\(li, i\) =>/);
+    expect(src).toMatch(/wrapAccurateImportPreviewResponse/);
     expect(src).toMatch(/data-testid=\{`preview-item-\$\{i\}-color`\}/);
     expect(src).toMatch(/\{li\.color \? \(/);
     expect(src).not.toMatch(/preview\.preview\.color/);
+  });
+
+  test("Accurate preview LINE ITEM count uses response line_items length", () => {
+    expect(src).toMatch(/Line Item \(\{accuratePreviewLineItems\(preview\)\.length\}\)/);
+    expect(src).toMatch(/setPreview\(wrapAccurateImportPreviewResponse\(d, "accurate"\)\)/);
   });
 
   test("Accurate preview shows order-level Keterangan from preview.notes", () => {
@@ -46,5 +52,7 @@ describe("Import PO Accurate multi Sales Order", () => {
     expect(src).toMatch(/: "-"/);
     expect(src).not.toMatch(/detailNotes/);
     expect(src).not.toMatch(/Warna Cetak/);
+    expect(src).not.toMatch(/searchCharField1/);
+    expect(src).not.toMatch(/charField1/);
   });
 });
