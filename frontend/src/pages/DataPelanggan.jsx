@@ -4,6 +4,7 @@ import {
   Plus,
   Search,
   Edit2,
+  Eye,
   Phone,
   Mail,
   MapPin,
@@ -12,7 +13,8 @@ import {
   CheckCircle2,
   X,
   Loader2,
-  FileText,
+  Power,
+  PowerOff,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -28,22 +30,44 @@ const INITIAL_FORM = {
   notes: "",
 };
 
+const displayOrDash = (value) => {
+  const text = value == null ? "" : String(value).trim();
+  return text || "—";
+};
+
+const isCustomerActive = (cust) => {
+  if (!cust || cust.is_active == null) return true;
+  return Boolean(cust.is_active);
+};
+
+const rowKey = (cust) => cust?.customer_key || cust?.id || "";
+
 export default function DataPelanggan() {
   const { hasPerm } = useAuth();
   const canManage = hasPerm("sales.customer.manage") || hasPerm("admin");
+  const canEdit = hasPerm("sales.customer.edit") || hasPerm("admin");
+  const canManageStatus = hasPerm("sales.customer.manage_status") || hasPerm("admin");
 
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Modal State
+  // Edit / create modal
   const [modalOpen, setModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
   const [formData, setFormData] = useState({ ...INITIAL_FORM });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+
+  // View modal
+  const [viewCustomer, setViewCustomer] = useState(null);
+
+  // Status confirmation
+  const [statusTarget, setStatusTarget] = useState(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusError, setStatusError] = useState("");
 
   const loadCustomers = useCallback(async () => {
     setLoading(true);
@@ -68,6 +92,27 @@ export default function DataPelanggan() {
     loadCustomers();
   }, [loadCustomers]);
 
+  const isPersistedMaster = (cust) => Boolean(cust?.is_master) && Boolean(cust?.id);
+
+  const sourceLabel = (cust) => {
+    if (isPersistedMaster(cust)) return "Master";
+    if (cust?.source === "prediction_history") return "Ditemukan dari Histori";
+    if (cust?.source === "live_po") return "Ditemukan dari PO";
+    return "Ditemukan dari PO/Histori";
+  };
+
+  const canEditRow = (cust) => {
+    if (!canEdit) return false;
+    if (cust?.identity_ambiguous) return false;
+    return Boolean(cust?.customer_key || cust?.id);
+  };
+
+  const canToggleStatus = (cust) => {
+    if (!canManageStatus) return false;
+    if (cust?.identity_ambiguous) return false;
+    return Boolean(cust?.customer_key || cust?.id);
+  };
+
   const handleOpenCreate = () => {
     setEditingCustomer(null);
     setFormData({ ...INITIAL_FORM });
@@ -75,17 +120,12 @@ export default function DataPelanggan() {
     setModalOpen(true);
   };
 
-  const isPersistedMaster = (cust) => Boolean(cust?.is_master) && Boolean(cust?.id);
-
-  const sourceLabel = (cust) => {
-    if (isPersistedMaster(cust)) return cust.source === "mixed" ? "Master" : "Master";
-    if (cust?.source === "prediction_history") return "Ditemukan dari Histori";
-    if (cust?.source === "live_po") return "Ditemukan dari PO";
-    return "Ditemukan dari PO/Histori";
+  const handleOpenView = (cust) => {
+    setViewCustomer(cust);
   };
 
   const handleOpenEdit = (cust) => {
-    if (!isPersistedMaster(cust)) return;
+    if (!canEditRow(cust)) return;
     setEditingCustomer(cust);
     setFormData({
       name: cust.name || "",
@@ -110,6 +150,42 @@ export default function DataPelanggan() {
   const handleFormChange = (field, val) => {
     setFormData((prev) => ({ ...prev, [field]: val }));
     if (formError) setFormError("");
+  };
+
+  const mergeUpdatedCustomer = (updated, previous) => {
+    if (!updated) return;
+    const updatedKey = updated.customer_key || (updated.id ? `id:${updated.id}` : "");
+    const prevKey = previous ? rowKey(previous) : "";
+    setCustomers((prev) => {
+      let replaced = false;
+      const next = prev.map((row) => {
+        const key = rowKey(row);
+        const match =
+          (updated.id && row.id === updated.id) ||
+          (updatedKey && key === updatedKey) ||
+          (prevKey && key === prevKey);
+        if (!match) return row;
+        replaced = true;
+        return {
+          ...row,
+          ...updated,
+          is_master: true,
+          is_active: updated.is_active == null ? true : Boolean(updated.is_active),
+          customer_key: updated.id ? `id:${updated.id}` : row.customer_key,
+          source: row.source && row.source !== "master" ? "mixed" : "master",
+        };
+      });
+      if (!replaced && updated.id) {
+        next.push({
+          ...updated,
+          is_master: true,
+          is_active: updated.is_active == null ? true : Boolean(updated.is_active),
+          customer_key: `id:${updated.id}`,
+          source: "master",
+        });
+      }
+      return next;
+    });
   };
 
   const handleFormSubmit = async (e) => {
@@ -140,20 +216,31 @@ export default function DataPelanggan() {
         notes: formData.notes.trim(),
       };
 
+      let updated = null;
       if (editingCustomer) {
-        if (!isPersistedMaster(editingCustomer)) {
-          setFormError("Pelanggan ditemukan dari PO/histori belum bisa diedit di master.");
-          return;
+        if (isPersistedMaster(editingCustomer)) {
+          const res = await api.updateSalesCustomer(editingCustomer.id, payload);
+          updated = res.customer;
+        } else {
+          const key = editingCustomer.customer_key;
+          if (!key) {
+            setFormError("Identitas pelanggan tidak valid untuk diedit.");
+            return;
+          }
+          const res = await api.updateSalesCustomerByKey({ ...payload, customer_key: key });
+          updated = res.customer;
         }
-        await api.updateSalesCustomer(editingCustomer.id, payload);
+        mergeUpdatedCustomer(updated, editingCustomer);
         setSuccessMsg("Data pelanggan berhasil diperbarui!");
       } else {
-        await api.createSalesCustomer(payload);
+        const res = await api.createSalesCustomer(payload);
+        updated = res.customer;
+        mergeUpdatedCustomer(updated, null);
         setSuccessMsg("Pelanggan baru berhasil ditambahkan!");
       }
 
       setModalOpen(false);
-      loadCustomers();
+      setEditingCustomer(null);
       setTimeout(() => setSuccessMsg(""), 4000);
     } catch (err) {
       const det = err.response?.data?.detail;
@@ -166,6 +253,46 @@ export default function DataPelanggan() {
       }
     } finally {
       setFormBusy(false);
+    }
+  };
+
+  const openStatusConfirm = (cust, nextActive) => {
+    if (!canToggleStatus(cust)) return;
+    setStatusError("");
+    setStatusTarget({ customer: cust, nextActive: Boolean(nextActive) });
+  };
+
+  const handleConfirmStatus = async () => {
+    if (!statusTarget) return;
+    const { customer, nextActive } = statusTarget;
+    setStatusBusy(true);
+    setStatusError("");
+    try {
+      let updated = null;
+      if (isPersistedMaster(customer)) {
+        const res = await api.setSalesCustomerStatus(customer.id, { is_active: nextActive });
+        updated = res.customer;
+      } else {
+        const key = customer.customer_key;
+        if (!key) {
+          setStatusError("Identitas pelanggan tidak valid.");
+          return;
+        }
+        const res = await api.setSalesCustomerStatusByKey({
+          customer_key: key,
+          is_active: nextActive,
+        });
+        updated = res.customer;
+      }
+      mergeUpdatedCustomer(updated, customer);
+      setSuccessMsg(nextActive ? "Pelanggan diaktifkan kembali." : "Pelanggan dinonaktifkan.");
+      setStatusTarget(null);
+      setTimeout(() => setSuccessMsg(""), 4000);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      setStatusError(typeof det === "string" ? det : "Gagal mengubah status pelanggan.");
+    } finally {
+      setStatusBusy(false);
     }
   };
 
@@ -182,6 +309,20 @@ export default function DataPelanggan() {
         (c.address || "").toLowerCase().includes(q)
     );
   }, [customers, searchQuery]);
+
+  const actionBtnStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    border: "1px solid #cbd5e1",
+    backgroundColor: "#ffffff",
+    color: "#334155",
+    cursor: "pointer",
+    transition: "all 0.1s ease",
+  };
 
   return (
     <div style={{ padding: "24px 32px", maxWidth: 1400, margin: "0 auto" }}>
@@ -254,7 +395,6 @@ export default function DataPelanggan() {
         </div>
       </div>
 
-      {/* Success Notification */}
       {successMsg && (
         <div
           data-testid="customer-success-msg"
@@ -276,7 +416,6 @@ export default function DataPelanggan() {
         </div>
       )}
 
-      {/* Error Notification */}
       {error && (
         <div
           data-testid="customer-list-error"
@@ -298,7 +437,6 @@ export default function DataPelanggan() {
         </div>
       )}
 
-      {/* Filter / Search Bar */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -347,7 +485,6 @@ export default function DataPelanggan() {
         </div>
       </div>
 
-      {/* Table Container */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -421,158 +558,380 @@ export default function DataPelanggan() {
                   <th style={{ padding: "12px 16px" }}>Kota</th>
                   <th style={{ padding: "12px 16px" }}>Alamat Lengkap</th>
                   <th style={{ padding: "12px 16px" }}>Catatan</th>
-                  <th style={{ padding: "12px 16px", textAlign: "center", width: 90 }}>Aksi</th>
+                  <th style={{ padding: "12px 16px", textAlign: "center", width: 160 }}>Aksi</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredCustomers.map((cust) => (
-                  <tr
-                    key={cust.customer_key || cust.id}
-                    data-testid={`customer-row-${cust.customer_key || cust.id}`}
-                    style={{
-                      borderBottom: "1px solid #f1f5f9",
-                      transition: "background 0.1s ease",
-                    }}
-                    onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "#f8fafc")}
-                    onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                  >
-                    <td style={{ padding: "14px 16px", fontWeight: 600, color: "#0f172a" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <Building size={16} color="#64748b" />
-                        <span>{cust.name}</span>
-                        <span
-                          data-testid={`customer-source-${cust.customer_key || cust.id}`}
-                          title={cust.source || ""}
-                          style={{
-                            fontSize: "0.7rem",
-                            fontWeight: 600,
-                            letterSpacing: "0.02em",
-                            padding: "2px 7px",
-                            borderRadius: 999,
-                            backgroundColor: isPersistedMaster(cust) ? "#ecfdf5" : "#f1f5f9",
-                            color: isPersistedMaster(cust) ? "#047857" : "#475569",
-                            border: `1px solid ${isPersistedMaster(cust) ? "#a7f3d0" : "#cbd5e1"}`,
-                          }}
-                        >
-                          {sourceLabel(cust)}
-                        </span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "14px 16px", color: "#334155" }}>
-                      {cust.phone ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <Phone size={14} color="#059669" />
-                          <span>{cust.phone}</span>
+                {filteredCustomers.map((cust) => {
+                  const key = rowKey(cust);
+                  const active = isCustomerActive(cust);
+                  return (
+                    <tr
+                      key={key}
+                      data-testid={`customer-row-${key}`}
+                      data-customer-active={active ? "true" : "false"}
+                      style={{
+                        borderBottom: "1px solid #f1f5f9",
+                        transition: "background 0.1s ease",
+                      }}
+                      onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "#f8fafc")}
+                      onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    >
+                      <td style={{ padding: "14px 16px", fontWeight: 600, color: "#0f172a" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <Building size={16} color="#64748b" />
+                          <span>{cust.name}</span>
+                          <span
+                            data-testid={`customer-status-${key}`}
+                            style={{
+                              fontSize: "0.7rem",
+                              fontWeight: 600,
+                              letterSpacing: "0.02em",
+                              padding: "2px 7px",
+                              borderRadius: 999,
+                              backgroundColor: active ? "#ecfdf5" : "#fef2f2",
+                              color: active ? "#047857" : "#b91c1c",
+                              border: `1px solid ${active ? "#a7f3d0" : "#fecaca"}`,
+                            }}
+                          >
+                            {active ? "Aktif" : "Nonaktif"}
+                          </span>
+                          <span
+                            data-testid={`customer-source-${key}`}
+                            title={cust.source || ""}
+                            style={{
+                              fontSize: "0.7rem",
+                              fontWeight: 600,
+                              letterSpacing: "0.02em",
+                              padding: "2px 7px",
+                              borderRadius: 999,
+                              backgroundColor: isPersistedMaster(cust) ? "#ecfdf5" : "#f1f5f9",
+                              color: isPersistedMaster(cust) ? "#047857" : "#475569",
+                              border: `1px solid ${isPersistedMaster(cust) ? "#a7f3d0" : "#cbd5e1"}`,
+                            }}
+                          >
+                            {sourceLabel(cust)}
+                          </span>
                         </div>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td style={{ padding: "14px 16px", color: "#475569" }}>
-                      {cust.pic || "—"}
-                      {cust.email && (
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#334155" }}>
+                        {cust.phone ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <Phone size={14} color="#059669" />
+                            <span>{cust.phone}</span>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#475569" }}>
+                        {cust.pic || "—"}
+                        {cust.email && (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                              fontSize: "0.775rem",
+                              color: "#64748b",
+                              marginTop: 2,
+                            }}
+                          >
+                            <Mail size={12} />
+                            <span>{cust.email}</span>
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#475569" }}>
+                        {cust.city ? (
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "2px 8px",
+                              backgroundColor: "#f1f5f9",
+                              borderRadius: 4,
+                              fontSize: "0.8rem",
+                              fontWeight: 500,
+                            }}
+                          >
+                            {cust.city}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          padding: "14px 16px",
+                          color: "#475569",
+                          maxWidth: 280,
+                          whiteSpace: "normal",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {cust.address ? (
+                          <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                            <MapPin size={14} color="#64748b" style={{ flexShrink: 0, marginTop: 2 }} />
+                            <span>{cust.address}</span>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          padding: "14px 16px",
+                          color: "#64748b",
+                          maxWidth: 200,
+                          whiteSpace: "normal",
+                          fontSize: "0.8rem",
+                        }}
+                      >
+                        {cust.notes || "—"}
+                      </td>
+                      <td style={{ padding: "14px 16px", textAlign: "center" }}>
                         <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                            fontSize: "0.775rem",
-                            color: "#64748b",
-                            marginTop: 2,
-                          }}
+                          style={{ display: "inline-flex", gap: 6, alignItems: "center", justifyContent: "center" }}
+                          data-testid={`customer-actions-${key}`}
                         >
-                          <Mail size={12} />
-                          <span>{cust.email}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenView(cust)}
+                            data-testid={`btn-view-customer-${key}`}
+                            title="Lihat"
+                            style={actionBtnStyle}
+                          >
+                            <Eye size={14} />
+                            <span className="sr-only">Lihat</span>
+                          </button>
+                          {canEditRow(cust) && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(cust)}
+                              data-testid={`btn-edit-customer-${cust.id || key}`}
+                              title="Edit"
+                              style={actionBtnStyle}
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                          )}
+                          {canToggleStatus(cust) && active && (
+                            <button
+                              type="button"
+                              onClick={() => openStatusConfirm(cust, false)}
+                              data-testid={`btn-deactivate-customer-${key}`}
+                              title="Nonaktifkan"
+                              style={{ ...actionBtnStyle, color: "#b91c1c", borderColor: "#fecaca" }}
+                            >
+                              <PowerOff size={14} />
+                            </button>
+                          )}
+                          {canToggleStatus(cust) && !active && (
+                            <button
+                              type="button"
+                              onClick={() => openStatusConfirm(cust, true)}
+                              data-testid={`btn-activate-customer-${key}`}
+                              title="Aktifkan Kembali"
+                              style={{ ...actionBtnStyle, color: "#047857", borderColor: "#a7f3d0" }}
+                            >
+                              <Power size={14} />
+                            </button>
+                          )}
                         </div>
-                      )}
-                    </td>
-                    <td style={{ padding: "14px 16px", color: "#475569" }}>
-                      {cust.city ? (
-                        <span
-                          style={{
-                            display: "inline-block",
-                            padding: "2px 8px",
-                            backgroundColor: "#f1f5f9",
-                            borderRadius: 4,
-                            fontSize: "0.8rem",
-                            fontWeight: 500,
-                          }}
-                        >
-                          {cust.city}
-                        </span>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td
-                      style={{
-                        padding: "14px 16px",
-                        color: "#475569",
-                        maxWidth: 280,
-                        whiteSpace: "normal",
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      {cust.address ? (
-                        <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-                          <MapPin size={14} color="#64748b" style={{ flexShrink: 0, marginTop: 2 }} />
-                          <span>{cust.address}</span>
-                        </div>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td
-                      style={{
-                        padding: "14px 16px",
-                        color: "#64748b",
-                        maxWidth: 200,
-                        whiteSpace: "normal",
-                        fontSize: "0.8rem",
-                      }}
-                    >
-                      {cust.notes || "—"}
-                    </td>
-                    <td style={{ padding: "14px 16px", textAlign: "center" }}>
-                      {canManage && isPersistedMaster(cust) && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenEdit(cust)}
-                          data-testid={`btn-edit-customer-${cust.id}`}
-                          title="Edit Data Pelanggan"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            width: 32,
-                            height: 32,
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            backgroundColor: "#ffffff",
-                            color: "#334155",
-                            cursor: "pointer",
-                            transition: "all 0.1s ease",
-                          }}
-                          onMouseOver={(e) => {
-                            e.currentTarget.style.backgroundColor = "#f1f5f9";
-                            e.currentTarget.style.borderColor = "#94a3b8";
-                          }}
-                          onMouseOut={(e) => {
-                            e.currentTarget.style.backgroundColor = "#ffffff";
-                            e.currentTarget.style.borderColor = "#cbd5e1";
-                          }}
-                        >
-                          <Edit2 size={14} />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      {/* View detail modal */}
+      {viewCustomer && (
+        <div
+          data-testid="customer-view-modal-backdrop"
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={() => setViewCustomer(null)}
+        >
+          <div
+            data-testid="customer-view-modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: "#ffffff",
+              borderRadius: 14,
+              width: "100%",
+              maxWidth: 560,
+              maxHeight: "92vh",
+              overflowY: "auto",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "16px 20px",
+                borderBottom: "1px solid #e2e8f0",
+              }}
+            >
+              <div>
+                <h2 style={{ fontSize: "1.1rem", fontWeight: 700, margin: 0, color: "#0f172a" }}>
+                  Detail Pelanggan
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "0.8rem", color: "#64748b" }}>
+                  Hanya lihat — tidak mengubah data.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="btn-close-view-customer"
+                onClick={() => setViewCustomer(null)}
+                style={{ background: "transparent", border: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div style={{ padding: "16px 20px" }} data-testid="customer-view-fields">
+              {[
+                ["Nama Pelanggan", viewCustomer.name],
+                ["Status", isCustomerActive(viewCustomer) ? "Aktif" : "Nonaktif"],
+                ["No. HP / WhatsApp", viewCustomer.phone],
+                ["PIC / Kontak", viewCustomer.pic],
+                ["Kota", viewCustomer.city],
+                ["Alamat Lengkap", viewCustomer.address],
+                ["Catatan", viewCustomer.notes],
+                ["Sumber", sourceLabel(viewCustomer)],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "140px 1fr",
+                    gap: 8,
+                    padding: "8px 0",
+                    borderBottom: "1px solid #f1f5f9",
+                    fontSize: "0.875rem",
+                  }}
+                >
+                  <div style={{ color: "#64748b", fontWeight: 600 }}>{label}</div>
+                  <div style={{ color: "#0f172a" }} data-testid={`customer-view-field-${label}`}>
+                    {displayOrDash(value)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Status confirmation */}
+      {statusTarget && (
+        <div
+          data-testid="customer-status-confirm-backdrop"
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1100,
+            padding: 16,
+          }}
+          onClick={statusBusy ? undefined : () => setStatusTarget(null)}
+        >
+          <div
+            data-testid="customer-status-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: "#ffffff",
+              borderRadius: 12,
+              width: "100%",
+              maxWidth: 440,
+              padding: 20,
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px", fontSize: "1.05rem", color: "#0f172a" }}>
+              {statusTarget.nextActive ? "Aktifkan Kembali?" : "Nonaktifkan Pelanggan?"}
+            </h3>
+            <p style={{ margin: "0 0 12px", fontSize: "0.875rem", color: "#475569", lineHeight: 1.5 }}>
+              {statusTarget.nextActive ? (
+                <>
+                  Aktifkan kembali <strong>{statusTarget.customer.name}</strong>?
+                </>
+              ) : (
+                <>
+                  Nonaktifkan <strong>{statusTarget.customer.name}</strong>? Pelanggan tetap ada di
+                  Data Pelanggan dan riwayat penjualan/PO/pembayaran tetap utuh — tidak dihapus.
+                </>
+              )}
+            </p>
+            {statusError && (
+              <p data-testid="customer-status-error" style={{ color: "#b91c1c", fontSize: "0.85rem" }}>
+                {statusError}
+              </p>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16 }}>
+              <button
+                type="button"
+                data-testid="btn-cancel-status"
+                disabled={statusBusy}
+                onClick={() => setStatusTarget(null)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                data-testid="btn-confirm-status"
+                disabled={statusBusy}
+                onClick={handleConfirmStatus}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: statusTarget.nextActive ? "#0284c7" : "#b91c1c",
+                  color: "#fff",
+                  fontWeight: 600,
+                  cursor: statusBusy ? "not-allowed" : "pointer",
+                  opacity: statusBusy ? 0.7 : 1,
+                }}
+              >
+                {statusBusy
+                  ? "Menyimpan..."
+                  : statusTarget.nextActive
+                    ? "Aktifkan Kembali"
+                    : "Nonaktifkan"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Tambah / Edit Pelanggan */}
       {modalOpen && (
@@ -605,7 +964,6 @@ export default function DataPelanggan() {
               boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
             }}
           >
-            {/* Modal Header */}
             <div
               style={{
                 display: "flex",
@@ -661,7 +1019,6 @@ export default function DataPelanggan() {
               </button>
             </div>
 
-            {/* Modal Form */}
             <form onSubmit={handleFormSubmit} style={{ padding: 24 }}>
               {formError && (
                 <div
@@ -684,7 +1041,6 @@ export default function DataPelanggan() {
                 </div>
               )}
 
-              {/* FormSection: consistent with PesananPenjualan */}
               <FormSection
                 id="customer-master-form"
                 title="Informasi Pelanggan"
@@ -697,7 +1053,6 @@ export default function DataPelanggan() {
                     gap: 16,
                   }}
                 >
-                  {/* Nama Pelanggan */}
                   <div style={{ gridColumn: "1 / -1" }}>
                     <label
                       style={{
@@ -728,7 +1083,6 @@ export default function DataPelanggan() {
                     />
                   </div>
 
-                  {/* No HP / WA */}
                   <div>
                     <label
                       style={{
@@ -759,7 +1113,6 @@ export default function DataPelanggan() {
                     />
                   </div>
 
-                  {/* PIC */}
                   <div>
                     <label
                       style={{
@@ -789,7 +1142,6 @@ export default function DataPelanggan() {
                     />
                   </div>
 
-                  {/* Email */}
                   <div>
                     <label
                       style={{
@@ -819,7 +1171,6 @@ export default function DataPelanggan() {
                     />
                   </div>
 
-                  {/* Kota */}
                   <div>
                     <label
                       style={{
@@ -850,7 +1201,6 @@ export default function DataPelanggan() {
                   </div>
                 </div>
 
-                {/* Alamat Lengkap */}
                 <div style={{ marginTop: 16 }}>
                   <label
                     style={{
@@ -881,7 +1231,6 @@ export default function DataPelanggan() {
                   />
                 </div>
 
-                {/* Catatan Pelanggan */}
                 <div style={{ marginTop: 14 }}>
                   <label
                     style={{
@@ -912,7 +1261,6 @@ export default function DataPelanggan() {
                 </div>
               </FormSection>
 
-              {/* Action Buttons */}
               <div
                 style={{
                   display: "flex",

@@ -20,6 +20,8 @@ PERMISSION_CATALOG = [
     ("PO", "po.delete", "Hapus permanen PO"),
     ("Penjualan", "sales.customer.view", "Lihat Data Pelanggan"),
     ("Penjualan", "sales.customer.manage", "Kelola Data Pelanggan"),
+    ("Penjualan", "sales.customer.edit", "Edit Pelanggan"),
+    ("Penjualan", "sales.customer.manage_status", "Kelola Status Pelanggan"),
     ("Penjualan", "sales_order.view", "Lihat Pesanan Penjualan"),
     ("Penjualan", "sales_order.create", "Buat Pesanan Penjualan"),
     ("Penjualan", "sales.delivery.view", "Lihat Pengiriman Pesanan"),
