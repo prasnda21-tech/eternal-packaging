@@ -1226,7 +1226,7 @@ export default function PesananPenjualan() {
                           </td>
                         )}
                         <td style={{ padding: "10px 12px", fontWeight: 600 }}>
-                          <Link to={`/po/${o.id}`} state={{ po_number: o.po_number }} style={{ color: "#0284c7", textDecoration: "none" }} data-testid={`po-link-${o.po_number}`}>
+                          <Link to={`/po/${o.id}`} state={{ po_number: o.po_number, customer: o.customer }} style={{ color: "#0284c7", textDecoration: "none" }} data-testid={`po-link-${o.po_number}`}>
                             {o.po_number}
                           </Link>
                         </td>
@@ -1282,7 +1282,7 @@ export default function PesananPenjualan() {
                           <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
                             <Link
                               to={`/po/${o.id}`}
-                              state={{ po_number: o.po_number }}
+                              state={{ po_number: o.po_number, customer: o.customer }}
                               data-testid={`btn-view-po-${o.id}`}
                               style={{ display: "inline-block", padding: "4px 8px", background: "#f1f5f9", color: "#334155", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600 }}
                             >

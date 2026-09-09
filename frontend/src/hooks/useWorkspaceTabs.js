@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { registerWorkspaceTabEnricher } from "../lib/workspaceTabEnrichment";
 
 /**
  * Shared workspace tabs: open on route, no duplicates, close + navigate,
@@ -16,8 +17,11 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
   pathRef.current = location.pathname;
   const stateRef = useRef(location.state);
   stateRef.current = location.state;
+  const openOrActivateRef = useRef(openOrActivate);
+  openOrActivateRef.current = openOrActivate;
 
-  useEffect(() => {
+  // Layout phase so /po/:id is in workspace before PODetail child effects run.
+  useLayoutEffect(() => {
     const uid = user?.id || user?.email || user?.sub || null;
     if (!uid) {
       setTabs([]);
@@ -30,7 +34,7 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
     setTabs(openOrActivate(restored, pathRef.current, stateRef.current).tabs);
   }, [user, load, openOrActivate]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!user || !hydratedUser.current) return;
     setTabs((cur) => {
       const { tabs: next, activated } = openOrActivate(cur, location.pathname, location.state);
@@ -44,8 +48,28 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
 
   useEffect(() => {
     if (!user || !hydratedUser.current) return;
+    // Never persist [] — that wipe + remount restores only catalog tabs
+    // (Dashboard / Pesanan Penjualan) and drops po-detail:<order_id>.
+    if (!tabs.length) return;
     save(user, tabs);
   }, [tabs, user, save]);
+
+  // In-place existence + label enrichment (no navigate/replace).
+  // Layout: register before paint so queued PODetail pings flush after hydrate.
+  useLayoutEffect(() => {
+    return registerWorkspaceTabEnricher((pathname, meta) => {
+      if (!hydratedUser.current) return;
+      setTabs((cur) => {
+        const { tabs: next, activated } = openOrActivateRef.current(cur, pathname, meta);
+        if (!activated) return cur;
+        const same = next.length === cur.length && next.every((t, i) => (
+          t.id === cur[i]?.id && t.path === cur[i]?.path && t.label === cur[i]?.label
+          && t.title === cur[i]?.title && t.labelPriority === cur[i]?.labelPriority
+        ));
+        return same ? cur : next;
+      });
+    });
+  }, []);
 
   const activateTab = useCallback((tab) => {
     if (!tab?.path) return;

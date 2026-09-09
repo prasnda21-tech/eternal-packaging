@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useLayoutEffect, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -24,6 +24,7 @@ import { terkirimQtySummary } from "../lib/deliveryHistory";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import { scrollToPoDetailStageIndex } from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
+import { enrichWorkspaceTab } from "../lib/workspaceTabEnrichment";
 import AppendQtyEntries from "../components/AppendQtyEntries";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import { newActionId } from "../lib/workflowEntries";
@@ -36,6 +37,7 @@ import { schedulePoHref } from "../lib/workPanel";
 
 export default function PODetail() {
   const { id } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const { user, hasPerm } = useAuth();
   const [order, setOrder] = useState(null);
@@ -72,6 +74,15 @@ export default function PODetail() {
     setTimeout(() => setToast(""), 2500);
   };
 
+  // INITIAL REGISTRATION (existence only): route /po/:id must create
+  // po-detail:<order_id> even when location.state is null and order is unloaded.
+  // Uses the same openOrActivate bridge — does not change tab identity.
+  useLayoutEffect(() => {
+    if (!id) return;
+    const st = location.state && typeof location.state === "object" ? location.state : {};
+    enrichWorkspaceTab(`/po/${id}`, st);
+  }, [id, location.state]);
+
   useEffect(() => {
     api.getOrder(id).then((d) => setOrder(d.order)).catch((e) => {
       // Workflow 06-12 bugfix: never setErr(object) — React akan crash render
@@ -82,6 +93,21 @@ export default function PODetail() {
       else setErr("Gagal memuat PO");
     }).finally(() => setLoading(false));
   }, [id]);
+
+  // Enrich the EXISTING dynamic PO tab label in place after order load.
+  // Do NOT navigate/replace — that previously raced the workspace tab lifecycle
+  // (and could replay a stale order.id across /po/:id changes), making the PO
+  // history tab disappear or fight route registration.
+  useEffect(() => {
+    if (!order?.id || !id || String(order.id) !== String(id)) return;
+    const customer = String(order.customer || "").trim();
+    const poNumber = String(order.po_number || "").trim();
+    if (!customer && !poNumber) return;
+    enrichWorkspaceTab(`/po/${order.id}`, {
+      ...(poNumber ? { po_number: poNumber } : {}),
+      ...(customer ? { customer } : {}),
+    });
+  }, [id, order?.id, order?.customer, order?.po_number]);
 
   useEffect(() => {
     setScreenerDraft("");

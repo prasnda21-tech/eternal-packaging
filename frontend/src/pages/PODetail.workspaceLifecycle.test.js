@@ -152,11 +152,11 @@ const flush = async () => {
   });
 };
 
-function makeOrder(id, poNumber) {
+function makeOrder(id, poNumber, customer) {
   return {
     id,
     po_number: poNumber,
-    customer: `Customer ${id}`,
+    customer: customer || `Customer ${id}`,
     outlet: "Outlet",
     current_stage: 0,
     status: "draft",
@@ -194,11 +194,26 @@ function ListPage() {
   return (
     <div data-testid="pesanan-penjualan-page">
       Pesanan Penjualan
-      <Link to="/po/ord-a" state={{ po_number: "PO/2026/09/09/000018" }} data-testid="lihat-po-a">
+      <Link
+        to="/po/ord-a"
+        state={{ po_number: "PO/2026/09/09/000018", customer: "WELCOME TO PLEASURE" }}
+        data-testid="lihat-po-a"
+      >
         Lihat PO A
       </Link>
-      <Link to="/po/ord-b" state={{ po_number: "PO/2026/09/09/000017" }} data-testid="lihat-po-b">
+      <Link
+        to="/po/ord-b"
+        state={{ po_number: "PO/2026/09/09/000017", customer: "PT ABC" }}
+        data-testid="lihat-po-b"
+      >
         Lihat PO B
+      </Link>
+      <Link
+        to="/po/ord-c"
+        state={{ po_number: "PO/2026/09/09/000016", customer: "WELCOME TO PLEASURE" }}
+        data-testid="lihat-po-c"
+      >
+        Lihat PO C same customer
       </Link>
     </div>
   );
@@ -238,11 +253,15 @@ describe("PO workspace tab render lifecycle", () => {
     api.listSalesReceipts.mockReset();
     api.listSalesReceipts.mockResolvedValue({ receipts: [] });
     api.getOrder.mockImplementation((id) => Promise.resolve({
-      order: makeOrder(id, id === "ord-b" ? "PO/2026/09/09/000017" : "PO/2026/09/09/000018"),
+      order: makeOrder(
+        id,
+        id === "ord-b" ? "PO/2026/09/09/000017" : id === "ord-c" ? "PO/2026/09/09/000016" : "PO/2026/09/09/000018",
+        id === "ord-b" ? "PT ABC" : "WELCOME TO PLEASURE",
+      ),
     }));
   });
 
-  test("CASE 1 — return to same PO tab without navigation state still renders detail", async () => {
+  test("CASE 1 — return to same PO tab without navigation state still renders detail and keeps customer label", async () => {
     const view = renderApp(["/penjualan/pesanan-penjualan"]);
     await flush();
     await act(async () => {
@@ -252,6 +271,9 @@ describe("PO workspace tab render lifecycle", () => {
     expect(view.container.querySelector("[data-testid='po-detail-page']")).toBeTruthy();
     expect(view.container.querySelector("[data-testid='detail-po-number']").textContent).toBe("PO/2026/09/09/000018");
     expect(view.container.querySelector("[data-testid='shell-path']").textContent).toBe("/po/ord-a");
+    expect(
+      view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').textContent,
+    ).toBe("WELCOME TO PLEASURE");
 
     await act(async () => {
       view.container.querySelector('[data-testid="workspace-tab-pesanan-penjualan"] .kb-workspace-tab-label').click();
@@ -265,10 +287,12 @@ describe("PO workspace tab render lifecycle", () => {
     });
     await flush();
     expect(view.container.querySelector("[data-testid='shell-path']").textContent).toBe("/po/ord-a");
-    expect(view.container.querySelector("[data-testid='shell-state']").textContent).toBe("");
     expect(view.container.querySelector("[data-testid='app-shell']")).toBeTruthy();
     expect(view.container.querySelector("[data-testid='po-detail-page']")).toBeTruthy();
     expect(view.container.querySelector("[data-testid='detail-po-number']").textContent).toBe("PO/2026/09/09/000018");
+    expect(
+      view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').textContent,
+    ).toBe("WELCOME TO PLEASURE");
     view.unmount();
   });
 
@@ -288,6 +312,9 @@ describe("PO workspace tab render lifecycle", () => {
     });
     await flush();
     expect(view.container.querySelector("[data-testid='detail-po-number']").textContent).toBe("PO/2026/09/09/000017");
+    expect(
+      view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-b"] .kb-workspace-tab-label').textContent,
+    ).toBe("PT ABC");
 
     await act(async () => {
       view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').click();
@@ -325,17 +352,19 @@ describe("PO workspace tab render lifecycle", () => {
     view.unmount();
   });
 
-  test("CASE 4 — direct /po/:id without navigation state renders detail from route param", async () => {
+  test("CASE 4 — direct /po/:id without navigation state renders detail and enriches customer label", async () => {
     const view = renderApp(["/po/ord-a"]);
     await flush();
-    expect(view.container.querySelector("[data-testid='shell-state']").textContent).toBe("");
     expect(view.container.querySelector("[data-testid='po-detail-page']")).toBeTruthy();
     expect(api.getOrder).toHaveBeenCalledWith("ord-a");
     expect(view.container.querySelector("[data-testid='detail-po-number']").textContent).toBe("PO/2026/09/09/000018");
+    expect(
+      view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').textContent,
+    ).toBe("WELCOME TO PLEASURE");
     view.unmount();
   });
 
-  test("CASE 5 — restored PO tab with null location.state still resolves", async () => {
+  test("CASE 5 — restored PO tab with null location.state still resolves and keeps customer label", async () => {
     const view = renderApp(["/penjualan/pesanan-penjualan"]);
     await flush();
     await act(async () => {
@@ -346,12 +375,47 @@ describe("PO workspace tab render lifecycle", () => {
 
     const restored = renderApp(["/penjualan/pesanan-penjualan"]);
     await flush();
+    expect(
+      restored.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').textContent,
+    ).toBe("WELCOME TO PLEASURE");
     await act(async () => {
       restored.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').click();
     });
     await flush();
     expect(restored.container.querySelector("[data-testid='shell-path']").textContent).toBe("/po/ord-a");
     expect(restored.container.querySelector("[data-testid='po-detail-page']")).toBeTruthy();
+    expect(
+      restored.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label').textContent,
+    ).toBe("WELCOME TO PLEASURE");
     restored.unmount();
+  });
+
+  test("same customer different PO keeps two distinct tabs", async () => {
+    const view = renderApp(["/penjualan/pesanan-penjualan"]);
+    await flush();
+    await act(async () => {
+      view.container.querySelector('[data-testid="lihat-po-a"]').click();
+    });
+    await flush();
+    await act(async () => {
+      view.container.querySelector('[data-testid="workspace-tab-pesanan-penjualan"] .kb-workspace-tab-label').click();
+    });
+    await flush();
+    await act(async () => {
+      view.container.querySelector('[data-testid="lihat-po-c"]').click();
+    });
+    await flush();
+    const a = view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-a"] .kb-workspace-tab-label');
+    const c = view.container.querySelector('[data-testid="workspace-tab-po-detail:ord-c"] .kb-workspace-tab-label');
+    expect(a.textContent).toBe("WELCOME TO PLEASURE");
+    expect(c.textContent).toBe("WELCOME TO PLEASURE");
+    expect(view.container.querySelectorAll('[data-testid^="workspace-tab-po-detail:"]')).toHaveLength(2);
+    expect(view.container.querySelector("[data-testid='detail-po-number']").textContent).toBe("PO/2026/09/09/000016");
+    await act(async () => {
+      a.click();
+    });
+    await flush();
+    expect(view.container.querySelector("[data-testid='detail-po-number']").textContent).toBe("PO/2026/09/09/000018");
+    view.unmount();
   });
 });
