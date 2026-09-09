@@ -21,6 +21,7 @@ from services.purchase_common import (
     now_iso,
     parse_qty,
     qty_le,
+    remaining_qty,
 )
 from services.purchase_orders import get_purchase_order
 from services.physical_stock_engine import (
@@ -179,7 +180,16 @@ async def list_purchase_goods_receipts(
 
 
 async def allocate_accurate_receipt_line(db, payload: Dict[str, Any], user: dict) -> dict:
-    """Overlay only — Accurate receipt documents are not mutated."""
+    """Overlay only — Accurate receipt documents are not mutated.
+
+    Integrity rules:
+    - allocated_qty > 0 (via parse_qty)
+    - allocated_qty <= remaining PO receivable qty (GR lokal + prior allocations)
+    - allocated_qty <= remaining Accurate line qty (received - prior allocations of same line)
+    - Accurate line must exist and receipt must be valid
+    - Item identity must match when both sides have accurate_item_id / master_item_id
+    Does NOT write physical stock or Stock Saat Ini.
+    """
     accurate_receipt_id = str(payload.get("accurate_receipt_id") or "").strip()
     accurate_line_id = str(payload.get("accurate_line_id") or "").strip()
     po_id = str(payload.get("purchase_order_id") or "").strip()
@@ -194,20 +204,79 @@ async def allocate_accurate_receipt_line(db, payload: Dict[str, Any], user: dict
             if existing:
                 return existing
 
+        acc = await db.accurate_purchase_receipts.find_one(
+            {"accurate_receipt_id": accurate_receipt_id}, {"_id": 0}
+        )
+        if not acc:
+            raise HTTPException(400, f"Penerimaan Accurate '{accurate_receipt_id}' tidak ditemukan.")
+        if acc.get("valid") is False:
+            raise HTTPException(400, "Penerimaan Accurate tidak valid / nonaktif; alokasi ditolak.")
+
+        acc_line = next(
+            (
+                li for li in (acc.get("lines") or [])
+                if str(li.get("accurate_line_id") or "").strip() == accurate_line_id
+            ),
+            None,
+        )
+        if acc_line is None:
+            raise HTTPException(400, "Baris penerimaan Accurate tidak ditemukan pada dokumen tersebut.")
+
         preview = await get_po_receipt_preview(db, po_id)
         src = next((l for l in preview["lines"] if str(l["purchase_order_line_id"]) == po_line_id), None)
         if src is None:
             raise HTTPException(400, "Baris Pesanan Pembelian tidak ditemukan.")
+
+        # Item identity: reject mismatch when both sides carry the same ID kind.
+        acc_aid = str(acc_line.get("accurate_item_id") or "").strip()
+        src_aid = str(src.get("accurate_item_id") or "").strip()
+        if acc_aid and src_aid and acc_aid != src_aid:
+            raise HTTPException(
+                400,
+                f"Item tidak cocok: Accurate item '{acc_aid}' ≠ PO line item '{src_aid}'.",
+            )
+        acc_mid = str(acc_line.get("master_item_id") or "").strip()
+        src_mid = str(src.get("master_item_id") or "").strip()
+        if acc_mid and src_mid and acc_mid != src_mid:
+            raise HTTPException(
+                400,
+                f"Item tidak cocok: master item '{acc_mid}' ≠ PO line master '{src_mid}'.",
+            )
+
+        prior_allocs = await db[ALLOC_COLLECTION].find(
+            {
+                "accurate_receipt_id": accurate_receipt_id,
+                "accurate_line_id": accurate_line_id,
+            },
+            {"_id": 0, "allocated_qty": 1},
+        ).to_list(5000)
+        prior_allocated = sum(float(a.get("allocated_qty") or 0) for a in prior_allocs)
+        remaining_accurate = remaining_qty(acc_line.get("received_qty"), prior_allocated)
+
         qty = parse_qty(payload.get("allocated_qty", payload.get("received_qty")), "Qty alokasi")
-        remain = float(src["remaining_receivable_qty"] or 0)
-        if not qty_le(qty, remain):
-            raise HTTPException(400, f"Qty alokasi ({qty}) melebihi sisa PO ({remain}).")
+        remain_po = float(src["remaining_receivable_qty"] or 0)
+        if not qty_le(qty, remain_po):
+            raise HTTPException(400, f"Qty alokasi ({qty}) melebihi sisa PO ({remain_po}).")
+        if not qty_le(qty, remaining_accurate):
+            raise HTTPException(
+                400,
+                f"Qty alokasi ({qty}) melebihi sisa qty penerimaan Accurate ({remaining_accurate}).",
+            )
+
+        max_allocatable = min(remain_po, remaining_accurate)
+        if not qty_le(qty, max_allocatable):
+            raise HTTPException(
+                400,
+                f"Qty alokasi ({qty}) melebihi batas alokasi ({max_allocatable}).",
+            )
 
         ts = now_iso()
         doc = {
             "id": str(uuid.uuid4()),
             "accurate_receipt_id": accurate_receipt_id,
             "accurate_line_id": accurate_line_id,
+            "accurate_item_id": acc_aid,
+            "master_item_id": src_mid or acc_mid,
             "purchase_order_id": preview["purchase_order_id"],
             "purchase_order_line_id": po_line_id,
             "po_number": preview["po_number"],

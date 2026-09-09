@@ -304,3 +304,118 @@ async def test_manual_purchase_receipt_http_create_get_zero_write_unauthorized()
             assert res.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_allocate_respects_accurate_remaining_and_item_identity():
+    """Allocate: max = min(remaining_po, remaining_accurate); wrong item rejected."""
+    aid = f"acc-{uuid.uuid4().hex[:8]}"
+    line_id = f"aline-{uuid.uuid4().hex[:6]}"
+    await server.db.accurate_purchase_receipts.delete_many({"accurate_receipt_id": aid})
+    await server.db.accurate_purchase_receipts.insert_one({
+        "accurate_receipt_id": aid,
+        "receipt_number": "AR-TEST-1",
+        "receipt_date": "2026-09-09",
+        "valid": True,
+        "source": "accurate",
+        "lines": [{
+            "accurate_line_id": line_id,
+            "accurate_item_id": "9001",
+            "received_qty": 10,
+        }],
+    })
+    async with await client_ctx() as c:
+        try:
+            req = await make_request(c, [{
+                "item_name": "Board",
+                "requested_qty": 10,
+                "accurate_item_id": "9001",
+            }])
+            po = (await c.post("/api/purchase-orders", json={
+                "request_id": req["id"],
+                "supplier": "S",
+                "lines": [{"request_line_id": req["lines"][0]["line_id"], "ordered_qty": 10, "unit_price": 100}],
+            })).json()["order"]
+            po_line = po["lines"][0]["line_id"]
+
+            # Wrong Accurate line id
+            bad_line = await c.post("/api/purchase-receipts/allocate", json={
+                "accurate_receipt_id": aid,
+                "accurate_line_id": "missing-line",
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": po_line,
+                "allocated_qty": 1,
+            })
+            assert bad_line.status_code == 400
+
+            # Wrong PO line id
+            bad_po_line = await c.post("/api/purchase-receipts/allocate", json={
+                "accurate_receipt_id": aid,
+                "accurate_line_id": line_id,
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": "not-a-po-line",
+                "allocated_qty": 1,
+            })
+            assert bad_po_line.status_code == 400
+
+            # Wrong item identity
+            await server.db.accurate_purchase_receipts.update_one(
+                {"accurate_receipt_id": aid},
+                {"$set": {"lines.0.accurate_item_id": "9999"}},
+            )
+            wrong_item = await c.post("/api/purchase-receipts/allocate", json={
+                "accurate_receipt_id": aid,
+                "accurate_line_id": line_id,
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": po_line,
+                "allocated_qty": 1,
+            })
+            assert wrong_item.status_code == 400
+            await server.db.accurate_purchase_receipts.update_one(
+                {"accurate_receipt_id": aid},
+                {"$set": {"lines.0.accurate_item_id": "9001"}},
+            )
+
+            ok = await c.post("/api/purchase-receipts/allocate", json={
+                "accurate_receipt_id": aid,
+                "accurate_line_id": line_id,
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": po_line,
+                "allocated_qty": 6,
+                "idempotency_key": f"alloc-{uuid.uuid4()}",
+            })
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["allocation"]["allocated_qty"] == 6
+
+            # Exceed remaining Accurate (4 left)
+            over_acc = await c.post("/api/purchase-receipts/allocate", json={
+                "accurate_receipt_id": aid,
+                "accurate_line_id": line_id,
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": po_line,
+                "allocated_qty": 5,
+            })
+            assert over_acc.status_code == 400
+
+            # GR + allocate cannot exceed PO ordered
+            gr = await c.post("/api/purchase-goods-receipts", json={
+                "purchase_order_id": po["id"],
+                "lines": [{"purchase_order_line_id": po_line, "received_qty": 4}],
+            })
+            assert gr.status_code == 200, gr.text
+            # remaining PO = 0 after allocate 6 + GR 4
+            over_po = await c.post("/api/purchase-receipts/allocate", json={
+                "accurate_receipt_id": aid,
+                "accurate_line_id": line_id,
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": po_line,
+                "allocated_qty": 1,
+            })
+            assert over_po.status_code == 400
+
+            detail = (await c.get(f"/api/purchase-orders/{po['id']}")).json()["order"]
+            assert detail["lines"][0]["cumulative_received_qty"] == 10
+            assert detail["receiving_status"] == "DITERIMA"
+        finally:
+            app.dependency_overrides.pop(current_user, None)
+            await server.db.accurate_purchase_receipts.delete_many({"accurate_receipt_id": aid})
