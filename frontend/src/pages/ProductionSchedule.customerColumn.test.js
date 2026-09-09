@@ -21,6 +21,14 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toContain("customer");
   });
 
+  test("Tanggal Pengerjaan cell formats with shared display helper only", () => {
+    expect(cellsSrc).toMatch(/formatDisplayDate/);
+    expect(cellsSrc).toMatch(/formatWorkDateDisplay/);
+    expect(cellsSrc).toMatch(/case "work_date":\s*return <WorkDateCell/);
+    expect(cellsSrc).not.toMatch(/\{entry\.work_date \|\| "—"\}/);
+    expect(cellsSrc).not.toMatch(/\{displayDate\}/);
+  });
+
   test("customer cell stays canonical and outlet stays a separate column", () => {
     expect(cellsSrc).toMatch(/case "customer":\s*return <strong>\{row\.customer \|\| "-"\}<\/strong>/);
     expect(cellsSrc).toMatch(/case "outlet":\s*return row\.outlet \|\| "-"/);

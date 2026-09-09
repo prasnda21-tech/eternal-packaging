@@ -203,7 +203,8 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.textContent).toContain("Budi");
     expect(container.textContent).toContain("Sari");
     expect(container.textContent).toContain("Cup 16oz");
-    expect(container.textContent).toContain("2026-08-25");
+    expect(container.textContent).toContain("25/08/26");
+    expect(container.textContent).not.toContain("2026-08-25");
     expect(container.textContent).toContain("Belum Dijadwalkan");
     expect(container.textContent).toContain("0 / 25.000");
     expect(container.textContent).toContain("25.000");
@@ -218,6 +219,67 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.getOrder).not.toHaveBeenCalled();
     expect(api.listOrders).not.toHaveBeenCalled();
     expect(api.productionExport).not.toHaveBeenCalled();
+  });
+
+  test("Tanggal Pengerjaan displays DD/MM/YY without mutating raw work_date", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          po_number: "PO-A",
+          work_date: "2026-09-09",
+          operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: "2026-09-09" }],
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2026-09-09" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-b",
+          po_number: "PO-B",
+          work_date: "2026-01-05",
+          operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: "2026-01-05" }],
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2026-01-05" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-c",
+          po_number: "PO-C",
+          work_date: "2025-12-31",
+          operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: "2025-12-31" }],
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2025-12-31" }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-d",
+          po_number: "PO-D",
+          work_date: "2026-09-09T00:00:00Z",
+          operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: "2026-09-09T00:00:00Z" }],
+          operators: [{ ...sampleRows[0].operators[0], work_date: "2026-09-09T00:00:00Z" }],
+        },
+        {
+          ...sampleRows[1],
+          po_number: "PO-E",
+          work_date: null,
+        },
+      ],
+      total: 5,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-A"]').textContent).toContain("09/09/26");
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-B"]').textContent).toContain("05/01/26");
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-C"]').textContent).toContain("31/12/25");
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-D"]').textContent).toContain("09/09/26");
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-E"]').textContent).toContain("Belum Dijadwalkan");
+    expect(container.textContent).not.toContain("2026-09-09");
+    expect(container.textContent).not.toContain("2026-01-05");
+    expect(container.textContent).not.toContain("2025-12-31");
+    const payload = await api.productionDashboard.mock.results[0].value;
+    expect(payload.rows.map((r) => r.work_date)).toEqual([
+      "2026-09-09",
+      "2026-01-05",
+      "2025-12-31",
+      "2026-09-09T00:00:00Z",
+      null,
+    ]);
   });
 
   test("empty canonical dataset shows Belum ada jadwal produksi", async () => {

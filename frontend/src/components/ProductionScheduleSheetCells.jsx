@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { XCircle } from "lucide-react";
-import { formatDate } from "../lib/constants";
+import { formatDate, formatDisplayDate } from "../lib/constants";
 import { formatIdQty, operatorPrintableItems } from "../lib/productionScheduleQty";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
@@ -41,15 +41,24 @@ function DeadlineShipCell({ row, variant }) {
   );
 }
 
+/** Display-only Tanggal Pengerjaan (dd/mm/yy). Empty/invalid keeps the existing cell empty token. */
+function formatWorkDateDisplay(value) {
+  if (value == null || String(value).trim() === "") return "";
+  const formatted = formatDisplayDate(value);
+  if (!formatted || formatted === "-") return "";
+  return formatted;
+}
+
 function WorkDateCell({ row, variant }) {
   const displayDate = row.displayOperatorKey
     ? (row.displayWorkDate || row.work_date)
     : null;
   if (row.displayOperatorKey) {
-    if (displayDate) {
+    const formatted = formatWorkDateDisplay(displayDate);
+    if (formatted) {
       return (
         <span data-testid={variant === "desktop" ? `prod-order-work-date-${row.po_number}` : undefined}>
-          {displayDate}
+          {formatted}
         </span>
       );
     }
@@ -62,14 +71,15 @@ function WorkDateCell({ row, variant }) {
         className="prod-date-line"
         data-testid={variant === "desktop" ? `prod-op-work-date-${row.po_number}-${i}` : undefined}
       >
-        {entry.work_date || "—"}
+        {formatWorkDateDisplay(entry.work_date) || "—"}
       </div>
     ));
   }
-  if (row.work_date) {
+  const formatted = formatWorkDateDisplay(row.work_date);
+  if (formatted) {
     return (
       <span data-testid={variant === "desktop" ? `prod-order-work-date-${row.po_number}` : undefined}>
-        {row.work_date}
+        {formatted}
       </span>
     );
   }
