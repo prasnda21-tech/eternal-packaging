@@ -180,6 +180,7 @@ from services.division_tasks import (
     DIVISION_DEFS as _DIVISION_TASK_DEFS,
     TASK_PROJECTION as _DIVISION_TASK_PROJECTION,
     build_division_tasks as _build_division_tasks,
+    enrich_tasks_current_stock as _enrich_tasks_current_stock,
     can_view_all_division as _can_view_all_division,
     po_needs_loading_task as _po_needs_loading_task,
     resolve_division as _resolve_division,
@@ -2849,6 +2850,10 @@ async def work_division_tasks(
     for o in raw:
         _attach_deadline_snapshot(o, lead_days)
     tasks = _build_division_tasks(raw, div, user, mine_only=mine_only)
+    # Kepala Produksi: one batch Persediaan read-model lookup (no N+1, no writes).
+    if div == "kepala_produksi":
+        stock_rows, _, _ = await _load_stock_context()
+        _enrich_tasks_current_stock(tasks, stock_rows)
     return {
         "division": div,
         "slug": cfg["slug"],

@@ -8,6 +8,7 @@ export const DIVISION_TASK_PAGES = {
     title: "TUGAS KEPALA PRODUKSI",
     qtyCols: true,
     extra: "schedule",
+    showCurrentStock: true,
     targetLabel: "Qty Item Cetak",
     doneLabel: "Sudah Dijadwalkan",
     remainLabel: "Belum Dijadwalkan",
@@ -34,6 +35,12 @@ export function formatIdQty(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
   return v.toLocaleString("id-ID");
+}
+
+/** Persediaan stock cell: null/undefined → —; exact 0 → "0". Never coerce null to 0. */
+export function formatCurrentStock(n) {
+  if (n === null || n === undefined || n === "") return "—";
+  return formatIdQty(n);
 }
 
 export function statusTone(code) {
