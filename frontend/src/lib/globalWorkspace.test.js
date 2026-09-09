@@ -97,8 +97,9 @@ describe("global workspace tabs", () => {
     const r = openOrActivateGlobalTab([], "/not-a-sidebar-page");
     expect(r.tabs).toEqual([]);
     expect(r.activated).toBe(null);
-    expect(globalTabByPath("/po/abc")).toBe(null);
     expect(globalTabByPath("/administrasi-karyawan/pengajuan/99")).toBe(null);
+    expect(globalTabByPath("/po/abc/kerja")).toBe(null);
+    expect(globalTabByPath("/not-a-sidebar-page")).toBe(null);
   });
 
   test("module coverage includes one leaf per active sidebar group", () => {
@@ -171,5 +172,119 @@ describe("global workspace tabs", () => {
     const onlySales = (key) => key === NAV_KEYS.settings || key === "settings.sales_accounting.view";
     expect(loadGlobalWorkspaceTabs(user, onlySales).map((t) => t.path)).toEqual(["/settings/sales-accounting"]);
     expect(openOrActivateGlobalTab([], "/settings/payroll-accounting", onlySales).activated).toBe(null);
+  });
+
+  test("CASE 1 — Lihat PO A opens a PO workspace tab", () => {
+    const list = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    const r = openOrActivateGlobalTab(list.tabs, "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    expect(r.activated.id).toBe("po-detail:ord-a");
+    expect(r.activated.path).toBe("/po/ord-a");
+    expect(r.activated.label).toBe("PO 000018");
+    expect(r.tabs.map((t) => t.id)).toEqual(["pesanan-penjualan", "po-detail:ord-a"]);
+  });
+
+  test("CASE 2 — second PO adds a tab and becomes active", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-b", () => true, { po_number: "PO/2026/09/09/000017" });
+    expect(r.tabs.map((t) => t.id)).toEqual(["pesanan-penjualan", "po-detail:ord-a", "po-detail:ord-b"]);
+    expect(r.activated.id).toBe("po-detail:ord-b");
+    expect(r.activated.label).toBe("PO 000017");
+  });
+
+  test("CASE 3 — third PO coexists with A and B", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-b");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-c");
+    expect(r.tabs.map((t) => t.id)).toEqual([
+      "pesanan-penjualan",
+      "po-detail:ord-a",
+      "po-detail:ord-b",
+      "po-detail:ord-c",
+    ]);
+  });
+
+  test("CASE 4 — opening the same PO focuses existing tab without duplicate", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    r = openOrActivateGlobalTab(r.tabs, "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    expect(r.tabs.filter((t) => t.id === "po-detail:ord-a")).toHaveLength(1);
+    expect(r.activated.id).toBe("po-detail:ord-a");
+    expect(r.tabs.map((t) => t.id)).toEqual(["pesanan-penjualan", "po-detail:ord-a"]);
+  });
+
+  test("CASE 5 — switching tabs uses exact order identity", () => {
+    let r = openOrActivateGlobalTab([], "/po/ord-a");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-b");
+    const a = openOrActivateGlobalTab(r.tabs, "/po/ord-a");
+    expect(a.activated.path).toBe("/po/ord-a");
+    expect(a.activated.id).toBe("po-detail:ord-a");
+    const b = openOrActivateGlobalTab(a.tabs, "/po/ord-b");
+    expect(b.activated.path).toBe("/po/ord-b");
+    expect(b.activated.id).toBe("po-detail:ord-b");
+  });
+
+  test("CASE 6 — close inactive PO removes only that tab", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-b");
+    const closed = closeGlobalTab(r.tabs, "po-detail:ord-a", "/po/ord-b");
+    expect(closed.tabs.map((t) => t.id)).toEqual(["pesanan-penjualan", "po-detail:ord-b"]);
+    expect(closed.navigateTo).toBe(null);
+  });
+
+  test("CASE 7 — close active PO uses existing neighbor fallback", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-b");
+    const closed = closeGlobalTab(r.tabs, "po-detail:ord-b", "/po/ord-b");
+    expect(closed.tabs.map((t) => t.id)).toEqual(["pesanan-penjualan", "po-detail:ord-a"]);
+    expect(closed.navigateTo).toBe("/po/ord-a");
+  });
+
+  test("CASE 8 — same customer different order_id stay two tabs", () => {
+    const a = openOrActivateGlobalTab([], "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    const b = openOrActivateGlobalTab(a.tabs, "/po/ord-b", () => true, { po_number: "PO/2026/09/09/000017" });
+    expect(b.tabs).toHaveLength(2);
+    expect(b.tabs[0].id).not.toBe(b.tabs[1].id);
+    expect(b.tabs.map((t) => t.path).sort()).toEqual(["/po/ord-a", "/po/ord-b"]);
+  });
+
+  test("CASE 9 — compact PO label from slash serial", () => {
+    const r = openOrActivateGlobalTab([], "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    expect(r.activated.label).toBe("PO 000018");
+    const full = openOrActivateGlobalTab([], "/po/ord-x", () => true, { po_number: "TASK-SCREEN-SIZE-01" });
+    expect(full.activated.label).toBe("TASK-SCREEN-SIZE-01");
+  });
+
+  test("CASE 10 — Pesanan Penjualan tab is not duplicated when opening POs", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a");
+    r = openOrActivateGlobalTab(r.tabs, "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-b");
+    r = openOrActivateGlobalTab(r.tabs, "/penjualan/pesanan-penjualan");
+    expect(r.tabs.filter((t) => t.id === "pesanan-penjualan")).toHaveLength(1);
+    expect(r.activated.id).toBe("pesanan-penjualan");
+  });
+
+  test("CASE 11 — direct /po/:id route opens a tab and nested kerja does not", () => {
+    const direct = openOrActivateGlobalTab([], "/po/ord-a");
+    expect(direct.activated.path).toBe("/po/ord-a");
+    expect(globalTabByPath("/po/ord-a").id).toBe("po-detail:ord-a");
+    const nested = openOrActivateGlobalTab(direct.tabs, "/po/ord-a/kerja");
+    expect(nested.activated).toBe(null);
+    expect(nested.tabs.map((t) => t.id)).toEqual(["po-detail:ord-a"]);
+  });
+
+  test("PO workspace tabs persist with catalog tabs in sessionStorage", () => {
+    let r = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    r = openOrActivateGlobalTab(r.tabs, "/po/ord-a", () => true, { po_number: "PO/2026/09/09/000018" });
+    saveGlobalWorkspaceTabs(user, r.tabs);
+    const restored = loadGlobalWorkspaceTabs(user);
+    expect(restored.map((t) => t.id)).toEqual(["pesanan-penjualan", "po-detail:ord-a"]);
+    expect(restored[1].label).toBe("PO 000018");
+    expect(restored[1].path).toBe("/po/ord-a");
   });
 });

@@ -84,6 +84,7 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/viewMode === "create"/);
     expect(src).toMatch(/viewMode === "list"/);
     expect(src).toMatch(/to=\{`\/po\/\$\{o\.id\}`\}/);
+    expect(src).toMatch(/state=\{\{ po_number: o\.po_number \}\}/);
     expect(src).toMatch(/Lihat PO/);
   });
 

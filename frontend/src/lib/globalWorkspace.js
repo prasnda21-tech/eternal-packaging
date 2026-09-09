@@ -18,6 +18,7 @@ import {
 import { CASH_BANK_WORKSPACE_TABS } from "./cashBankWorkspace";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 import { createWorkspaceTabApi } from "./workspaceTabs";
+import { hydratePoDetailStoredTab, poDetailWorkspaceTab } from "./poWorkspaceTab";
 
 export const GLOBAL_WORKSPACE_STORAGE_PREFIX = "ep.workspaceTabs.";
 
@@ -94,12 +95,16 @@ export function createGlobalWorkspaceApi(hasPerm) {
   return createWorkspaceTabApi({
     catalog: visibleGlobalWorkspaceCatalog(hasPerm),
     storagePrefix: GLOBAL_WORKSPACE_STORAGE_PREFIX,
+    dynamicFromPath: poDetailWorkspaceTab,
+    resolveStoredTab: hydratePoDetailStoredTab,
   });
 }
 
 const fullApi = createWorkspaceTabApi({
   catalog: GLOBAL_WORKSPACE_TABS,
   storagePrefix: GLOBAL_WORKSPACE_STORAGE_PREFIX,
+  dynamicFromPath: poDetailWorkspaceTab,
+  resolveStoredTab: hydratePoDetailStoredTab,
 });
 
 export function globalTabByPath(pathname) {
@@ -122,8 +127,8 @@ export function clearGlobalWorkspaceTabs(user) {
   return fullApi.clear(user);
 }
 
-export function openOrActivateGlobalTab(tabs, pathname, hasPerm = () => true) {
-  return createGlobalWorkspaceApi(hasPerm).openOrActivate(tabs, pathname);
+export function openOrActivateGlobalTab(tabs, pathname, hasPerm = () => true, meta) {
+  return createGlobalWorkspaceApi(hasPerm).openOrActivate(tabs, pathname, meta);
 }
 
 export function closeGlobalTab(tabs, closeId, activePath, hasPerm = () => true) {
