@@ -69,4 +69,18 @@ describe("MobileTasksPage sorting", () => {
     expect(ids).toEqual(["mobile-task-C", "mobile-task-D", "mobile-task-A", "mobile-task-B"]);
     expect(ids).toHaveLength(4);
   });
+
+  test("sorts URGENT then H-1 then existing work_date order", async () => {
+    api.divisionTasks.mockResolvedValue({
+      tasks: [
+        { task_id: "N", order_id: "n", order_number: "PO-N", work_date: "2026-09-07", urgent: false, delivery_deadline_status: "normal", item: "Cup", target_qty: 1, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+        { task_id: "H", order_id: "h", order_number: "PO-H", work_date: "2026-09-10", urgent: false, delivery_deadline_status: "h1", item: "Cup", target_qty: 1, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+        { task_id: "U", order_id: "u", order_number: "PO-U", work_date: "2026-09-11", urgent: true, delivery_deadline_status: "normal", item: "Cup", target_qty: 1, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+      ],
+    });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    const ids = [...container.querySelectorAll("a.mop-card")].map((el) => el.getAttribute("data-testid"));
+    expect(ids).toEqual(["mobile-task-U", "mobile-task-H", "mobile-task-N"]);
+  });
 });

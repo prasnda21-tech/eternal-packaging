@@ -6,6 +6,7 @@ import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
   productionSheetCellClassName,
 } from "../lib/productionScheduleTable";
+import { isProductionScheduleH1, isProductionScheduleUrgent } from "../lib/productionSchedulePriority";
 
 function DeadlineShipCell({ row, variant }) {
   if (!row.delivery_deadline_effective) {
@@ -34,8 +35,8 @@ function DeadlineShipCell({ row, variant }) {
       {row.delivery_deadline_status === "h6" && (
         <span className="urgent-badge" data-testid={statusTestId}>≤6 JAM</span>
       )}
-      {row.delivery_deadline_status === "h1" && (
-        <span className="standard-badge" style={{ background: "#fef4d6", color: "#7a5a1e" }} data-testid={statusTestId}>H-1</span>
+      {isProductionScheduleH1(row) && (
+        <span className="standard-badge prod-h1-badge" data-testid={statusTestId}>H-1</span>
       )}
     </>
   );
@@ -170,7 +171,7 @@ function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref })
     case "work_date":
       return <WorkDateCell row={row} variant={variant} />;
     case "prio":
-      return row.urgent ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>;
+      return isProductionScheduleUrgent(row) ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>;
     case "buffer":
       return row.buffer_stock
         ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span>

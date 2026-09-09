@@ -10,6 +10,7 @@ import {
   taskScopeQtyLabel,
   taskWorkDateLabel,
 } from "../../lib/mobileTaskCard";
+import ProductionSchedulePriorityBadges from "../../components/ProductionSchedulePriorityBadges";
 
 export default function MobileTaskCard({ task, workspaceId }) {
   const status = mobileWorkStatus(task.completed_qty, task.target_qty);
@@ -24,7 +25,10 @@ export default function MobileTaskCard({ task, workspaceId }) {
       data-testid={`mobile-task-${task.task_id || task.order_number}`}
       data-line-idx={task.line_idx ?? ""}
     >
-      <div className="mop-card-kicker">{task.order_number}</div>
+      <div className="mop-card-kicker-row">
+        <div className="mop-card-kicker">{task.order_number}</div>
+        <ProductionSchedulePriorityBadges row={task} testIdPrefix="mobile-task-priority" />
+      </div>
       <div className="mop-card-title">{getCanonicalCustomerName(task)}</div>
       <div className="mop-task-facts">
         <div className="mop-task-fact" data-testid="mobile-task-operator">

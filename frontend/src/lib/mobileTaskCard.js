@@ -1,6 +1,7 @@
 import { formatDisplayDate } from "./constants";
 import { formatIdQty } from "./divisionTasks";
 import { toDateKey } from "./productionScheduleFilters";
+import { productionSchedulePriorityRank } from "./productionSchedulePriority";
 
 export const TASK_OPERATOR_EMPTY = "Belum ditentukan";
 export const TASK_WORK_DATE_EMPTY = "Belum Dijadwalkan";
@@ -76,6 +77,9 @@ function identityKey(task) {
 export function sortOperationalTasks(tasks) {
   const list = Array.isArray(tasks) ? tasks : [];
   return [...list].sort((a, b) => {
+    const ar = productionSchedulePriorityRank(a);
+    const br = productionSchedulePriorityRank(b);
+    if (ar !== br) return ar - br;
     const aw = toDateKey(a?.work_date);
     const bw = toDateKey(b?.work_date);
     if (Boolean(aw) !== Boolean(bw)) return aw ? -1 : 1;

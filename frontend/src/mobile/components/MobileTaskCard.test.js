@@ -247,4 +247,118 @@ describe("MobileTaskCard schedule fields", () => {
     expect(container.querySelector('[data-testid="mobile-task-qty"]').textContent).not.toContain("pcs");
     expect(container.textContent).toContain("Belum Mulai");
   });
+
+  test("CASE 1 — URGENT task shows URGENT badge", () => {
+    renderCard({
+      task_id: "operator:po-u:0:s1",
+      order_id: "po-u",
+      order_number: "PO-URG",
+      urgent: true,
+      delivery_deadline_status: "normal",
+      item: "Cup",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-priority-urgent"]').textContent).toBe("URGENT");
+    expect(container.querySelector('[data-testid="mobile-task-priority-h1"]')).toBeNull();
+  });
+
+  test("CASE 2 — H-1 task shows H-1 badge", () => {
+    renderCard({
+      task_id: "helper:po-h:0:-",
+      order_id: "po-h",
+      order_number: "PO-H1",
+      urgent: false,
+      delivery_deadline_status: "h1",
+      item: "Cup",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-priority-h1"]').textContent).toBe("H-1");
+    expect(container.querySelector('[data-testid="mobile-task-priority-urgent"]')).toBeNull();
+  });
+
+  test("CASE 3 — normal task has no urgency badge", () => {
+    renderCard({
+      task_id: "screener:po-n:po:-",
+      order_id: "po-n",
+      order_number: "PO-N",
+      urgent: false,
+      delivery_deadline_status: "normal",
+      item: "Cup",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-priority"]')).toBeNull();
+  });
+
+  test("CASE 4 — dual URGENT + H-1 matches schedule (both badges, URGENT first)", () => {
+    renderCard({
+      task_id: "operator:po-both:0:s1",
+      order_id: "po-both",
+      order_number: "PO-BOTH",
+      urgent: true,
+      delivery_deadline_status: "h1",
+      item: "Cup",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    });
+    const badges = [...container.querySelectorAll("[data-testid^='mobile-task-priority-']")].map((el) => el.textContent);
+    expect(badges).toEqual(["URGENT", "H-1"]);
+  });
+
+  test("CASE 5 — terkirim/completed is not H-1", () => {
+    renderCard({
+      task_id: "packing:po-done:0:-",
+      order_id: "po-done",
+      order_number: "PO-DONE",
+      urgent: false,
+      delivery_deadline_status: "terkirim",
+      item: "Cup",
+      target_qty: 10,
+      completed_qty: 10,
+      status: "selesai",
+      status_label: "Selesai",
+    });
+    expect(container.querySelector('[data-testid="mobile-task-priority"]')).toBeNull();
+  });
+
+  test("CASE 6 — same-name lines keep independent badges", () => {
+    const line0 = {
+      task_id: "helper:po-4:0:-",
+      order_id: "po-4",
+      order_number: "PO-1004",
+      item: "Cup 16oz",
+      line_idx: 0,
+      urgent: true,
+      delivery_deadline_status: "normal",
+      target_qty: 10,
+      completed_qty: 0,
+      status: "belum",
+    };
+    const line2 = {
+      ...line0,
+      task_id: "helper:po-4:2:-",
+      line_idx: 2,
+      urgent: false,
+      delivery_deadline_status: "h1",
+    };
+    act(() => {
+      root.render(
+        <>
+          <MobileTaskCard task={line0} workspaceId="prep" />
+          <MobileTaskCard task={line2} workspaceId="prep" />
+        </>,
+      );
+    });
+    const cards = container.querySelectorAll("a.mop-card");
+    expect(cards[0].querySelector('[data-testid="mobile-task-priority-urgent"]')).toBeTruthy();
+    expect(cards[0].querySelector('[data-testid="mobile-task-priority-h1"]')).toBeNull();
+    expect(cards[1].querySelector('[data-testid="mobile-task-priority-h1"]')).toBeTruthy();
+    expect(cards[1].querySelector('[data-testid="mobile-task-priority-urgent"]')).toBeNull();
+  });
 });

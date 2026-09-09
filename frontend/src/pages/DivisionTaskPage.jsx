@@ -12,6 +12,7 @@ import {
   taskMatchesStatus,
   taskWorkHref,
 } from "../lib/divisionTasks";
+import ProductionSchedulePriorityBadges from "../components/ProductionSchedulePriorityBadges";
 
 const STATUS_TABS = [
   { key: "semua", label: "Semua" },
@@ -138,7 +139,11 @@ export default function DivisionTaskPage() {
             )}
             {rows.map((t) => (
               <tr key={t.task_id} data-testid={`division-task-row-${t.order_number}`}>
-                <td className="mono">{t.order_number}</td>
+                <td className="mono">
+                  <span>{t.order_number}</span>
+                  {" "}
+                  <ProductionSchedulePriorityBadges row={t} testIdPrefix={`division-task-priority-${t.task_id || t.order_number}`} />
+                </td>
                 <td>{t.customer_name || "—"}</td>
                 <td>{t.item || "—"}</td>
                 {cfg.extra === "design" && <td data-testid={`division-task-design-${t.order_number}`}>{t.design_status_label || t.design_status || "—"}</td>}
