@@ -6,6 +6,7 @@ import MobileTasksPage from "./mobile/MobileTasksPage";
 import MobileOrdersPage from "./mobile/MobileOrdersPage";
 import MobileOrderDetailPage from "./mobile/MobileOrderDetailPage";
 import MobileProductionSchedulePage from "./mobile/MobileProductionSchedulePage";
+import MobileDeliverySchedulePage from "./mobile/MobileDeliverySchedulePage";
 import MobileNotificationsPage from "./mobile/MobileNotificationsPage";
 import MobileProfilePage from "./mobile/MobileProfilePage";
 import AppShell from "./components/AppShell";
@@ -194,6 +195,7 @@ export default function App() {
             <Route path="/m/orders" element={<MobileOrdersPage />} />
             <Route path="/m/orders/:id" element={<MobileOrderDetailPage />} />
             <Route path="/m/schedule" element={<MobileProductionSchedulePage />} />
+            <Route path="/m/delivery-schedule" element={<MobileDeliverySchedulePage />} />
             <Route path="/m/notifications" element={<MobileNotificationsPage />} />
             <Route path="/m/chat" element={<MobileChatPage />} />
             <Route path="/m/chat/:roomId" element={<MobileChatRoomPage />} />

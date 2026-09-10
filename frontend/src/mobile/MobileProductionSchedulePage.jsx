@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Download } from "lucide-react";
+import { Download, Filter } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatApiError } from "../lib/errors";
@@ -12,22 +12,34 @@ import {
   applyProductionFilters,
   isScheduledToday,
   productionFiltersAreActive,
-  sortProductionRows,
 } from "../lib/productionScheduleFilters";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
 import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
 import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
-import {
-  PRODUCTION_SCHEDULE_TABLE_COLS,
-  productionSheetColumnStyle,
-} from "../lib/productionScheduleTable";
+import { productionSheetColumnStyle } from "../lib/productionScheduleTable";
+import { MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/mobileProductionScheduleCols";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import {
   canViewMobileSchedule,
-  mobileScheduleHref,
   mobileProductionDashboardParams,
   rowsFromProductionDashboard,
 } from "../lib/mobileSchedule";
+import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
+import {
+  OPS_QUICK_FILTERS,
+  productionOpsBadge,
+  productionQuickMatch,
+  sortByOpsQueue,
+  productionQueueRank,
+} from "../lib/mobileOpsQueue";
+import {
+  MOBILE_PROD_FILTER_KEY,
+  MOBILE_PROD_SCROLL_KEY,
+  readJsonSession,
+  readScrollSession,
+  writeJsonSession,
+  writeScrollSession,
+} from "../lib/mobileOpsSession";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import MobileTopBar from "./MobileTopBar";
 
@@ -47,24 +59,43 @@ export default function MobileProductionSchedulePage() {
   const { hasPerm } = useAuth();
   const allowed = canViewMobileSchedule(hasPerm);
   const canExport = hasPerm("dashboard.production.export");
+  const saved = readJsonSession(MOBILE_PROD_FILTER_KEY, {
+    q: FILTER_DEFAULTS.q,
+    includeCancelled: FILTER_DEFAULTS.includeCancelled,
+    includeCompleted: FILTER_DEFAULTS.includeCompleted,
+    quick: "semua_aktif",
+  });
   const [rows, setRows] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(allowed);
   const [reloadKey, setReloadKey] = useState(0);
-  const [q, setQ] = useState(FILTER_DEFAULTS.q);
-  const [sortBy, setSortBy] = useState(FILTER_DEFAULTS.sortBy);
-  const [includeCancelled, setIncludeCancelled] = useState(FILTER_DEFAULTS.includeCancelled);
-  const [includeCompleted, setIncludeCompleted] = useState(FILTER_DEFAULTS.includeCompleted);
+  const [q, setQ] = useState(saved.q ?? FILTER_DEFAULTS.q);
+  const [includeCancelled, setIncludeCancelled] = useState(Boolean(saved.includeCancelled));
+  const [includeCompleted, setIncludeCompleted] = useState(
+    saved.includeCompleted == null ? FILTER_DEFAULTS.includeCompleted : Boolean(saved.includeCompleted),
+  );
+  const [quick, setQuick] = useState(saved.quick || "semua_aktif");
+  const [filterOpen, setFilterOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const sheetZoom = useProductionSheetZoom();
+  const scrollRestored = useRef(false);
 
   const filterState = {
     ...FILTER_DEFAULTS,
     q,
-    sortBy,
+    sortBy: FILTER_DEFAULTS.sortBy,
     includeCancelled,
     includeCompleted,
   };
+
+  useEffect(() => {
+    writeJsonSession(MOBILE_PROD_FILTER_KEY, {
+      q,
+      includeCancelled,
+      includeCompleted,
+      quick,
+    });
+  }, [q, includeCancelled, includeCompleted, quick]);
 
   useEffect(() => {
     if (!allowed) {
@@ -96,24 +127,42 @@ export default function MobileProductionSchedulePage() {
   }, [allowed, includeCancelled, includeCompleted, reloadKey]);
 
   const filtered = useMemo(
-    () => applyProductionFilters(rows, filterState),
-    [rows, q, includeCancelled, includeCompleted],
+    () => applyProductionFilters(rows, filterState).filter((r) => productionQuickMatch(r, quick)),
+    [rows, q, includeCancelled, includeCompleted, quick],
   );
-  const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
+  const sorted = useMemo(() => sortByOpsQueue(filtered, productionQueueRank), [filtered]);
   const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
   const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
-  const filtersActive = productionFiltersAreActive(filterState);
+  const filtersActive = productionFiltersAreActive(filterState) || quick !== "semua_aktif";
+
+  useLayoutEffect(() => {
+    if (loading || scrollRestored.current) return;
+    const el = sheetZoom.viewportRef?.current;
+    const savedScroll = readScrollSession(MOBILE_PROD_SCROLL_KEY);
+    if (el && savedScroll) {
+      el.scrollLeft = savedScroll.left;
+      el.scrollTop = savedScroll.top;
+    }
+    scrollRestored.current = true;
+  }, [loading, sheetZoom.viewportRef, displayRows.length]);
+
+  const persistScroll = () => {
+    const el = sheetZoom.viewportRef?.current;
+    if (!el) return;
+    writeScrollSession(MOBILE_PROD_SCROLL_KEY, el.scrollLeft, el.scrollTop);
+  };
 
   const resetFilters = () => {
     setQ(FILTER_DEFAULTS.q);
-    setSortBy(FILTER_DEFAULTS.sortBy);
     setIncludeCancelled(FILTER_DEFAULTS.includeCancelled);
     setIncludeCompleted(FILTER_DEFAULTS.includeCompleted);
+    setQuick("semua_aktif");
   };
 
-  const cycleSort = (col) => {
-    if (col === "deadline") setSortBy("deadline");
-    else if (col === "work_date") setSortBy((prev) => (prev === "work_date_asc" ? "work_date" : "work_date_asc"));
+  const openRow = (row) => {
+    persistScroll();
+    const href = mobileScheduleWorkHref(row.id, hasPerm, "production");
+    if (href) navigate(href);
   };
 
   const download = async (scope) => {
@@ -151,6 +200,19 @@ export default function MobileProductionSchedulePage() {
         {allowed && (
           <>
             <div className="mop-schedule-toolbar" data-testid="mobile-schedule-toolbar">
+              <div className="mop-ops-quick" data-testid="mobile-schedule-quick-filters">
+                {OPS_QUICK_FILTERS.map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    className={`mop-ops-chip${quick === f.key ? " is-active" : ""}`}
+                    data-testid={`mobile-schedule-quick-${f.key}`}
+                    onClick={() => setQuick(f.key)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
               <ProductionScheduleSearchCluster
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
@@ -181,12 +243,20 @@ export default function MobileProductionSchedulePage() {
               </label>
               <button
                 type="button"
+                className={"mop-btn-ghost" + (filterOpen ? " is-active" : "")}
+                onClick={() => setFilterOpen((v) => !v)}
+                data-testid="mobile-schedule-filter-btn"
+              >
+                <Filter size={12} /> Filter
+              </button>
+              <button
+                type="button"
                 className="mop-btn-ghost mop-schedule-reset"
                 onClick={resetFilters}
-                disabled={!filtersActive && sortBy === FILTER_DEFAULTS.sortBy}
+                disabled={!filtersActive}
                 data-testid="mobile-schedule-reset"
               >
-                Reset Filter
+                Reset
               </button>
               {canExport && (
                 <>
@@ -211,6 +281,13 @@ export default function MobileProductionSchedulePage() {
                 </>
               )}
             </div>
+            {filterOpen && (
+              <div className="mop-ds-filter-panel" data-testid="mobile-schedule-filter-panel" style={{ marginBottom: 6 }}>
+                <p className="mop-topbar-sub" style={{ color: "var(--mop-muted)", margin: 0 }}>
+                  Filter lanjutan memakai pencarian + chip operasional di atas. Checkbox Selesai/Cancelled tetap di toolbar.
+                </p>
+              </div>
+            )}
             {loading && (
               <p className="mop-empty" data-testid="mobile-schedule-loading">Memuat jadwal produksi...</p>
             )}
@@ -237,35 +314,27 @@ export default function MobileProductionSchedulePage() {
                 data-testid="mobile-schedule-scroll"
                 ref={sheetZoom.setViewportRef}
                 style={productionSheetZoomStyle(sheetZoom.zoom)}
+                onScroll={persistScroll}
               >
                 <table
                   className="production-sheet-table"
                   data-testid="mobile-schedule-table"
                 >
                   <colgroup>
-                    {PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => (
+                    {MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => (
                       <col key={col.key} style={productionSheetColumnStyle(col)} />
                     ))}
                   </colgroup>
                   <thead className="production-sheet-header" data-testid="mobile-schedule-thead">
                     <tr>
-                      {PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => (
+                      {MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => (
                         <th
                           key={col.key}
                           scope="col"
                           className={col.num || col.align === "right" || col.type === "qty" ? "num" : ""}
                           style={productionSheetColumnStyle(col)}
                         >
-                          {col.sort ? (
-                            <button
-                              type="button"
-                              className="production-sheet-th-sort mop-schedule-th-sort"
-                              onClick={() => cycleSort(col.sort)}
-                              data-testid={`mobile-schedule-sort-${col.key}`}
-                            >
-                              {col.label}
-                            </button>
-                          ) : col.label}
+                          {col.label}
                         </th>
                       ))}
                     </tr>
@@ -275,8 +344,8 @@ export default function MobileProductionSchedulePage() {
                       const qtyProg = poTotalQtyDisplay(row);
                       const cetakProg = operatorQtyCetakProgress(row, row.displayOperator?.splits);
                       const isToday = isScheduledToday(row);
-                      const href = mobileScheduleHref(row.id);
-                      const open = () => { if (href) navigate(href); };
+                      const href = mobileScheduleWorkHref(row.id, hasPerm, "production");
+                      const badge = productionOpsBadge(row);
                       return (
                         <tr
                           key={row.displayRowKey}
@@ -287,13 +356,13 @@ export default function MobileProductionSchedulePage() {
                           tabIndex={0}
                           onClick={() => {
                             if (sheetZoom.consumeClickSuppression()) return;
-                            open();
+                            openRow(row);
                           }}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
                               if (sheetZoom.consumeClickSuppression()) return;
-                              open();
+                              openRow(row);
                             }
                           }}
                         >
@@ -303,13 +372,15 @@ export default function MobileProductionSchedulePage() {
                             qtyProg={qtyProg}
                             cetakProg={cetakProg}
                             isToday={isToday}
+                            opsBadge={badge}
+                            columns={MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS}
                           />
                         </tr>
                       );
                     })}
                     {!sorted.length && (
                       <tr>
-                        <td colSpan={PRODUCTION_SCHEDULE_TABLE_COLS.length} className="production-sheet-empty mop-schedule-filter-empty">
+                        <td colSpan={MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.length} className="production-sheet-empty mop-schedule-filter-empty">
                           Tidak ada PO cocok dengan filter.
                         </td>
                       </tr>

@@ -16,13 +16,15 @@ describe("mobile route wiring", () => {
   const tasksPage = fs.readFileSync(path.join(__dirname, "../mobile/MobileTasksPage.jsx"), "utf8");
   const schedulePage = fs.readFileSync(path.join(__dirname, "../mobile/MobileProductionSchedulePage.jsx"), "utf8");
   const mobileSchedule = fs.readFileSync(path.join(__dirname, "../lib/mobileSchedule.js"), "utf8");
-  const bottomNav = fs.readFileSync(path.join(__dirname, "../mobile/MobileBottomNav.jsx"), "utf8");
+  const sidebar = fs.readFileSync(path.join(__dirname, "../mobile/MobileSidebar.jsx"), "utf8");
+  const topBar = fs.readFileSync(path.join(__dirname, "../mobile/MobileTopBar.jsx"), "utf8");
 
   test("mobile namespace is outside AppShell", () => {
     expect(app).toMatch(/path="\/m\/tasks"/);
     expect(app).toMatch(/path="\/m\/orders"/);
     expect(app).toMatch(/path="\/m\/orders\/:id"/);
     expect(app).toMatch(/path="\/m\/schedule"/);
+    expect(app).toMatch(/path="\/m\/delivery-schedule"/);
     expect(app).toMatch(/path="\/m\/notifications"/);
     expect(app).toMatch(/path="\/m\/profile"/);
     expect(app).toMatch(/MobileOperationalLayout/);
@@ -46,13 +48,38 @@ describe("mobile route wiring", () => {
     expect(detail).toMatch(/WORKSPACE_VIEWS\[selected\.id\]/);
   });
 
-  test("bottom nav active helper", () => {
+  test("top-left Menu opens left sidebar navigation", () => {
     expect(activeMobileNav("/m/tasks")).toBe("tasks");
     expect(activeMobileNav("/m/schedule")).toBe("schedule");
-    expect(layout).toMatch(/MobileBottomNav/);
-    expect(bottomNav).toMatch(/CalendarDays/);
-    expect(bottomNav.indexOf("orders")).toBeLessThan(bottomNav.indexOf("schedule"));
-    expect(bottomNav.indexOf("schedule")).toBeLessThan(bottomNav.indexOf("notifications"));
+    expect(activeMobileNav("/m/delivery-schedule")).toBe("deliverySchedule");
+    expect(layout).toMatch(/MobileSidebar/);
+    expect(layout).toMatch(/MobileNavProvider/);
+    expect(layout).not.toMatch(/MobileBottomNav/);
+    expect(topBar).toMatch(/mobile-nav-menu/);
+    expect(topBar).toMatch(/Menu/);
+    expect(sidebar).toMatch(/mop-sidebar/);
+    expect(sidebar).toMatch(/Jadwal Pengiriman|deliverySchedule/);
+    expect(sidebar).not.toMatch(/mop-menu-popup/);
+  });
+
+  test("delivery schedule page reuses canonical schedule API and production sheet zoom", () => {
+    const dsPage = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliverySchedulePage.jsx"), "utf8");
+    const dsLib = fs.readFileSync(path.join(__dirname, "../lib/mobileDeliverySchedule.js"), "utf8");
+    expect(dsPage).toMatch(/api\.deliverySchedule/);
+    expect(dsPage).toMatch(/matchesDeliveryScheduleFilters/);
+    expect(dsPage).toMatch(/EMPTY_DELIVERY_FILTERS/);
+    expect(dsPage).toMatch(/useProductionSheetZoom/);
+    expect(dsPage).toMatch(/production-sheet-viewport/);
+    expect(dsPage).toMatch(/canViewMobileDeliverySchedule/);
+    expect(dsPage).toMatch(/canEditMobileDeliveryScheduleLocation/);
+    expect(dsPage).toMatch(/mobileScheduleWorkHref/);
+    expect(dsPage).toMatch(/OPS_QUICK_FILTERS|mds-quick/);
+    expect(dsPage).toMatch(/qty_packed|PackingCell|packingProgressText/);
+    expect(dsPage).toMatch(/MOBILE_DELIVERY_FILTER_KEY|writeJsonSession/);
+    expect(dsLib).toMatch(/delivery\.location\.manage/);
+    expect(dsLib).toMatch(/NAV_KEYS\.deliverySchedule/);
+    expect(dsPage).not.toMatch(/roleName\s*===\s*['"]driver['"]/);
+    expect(app).toMatch(/MobileDeliverySchedulePage/);
   });
 
   test("PWA customer labels never fall back to outlet", () => {
@@ -114,7 +141,7 @@ describe("mobile route wiring", () => {
     expect(schedulePage).toMatch(/if \(!cancelled\) setLoading\(false\)/);
     expect(schedulePage).toMatch(/canViewMobileSchedule/);
     expect(schedulePage).toMatch(/production-sheet-table/);
-    expect(schedulePage).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS/);
+    expect(schedulePage).toMatch(/MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS/);
     expect(schedulePage).toMatch(/applyProductionFilters/);
     expect(schedulePage).toMatch(/FILTER_DEFAULTS/);
     expect(schedulePage).not.toMatch(/className="mop-card"/);
@@ -137,6 +164,18 @@ describe("mobile route wiring", () => {
     expect(appCss).not.toMatch(/mop-sched-zoom/);
     expect(mobileCss).not.toMatch(/mop-schedule-zoom-btn/);
     expect(mobileCss).not.toMatch(/--mop-sched-zoom/);
+  });
+
+  test("task navigation uses compact Pilih Tugas dropdown, not horizontal chips", () => {
+    expect(tasksPage).toMatch(/MobileWorkspaceSelect/);
+    expect(tasksPage).toMatch(/permittedMobileWorkspaces/);
+    expect(tasksPage).not.toMatch(/mop-ws-tabs/);
+    expect(detail).toMatch(/MobileWorkspaceSelect/);
+    expect(detail).toMatch(/po\.view/);
+    expect(detail).toMatch(/mobile-po-ringkasan/);
+    expect(detail).toMatch(/Ringkasan PO/);
+    const selectSrc = fs.readFileSync(path.join(__dirname, "../mobile/components/MobileWorkspaceSelect.jsx"), "utf8");
+    expect(selectSrc).toMatch(/Pilih Tugas/);
   });
 
   test("tasks page uses one division-tasks request and sorts without extra fetches", () => {

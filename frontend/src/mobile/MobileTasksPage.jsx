@@ -6,6 +6,7 @@ import { sortOperationalTasks } from "../lib/mobileTaskCard";
 import { permittedMobileWorkspaces, taskSummaryFromList } from "../lib/mobileWorkspaces";
 import MobileTopBar from "./MobileTopBar";
 import MobileTaskCard from "./components/MobileTaskCard";
+import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 
 export default function MobileTasksPage() {
   const { user, hasPerm } = useAuth();
@@ -65,18 +66,11 @@ export default function MobileTasksPage() {
           <div className="mop-summary-cell"><span>Menunggu</span><strong>{summary.menunggu}</strong></div>
         </div>
         {workspaces.length > 0 && (
-          <div className="mop-ws-tabs" data-testid="mobile-workspace-tabs">
-            {workspaces.map((ws) => (
-              <button
-                key={ws.id}
-                type="button"
-                className={`mop-ws-tab${selected?.id === ws.id ? " is-active" : ""}`}
-                onClick={() => setWsId(ws.id)}
-              >
-                {ws.label}
-              </button>
-            ))}
-          </div>
+          <MobileWorkspaceSelect
+            workspaces={workspaces}
+            value={selected?.id}
+            onChange={setWsId}
+          />
         )}
         {busy && !tasks.length && <p className="mop-empty">Memuat tugas...</p>}
         {err && <div className="mop-error">{err}</div>}

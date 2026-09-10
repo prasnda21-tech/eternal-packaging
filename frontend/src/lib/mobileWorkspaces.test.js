@@ -114,19 +114,24 @@ describe("mobile cards and nav", () => {
     expect(activeMobileNav("/m/tasks")).toBe("tasks");
     expect(activeMobileNav("/m/orders/123?ws=print")).toBe("orders");
     expect(activeMobileNav("/m/schedule")).toBe("schedule");
+    expect(activeMobileNav("/m/delivery-schedule")).toBe("deliverySchedule");
     expect(activeMobileNav("/m/notifications")).toBe("notifications");
     expect(activeMobileNav("/m/profile")).toBe("profile");
     expect(activeMobileNav("/po/123")).toBe(null);
   });
 
-  test("Jadwal Produksi nav is permission gated, not role-name gated", () => {
+  test("Jadwal Produksi and Jadwal Pengiriman nav are permission gated, not role-name gated", () => {
     expect(visibleMobileNavItems((p) => p === "schedule.view").map((i) => i.id))
-      .toEqual(["tasks", "orders", "schedule", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "schedule", "deliverySchedule", "notifications", "profile"]);
     expect(visibleMobileNavItems((p) => p === "nav.production_schedule").map((i) => i.id))
       .toEqual(["tasks", "orders", "schedule", "notifications", "profile"]);
+    expect(visibleMobileNavItems((p) => p === "nav.delivery_schedule").map((i) => i.id))
+      .toEqual(["tasks", "orders", "deliverySchedule", "notifications", "profile"]);
     expect(visibleMobileNavItems((p) => p === "operator.update").map((i) => i.id))
       .toEqual(["tasks", "orders", "notifications", "profile"]);
     expect(visibleMobileNavItems((p) => p === "admin").map((i) => i.id))
+      .toEqual(["tasks", "orders", "notifications", "profile"]);
+    expect(visibleMobileNavItems((p) => p === "driver").map((i) => i.id))
       .toEqual(["tasks", "orders", "notifications", "profile"]);
   });
 
