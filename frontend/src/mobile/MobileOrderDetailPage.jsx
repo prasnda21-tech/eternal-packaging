@@ -7,6 +7,7 @@ import { formatDeadline } from "../lib/constants";
 import { poCardPresentation, selectMobileWorkspace } from "../lib/mobileWorkspaces";
 import MobileTopBar from "./MobileTopBar";
 import MobileStageFlow from "./components/MobileStageFlow";
+import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 import MobileScreenerWorkspace from "./workspaces/MobileScreenerWorkspace";
 import MobileHelperPrepWorkspace from "./workspaces/MobileHelperPrepWorkspace";
 import MobilePackingWorkspace from "./workspaces/MobilePackingWorkspace";
@@ -35,6 +36,7 @@ export default function MobileOrderDetailPage() {
   const choice = selectMobileWorkspace(hasPerm, requested);
   const selected = choice.selected;
   const fromTask = Boolean(location.state?.fromTask || requested);
+  const canViewPoSummary = hasPerm("po.view");
   const [order, setOrder] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -86,26 +88,22 @@ export default function MobileOrderDetailPage() {
         )}
         {order && (
           <>
-            <div className="mop-meta-grid">
-              <div data-testid="mobile-order-customer"><span>Customer</span><strong>{getCanonicalCustomerName(order)}</strong></div>
-              <div><span>Product</span><strong>{card.product}</strong></div>
-              <div><span>Qty</span><strong>{card.qty != null ? Number(card.qty).toLocaleString("id-ID") : (card.lines.length ? card.lines.map((l) => l.qty).join(" / ") : "—")}</strong></div>
-              <div><span>Deadline</span><strong>{formatDeadline(order.deadline) !== "-" ? formatDeadline(order.deadline) : (order.work_date || "—")}</strong></div>
-            </div>
-            <MobileStageFlow order={order} />
-            {choice.permitted.length > 1 && (
-              <div className="mop-ws-tabs">
-                {choice.permitted.map((ws) => (
-                  <button
-                    key={ws.id}
-                    type="button"
-                    className={`mop-ws-tab${selected?.id === ws.id ? " is-active" : ""}`}
-                    onClick={() => setParams({ ws: ws.id }, { replace: true })}
-                  >
-                    {ws.label}
-                  </button>
-                ))}
+            {canViewPoSummary ? (
+              <div className="mop-meta-grid" data-testid="mobile-po-ringkasan">
+                <div className="mop-meta-grid-head" data-testid="mobile-po-ringkasan-title">Ringkasan PO</div>
+                <div data-testid="mobile-order-customer"><span>Customer</span><strong>{getCanonicalCustomerName(order)}</strong></div>
+                <div><span>Product</span><strong>{card.product}</strong></div>
+                <div><span>Qty</span><strong>{card.qty != null ? Number(card.qty).toLocaleString("id-ID") : (card.lines.length ? card.lines.map((l) => l.qty).join(" / ") : "—")}</strong></div>
+                <div><span>Deadline</span><strong>{formatDeadline(order.deadline) !== "-" ? formatDeadline(order.deadline) : (order.work_date || "—")}</strong></div>
               </div>
+            ) : null}
+            <MobileStageFlow order={order} />
+            {choice.permitted.length > 0 && (
+              <MobileWorkspaceSelect
+                workspaces={choice.permitted}
+                value={selected?.id}
+                onChange={(wsId) => setParams({ ws: wsId }, { replace: true })}
+              />
             )}
             {choice.unauthorized && <p className="mop-card-meta">Workspace diminta tidak diizinkan. Menampilkan workspace yang tersedia.</p>}
             {Workspace ? (

@@ -249,4 +249,5 @@ def test_schedule_row_embeds_canonical_shipment_percents():
     assert row["percent_ready_to_ship"] == 75
     assert row["percent_ready_to_ship_display"] == 75
     assert row["qty_delivered"] == 5000
+    assert row["qty_packed"] == 100
     assert row["item_label"] == "Cetak"  # still in API; UI may omit column

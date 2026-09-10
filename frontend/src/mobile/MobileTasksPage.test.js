@@ -68,6 +68,45 @@ describe("MobileTasksPage sorting", () => {
     const ids = [...container.querySelectorAll("a.mop-card")].map((el) => el.getAttribute("data-testid"));
     expect(ids).toEqual(["mobile-task-C", "mobile-task-D", "mobile-task-A", "mobile-task-B"]);
     expect(ids).toHaveLength(4);
+    expect(container.querySelector('[data-testid="mobile-workspace-select"]')).toBeTruthy();
+    expect(container.textContent).toContain("Pilih Tugas");
+    expect(container.querySelector(".mop-ws-tabs")).toBeFalsy();
+  });
+
+  test("Helper dropdown lists only granted prep/packing/loading workspaces", async () => {
+    mockHasPerm.mockImplementation((p) => ["helper.prepare", "packing.update", "loading.update"].includes(p));
+    api.divisionTasks.mockResolvedValue({ tasks: [] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    const select = container.querySelector('[data-testid="mobile-workspace-select-input"]');
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Persiapan Cup", "Packing", "Loading"]);
+    expect([...select.options].map((o) => o.value)).not.toContain("screener");
+    expect([...select.options].map((o) => o.value)).not.toContain("print");
+  });
+
+  test("unauthorized workspace options are absent from dropdown", async () => {
+    mockHasPerm.mockImplementation((p) => p === "screen.update");
+    api.divisionTasks.mockResolvedValue({ tasks: [] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-workspace-select-current"]').textContent).toBe("Screener");
+    expect(container.querySelector("select")).toBeFalsy();
+  });
+
+  test("changing dropdown switches divisionTasks workspace without changing auth role", async () => {
+    mockHasPerm.mockImplementation((p) => ["helper.prepare", "packing.update"].includes(p));
+    api.divisionTasks.mockResolvedValue({ tasks: [] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledWith("helper", "mine");
+    const select = container.querySelector('[data-testid="mobile-workspace-select-input"]');
+    await act(async () => {
+      select.value = "packing";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledWith("packing", "mine");
+    expect(container.textContent).toContain("Operator");
   });
 
   test("sorts URGENT then H-1 then existing work_date order", async () => {

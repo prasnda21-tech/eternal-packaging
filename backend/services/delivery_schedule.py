@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from services.dashboard_today import wib_today
 from services.shipment_status import shipment_status_row
+from quantity_rules import qty_packed
 
 STATUS_PENDING = "pending"
 STATUS_SCHEDULED = "scheduled"
@@ -52,6 +53,8 @@ SCHEDULE_PROJECTION = {
     "shipments.number": 1,
     "shipments.lines": 1,
     "loading_checklist.driver_name": 1,
+    "packing_info": 1,
+    "priority": 1,
     "cancelled": 1,
 }
 
@@ -184,6 +187,11 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
     code = schedule_status_code(order, today)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
+    sj_numbers = []
+    for sh in order.get("shipments") or []:
+        num = str(sh.get("number") or sh.get("sj_number") or "").strip()
+        if num and num not in sj_numbers:
+            sj_numbers.append(num)
     return {
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
@@ -198,12 +206,16 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
         "delivery_status": order.get("delivery_status") or "",
         "qty_total": ship.get("qty_total"),
         "qty_delivered": ship.get("qty_delivered"),
+        "qty_packed": qty_packed(order),
         "qty_printed_operator": ship.get("qty_printed_operator"),
         "print_qty_total": ship.get("print_qty_total"),
         "percent_delivered": ship.get("percent_delivered"),
         "percent_delivered_display": ship.get("percent_delivered_display"),
         "percent_ready_to_ship": ship.get("percent_ready_to_ship"),
         "percent_ready_to_ship_display": ship.get("percent_ready_to_ship_display"),
+        "sj_numbers": sj_numbers,
+        "sj_label": ", ".join(sj_numbers) if sj_numbers else "",
+        "urgent": str(order.get("priority") or "").lower() == "urgent",
     }
 
 

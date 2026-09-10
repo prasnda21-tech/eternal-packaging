@@ -1,12 +1,27 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import MobileBottomNav from "./MobileBottomNav";
+import MobileTopBar from "./MobileTopBar";
+import MobileSidebar from "./MobileSidebar";
+import { MobileNavProvider } from "./MobileNavContext";
+import MobileOperationalLayout from "./MobileOperationalLayout";
 
 const mockHasPerm = jest.fn(() => false);
 
 jest.mock("react-router-dom", () => ({
-  NavLink: ({ to, children, className, ...props }) => (
-    <a href={to} className={className} {...props}>{children}</a>
+  Outlet: () => <div data-testid="outlet" />,
+  useLocation: () => ({ pathname: "/m/orders" }),
+  NavLink: ({ to, children, className, onClick, ...props }) => (
+    <a
+      href={to}
+      className={className}
+      onClick={(e) => {
+        e.preventDefault();
+        onClick?.(e);
+      }}
+      {...props}
+    >
+      {children}
+    </a>
   ),
 }), { virtual: true });
 
@@ -14,11 +29,25 @@ jest.mock("../lib/auth", () => ({
   useAuth: () => ({ hasPerm: (perm) => mockHasPerm(perm) }),
 }));
 
+jest.mock("../lib/api", () => ({
+  __esModule: true,
+  default: {
+    chatUnreadSummary: jest.fn(async () => ({ total_unread: 0 })),
+  },
+}));
+
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
-const navIds = (container) => [...container.querySelectorAll(".mop-nav-btn")].map((el) => el.getAttribute("data-testid"));
+function MenuHarness({ pathname = "/m/orders" }) {
+  return (
+    <MobileNavProvider>
+      <MobileTopBar title="Test" />
+      <MobileSidebar pathname={pathname} />
+    </MobileNavProvider>
+  );
+}
 
-describe("MobileBottomNav", () => {
+describe("PWA left sidebar menu", () => {
   let container;
   let root;
 
@@ -27,7 +56,7 @@ describe("MobileBottomNav", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     mockHasPerm.mockReset();
-    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "nav.delivery_schedule" || p === "chat.use");
   });
 
   afterEach(() => {
@@ -35,74 +64,64 @@ describe("MobileBottomNav", () => {
     container.remove();
   });
 
-  test("authorized nav order is Tugas, PO, Jadwal Produksi, Notifikasi, Profil", async () => {
+  test("menu button top-left opens left sidebar", async () => {
     await act(async () => {
-      root.render(<MobileBottomNav pathname="/m/orders" />);
+      root.render(<MenuHarness />);
     });
-    expect(navIds(container)).toEqual([
-      "mobile-nav-tasks",
-      "mobile-nav-orders",
-      "mobile-nav-schedule",
-      "mobile-nav-notifications",
-      "mobile-nav-profile",
-    ]);
-    expect(container.textContent).toContain("Tugas");
-    expect(container.textContent).toContain("PO");
-    expect(container.textContent).toContain("Jadwal");
-    expect(container.textContent).toContain("Produksi");
-    expect(container.textContent).toContain("Notifikasi");
-    expect(container.textContent).toContain("Profil");
-    expect(container.querySelector('[data-testid="mobile-nav-orders"]').className).toContain("is-active");
-    expect(container.querySelector('[data-testid="mobile-nav-schedule"]').className).not.toContain("is-active");
+    const btn = container.querySelector('[data-testid="mobile-nav-menu"]');
+    expect(btn).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-sidebar"]')).toBeFalsy();
+    await act(async () => {
+      btn.click();
+    });
+    const sidebar = container.querySelector('[data-testid="mobile-sidebar"]');
+    expect(sidebar).toBeTruthy();
+    expect(sidebar.className).toContain("mop-sidebar");
+    expect(container.querySelector('[data-testid="mobile-nav-menu-popup"]')).toBeFalsy();
   });
 
-  test("Jadwal Produksi navigates to /m/schedule", async () => {
+  test("sidebar lists destinations including Jadwal Produksi and Jadwal Pengiriman", async () => {
     await act(async () => {
-      root.render(<MobileBottomNav pathname="/m/orders" />);
+      root.render(<MenuHarness />);
     });
-    expect(container.querySelector('[data-testid="mobile-nav-schedule"]').getAttribute("href")).toBe("/m/schedule");
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-nav-menu"]').click();
+    });
+    expect(container.querySelector('[data-testid="mobile-nav-tasks"]').textContent).toContain("Tugas Saya");
+    expect(container.querySelector('[data-testid="mobile-nav-orders"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-nav-schedule"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-nav-deliverySchedule"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-nav-chat"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-nav-deliverySchedule"]').getAttribute("href")).toBe("/m/delivery-schedule");
   });
 
-  test("PO still navigates to /m/orders", async () => {
+  test("outside tap and route selection close sidebar", async () => {
     await act(async () => {
-      root.render(<MobileBottomNav pathname="/m/tasks" />);
+      root.render(<MenuHarness />);
     });
-    expect(container.querySelector('[data-testid="mobile-nav-orders"]').getAttribute("href")).toBe("/m/orders");
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-nav-menu"]').click();
+    });
+    expect(container.querySelector('[data-testid="mobile-sidebar"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-sidebar-backdrop"]').click();
+    });
+    expect(container.querySelector('[data-testid="mobile-sidebar"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-nav-menu"]').click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-nav-tasks"]').click();
+    });
+    expect(container.querySelector('[data-testid="mobile-sidebar"]')).toBeFalsy();
   });
 
-  test("/m/schedule marks Jadwal Produksi active", async () => {
+  test("layout uses sidebar provider, not bottom-sheet nav", async () => {
     await act(async () => {
-      root.render(<MobileBottomNav pathname="/m/schedule" />);
+      root.render(<MobileOperationalLayout />);
     });
-    expect(container.querySelector('[data-testid="mobile-nav-schedule"]').className).toContain("is-active");
-    expect(container.querySelector('[data-testid="mobile-nav-tasks"]').className).not.toContain("is-active");
-    expect(container.querySelector('[data-testid="mobile-nav-orders"]').className).not.toContain("is-active");
-    expect(container.querySelector('[data-testid="mobile-nav-notifications"]').className).not.toContain("is-active");
-    expect(container.querySelector('[data-testid="mobile-nav-profile"]').className).not.toContain("is-active");
-  });
-
-  test("unauthorized users do not see Jadwal Produksi", async () => {
-    mockHasPerm.mockImplementation((p) => p === "operator.update");
-    await act(async () => {
-      root.render(<MobileBottomNav pathname="/m/orders" />);
-    });
-    expect(container.querySelector('[data-testid="mobile-nav-schedule"]')).toBeFalsy();
-    expect(navIds(container)).toEqual([
-      "mobile-nav-tasks",
-      "mobile-nav-orders",
-      "mobile-nav-notifications",
-      "mobile-nav-profile",
-    ]);
-  });
-
-  test("existing nav routes stay unchanged", async () => {
-    await act(async () => {
-      root.render(<MobileBottomNav pathname="/m/notifications" />);
-    });
-    expect(container.querySelector('[data-testid="mobile-nav-tasks"]').getAttribute("href")).toBe("/m/tasks");
-    expect(container.querySelector('[data-testid="mobile-nav-orders"]').getAttribute("href")).toBe("/m/orders");
-    expect(container.querySelector('[data-testid="mobile-nav-notifications"]').getAttribute("href")).toBe("/m/notifications");
-    expect(container.querySelector('[data-testid="mobile-nav-profile"]').getAttribute("href")).toBe("/m/profile");
-    expect(container.querySelector('[data-testid="mobile-nav-schedule"]').getAttribute("href")).toBe("/m/schedule");
+    expect(container.querySelector('[data-testid="mobile-operational-root"]').className).toContain("mop-root--sidebar");
+    expect(container.querySelector('[data-testid="mobile-bottom-nav"]')).toBeFalsy();
   });
 });

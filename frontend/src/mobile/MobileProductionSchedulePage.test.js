@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
 import { FILTER_DEFAULTS } from "../lib/productionScheduleFilters";
-import { PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/productionScheduleTable";
+import { MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/mobileProductionScheduleCols";
 import {
   PRODUCTION_SHEET_ZOOM_CSS_VAR,
   PRODUCTION_SHEET_ZOOM_DEFAULT,
@@ -65,6 +65,9 @@ const sampleRows = [
     total_quantity: 25000,
     print_qty_total: 20000,
     operator_assigned_qty: 10000,
+    screen_qty: 3000,
+    helper_prepared: 0,
+    helper_required: 25000,
     design_status: "Approved",
     payment_status: "Approved",
     packing_status: "Belum",
@@ -114,6 +117,7 @@ describe("MobileProductionSchedulePage", () => {
     api.getOrder.mockReset();
     api.listOrders.mockReset();
     window.localStorage.clear();
+    window.sessionStorage.clear();
     rafNow = 0;
     jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => (
       window.setTimeout(() => {
@@ -194,7 +198,16 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-schedule-today"]')).toBeFalsy();
     expect(container.textContent).not.toContain("pada tanggal ini");
     const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
-    expect(headers).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
+    expect(headers).toEqual(MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
+    expect(headers).not.toContain("Payment");
+    expect(headers).not.toContain("Packing");
+    expect(headers).not.toContain("Surat Jalan");
+    expect(headers).not.toContain("Driver");
+    expect(headers).not.toContain("Persiapan Screen");
+    expect(headers.filter((h) => h === "Screen")).toHaveLength(1);
+    const qtyIdx = headers.indexOf("Total Qty");
+    expect(headers[qtyIdx + 1]).toBe("Persiapan Cup");
+    expect(headers[qtyIdx + 2]).toBe("Screen");
     expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(2);
     const opNames = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-name')].map((el) => el.textContent);
     expect(opNames).toEqual(["Budi", "Sari"]);
@@ -208,6 +221,8 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.textContent).toContain("Belum Dijadwalkan");
     expect(container.textContent).toContain("0 / 25.000");
     expect(container.textContent).toContain("25.000");
+    expect(container.querySelector('[data-testid="prod-screen-qty-PO-1001"]').textContent).toContain("3.000");
+    expect(container.querySelector('[data-testid="prod-screen-qty-PO-1001"]').textContent).not.toMatch(/\//);
     expect(container.querySelector('[data-testid="mobile-schedule-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-search-btn"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-ringkasan"]')).toBeTruthy();
@@ -371,7 +386,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]')).toBeTruthy();
   });
 
-  test("row click opens mobile PO detail without workspace query", async () => {
+  test("row click opens role-relevant workspace when permitted, else PO detail", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
     const rows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')];
@@ -379,6 +394,11 @@ describe("MobileProductionSchedulePage", () => {
     expect(rows.every((row) => row.getAttribute("data-to") === "/m/orders/po-1")).toBe(true);
     await act(async () => { rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
+
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "screen.update");
+    await renderPage();
+    const screenerRows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')];
+    expect(screenerRows[0].getAttribute("data-to")).toBe("/m/orders/po-1?ws=screener");
   });
 
   test("unauthorized direct URL is blocked and does not render the spreadsheet", async () => {
@@ -506,11 +526,12 @@ describe("MobileProductionSchedulePage", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
   });
 
-  test("PWA Screen column matches desktop labels for the same row payload", async () => {
+  test("PWA Screen column is qty-only and screen_size column is absent", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     api.productionDashboard.mockResolvedValue({
       rows: [{
         ...sampleRows[0],
+        screen_qty: 3000,
         operators: [
           { split_id: "s1", line_idx: 0, line_id: "lid-a", line_name: "Cup 16oz", operator_name: "Budi", quantity: 10000, line_printable: true, screen_size: "large" },
           { split_id: "s2", line_idx: 2, line_id: "lid-b", line_name: "Cup 16oz", operator_name: "Sari", quantity: 500, line_printable: true, screen_size: "small" },
@@ -518,9 +539,11 @@ describe("MobileProductionSchedulePage", () => {
       }],
     });
     await renderPage();
-    expect(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toContain("Screen");
-    const cells = [...container.querySelectorAll('[data-testid^="mobile-schedule-screen-size-PO-1001-"]')];
-    const labels = cells.map((el) => el.textContent.trim());
-    expect(labels).toEqual(expect.arrayContaining(["Screen Besar", "Screen Kecil"]));
+    expect(MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toContain("Screen");
+    expect(MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key)).not.toContain("screen_size");
+    expect(container.querySelectorAll('[data-testid^="mobile-schedule-screen-size-"]').length).toBe(0);
+    const screenCell = container.querySelector('[data-testid="prod-screen-qty-PO-1001"]');
+    expect(screenCell.textContent.trim()).toBe("3.000");
+    expect(screenCell.textContent).not.toContain("/");
   });
 });

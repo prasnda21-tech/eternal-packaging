@@ -171,7 +171,8 @@ function StatusCell({ row }) {
   return <span className="pill sm">{row.status_final}</span>;
 }
 
-function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref }) {
+function cellContent(col, ctx) {
+  const { row, variant, qtyProg, cetakProg, isToday, poHref } = ctx;
   switch (col.key) {
     case "po":
       return variant === "desktop" && poHref ? (
@@ -188,6 +189,9 @@ function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref })
     case "work_date":
       return <WorkDateCell row={row} variant={variant} />;
     case "prio":
+      if (ctx.opsBadge) {
+        return <span className={`mop-ops-badge mop-ops-badge-${ctx.opsBadge.tone}`}>{ctx.opsBadge.label}</span>;
+      }
       return isProductionScheduleUrgent(row) ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>;
     case "buffer":
       return row.buffer_stock
@@ -199,8 +203,15 @@ function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref })
       return <TotalQtyCell qtyProg={qtyProg} />;
     case "screen_size":
       return <ScreenSizeCell row={row} variant={variant} />;
-    case "screen":
-      return row.screen_qty ?? "-";
+    case "screen": {
+      if (row.screen_qty == null || String(row.screen_qty).trim() === "") return "-";
+      const done = Number(row.screen_qty) || 0;
+      return (
+        <span className="mop-qty-progress" data-testid={`prod-screen-qty-${row.po_number}`} title={`Screen ${formatIdQty(done)}`}>
+          <span>{formatIdQty(done)}</span>
+        </span>
+      );
+    }
     case "qty_cetak":
       return cetakProg.text;
     case "operator":
@@ -223,12 +234,25 @@ function cellContent(col, { row, variant, qtyProg, cetakProg, isToday, poHref })
       return row.hold
         ? <span className="pill sm pill-hold" title={(row.hold_reasons || []).join("; ")}>HOLD</span>
         : <span className="muted small">-</span>;
-    case "helper":
-      return row.helper_required != null ? (
-        <span className={row.helper_shortage_status === "Barang Kurang" ? "prod-helper-warn" : ""}>
-          {row.helper_prepared ?? 0}/{row.helper_required} {row.helper_shortage ? `(-${row.helper_shortage})` : ""}
+    case "helper": {
+      if (row.helper_required == null) return <span className="muted">-</span>;
+      const done = Number(row.helper_prepared ?? 0);
+      const target = Number(row.helper_required) || 0;
+      const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
+      return (
+        <span className={`mop-qty-progress${row.helper_shortage_status === "Barang Kurang" ? " prod-helper-warn" : ""}`}>
+          <span>
+            {formatIdQty(done)} / {formatIdQty(target)}
+            {row.helper_shortage ? ` (-${formatIdQty(row.helper_shortage)})` : ""}
+          </span>
+          {target > 0 ? (
+            <span className="mop-qty-progress-bar" aria-hidden>
+              <span className="mop-qty-progress-fill" style={{ width: `${pct}%` }} />
+            </span>
+          ) : null}
         </span>
-      ) : <span className="muted">-</span>;
+      );
+    }
     case "packing":
       return row.packing_status === "Sudah" ? <span className="pill sm pill-ok">Sudah</span> :
         row.packing_status === "Berjalan" ? <span className="pill sm">Berjalan</span> :
@@ -301,9 +325,12 @@ export default function ProductionScheduleSheetCells({
   cetakProg,
   isToday,
   poHref,
+  opsBadge,
+  columns,
 }) {
-  const ctx = { row, variant, qtyProg, cetakProg, isToday, poHref };
-  return PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => {
+  const cols = Array.isArray(columns) && columns.length ? columns : PRODUCTION_SCHEDULE_TABLE_COLS;
+  const ctx = { row, variant, qtyProg, cetakProg, isToday, poHref, opsBadge };
+  return cols.map((col) => {
     const { classExtra, testids } = cellExtras(col, ctx);
     const todayStyle = col.key === "customer" && isToday
       ? { backgroundColor: "#fef08a", color: "#713f12" }

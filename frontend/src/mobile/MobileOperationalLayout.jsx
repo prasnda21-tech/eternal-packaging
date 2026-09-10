@@ -1,15 +1,18 @@
 import { Outlet, useLocation } from "react-router-dom";
-import MobileBottomNav from "./MobileBottomNav";
+import { MobileNavProvider } from "./MobileNavContext";
+import MobileSidebar from "./MobileSidebar";
 import "./mobile.css";
 
 export default function MobileOperationalLayout() {
   const { pathname } = useLocation();
   return (
-    <div className="mop-root" data-testid="mobile-operational-root">
-      <div className="mop-shell">
-        <Outlet />
-        <MobileBottomNav pathname={pathname} />
+    <MobileNavProvider>
+      <div className="mop-root mop-root--sidebar" data-testid="mobile-operational-root">
+        <div className="mop-shell mop-shell--sidebar">
+          <Outlet />
+          <MobileSidebar pathname={pathname} />
+        </div>
       </div>
-    </div>
+    </MobileNavProvider>
   );
 }

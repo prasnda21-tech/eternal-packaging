@@ -1,6 +1,7 @@
 /** Permission-driven mobile operational workspaces. Route/query never grants access. */
 
 import { NAV_KEYS } from "./navAccess";
+import { MOBILE_DELIVERY_SCHEDULE_PATH, MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS } from "./mobileDeliverySchedule";
 
 export const MOBILE_WORKSPACES = [
   { id: "screener", label: "Screener", permission: "screen.update", division: "screener" },
@@ -13,7 +14,7 @@ export const MOBILE_WORKSPACES = [
 ];
 
 export const MOBILE_NAV_ITEMS = [
-  { id: "tasks", label: "Tugas", to: "/m/tasks" },
+  { id: "tasks", label: "Tugas Saya", to: "/m/tasks" },
   { id: "orders", label: "PO", to: "/m/orders" },
   {
     id: "schedule",
@@ -21,6 +22,13 @@ export const MOBILE_NAV_ITEMS = [
     lines: ["Jadwal", "Produksi"],
     to: "/m/schedule",
     anyOf: ["schedule.view", NAV_KEYS.schedule],
+  },
+  {
+    id: "deliverySchedule",
+    label: "Jadwal Pengiriman",
+    lines: ["Jadwal", "Pengiriman"],
+    to: MOBILE_DELIVERY_SCHEDULE_PATH,
+    anyOf: [...MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS],
   },
   { id: "chat", label: "Chat", to: "/m/chat", anyOf: [NAV_KEYS.chat, "chat.use"] },
   { id: "notifications", label: "Notifikasi", to: "/m/notifications" },
@@ -57,9 +65,34 @@ export function mobileTaskHref(orderId, workspaceId) {
   return `${base}?ws=${encodeURIComponent(workspaceId)}`;
 }
 
+/**
+ * Prefer workspace for schedule table row click — permission-based, never role-name.
+ * production → screener / prep / print; delivery → packing / loading / delivery.
+ */
+export function preferredMobileWorkspaceForTable(hasPerm, table) {
+  const permitted = permittedMobileWorkspaces(hasPerm);
+  if (!permitted.length) return null;
+  const order = table === "delivery"
+    ? ["packing", "loading", "delivery"]
+    : ["screener", "prep", "print", "sample"];
+  for (const id of order) {
+    const match = permitted.find((ws) => ws.id === id);
+    if (match) return match;
+  }
+  return permitted[0];
+}
+
+export function mobileScheduleWorkHref(orderId, hasPerm, table) {
+  const ws = preferredMobileWorkspaceForTable(hasPerm, table);
+  return mobileTaskHref(orderId, ws?.id);
+}
+
 export function activeMobileNav(pathname) {
   const path = String(pathname || "");
   if (path.startsWith("/m/orders")) return "orders";
+  if (path.startsWith(MOBILE_DELIVERY_SCHEDULE_PATH) || path.startsWith("/m/delivery-schedule")) {
+    return "deliverySchedule";
+  }
   if (path.startsWith("/m/schedule")) return "schedule";
   if (path.startsWith("/m/chat")) return "chat";
   if (path.startsWith("/m/notifications")) return "notifications";
