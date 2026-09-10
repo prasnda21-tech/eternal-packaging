@@ -6,14 +6,17 @@ import {
   CHAT_ACCEPT,
   canEditMessage,
   formatChatTime,
+  memberDisplayName,
   newClientMessageId,
   previewText,
+  roomDisplayTitle,
   roomInitials,
   roomTypeFilter,
 } from "../lib/chatFormat";
 import { createChatRealtime } from "../lib/chatRealtime";
 import {
   ChatComposer,
+  MemberListItem,
   MessageBubble,
   NewChatModal,
   RoomListItem,
@@ -29,13 +32,15 @@ const FILTERS = [
   { id: "work", label: "Pekerjaan" },
 ];
 
-function normalizeRoom(room) {
+function normalizeRoom(room, { members = [], meId } = {}) {
   const id = room.room_id || room.id;
+  const title = roomDisplayTitle(room, { members, meId });
   return {
     ...room,
     room_id: id,
-    name: room.name || room.title || "Chat",
-    initials: roomInitials(room.name || room.title),
+    name: title,
+    display_name: title,
+    initials: roomInitials(title),
     preview: room.last_message_preview || previewText(room.last_message),
     last_activity_label: formatChatTime(room.last_activity_at || room.updated_at),
     room_type: room.room_type || room.type,
@@ -77,6 +82,8 @@ export default function ChatPage() {
   const [members, setMembers] = useState([]);
   const [roomDetail, setRoomDetail] = useState(null);
   const fileInputRef = useRef(null);
+  const messagesRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const seenIds = useRef(new Set());
   const activeRoomIdRef = useRef(activeRoomId);
   const roomsRef = useRef([]);
@@ -88,17 +95,21 @@ export default function ChatPage() {
     if (mentionQ == null) return [];
     const q = mentionQ.toLowerCase();
     return (members || [])
-      .filter((m) => String(m.name || "").toLowerCase().includes(q) || String(m.role || "").toLowerCase().includes(q))
+      .filter((m) => {
+        const label = memberDisplayName(m).toLowerCase();
+        const role = String(m.role || m.user_role || "").toLowerCase();
+        return label.includes(q) || role.includes(q);
+      })
       .slice(0, 8)
-      .map((m) => ({ id: m.user_id || m.id, label: m.name, type: "user" }));
+      .map((m) => ({ id: m.user_id || m.id, label: memberDisplayName(m), type: "user" }));
   }, [mentionQ, members]);
 
   const loadRooms = useCallback(async () => {
     const res = await api.chatListRooms();
-    const items = (res?.rooms || res?.items || []).map(normalizeRoom);
+    const items = (res?.rooms || res?.items || []).map((r) => normalizeRoom(r, { meId }));
     setRooms(items);
     return items;
-  }, []);
+  }, [meId]);
 
   const loadMessages = useCallback(async (rid) => {
     if (!rid) return;
@@ -119,9 +130,10 @@ export default function ChatPage() {
     if (!rid) return;
     const res = await api.chatGetRoom(rid);
     const room = res?.room || res || {};
-    setRoomDetail(normalizeRoom(room));
-    setMembers(res?.members || room?.members || []);
-  }, []);
+    const nextMembers = res?.members || room?.members || [];
+    setMembers(nextMembers);
+    setRoomDetail(normalizeRoom(room, { members: nextMembers, meId }));
+  }, [meId]);
 
   useEffect(() => {
     loadRooms().catch(() => setToast("Gagal memuat inbox chat"));
@@ -193,10 +205,29 @@ export default function ChatPage() {
     realtimeRef.current?.subscribe(ids);
   }, [rooms, activeRoomId]);
 
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [activeRoomId]);
+
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, activeRoomId]);
+
+  const onMessagesScroll = () => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distance < 80;
+  };
+
   const filteredRooms = useMemo(
     () => rooms.filter((r) => roomTypeFilter(filter, r)),
     [rooms, filter],
   );
+
+  const conversationTitle = roomDetail?.name || "Percakapan";
 
   const selectRoom = (room) => {
     const id = room.room_id || room.id;
@@ -273,11 +304,18 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="chat-page" data-testid="chat-page">
+    <div className={`chat-page${infoOpen && activeRoomId ? " has-info" : ""}`} data-testid="chat-page">
       <aside className="chat-inbox" data-testid="chat-inbox">
-        <div className="chat-inbox-head">
+        <div className="chat-inbox-head" data-testid="chat-inbox-head">
           <h1>Chat</h1>
-          <button type="button" data-testid="chat-new-btn" onClick={() => setShowNew(true)}>+ Baru</button>
+          <button
+            type="button"
+            className="chat-btn chat-btn-primary"
+            data-testid="chat-new-btn"
+            onClick={() => setShowNew(true)}
+          >
+            + Baru
+          </button>
         </div>
         <div className="chat-filters">
           {FILTERS.map((f) => (
@@ -309,12 +347,24 @@ export default function ChatPage() {
           <>
             <header className="chat-conv-head">
               <div>
-                <strong>{roomDetail?.name || "Percakapan"}</strong>
+                <strong data-testid="chat-conversation-title">{conversationTitle}</strong>
                 <span className="chat-ws-status" data-testid="chat-ws-status">{wsStatus}</span>
               </div>
-              <button type="button" onClick={() => setInfoOpen((v) => !v)}>Info</button>
+              <button
+                type="button"
+                className="chat-btn chat-btn-secondary"
+                data-testid="chat-info-btn"
+                onClick={() => setInfoOpen((v) => !v)}
+              >
+                Info
+              </button>
             </header>
-            <div className="chat-messages" data-testid="chat-messages">
+            <div
+              className="chat-messages"
+              data-testid="chat-messages"
+              ref={messagesRef}
+              onScroll={onMessagesScroll}
+            >
               {messages.map((m) => (
                 <MessageBubble
                   key={m.message_id}
@@ -361,7 +411,7 @@ export default function ChatPage() {
       {infoOpen && activeRoomId ? (
         <aside className="chat-info" data-testid="chat-info-drawer">
           <h2>Info ruang</h2>
-          <p>{roomDetail?.name}</p>
+          <p data-testid="chat-info-title">{conversationTitle}</p>
           <p className="muted">{roomDetail?.room_type}</p>
           {roomDetail?.work_context ? (
             <div className="chat-info-work">
@@ -370,9 +420,9 @@ export default function ChatPage() {
             </div>
           ) : null}
           <h3>Anggota</h3>
-          <ul>
+          <ul className="chat-member-list" data-testid="chat-member-list">
             {members.map((m) => (
-              <li key={m.user_id || m.id}>{m.name || m.user_id}</li>
+              <MemberListItem key={m.user_id || m.id} member={m} />
             ))}
           </ul>
         </aside>

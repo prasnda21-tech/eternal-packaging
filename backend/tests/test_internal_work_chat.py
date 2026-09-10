@@ -301,3 +301,33 @@ async def test_websocket_auth_and_subscribe_ack():
         raise AssertionError("unauthenticated websocket should fail")
     except Exception:
         assert bad.closed == 4401
+
+
+@pytest.mark.anyio
+async def test_room_detail_enriches_member_display_names_and_dm_title():
+    a = await _insert_user(_user("admin", name="Admin Eternal", perms=["chat.use"]))
+    b = await _insert_user(_user("helper", name="Peer Helper", perms=["chat.use"]))
+    outsider = await _insert_user(_user("driver", perms=["chat.use"], name="Outsider"))
+    async with await client_for(a) as c:
+        created = await c.post("/api/chat/rooms/dm", json={"peer_user_id": b["id"]})
+        assert created.status_code == 201, created.text
+        room_id = created.json()["id"]
+        # Strip denormalized names to prove detail re-enriches from users bulk lookup
+        await server.db[COLL_MEMBERS].update_many(
+            {"room_id": room_id},
+            {"$unset": {"user_name": "", "user_email": "", "user_role": "", "name": ""}},
+        )
+        await server.db[COLL_ROOMS].update_one({"id": room_id}, {"$set": {"name": None}})
+        detail = await c.get(f"/api/chat/rooms/{room_id}")
+        assert detail.status_code == 200, detail.text
+        body = detail.json()
+        assert body["name"] == "Peer Helper"
+        assert body["id"] == room_id
+        names = {m["user_id"]: m["display_name"] for m in body["members"]}
+        assert names[a["id"]] == "Admin Eternal"
+        assert names[b["id"]] == "Peer Helper"
+        assert all(m["user_id"] in (a["id"], b["id"]) for m in body["members"])
+        assert all(m["display_name"] != m["user_id"] for m in body["members"])
+    async with await client_for(outsider) as c:
+        denied = await c.get(f"/api/chat/rooms/{room_id}")
+        assert denied.status_code == 403

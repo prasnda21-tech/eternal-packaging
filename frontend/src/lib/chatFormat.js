@@ -66,5 +66,50 @@ export function canEditMessage(message, now = Date.now()) {
   return now - created <= 15 * 60 * 1000;
 }
 
+/** Human-readable member label. Never prefer raw user_id/UUID. */
+export function memberDisplayName(member) {
+  const candidates = [
+    member?.display_name,
+    member?.name,
+    member?.user_name,
+    member?.email,
+    member?.user_email,
+  ];
+  for (const c of candidates) {
+    const s = String(c || "").trim();
+    if (!s) continue;
+    if (looksLikeInternalId(s)) continue;
+    return s;
+  }
+  return "Pengguna";
+}
+
+export function memberRoleLabel(member) {
+  return String(member?.role || member?.user_role || "").trim();
+}
+
+export function looksLikeInternalId(value) {
+  const s = String(value || "").trim();
+  if (!s) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)) return true;
+  if (/^u-[a-z0-9-]+$/i.test(s)) return true;
+  return false;
+}
+
+/** Presentation title for room list/header. DM generic titles resolve via peer member. */
+export function roomDisplayTitle(room, { members = [], meId } = {}) {
+  const type = room?.room_type || room?.type;
+  const raw = String(room?.name || room?.title || "").trim();
+  if (type === "dm") {
+    const generic = !raw || raw === "Chat" || raw === "DM" || looksLikeInternalId(raw);
+    if (generic) {
+      const peer = (members || []).find((m) => String(m.user_id || m.id) !== String(meId));
+      const peerName = memberDisplayName(peer);
+      if (peerName && peerName !== "Pengguna") return peerName;
+    }
+  }
+  return raw || "Chat";
+}
+
 export const CHAT_ACCEPT =
   "image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx";

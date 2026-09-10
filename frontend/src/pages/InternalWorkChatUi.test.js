@@ -4,7 +4,7 @@ import api from "../lib/api";
 import ChatPage from "./ChatPage";
 import MobileChatPage from "../mobile/MobileChatPage";
 import MobileChatRoomPage from "../mobile/MobileChatRoomPage";
-import { MessageBubble, WorkContextCard } from "../components/chat/ChatShared";
+import { MessageBubble, WorkContextCard, WorkPickerModal } from "../components/chat/ChatShared";
 import { NAV_KEYS } from "../lib/navAccess";
 import { visibleGlobalWorkspaceCatalog } from "../lib/globalWorkspace";
 import { activeMobileNav, visibleMobileNavItems } from "../lib/mobileWorkspaces";
@@ -96,10 +96,13 @@ function seedApi() {
   api.chatGetRoom.mockResolvedValue({
     id: "r1",
     room_id: "r1",
-    name: "DM Peer",
+    name: "Chat",
     room_type: "dm",
     type: "dm",
-    members: [{ user_id: "u2", name: "Peer" }],
+    members: [
+      { user_id: "u1", name: "Admin", role: "admin" },
+      { user_id: "d6cc9b04-a27e-4b84-b8c4-14e0da2dbe95", display_name: "Peer Helper", role: "helper" },
+    ],
   });
   api.chatListMessages.mockResolvedValue({
     messages: [
@@ -161,6 +164,78 @@ describe("Chat web UI", () => {
     expect(container.textContent).toContain("Operator");
     expect(container.textContent).toContain("Halo <script>alert(1)</script>");
     expect(container.querySelector("script")).toBeNull();
+  });
+
+  test("member names are human-readable and DM title resolves peer", async () => {
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    const memberNames = Array.from(container.querySelectorAll('[data-testid="chat-member-name"]')).map((n) => n.textContent);
+    expect(memberNames).toContain("Peer Helper");
+    expect(memberNames.join(" ")).not.toMatch(/d6cc9b04-a27e-4b84-b8c4-14e0da2dbe95/);
+    expect(container.querySelector('[data-testid="chat-member-role"]')?.textContent).toMatch(/helper|admin/i);
+    expect(container.querySelector('[data-testid="chat-conversation-title"]')?.textContent).toBe("Peer Helper");
+    expect(container.querySelector('[data-testid="chat-messages"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-composer"]')).toBeTruthy();
+  });
+
+  test("inbox header keeps + Baru visible with filters and functional actions", async () => {
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    const head = container.querySelector('[data-testid="chat-inbox-head"]');
+    const newBtn = container.querySelector('[data-testid="chat-new-btn"]');
+    expect(head).toBeTruthy();
+    expect(head.contains(newBtn)).toBe(true);
+    expect(newBtn.className).toMatch(/chat-btn-primary/);
+    expect(container.querySelector('[data-testid="chat-filter-all"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-info-btn"]')?.className).toMatch(/chat-btn/);
+    expect(container.querySelector('[data-testid="chat-tag-work-btn"]')?.className).toMatch(/chat-btn/);
+    expect(container.querySelector('[data-testid="chat-attach-btn"]')?.className).toMatch(/chat-btn/);
+    expect(container.querySelector('[data-testid="chat-send-btn"]')?.className).toMatch(/chat-btn-primary/);
+  });
+
+  test("Tag Pekerjaan modal renders selectable rows and footer actions", async () => {
+    jest.useFakeTimers();
+    const onConfirm = jest.fn();
+    const searchOrders = jest.fn().mockResolvedValue({
+      items: [{ id: "ord-1", po_number: "PO-1", customer_name: "Acme" }],
+    });
+    const loadLines = jest.fn().mockResolvedValue({
+      items: [{ line_id: "L1", line_idx: 0, name: "Cup 12oz", qty: 100 }],
+    });
+    const loadTasks = jest.fn().mockResolvedValue({ items: [] });
+    await act(async () => {
+      root.render(
+        <WorkPickerModal
+          open
+          onClose={() => {}}
+          onConfirm={onConfirm}
+          searchOrders={searchOrders}
+          loadLines={loadLines}
+          loadTasks={loadTasks}
+        />,
+      );
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="chat-work-picker"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-work-close"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-work-po-list"] button')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="chat-work-po-list"] button')?.click();
+      await Promise.resolve();
+    });
+    expect(loadLines).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="chat-work-line-option"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-work-picker-actions"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-work-po-only"]')?.className).toMatch(/chat-btn-primary/);
+    expect(container.querySelector('[data-testid="chat-work-pick-task-po"]')?.className).toMatch(/chat-btn-secondary/);
+    jest.useRealTimers();
   });
 
   test("send keeps draft on failure", async () => {
