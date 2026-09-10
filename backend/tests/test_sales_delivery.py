@@ -858,3 +858,51 @@ async def test_case_9_existing_partial_historical_sj_derived_correctly():
         app.dependency_overrides.pop(current_user, None)
 
 
+@pytest.mark.anyio
+async def test_early_create_allowed_when_packing_incomplete():
+    """Pengiriman Pesanan may be created before Packing/Loading are complete."""
+    admin = {"id": "u-early", "email": "early@test.com", "name": "Early", "role": "admin", "permissions": list(ALL_PERMISSIONS)}
+    app.dependency_overrides[current_user] = lambda: admin
+    try:
+        po = await create_helper_po("PO-EARLY-1", [
+            {"name": "Cup", "quantity": 10000, "unit": "pcs", "line_id": "L0", "production_process": "print"},
+        ])
+        # Partial packing only — previously blocked create when packing lines existed
+        await server.db.orders.update_one(
+            {"id": po["id"]},
+            {"$set": {
+                "packing_info": {
+                    "qty_packed": 2000,
+                    "lines": [{"line_idx": 0, "packed_qty": 2000}],
+                }
+            }},
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{"line_idx": 0, "qty": 4000}],
+            })
+            assert r.status_code == 200, r.text
+            body = r.json()
+            delivery = body.get("delivery") or body
+            assert int(delivery.get("total_qty") or 0) == 4000
+            # Physical packing unchanged by mere process creation
+            fresh = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert fresh["packing_info"]["lines"][0]["packed_qty"] == 2000
+            assert not fresh.get("loading_confirmations")
+            assert int(fresh.get("qty_delivered") or 0) == 0
+            assert fresh.get("delivery_status") not in ("Terkirim", "Sebagian Terkirim")
+            # Early create must NOT make Pengiriman eligible / skip Loading
+            from quantity_rules import eligible_delivery_qty, loading_status_semantic
+            assert eligible_delivery_qty(fresh) == 0
+            assert loading_status_semantic(fresh) != "completed"
+            assert any(
+                str(sh.get("sales_delivery_id") or "") == str(delivery.get("id") or delivery.get("delivery_id") or "")
+                for sh in (fresh.get("shipments") or [])
+            )
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"po_number": "PO-EARLY-1"})
+        await server.db.sales_deliveries.delete_many({"po_number": {"$regex": "^PO-EARLY-1"}})
+

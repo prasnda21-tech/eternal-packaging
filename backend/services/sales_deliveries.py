@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
-from quantity_rules import packing_lines_stored, qty_packed_for_line, qty_shipped_for_line
 from services import storage as obj_storage
 from services.surat_jalan_files import (
     SOURCE_SYSTEM_GENERATED,
@@ -560,17 +559,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     f"melebihi sisa PO yang tersedia ({remain} {target_line['unit']})."
                 )
 
-            # Workflow gate: if packing lines are tracked on this PO, ensure quantity has passed Packing
-            if packing_lines_stored(order) is not None:
-                packed = qty_packed_for_line(order, line_idx)
-                shipped = qty_shipped_for_line(order, line_idx)
-                avail_packing = max(0, packed - shipped)
-                if qty_to_ship > avail_packing:
-                    raise HTTPException(
-                        400,
-                        f"Kuantitas pengiriman untuk '{target_line['name']}' ({qty_to_ship} {target_line['unit']}) "
-                        f"melebihi kuantitas packing yang siap dibuatkan Surat Jalan ({avail_packing} {target_line['unit']})."
-                    )
+            # Packing/Loading are NOT prerequisites for creating/preparing Pengiriman Pesanan.
+            # Physical readiness is enforced later (Loading confirm, photo/gallery, confirm-delivered).
 
         # 4. Determine shipment index and SJ number backend-authoritatively
         now = now_iso()

@@ -52,6 +52,25 @@ const baseOrder = {
   delivery_status: "Belum Terkirim",
   eligible_delivery_qty: 10,
   delivery_proofs: [],
+  line_items: [{ name: "Cup", quantity: 10, line_id: "l0" }],
+  packing_info: { qty_packed: 10, lines: [{ line_idx: 0, packed_qty: 10 }] },
+  shipments: [{ id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 10 }] }],
+  loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 10 }] }],
+};
+
+const unreadOrder = {
+  ...baseOrder,
+  packing_info: { qty_packed: 10, lines: [{ line_idx: 0, packed_qty: 10 }] },
+  loading_confirmations: [],
+};
+
+const partialReadyOrder = {
+  ...baseOrder,
+  line_items: [{ name: "Cup", quantity: 10000, line_id: "l0" }],
+  packing_info: { qty_packed: 3000, lines: [{ line_idx: 0, packed_qty: 3000 }] },
+  shipments: [{ id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 3000 }] }],
+  loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 2000 }] }],
+  eligible_delivery_qty: 2000,
 };
 
 describe("PWA Pengiriman gallery picker", () => {
@@ -87,6 +106,22 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(container.querySelector('[data-testid="mobile-photo-picker-sheet"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-photo-camera"]').textContent).toMatch(/Ambil Foto/);
     expect(container.querySelector('[data-testid="mobile-photo-gallery"]').textContent).toMatch(/Pilih dari Galeri/);
+  });
+
+  test("batch photo write is blocked when Loading for this delivery is insufficient", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={unreadOrder} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-proof-batch-readiness-hint"]')?.textContent || "").toMatch(/Loading/i);
+  });
+
+  test("SJ3000 Packed3000 Loaded2000 enables photo for physical partial batch", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={partialReadyOrder} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-proof-batch-readiness-hint"]')).toBeFalsy();
   });
 
   test("gallery input accepts images and does not force camera capture", () => {

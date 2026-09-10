@@ -12,6 +12,8 @@ import {
   authoritativeDriverDisplayName,
   MIN_DELIVERY_PROOFS,
   proofUploadUserError,
+  canUploadDeliveryBatchPhoto,
+  deliveryBatchPhotoBlockReason,
 } from "../lib/deliveryProof";
 import { deliveryHistoryEntries, displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 import { newActionId } from "../lib/workflowEntries";
@@ -56,6 +58,9 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
   }, [order.delivery_recipient_signature?.id]);
 
   const canUpload = hasPerm("delivery.update");
+  const batchPhotoReady = canUploadDeliveryBatchPhoto(order);
+  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order);
+  const canWritePhoto = canUpload && batchPhotoReady;
   const canDelete = hasPerm("delivery.update");
   const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
   const canSetDate = hasPerm("delivery.reschedule.set_date");
@@ -112,6 +117,10 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
 
   const stageFiles = async (fileList) => {
     setErr("");
+    if (!canWritePhoto) {
+      setErr(batchPhotoBlockReason || "Foto pengiriman belum dapat diinput untuk batch ini.");
+      return;
+    }
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
     if (freeSlotsForNewSelection <= 0) {
@@ -464,12 +473,18 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
             data-testid="proof-file-input"
           />
 
+          {!canWritePhoto && batchPhotoBlockReason && (
+            <p className="muted small" data-testid="proof-batch-readiness-hint">
+              {batchPhotoBlockReason}
+            </p>
+          )}
+
           <div className="proof-buttons">
             <button
               type="button"
               className="primary"
               onClick={pickCamera}
-              disabled={uploading || remainingSlots <= 0}
+              disabled={uploading || remainingSlots <= 0 || !canWritePhoto}
               data-testid="proof-camera-button"
             >
               <Camera size={16} /> Ambil foto (kamera)
@@ -478,7 +493,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
               type="button"
               className="ghost"
               onClick={pickGallery}
-              disabled={uploading || remainingSlots <= 0}
+              disabled={uploading || remainingSlots <= 0 || !canWritePhoto}
               data-testid="proof-gallery-button"
             >
               <ImagePlus size={16} /> Pilih dari galeri

@@ -13,6 +13,12 @@ import {
   isDeliveryProofUploadBusy,
   emptyDeliveryPhotoSlotCount,
   DELIVERY_PROOF_FORMAT_MESSAGE,
+  canUploadDeliveryBatchPhoto,
+  deliveryBatchPhotoBlockReason,
+  deliveryBatchPhotoReadiness,
+  MSG_PHOTO_LOADING_INSUFFICIENT,
+  MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT,
+  MSG_PHOTO_PACKING_INSUFFICIENT,
 } from "./deliveryProof";
 
 describe("deliveryProof helpers", () => {
@@ -139,5 +145,46 @@ describe("deliveryProof helpers", () => {
   test("compressed file over backend limit surfaces the existing 5MB message", () => {
     expect(deliveryProofCompressedSizeError({ size: 5 * 1024 * 1024 + 1 })).toMatch(/5MB/);
     expect(deliveryProofCompressedSizeError({ size: 100 })).toBeNull();
+  });
+
+  test("batch photo readiness uses physically-ready loaded qty, not full SJ", () => {
+    const base = {
+      line_items: [{ name: "Cup", quantity: 10000, line_id: "L0" }],
+      packing_info: { qty_packed: 3000, lines: [{ line_idx: 0, packed_qty: 3000 }] },
+      shipments: [{ id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 3000 }] }],
+      loading_confirmations: [],
+    };
+    expect(deliveryBatchPhotoBlockReason(base)).toBe(MSG_PHOTO_LOADING_INSUFFICIENT);
+    expect(canUploadDeliveryBatchPhoto(base)).toBe(false);
+
+    const partialReady = {
+      ...base,
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 2000 }] }],
+    };
+    expect(canUploadDeliveryBatchPhoto(partialReady)).toBe(true);
+    expect(deliveryBatchPhotoReadiness(partialReady).readyQty).toBe(2000);
+    expect(deliveryBatchPhotoReadiness(partialReady).reason).toBeNull();
+
+    const ready = {
+      ...base,
+      packing_info: { qty_packed: 4000, lines: [{ line_idx: 0, packed_qty: 4000 }] },
+      shipments: [{ id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 4000 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 4000 }] }],
+    };
+    expect(canUploadDeliveryBatchPhoto(ready)).toBe(true);
+
+    const noPack = {
+      ...ready,
+      packing_info: { qty_packed: 0, lines: [{ line_idx: 0, packed_qty: 0 }] },
+      loading_confirmations: [],
+    };
+    expect(deliveryBatchPhotoBlockReason(noPack)).toBe(MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT);
+
+    const packLtLoaded = {
+      ...base,
+      packing_info: { qty_packed: 1500, lines: [{ line_idx: 0, packed_qty: 1500 }] },
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 2000 }] }],
+    };
+    expect(deliveryBatchPhotoBlockReason(packLtLoaded)).toBe(MSG_PHOTO_PACKING_INSUFFICIENT);
   });
 });
