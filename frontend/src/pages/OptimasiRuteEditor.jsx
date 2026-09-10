@@ -252,6 +252,36 @@ export default function OptimasiRuteEditor() {
               {route?.current_optimization_version ? "Optimize Ulang" : "Optimize Route"}
             </button>
           )}
+          {!isNew && canEdit && (
+            <button
+              type="button"
+              className="iro-btn-secondary iro-danger-btn"
+              data-testid="iro-delete-route"
+              disabled={busy}
+              onClick={async () => {
+                const ok = window.confirm(
+                  "Hapus rute optimasi ini?\n\n"
+                  + "• Data optimasi rute akan dihapus\n"
+                  + "• Pengiriman TIDAK dihapus\n"
+                  + "• Surat Jalan TIDAK dihapus\n"
+                  + "• Packing / Loading / PO TIDAK diubah",
+                );
+                if (!ok) return;
+                setBusy(true);
+                setError("");
+                try {
+                  await api.deleteIndependentRoute(route.id);
+                  navigate("/optimasi-rute");
+                } catch (e) {
+                  setError(e?.response?.data?.detail || "Gagal menghapus rute.");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Hapus Rute
+            </button>
+          )}
         </div>
       </div>
 
@@ -391,6 +421,32 @@ export default function OptimasiRuteEditor() {
                   )}
                   {canEdit && (
                     <button type="button" className="iro-linkish" onClick={() => setModal({ phase: ADD_STOP_PHASES.LOCATION, edit: stop })} data-testid={`iro-edit-loc-${stop.id}`}>Ubah Titik</button>
+                  )}
+                  {canEdit && (
+                    <button
+                      type="button"
+                      className="iro-linkish iro-danger"
+                      data-testid={`iro-delete-stop-${stop.id}`}
+                      onClick={async () => {
+                        const ok = window.confirm(
+                          "Keluarkan stop ini dari rute?\n\nPengiriman / SJ / Packing / Loading tidak dihapus.",
+                        );
+                        if (!ok) return;
+                        setBusy(true);
+                        setError("");
+                        try {
+                          const r = await api.deleteIndependentStop(route.id, stop.id);
+                          setRoute(r.route);
+                          setInfo("Stop dikeluarkan dari rute. Optimasi sebelumnya menjadi usang.");
+                        } catch (e) {
+                          setError(e?.response?.data?.detail || "Gagal menghapus stop.");
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Hapus Stop
+                    </button>
                   )}
                 </div>
               </article>

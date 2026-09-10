@@ -5012,6 +5012,23 @@ async def list_delivery_schedule(user=Depends(current_user)):
         SCHEDULE_PROJECTION,
     ).sort("deadline", 1).to_list(1000)
     rows = [_delivery_schedule_row(o) for o in docs]
+    # Enrich optimization status (pure read; no writes).
+    try:
+        from services.independent_route.delivery_bridge import optimization_status_map
+        ids = [str(r.get("id") or "") for r in rows if r.get("id")]
+        status_map = await optimization_status_map(db, ids)
+        for r in rows:
+            info = status_map.get(str(r.get("id") or "")) or {}
+            r["optimization_status"] = info.get("optimization_status") or "belum_dioptimasi"
+            r["optimization_status_label"] = info.get("optimization_status_label") or "Belum Dioptimasi"
+            r["route_id"] = info.get("route_id")
+            if not r.get("driver_user_id") and info.get("driver_user_id"):
+                r["driver_user_id"] = info.get("driver_user_id")
+    except Exception:
+        for r in rows:
+            r.setdefault("optimization_status", "belum_dioptimasi")
+            r.setdefault("optimization_status_label", "Belum Dioptimasi")
+            r.setdefault("route_id", None)
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
 
 

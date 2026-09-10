@@ -595,9 +595,15 @@ export const api = {
   addIndependentStop: (id, payload) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/stops`, payload).then((r) => r.data),
   updateIndependentStop: (routeId, stopId, payload) => client.patch(`/route-optimizer/routes/${encodeURIComponent(routeId)}/stops/${encodeURIComponent(stopId)}`, payload).then((r) => r.data),
   deleteIndependentStop: (routeId, stopId) => client.delete(`/route-optimizer/routes/${encodeURIComponent(routeId)}/stops/${encodeURIComponent(stopId)}`).then((r) => r.data),
+  deleteIndependentRoute: (id) => client.delete(`/route-optimizer/routes/${encodeURIComponent(id)}`).then((r) => r.data),
   optimizeIndependentRoute: (id, payload = {}) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/optimize`, payload).then((r) => r.data),
   reorderIndependentRoute: (id, payload) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/reorder`, payload).then((r) => r.data),
   listIndependentRouteVersions: (id) => client.get(`/route-optimizer/routes/${encodeURIComponent(id)}/versions`).then((r) => r.data),
+  reviewScheduleRouteOptimize: (orderIds) => client.post(`/route-optimizer/from-schedule/review`, { order_ids: orderIds || [] }).then((r) => r.data),
+  optimizeFromSchedule: (orderIds) => client.post(`/route-optimizer/from-schedule/optimize`, { order_ids: orderIds || [] }).then((r) => r.data),
+  scheduleRouteOptimizeStatus: (orderIds) => client.get(`/route-optimizer/from-schedule/status`, {
+    params: { ids: (orderIds || []).join(",") },
+  }).then((r) => r.data),
 
   // Internal Work Chat
   chatUnreadSummary: () => client.get("/chat/unread-summary").then((r) => r.data),

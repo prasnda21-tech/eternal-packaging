@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Download, Filter } from "lucide-react";
+import { Filter } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatApiError } from "../lib/errors";
@@ -58,7 +58,6 @@ export default function MobileProductionSchedulePage() {
   const navigate = useNavigate();
   const { hasPerm } = useAuth();
   const allowed = canViewMobileSchedule(hasPerm);
-  const canExport = hasPerm("dashboard.production.export");
   const saved = readJsonSession(MOBILE_PROD_FILTER_KEY, {
     q: FILTER_DEFAULTS.q,
     includeCancelled: FILTER_DEFAULTS.includeCancelled,
@@ -76,7 +75,6 @@ export default function MobileProductionSchedulePage() {
   );
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
   const sheetZoom = useProductionSheetZoom();
   const scrollRestored = useRef(false);
 
@@ -165,29 +163,6 @@ export default function MobileProductionSchedulePage() {
     if (href) navigate(href);
   };
 
-  const download = async (scope) => {
-    setExporting(true);
-    try {
-      const payload = { scope };
-      if (scope === "filtered") payload.ids = filtered.map((r) => r.id);
-      payload.include_cancelled = includeCancelled;
-      payload.include_completed = includeCompleted;
-      const blob = await api.productionExport(payload);
-      const url = URL.createObjectURL(new Blob([blob], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `jadwal-produksi-${new Date().toISOString().slice(0, 10)}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setErr(scheduleLoadErrorMessage(e) || "Gagal memuat jadwal produksi.");
-    } finally {
-      setExporting(false);
-    }
-  };
-
   return (
     <div className="mop-schedule-root">
       <MobileTopBar kicker="ETERNAL PACKAGING" title="Jadwal Produksi" />
@@ -241,45 +216,25 @@ export default function MobileProductionSchedulePage() {
                 />
                 Cancelled
               </label>
-              <button
-                type="button"
-                className={"mop-btn-ghost" + (filterOpen ? " is-active" : "")}
-                onClick={() => setFilterOpen((v) => !v)}
-                data-testid="mobile-schedule-filter-btn"
-              >
-                <Filter size={12} /> Filter
-              </button>
-              <button
-                type="button"
-                className="mop-btn-ghost mop-schedule-reset"
-                onClick={resetFilters}
-                disabled={!filtersActive}
-                data-testid="mobile-schedule-reset"
-              >
-                Reset
-              </button>
-              {canExport && (
-                <>
-                  <button
-                    type="button"
-                    className="mop-btn-ghost"
-                    disabled={exporting || !filtered.length}
-                    onClick={() => download("filtered")}
-                    data-testid="mobile-schedule-export-filtered"
-                  >
-                    <Download size={12} /> Export Terfilter
-                  </button>
-                  <button
-                    type="button"
-                    className="mop-btn-ghost"
-                    disabled={exporting}
-                    onClick={() => download("all")}
-                    data-testid="mobile-schedule-export-all"
-                  >
-                    <Download size={12} /> Export Semua
-                  </button>
-                </>
-              )}
+              <div className="mop-schedule-filter-actions" data-testid="mobile-schedule-filter-actions">
+                <button
+                  type="button"
+                  className={"mop-btn-ghost" + (filterOpen ? " is-active" : "")}
+                  onClick={() => setFilterOpen((v) => !v)}
+                  data-testid="mobile-schedule-filter-btn"
+                >
+                  <Filter size={12} /> Filter
+                </button>
+                <button
+                  type="button"
+                  className="mop-btn-ghost mop-schedule-reset"
+                  onClick={resetFilters}
+                  disabled={!filtersActive}
+                  data-testid="mobile-schedule-reset"
+                >
+                  Reset
+                </button>
+              </div>
             </div>
             {filterOpen && (
               <div className="mop-ds-filter-panel" data-testid="mobile-schedule-filter-panel" style={{ marginBottom: 6 }}>

@@ -35,6 +35,7 @@ SCHEDULE_PROJECTION = {
     "po_number": 1,
     "customer": 1,
     "customer_name": 1,
+    "customer_id": 1,
     "deadline": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
@@ -53,6 +54,10 @@ SCHEDULE_PROJECTION = {
     "shipments.number": 1,
     "shipments.lines": 1,
     "loading_checklist.driver_name": 1,
+    "loading_checklist.driver_user_id": 1,
+    "delivery_outlet_id": 1,
+    "delivery_location": 1,
+    "address": 1,
     "packing_info": 1,
     "priority": 1,
     "cancelled": 1,
@@ -183,6 +188,12 @@ def _driver_name(order: dict) -> str:
     return (lc.get("driver_name") or "").strip()
 
 
+def _driver_user_id(order: dict) -> Optional[str]:
+    lc = order.get("loading_checklist") or {}
+    uid = str(lc.get("driver_user_id") or order.get("driver_user_id") or "").strip()
+    return uid or None
+
+
 def schedule_row(order: dict, today: Optional[str] = None) -> dict:
     code = schedule_status_code(order, today)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
@@ -196,6 +207,7 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
         "customer_name": order.get("customer_name") or order.get("customer") or "",
+        "customer_id": order.get("customer_id"),
         "item_label": _item_label(order),
         "deadline": original_deadline(order),
         "jadwal_manual": manual_schedule_date(order),
@@ -203,6 +215,8 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
         "status": code,
         "status_label": schedule_status_label(code),
         "driver_name": _driver_name(order) or None,
+        "driver_user_id": _driver_user_id(order),
+        "delivery_outlet_id": order.get("delivery_outlet_id"),
         "delivery_status": order.get("delivery_status") or "",
         "qty_total": ship.get("qty_total"),
         "qty_delivered": ship.get("qty_delivered"),

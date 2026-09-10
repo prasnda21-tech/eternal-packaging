@@ -386,6 +386,22 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]')).toBeTruthy();
   });
 
+  test("PWA toolbar keeps Filter/Reset and removes Export buttons", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "dashboard.production.export");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mobile-schedule-filter-btn"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-reset"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-filter-actions"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-export-filtered"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-export-all"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Export Terfilter");
+    expect(container.textContent).not.toContain("Export Semua");
+    expect(container.textContent).toContain("Filter");
+    expect(container.textContent).toContain("Reset");
+    expect(api.productionExport).not.toHaveBeenCalled();
+  });
+
   test("row click opens role-relevant workspace when permitted, else PO detail", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();

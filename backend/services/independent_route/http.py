@@ -1,9 +1,9 @@
 """HTTP routes for the independent Route Optimizer."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.independent_route.constants import (
     PERM_CREATE,
@@ -18,10 +18,21 @@ from services.independent_route.constants import (
 from services.independent_route import places as places_svc
 from services.independent_route import settings as settings_svc
 from services.independent_route import store
+from services.independent_route import delivery_bridge
 
 
 class LoosePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+
+class ScheduleReviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_ids: List[str] = Field(default_factory=list)
+
+
+class ScheduleOptimizePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_ids: List[str] = Field(default_factory=list)
 
 
 def _actor(user: dict) -> dict:
@@ -104,6 +115,11 @@ def register_independent_route_routes(
         await require_any_perm(user, PERM_EDIT_OWN, PERM_MANAGE)
         return {"route": await store.update_route(get_db(), route_id, payload.model_dump(), _actor(user), await _perms(user))}
 
+    @api_router.delete("/route-optimizer/routes/{route_id}")
+    async def delete_route(route_id: str, user=Depends(current_user)):
+        await require_any_perm(user, PERM_EDIT_OWN, PERM_MANAGE)
+        return await store.soft_delete_route(get_db(), route_id, _actor(user), await _perms(user))
+
     @api_router.post("/route-optimizer/routes/{route_id}/stops")
     async def add_stop(route_id: str, payload: LoosePayload, user=Depends(current_user)):
         await require_any_perm(user, PERM_EDIT_OWN, PERM_CREATE, PERM_MANAGE)
@@ -134,3 +150,47 @@ def register_independent_route_routes(
     async def route_versions(route_id: str, user=Depends(current_user)):
         await _require_view(user)
         return {"versions": await store.list_versions(get_db(), route_id, _actor(user), await _perms(user))}
+
+    # ---- Delivery schedule bridge (read review / mutate optimize) ----
+
+    @api_router.get("/route-optimizer/from-schedule/review")
+    async def schedule_review_get(ids: str = "", user=Depends(current_user)):
+        """Pure read review for exact order IDs (comma-separated). ZERO writes."""
+        await require_any_perm(user, PERM_VIEW, PERM_CREATE, PERM_OPTIMIZE, PERM_MANAGE, PERM_NAV)
+        order_ids = [p.strip() for p in str(ids or "").split(",") if p.strip()]
+        return await delivery_bridge.build_review_rows(get_db(), order_ids)
+
+    @api_router.post("/route-optimizer/from-schedule/review")
+    async def schedule_review_post(payload: ScheduleReviewPayload, user=Depends(current_user)):
+        """Pure read review via POST body for large ID lists. ZERO writes."""
+        await require_any_perm(user, PERM_VIEW, PERM_CREATE, PERM_OPTIMIZE, PERM_MANAGE, PERM_NAV)
+        return await delivery_bridge.build_review_rows(get_db(), list(payload.order_ids or []))
+
+    @api_router.post("/route-optimizer/from-schedule/optimize")
+    async def schedule_optimize(payload: ScheduleOptimizePayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_CREATE, PERM_MANAGE)
+        await require_perm(user, PERM_OPTIMIZE)
+        return await delivery_bridge.create_and_optimize_from_schedule(
+            get_db(),
+            order_ids=list(payload.order_ids or []),
+            actor=_actor(user),
+            perms=await _perms(user),
+        )
+
+    @api_router.get("/route-optimizer/from-schedule/status")
+    async def schedule_opt_status(ids: str = "", user=Depends(current_user)):
+        """Pure read optimization status map. ZERO writes."""
+        await require_any_perm(
+            user,
+            PERM_VIEW,
+            PERM_CREATE,
+            PERM_OPTIMIZE,
+            PERM_MANAGE,
+            PERM_NAV,
+            "delivery.schedule.view",
+            "nav.delivery_schedule",
+            "schedule.view",
+        )
+        order_ids = [p.strip() for p in str(ids or "").split(",") if p.strip()]
+        status_map = await delivery_bridge.optimization_status_map(get_db(), order_ids)
+        return {"statuses": status_map}
