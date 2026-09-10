@@ -91,6 +91,30 @@ describe("PO Detail delivery cards", () => {
     expect(css).toMatch(/po-meta-aksi-row/);
   });
 
+  test("PROSES KE PENGIRIMAN PESANAN is gated by remain+perm only, not Packing/Loading", () => {
+    expect(detail).toMatch(/canProcessSalesDelivery/);
+    expect(detail).toMatch(/salesDeliveryTotalRemaining/);
+    expect(detail).toMatch(/btn-proses-pengiriman-pesanan/);
+    // No packing/loading prerequisite on the Aksi PO create entry
+    const gateBlock = detail.slice(
+      detail.indexOf("const canProcessSalesDelivery"),
+      detail.indexOf("const canProcessSalesDelivery") + 280,
+    );
+    expect(gateBlock).not.toMatch(/packing|loading|qty_packed|qty_loaded/i);
+    expect(detail).toMatch(/DeliveryProofPanel/);
+  });
+
+  test("StageBar uses resolveStageState so early SJ does not skip Loading without eligible", () => {
+    const bar = fs.readFileSync(path.join(__dirname, "../components/StageBar.jsx"), "utf8");
+    const stageState = fs.readFileSync(path.join(__dirname, "../lib/stageState.js"), "utf8");
+    expect(bar).toMatch(/resolveStageState/);
+    expect(stageState).toMatch(/eligible_delivery_qty/);
+    expect(stageState).toMatch(/Menunggu konfirmasi Loading/);
+    // Pengiriman current only when eligible > 0, not merely because SJ/shipment exists
+    expect(stageState).toMatch(/if \(eligible > 0\)/);
+    expect(stageState).toMatch(/Menunggu bukti pengiriman/);
+  });
+
   test("Aksi PO sits above Line Item and shipping summary is gone", () => {
     expect(detail.indexOf("detail-info")).toBeLessThan(detail.indexOf("po-actions-panel"));
     expect(detail.indexOf("po-actions-panel")).toBeLessThan(detail.indexOf("line-items-panel"));

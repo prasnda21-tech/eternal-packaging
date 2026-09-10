@@ -14,6 +14,8 @@ import {
   deliveryProofCompressedSizeError,
   isDeliveryProofUploadBusy,
   emptyDeliveryPhotoSlotCount,
+  canUploadDeliveryBatchPhoto,
+  deliveryBatchPhotoBlockReason,
 } from "../../lib/deliveryProof";
 import { compressImage } from "../../lib/imageCompress";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
@@ -50,6 +52,9 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
   const orderSig = order?.delivery_recipient_signature;
   const driverSig = order?.delivery_driver_signature;
   const canMutate = canEdit && !delivered;
+  const batchPhotoReady = canUploadDeliveryBatchPhoto(order);
+  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order);
+  const canWritePhoto = canMutate && batchPhotoReady;
   const photoBusy = isDeliveryProofUploadBusy(localSlots);
   const canConfirm = canSubmitConfirmDelivered(
     proofs,
@@ -59,12 +64,12 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     localSig.driver,
     driverSig,
   ) && Number(order?.eligible_delivery_qty || 0) > 0 && canMutate && !photoBusy;
-  const emptySlots = canMutate ? emptyDeliveryPhotoSlotCount(proofs.length, localSlots.length) : 0;
+  const emptySlots = canWritePhoto ? emptyDeliveryPhotoSlotCount(proofs.length, localSlots.length) : 0;
 
   const closePicker = () => setPicker(null);
 
   const openPicker = (intent) => {
-    if (!canMutate || photoBusy) return;
+    if (!canWritePhoto || photoBusy) return;
     pickerIntentRef.current = intent || { type: "add" };
     setPicker(pickerIntentRef.current);
   };
@@ -92,6 +97,10 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
 
   const addPhoto = async (file, intent) => {
     if (!file || !canMutate) return;
+    if (!canWritePhoto) {
+      setErr(batchPhotoBlockReason || "Foto pengiriman belum dapat diinput untuk batch ini.");
+      return;
+    }
     if (pickingRef.current) return;
     pickingRef.current = true;
     const clientId = newClientId();
@@ -326,6 +335,11 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
           Buat TTD Driver
         </button>
       </div>
+      {canMutate && !canWritePhoto && batchPhotoBlockReason && (
+        <p className="mop-muted" data-testid="mobile-proof-batch-readiness-hint">
+          {batchPhotoBlockReason}
+        </p>
+      )}
       {err && (
         <div className="mop-error" data-testid="mobile-delivery-error">
           {err}

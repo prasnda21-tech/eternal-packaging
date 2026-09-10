@@ -66,6 +66,46 @@ describe("SJ / Loading / Terkirim chips", () => {
     expect(terkirim.state).toBe("pending");
   });
 
+  test("early delivery process / SJ existence does not make Pengiriman current without Loading", () => {
+    const loading = resolveStageState(13, {
+      surat_jalan_created: true,
+      loading_qty_status: "pending",
+      terkirim_confirmed: false,
+      delivery_status: "Belum Terkirim",
+      eligible_delivery_qty: 0,
+      qty_delivered: 0,
+      current_stage: 12,
+    }, 12);
+    expect(loading.state).toBe("current");
+    expect(loading.label).toMatch(/konfirmasi/i);
+
+    const terkirim = resolveStageState(14, {
+      surat_jalan_created: true,
+      terkirim_confirmed: false,
+      delivery_status: "Belum Terkirim",
+      eligible_delivery_qty: 0,
+      qty_delivered: 0,
+      current_stage: 12,
+    }, 12);
+    expect(terkirim.state).toBe("pending");
+    expect(terkirim.label).toMatch(/loading/i);
+    expect(terkirim.state).not.toBe("current");
+    expect(terkirim.state).not.toBe("done");
+  });
+
+  test("partial loaded batch can open Pengiriman when eligible reflects Loading only", () => {
+    const terkirim = resolveStageState(14, {
+      surat_jalan_created: true,
+      terkirim_confirmed: false,
+      delivery_status: "Belum Terkirim",
+      eligible_delivery_qty: 2000,
+      qty_delivered: 0,
+      current_stage: 13,
+    }, 13);
+    expect(terkirim.state).toBe("current");
+    expect(terkirim.label).toMatch(/bukti/i);
+  });
+
   test("partial delivery does not mark full Terkirim", () => {
     const terkirim = resolveStageState(14, {
       delivery_status: "Sebagian Terkirim",

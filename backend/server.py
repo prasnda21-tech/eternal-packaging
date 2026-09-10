@@ -231,6 +231,8 @@ from quantity_rules import (
     is_print_line as _qr_is_print_line,
     apply_delivery_from_proof_evidence as _qr_apply_delivery_from_proof_evidence,
     confirm_delivery_block_reason as _qr_confirm_delivery_block_reason,
+    delivery_batch_photo_block_reason as _qr_delivery_batch_photo_block_reason,
+    reconcile_sj_quantities_to_loaded_delivery as _qr_reconcile_sj_quantities_to_loaded_delivery,
     valid_delivery_proof_count as _qr_valid_delivery_proof_count,
     apply_loading_increments as _qr_apply_loading_increments,
     apply_loading_confirmation as _qr_apply_loading_confirmation,
@@ -1545,7 +1547,12 @@ def _compute_pending_queues(order: dict) -> List[str]:
     elif not _surat_jalan_created(order) and cs >= 11:
         queues.append("delivery_note")
     elif _surat_jalan_created(order) and not _terkirim_confirmed(order):
-        queues.append("driver")
+        # Early sales-delivery / SJ allocation must not skip Loading work.
+        # Driver/Pengiriman queue only when physically eligible to deliver.
+        if _qr_eligible_delivery_qty(order) > 0:
+            queues.append("driver")
+        else:
+            queues.append("loading")
 
     return queues
 
@@ -2682,7 +2689,10 @@ def _po_needs_loading(o: dict) -> bool:
 def _po_needs_terkirim(o: dict) -> bool:
     if o.get("delivery_status") == "Terkirim" or _terkirim_confirmed(o):
         return False
-    return _surat_jalan_created(o)
+    if not _surat_jalan_created(o):
+        return False
+    # Delivery record / SJ existence alone is not Pengiriman readiness.
+    return _qr_eligible_delivery_qty(o) > 0
 
 
 def _op_task_predicate(o: dict, user_email: str, is_supervisor: bool = False):
@@ -4415,6 +4425,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     frozen_sig_holder = {"sig": None, "driver_sig": None}
     conf_holder = {}
+    reconcile_holder = {"result": None}
 
     def mutate(order: dict):
         ids = list(order.get("delivery_confirm_action_ids") or [])
@@ -4434,6 +4445,9 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         order["delivered_at"] = now
         order["delivered_by"] = user.get("email")
         order["delivered_by_name"] = user.get("name")
+        # Reconcile operational SJ qty down to loaded/actual for this confirmation.
+        # Packing and Loading quantities are not mutated. Idempotent on retry.
+        reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
         conf = _append_delivery_confirmation(
             order, user, qty_increment=increment, now=now, action_id=action_id,
         )
@@ -4486,6 +4500,57 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             from services.physical_stock_engine import release_delivery_confirmed_stock
             await release_delivery_confirmed_stock(db, claimed_stock)
         raise
+
+    # Keep sales_deliveries operational qty in sync with reconciled order.shipments
+    # so canonical remain (ordered − Σ sales_deliveries qty) reflects returned shortfall.
+    try:
+        touched = set((reconcile_holder.get("result") or {}).get("shipment_ids") or [])
+        if touched:
+            for sh in order.get("shipments") or []:
+                if not isinstance(sh, dict):
+                    continue
+                sid = str(sh.get("sales_delivery_id") or sh.get("id") or "").strip()
+                if not sid or sid not in touched:
+                    continue
+                sh_lines = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+                if not sh_lines:
+                    continue
+                delivery = await db.sales_deliveries.find_one(
+                    {"id": sid, "is_cancelled": {"$ne": True}},
+                    {"_id": 0, "line_items": 1},
+                )
+                if not delivery:
+                    continue
+                by_idx = {
+                    int(ln.get("line_idx", 0)): ln
+                    for ln in sh_lines
+                    if isinstance(ln, dict)
+                }
+                new_items = []
+                total_qty = 0
+                for li in delivery.get("line_items") or []:
+                    if not isinstance(li, dict):
+                        continue
+                    item = dict(li)
+                    idx = int(item.get("line_idx", 0))
+                    src = by_idx.get(idx)
+                    if src is not None:
+                        q = max(0, int(src.get("qty") if src.get("qty") is not None else src.get("quantity") or 0))
+                        item["qty"] = q
+                        if "quantity" in item:
+                            item["quantity"] = q
+                    total_qty += max(0, int(item.get("qty") if item.get("qty") is not None else item.get("quantity") or 0))
+                    new_items.append(item)
+                await db.sales_deliveries.update_one(
+                    {"id": sid, "is_cancelled": {"$ne": True}},
+                    {"$set": {
+                        "line_items": new_items,
+                        "total_qty": total_qty,
+                        "updated_at": now_iso(),
+                    }},
+                )
+    except Exception:
+        logging.getLogger(__name__).warning("sales_delivery SJ reconcile sync failed", exc_info=True)
 
     if claimed_stock:
         from services.physical_stock_engine import finalize_delivery_confirmed_stock
@@ -9247,6 +9312,9 @@ async def upload_delivery_proof(
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
+    photo_blocked = _qr_delivery_batch_photo_block_reason(order)
+    if photo_blocked:
+        raise HTTPException(400, photo_blocked)
     # Content-type and size first, so error messages remain actionable
     ct = (file.content_type or "").lower()
     if ct not in ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"):

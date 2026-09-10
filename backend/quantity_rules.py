@@ -4,7 +4,7 @@ Used by server endpoints and unit tests. No DB / FastAPI dependency.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 
 def is_print_line(li: dict) -> bool:
@@ -654,11 +654,19 @@ def apply_packing_increments(order: dict, updates: list) -> tuple:
 def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     if new_delivered is None or new_delivered < 0:
         return "Qty pengiriman tidak valid."
+    if new_delivered == 0:
+        return "Qty dikirim harus lebih dari 0."
     required = packing_required_total(order)
     current = qty_delivered(order)
     eligible = eligible_delivery_qty(order)
     if new_delivered > eligible:
         return f"Qty dikirim ({new_delivered}) melebihi qty Loading terkonfirmasi ({eligible})."
+    packed = qty_packed(order)
+    if packed > 0 and new_delivered > packed:
+        return f"Qty dikirim ({new_delivered}) melebihi qty Packing ({packed})."
+    shipped = qty_shipped(order)
+    if shipped > 0 and new_delivered > shipped:
+        return f"Qty dikirim ({new_delivered}) melebihi alokasi Surat Jalan ({shipped})."
     if required and new_delivered > required:
         return f"Qty dikirim ({new_delivered}) melebihi total qty PO ({required})."
     if new_delivered < current:
@@ -1135,19 +1143,37 @@ def loading_confirm_cap_for_line(order: dict, line_idx: int) -> int:
     return max(0, packed)
 
 
+def _shipments_require_loading_confirm(order: dict) -> bool:
+    """True when shipments come from sales-delivery create (incl. early prepare).
+
+    Those records allocate SJ qty but are NOT physical Loading/Pengiriman evidence.
+    Historical shipments without sales_delivery_id keep the legacy SJ-qty fallback.
+    """
+    for sh in shipments_stored(order):
+        if not isinstance(sh, dict):
+            continue
+        if str(sh.get("sales_delivery_id") or "").strip():
+            return True
+    return False
+
+
 def eligible_delivery_qty(order: dict) -> int:
     """Qty legally eligible to deliver.
 
-    New workflow: confirmed Loading (SJ-linked). Historical POs with SJ item/qty
-    lines remain deliverable without rewriting those records.
+    New workflow: confirmed Loading (SJ-linked). Early-created Pengiriman Pesanan
+    shipments must NOT become deliverable merely because the delivery record /
+    SJ allocation exists — Loading remains the physical gate.
+
+    Historical POs with SJ item/qty lines and no sales_delivery_id remain
+    deliverable without rewriting those records.
     """
     if loading_confirmations_stored(order):
         return qty_confirmed_loading(order)
-    if has_shipment_line_quantities(order):
-        return qty_shipped(order)
     legacy = sum(_legacy_loaded_qty_for_line(order, i) for i in range(_line_count(order)))
     if legacy > 0:
         return legacy
+    if has_shipment_line_quantities(order) and not _shipments_require_loading_confirm(order):
+        return qty_shipped(order)
     return 0
 
 
@@ -1693,3 +1719,332 @@ def loading_status_semantic(order: dict) -> str:
     if target > 0 and loaded >= target:
         return SJ_STATUS_COMPLETED
     return SJ_STATUS_PARTIAL
+
+
+# ---------------------------------------------------------------------------
+# Delivery-batch photo/gallery readiness + SJ reconcile on actual delivery
+# ---------------------------------------------------------------------------
+
+MSG_PHOTO_PACKING_INSUFFICIENT = (
+    "Qty Packing untuk pengiriman ini belum mencukupi."
+)
+MSG_PHOTO_LOADING_INSUFFICIENT = (
+    "Qty Loading untuk pengiriman ini belum mencukupi."
+)
+MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT = (
+    "Foto pengiriman dapat diinput setelah qty Packing dan Loading untuk pengiriman "
+    "ini mencukupi."
+)
+
+
+def active_delivery_batch(order: dict) -> Optional[dict]:
+    """Canonical delivery batch = latest shipment (sales delivery / SJ allocation)."""
+    ships = shipments_stored(order)
+    if not ships:
+        return None
+    last = ships[-1]
+    return last if isinstance(last, dict) else None
+
+
+def delivery_batch_identity(shipment: Optional[dict]) -> str:
+    if not isinstance(shipment, dict):
+        return ""
+    for key in ("id", "sales_delivery_id", "number"):
+        val = str(shipment.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def delivery_batch_qty(shipment: Optional[dict]) -> int:
+    if not isinstance(shipment, dict):
+        return 0
+    total = 0
+    lines = shipment.get("lines")
+    if isinstance(lines, list) and lines:
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        return total
+    return max(0, _safe_int(shipment.get("total_qty") or shipment.get("qty") or 0))
+
+
+def packed_available_for_delivery_batch(order: dict, shipment: Optional[dict] = None) -> int:
+    """Packed qty available to cover this exact shipment (exclude this shipment from shipped).
+
+    Does not treat loaded>packed excess as packed. Whole-PO incompleteness elsewhere
+    does not reduce this batch's available packed below what covers this shipment.
+    """
+    sh = shipment if isinstance(shipment, dict) else active_delivery_batch(order)
+    if not sh:
+        return 0
+    sid = delivery_batch_identity(sh)
+    lines = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+    if lines:
+        avail = 0
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            if idx < 0:
+                continue
+            need = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            line_avail = max(
+                0,
+                packed_qty_for_line(order, idx)
+                - qty_shipped_for_line(order, idx, exclude_shipment_id=sid or None),
+            )
+            # Cap contribution by this SJ line allocation (never invent beyond SJ)
+            avail += min(line_avail, need) if need else line_avail
+        return avail
+    # Legacy shipment without lines: single-line / total packed minus other shipments
+    q = delivery_batch_qty(sh)
+    packed = qty_packed(order)
+    other = 0
+    for other_sh in shipments_stored(order):
+        if not isinstance(other_sh, dict):
+            continue
+        other_id = delivery_batch_identity(other_sh)
+        if sid and other_id == sid:
+            continue
+        other += delivery_batch_qty(other_sh)
+    return max(0, min(max(0, packed - other), q if q else max(0, packed - other)))
+
+
+def loaded_qty_for_delivery_batch(order: dict, shipment: Optional[dict] = None) -> int:
+    sh = shipment if isinstance(shipment, dict) else active_delivery_batch(order)
+    if not sh:
+        return 0
+    sid = delivery_batch_identity(sh)
+    if not sid:
+        return 0
+    lines = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+    if lines:
+        total = 0
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            if idx < 0:
+                continue
+            total += loaded_qty_for_sj_line(order, sid, idx)
+        return total
+    # No line breakdown: sum confirmations linked to this SJ id/number
+    target_ids = {sid}
+    for k in ("id", "number", "sales_delivery_id"):
+        v = str(sh.get(k) or "").strip()
+        if v:
+            target_ids.add(v)
+    total = 0
+    for conf in loading_confirmations_stored(order):
+        if str(conf.get("surat_jalan_id") or "").strip() in target_ids:
+            total += confirmation_qty_total(conf)
+    if total > 0:
+        return total
+    # Legacy loading_info only when this is the sole / latest shipment context
+    return qty_loaded(order) if len(shipments_stored(order)) <= 1 else 0
+
+
+def delivery_batch_photo_readiness(order: dict, shipment: Optional[dict] = None) -> dict:
+    """Photo/gallery write eligibility for one delivery batch.
+
+    Actual delivered qty does NOT exist until confirm-delivered. Until then, the
+    physically-ready batch is the exact shipment-linked LOADED quantity.
+
+    PHOTO allowed when:
+      loaded_ready > 0
+      AND packed_available_for_batch >= loaded_ready
+
+    SJ planned qty is NOT required to be fully loaded. Whole-PO completion is NOT
+    required. Loaded>packed excess cannot bypass packing.
+    """
+    sh = shipment if isinstance(shipment, dict) else active_delivery_batch(order)
+    sj_qty = delivery_batch_qty(sh)
+    packed_avail = packed_available_for_delivery_batch(order, sh)
+    loaded = loaded_qty_for_delivery_batch(order, sh)
+    # Physically ready batch = loaded, never above current SJ allocation
+    ready_q = min(loaded, sj_qty) if sj_qty > 0 else 0
+    loaded_ok = ready_q > 0
+    # Packing must cover the physically ready (loaded) batch — not necessarily full SJ
+    packed_ok = loaded_ok and packed_avail >= ready_q
+    # Defensive invalid state: loaded > packed available
+    if loaded > packed_avail:
+        packed_ok = False
+    allowed = bool(loaded_ok and packed_ok)
+    reason = None
+    if not allowed:
+        if not loaded_ok and packed_avail <= 0:
+            reason = MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT
+        elif not loaded_ok:
+            reason = MSG_PHOTO_LOADING_INSUFFICIENT
+        elif not packed_ok:
+            reason = MSG_PHOTO_PACKING_INSUFFICIENT
+        else:
+            reason = MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT
+    return {
+        "allowed": allowed,
+        "batch_qty": sj_qty,
+        "ready_qty": ready_q,
+        "packed_available": packed_avail,
+        "loaded": loaded,
+        "shipment_id": delivery_batch_identity(sh) if sh else "",
+        "reason": reason,
+    }
+
+
+def delivery_batch_photo_block_reason(order: dict, shipment: Optional[dict] = None) -> Optional[str]:
+    return delivery_batch_photo_readiness(order, shipment).get("reason")
+
+
+def _set_line_qty(ln: dict, qty: int) -> None:
+    ln["qty"] = int(qty)
+    if "quantity" in ln:
+        ln["quantity"] = int(qty)
+
+
+def _delivered_qty_by_sj_line(order: dict) -> dict:
+    """FIFO-allocate persisted qty_delivered onto loading confirmation lines → (sj_id, line_idx)."""
+    leftover = max(0, qty_delivered(order))
+    out: dict = {}
+    for conf in loading_confirmations_stored(order):
+        if leftover <= 0:
+            break
+        sj = str(conf.get("surat_jalan_id") or "").strip()
+        if not sj:
+            continue
+        conf_lines = [ln for ln in (conf.get("lines") or []) if isinstance(ln, dict)]
+        conf_cap = confirmation_qty_total(conf)
+        take = min(conf_cap, leftover)
+        leftover -= take
+        if take <= 0 or not conf_lines:
+            continue
+        remaining_take = take
+        for ln in conf_lines:
+            if remaining_take <= 0:
+                break
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            if idx < 0:
+                continue
+            line_cap = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            line_take = min(line_cap, remaining_take)
+            remaining_take -= line_take
+            key = (sj, idx)
+            out[key] = out.get(key, 0) + line_take
+    return out
+
+
+def reconcile_sj_quantities_to_loaded_delivery(order: dict) -> dict:
+    """Reduce current/effective SJ line qtys to actual delivered allocation per exact line.
+
+    When confirm-delivered sets qty_delivered equal to total loaded (normal path),
+    this matches loaded-for-SJ. When delivered < loaded, SJ follows delivered;
+    Loading history is never silently reduced.
+
+    - Packing unchanged
+    - Loading unchanged (no silent unload)
+    - Historical PDF bytes untouched
+    - Remain returns via lower shipped/SJ allocation (idempotent)
+    - Never increases SJ qty
+    """
+    returned_total = 0
+    touched_shipment_ids: List[str] = []
+    delivered_by = _delivered_qty_by_sj_line(order)
+    # If nothing delivered yet, do not mutate SJ (confirm path always delivers > 0 first)
+    if qty_delivered(order) <= 0 and not delivered_by:
+        return {"returned_qty": 0, "shipment_ids": []}
+
+    for sh in shipments_stored(order):
+        if not isinstance(sh, dict):
+            continue
+        sid = delivery_batch_identity(sh)
+        if not sid:
+            continue
+        lines = sh.get("lines")
+        if not isinstance(lines, list) or not lines:
+            continue
+        batch_loaded = loaded_qty_for_delivery_batch(order, sh)
+        if batch_loaded <= 0 and not any(
+            (sid == k[0] or str(sh.get("number") or "") == k[0]) for k in delivered_by.keys()
+        ):
+            continue
+
+        # Resolve delivered keys against possible SJ identity aliases
+        alias_ids = {sid}
+        for k in ("id", "number", "sales_delivery_id"):
+            v = str(sh.get(k) or "").strip()
+            if v:
+                alias_ids.add(v)
+
+        reduced = 0
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            if idx < 0:
+                continue
+            sj_q = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            loaded_q = loaded_qty_for_sj_line(order, sid, idx)
+            delivered_q = 0
+            for alias in alias_ids:
+                delivered_q = max(delivered_q, delivered_by.get((alias, idx), 0))
+            # Actual operational SJ qty = min(SJ, delivered attribution).
+            # Never raise SJ; never invent from loaded when delivered is lower.
+            if delivered_q <= 0 and loaded_q <= 0:
+                continue
+            actual_q = min(sj_q, delivered_q if delivered_q > 0 else loaded_q)
+            # Cap by loaded as well — delivery cannot exceed loading physically
+            if loaded_q > 0:
+                actual_q = min(actual_q, loaded_q)
+            if actual_q < sj_q:
+                reduced += sj_q - actual_q
+                _set_line_qty(ln, actual_q)
+        new_total = 0
+        for ln in lines:
+            if isinstance(ln, dict):
+                new_total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        if reduced > 0:
+            sh["total_qty"] = new_total
+            if "qty" in sh:
+                sh["qty"] = new_total
+            returned_total += reduced
+            touched_shipment_ids.append(sid)
+            # Mirror operational qty onto surat_jalan_files metadata (not PDF bytes)
+            files = order.get("surat_jalan_files")
+            if isinstance(files, list):
+                for f in files:
+                    if not isinstance(f, dict):
+                        continue
+                    file_ids = {
+                        str(f.get("id") or "").strip(),
+                        str(f.get("shipment_id") or "").strip(),
+                        str(f.get("sales_delivery_id") or "").strip(),
+                        str(f.get("sj_number") or "").strip(),
+                        str(f.get("number") or "").strip(),
+                    }
+                    if sid not in file_ids and str(sh.get("number") or "").strip() not in file_ids:
+                        continue
+                    f_lines = f.get("lines")
+                    if isinstance(f_lines, list) and f_lines:
+                        by_idx = {
+                            _safe_int(ln.get("line_idx"), default=-1): ln
+                            for ln in lines
+                            if isinstance(ln, dict)
+                        }
+                        for fl in f_lines:
+                            if not isinstance(fl, dict):
+                                continue
+                            fidx = _safe_int(fl.get("line_idx"), default=-1)
+                            src = by_idx.get(fidx)
+                            if src is not None:
+                                _set_line_qty(
+                                    fl,
+                                    max(0, _safe_int(src.get("qty") if src.get("qty") is not None else src.get("quantity"))),
+                                )
+                        f["total_qty"] = new_total
+                        if "qty" in f:
+                            f["qty"] = new_total
+    return {
+        "returned_qty": returned_total,
+        "shipment_ids": touched_shipment_ids,
+    }
