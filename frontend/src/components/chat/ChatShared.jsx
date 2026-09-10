@@ -4,7 +4,7 @@ import { workContextHref, workContextLabel } from "../../lib/chatWorkLinks";
 import { formatBytes, isImageMime, memberDisplayName, memberRoleLabel, roomInitials } from "../../lib/chatFormat";
 
 export function WorkContextCard({ workRef, mobile = false }) {
-  const snap = workRef?.snapshot || {};
+  const snap = workRef?.snapshot || workRef || {};
   const href = workContextHref(workRef, { mobile });
   const title = workContextLabel(workRef);
   return (
@@ -17,8 +17,8 @@ export function WorkContextCard({ workRef, mobile = false }) {
         {(snap.stage_label || snap.task_label) ? (
           <div>Stage: {snap.stage_label || snap.task_label}</div>
         ) : null}
-        {snap.assignee_name ? <div>Assignee: {snap.assignee_name}</div> : null}
-        {snap.is_h1 ? <div className="chat-work-flag">H-1</div> : null}
+        {(snap.assignee || snap.assignee_name) ? <div>Assignee: {snap.assignee || snap.assignee_name}</div> : null}
+        {snap.h_minus_1 || snap.is_h1 ? <div className="chat-work-flag">H-1</div> : null}
         {snap.is_urgent || snap.urgent ? <div className="chat-work-flag urgent">URGENT</div> : null}
       </div>
       {href ? (
@@ -255,6 +255,9 @@ export function WorkPickerModal({
   const [tasks, setTasks] = useState([]);
   const [task, setTask] = useState(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -266,26 +269,60 @@ export function WorkPickerModal({
     setTasks([]);
     setTask(null);
     setError("");
+    setLoading(false);
+    setSearched(false);
+    setReloadKey(0);
   }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
     const t = setTimeout(async () => {
       try {
         const res = await searchOrders(q);
-        setOrders(res?.items || res || []);
+        if (cancelled) return;
+        const list = Array.isArray(res?.items)
+          ? res.items
+          : Array.isArray(res?.orders)
+            ? res.orders
+            : Array.isArray(res)
+              ? res
+              : [];
+        setOrders(list);
+        setSearched(true);
       } catch (err) {
+        if (cancelled) return;
+        setOrders([]);
+        setSearched(true);
         setError(err?.response?.data?.detail || "Gagal mencari PO");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }, 250);
-    return () => clearTimeout(t);
-  }, [q, open, searchOrders]);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q, open, searchOrders, reloadKey]);
 
   if (!open) return null;
 
   const poLabel = order ? (order.po_number || order.order_number || order.id) : "";
   const customerLabel = order ? (order.customer_name || order.customer || "") : "";
   const lineStep = !!(order && !line && !task);
+
+  const emptyHint = (() => {
+    if (loading) return null;
+    if (error) return null;
+    if (!searched) return null;
+    if (orders.length) return null;
+    if (String(q || "").trim()) {
+      return "Tidak ada PO/pekerjaan yang cocok.";
+    }
+    return "Belum ada PO/pekerjaan yang dapat diakses. Ketik nomor PO untuk mencari.";
+  })();
 
   return (
     <div className="modal" data-testid="chat-work-picker">
@@ -306,6 +343,12 @@ export function WorkPickerModal({
                 placeholder="Cari PO…"
                 data-testid="chat-work-po-search"
               />
+              {loading ? (
+                <div className="chat-picker-status" data-testid="chat-work-loading">Memuat PO…</div>
+              ) : null}
+              {emptyHint ? (
+                <div className="chat-picker-status" data-testid="chat-work-empty">{emptyHint}</div>
+              ) : null}
               <ul className="chat-picker-list" data-testid="chat-work-po-list">
                 {orders.map((o) => (
                   <li key={o.id || o.order_id}>
@@ -378,7 +421,23 @@ export function WorkPickerModal({
               </ul>
             </>
           )}
-          {error ? <div className="chat-error">{error}</div> : null}
+          {error ? (
+            <div className="chat-error" data-testid="chat-work-error">
+              {error}
+              <button
+                type="button"
+                className="chat-btn chat-btn-secondary"
+                data-testid="chat-work-retry"
+                onClick={() => {
+                  setSearched(false);
+                  setError("");
+                  setReloadKey((k) => k + 1);
+                }}
+              >
+                Coba lagi
+              </button>
+            </div>
+          ) : null}
         </div>
 
         {order ? (
@@ -391,6 +450,8 @@ export function WorkPickerModal({
                   data-testid="chat-work-po-only"
                   onClick={() => onConfirm({
                     order_id: order.id || order.order_id,
+                    po_number: order.po_number || order.order_number,
+                    customer_name: order.customer_name || order.customer,
                   })}
                 >
                   Gunakan PO saja
@@ -419,6 +480,9 @@ export function WorkPickerModal({
                     line_id: line?.line_id || undefined,
                     line_idx: line?.__po_task ? undefined : line?.line_idx,
                     task_id: task?.task_id || undefined,
+                    po_number: order.po_number || order.order_number,
+                    customer_name: order.customer_name || order.customer,
+                    item_name: line?.__po_task ? undefined : (line?.name || line?.item_name),
                   })}
                 >
                   Pakai konteks ini
@@ -430,6 +494,143 @@ export function WorkPickerModal({
             )}
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function EditMembersModal({
+  open,
+  onClose,
+  members,
+  searchUsers,
+  onSave,
+}) {
+  const [q, setQ] = useState("");
+  const [users, setUsers] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setQ("");
+    setUsers([]);
+    setError("");
+    setSaving(false);
+    setSelected(
+      (members || [])
+        .map((m) => String(m.user_id || m.id || "").trim())
+        .filter(Boolean),
+    );
+  }, [open, members]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const t = setTimeout(async () => {
+      try {
+        const res = await searchUsers(q);
+        setUsers(res?.items || res || []);
+      } catch (err) {
+        setError(err?.response?.data?.detail || "Gagal mencari user");
+      }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [q, open, searchUsers]);
+
+  if (!open) return null;
+
+  const memberIds = new Set(
+    (members || []).map((m) => String(m.user_id || m.id || "").trim()).filter(Boolean),
+  );
+  const directory = [...(members || [])];
+  for (const u of users) {
+    const id = String(u.id || u.user_id || "").trim();
+    if (!id || directory.some((m) => String(m.user_id || m.id) === id)) continue;
+    directory.push({
+      user_id: id,
+      display_name: u.name || u.display_name || u.email,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+    });
+  }
+
+  const toggle = (id) => {
+    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const next = new Set(selected);
+      const addIds = [...next].filter((id) => !memberIds.has(id));
+      const removeIds = [...memberIds].filter((id) => !next.has(id));
+      await onSave({ addIds, removeIds, selectedIds: [...next] });
+      onClose();
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || "Gagal menyimpan anggota");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal" data-testid="chat-edit-members-modal">
+      <div className="modal-inner chat-work-picker-inner">
+        <div className="modal-head">
+          <strong>Edit Anggota</strong>
+          <button type="button" className="chat-btn chat-btn-ghost" data-testid="chat-edit-members-close" onClick={onClose}>
+            Tutup
+          </button>
+        </div>
+        <div className="chat-work-picker-body">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Cari user aktif…"
+            data-testid="chat-edit-members-search"
+          />
+          <ul className="chat-picker-list" data-testid="chat-edit-members-list">
+            {directory.map((u) => {
+              const id = String(u.user_id || u.id || "").trim();
+              const checked = selected.includes(id);
+              const label = memberDisplayName(u);
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    className={`chat-picker-row${checked ? " is-selected" : ""}`}
+                    data-testid="chat-edit-member-option"
+                    data-user-id={id}
+                    aria-pressed={checked}
+                    onClick={() => toggle(id)}
+                  >
+                    <strong data-testid="chat-edit-member-name">{label}</strong>
+                    <span>{memberRoleLabel(u) || u.role || ""}</span>
+                    <span>{checked ? "✓" : ""}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {error ? <div className="chat-error" data-testid="chat-edit-members-error">{error}</div> : null}
+        </div>
+        <div className="chat-work-picker-foot">
+          <button
+            type="button"
+            className="chat-btn chat-btn-primary"
+            data-testid="chat-edit-members-save"
+            disabled={saving}
+            onClick={save}
+          >
+            {saving ? "Menyimpan…" : "Simpan Anggota"}
+          </button>
+          <button type="button" className="chat-btn chat-btn-ghost" onClick={onClose}>
+            Batal
+          </button>
+        </div>
       </div>
     </div>
   );

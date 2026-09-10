@@ -50,6 +50,15 @@ class ConnectionManager:
             if subs is not None:
                 subs.difference_update(str(r) for r in room_ids if r)
 
+    async def unsubscribe_user_from_room(self, user_id: str, room_id: str) -> None:
+        """Drop in-process room subscriptions for a user after membership removal."""
+        rid = str(room_id)
+        async with self._lock:
+            for ws in list(self._user_sockets.get(str(user_id), set())):
+                subs = self._subscriptions.get(ws)
+                if subs is not None:
+                    subs.discard(rid)
+
     async def broadcast_to_room(self, room_id: str, event: dict) -> None:
         payload = dict(event or {})
         payload["room_id"] = str(room_id)

@@ -49,7 +49,7 @@ def bind_motor():
 async def clean_db(bind_motor):
     db = server.db
     await ensure_indexes(db)
-    for coll in (COLL_ROOMS, COLL_MEMBERS, COLL_MESSAGES, COLL_ATTACHMENTS, "users", "roles", "orders", "files"):
+    for coll in (COLL_ROOMS, COLL_MEMBERS, COLL_MESSAGES, COLL_ATTACHMENTS, "users", "roles", "role_permissions", "orders", "files"):
         if coll == "files":
             await db[coll].delete_many({"kind": "chat_attachment"})
         else:
@@ -57,7 +57,7 @@ async def clean_db(bind_motor):
     app.dependency_overrides.clear()
     yield
     app.dependency_overrides.clear()
-    for coll in (COLL_ROOMS, COLL_MEMBERS, COLL_MESSAGES, COLL_ATTACHMENTS, "users", "roles", "orders", "files"):
+    for coll in (COLL_ROOMS, COLL_MEMBERS, COLL_MESSAGES, COLL_ATTACHMENTS, "users", "roles", "role_permissions", "orders", "files"):
         if coll == "files":
             await db[coll].delete_many({"kind": "chat_attachment"})
         else:
@@ -331,3 +331,146 @@ async def test_room_detail_enriches_member_display_names_and_dm_title():
     async with await client_for(outsider) as c:
         denied = await c.get(f"/api/chat/rooms/{room_id}")
         assert denied.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_work_tag_search_respects_role_override_and_excludes_inaccessible():
+    viewer = await _insert_user(_user("custom_role", permissions_override={"chat.use": True}))
+    await server.db.role_permissions.insert_one({
+        "role": "custom_role",
+        "permissions": ["chat.use", "nav.chat", "po.view"],
+    })
+    visible = _order(po_number="PO-VISIBLE-1")
+    other = _order(po_number="PO-OTHER-9")
+    await server.db.orders.insert_many([visible, other])
+    async with await client_for(viewer) as c:
+        listed = await c.get("/api/chat/work/orders")
+        assert listed.status_code == 200, listed.text
+        numbers = {o["po_number"] for o in listed.json()["orders"]}
+        assert "PO-VISIBLE-1" in numbers
+        searched = await c.get("/api/chat/work/orders", params={"q": "VISIBLE"})
+        assert searched.status_code == 200
+        assert any(o["order_id"] == visible["id"] for o in searched.json()["orders"])
+        assert all(o["order_id"] for o in searched.json()["orders"])
+
+    locked = await _insert_user(_user("locked_role", permissions_override={"chat.use": True, "po.view": False}))
+    await server.db.role_permissions.insert_one({
+        "role": "locked_role",
+        "permissions": ["chat.use", "nav.chat"],
+    })
+    async with await client_for(locked) as c:
+        empty = await c.get("/api/chat/work/orders", params={"q": "VISIBLE"})
+        assert empty.status_code == 200
+        assert empty.json()["orders"] == []
+
+
+@pytest.mark.anyio
+async def test_work_tag_message_persists_canonical_ids_and_same_name_lines():
+    admin = await _insert_user(_user("admin"))
+    order = _order()
+    await server.db.orders.insert_one(order)
+    peer = await _insert_user(_user("helper", perms=["chat.use"]))
+    async with await client_for(admin) as c:
+        room = (await c.post("/api/chat/rooms/dm", json={"peer_user_id": peer["id"]})).json()
+        msg0 = await c.post(f"/api/chat/rooms/{room['id']}/messages", json={
+            "content": "line0",
+            "work_refs": [{"order_id": order["id"], "line_id": "L1", "line_idx": 0}],
+        })
+        msg1 = await c.post(f"/api/chat/rooms/{room['id']}/messages", json={
+            "content": "line1",
+            "work_refs": [{"order_id": order["id"], "line_id": "L2", "line_idx": 1}],
+        })
+        assert msg0.status_code == msg1.status_code == 201
+        snap0 = msg0.json()["work_refs"][0]
+        snap1 = msg1.json()["work_refs"][0]
+        assert snap0["order_id"] == order["id"]
+        assert snap0["line_id"] == "L1"
+        assert snap0["line_idx"] == 0
+        assert snap1["line_id"] == "L2"
+        assert snap1["line_idx"] == 1
+        assert snap0["item_name"] == snap1["item_name"] == "Cup 16oz"
+        listed = await c.get(f"/api/chat/rooms/{room['id']}/messages")
+        refs = [m["work_refs"][0] for m in listed.json()["messages"] if m.get("work_refs")]
+        assert {r["line_id"] for r in refs} == {"L1", "L2"}
+
+
+@pytest.mark.anyio
+async def test_custom_group_member_add_remove_auth_and_history_preserved():
+    admin = await _insert_user(_user("admin", name="Manager"))
+    plain = await _insert_user(_user("operator", perms=["chat.use"], name="Plain"))
+    peer = await _insert_user(_user("helper", perms=["chat.use"], name="Peer"))
+    extra = await _insert_user(_user("driver", perms=["chat.use"], name="Extra"))
+    await server.db.roles.insert_many([
+        {"role": "helper", "label": "Helper"},
+        {"role": "operator", "label": "Operator"},
+    ])
+    await bootstrap_system_groups(server.db)
+    async with await client_for(admin) as c:
+        created = await c.post("/api/chat/rooms/custom", json={"name": "Ops", "member_ids": [peer["id"]]})
+        assert created.status_code == 201, created.text
+        room_id = created.json()["id"]
+        msg = await c.post(f"/api/chat/rooms/{room_id}/messages", json={"content": "keep me", "client_message_id": "hist-1"})
+        assert msg.status_code == 201
+        msg_id = msg.json()["id"]
+
+        added = await c.post(f"/api/chat/rooms/{room_id}/members", json={"user_ids": [extra["id"], peer["id"]]})
+        assert added.status_code == 200, added.text
+        member_ids = [m["user_id"] for m in added.json()["members"]]
+        assert member_ids.count(extra["id"]) == 1
+        assert peer["id"] in member_ids
+        assert all(m.get("display_name") for m in added.json()["members"])
+
+        removed = await c.request("DELETE", f"/api/chat/rooms/{room_id}/members", json={"user_ids": [extra["id"]]})
+        assert removed.status_code == 200
+        assert extra["id"] not in [m["user_id"] for m in removed.json()["members"]]
+        again = await c.request("DELETE", f"/api/chat/rooms/{room_id}/members", json={"user_ids": [extra["id"]]})
+        assert again.status_code == 200
+
+        hist = await c.get(f"/api/chat/rooms/{room_id}/messages")
+        assert any(m["id"] == msg_id and m["content"] == "keep me" for m in hist.json()["messages"])
+
+    async with await client_for(extra) as c:
+        denied_list = await c.get(f"/api/chat/rooms/{room_id}/messages")
+        assert denied_list.status_code == 403
+        denied_send = await c.post(f"/api/chat/rooms/{room_id}/messages", json={"content": "nope"})
+        assert denied_send.status_code == 403
+
+    async with await client_for(plain) as c:
+        denied = await c.post(f"/api/chat/rooms/{room_id}/members", json={"user_ids": [extra["id"]]})
+        assert denied.status_code == 403
+
+    # system group manual membership rejected
+    helper_room = await server.db[COLL_ROOMS].find_one({"type": "system_group", "system_key": "role:helper"}, {"_id": 0})
+    assert helper_room
+    async with await client_for(admin) as c:
+        bad = await c.post(f"/api/chat/rooms/{helper_room['id']}/members", json={"user_ids": [extra["id"]]})
+        assert bad.status_code == 400
+        bad_del = await c.request("DELETE", f"/api/chat/rooms/{helper_room['id']}/members", json={"user_ids": [peer["id"]]})
+        assert bad_del.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_removed_member_unsubscribed_from_room_events():
+    admin = await _insert_user(_user("admin"))
+    peer = await _insert_user(_user("helper", perms=["chat.use"]))
+    async with await client_for(admin) as c:
+        created = await c.post("/api/chat/rooms/custom", json={"name": "Ops", "member_ids": [peer["id"]]})
+        room_id = created.json()["id"]
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def accept(self):
+            return None
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    ws = FakeWebSocket()
+    await manager.connect(ws, peer["id"])
+    await manager.subscribe(ws, [room_id])
+    await manager.unsubscribe_user_from_room(peer["id"], room_id)
+    await manager.broadcast_to_room(room_id, {"type": "message.created", "probe": True})
+    assert not any(e.get("probe") for e in ws.sent)
+    await manager.disconnect(ws)

@@ -221,8 +221,8 @@ async def apply_room_display_name(db, room: dict, viewer_uid: str, users_by_id: 
     return out
 
 
-async def room_detail(db, room_id: str, uid: str) -> dict:
-    await require_active_member(db, room_id, uid)
+async def room_members_payload(db, room_id: str, viewer_uid: str) -> dict:
+    """Enriched room + active members without membership gate (caller authorizes)."""
     room = await db[COLL_ROOMS].find_one({"id": str(room_id)}, {"_id": 0})
     if not room:
         raise HTTPException(404, "Room chat tidak ditemukan")
@@ -230,9 +230,14 @@ async def room_detail(db, room_id: str, uid: str) -> dict:
     member_ids = [m.get("user_id") for m in members]
     peer_ids = list(room.get("participant_ids") or [])
     users_by_id = await _bulk_users_by_id(db, [*member_ids, *peer_ids])
-    room = await apply_room_display_name(db, room, uid, users_by_id=users_by_id)
+    room = await apply_room_display_name(db, room, viewer_uid, users_by_id=users_by_id)
     room["members"] = [_member_display_fields(m, users_by_id.get(str(m.get("user_id") or ""))) for m in members]
     return room
+
+
+async def room_detail(db, room_id: str, uid: str) -> dict:
+    await require_active_member(db, room_id, uid)
+    return await room_members_payload(db, room_id, uid)
 
 
 async def list_my_rooms(db, user: dict, filter_type: Optional[str] = None) -> list[dict]:
@@ -310,7 +315,8 @@ async def add_members(db, room_id: str, user_ids: list[str], actor: dict) -> dic
     if room.get("type") not in (ROOM_CUSTOM_GROUP, ROOM_WORK):
         raise HTTPException(400, "Anggota room ini tidak dapat diubah manual")
     await _upsert_members(db, room_id, user_ids, _actor(actor))
-    return await room_detail(db, room_id, user_id(actor))
+    # Managers may not be members; still return enriched payload after mutation.
+    return await room_members_payload(db, room_id, user_id(actor))
 
 
 async def remove_members(db, room_id: str, user_ids: list[str], actor: dict) -> dict:
@@ -319,11 +325,15 @@ async def remove_members(db, room_id: str, user_ids: list[str], actor: dict) -> 
         raise HTTPException(404, "Room chat tidak ditemukan")
     if room.get("type") not in (ROOM_CUSTOM_GROUP, ROOM_WORK):
         raise HTTPException(400, "Anggota room ini tidak dapat diubah manual")
-    await db[COLL_MEMBERS].update_many(
-        {"room_id": room_id, "user_id": {"$in": [str(x) for x in user_ids]}},
-        {"$set": {"active": False, "left_at": now_iso(), "updated_at": now_iso()}},
-    )
-    return await room_detail(db, room_id, user_id(actor))
+    targets = [str(x).strip() for x in (user_ids or []) if str(x or "").strip()]
+    if targets:
+        await db[COLL_MEMBERS].update_many(
+            {"room_id": room_id, "user_id": {"$in": targets}},
+            {"$set": {"active": False, "left_at": now_iso(), "updated_at": now_iso()}},
+        )
+    payload = await room_members_payload(db, room_id, user_id(actor))
+    payload["removed_user_ids"] = targets
+    return payload
 
 
 async def archive_room(db, room_id: str, actor: dict) -> dict:

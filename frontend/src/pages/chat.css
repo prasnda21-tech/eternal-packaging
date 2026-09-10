@@ -592,6 +592,17 @@
   background: #f8fbfc;
 }
 
+.chat-picker-status {
+  padding: 10px 4px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.chat-info .chat-btn {
+  margin: 0 12px 8px;
+  align-self: flex-start;
+}
+
 .chat-picker-list {
   list-style: none;
   margin: 0;

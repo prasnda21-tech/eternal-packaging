@@ -15,22 +15,36 @@ def _uid(user: dict) -> str:
     return str((user or {}).get("user_id") or (user or {}).get("id") or "").strip()
 
 
-def _perms(user: dict) -> set:
+async def _role_defaults_override(db) -> dict:
+    docs = await db.role_permissions.find({}, {"_id": 0, "role": 1, "permissions": 1}).to_list(100)
+    return {d["role"]: d.get("permissions", []) for d in docs if d.get("role")}
+
+
+async def _perms(db, user: dict) -> set:
+    """Effective permissions including persisted role_permissions overrides."""
     if (user or {}).get("role") == "admin":
         return set(ALL_PERMISSIONS)
-    return effective_permissions((user or {}).get("role"), (user or {}).get("permissions_override") or {})
+    if (user or {}).get("email"):
+        u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "_id": 0})
+        if u and u.get("is_super_admin"):
+            return set(ALL_PERMISSIONS)
+    role_override = await _role_defaults_override(db)
+    return effective_permissions(
+        (user or {}).get("role"),
+        (user or {}).get("permissions_override") or {},
+        role_override,
+    )
 
 
 def _is_admin(user: dict) -> bool:
     return (user or {}).get("role") == "admin"
 
 
-def _can_view_po(user: dict) -> bool:
-    return _is_admin(user) or "po.view" in _perms(user)
+async def _can_view_po(db, user: dict) -> bool:
+    return _is_admin(user) or "po.view" in await _perms(db, user)
 
 
-def _task_visible_to_user(order: dict, user: dict, task_id: Optional[str] = None) -> Optional[dict]:
-    perms = _perms(user)
+def _task_visible_to_user(order: dict, user: dict, perms: set, task_id: Optional[str] = None) -> Optional[dict]:
     for division, cfg in DIVISION_DEFS.items():
         if cfg.get("submit_perm") not in perms:
             continue
@@ -77,14 +91,25 @@ def work_key(order_id, line_id=None, line_idx=None, task_id=None) -> str:
     return f"po:{oid}"
 
 
+def _order_summary(d: dict) -> dict:
+    return {
+        "order_id": d.get("id"),
+        "po_number": d.get("po_number"),
+        "customer_name": d.get("customer_name") or d.get("customer") or d.get("outlet"),
+        "deadline": d.get("deadline"),
+        "urgent": d.get("priority") == "urgent",
+    }
+
+
 async def resolve_work_snapshot(db, user, *, order_id, line_id=None, line_idx=None, task_id=None) -> dict:
     order = await db.orders.find_one({"id": str(order_id)}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
-    task = _task_visible_to_user(order, user, task_id) if task_id else None
+    perms = await _perms(db, user)
+    task = _task_visible_to_user(order, user, perms, task_id) if task_id else None
     if task_id and not task:
         raise HTTPException(404, "Task pekerjaan tidak ditemukan")
-    if not _can_view_po(user) and not task:
+    if not (_is_admin(user) or "po.view" in perms) and not task:
         raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
     if line_idx is None and line_id:
         line_idx = _line_idx_from_id(order, line_id)
@@ -131,9 +156,47 @@ async def resolve_work_snapshot(db, user, *, order_id, line_id=None, line_idx=No
 
 
 async def search_work_orders(db, user, q, limit=20) -> list[dict]:
-    if not _can_view_po(user):
-        return []
+    """Bounded PO/work discovery for Tag Pekerjaan.
+
+    Users with po.view (including DB role overrides) get recent/matching POs.
+    Users without po.view but with visible division tasks get only those orders.
+    """
     text = str(q or "").strip()
+    lim = max(1, min(int(limit or 20), 50))
+    perms = await _perms(db, user)
+    can_po = _is_admin(user) or "po.view" in perms
+
+    if can_po:
+        query = {"cancelled": {"$ne": True}}
+        if text:
+            query["$or"] = [
+                {"po_number": {"$regex": text, "$options": "i"}},
+                {"customer": {"$regex": text, "$options": "i"}},
+                {"customer_name": {"$regex": text, "$options": "i"}},
+                {"outlet": {"$regex": text, "$options": "i"}},
+            ]
+        docs = await (
+            db.orders.find(
+                query,
+                {
+                    "_id": 0,
+                    "id": 1,
+                    "po_number": 1,
+                    "customer": 1,
+                    "customer_name": 1,
+                    "outlet": 1,
+                    "deadline": 1,
+                    "priority": 1,
+                },
+            )
+            .sort("created_at", -1)
+            .limit(lim)
+            .to_list(lim)
+        )
+        return [_order_summary(d) for d in docs]
+
+    # Task-scoped discovery: scan a bounded recent window, keep only visible work.
+    scan_lim = min(120, max(lim * 4, 40))
     query = {"cancelled": {"$ne": True}}
     if text:
         query["$or"] = [
@@ -142,8 +205,36 @@ async def search_work_orders(db, user, q, limit=20) -> list[dict]:
             {"customer_name": {"$regex": text, "$options": "i"}},
             {"outlet": {"$regex": text, "$options": "i"}},
         ]
-    docs = await db.orders.find(query, {"_id": 0, "id": 1, "po_number": 1, "customer": 1, "customer_name": 1, "outlet": 1, "deadline": 1, "priority": 1}).sort("created_at", -1).limit(max(1, min(int(limit or 20), 50))).to_list(50)
-    return [{"order_id": d.get("id"), "po_number": d.get("po_number"), "customer_name": d.get("customer_name") or d.get("customer") or d.get("outlet"), "deadline": d.get("deadline"), "urgent": d.get("priority") == "urgent"} for d in docs]
+    docs = await (
+        db.orders.find(
+            query,
+            {
+                "_id": 0,
+                "id": 1,
+                "po_number": 1,
+                "customer": 1,
+                "customer_name": 1,
+                "outlet": 1,
+                "deadline": 1,
+                "priority": 1,
+                "line_items": 1,
+                "operator_splits": 1,
+                "current_stage": 1,
+                "status_label": 1,
+                "work_date": 1,
+            },
+        )
+        .sort("created_at", -1)
+        .limit(scan_lim)
+        .to_list(scan_lim)
+    )
+    out = []
+    for d in docs:
+        if _task_visible_to_user(d, user, perms):
+            out.append(_order_summary(d))
+            if len(out) >= lim:
+                break
+    return out
 
 
 async def list_order_lines(db, user, order_id) -> list[dict]:
@@ -165,9 +256,10 @@ async def list_order_tasks(db, user, order_id, line_idx=None) -> list[dict]:
     order = await db.orders.find_one({"id": str(order_id)}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
-    if not _can_view_po(user) and not _task_visible_to_user(order, user):
+    perms = await _perms(db, user)
+    can_po = _is_admin(user) or "po.view" in perms
+    if not can_po and not _task_visible_to_user(order, user, perms):
         raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
-    perms = _perms(user)
     out = []
     for division, cfg in DIVISION_DEFS.items():
         if cfg.get("submit_perm") not in perms and not _is_admin(user):

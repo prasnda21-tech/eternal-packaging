@@ -45,6 +45,21 @@ export default function MobileChatRoomPage() {
   const fileInputRef = useRef(null);
   const seenIds = useRef(new Set());
 
+  const searchWorkOrders = useCallback(async (q) => {
+    const res = await api.chatSearchWorkOrders(q);
+    return { items: res?.orders || [] };
+  }, []);
+
+  const loadWorkLines = useCallback(async (oid) => {
+    const res = await api.chatWorkOrderLines(oid);
+    return { items: res?.lines || [] };
+  }, []);
+
+  const loadWorkTasks = useCallback(async (oid, lineIdx) => {
+    const res = await api.chatWorkOrderTasks(oid, lineIdx);
+    return { items: res?.tasks || [] };
+  }, []);
+
   const load = useCallback(async () => {
     const [meta, hist] = await Promise.all([
       api.chatGetRoom(roomId),
@@ -163,6 +178,13 @@ export default function MobileChatRoomPage() {
           />
         ))}
       </div>
+      {workTags.length ? (
+        <div className="chat-pending-tags" data-testid="chat-pending-work-tags">
+          {workTags.map((t, i) => (
+            <span key={`${t.order_id}-${i}`}>{t.po_number || `PO ${t.order_id}`}</span>
+          ))}
+        </div>
+      ) : null}
       {sendError ? <div className="chat-error">{sendError}</div> : null}
       <ChatComposer
         draft={draft}
@@ -177,18 +199,9 @@ export default function MobileChatRoomPage() {
       <WorkPickerModal
         open={showWorkPicker}
         onClose={() => setShowWorkPicker(false)}
-        searchOrders={async (q) => {
-          const res = await api.chatSearchWorkOrders(q);
-          return { items: res?.orders || [] };
-        }}
-        loadLines={async (oid) => {
-          const res = await api.chatWorkOrderLines(oid);
-          return { items: res?.lines || [] };
-        }}
-        loadTasks={async (oid, lineIdx) => {
-          const res = await api.chatWorkOrderTasks(oid, lineIdx);
-          return { items: res?.tasks || [] };
-        }}
+        searchOrders={searchWorkOrders}
+        loadLines={loadWorkLines}
+        loadTasks={loadWorkTasks}
         onConfirm={(ctx) => {
           setWorkTags((cur) => [...cur, ctx]);
           setShowWorkPicker(false);
