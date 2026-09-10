@@ -45,7 +45,6 @@ import PesananPembelian from "./pages/PesananPembelian";
 import FakturPembelian from "./pages/FakturPembelian";
 import PembayaranPembelian from "./pages/PembayaranPembelian";
 import AnalitikOutput from "./pages/AnalitikOutput";
-import StatusPengiriman from "./pages/StatusPengiriman";
 import StatusPO from "./pages/StatusPO";
 import GajiOperator from "./pages/GajiOperator";
 import PrediksiOrder from "./pages/PrediksiOrder";
@@ -123,7 +122,6 @@ function LaporanIndex() {
   const r = reportsNavVisible(hasPerm);
   if (r.analytics) return <Navigate to="/laporan/analitik-output" replace />;
   if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
-  if (r.shipmentStatus) return <Navigate to="/laporan/status-pengiriman" replace />;
   if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
   if (r.orderPrediction) return <Navigate to="/laporan/prediksi-order" replace />;
   return <Navigate to="/" replace />;
@@ -256,7 +254,7 @@ export default function App() {
             <Route path="/kas-bank" element={<KasBankIndex />} />
             <Route path="/laporan/analitik-output" element={<PermGate anyOf={[NAV_KEYS.analytics]} alsoAnyOf={["schedule.view"]}><AnalitikOutput /></PermGate>} />
             <Route path="/laporan/status-po" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
-            <Route path="/laporan/status-pengiriman" element={<PermGate anyOf={[NAV_KEYS.shipmentStatus]} alsoAnyOf={["schedule.view"]}><StatusPengiriman /></PermGate>} />
+            <Route path="/laporan/status-pengiriman" element={<Navigate to="/produksi/jadwal-pengiriman" replace />} />
             <Route path="/laporan/gaji-operator" element={<PermGate anyOf={[NAV_KEYS.gajiOperator]} alsoAnyOf={["reports.gaji_operator.view", "schedule.view"]}><GajiOperator /></PermGate>} />
             <Route path="/laporan/prediksi-order" element={<PermGate anyOf={[NAV_KEYS.orderPrediction]} alsoAnyOf={["reports.order_prediction.view"]}><PrediksiOrder /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />

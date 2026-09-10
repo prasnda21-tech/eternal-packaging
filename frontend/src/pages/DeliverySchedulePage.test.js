@@ -62,6 +62,14 @@ describe("delivery reschedule UI", () => {
     expect(schedule).toMatch(/OutletLocationModal/);
   });
 
+  test("jadwal has progress columns and no shipment item", () => {
+    expect(schedule).toMatch(/Terkirim/);
+    expect(schedule).toMatch(/Dapat Dikirim/);
+    expect(schedule).not.toMatch(/Shipment \/ Item/);
+    expect(schedule).toMatch(/ds-filter-btn/);
+    expect(schedule).toMatch(/ds-sort-customer/);
+  });
+
   test("reschedule page has reason history and set date action", () => {
     expect(reschedule).toMatch(/Alasan/);
     expect(reschedule).toMatch(/Tanggal Sebelumnya/);

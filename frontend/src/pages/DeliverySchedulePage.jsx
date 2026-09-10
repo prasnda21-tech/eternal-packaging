@@ -1,12 +1,53 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Filter, RefreshCw, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
-import { DELIVERY_SCHEDULE_STATUS_OPTIONS, EMPTY_DELIVERY_FILTERS, matchesDeliveryScheduleFilters } from "../lib/deliverySchedule";
+import { clampPercent, terkirimTone } from "../lib/shipmentStatus";
+import {
+  DELIVERY_SCHEDULE_STATUS_OPTIONS,
+  DELIVERY_SORT_KEYS,
+  EMPTY_DELIVERY_FILTERS,
+  EMPTY_DELIVERY_SORT,
+  countActiveDeliveryFilters,
+  cycleDeliverySort,
+  matchesDeliveryScheduleFilters,
+  sortDeliveryRows,
+} from "../lib/deliverySchedule";
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import OutletLocationModal from "../components/OutletLocationModal";
+
+function ProgressCell({ pct, tone, testid, title }) {
+  const p = clampPercent(pct);
+  return (
+    <div className={"ship-bar ship-bar-" + tone} data-testid={testid} title={title}>
+      <div className="ship-bar-fill" style={{ width: p + "%" }} />
+      <span className="ship-bar-label">{p}%</span>
+    </div>
+  );
+}
+
+function SortableTh({ label, sortKey, sort, onCycle, className = "", testid }) {
+  const active = sort?.key === sortKey && !!sort?.direction;
+  const ariaSort = !active ? "none" : (sort.direction === "asc" ? "ascending" : "descending");
+  const Icon = !active ? ArrowUpDown : (sort.direction === "asc" ? ArrowUp : ArrowDown);
+  return (
+    <th className={className} aria-sort={ariaSort}>
+      <button
+        type="button"
+        className={"ship-th-sort" + (active ? " is-active" : "")}
+        onClick={() => onCycle(sortKey)}
+        title={`Urutkan ${label}`}
+        aria-label={`Urutkan ${label}`}
+        data-testid={testid}
+      >
+        <span>{label}</span>
+        <Icon size={12} aria-hidden="true" />
+      </button>
+    </th>
+  );
+}
 
 async function outletRowForOrder({ orderId, customer, outlet }) {
   const row = {
@@ -40,6 +81,9 @@ export default function DeliverySchedulePage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [filters, setFilters] = useState(EMPTY_DELIVERY_FILTERS);
+  const [sort, setSort] = useState(EMPTY_DELIVERY_SORT);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
   const [locRow, setLocRow] = useState(null);
 
   const load = useCallback(async () => {
@@ -58,13 +102,34 @@ export default function DeliverySchedulePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const visible = useMemo(
+  const filteredRows = useMemo(
     () => (rows || []).filter((r) => matchesDeliveryScheduleFilters(r, filters)),
     [rows, filters],
   );
+  const visible = useMemo(
+    () => sortDeliveryRows(filteredRows, sort),
+    [filteredRows, sort],
+  );
+  const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
 
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
-  const reset = () => setFilters(EMPTY_DELIVERY_FILTERS);
+  const setDraft = (key, value) => setDraftFilters((prev) => ({ ...prev, [key]: value }));
+  const onHeaderSort = (key) => setSort((prev) => cycleDeliverySort(prev, key));
+
+  const openFilterPanel = () => {
+    setDraftFilters({ ...EMPTY_DELIVERY_FILTERS, ...filters });
+    setFilterOpen(true);
+  };
+  const closeFilterPanel = () => setFilterOpen(false);
+  const applyDraftFilters = () => {
+    setFilters({ ...EMPTY_DELIVERY_FILTERS, ...draftFilters });
+    setFilterOpen(false);
+  };
+  const resetFilters = () => {
+    const empty = { ...EMPTY_DELIVERY_FILTERS };
+    setDraftFilters(empty);
+    setFilters(empty);
+  };
 
   return (
     <div className="ship-status-page" data-testid="delivery-schedule-page">
@@ -98,7 +163,17 @@ export default function DeliverySchedulePage() {
               ))}
             </select>
           </label>
-          <button type="button" className="ghost sm" onClick={reset} data-testid="ds-filter-reset">Reset</button>
+          <button
+            type="button"
+            className={"ship-tool-btn" + (activeFilterCount > 0 ? " is-active" : "")}
+            onClick={openFilterPanel}
+            data-testid="ds-filter-btn"
+            aria-label="Filter"
+          >
+            <Filter size={13} />
+            <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
+          </button>
+          <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset">Reset</button>
           <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="ds-refresh" disabled={busy}>
             <RefreshCw size={14} className={busy ? "spin" : ""} />
           </button>
@@ -109,14 +184,71 @@ export default function DeliverySchedulePage() {
         <table className="ship-table" data-testid="delivery-schedule-table">
           <thead>
             <tr>
-              <th>Tanggal Pengiriman</th>
-              <th>No PO</th>
-              <th>Customer</th>
-              <th>Shipment / Item</th>
-              <th>Deadline</th>
-              <th>Jadwal Manual</th>
-              <th>Status</th>
-              <th>Driver</th>
+              <SortableTh
+                label="Tanggal Pengiriman"
+                sortKey={DELIVERY_SORT_KEYS.effective_delivery_date}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-delivery-date"
+              />
+              <SortableTh
+                label="No PO"
+                sortKey={DELIVERY_SORT_KEYS.po_number}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-po"
+              />
+              <SortableTh
+                label="Customer"
+                sortKey={DELIVERY_SORT_KEYS.customer}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-customer"
+              />
+              <SortableTh
+                label="Deadline"
+                sortKey={DELIVERY_SORT_KEYS.deadline}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-deadline"
+              />
+              <SortableTh
+                label="Jadwal Manual"
+                sortKey={DELIVERY_SORT_KEYS.jadwal_manual}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-manual"
+              />
+              <SortableTh
+                label="Status"
+                sortKey={DELIVERY_SORT_KEYS.status}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-status"
+              />
+              <SortableTh
+                label="Driver"
+                sortKey={DELIVERY_SORT_KEYS.driver}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-driver"
+              />
+              <SortableTh
+                label="Terkirim"
+                sortKey={DELIVERY_SORT_KEYS.shipped}
+                sort={sort}
+                onCycle={onHeaderSort}
+                className="num"
+                testid="ds-sort-terkirim"
+              />
+              <SortableTh
+                label="Dapat Dikirim"
+                sortKey={DELIVERY_SORT_KEYS.shippable}
+                sort={sort}
+                onCycle={onHeaderSort}
+                className="num"
+                testid="ds-sort-dapat"
+              />
               <th>Surat Jalan</th>
               <th>Aksi</th>
             </tr>
@@ -129,11 +261,26 @@ export default function DeliverySchedulePage() {
                   {r.id ? <Link to={`/po/${r.id}`}>{r.order_number}</Link> : (r.order_number || "-")}
                 </td>
                 <td>{r.customer_name || "-"}</td>
-                <td>{r.item_label || "-"}</td>
                 <td className="mono" data-testid={`ds-deadline-${r.order_number}`}>{formatDate(r.deadline, { dateOnly: true })}</td>
                 <td className="mono" data-testid={`ds-manual-${r.order_number}`}>{r.jadwal_manual ? formatDate(r.jadwal_manual, { dateOnly: true }) : "—"}</td>
                 <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>
                 <td>{r.driver_name || "—"}</td>
+                <td>
+                  <ProgressCell
+                    pct={r.percent_delivered_display ?? r.percent_delivered}
+                    tone={terkirimTone(r.percent_delivered_display ?? r.percent_delivered)}
+                    testid={`ds-terkirim-${r.order_number}`}
+                    title={`Terkirim ${r.qty_delivered ?? 0} / ${r.qty_total ?? 0}`}
+                  />
+                </td>
+                <td>
+                  <ProgressCell
+                    pct={r.percent_ready_to_ship_display ?? r.percent_ready_to_ship}
+                    tone="ready"
+                    testid={`ds-dapat-${r.order_number}`}
+                    title={`Dicetak operator ${r.qty_printed_operator ?? 0} / ${r.print_qty_total ?? 0}`}
+                  />
+                </td>
                 <td>
                   <SuratJalanViewButton
                     order={{ id: r.id, po_number: r.order_number, customer_name: r.customer_name, sj_files: r.sj_files }}
@@ -163,7 +310,7 @@ export default function DeliverySchedulePage() {
               </tr>
             ))}
             {!visible.length && !busy && (
-              <tr><td colSpan={10} className="empty-state">Tidak ada jadwal pengiriman.</td></tr>
+              <tr><td colSpan={11} className="empty-state">Tidak ada jadwal pengiriman.</td></tr>
             )}
           </tbody>
         </table>
@@ -175,6 +322,86 @@ export default function DeliverySchedulePage() {
         onClose={() => setLocRow(null)}
         onSaved={() => load()}
       />
+
+      {filterOpen && (
+        <div
+          className="modal modal-viewport-safe-wrap"
+          role="dialog"
+          aria-modal="true"
+          data-testid="ds-filter-panel"
+          onClick={(e) => e.target === e.currentTarget && closeFilterPanel()}
+        >
+          <div className="modal-inner modal-viewport-safe ship-filter-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3>Filter Jadwal Pengiriman</h3>
+              <button type="button" className="icon-button" onClick={closeFilterPanel} aria-label="Tutup" data-testid="ds-filter-close">
+                <X size={16} />
+              </button>
+            </header>
+            <div className="ship-filter-panel-body" data-testid="ds-filter-panel-body">
+              <label className="ship-filter-field">
+                <span>Nama Customer</span>
+                <input type="text" value={draftFilters.customer} onChange={(e) => setDraft("customer", e.target.value)} placeholder="Cari customer" data-testid="ds-adv-customer" />
+              </label>
+              <label className="ship-filter-field">
+                <span>No PO</span>
+                <input type="text" value={draftFilters.po} onChange={(e) => setDraft("po", e.target.value)} placeholder="Cari No PO" data-testid="ds-adv-po" />
+              </label>
+              <div className="ship-filter-range">
+                <span className="ship-filter-range-label">Tanggal Pengiriman</span>
+                <div className="ship-filter-range-row">
+                  <label className="ship-filter-field">
+                    <span>Dari</span>
+                    <input type="date" value={draftFilters.dateFrom} onChange={(e) => setDraft("dateFrom", e.target.value)} data-testid="ds-adv-from" />
+                  </label>
+                  <label className="ship-filter-field">
+                    <span>Sampai</span>
+                    <input type="date" value={draftFilters.dateTo} onChange={(e) => setDraft("dateTo", e.target.value)} data-testid="ds-adv-to" />
+                  </label>
+                </div>
+              </div>
+              <label className="ship-filter-field">
+                <span>Status</span>
+                <select value={draftFilters.status} onChange={(e) => setDraft("status", e.target.value)} data-testid="ds-adv-status">
+                  {DELIVERY_SCHEDULE_STATUS_OPTIONS.map((o) => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="ship-filter-field">
+                <span>Driver</span>
+                <input type="text" value={draftFilters.driver} onChange={(e) => setDraft("driver", e.target.value)} placeholder="Cari driver" data-testid="ds-adv-driver" />
+              </label>
+              <label className="ship-filter-field">
+                <span>Terkirim</span>
+                <select value={draftFilters.terkirim || "all"} onChange={(e) => setDraft("terkirim", e.target.value)} data-testid="ds-adv-terkirim">
+                  <option value="all">Semua</option>
+                  <option value="none">Belum Terkirim</option>
+                  <option value="partial">Terkirim Sebagian</option>
+                  <option value="full">Terkirim 100%</option>
+                </select>
+              </label>
+              <label className="ship-filter-field">
+                <span>Dapat Dikirim</span>
+                <select value={draftFilters.dapatDikirim || "all"} onChange={(e) => setDraft("dapatDikirim", e.target.value)} data-testid="ds-adv-dapat">
+                  <option value="all">Semua</option>
+                  <option value="none">Tidak Dapat Dikirim</option>
+                  <option value="partial">Dapat Dikirim Sebagian</option>
+                  <option value="full">Dapat Dikirim 100%</option>
+                </select>
+              </label>
+            </div>
+            <footer className="ship-filter-panel-foot" data-testid="ds-filter-panel-foot">
+              <button type="button" className="ship-reset-btn" onClick={resetFilters} data-testid="ds-adv-reset">
+                Reset Filter
+              </button>
+              <button type="button" className="primary sm" onClick={applyDraftFilters} data-testid="ds-filter-apply">
+                Terapkan Filter
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

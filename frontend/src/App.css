@@ -3537,6 +3537,39 @@ html:has(.ship-status-page) #root{
 .ship-reset-btn{
   min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer;
 }
+.ship-tool-btn{
+  min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-family:'IBM Plex Sans',sans-serif;font-weight:600;
+}
+.ship-tool-btn.is-active{
+  border-color:#1a9aa0;color:#0f6e73;background:#e8f7f7;
+}
+.ship-th-sort{
+  display:inline-flex;align-items:center;gap:4px;max-width:100%;
+  margin:0;padding:0;border:0;background:transparent;color:inherit;
+  font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer;white-space:nowrap;
+}
+.ship-th-sort svg{flex:0 0 auto;opacity:.55}
+.ship-th-sort.is-active{color:#b8f3f0}
+.ship-th-sort.is-active svg{opacity:1;color:#7fe0dc}
+.ship-table thead th.num .ship-th-sort{justify-content:center;width:100%}
+.ship-filter-modal{max-width:520px;width:100%}
+.ship-filter-panel-body{
+  display:grid;gap:10px;padding:14px 18px;overflow-y:auto;min-height:0;flex:1 1 auto;
+}
+.ship-filter-panel-body .ship-filter-field input,
+.ship-filter-panel-body .ship-filter-field select{
+  min-height:28px;padding:3px 8px;font-size:12.5px;border:1px solid #c5ced6;background:#f4f6f8;color:#4a5560;border-radius:3px;width:100%;
+}
+.ship-filter-range{display:grid;gap:6px}
+.ship-filter-range-label{
+  display:block;font:10px/1.4 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#6a7680;
+}
+.ship-filter-range-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ship-filter-panel-foot{
+  display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 18px;
+  border-top:1px solid #dbe2e8;background:#fff;flex-shrink:0;
+}
 .ship-status-grid{
   flex:1 1 0;min-height:0;overflow:auto;width:100%;border:1px solid #c5ced6;
   -webkit-overflow-scrolling:touch;overscroll-behavior:contain;

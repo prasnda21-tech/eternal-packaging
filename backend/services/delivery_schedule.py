@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.dashboard_today import wib_today
+from services.shipment_status import shipment_status_row
 
 STATUS_PENDING = "pending"
 STATUS_SCHEDULED = "scheduled"
@@ -41,9 +42,15 @@ SCHEDULE_PROJECTION = {
     "current_stage": 1,
     "delivered_at": 1,
     "qty_delivered": 1,
+    "total_quantity": 1,
     "line_items.name": 1,
+    "line_items.quantity": 1,
+    "line_items.production_process": 1,
+    "operator_splits.qty_completed": 1,
+    "operator_splits.line_idx": 1,
     "shipments.id": 1,
     "shipments.number": 1,
+    "shipments.lines": 1,
     "loading_checklist.driver_name": 1,
     "cancelled": 1,
 }
@@ -175,6 +182,8 @@ def _driver_name(order: dict) -> str:
 
 def schedule_row(order: dict, today: Optional[str] = None) -> dict:
     code = schedule_status_code(order, today)
+    # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
+    ship = shipment_status_row(order)
     return {
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
@@ -187,6 +196,14 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
         "status_label": schedule_status_label(code),
         "driver_name": _driver_name(order) or None,
         "delivery_status": order.get("delivery_status") or "",
+        "qty_total": ship.get("qty_total"),
+        "qty_delivered": ship.get("qty_delivered"),
+        "qty_printed_operator": ship.get("qty_printed_operator"),
+        "print_qty_total": ship.get("print_qty_total"),
+        "percent_delivered": ship.get("percent_delivered"),
+        "percent_delivered_display": ship.get("percent_delivered_display"),
+        "percent_ready_to_ship": ship.get("percent_ready_to_ship"),
+        "percent_ready_to_ship_display": ship.get("percent_ready_to_ship_display"),
     }
 
 
