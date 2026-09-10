@@ -497,6 +497,8 @@
 .line-item:last-child{border-bottom:0}
 .line-item strong{font-size:15px}
 .line-item .mono{font:11px 'IBM Plex Mono';color:var(--soft);margin-left:12px}
+.line-product-replace{margin-top:4px}
+.line-product-replace .error{color:#b42318;margin:0}
 .li-meta{display:flex;gap:22px;color:var(--soft);font-size:13px;flex-wrap:wrap}
 .li-meta span{display:flex;align-items:center;gap:5px}
 .li-notes{margin:0;color:var(--soft);font-size:13px;font-style:italic}

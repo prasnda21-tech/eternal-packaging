@@ -1089,6 +1089,11 @@ async def get_order(order_id: str, user=Depends(current_user)):
     _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
     attach_schedule_snapshot(order)
     order["sales_delivery_summary"] = _sales_delivery_summary
+    try:
+        from services.line_product_replacement import evaluate_all_line_product_replacements
+        order["line_product_replace"] = await evaluate_all_line_product_replacements(db, order)
+    except Exception:
+        order["line_product_replace"] = []
     _strip_tracking_secret(order)
     return {"order": _strip_sj_bytes(order)}
 
@@ -7895,6 +7900,154 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     new_order.pop("_id", None)
     await _audit_po(new_order, "sales_order.create", user, note=f"Buat Pesanan Penjualan {po_num}")
     return {"order": new_order, "message": "Pesanan Penjualan berhasil dibuat"}
+
+
+class LineProductReplacePayload(BaseModel):
+    """Exact catalog identity only — never product name."""
+    master_item_id: Optional[str] = None
+    accurate_item_id: Optional[str] = None
+    # Optional explicit process — if provided must match source line class.
+    production_process: Optional[str] = None
+
+
+@api_router.patch("/sales-orders/{order_id}/lines/{line_idx}/product")
+async def replace_sales_order_line_product(
+    order_id: str,
+    line_idx: int,
+    payload: LineProductReplacePayload,
+    user=Depends(current_user),
+):
+    """Replace product identity on an exact order line (safe Path 1 lock).
+
+    Permission: po.edit (not production.route.edit).
+    Preserves line_idx; does not rewrite SJ/loading/delivery/stock history.
+    """
+    await _require_perm(user, "po.edit")
+
+    from services.line_product_replacement import (
+        apply_product_fields_to_line,
+        evaluate_all_line_product_replacements,
+        evaluate_line_product_replacement,
+        line_production_process,
+        map_master_to_line_fields,
+        current_product_snapshot,
+        reject_cross_type_explicit,
+        resolve_replacement_master,
+        REASON_CROSS_TYPE,
+        MSG_CROSS_TYPE,
+        REASON_SAME_PRODUCT,
+        MSG_SAME,
+    )
+
+    # Authoritative re-load at write time (race safety).
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+
+    lis = order.get("line_items") or []
+    if line_idx < 0 or line_idx >= len(lis) or not isinstance(lis[line_idx], dict):
+        raise HTTPException(400, "Line item tidak ditemukan.")
+
+    source_li = lis[line_idx]
+    source_process = line_production_process(source_li)
+    reject_cross_type_explicit(source_process, payload.production_process)
+
+    guard = await evaluate_line_product_replacement(db, order, line_idx)
+    if not guard["allowed"]:
+        raise HTTPException(
+            409,
+            {
+                "code": guard["reason_code"],
+                "message": guard["reason_message"],
+                "line_idx": guard["line_idx"],
+                "production_process": guard["production_process"],
+                "downstream_sources": guard.get("downstream_sources") or [],
+            },
+        )
+
+    master = await resolve_replacement_master(
+        db,
+        master_item_id=payload.master_item_id,
+        accurate_item_id=payload.accurate_item_id,
+    )
+    master_proc = (master.get("production_process") or "").strip().lower()
+    if master_proc in ("print", "non_print") and master_proc != source_process:
+        raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+
+    mapped = map_master_to_line_fields(master)
+    if not mapped.get("name"):
+        raise HTTPException(400, "Produk target tidak memiliki nama yang valid.")
+    if not mapped.get("accurate_item_id") and not mapped.get("master_item_id"):
+        raise HTTPException(400, "Produk target tidak memiliki identitas kanonis.")
+
+    before = current_product_snapshot(source_li)
+    same_aid = (
+        before.get("accurate_item_id")
+        and mapped.get("accurate_item_id")
+        and str(before["accurate_item_id"]) == str(mapped["accurate_item_id"])
+    )
+    same_mid = (
+        before.get("master_item_id")
+        and mapped.get("master_item_id")
+        and str(before["master_item_id"]) == str(mapped["master_item_id"])
+        and not mapped.get("accurate_item_id")
+        and not before.get("accurate_item_id")
+    )
+    if same_aid or same_mid:
+        raise HTTPException(400, {"code": REASON_SAME_PRODUCT, "message": MSG_SAME})
+
+    # Final race re-check immediately before persist
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not fresh:
+        raise HTTPException(404, "PO tidak ditemukan")
+    race = await evaluate_line_product_replacement(db, fresh, line_idx)
+    if not race["allowed"]:
+        raise HTTPException(
+            409,
+            {
+                "code": race["reason_code"],
+                "message": race["reason_message"],
+                "line_idx": race["line_idx"],
+                "production_process": race["production_process"],
+                "downstream_sources": race.get("downstream_sources") or [],
+            },
+        )
+    fresh_lis = list(fresh.get("line_items") or [])
+    if line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
+        raise HTTPException(400, "Line item tidak ditemukan.")
+
+    mutated = apply_product_fields_to_line(fresh_lis[line_idx], mapped)
+    for keep in ("quantity", "production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
+        if keep in fresh_lis[line_idx]:
+            mutated[keep] = fresh_lis[line_idx].get(keep)
+    if line_production_process(mutated) != source_process:
+        raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+
+    fresh_lis[line_idx] = mutated
+    fresh["line_items"] = fresh_lis
+    await _persist_order(fresh)
+    after = current_product_snapshot(mutated)
+    await _audit_po(
+        fresh,
+        "sales_order.line_product.replace",
+        user,
+        before={"line_idx": line_idx, "product": before},
+        after={"line_idx": line_idx, "product": after},
+        note=f"Ganti barang line_idx={line_idx}",
+    )
+
+    eligibility = await evaluate_all_line_product_replacements(db, fresh)
+    fresh["line_product_replace"] = eligibility
+    return {
+        "order": fresh,
+        "line_idx": line_idx,
+        "line": mutated,
+        "before": before,
+        "after": after,
+        "eligibility": eligibility[line_idx] if line_idx < len(eligibility) else None,
+        "message": "Barang berhasil diganti",
+    }
 
 
 def _mongo_array_nonempty_expr(field: str) -> dict:

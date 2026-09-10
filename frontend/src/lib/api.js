@@ -194,6 +194,8 @@ export const api = {
       .then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
+  replaceSalesOrderLineProduct: (orderId, lineIdx, payload) =>
+    client.patch(`/sales-orders/${orderId}/lines/${lineIdx}/product`, payload).then((r) => r.data),
   masterItemDetail: (id) => client.get(`/master-items/${encodeURIComponent(id)}/detail`).then((r) => r.data),
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
