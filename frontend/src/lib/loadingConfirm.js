@@ -15,6 +15,21 @@ function packedQtyForLine(order, snap, idx) {
   return 0;
 }
 
+function isPrintLine(li) {
+  return String(li?.production_process || "print").toLowerCase() !== "non_print";
+}
+
+/** Physical qty eligible for Loading: packed for cetak; PO qty for non-cetak (skip Packing). */
+function physicalQtyForLoadingLine(order, snap, idx, li, qtyPo) {
+  if (!isPrintLine(li)) {
+    if (snap?.loading_cap != null && snap.loading_cap !== "") {
+      return Number(snap.loading_cap) || 0;
+    }
+    return qtyPo;
+  }
+  return packedQtyForLine(order, snap, idx);
+}
+
 export function loadingPoLines(order, selectedSjId = null) {
   const lis = Array.isArray(order?.line_items) ? order.line_items : [];
   const snapshot = Array.isArray(order?.shipment_lines) ? order.shipment_lines : [];
@@ -43,6 +58,7 @@ export function loadingPoLines(order, selectedSjId = null) {
     const snap = snapshot.find((r) => Number(r.line_idx) === idx) || {};
     const qtyPo = Number(li.quantity ?? snap.qty_po ?? 0) || 0;
     const packed = packedQtyForLine(order, snap, idx);
+    const physical = physicalQtyForLoadingLine(order, snap, idx, li, qtyPo);
 
     let sjLineQty = 0;
     if (matchingSj && Array.isArray(matchingSj.lines) && matchingSj.lines.length) {
@@ -52,7 +68,7 @@ export function loadingPoLines(order, selectedSjId = null) {
       sjLineQty = Number(matchingSj.total_qty ?? matchingSj.qty ?? 0) || 0;
     } else if (!matchingSj && !files.length) {
       const loadedSnap = Number(snap.loaded ?? 0) || 0;
-      const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
+      const cap = qtyPo > 0 ? Math.min(physical, qtyPo) : physical;
       const availSnap = snap.available_loading != null ? Number(snap.available_loading) : Math.max(0, cap - loadedSnap);
       return {
         line_idx: idx,
@@ -60,8 +76,9 @@ export function loadingPoLines(order, selectedSjId = null) {
         item_code: li.item_code || snap.item_code || "",
         accurate_item_id: li.accurate_item_id || snap.accurate_item_id || "",
         color: li.color || snap.color || "",
+        production_process: isPrintLine(li) ? "print" : "non_print",
         qty_po: qtyPo,
-        qty_sj: packed,
+        qty_sj: physical,
         packed,
         loaded: loadedSnap,
         available: Math.max(0, availSnap),
@@ -85,7 +102,7 @@ export function loadingPoLines(order, selectedSjId = null) {
       }
     }
 
-    const cap = qtyPo > 0 ? Math.min(packed, qtyPo) : packed;
+    const cap = qtyPo > 0 ? Math.min(physical, qtyPo) : physical;
     const physicalAvailable = Math.max(0, cap - totalLoadedLine);
     const sjAvailable = Math.max(0, sjLineQty - loadedForSj);
     const available = Math.min(sjAvailable, physicalAvailable);
@@ -96,6 +113,7 @@ export function loadingPoLines(order, selectedSjId = null) {
       item_code: li.item_code || snap.item_code || "",
       accurate_item_id: li.accurate_item_id || snap.accurate_item_id || "",
       color: li.color || snap.color || "",
+      production_process: isPrintLine(li) ? "print" : "non_print",
       qty_po: qtyPo,
       qty_sj: sjLineQty,
       packed,
@@ -188,12 +206,26 @@ export function validateLoadingDraftLines(rows, poLines) {
     if (avail != null && qty > avail) {
       if (avail <= 0) {
         if (po?.physical_available <= 0) {
-          return { ok: false, error: "Loading tidak dapat dilakukan karena belum ada qty Packing.", lines: [] };
+          const nonPrint = String(po?.production_process || "").toLowerCase() === "non_print";
+          return {
+            ok: false,
+            error: nonPrint
+              ? "Loading tidak dapat dilakukan karena qty eligible belum tersedia."
+              : "Loading tidak dapat dilakukan karena belum ada qty Packing.",
+            lines: [],
+          };
         }
         return { ok: false, error: "Qty Loading belum bisa diisi. Seluruh kuantitas Surat Jalan untuk item ini sudah selesai di-loading.", lines: [] };
       }
       if (po?.physical_available != null && qty > po.physical_available) {
-        return { ok: false, error: `Qty melebihi qty Packing yang tersedia (${po.physical_available}).`, lines: [] };
+        const nonPrint = String(po?.production_process || "").toLowerCase() === "non_print";
+        return {
+          ok: false,
+          error: nonPrint
+            ? `Qty melebihi qty eligible yang tersedia (${po.physical_available}).`
+            : `Qty melebihi qty Packing yang tersedia (${po.physical_available}).`,
+          lines: [],
+        };
       }
       return { ok: false, error: `Qty melebihi sisa Surat Jalan yang siap loading (${avail}).`, lines: [] };
     }

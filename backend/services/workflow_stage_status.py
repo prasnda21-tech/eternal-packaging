@@ -235,8 +235,11 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
     if idx == STAGE_PACKING:
         if req_print and not sample_ok(order):
             return {"state": "pending", "label": "Menunggu"}
-        if not req_print and not (group2_complete(order) and penjadwalan_done(order)):
-            return {"state": "pending", "label": "Menunggu"}
+        if not req_print:
+            if not (group2_complete(order) and penjadwalan_done(order)):
+                return {"state": "pending", "label": "Menunggu"}
+            # Full non-cetak: Packing di-skip — lanjut SJ/Loading tanpa packed_qty.
+            return {"state": "done", "label": "Dilewati"}
         if cs >= 12:
             return {"state": "done", "label": "Selesai"}
         if _packing_qty_input(order) and cs == idx:
