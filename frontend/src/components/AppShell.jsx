@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
@@ -110,7 +110,7 @@ const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, e
   );
 });
 
-function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate }) {
+function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate, badge }) {
   return (
     <NavLink
       to={to}
@@ -122,6 +122,11 @@ function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate }) {
       onClick={onNavigate}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
+      {badge ? (
+        <span className="rail-unread-badge" data-testid={`${testid}-unread`}>
+          {badge > 99 ? "99+" : badge}
+        </span>
+      ) : null}
       <span className="rail-tooltip">{label}</span>
     </NavLink>
   );
@@ -147,6 +152,7 @@ export default function AppShell() {
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
   const [health, setHealth] = useState({ ok: null, checkedAt: null });
+  const [chatUnread, setChatUnread] = useState(0);
   const [flyoutPos, setFlyoutPos] = useState({ left: 64, top: 8, scrimLeft: 64, scrimTop: 0, placement: "right" });
   const sidebarRef = useRef(null);
   const flyoutRef = useRef(null);
@@ -166,6 +172,21 @@ export default function AppShell() {
     const t = setInterval(check, 30000); // Reuse existing polling cadence (30s)
     return () => { cancelled = true; clearInterval(t); };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadUnread = async () => {
+      try {
+        const r = await api.chatUnreadSummary();
+        if (!cancelled) setChatUnread(Number(r?.total_unread || 0));
+      } catch (_) {
+        if (!cancelled) setChatUnread(0);
+      }
+    };
+    loadUnread();
+    const t = setInterval(loadUnread, 30000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [location.pathname]);
 
   useEffect(() => {
     setActiveSidebarMenu(null);
@@ -256,6 +277,7 @@ export default function AppShell() {
   const settingsItems = settingsMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
+  const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
   const showRouteOptimizer = hasPerm(NAV_KEYS.routeOptimizer) || hasPerm("route_optimizer.view") || hasPerm("route_optimizer.create") || hasPerm("route_optimizer.manage");
   const showSettings = hasPerm(NAV_KEYS.settings);
 
@@ -289,6 +311,16 @@ export default function AppShell() {
               testid="top-nav-dashboard"
               label="Dashboard"
               icon={LayoutDashboard}
+              onNavigate={closeFlyout}
+            />
+          )}
+          {showChat && (
+            <RailNavLink
+              to="/chat"
+              testid="top-nav-chat"
+              label="Chat"
+              icon={MessageCircle}
+              badge={chatUnread > 0 ? chatUnread : 0}
               onNavigate={closeFlyout}
             />
           )}

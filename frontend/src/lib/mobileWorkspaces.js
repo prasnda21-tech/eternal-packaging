@@ -22,6 +22,7 @@ export const MOBILE_NAV_ITEMS = [
     to: "/m/schedule",
     anyOf: ["schedule.view", NAV_KEYS.schedule],
   },
+  { id: "chat", label: "Chat", to: "/m/chat", anyOf: [NAV_KEYS.chat, "chat.use"] },
   { id: "notifications", label: "Notifikasi", to: "/m/notifications" },
   { id: "profile", label: "Profil", to: "/m/profile" },
 ];
@@ -60,6 +61,7 @@ export function activeMobileNav(pathname) {
   const path = String(pathname || "");
   if (path.startsWith("/m/orders")) return "orders";
   if (path.startsWith("/m/schedule")) return "schedule";
+  if (path.startsWith("/m/chat")) return "chat";
   if (path.startsWith("/m/notifications")) return "notifications";
   if (path.startsWith("/m/profile")) return "profile";
   if (path === "/m" || path.startsWith("/m/tasks")) return "tasks";

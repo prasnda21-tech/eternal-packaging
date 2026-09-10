@@ -65,6 +65,9 @@ import HrPayroll from "./pages/HrPayroll";
 import FormShowcase from "./pages/FormShowcase";
 import OptimasiRute from "./pages/OptimasiRute";
 import OptimasiRuteEditor from "./pages/OptimasiRuteEditor";
+import ChatPage from "./pages/ChatPage";
+import MobileChatPage from "./mobile/MobileChatPage";
+import MobileChatRoomPage from "./mobile/MobileChatRoomPage";
 import "@/App.css";
 import "@/productionSheet.css";
 import "@/ui-system.css";
@@ -192,10 +195,14 @@ export default function App() {
             <Route path="/m/orders/:id" element={<MobileOrderDetailPage />} />
             <Route path="/m/schedule" element={<MobileProductionSchedulePage />} />
             <Route path="/m/notifications" element={<MobileNotificationsPage />} />
+            <Route path="/m/chat" element={<MobileChatPage />} />
+            <Route path="/m/chat/:roomId" element={<MobileChatRoomPage />} />
             <Route path="/m/profile" element={<MobileProfilePage />} />
           </Route>
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
+            <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />

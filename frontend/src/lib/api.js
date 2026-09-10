@@ -591,6 +591,35 @@ export const api = {
   optimizeIndependentRoute: (id, payload = {}) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/optimize`, payload).then((r) => r.data),
   reorderIndependentRoute: (id, payload) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/reorder`, payload).then((r) => r.data),
   listIndependentRouteVersions: (id) => client.get(`/route-optimizer/routes/${encodeURIComponent(id)}/versions`).then((r) => r.data),
+
+  // Internal Work Chat
+  chatUnreadSummary: () => client.get("/chat/unread-summary").then((r) => r.data),
+  chatListRooms: (filter) => client.get("/chat/rooms", { params: filter ? { filter } : {} }).then((r) => r.data),
+  chatGetRoom: (roomId) => client.get(`/chat/rooms/${encodeURIComponent(roomId)}`).then((r) => r.data),
+  chatCreateDm: (peerUserId) => client.post("/chat/rooms/dm", { peer_user_id: peerUserId }).then((r) => r.data),
+  chatCreateCustomGroup: (payload) => client.post("/chat/rooms/custom", payload).then((r) => r.data),
+  chatCreateWorkRoom: (payload) => client.post("/chat/rooms/work", payload).then((r) => r.data),
+  chatUpdateRoom: (roomId, payload) => client.patch(`/chat/rooms/${encodeURIComponent(roomId)}`, payload).then((r) => r.data),
+  chatArchiveRoom: (roomId) => client.post(`/chat/rooms/${encodeURIComponent(roomId)}/archive`).then((r) => r.data),
+  chatAddMembers: (roomId, userIds) => client.post(`/chat/rooms/${encodeURIComponent(roomId)}/members`, { user_ids: userIds }).then((r) => r.data),
+  chatRemoveMembers: (roomId, userIds) => client.delete(`/chat/rooms/${encodeURIComponent(roomId)}/members`, { data: { user_ids: userIds } }).then((r) => r.data),
+  chatListMessages: (roomId, params = {}) => client.get(`/chat/rooms/${encodeURIComponent(roomId)}/messages`, { params }).then((r) => r.data),
+  chatSendMessage: (roomId, payload) => client.post(`/chat/rooms/${encodeURIComponent(roomId)}/messages`, payload).then((r) => r.data),
+  chatEditMessage: (messageId, payload) => client.patch(`/chat/messages/${encodeURIComponent(messageId)}`, payload).then((r) => r.data),
+  chatDeleteMessage: (messageId) => client.delete(`/chat/messages/${encodeURIComponent(messageId)}`).then((r) => r.data),
+  chatMarkRead: (roomId, sequence) => client.post(`/chat/rooms/${encodeURIComponent(roomId)}/read`, { sequence }).then((r) => r.data),
+  chatSearchUsers: (q) => client.get("/chat/users", { params: { q: q || "" } }).then((r) => r.data),
+  chatSearchWorkOrders: (q) => client.get("/chat/work/orders", { params: { q: q || "" } }).then((r) => r.data),
+  chatWorkOrderLines: (orderId) => client.get(`/chat/work/orders/${encodeURIComponent(orderId)}/lines`).then((r) => r.data),
+  chatWorkOrderTasks: (orderId, lineIdx) => client.get(`/chat/work/orders/${encodeURIComponent(orderId)}/tasks`, {
+    params: lineIdx == null || lineIdx === "" ? {} : { line_idx: lineIdx },
+  }).then((r) => r.data),
+  chatUploadAttachment: (roomId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/chat/rooms/${encodeURIComponent(roomId)}/attachments`, form).then((r) => r.data);
+  },
+  chatAttachmentDownloadUrl: (attachmentId) => `${API}/chat/attachments/${encodeURIComponent(attachmentId)}/download`,
 };
 
 export default api;

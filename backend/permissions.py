@@ -180,6 +180,9 @@ PERMISSION_CATALOG = [
     ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
     ("Kas & Bank", "cash_bank.reverse", "Reversal Kas & Bank"),
     ("Kas & Bank", "cash_bank.reconcile", "Rekonsiliasi Kas & Bank"),
+    ("Chat", "chat.use", "Gunakan Chat Internal"),
+    ("Chat", "chat.group.manage", "Kelola Grup Chat"),
+    ("Chat", "chat.moderate", "Moderasi Chat"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -253,6 +256,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.cash_bank.transfers", "Menu Transfer Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.mutasi", "Menu Mutasi Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.reconciliation", "Menu Rekonsiliasi Bank"),
+    ("Akses Menu", "nav.chat", "Menu Chat"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -640,6 +644,9 @@ for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
     if _role == "admin":
         continue
     ROLE_DEFAULT_PERMISSIONS[_role] = sorted(set(_keys) | derived_nav_permissions(set(_keys)))
+
+for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
+    ROLE_DEFAULT_PERMISSIONS[_role] = sorted(set(_keys) | {"chat.use", "nav.chat"})
 
 ROLE_LABELS = {
     "admin": "Admin",

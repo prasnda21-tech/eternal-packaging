@@ -68,11 +68,13 @@ export const NAV_KEYS = {
   cashBankTransfers: "nav.cash_bank.transfers",
   cashBankMutasi: "nav.cash_bank.mutasi",
   cashBankReconciliation: "nav.cash_bank.reconciliation",
+  chat: "nav.chat",
   settings: "nav.settings",
 };
 
 export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.dashboard, label: "Dashboard", parent: null },
+  { key: NAV_KEYS.chat, label: "Chat", parent: null },
   { key: NAV_KEYS.production, label: "Produksi", parent: null },
   { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliverySchedule, label: "Jadwal Pengiriman", parent: NAV_KEYS.production },
