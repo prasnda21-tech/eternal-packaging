@@ -4049,3 +4049,28 @@ button.ghost.sm.icon{padding:4px 6px}
 
 
 
+
+/* Delivery → Route Optimizer bridge */
+.iro-source{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#e2e8f0;color:#0f172a}
+.iro-source.is-delivery_schedule{background:#ccfbf1;color:#115e59}
+.iro-source.is-manual{background:#e2e8f0;color:#334155}
+.iro-danger,.iro-danger-btn{color:#b91c1c!important}
+.iro-row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.mds-opt-badge{display:inline-flex;flex-direction:column;gap:2px;font-size:11px;font-weight:600;line-height:1.2}
+.mds-opt-badge.is-belum_dioptimasi{color:#64748b}
+.mds-opt-badge.is-sudah_dioptimasi{color:#0f766e}
+.mds-opt-badge.is-perlu_optimasi_ulang{color:#b45309}
+.mds-opt-link{font-size:11px;font-weight:700;color:#1d4ed8;text-decoration:underline}
+.mds-review-page{display:grid;gap:12px}
+.mds-review-toolbar,.mds-review-actions,.mds-review-summary,.mds-review-groups{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.mds-review-summary{font-size:12px;font-weight:600;border:1px solid #cbd5e1;border-radius:10px;padding:8px 10px;background:#f8fafc}
+.mds-review-group{border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px;font-size:12px;display:flex;gap:8px}
+.mds-review-list{display:grid;gap:0;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;background:#fff}
+.mds-review-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;align-items:start;padding:10px;border-bottom:1px solid #e2e8f0}
+.mds-review-row:last-child{border-bottom:0}
+.mds-review-row.is-ineligible{background:#fff7ed}
+.mds-review-title{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.mds-review-meta{display:flex;flex-wrap:wrap;gap:6px 10px;font-size:11px;color:#475569;margin-top:4px}
+.mds-review-reason{margin-top:4px;font-size:12px;font-weight:700;color:#c2410c}
+.mds-review-result{border:1px solid #99f6e4;background:#f0fdfa;border-radius:12px;padding:12px;display:grid;gap:8px}
+.mds-review-result-row{display:flex;gap:10px;flex-wrap:wrap;font-size:12px}

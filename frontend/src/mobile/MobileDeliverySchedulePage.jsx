@@ -19,10 +19,13 @@ import {
 import {
   MOBILE_DELIVERY_SCHEDULE_COLS,
   canEditMobileDeliveryScheduleLocation,
+  canOptimizeFromDeliverySchedule,
   canViewMobileDeliverySchedule,
   mobileDeliverySheetColumnStyle,
+  mobileScheduleReviewHref,
+  optimizationStatusMeta,
 } from "../lib/mobileDeliverySchedule";
-import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
+import { ROUTE_PERMS } from "../lib/independentRoute";import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
 import {
   OPS_QUICK_FILTERS,
   deliveryOpsBadge,
@@ -117,6 +120,7 @@ export default function MobileDeliverySchedulePage() {
   const { hasPerm } = useAuth();
   const allowed = canViewMobileDeliverySchedule(hasPerm);
   const canSetLocation = canEditMobileDeliveryScheduleLocation(hasPerm);
+  const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
   const saved = readJsonSession(MOBILE_DELIVERY_FILTER_KEY, {
     filters: EMPTY_DELIVERY_FILTERS,
     quick: "semua_aktif",
@@ -239,29 +243,31 @@ export default function MobileDeliverySchedulePage() {
                   </button>
                 ))}
               </div>
-              <button
-                type="button"
-                className={"mop-btn-ghost mop-ds-filter-btn" + (activeFilterCount > 0 ? " is-active" : "")}
-                onClick={openFilterPanel}
-                data-testid="mds-filter-btn"
-                aria-label="Filter"
-                aria-expanded={filterOpen}
-              >
-                <Filter size={13} aria-hidden />
-                <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
-              </button>
+              <div className="mop-schedule-filter-actions" data-testid="mds-filter-actions">
+                <button
+                  type="button"
+                  className={"mop-btn-ghost mop-ds-filter-btn" + (activeFilterCount > 0 ? " is-active" : "")}
+                  onClick={openFilterPanel}
+                  data-testid="mds-filter-btn"
+                  aria-label="Filter"
+                  aria-expanded={filterOpen}
+                >
+                  <Filter size={13} aria-hidden />
+                  <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
+                </button>
+                <button
+                  type="button"
+                  className="mop-btn-ghost mop-schedule-reset"
+                  onClick={resetFilters}
+                  disabled={activeFilterCount === 0 && quick === "semua_aktif"}
+                  data-testid="mds-filter-reset"
+                >
+                  Reset
+                </button>
+              </div>
               <span className="mop-schedule-count" data-testid="mds-count">
                 {visible.length} / {rows.length} entri
               </span>
-              <button
-                type="button"
-                className="mop-btn-ghost mop-schedule-reset"
-                onClick={resetFilters}
-                disabled={activeFilterCount === 0 && quick === "semua_aktif"}
-                data-testid="mds-filter-reset"
-              >
-                Reset
-              </button>
               <button
                 type="button"
                 className="mop-btn-ghost"
@@ -273,6 +279,21 @@ export default function MobileDeliverySchedulePage() {
               >
                 <RefreshCw size={14} className={busy ? "spin" : ""} aria-hidden />
               </button>
+              {canOptimize && (
+                <button
+                  type="button"
+                  className="mop-btn-primary"
+                  data-testid="mds-optimasi-rute"
+                  disabled={busy || visible.length === 0}
+                  onClick={() => {
+                    persistScroll();
+                    const ids = visible.map((r) => r.id).filter(Boolean);
+                    navigate(mobileScheduleReviewHref(ids));
+                  }}
+                >
+                  Optimasi Rute
+                </button>
+              )}
             </div>
 
             {busy && (
@@ -393,6 +414,29 @@ export default function MobileDeliverySchedulePage() {
                             />
                           </td>
                           <td className="production-sheet-cell">{r.driver_name || "—"}</td>
+                          <td className="production-sheet-cell" data-testid={`mds-opt-${r.order_number}`}>
+                            {(() => {
+                              const meta = optimizationStatusMeta(r);
+                              return (
+                                <span className={`mds-opt-badge is-${meta.code}`} title={meta.label}>
+                                  {meta.label}
+                                  {meta.code === "sudah_dioptimasi" && meta.routeId && hasPerm(ROUTE_PERMS.view) ? (
+                                    <Link
+                                      className="mds-opt-link"
+                                      to={`/optimasi-rute/${encodeURIComponent(meta.routeId)}`}
+                                      data-testid={`mds-lihat-rute-${r.order_number}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        persistScroll();
+                                      }}
+                                    >
+                                      Lihat Rute
+                                    </Link>
+                                  ) : null}
+                                </span>
+                              );
+                            })()}
+                          </td>
                           <td className="production-sheet-cell" data-testid={`mds-status-${r.order_number}`}>
                             {r.status_label}
                           </td>

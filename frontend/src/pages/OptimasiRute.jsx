@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { MapPinned, Plus } from "lucide-react";
+import { MapPinned, Plus, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
@@ -11,13 +11,20 @@ import {
   statusLabel,
   strategyLabel,
 } from "../lib/independentRoute";
+import { sourceTypeLabel } from "../lib/deliveryRouteBridge";
 
 export default function OptimasiRute() {
   const { hasPerm } = useAuth();
   const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState("");
   const canCreate = hasPerm(ROUTE_PERMS.create) || hasPerm(ROUTE_PERMS.manage);
+  const canDelete = hasPerm(ROUTE_PERMS.editOwn) || hasPerm(ROUTE_PERMS.manage);
+
+  const load = () => api.listIndependentRoutes()
+    .then((r) => setRows(r.routes || []))
+    .catch((e) => setError(e?.response?.data?.detail || "Gagal memuat rute."));
 
   useEffect(() => {
     let cancelled = false;
@@ -27,13 +34,38 @@ export default function OptimasiRute() {
     return () => { cancelled = true; };
   }, []);
 
+  const onDelete = async (row) => {
+    if (!canDelete || !row?.id) return;
+    const ok = window.confirm(
+      "Hapus rute optimasi ini?\n\n"
+      + "• Data optimasi rute akan dihapus\n"
+      + "• Pengiriman TIDAK dihapus\n"
+      + "• Surat Jalan TIDAK dihapus\n"
+      + "• Packing / Loading / PO TIDAK diubah",
+    );
+    if (!ok) return;
+    setBusyId(row.id);
+    setError("");
+    try {
+      await api.deleteIndependentRoute(row.id);
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Gagal menghapus rute.");
+    } finally {
+      setBusyId("");
+    }
+  };
+
   return (
     <div className="iro-page" data-testid="iro-list-page">
       <div className="iro-hero">
         <div>
-          <p className="eyebrow">Perencana rute mandiri</p>
+          <p className="eyebrow">Perencana rute</p>
           <h1>Optimasi Rute</h1>
-          <p className="subhead">Buat rencana rute, tentukan titik customer secara manual, lalu optimasi urutan dengan prioritas keras. Tidak terhubung ke Pesanan Penjualan atau Pengiriman.</p>
+          <p className="subhead">
+            Buat rencana rute manual atau dari Jadwal Pengiriman, lalu optimasi urutan dengan prioritas keras.
+            Rute terhubung ke Pengiriman hanya jika dibuat dari Jadwal Pengiriman.
+          </p>
         </div>
         {canCreate && (
           <button type="button" className="iro-btn-primary" data-testid="iro-create-btn" onClick={() => navigate("/optimasi-rute/baru")}>
@@ -49,6 +81,7 @@ export default function OptimasiRute() {
           <thead>
             <tr>
               <th>Nama rute</th>
+              <th>Sumber</th>
               <th>Pembuat</th>
               <th>Tanggal</th>
               <th>Stop</th>
@@ -63,10 +96,15 @@ export default function OptimasiRute() {
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={11} className="iro-empty">Belum ada rute. Buat rencana baru tanpa butuh pengiriman aktif.</td></tr>
+              <tr><td colSpan={12} className="iro-empty">Belum ada rute. Buat rencana baru atau optimasi dari Jadwal Pengiriman.</td></tr>
             ) : rows.map((row) => (
               <tr key={row.id}>
                 <td><strong>{row.name}</strong></td>
+                <td>
+                  <span className={`iro-source is-${String(row.source_type || "manual").toLowerCase()}`} data-testid={`iro-source-${row.id}`}>
+                    {sourceTypeLabel(row.source_type)}
+                  </span>
+                </td>
                 <td>{row.created_by?.name || "—"}</td>
                 <td>{row.route_date || "—"}</td>
                 <td className="num">{row.stop_count || 0}</td>
@@ -76,8 +114,19 @@ export default function OptimasiRute() {
                 <td><span className={`iro-status is-${(row.status || "draft").toLowerCase()}`}>{statusLabel(row.status)}</span></td>
                 <td>{row.last_optimized_at ? String(row.last_optimized_at).replace("T", " ").slice(0, 16) : "—"}</td>
                 <td>{formatKm(row.estimated_distance_m)}</td>
-                <td>
-                    <Link className="iro-link" to={`/optimasi-rute/${row.id}`} data-testid={`iro-open-${row.id}`}>Buka</Link>
+                <td className="iro-row-actions">
+                  <Link className="iro-link" to={`/optimasi-rute/${row.id}`} data-testid={`iro-open-${row.id}`}>Buka</Link>
+                  {canDelete && (
+                    <button
+                      type="button"
+                      className="iro-linkish iro-danger"
+                      data-testid={`iro-delete-${row.id}`}
+                      disabled={busyId === row.id}
+                      onClick={() => onDelete(row)}
+                    >
+                      <Trash2 size={14} /> Hapus Rute
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

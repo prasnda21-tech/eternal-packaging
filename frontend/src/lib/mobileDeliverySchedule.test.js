@@ -72,6 +72,7 @@ describe("mobileDeliverySchedule access", () => {
       "shipped",
       "shippable",
       "driver",
+      "opt_route",
       "status",
       "deadline",
       "jadwal_manual",

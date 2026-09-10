@@ -125,7 +125,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-dapat-PO-100"] .mop-qty-context').textContent).toBe("dari 5.000 qty cetak");
   });
 
-  test("partial delivery keeps independent terkirim/dapat context without Optimize Rute", async () => {
+  test("partial delivery keeps independent terkirim/dapat context; Optimasi action is permission-gated", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockDeliverySchedule.mockResolvedValue({
       rows: [{
@@ -144,7 +144,26 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-terkirim-PO-100"] .mop-qty-context').textContent).toContain("5.000");
     expect(container.querySelector('[data-testid="mds-dapat-PO-100"] .mop-qty-context').textContent).toContain("qty cetak");
     expect(container.textContent).not.toContain("Optimize Rute");
-    expect(container.textContent).not.toContain("Optimasi Rute");
+    // Status column label may appear; action button requires route_optimizer.*
+    expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeFalsy();
+  });
+
+  test("PWA delivery toolbar keeps Filter/Reset/Optimasi and has no Export buttons", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "route_optimizer.create" || p === "route_optimizer.optimize"
+    ));
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => {
+      root.render(<MobileDeliverySchedulePage />);
+    });
+    expect(container.querySelector('[data-testid="mds-filter-btn"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-filter-reset"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-filter-actions"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Export Terfilter");
+    expect(container.textContent).not.toContain("Export Semua");
+    expect(container.querySelector('[data-testid="mds-export-filtered"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-export-all"]')).toBeFalsy();
   });
 
   test("view+edit shows Atur Lokasi; view-only hides it", async () => {
@@ -219,6 +238,9 @@ describe("MobileDeliverySchedulePage", () => {
     expect(src).not.toMatch(/roleName\s*===\s*['"]driver['"]/);
     expect(src).not.toMatch(/Buat Jadwal Pengiriman/);
     expect(src).not.toMatch(/Rute Saya/);
-    expect(src).not.toMatch(/Route Optimization|Optimasi Rute/);
+    // Bridge action is permission-gated via route_optimizer.*, not role name / legacy modules.
+    expect(src).toMatch(/canOptimizeFromDeliverySchedule/);
+    expect(src).toMatch(/mds-optimasi-rute/);
+    expect(src).not.toMatch(/delivery\.route\.optimize/);
   });
 });

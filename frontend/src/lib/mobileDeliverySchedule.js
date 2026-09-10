@@ -47,11 +47,52 @@ export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "shipped", label: "Terkirim", width: 72, sort: "shipped", num: true },
   { key: "shippable", label: "Dapat Dikirim", width: 80, sort: "shippable", num: true },
   { key: "driver", label: "Driver", width: 88, sort: "driver" },
+  { key: "opt_route", label: "Optimasi Rute", width: 110 },
   { key: "status", label: "Status", width: 88, sort: "status" },
   { key: "deadline", label: "Deadline", width: 78, sort: "deadline" },
   { key: "jadwal_manual", label: "Jadwal Manual", width: 78, sort: "jadwal_manual" },
   { key: "actions", label: "Aksi", width: 140 },
 ];
+
+export const ROUTE_OPT_ACTION_PERMS = [
+  "route_optimizer.create",
+  "route_optimizer.optimize",
+  "route_optimizer.manage",
+];
+
+export function canOptimizeFromDeliverySchedule(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  return ROUTE_OPT_ACTION_PERMS.some((p) => hasPerm(p));
+}
+
+export const OPT_STATUS = {
+  NONE: "belum_dioptimasi",
+  OPTIMIZED: "sudah_dioptimasi",
+  STALE: "perlu_optimasi_ulang",
+};
+
+export const OPT_STATUS_LABELS = {
+  [OPT_STATUS.NONE]: "Belum Dioptimasi",
+  [OPT_STATUS.OPTIMIZED]: "Sudah Dioptimasi",
+  [OPT_STATUS.STALE]: "Perlu Optimasi Ulang",
+};
+
+export function optimizationStatusMeta(row) {
+  const code = row?.optimization_status || OPT_STATUS.NONE;
+  return {
+    code,
+    label: row?.optimization_status_label || OPT_STATUS_LABELS[code] || OPT_STATUS_LABELS[OPT_STATUS.NONE],
+    routeId: row?.route_id || null,
+  };
+}
+
+export const MOBILE_SCHEDULE_REVIEW_PATH = "/m/delivery-schedule/review-optimasi";
+
+export function mobileScheduleReviewHref(orderIds) {
+  const ids = (orderIds || []).filter(Boolean).map(String);
+  const qs = ids.length ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
+  return `${MOBILE_SCHEDULE_REVIEW_PATH}${qs}`;
+}
 
 export function mobileDeliverySheetColumnStyle(col) {
   const w = Number(col?.width) || 80;

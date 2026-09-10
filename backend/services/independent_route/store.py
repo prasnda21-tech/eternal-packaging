@@ -22,6 +22,9 @@ from services.independent_route.constants import (
     REF_SALES_OUTLET,
     SEQ_MANUAL,
     SEQ_OPTIMIZED,
+    SOURCE_DELIVERY_SCHEDULE,
+    SOURCE_MANUAL,
+    SOURCE_TYPES,
     START_CURRENT,
     START_MODES,
     STATUS_DRAFT,
@@ -92,12 +95,28 @@ async def ensure_indexes(db) -> None:
     await db[COL_PLANS].create_index("created_by.id")
     await db[COL_PLANS].create_index("created_at")
     await db[COL_PLANS].create_index("status")
+    await db[COL_PLANS].create_index("source_type")
+    await db[COL_PLANS].create_index("deleted_at")
     await db[COL_STOPS].create_index("id", unique=True)
     await db[COL_STOPS].create_index("route_id")
     await db[COL_STOPS].create_index([("route_id", 1), ("id", 1)], unique=True)
+    await db[COL_STOPS].create_index("sales_order_id")
+    await db[COL_STOPS].create_index([("source_type", 1), ("sales_order_id", 1)])
     await db[COL_VERSIONS].create_index("id", unique=True)
     await db[COL_VERSIONS].create_index("route_id")
     await db[COL_VERSIONS].create_index([("route_id", 1), ("optimization_version", 1)], unique=True)
+
+
+def _active_plan_query(extra: dict | None = None) -> dict:
+    q = {"$or": [{"deleted_at": {"$exists": False}}, {"deleted_at": None}]}
+    if extra:
+        q = {"$and": [q, extra]}
+    return q
+
+
+def _normalize_source_type(raw) -> str:
+    val = str(raw or SOURCE_MANUAL).strip().lower()
+    return val if val in SOURCE_TYPES else SOURCE_MANUAL
 
 
 def _location_snapshot(payload: dict | None, *, required: bool = False, label: str = "Lokasi") -> Optional[dict]:
@@ -230,6 +249,13 @@ def public_stop(doc: dict, settings: dict | None = None) -> dict:
         "manual_order": doc.get("manual_order"),
         "optimized_order": doc.get("optimized_order"),
         "display_order": doc.get("display_order"),
+        "source_type": _normalize_source_type(doc.get("source_type")),
+        "sales_order_id": doc.get("sales_order_id"),
+        "delivery_id": doc.get("delivery_id"),
+        "delivery_schedule_id": doc.get("delivery_schedule_id"),
+        "driver_user_id": doc.get("driver_user_id"),
+        "order_number": doc.get("order_number"),
+        "planning_snapshot": doc.get("planning_snapshot"),
         "created_by": doc.get("created_by"),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
@@ -266,6 +292,10 @@ def public_route(doc: dict, stops: list[dict], settings: dict | None = None) -> 
         "revision": doc.get("revision") or 1,
         "stop_count": len(pub_stops),
         "missing_location_count": len(missing),
+        "source_type": _normalize_source_type(doc.get("source_type")),
+        "driver_user_id": doc.get("driver_user_id"),
+        "driver_name": doc.get("driver_name"),
+        "deleted_at": doc.get("deleted_at"),
         "created_at": doc.get("created_at"),
         "created_by": doc.get("created_by"),
         "updated_at": doc.get("updated_at"),
@@ -289,6 +319,9 @@ def public_route_list_item(doc: dict) -> dict:
         "current_optimization_version": doc.get("current_optimization_version") or 0,
         "optimization_stale": bool(doc.get("optimization_stale")),
         "sequence_overridden": bool(doc.get("sequence_overridden")),
+        "source_type": _normalize_source_type(doc.get("source_type")),
+        "driver_user_id": doc.get("driver_user_id"),
+        "driver_name": doc.get("driver_name"),
         "created_at": doc.get("created_at"),
         "created_by": doc.get("created_by"),
         "updated_at": doc.get("updated_at"),
@@ -332,15 +365,17 @@ def _resolve_priority(settings: dict, priority_id: str | None, fallback_rank=Non
 
 
 async def list_routes(db, actor: dict, perms: set) -> list[dict]:
-    query = {}
+    query = _active_plan_query()
     if not can_manage(perms):
-        query["created_by.id"] = actor["id"]
+        query = _active_plan_query({"created_by.id": actor["id"]})
     docs = await db[COL_PLANS].find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
     return [public_route_list_item(d) for d in docs]
 
 
 async def get_route(db, route_id: str, actor: dict, perms: set) -> dict:
     route = await _route_or_404(db, route_id)
+    if route.get("deleted_at"):
+        raise HTTPException(404, "Rute tidak ditemukan.")
     if not can_manage(perms) and not owns_route(route, actor):
         raise HTTPException(403, "Anda tidak punya akses ke rute ini.")
     settings = await load_settings(db)
@@ -372,6 +407,7 @@ async def create_route(db, payload: dict, actor: dict) -> dict:
         actor,
     )
     route_id = new_id("iro")
+    source_type = _normalize_source_type(payload.get("source_type"))
     doc = {
         "id": route_id,
         "name": name,
@@ -392,6 +428,10 @@ async def create_route(db, payload: dict, actor: dict) -> dict:
         "last_optimized_by": None,
         "stop_count": 0,
         "revision": 1,
+        "source_type": source_type,
+        "driver_user_id": str(payload.get("driver_user_id") or "").strip() or None,
+        "driver_name": str(payload.get("driver_name") or "").strip() or None,
+        "deleted_at": None,
         "created_at": now,
         "created_by": actor,
         "updated_at": now,
@@ -515,6 +555,13 @@ async def add_stop(db, route_id: str, payload: dict, actor: dict, perms: set) ->
         "manual_order": next_order,
         "optimized_order": None,
         "display_order": next_order,
+        "source_type": _normalize_source_type(payload.get("source_type") or route.get("source_type")),
+        "sales_order_id": str(payload.get("sales_order_id") or "").strip() or None,
+        "delivery_id": str(payload.get("delivery_id") or "").strip() or None,
+        "delivery_schedule_id": str(payload.get("delivery_schedule_id") or "").strip() or None,
+        "driver_user_id": str(payload.get("driver_user_id") or "").strip() or None,
+        "order_number": str(payload.get("order_number") or "").strip() or None,
+        "planning_snapshot": payload.get("planning_snapshot") if isinstance(payload.get("planning_snapshot"), dict) else None,
         "created_by": actor,
         "created_at": now,
         "updated_at": now,
@@ -591,6 +638,8 @@ async def update_stop(db, route_id: str, stop_id: str, payload: dict, actor: dic
 
 async def delete_stop(db, route_id: str, stop_id: str, actor: dict, perms: set) -> dict:
     route = await _route_or_404(db, route_id)
+    if route.get("deleted_at"):
+        raise HTTPException(404, "Rute tidak ditemukan.")
     if not can_edit_route(route, actor, perms):
         raise HTTPException(403, "Anda tidak boleh menghapus stop ini.")
     _assert_not_final(route)
@@ -599,12 +648,14 @@ async def delete_stop(db, route_id: str, stop_id: str, actor: dict, perms: set) 
         raise HTTPException(404, "Stop tidak ditemukan.")
     now = now_iso()
     remaining = await _stops_for(db, route_id)
+    # Membership change invalidates prior optimized sequence.
+    stale = True if int(route.get("current_optimization_version") or 0) > 0 else False
     await db[COL_PLANS].update_one(
         {"id": route_id},
         {
             "$set": {
                 "stop_count": len(remaining),
-                "optimization_stale": True if route.get("current_optimization_version") else False,
+                "optimization_stale": stale,
                 "updated_at": now,
                 "updated_by": actor,
                 "revision": int(route.get("revision") or 1) + 1,
@@ -613,7 +664,49 @@ async def delete_stop(db, route_id: str, stop_id: str, actor: dict, perms: set) 
     )
     settings = await load_settings(db)
     route = await _route_or_404(db, route_id)
-    return {"route": public_route(route, remaining, settings)}
+    return {
+        "route": public_route(route, remaining, settings),
+        "deleted_stop_id": stop_id,
+        "source_untouched": True,
+    }
+
+
+async def soft_delete_route(db, route_id: str, actor: dict, perms: set) -> dict:
+    """Deactivate a route by exact id. Never touches Pengiriman/SJ/Packing/Loading/PO."""
+    route = await _route_or_404(db, route_id)
+    if route.get("deleted_at"):
+        raise HTTPException(404, "Rute tidak ditemukan.")
+    if not (can_manage(perms) or (can_edit_route(route, actor, perms))):
+        raise HTTPException(403, "Anda tidak boleh menghapus rute ini.")
+    now = now_iso()
+    # Soft-delete plan + hard-delete owned stops only (optimizer data).
+    await db[COL_PLANS].update_one(
+        {"id": route_id},
+        {
+            "$set": {
+                "deleted_at": now,
+                "deleted_by": actor,
+                "updated_at": now,
+                "updated_by": actor,
+                "optimization_stale": True,
+                "revision": int(route.get("revision") or 1) + 1,
+            }
+        },
+    )
+    stops = await _stops_for(db, route_id)
+    stop_ids = [s.get("id") for s in stops if s.get("id")]
+    if stop_ids:
+        await db[COL_STOPS].delete_many({"route_id": route_id, "id": {"$in": stop_ids}})
+    return {
+        "deleted": True,
+        "route_id": route_id,
+        "deleted_stop_ids": stop_ids,
+        "source_untouched": True,
+        "message": (
+            "Rute optimasi dihapus. Pengiriman, Surat Jalan, Packing, Loading, "
+            "dan PO tidak dihapus/diubah."
+        ),
+    }
 
 
 def _stop_optimize_payload(stops: list[dict]) -> list[dict]:

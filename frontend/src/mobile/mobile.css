@@ -1327,6 +1327,18 @@
   justify-content: center;
 }
 
+/* Compact Filter + Reset cluster in the upper PWA toolbar (no separate lower row). */
+.mop-schedule-filter-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.mop-schedule-filter-actions .mop-btn-ghost {
+  flex: 0 0 auto;
+}
+
 .mop-schedule-error-detail {
   margin-top: 6px;
   font-size: 12px;
