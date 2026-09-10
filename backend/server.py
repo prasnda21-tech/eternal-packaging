@@ -2672,6 +2672,9 @@ def _po_needs_cetak_qty(o: dict) -> bool:
 
 def _po_needs_packing(o: dict) -> bool:
     # Packing dibutuhkan jika prereq semua sudah OK tapi belum masuk stage packing (>=11).
+    # Full non-cetak: Packing di-skip (langsung Loading setelah prerequisite SJ).
+    if not _requires_printing(o):
+        return False
     if (o.get("current_stage") or 0) >= 12:
         return False
     return len(_prereq_reasons_for_packing(o)) == 0

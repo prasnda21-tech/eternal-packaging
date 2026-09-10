@@ -18,7 +18,7 @@ function emptyDraft(packingLines) {
   return map;
 }
 
-// Packing = print (setelah selesai operator) + non_print (langsung tersedia).
+// Packing = line Cetak saja (setelah selesai operator). Non-cetak skip Packing.
 // Input & persist PER LINE. Total PO hanya ringkasan (SUM). Append-only increments.
 export default function PackingPanel({ order, canManage, busy, onSaveQty, footerActions = null }) {
   const { user } = useAuth();
@@ -46,9 +46,8 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
   const hasQty = packedSaved > 0;
   const semantic = order.packing_status_semantic || "Belum";
   const fullyPacked = semantic === "Sudah";
-  const requiredTotal = typeof order.packing_required_total === "number"
-    ? order.packing_required_total
-    : packingLines.reduce((s, r) => s + Number(r.qty_po || 0), 0);
+  const requiredTotal = packingLines.reduce((s, r) => s + Number(r.qty_po || 0), 0)
+    || (typeof order.print_qty_total === "number" ? order.print_qty_total : 0);
   const available = typeof order.available_for_packing === "number"
     ? order.available_for_packing
     : packingLines.reduce((s, r) => s + Number(r.available || 0), 0);
@@ -57,7 +56,6 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
     ? order.print_available_for_packing
     : printCompleted;
   const helperPrepared = order.helper_prepared_print_qty;
-  const nonPrintTotal = Number(order.non_print_qty_total || 0);
   const shortageSaved = Math.max(requiredTotal - packedSaved, 0);
   const remainingAvailable = Math.max(available - packedSaved, 0);
   const canSubmitQty = packingSubmitEnabled(canManage, available);
@@ -98,6 +96,11 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
 
   const packingStatus = fullyPacked ? "DONE" : hasQty ? "IN PROGRESS" : "READY";
 
+  // Full / all-line non-cetak: jangan tampilkan Packing sama sekali.
+  if ((order.line_items || []).length > 0 && packingLines.length === 0) {
+    return null;
+  }
+
   return (
     <section className="panel packing-panel" data-testid="packing-panel">
       <QtyOpsHead icon={Package} title="Packing">
@@ -115,7 +118,8 @@ export default function PackingPanel({ order, canManage, busy, onSaveQty, footer
 
       <div className="qty-ops-body">
       <p className="muted small" data-testid="packing-availability-note" style={{ marginTop: 0 }}>
-        Qty Packing diisi per barang. Total di atas hanya penjumlahan. Non-cetak: <b>{fmt(nonPrintTotal)}</b> (langsung) · Cetak siap packing:{" "}
+        Qty Packing diisi per barang Cetak. Non-cetak tidak perlu Packing (langsung Loading).
+        Cetak siap packing:{" "}
         <b data-testid="packing-print-available">{fmt(printAvailable)}</b>
         {" "}(selesai operator {fmt(printCompleted)}
         {helperPrepared !== null && helperPrepared !== undefined

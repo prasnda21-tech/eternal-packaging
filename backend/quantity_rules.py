@@ -284,17 +284,18 @@ def qty_delivered(order: dict) -> int:
 
 
 def available_for_packing(order: dict) -> int:
-    """Barang fisik yang boleh di-packing.
+    """Barang fisik yang boleh di-packing (Cetak saja).
 
-    available_for_packing =
-      ready_non_print_qty
-      + ready_completed_print_qty
-
-    ready_completed_print_qty = min(print_completed_qty, helper_prepared_print_qty)
-    Qty Tidak Cetak tidak melewati Operator. Tidak double-count.
+    Non-cetak skip Packing — tidak masuk availability Packing dan tidak
+    memakai packed_qty sintetis. Loading non-cetak memakai PO qty.
     """
-    required = packing_required_total(order)
-    avail = non_print_qty_total(order) + print_available_for_packing(order)
+    lis = order.get("line_items") or []
+    if lis and print_qty_total(order) <= 0:
+        return 0
+    required = print_qty_total(order) if lis else packing_required_total(order)
+    avail = print_available_for_packing(order)
+    if required <= 0:
+        return max(0, avail)
     return max(0, min(required, avail))
 
 
@@ -321,7 +322,7 @@ def available_for_packing_line(order: dict, line_idx: int) -> int:
     """Availability satu line. Tidak memakai sisa availability line lain.
 
     Cetak: MIN(print_completed, helper_prepared, qty_po)
-    Non-cetak: qty_po (langsung, tanpa Operator).
+    Non-cetak: 0 (skip Packing — Loading memakai PO qty).
     """
     lis = order.get("line_items") or []
     if not lis:
@@ -332,7 +333,7 @@ def available_for_packing_line(order: dict, line_idx: int) -> int:
     li = lis[idx]
     qty = max(0, _safe_int(li.get("quantity")))
     if not is_print_line(li):
-        return qty
+        return 0
     completed = print_completed_for_line(order, idx)
     print_idxs = print_line_indices(order)
     if len(print_idxs) == 1 and print_idxs[0] == idx:
@@ -380,30 +381,26 @@ def packing_line_breakdown(order: dict) -> list:
     helper_agg = helper_prepared_print_qty(order)
     rows = []
     for idx, li in enumerate(lis):
+        # Non-cetak skip Packing — tidak dirender di daftar Packing.
+        if not is_print_line(li):
+            continue
         qty = max(0, _safe_int(li.get("quantity")))
-        print_line = is_print_line(li)
-        process = "print" if print_line else "non_print"
-        if print_line:
-            completed = print_completed_for_line(order, idx)
-            if len(print_idxs) == 1 and print_idxs[0] == idx:
-                completed += _unassigned_print_completed(order)
-            completed = min(completed, qty)
-            prepared = helper_prepared_for_line(order, idx)
-            if prepared is None and helper_agg is not None and len(print_idxs) == 1:
-                prepared = helper_agg
-            print_remaining = max(0, qty - completed)
-        else:
-            completed = 0
-            prepared = None
-            print_remaining = 0
+        completed = print_completed_for_line(order, idx)
+        if len(print_idxs) == 1 and print_idxs[0] == idx:
+            completed += _unassigned_print_completed(order)
+        completed = min(completed, qty)
+        prepared = helper_prepared_for_line(order, idx)
+        if prepared is None and helper_agg is not None and len(print_idxs) == 1:
+            prepared = helper_agg
+        print_remaining = max(0, qty - completed)
         avail = available_for_packing_line(order, idx)
         packed = qty_packed_for_line(order, idx)
         rows.append({
             "line_idx": idx,
             "name": li.get("name") or f"Line #{idx + 1}",
             "color": li.get("color"),
-            "production_process": process,
-            "is_print": print_line,
+            "production_process": "print",
+            "is_print": True,
             "qty_po": qty,
             "helper_prepared": prepared,
             "print_completed": completed,
@@ -416,10 +413,16 @@ def packing_line_breakdown(order: dict) -> list:
 
 
 def packing_status_semantic(order: dict) -> str:
-    """Belum / Berjalan / Sudah — quantity-aware, backward-compatible dengan stage."""
+    """Belum / Berjalan / Sudah — quantity-aware, backward-compatible dengan stage.
+
+    Non-cetak skip Packing: target Packing = qty Cetak saja. Full non-print → Sudah.
+    """
     cs = _safe_int(order.get("current_stage"))
-    required = packing_required_total(order)
-    packed = qty_packed(order)
+    lis = order.get("line_items") or []
+    if lis and print_qty_total(order) <= 0:
+        return "Sudah"
+    required = print_qty_total(order) if lis else packing_required_total(order)
+    packed = qty_packed_print(order) if lis else qty_packed(order)
 
     if required > 0 and packed >= required:
         return "Sudah"
@@ -437,14 +440,17 @@ def apply_confirmed_packing_progress(order: dict) -> bool:
     """After packing qty is confirmed, packed qty is immediately eligible downstream.
 
     Partial packing opens Surat Jalan (stage 12). Does not invent packed qty.
+    Non-cetak tidak dihitung sebagai target Packing.
     Returns True if packing_status or current_stage changed.
     """
-    packed = qty_packed(order)
-    if packed <= 0:
+    packed_total = qty_packed(order)
+    if packed_total <= 0:
         return False
     changed = False
-    required = packing_required_total(order)
-    status = "Sudah" if required and packed >= required else "Berjalan"
+    lis = order.get("line_items") or []
+    required = print_qty_total(order) if lis else packing_required_total(order)
+    packed = qty_packed_print(order) if lis else packed_total
+    status = "Sudah" if (required <= 0 or (required and packed >= required)) else "Berjalan"
     if order.get("packing_status") != status:
         order["packing_status"] = status
         changed = True
@@ -573,6 +579,11 @@ def validate_packing_lines(updates: list, order: dict) -> Optional[str]:
         if qty < 0:
             return "Qty Packing tidak boleh negatif."
         name = lis[idx].get("name") or f"Line #{idx + 1}"
+        if not is_print_line(lis[idx]):
+            return (
+                f"Line '{name}' adalah non-cetak — tidak perlu Packing "
+                "(langsung ke Loading setelah prerequisite valid)."
+            )
         po = max(0, _safe_int(lis[idx].get("quantity")))
         avail = available_for_packing_line(order, idx)
         if qty > po:
@@ -849,9 +860,14 @@ def qty_shipped(order: dict) -> int:
 
 
 def available_for_delivery_note_line(order: dict, line_idx: int, *, exclude_shipment_id: Optional[str] = None) -> int:
-    packed = packed_qty_for_line(order, line_idx)
+    """Sisa qty yang boleh dialokasi ke Surat Jalan per line.
+
+    Cetak: packed − shipped.
+    Non-cetak: PO qty − shipped (skip Packing — tidak invent packed_qty).
+    """
+    physical = physical_qty_for_loading_line(order, line_idx)
     shipped = qty_shipped_for_line(order, line_idx, exclude_shipment_id=exclude_shipment_id)
-    return max(0, packed - shipped)
+    return max(0, physical - shipped)
 
 
 def loading_lines_stored(order: dict) -> Optional[list]:
@@ -1136,25 +1152,42 @@ def surat_jalan_created(order: dict) -> bool:
     )
 
 
-def loading_cap_for_line(order: dict, line_idx: int) -> int:
-    """Historical increment cap = min(packed, shipped-if-SJ-lines). Never > packed.
+def physical_qty_for_loading_line(order: dict, line_idx: int) -> int:
+    """Physical qty eligible for Loading.
 
-    New SJ-linked confirmations use `available_for_loading_confirm_line` (packed qty).
+    Cetak: packed qty (wajib Packing).
+    Non-cetak: PO qty (skip Packing — no synthetic packed_qty).
     """
-    packed = packed_qty_for_line(order, line_idx)
+    lis = order.get("line_items") or []
+    idx = int(line_idx)
+    if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
+        return po_qty_for_line(order, idx)
+    return packed_qty_for_line(order, idx)
+
+
+def loading_cap_for_line(order: dict, line_idx: int) -> int:
+    """Historical increment cap = min(physical, shipped-if-SJ-lines).
+
+    Cetak physical = packed. Non-cetak physical = PO qty (skip Packing).
+    New SJ-linked confirmations use `available_for_loading_confirm_line`.
+    """
+    physical = physical_qty_for_loading_line(order, line_idx)
     if has_shipment_line_quantities(order):
         shipped = qty_shipped_for_line(order, line_idx)
-        return max(0, min(packed, shipped))
-    return max(0, packed)
+        return max(0, min(physical, shipped))
+    return max(0, physical)
 
 
 def loading_confirm_cap_for_line(order: dict, line_idx: int) -> int:
-    """Physical cap for SJ-linked Loading confirm: packed qty, never above PO qty."""
-    packed = packed_qty_for_line(order, line_idx)
+    """Physical cap for SJ-linked Loading confirm; never above PO qty.
+
+    Cetak: packed qty. Non-cetak: PO qty (skip Packing).
+    """
+    physical = physical_qty_for_loading_line(order, line_idx)
     po = po_qty_for_line(order, line_idx)
     if po > 0:
-        return max(0, min(packed, po))
-    return max(0, packed)
+        return max(0, min(physical, po))
+    return max(0, physical)
 
 
 def _shipments_require_loading_confirm(order: dict) -> bool:
@@ -1192,7 +1225,7 @@ def eligible_delivery_qty(order: dict) -> int:
 
 
 def available_for_loading_confirm_line(order: dict, line_idx: int) -> int:
-    """Remaining Loading confirm qty = packed physical qty minus already loaded."""
+    """Remaining Loading confirm qty = physical eligible minus already loaded."""
     return max(0, loading_confirm_cap_for_line(order, line_idx) - qty_loaded_for_line(order, line_idx))
 
 
@@ -1240,6 +1273,12 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
             
             if avail <= 0:
                 if physical_avail <= 0:
+                    lis = order.get("line_items") or []
+                    if 0 <= int(idx) < len(lis) and not is_print_line(lis[int(idx)]):
+                        return (
+                            f"Loading tidak dapat dilakukan karena qty eligible "
+                            f"untuk '{name}' belum tersedia."
+                        )
                     return (
                         f"Loading tidak dapat dilakukan karena belum ada qty Packing "
                         f"yang tersedia untuk '{name}'."
@@ -1250,6 +1289,11 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
                 )
             
             if physical_avail < sj_avail and qty > physical_avail:
+                lis = order.get("line_items") or []
+                if 0 <= int(idx) < len(lis) and not is_print_line(lis[int(idx)]):
+                    return (
+                        f"Qty Loading '{name}' ({qty}) melebihi qty eligible yang tersedia ({physical_avail})."
+                    )
                 return (
                     f"Qty Loading '{name}' ({qty}) melebihi qty Packing yang tersedia ({physical_avail})."
                 )
@@ -1300,7 +1344,7 @@ def apply_loading_confirmation(
 
 
 def line_shipment_mismatch(order: dict, line_idx: int) -> bool:
-    return qty_shipped_for_line(order, line_idx) > packed_qty_for_line(order, line_idx)
+    return qty_shipped_for_line(order, line_idx) > physical_qty_for_loading_line(order, line_idx)
 
 
 def match_po_line_idx(order: dict, ship_line: dict) -> tuple:
@@ -1359,9 +1403,9 @@ def validate_shipment_lines(
 ) -> Optional[str]:
     """Validate a new/updated shipment's line quantities.
 
-    Manual SJ: cannot exceed packed remaining (no over-allocation).
-    Accurate import: mapping must be valid; qty > packed is recorded as
-    mismatch later and does not raise here (loading still capped at packed).
+    Manual SJ: cannot exceed remaining physical eligible (print = packed;
+    non-print = PO qty — Packing skipped). Accurate import: mapping must be
+    valid; qty > physical is recorded as mismatch later.
     """
     if not updates:
         return "Qty Surat Jalan per line wajib diisi."
@@ -1378,12 +1422,18 @@ def validate_shipment_lines(
             return f"Line #{idx + 1} duplikat pada Surat Jalan yang sama."
         seen.add(idx)
         total += qty
-        packed = packed_qty_for_line(order, idx)
+        physical = physical_qty_for_loading_line(order, idx)
         already = qty_shipped_for_line(order, idx, exclude_shipment_id=exclude_shipment_id)
         if source != SHIPMENT_SOURCE_ACCURATE:
-            avail = max(0, packed - already)
+            avail = max(0, physical - already)
             if qty > avail:
                 name = _line_name(order, idx)
+                lis = order.get("line_items") or []
+                if 0 <= int(idx) < len(lis) and not is_print_line(lis[int(idx)]):
+                    return (
+                        f"Qty Surat Jalan '{name}' ({qty}) melebihi qty eligible "
+                        f"yang belum dialokasikan ({avail})."
+                    )
                 return (
                     f"Qty Surat Jalan '{name}' ({qty}) melebihi qty packing "
                     f"yang belum dialokasikan ({avail})."
@@ -1394,7 +1444,7 @@ def validate_shipment_lines(
 
 
 def shipment_line_mismatches(updates: list, order: dict, *, exclude_shipment_id: Optional[str] = None) -> list:
-    """Per-line warnings when Accurate shipped qty exceeds Eternal packed qty."""
+    """Per-line warnings when Accurate shipped qty exceeds Eternal physical eligible."""
     warnings = []
     for u in updates:
         idx, err = match_po_line_idx(order, u)
@@ -1402,9 +1452,12 @@ def shipment_line_mismatches(updates: list, order: dict, *, exclude_shipment_id:
             continue
         qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
         packed = packed_qty_for_line(order, idx)
+        physical = physical_qty_for_loading_line(order, idx)
         already = qty_shipped_for_line(order, idx, exclude_shipment_id=exclude_shipment_id)
         projected = already + qty
-        if projected > packed:
+        if projected > physical:
+            lis = order.get("line_items") or []
+            non_print = 0 <= int(idx) < len(lis) and not is_print_line(lis[int(idx)])
             warnings.append({
                 "line_idx": idx,
                 "name": _line_name(order, idx),
@@ -1412,7 +1465,11 @@ def shipment_line_mismatches(updates: list, order: dict, *, exclude_shipment_id:
                 "shipped": projected,
                 "message": (
                     f"Qty Surat Jalan Accurate '{_line_name(order, idx)}' ({projected}) "
-                    f"melebihi qty Packing Helper ({packed}). Loading dibatasi packing."
+                    + (
+                        f"melebihi qty eligible non-cetak ({physical})."
+                        if non_print
+                        else f"melebihi qty Packing Helper ({packed}). Loading dibatasi packing."
+                    )
                 ),
             })
     return warnings
@@ -1442,13 +1499,14 @@ def normalize_shipment_line_updates(updates: list, order: dict) -> list:
         if err or idx is None:
             continue
         qty = max(0, _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity")))
-        packed = packed_qty_for_line(order, idx)
+        packed = packed_qty_for_line(order, idx)  # actual packed only — never invent
+        physical = physical_qty_for_loading_line(order, idx)
         rows.append({
             "line_idx": idx,
             "qty": qty,
             "accurate_item_id": str(u.get("accurate_item_id") or _line_accurate_item_id(order, idx) or "") or None,
             "packed_qty": packed,
-            "mismatch": qty > packed,
+            "mismatch": qty > physical,
         })
     return rows
 
@@ -1529,10 +1587,13 @@ def validate_loading_lines(updates: list, order: dict) -> Optional[str]:
         if qty < 0:
             return "Qty Loading tidak boleh negatif."
         cap = loading_cap_for_line(order, idx)
-        packed = packed_qty_for_line(order, idx)
+        physical = physical_qty_for_loading_line(order, idx)
         name = _line_name(order, idx)
-        if qty > packed:
-            return f"Qty Loading '{name}' ({qty}) melebihi qty packing ({packed})."
+        if qty > physical:
+            lis = order.get("line_items") or []
+            if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
+                return f"Qty Loading '{name}' ({qty}) melebihi qty eligible ({physical})."
+            return f"Qty Loading '{name}' ({qty}) melebihi qty packing ({physical})."
         if qty > cap:
             shipped = qty_shipped_for_line(order, idx)
             if has_shipment_line_quantities(order) and qty > shipped:
@@ -1586,13 +1647,16 @@ def validate_loading_increments(updates: list, order: dict) -> Optional[str]:
         seen.add(idx)
         if qty <= 0:
             return "Qty Loading harus lebih dari 0."
-        packed = packed_qty_for_line(order, idx)
+        physical = physical_qty_for_loading_line(order, idx)
         cap = loading_cap_for_line(order, idx)
         current = qty_loaded_for_line(order, idx)
         new_total = current + qty
         name = _line_name(order, idx)
-        if new_total > packed:
-            return f"Qty Loading '{name}' ({new_total}) melebihi qty packing ({packed})."
+        if new_total > physical:
+            lis = order.get("line_items") or []
+            if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
+                return f"Qty Loading '{name}' ({new_total}) melebihi qty eligible ({physical})."
+            return f"Qty Loading '{name}' ({new_total}) melebihi qty packing ({physical})."
         if new_total > cap:
             shipped = qty_shipped_for_line(order, idx)
             if has_shipment_line_quantities(order) and new_total > shipped:
@@ -1628,33 +1692,31 @@ def apply_loading_increments(order: dict, updates: list) -> tuple:
 
 
 def shipment_line_breakdown(order: dict) -> list:
-    """Derived per-line SJ + loading tracker (not persisted)."""
-    rows = packing_line_breakdown(order)
-    if not rows:
-        n = _line_count(order)
-        rows = [{
-            "line_idx": i,
-            "name": _line_name(order, i),
-            "qty_po": packed_qty_for_line(order, i) if i == 0 and not (order.get("line_items") or []) else 0,
-            "packed": packed_qty_for_line(order, i),
-        } for i in range(n)]
+    """Derived per-line SJ + loading tracker (not persisted).
+
+    Includes print + non-print (non-print Loading uses PO qty, not packed).
+    Does not depend on packing_line_breakdown (print-only).
+    """
+    n = _line_count(order)
     out = []
-    for row in rows:
-        idx = _safe_int(row.get("line_idx"), default=-1)
+    for idx in range(n):
         packed = packed_qty_for_line(order, idx)
         shipped = qty_shipped_for_line(order, idx)
         loaded = qty_loaded_for_line(order, idx)
         avail_sj = available_for_delivery_note_line(order, idx)
         cap_load = loading_confirm_cap_for_line(order, idx)
         avail_load = available_for_loading_confirm_line(order, idx)
-        mismatch = shipped > packed
+        physical = physical_qty_for_loading_line(order, idx)
+        mismatch = shipped > physical
+        lis = order.get("line_items") or []
+        li = lis[idx] if 0 <= idx < len(lis) else {}
         out.append({
             "line_idx": idx,
-            "name": row.get("name") or _line_name(order, idx),
-            "item_code": (order.get("line_items") or [{}])[idx].get("item_code") if 0 <= idx < len(order.get("line_items") or []) else None,
+            "name": _line_name(order, idx),
+            "item_code": li.get("item_code") if isinstance(li, dict) else None,
             "accurate_item_id": _line_accurate_item_id(order, idx),
-            "color": row.get("color"),
-            "qty_po": row.get("qty_po") if row.get("qty_po") is not None else po_qty_for_line(order, idx),
+            "color": li.get("color") if isinstance(li, dict) else None,
+            "qty_po": po_qty_for_line(order, idx),
             "packed": packed,
             "shipped": shipped,
             "available_sj": avail_sj,
@@ -1663,6 +1725,9 @@ def shipment_line_breakdown(order: dict) -> list:
             "available_loading": avail_load,
             "remaining_loading": avail_load,
             "mismatch": mismatch,
+            "production_process": (
+                "non_print" if isinstance(li, dict) and not is_print_line(li) else "print"
+            ),
         })
     return out
 

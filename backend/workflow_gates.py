@@ -112,6 +112,9 @@ def print_qty_input(order: dict) -> bool:
 
 
 def packing_qty_input(order: dict) -> bool:
+    """True when Packing evidence exists, or Packing is not required (full non-print)."""
+    if not requires_printing(order):
+        return True
     return qty_packed(order) > 0
 
 

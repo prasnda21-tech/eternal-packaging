@@ -36,13 +36,46 @@ describe("Loading confirm helpers", () => {
 
   test("blocks loading when packed physical qty is empty", () => {
     const empty = loadingPoLines({
-      line_items: [{ name: "Item A", quantity: 1000 }],
+      line_items: [{ name: "Item A", quantity: 1000, production_process: "print" }],
       packing_info: { lines: [{ line_idx: 0, packed_qty: 0 }] },
     });
     expect(empty[0].available).toBe(0);
     const check = validateLoadingDraftLines([{ line_idx: 0, qty: "10" }], empty);
     expect(check.ok).toBe(false);
     expect(check.error).toMatch(/qty Packing/i);
+  });
+
+  test("non-cetak loading uses PO qty without packed_qty", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "Box", quantity: 400, production_process: "non_print" }],
+      packing_info: {},
+      surat_jalan_files: [{ id: "f1", name: "sj.pdf", lines: [{ line_idx: 0, qty: 400 }] }],
+    }, "f1");
+    expect(lines[0].packed).toBe(0);
+    expect(lines[0].available).toBe(400);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "400" }], lines).ok).toBe(true);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "401" }], lines).ok).toBe(false);
+  });
+
+  test("mixed order: cetak needs packed, non-cetak uses PO qty", () => {
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "Cetak", quantity: 500, production_process: "print" },
+        { name: "Non", quantity: 300, production_process: "non_print" },
+      ],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 200 }] },
+      surat_jalan_files: [{
+        id: "f1",
+        name: "sj.pdf",
+        lines: [
+          { line_idx: 0, qty: 500 },
+          { line_idx: 1, qty: 300 },
+        ],
+      }],
+    }, "f1");
+    expect(lines[0].available).toBe(200);
+    expect(lines[1].available).toBe(300);
+    expect(lines[1].packed).toBe(0);
   });
 
   test("remaining after partial loading is packed minus loaded", () => {

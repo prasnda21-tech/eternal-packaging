@@ -86,18 +86,18 @@ def test_b_print_completed_1000_available_4000():
     o = _mixed_po(completed=[1000])
     assert print_completed_qty(o) == 1000
     assert non_print_qty_total(o) == 3000
-    assert available_for_packing(o) == 4000
-    assert validate_packing_qty(4000, o) is None
-    assert validate_packing_qty(4001, o) is not None
+    # Non-cetak skip Packing — availability Packing = cetak siap saja
+    assert available_for_packing(o) == 1000
+    assert validate_packing_qty(1000, o) is None
+    assert validate_packing_qty(1001, o) is not None
 
 
 def test_b_no_double_count_packing():
     o = _mixed_po(completed=[1000], packed=1000)
-    # Still only 4000 physically available total; packed 1000 is subset
-    assert available_for_packing(o) == 4000
+    # Still only 1000 physically available for Packing (print); packed 1000 is subset
+    assert available_for_packing(o) == 1000
     assert validate_packing_qty(1000, o) is None
-    assert validate_packing_qty(4000, o) is None
-    assert validate_packing_qty(4001, o) is not None
+    assert validate_packing_qty(1001, o) is not None
 
 
 # --- C: partial delivery ---
@@ -139,7 +139,8 @@ def test_d_full_6000_delivered():
         {"id": "b", "quantity": 1000, "qty_completed": 1000},
         {"id": "c", "quantity": 1000, "qty_completed": 1000},
     ]
-    assert available_for_packing(o) == 6000
+    # Packing availability = print only (3000); non-cetak skip Packing
+    assert available_for_packing(o) == 3000
     assert is_fully_delivered(o)
     o["delivery_status"] = "Terkirim"
     o["current_stage"] = 14
@@ -197,12 +198,14 @@ def test_e_concurrent_packing_stale_write_rejected():
     store.doc["updated_at"] = "v0"
 
     doc, token = store.read()
-    assert validate_packing_qty(4000, doc) is None
-    doc["packing_info"] = {"qty_packed": 4000}
+    # Packing availability = print completed only (non-cetak skip Packing)
+    assert validate_packing_qty(1000, doc) is None
+    assert validate_packing_qty(1001, doc) is not None
+    doc["packing_info"] = {"qty_packed": 1000}
     assert store.write(token, doc) is True
 
     # Stale concurrent pack attempt
-    assert store.write("v0", {**store.doc, "packing_info": {"qty_packed": 4000}}) is False
+    assert store.write("v0", {**store.doc, "packing_info": {"qty_packed": 1000}}) is False
 
 
 # --- Legacy PO safety ---
@@ -298,7 +301,11 @@ def test_confirmed_packing_opens_downstream_partial():
     assert o["current_stage"] == 12
     assert o["packing_status"] == "Berjalan"
     updates = remaining_delivery_note_updates(o)
-    assert sum(int(u.get("qty") or 0) for u in updates) == 2000
+    # Print packed 2000 + non-cetak PO qty 3000 (skip Packing) = 5000
+    by_idx = {int(u["line_idx"]): int(u["qty"]) for u in updates}
+    assert by_idx.get(0) == 2000
+    assert by_idx.get(1) == 3000
+    assert sum(by_idx.values()) == 5000
 
 
 def test_confirmed_packing_zero_does_not_mutate():
@@ -358,11 +365,11 @@ def test_b_packing_print_capped_by_completed_and_helper():
     o = _helper_po(prepared=2000, completed=[1000])
     assert print_completed_qty(o) == 1000
     assert print_available_for_packing(o) == 1000
-    # Non-cetak 3000 tetap langsung tersedia
     assert non_print_qty_total(o) == 3000
-    assert available_for_packing(o) == 4000
-    assert validate_packing_qty(4000, o) is None
-    assert validate_packing_qty(4001, o) is not None
+    # Non-cetak skip Packing
+    assert available_for_packing(o) == 1000
+    assert validate_packing_qty(1000, o) is None
+    assert validate_packing_qty(1001, o) is not None
 
 
 def test_b_packing_print_never_exceeds_helper_even_if_completed_higher():
@@ -370,7 +377,7 @@ def test_b_packing_print_never_exceeds_helper_even_if_completed_higher():
     o["operator_splits"] = [{"quantity": 3000, "qty_completed": 2500}]
     assert print_completed_qty(o) == 2500
     assert print_available_for_packing(o) == 2000
-    assert available_for_packing(o) == 5000  # 3000 non-print + 2000 print
+    assert available_for_packing(o) == 2000  # print only; non-cetak skip Packing
 
 
 def test_c_helper_increase_unlocks_more_operator_execution():
@@ -396,7 +403,7 @@ def test_d_delivered_capped_by_packed():
 
 
 def test_e_non_print_skips_operator_and_helper_cap():
-    """TEST E: Qty Tidak Cetak tidak masuk Operator dan tetap packing-ready."""
+    """TEST E: Qty Tidak Cetak tidak masuk Operator dan skip Packing."""
     o = _mixed_po(print_qty=0, non_print_qty=3000, completed=None)
     o["line_items"] = [
         {"name": "Non", "quantity": 3000, "production_process": "non_print"},
@@ -407,9 +414,10 @@ def test_e_non_print_skips_operator_and_helper_cap():
     assert print_qty_total(o) == 0
     assert non_print_qty_total(o) == 3000
     assert operator_assignment_cap(o) == 0
-    assert available_for_packing(o) == 3000
+    assert available_for_packing(o) == 0
+    assert packing_status_semantic(o) == "Sudah"
     assert validate_operator_assignment_total(1, 0, 0) is not None
-    assert validate_packing_qty(3000, o) is None
+    assert validate_packing_qty(3000, o) is not None
 
 
 def test_helper_cannot_drop_below_completed_print():
@@ -427,20 +435,19 @@ def test_print_completed_rejected_over_helper():
 def test_packing_line_breakdown_reads_stored_lines_not_total():
     o = _mixed_po(completed=[1000], packed=0)
     o["operator_splits"][0]["line_idx"] = 0
-    o["packing_info"] = {"lines": [{"line_idx": 1, "packed_qty": 1500}]}
+    o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 500}]}
     lines = packing_line_breakdown(o)
-    assert len(lines) == 2
-    print_row, non_row = lines[0], lines[1]
+    # Non-cetak excluded from Packing breakdown
+    assert len(lines) == 1
+    print_row = lines[0]
     assert print_row["is_print"] is True
-    assert non_row["is_print"] is False
-    assert non_row["available"] == 3000
+    assert print_row["line_idx"] == 0
     assert print_row["print_completed"] == 1000
     assert print_row["print_remaining"] == 2000
     assert print_row["available"] == 1000
-    assert non_row["packed"] == 1500
-    assert print_row["packed"] == 0
-    assert print_row["remaining"] == 1000
-    assert qty_packed(o) == 1500
+    assert print_row["packed"] == 500
+    assert print_row["remaining"] == 500
+    assert qty_packed(o) == 500
 
 
 def test_packing_line_breakdown_legacy_total_does_not_fill_lines():
@@ -449,8 +456,9 @@ def test_packing_line_breakdown_legacy_total_does_not_fill_lines():
     lines = packing_line_breakdown(o)
     assert packing_lines_stored(o) is None
     assert qty_packed(o) == 4000
+    assert len(lines) == 1
     assert lines[0]["packed"] == 0
-    assert lines[1]["packed"] == 0
+    assert lines[0]["is_print"] is True
 
 
 def test_packing_line_breakdown_helper_caps_print_available():
@@ -458,10 +466,10 @@ def test_packing_line_breakdown_helper_caps_print_available():
     o["operator_splits"][0]["line_idx"] = 0
     o["helper_prep"] = {"qty_prepared": 500, "items": [{"line_idx": 0, "qty_required": 3000, "qty_prepared": 500}]}
     lines = packing_line_breakdown(o)
+    assert len(lines) == 1
     assert lines[0]["helper_prepared"] == 500
     assert lines[0]["available"] == 500
-    assert lines[1]["available"] == 3000
-    assert sum(r["available"] for r in lines) == available_for_packing(o) == 3500
+    assert sum(r["available"] for r in lines) == available_for_packing(o) == 500
 
 
 def _four_line_po():
@@ -506,16 +514,12 @@ def test_b_line_a_additional_150_rejected():
     assert qty_packed_for_line(o, 0) == 300
 
 
-def test_c_non_print_b_independent_of_a():
+def test_c_non_print_b_rejected_from_packing():
     o = _four_line_po()
     o["packing_info"] = {"lines": [{"line_idx": 0, "packed_qty": 300}]}
-    assert validate_packing_lines([{"line_idx": 1, "packed_qty": 500}], o) is None
-    o["packing_info"]["lines"] = [
-        {"line_idx": 0, "packed_qty": 300},
-        {"line_idx": 1, "packed_qty": 500},
-    ]
-    assert qty_packed_for_line(o, 0) == 300
-    assert qty_packed_for_line(o, 1) == 500
+    err = validate_packing_lines([{"line_idx": 1, "packed_qty": 500}], o)
+    assert err is not None
+    assert available_for_packing_line(o, 1) == 0
 
 
 def test_d_total_packed_is_sum_of_lines():
@@ -539,7 +543,7 @@ def test_e_one_line_complete_po_not_fully_packed():
     assert packing_required_total(o) == 2500
 
 
-def test_f_all_lines_packed_to_po_qty_marks_complete():
+def test_f_all_print_lines_packed_marks_complete():
     o = _four_line_po()
     o["operator_splits"] = [
         {"line_idx": 0, "quantity": 1000, "qty_completed": 1000},
@@ -552,15 +556,15 @@ def test_f_all_lines_packed_to_po_qty_marks_complete():
             {"line_idx": 2, "qty_required": 250, "qty_prepared": 250},
         ],
     }
+    # Non-cetak lines are not packed — only print lines
     lines_payload = [
         {"line_idx": 0, "packed_qty": 1000},
-        {"line_idx": 1, "packed_qty": 1000},
         {"line_idx": 2, "packed_qty": 250},
-        {"line_idx": 3, "packed_qty": 250},
     ]
     assert validate_packing_lines(lines_payload, o) is None
+    assert validate_packing_lines([{"line_idx": 1, "packed_qty": 1000}], o) is not None
     o["packing_info"] = {"lines": lines_payload}
-    assert qty_packed(o) == 2500
+    assert qty_packed(o) == 1250
     assert packing_status_semantic(o) == "Sudah"
 
 
@@ -609,9 +613,9 @@ def test_partial_print_available_for_packing_while_not_complete():
     from quantity_rules import PRINT_STATUS_IN_PROGRESS
     assert print_status(o) == PRINT_STATUS_IN_PROGRESS
     assert print_available_for_packing(o) == 1000
-    assert available_for_packing(o) == 4000
-    assert validate_packing_qty(4000, o) is None
-    assert validate_packing_qty(4001, o) is not None
+    assert available_for_packing(o) == 1000
+    assert validate_packing_qty(1000, o) is None
+    assert validate_packing_qty(1001, o) is not None
 
 
 def test_jadwal_total_qty_progress_not_po_total():

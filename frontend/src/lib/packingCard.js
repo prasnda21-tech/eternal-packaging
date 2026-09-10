@@ -24,7 +24,7 @@ function packedForLine(order, idx) {
   return safeInt(found?.packed_qty);
 }
 
-/** Frontend fallback if backend belum mengirim packing_lines. */
+/** Frontend fallback if backend belum mengirim packing_lines. Cetak saja. */
 export function computePackingLines(order) {
   const lis = order?.line_items || [];
   const helperAgg = order?.helper_prepared_print_qty;
@@ -48,55 +48,43 @@ export function computePackingLines(order) {
   const unassigned = splits.reduce((s, sp) => (sp.line_idx == null ? s + safeInt(sp.qty_completed) : s), 0);
   const printIdxs = lis.map((li, i) => (isPrintLine(li) ? i : -1)).filter((i) => i >= 0);
 
-  return lis.map((li, idx) => {
-    const qty = safeInt(li.quantity);
-    const printLine = isPrintLine(li);
-    if (!printLine) {
+  return lis
+    .map((li, idx) => {
+      if (!isPrintLine(li)) return null;
+      const qty = safeInt(li.quantity);
+      let completed = completedForLine(idx);
+      if (printIdxs.length === 1 && printIdxs[0] === idx) {
+        completed += unassigned;
+      }
+      completed = Math.min(completed, qty);
+      let prepared = helperForLine(idx);
+      if (prepared == null && helperAgg != null && helperAgg !== "" && printIdxs.length === 1) {
+        prepared = safeInt(helperAgg);
+      }
+      const available = Math.min(qty, prepared == null ? completed : Math.min(completed, prepared));
       const packed = packedForLine(order, idx);
       return {
         line_idx: idx,
         name: li.name || `Line #${idx + 1}`,
         color: li.color || null,
-        production_process: "non_print",
-        is_print: false,
+        production_process: "print",
+        is_print: true,
         qty_po: qty,
-        helper_prepared: null,
-        print_completed: 0,
-        print_remaining: 0,
-        available: qty,
+        helper_prepared: prepared,
+        print_completed: completed,
+        print_remaining: Math.max(0, qty - completed),
+        available,
         packed,
-        remaining: Math.max(0, qty - packed),
+        remaining: Math.max(0, available - packed),
       };
-    }
-    let completed = completedForLine(idx);
-    if (printIdxs.length === 1 && printIdxs[0] === idx) {
-      completed += unassigned;
-    }
-    completed = Math.min(completed, qty);
-    let prepared = helperForLine(idx);
-    if (prepared == null && helperAgg != null && helperAgg !== "" && printIdxs.length === 1) {
-      prepared = safeInt(helperAgg);
-    }
-    const available = Math.min(qty, prepared == null ? completed : Math.min(completed, prepared));
-    const packed = packedForLine(order, idx);
-    return {
-      line_idx: idx,
-      name: li.name || `Line #${idx + 1}`,
-      color: li.color || null,
-      production_process: "print",
-      is_print: true,
-      qty_po: qty,
-      helper_prepared: prepared,
-      print_completed: completed,
-      print_remaining: Math.max(0, qty - completed),
-      available,
-      packed,
-      remaining: Math.max(0, available - packed),
-    };
-  });
+    })
+    .filter(Boolean);
 }
 
 export function packingLinesForOrder(order) {
-  if (Array.isArray(order?.packing_lines) && order.packing_lines.length) return order.packing_lines;
-  return computePackingLines(order);
+  const rows = Array.isArray(order?.packing_lines) && order.packing_lines.length
+    ? order.packing_lines
+    : computePackingLines(order);
+  // Non-cetak never shown in Packing (backend may still send legacy rows).
+  return rows.filter((r) => r?.is_print !== false && String(r?.production_process || "print").toLowerCase() !== "non_print");
 }
