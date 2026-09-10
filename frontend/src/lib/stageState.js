@@ -114,7 +114,17 @@ function packingDone(order) {
   return (order?.current_stage || 0) >= 12;
 }
 function suratJalanCreated(order) {
-  return !!(order?.surat_jalan_created);
+  // Prefer authoritative backend flag when present.
+  if (order && Object.prototype.hasOwnProperty.call(order, "surat_jalan_created")) {
+    return !!order.surat_jalan_created;
+  }
+  // Fallback for partial fixtures: live SJ files only (same as Loading / FILE TERSIMPAN).
+  const hist = Array.isArray(order?.sj_files)
+    ? order.sj_files.filter((f) => f && f.has_file !== false && !f.is_deleted)
+    : [];
+  if (hist.length) return true;
+  const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  return files.some((f) => f && !f.is_deleted && (f.id || f.file_id));
 }
 function loadingCompleted(order) {
   return !!(order?.loading_completed);

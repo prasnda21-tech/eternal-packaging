@@ -57,6 +57,13 @@ describe("Surat Jalan card upload + preview", () => {
     expect(src).toMatch(/sj-hapus-/);
   });
 
+  test("FILE TERSIMPAN badge uses live sjHistory files, not shipment ghosts", () => {
+    expect(src).toMatch(/const files = sjHistory\(order\)/);
+    expect(src).toMatch(/const created = files\.length > 0/);
+    expect(src).toMatch(/File tersimpan/);
+    expect(src).not.toMatch(/const created = !!order\.surat_jalan_created/);
+  });
+
   test("Loading view uses file-view permission and does not grant upload", () => {
     const viewBtn = fs.readFileSync(path.join(__dirname, "SuratJalanViewButton.jsx"), "utf8");
     expect(viewBtn).toMatch(/SJ_VIEW_FILE_PERM/);

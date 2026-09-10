@@ -93,12 +93,14 @@ describe("PO Detail delivery cards", () => {
 
   test("PROSES KE PENGIRIMAN PESANAN is gated by remain+perm only, not Packing/Loading", () => {
     expect(detail).toMatch(/canProcessSalesDelivery/);
+    expect(detail).toMatch(/aksiPoSalesDeliveryState/);
     expect(detail).toMatch(/salesDeliveryTotalRemaining/);
     expect(detail).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(detail).toMatch(/badge-pengiriman-selesai|Seluruh Qty Selesai Dibuatkan SJ/);
     // No packing/loading prerequisite on the Aksi PO create entry
     const gateBlock = detail.slice(
-      detail.indexOf("const canProcessSalesDelivery"),
-      detail.indexOf("const canProcessSalesDelivery") + 280,
+      detail.indexOf("aksiPoSalesDeliveryState"),
+      detail.indexOf("aksiPoSalesDeliveryState") + 200,
     );
     expect(gateBlock).not.toMatch(/packing|loading|qty_packed|qty_loaded/i);
     expect(detail).toMatch(/DeliveryProofPanel/);

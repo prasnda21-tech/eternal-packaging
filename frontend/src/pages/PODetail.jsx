@@ -21,6 +21,7 @@ import OutletLocationModal from "../components/OutletLocationModal";
 import StageBar from "../components/StageBar";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import { terkirimQtySummary } from "../lib/deliveryHistory";
+import { aksiPoSalesDeliveryState } from "../lib/aksiPoSalesDelivery";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import { scrollToPoDetailStageIndex } from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
@@ -326,13 +327,12 @@ export default function PODetail() {
   const canEditRoute = hasPerm("production.route.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
   const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
-  const salesDeliverySummary = order.sales_delivery_summary || {};
-  const salesDeliveryTotalOrdered = order.total_quantity || 0;
-  const salesDeliveryTotalShipped = salesDeliverySummary.total_shipped || 0;
-  const salesDeliveryTotalRemaining = salesDeliverySummary.total_remaining !== undefined
-    ? salesDeliverySummary.total_remaining
-    : Math.max(0, salesDeliveryTotalOrdered - salesDeliveryTotalShipped);
-  const canProcessSalesDelivery = !order.cancelled && salesDeliveryTotalRemaining > 0 && canCreateDelivery;
+  const {
+    showProcess: canProcessSalesDelivery,
+    showAllQtyDone: salesDeliveryAllQtyDone,
+  } = aksiPoSalesDeliveryState(order, { canCreateDelivery });
+  // Canonical remain lives in order.sales_delivery_summary (via aksiPoSalesDeliveryState).
+  const salesDeliveryTotalRemaining = (order.sales_delivery_summary || {}).total_remaining;
   const terkirimSummary = terkirimQtySummary(order);
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
@@ -730,7 +730,7 @@ export default function PODetail() {
             >
               <Truck size={16} /> PROSES KE PENGIRIMAN PESANAN
             </Link>
-          ) : salesDeliveryTotalRemaining <= 0 && salesDeliveryTotalOrdered > 0 ? (
+          ) : salesDeliveryAllQtyDone ? (
             <span className="po-action-done" data-testid="badge-pengiriman-selesai">
               <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
             </span>
