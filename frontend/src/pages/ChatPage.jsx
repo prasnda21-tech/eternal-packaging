@@ -16,6 +16,7 @@ import {
 import { createChatRealtime } from "../lib/chatRealtime";
 import {
   ChatComposer,
+  EditMembersModal,
   MemberListItem,
   MessageBubble,
   NewChatModal,
@@ -77,6 +78,7 @@ export default function ChatPage() {
   const [showNew, setShowNew] = useState(false);
   const [showWorkPicker, setShowWorkPicker] = useState(false);
   const [workPickerMode, setWorkPickerMode] = useState("tag"); // tag | room
+  const [showEditMembers, setShowEditMembers] = useState(false);
   const [infoOpen, setInfoOpen] = useState(true);
   const [lightbox, setLightbox] = useState(null);
   const [members, setMembers] = useState([]);
@@ -187,6 +189,28 @@ export default function ChatPage() {
         }
         if (type === "room.updated" || type === "membership.updated" || type === "read.updated") {
           loadRooms().catch(() => {});
+          const rid = payload.room_id || activeRoomIdRef.current;
+          if (rid && rid === activeRoomIdRef.current) {
+            loadRoomMeta(rid).catch(() => {
+              // Removed from room or lost access — clear active conversation.
+              setActiveRoomId(null);
+              setMembers([]);
+              setRoomDetail(null);
+              setMessages([]);
+              navigate("/chat", { replace: true });
+            });
+          }
+          const removed = payload.removed_user_ids || [];
+          if (meId && removed.map(String).includes(String(meId))) {
+            loadRooms().catch(() => {});
+            if (String(payload.room_id || "") === String(activeRoomIdRef.current || "")) {
+              setActiveRoomId(null);
+              setMembers([]);
+              setRoomDetail(null);
+              setMessages([]);
+              navigate("/chat", { replace: true });
+            }
+          }
         }
       },
     });
@@ -196,7 +220,7 @@ export default function ChatPage() {
       realtimeRef.current = null;
       rt.stop();
     };
-  }, [loadRooms, loadMessages, meId]);
+  }, [loadRooms, loadMessages, loadRoomMeta, meId, navigate]);
 
   useEffect(() => {
     roomsRef.current = rooms;
@@ -228,6 +252,28 @@ export default function ChatPage() {
   );
 
   const conversationTitle = roomDetail?.name || "Percakapan";
+  const roomType = roomDetail?.room_type || roomDetail?.type;
+  const canEditMembers = canManageGroup && roomType === "custom_group";
+
+  const searchWorkOrders = useCallback(async (q) => {
+    const res = await api.chatSearchWorkOrders(q);
+    return { items: res?.orders || res?.items || [] };
+  }, []);
+
+  const loadWorkLines = useCallback(async (oid) => {
+    const res = await api.chatWorkOrderLines(oid);
+    return { items: res?.lines || res?.items || [] };
+  }, []);
+
+  const loadWorkTasks = useCallback(async (oid, lineIdx) => {
+    const res = await api.chatWorkOrderTasks(oid, lineIdx);
+    return { items: res?.tasks || res?.items || [] };
+  }, []);
+
+  const searchChatUsers = useCallback(async (q) => {
+    const res = await api.chatSearchUsers(q);
+    return { items: res?.users || res?.items || [] };
+  }, []);
 
   const selectRoom = (room) => {
     const id = room.room_id || room.id;
@@ -380,7 +426,10 @@ export default function ChatPage() {
             {workTags.length ? (
               <div className="chat-pending-tags" data-testid="chat-pending-work-tags">
                 {workTags.map((t, i) => (
-                  <span key={`${t.order_id}-${i}`}>PO {t.order_id}</span>
+                  <span key={`${t.order_id}-${i}`}>
+                    {t.po_number || t.order_number || `PO ${t.order_id}`}
+                    {t.item_name ? ` · ${t.item_name}` : ""}
+                  </span>
                 ))}
               </div>
             ) : null}
@@ -420,6 +469,16 @@ export default function ChatPage() {
             </div>
           ) : null}
           <h3>Anggota</h3>
+          {canEditMembers ? (
+            <button
+              type="button"
+              className="chat-btn chat-btn-secondary"
+              data-testid="chat-edit-members-btn"
+              onClick={() => setShowEditMembers(true)}
+            >
+              Edit Anggota
+            </button>
+          ) : null}
           <ul className="chat-member-list" data-testid="chat-member-list">
             {members.map((m) => (
               <MemberListItem key={m.user_id || m.id} member={m} />
@@ -432,10 +491,7 @@ export default function ChatPage() {
         open={showNew}
         onClose={() => setShowNew(false)}
         canManageGroup={canManageGroup}
-        searchUsers={async (q) => {
-          const res = await api.chatSearchUsers(q);
-          return { items: res?.users || res?.items || [] };
-        }}
+        searchUsers={searchChatUsers}
         onCreateDm={async (peerId) => {
           const res = await api.chatCreateDm(peerId);
           const room = normalizeRoom(res?.room || res);
@@ -460,18 +516,9 @@ export default function ChatPage() {
       <WorkPickerModal
         open={showWorkPicker}
         onClose={() => setShowWorkPicker(false)}
-        searchOrders={async (q) => {
-          const res = await api.chatSearchWorkOrders(q);
-          return { items: res?.orders || res?.items || [] };
-        }}
-        loadLines={async (oid) => {
-          const res = await api.chatWorkOrderLines(oid);
-          return { items: res?.lines || res?.items || [] };
-        }}
-        loadTasks={async (oid, lineIdx) => {
-          const res = await api.chatWorkOrderTasks(oid, lineIdx);
-          return { items: res?.tasks || res?.items || [] };
-        }}
+        searchOrders={searchWorkOrders}
+        loadLines={loadWorkLines}
+        loadTasks={loadWorkTasks}
         onConfirm={async (ctx) => {
           if (workPickerMode === "tag") {
             setWorkTags((cur) => [...cur, ctx]);
@@ -483,6 +530,24 @@ export default function ChatPage() {
           setShowWorkPicker(false);
           await loadRooms();
           selectRoom(room);
+        }}
+      />
+
+      <EditMembersModal
+        open={showEditMembers}
+        onClose={() => setShowEditMembers(false)}
+        members={members}
+        searchUsers={searchChatUsers}
+        onSave={async ({ addIds, removeIds }) => {
+          if (!activeRoomId) return;
+          if (addIds?.length) {
+            await api.chatAddMembers(activeRoomId, addIds);
+          }
+          if (removeIds?.length) {
+            await api.chatRemoveMembers(activeRoomId, removeIds);
+          }
+          await loadRoomMeta(activeRoomId);
+          await loadRooms();
         }}
       />
 

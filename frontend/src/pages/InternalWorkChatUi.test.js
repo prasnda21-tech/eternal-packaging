@@ -4,7 +4,7 @@ import api from "../lib/api";
 import ChatPage from "./ChatPage";
 import MobileChatPage from "../mobile/MobileChatPage";
 import MobileChatRoomPage from "../mobile/MobileChatRoomPage";
-import { MessageBubble, WorkContextCard, WorkPickerModal } from "../components/chat/ChatShared";
+import { MessageBubble, WorkContextCard, WorkPickerModal, EditMembersModal } from "../components/chat/ChatShared";
 import { NAV_KEYS } from "../lib/navAccess";
 import { visibleGlobalWorkspaceCatalog } from "../lib/globalWorkspace";
 import { activeMobileNav, visibleMobileNavItems } from "../lib/mobileWorkspaces";
@@ -36,6 +36,8 @@ jest.mock("../lib/api", () => ({
     chatCreateDm: jest.fn(),
     chatCreateCustomGroup: jest.fn(),
     chatCreateWorkRoom: jest.fn(),
+    chatAddMembers: jest.fn(),
+    chatRemoveMembers: jest.fn(),
     chatEditMessage: jest.fn(),
     chatDeleteMessage: jest.fn(),
   },
@@ -236,6 +238,170 @@ describe("Chat web UI", () => {
     expect(container.querySelector('[data-testid="chat-work-po-only"]')?.className).toMatch(/chat-btn-primary/);
     expect(container.querySelector('[data-testid="chat-work-pick-task-po"]')?.className).toMatch(/chat-btn-secondary/);
     jest.useRealTimers();
+  });
+
+  test("Tag Pekerjaan shows loading then empty state", async () => {
+    jest.useFakeTimers();
+    let resolveSearch;
+    const searchOrders = jest.fn().mockImplementation(
+      () => new Promise((resolve) => { resolveSearch = resolve; }),
+    );
+    await act(async () => {
+      root.render(
+        <WorkPickerModal
+          open
+          onClose={() => {}}
+          onConfirm={() => {}}
+          searchOrders={searchOrders}
+          loadLines={async () => ({ items: [] })}
+          loadTasks={async () => ({ items: [] })}
+        />,
+      );
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="chat-work-loading"]')?.textContent).toMatch(/Memuat/);
+    await act(async () => {
+      resolveSearch({ items: [] });
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="chat-work-empty"]')?.textContent).toMatch(/Belum ada PO|ketik|Tidak ada/i);
+    jest.useRealTimers();
+  });
+
+  test("Tag Pekerjaan no-results state after search", async () => {
+    jest.useFakeTimers();
+    const searchOrders = jest.fn().mockResolvedValue({ items: [] });
+    await act(async () => {
+      root.render(
+        <WorkPickerModal
+          open
+          onClose={() => {}}
+          onConfirm={() => {}}
+          searchOrders={searchOrders}
+          loadLines={async () => ({ items: [] })}
+          loadTasks={async () => ({ items: [] })}
+        />,
+      );
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    const input = container.querySelector('[data-testid="chat-work-po-search"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(input, "ZZZ-NONE");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="chat-work-empty"]')?.textContent).toMatch(/Tidak ada PO\/pekerjaan yang cocok/);
+    jest.useRealTimers();
+  });
+
+  test("work card renders flat snapshot fields from message payload", () => {
+    act(() => {
+      root.render(
+        <WorkContextCard
+          workRef={{
+            order_id: "ord-flat",
+            po_number: "PO-FLAT",
+            customer_name: "Renea",
+            item_name: "Cup",
+            qty: 12,
+          }}
+        />,
+      );
+    });
+    expect(container.querySelector('[data-testid="chat-work-card"]')?.textContent).toMatch(/PO-FLAT/);
+    expect(container.querySelector('[data-testid="chat-work-card"]')?.textContent).toMatch(/Renea/);
+    expect(container.querySelector('[data-testid="chat-work-open-link"]')?.getAttribute("href")).toBe("/po/ord-flat");
+  });
+
+  test("Edit Anggota modal toggles members with human-readable names", async () => {
+    jest.useFakeTimers();
+    const onSave = jest.fn().mockResolvedValue(undefined);
+    const searchUsers = jest.fn().mockResolvedValue({
+      items: [{ id: "u9", name: "New Helper", role: "helper" }],
+    });
+    await act(async () => {
+      root.render(
+        <EditMembersModal
+          open
+          onClose={() => {}}
+          members={[
+            { user_id: "u1", display_name: "Admin Eternal", role: "admin" },
+            { user_id: "u2", display_name: "Peer Helper", role: "helper" },
+          ]}
+          searchUsers={searchUsers}
+          onSave={onSave}
+        />,
+      );
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    const names = Array.from(container.querySelectorAll('[data-testid="chat-edit-member-name"]')).map((n) => n.textContent);
+    expect(names).toEqual(expect.arrayContaining(["Admin Eternal", "Peer Helper", "New Helper"]));
+    expect(names.join(" ")).not.toMatch(/u1|u2|u9/);
+    await act(async () => {
+      const opt = Array.from(container.querySelectorAll('[data-testid="chat-edit-member-option"]'))
+        .find((el) => el.getAttribute("data-user-id") === "u9");
+      opt?.click();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="chat-edit-members-save"]')?.click();
+      await Promise.resolve();
+    });
+    expect(onSave).toHaveBeenCalled();
+    const arg = onSave.mock.calls[0][0];
+    expect(arg.addIds).toContain("u9");
+    expect(arg.selectedIds).toEqual(expect.arrayContaining(["u1", "u2", "u9"]));
+    jest.useRealTimers();
+  });
+
+  test("Edit Anggota control visible for custom_group managers only", async () => {
+    api.chatGetRoom.mockResolvedValue({
+      id: "r-group",
+      room_id: "r-group",
+      name: "Ops",
+      room_type: "custom_group",
+      type: "custom_group",
+      members: [
+        { user_id: "u1", display_name: "Admin", role: "admin" },
+        { user_id: "u2", display_name: "Peer Helper", role: "helper" },
+      ],
+    });
+    mockRoomId = "r-group";
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-edit-members-btn"]')).toBeTruthy();
+  });
+
+  test("system_group Info has no Edit Anggota control", async () => {
+    api.chatGetRoom.mockResolvedValue({
+      id: "r-sys",
+      room_id: "r-sys",
+      name: "Operator",
+      room_type: "system_group",
+      type: "system_group",
+      members: [{ user_id: "u1", display_name: "Admin", role: "admin" }],
+    });
+    mockRoomId = "r-sys";
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-edit-members-btn"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-member-list"]')).toBeTruthy();
   });
 
   test("send keeps draft on failure", async () => {

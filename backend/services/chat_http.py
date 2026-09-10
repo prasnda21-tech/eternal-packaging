@@ -86,11 +86,16 @@ async def _has_perm(user_permissions, user: dict, perm: str) -> bool:
     return perm in effective_permissions(user.get("role"), user.get("permissions_override") or {})
 
 
-async def _broadcast_room_membership(db, room_id: str, event: dict) -> None:
+async def _broadcast_room_membership(db, room_id: str, event: dict, *, also_user_ids: list[str] | None = None) -> None:
     await chat_realtime.broadcast_to_room(room_id, event)
-    members = await db.chat_members.find({"room_id": room_id, "active": True}, {"_id": 0, "user_id": 1}).to_list(500)
-    for member in members:
-        await chat_realtime.broadcast_to_user(member["user_id"], event)
+    notify_ids = {str(m["user_id"]) for m in await db.chat_members.find(
+        {"room_id": room_id, "active": True}, {"_id": 0, "user_id": 1}
+    ).to_list(500)}
+    for uid in also_user_ids or []:
+        if uid:
+            notify_ids.add(str(uid))
+    for uid in notify_ids:
+        await chat_realtime.broadcast_to_user(uid, event)
 
 
 async def authenticate_ws(websocket: WebSocket, db, user_permissions=None) -> dict:
@@ -170,7 +175,15 @@ def register_chat_routes(
     async def delete_members(room_id: str, payload: MembersPayload, user=Depends(require_perm(PERM_CHAT_USE, PERM_CHAT_GROUP_MANAGE))):
         db = get_db()
         room = await chat_rooms.remove_members(db, room_id, payload.user_ids, user)
-        await _broadcast_room_membership(db, room_id, {"type": chat_realtime.EVENT_MEMBERSHIP_UPDATED, "room_id": room_id})
+        removed = list(room.get("removed_user_ids") or [])
+        await _broadcast_room_membership(
+            db,
+            room_id,
+            {"type": chat_realtime.EVENT_MEMBERSHIP_UPDATED, "room_id": room_id, "removed_user_ids": removed},
+            also_user_ids=removed,
+        )
+        for uid in removed:
+            await chat_realtime.manager.unsubscribe_user_from_room(uid, room_id)
         return room
 
     @api_router.post("/chat/rooms/{room_id}/archive")
