@@ -997,10 +997,18 @@ def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
 
 
 def has_surat_jalan_file(order: dict) -> bool:
+    """True only when a live Surat Jalan file entry exists.
+
+    Bare shipments (allocation / sales-delivery rows) are NOT files — Loading and
+    FILE TERSIMPAN already require surat_jalan_files. Soft-deleted / missing-file
+    ghosts must not keep has-file semantics active.
+    """
     files = order.get("surat_jalan_files")
     if isinstance(files, list) and files:
         for f in files:
             if not isinstance(f, dict):
+                continue
+            if f.get("is_deleted"):
                 continue
             if str(f.get("id") or "").strip() and (
                 str(f.get("data_url") or "").startswith("data:")
@@ -1009,8 +1017,6 @@ def has_surat_jalan_file(order: dict) -> bool:
                 or f.get("uploaded_at")
             ):
                 return True
-    if shipments_stored(order):
-        return True
     return False
 
 
@@ -1111,10 +1117,18 @@ def effective_loaded_qty(order: dict) -> int:
 
 
 def surat_jalan_created(order: dict) -> bool:
+    """Current active SJ for stageflow / FILE TERSIMPAN.
+
+    Live file entries count. Legacy stamp-only POs without shipments still count.
+    Bare shipments after file delete (or PDF never generated) do NOT count — they
+    are allocation history/ghosts and must not disagree with Loading's
+    \"Belum ada file Surat Jalan.\"
+    """
     if has_surat_jalan_file(order):
         return True
     if shipments_stored(order):
-        return True
+        # Shipment without a live file is not an active SJ document.
+        return False
     return bool(
         order.get("delivery_note_number")
         and order.get("delivery_note_created_at")
@@ -1682,9 +1696,12 @@ def surat_jalan_status_semantic(order: dict) -> str:
 
     Selesai only when a valid Surat Jalan exists AND Loading fulfills every
     required line. Allocation of packed qty to SJ is not enough.
+    Ghost shipments without a live file must stay pending for stage/badge.
     """
     created = surat_jalan_created(order)
-    if created and loading_fulfills_all_required_lines(order):
+    if not created:
+        return SJ_STATUS_PENDING
+    if loading_fulfills_all_required_lines(order):
         return SJ_STATUS_COMPLETED
     packed = qty_packed(order)
     shipped = qty_shipped(order)

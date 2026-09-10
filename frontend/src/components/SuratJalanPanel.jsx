@@ -39,8 +39,10 @@ export default function SuratJalanPanel({
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [preview, setPreview] = useState(null);
   const uploading = busyProp || busy;
-  const created = !!order.surat_jalan_created;
   const files = sjHistory(order);
+  // FILE TERSIMPAN = live/active SJ file only (same evidence Loading uses).
+  // Do not use bare surat_jalan_created from shipment ghosts / deleted history.
+  const created = files.length > 0;
   const sjOrderId = order?.id;
   const sjStoredDate = order?.delivery_note_created_at;
 

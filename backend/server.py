@@ -3669,11 +3669,32 @@ async def delete_surat_jalan_file(
     file_id: str,
     user=Depends(require_perm(_SJ_DELETE_FILE)),
 ):
-    """Delete one Surat Jalan file. Permission-gated. No cascade to Loading/delivery."""
+    """Delete one Surat Jalan file. Permission-gated.
+
+    Generated (Pengiriman Pesanan) SJ files also release the matching active
+    sales_delivery allocation when safe, so Aksi PO remain / create-SJ action
+    returns with stageflow. Loading/Delivered blockers are preserved.
+    Manual uploads remain file-only (no sales_delivery cascade).
+    """
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
+
+    existing = _sj_find_file(order, file_id)
+    if not existing:
+        raise HTTPException(404, "File Surat Jalan tidak ditemukan")
+
+    linked_delivery = None
+    if _sj_is_generated(existing):
+        delivery_id = str(existing.get("id") or existing.get("shipment_id") or file_id or "").strip()
+        if delivery_id:
+            linked_delivery = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0})
+        if linked_delivery:
+            blocker = await _sales_delivery_delete_blocker(linked_delivery)
+            if blocker:
+                raise HTTPException(400, blocker)
+
     removed = _sj_remove_file(order, file_id)
     if not removed:
         raise HTTPException(404, "File Surat Jalan tidak ditemukan")
@@ -3681,6 +3702,15 @@ async def delete_surat_jalan_file(
         {"id": file_id, "kind": "surat_jalan", "order_id": order["id"]},
         {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_by": user.get("email")}},
     )
+
+    if linked_delivery:
+        await db.sales_deliveries.delete_one({"id": linked_delivery["id"]})
+        await _remove_matching_business_sj_shipment(order.get("id"), linked_delivery)
+        # Reload order after shipment / stamp cleanup so response is current.
+        fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if fresh:
+            order = fresh
+
     add_timeline(
         order, 12, user,
         note=f"Hapus file Surat Jalan: {removed.get('name') or file_id}",
@@ -3691,6 +3721,11 @@ async def delete_surat_jalan_file(
         order, "delivery_note.delete_file", user,
         note=str(removed.get("name") or file_id),
     )
+    # Recompute derived SJ / stage flags + remain so Aksi PO matches stageflow
+    # immediately (no stale "Seluruh Qty Selesai Dibuatkan SJ").
+    order["surat_jalan_created"] = _surat_jalan_created(order)
+    _attach_quantity_snapshot(order)
+    order["sales_delivery_summary"] = await _get_po_delivery_summary(db, order)
     return {"order": _strip_sj_bytes(order)}
 
 
@@ -8190,7 +8225,13 @@ async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
 
 
 async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> None:
-    """Remove the exact business SJ shipment row and its system-generated PDF only."""
+    """Remove the exact business SJ shipment row and its system-generated PDF only.
+
+    Soft-deletes the generated PDF blob for audit. Does not erase packing,
+    loading, or delivery history. When no active SJ evidence remains, clears
+    delivery_note_* stamps so stageflow no longer treats deleted history as
+    an active Surat Jalan (same rule as remove_file_from_order).
+    """
     if not po_id:
         return
     delivery_id = delivery.get("id")
@@ -8211,6 +8252,28 @@ async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> N
             },
             {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_reason": "sales.delivery.delete"}},
         )
+    order = await db.orders.find_one(
+        {"id": po_id},
+        {"_id": 0, "shipments": 1, "surat_jalan_files": 1},
+    )
+    if not order:
+        return
+    shipments = [sh for sh in (order.get("shipments") or []) if isinstance(sh, dict)]
+    files = [
+        f for f in (order.get("surat_jalan_files") or [])
+        if isinstance(f, dict) and not f.get("is_deleted")
+    ]
+    if shipments or files:
+        return
+    await db.orders.update_one(
+        {"id": po_id},
+        {"$set": {
+            "delivery_note_number": None,
+            "delivery_note_created_at": None,
+            "delivery_note_created_by": None,
+            "delivery_note_created_by_name": None,
+        }},
+    )
 
 
 @api_router.delete("/sales-receipts/{id}")

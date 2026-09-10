@@ -13,6 +13,77 @@ describe("SJ / Loading / Terkirim chips", () => {
     expect(sj.state).toBe("current");
   });
 
+  test("deleted/cancelled SJ only: Surat Jalan is not falsely complete", () => {
+    const sj = resolveStageState(12, {
+      surat_jalan_created: false,
+      surat_jalan_status_semantic: "pending",
+      packing_info: { qty_packed: 3000, lines: [{ line_idx: 0, packed_qty: 3000 }] },
+      current_stage: 12,
+    }, 12);
+    expect(sj.state).not.toBe("done");
+    expect(sj.label).toMatch(/menunggu/i);
+    expect(sj.label).not.toMatch(/selesai/i);
+
+    const loading = resolveStageState(13, {
+      surat_jalan_created: false,
+      loading_qty_status: "pending",
+      current_stage: 12,
+    }, 12);
+    expect(loading.state).toBe("pending");
+    expect(loading.label).toMatch(/surat jalan/i);
+
+    const terkirim = resolveStageState(14, {
+      surat_jalan_created: false,
+      eligible_delivery_qty: 0,
+      terkirim_confirmed: false,
+      delivery_status: "Belum Terkirim",
+      current_stage: 12,
+    }, 12);
+    expect(terkirim.state).toBe("pending");
+    expect(terkirim.state).not.toBe("current");
+    expect(terkirim.state).not.toBe("done");
+  });
+
+  test("shipment ghost without live file does not keep SJ stage active", () => {
+    const sj = resolveStageState(12, {
+      surat_jalan_created: false,
+      surat_jalan_status_semantic: "pending",
+      shipments: [{ id: "ghost", sales_delivery_id: "ghost", lines: [{ line_idx: 0, qty: 3000 }] }],
+      surat_jalan_files: [],
+      sj_files: [],
+      packing_info: { qty_packed: 3000, lines: [{ line_idx: 0, packed_qty: 3000 }] },
+      current_stage: 12,
+    }, 12);
+    expect(sj.state).not.toBe("done");
+    expect(sj.label).toMatch(/menunggu/i);
+
+    const loading = resolveStageState(13, {
+      surat_jalan_created: false,
+      surat_jalan_files: [],
+      current_stage: 12,
+    }, 12);
+    expect(loading.state).toBe("pending");
+  });
+
+  test("historical deleted SJ does not drive stage; new active SJ does", () => {
+    const historyOnly = resolveStageState(12, {
+      surat_jalan_created: false,
+      surat_jalan_status_semantic: "pending",
+      sj_files: [{ id: "old-deleted", name: "SJ-OLD.pdf", is_deleted: true }],
+      current_stage: 12,
+    }, 12);
+    expect(historyOnly.state).not.toBe("done");
+    expect(historyOnly.label).toMatch(/menunggu/i);
+
+    const newActive = resolveStageState(12, {
+      surat_jalan_created: true,
+      surat_jalan_status_semantic: "partial",
+      current_stage: 12,
+    }, 12);
+    expect(newActive.state).toBe("current");
+    expect(newActive.label).toMatch(/parsial|siap loading/i);
+  });
+
   test("SJ + full Loading is Selesai on Alur Pekerjaan", () => {
     const sj = resolveStageState(12, {
       surat_jalan_created: true,

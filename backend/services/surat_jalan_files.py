@@ -331,8 +331,9 @@ def history_entries(order: dict) -> List[dict]:
 def remove_file_from_order(order: dict, file_id: str) -> Optional[dict]:
     """Remove the exact Surat Jalan file. Does not touch Loading or delivery history.
 
-    If that was the last file and there are no shipment records, clear derived
-    delivery_note_* stamps so workflow status is no longer Selesai.
+    Clears delivery_note_* when no live SJ files remain so FILE TERSIMPAN /
+    stageflow do not stay active from stamps alone. Bare shipments may remain
+    as allocation rows but are not active SJ documents without a file.
     """
     want = _safe_str(file_id)
     if not want:
@@ -355,7 +356,7 @@ def remove_file_from_order(order: dict, file_id: str) -> Optional[dict]:
         same_id = _safe_str(sh.get("id")) == want or _safe_str(sh.get("sales_delivery_id")) == want
         if same_file or same_id:
             sh["file_id"] = None
-    if not kept and not shipments_stored(order):
+    if not kept:
         order["delivery_note_number"] = None
         order["delivery_note_created_at"] = None
         order["delivery_note_created_by"] = None

@@ -76,6 +76,8 @@ def test_remove_exact_file_does_not_cascade():
     assert order["loading_confirmations"][0]["id"] == "c1"
     assert order["delivery_history"][0]["item"] == "A"
     assert surat_jalan_created(order) is True
+    # Stamps stay while another live file remains
+    assert order["delivery_note_number"] == "SJ-1"
 
 
 def test_last_file_delete_clears_sj_status():
@@ -100,6 +102,47 @@ def test_last_file_delete_clears_sj_status():
     assert order["loading_confirmations"]
     assert surat_jalan_created(order) is False
     assert surat_jalan_status_semantic(order) != "completed"
+
+
+def test_file_delete_with_bare_shipment_clears_active_sj_signals():
+    """Hapus File must not leave FILE TERSIMPAN / stage active via ghost shipment."""
+    order = {
+        "line_items": [{"name": "A", "quantity": 3000}],
+        "packing_info": {"qty_packed": 3000, "lines": [{"line_idx": 0, "packed_qty": 3000}]},
+        "surat_jalan_files": [
+            {
+                "id": "sid1",
+                "name": "SJ.pdf",
+                "storage_path": "p",
+                "source": "SYSTEM_GENERATED",
+                "uploaded_at": "t",
+                "sj_number": "SJ-1",
+                "lines": [{"line_idx": 0, "qty": 3000}],
+            }
+        ],
+        "shipments": [
+            {
+                "id": "sid1",
+                "number": "SJ-1",
+                "sales_delivery_id": "sid1",
+                "file_id": "sid1",
+                "lines": [{"line_idx": 0, "qty": 3000}],
+            }
+        ],
+        "delivery_note_number": "SJ-1",
+        "delivery_note_created_at": "t",
+        "delivery_note_created_by": "u",
+        "loading_confirmations": [],
+        "current_stage": 12,
+    }
+    assert surat_jalan_created(order) is True
+    remove_file_from_order(order, "sid1")
+    assert order["surat_jalan_files"] == []
+    assert order["shipments"][0]["file_id"] in (None, "")
+    assert order["delivery_note_number"] is None
+    assert surat_jalan_created(order) is False
+    assert surat_jalan_status_semantic(order) == "pending"
+    assert history_entries(order) == []
 
 
 def test_endpoint_is_authenticated_permission_404():
