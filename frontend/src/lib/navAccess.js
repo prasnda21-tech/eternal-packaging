@@ -107,7 +107,6 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.reports },
-  { key: NAV_KEYS.shipmentStatus, label: "Status Pengiriman", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.orderPrediction, label: "Prediksi Order", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.employeeAdmin, label: "Administrasi Karyawan", parent: null },
@@ -316,7 +315,7 @@ export function inventoryMenuItems(hasPerm) {
 export const REPORTS_NAV_ROUTES = {
   [NAV_KEYS.analytics]: "/laporan/analitik-output",
   [NAV_KEYS.statusPo]: "/laporan/status-po",
-  [NAV_KEYS.shipmentStatus]: "/laporan/status-pengiriman",
+  // Status Pengiriman consolidated into Jadwal Pengiriman — no standalone menu route.
   [NAV_KEYS.gajiOperator]: "/laporan/gaji-operator",
   [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
 };
@@ -324,7 +323,6 @@ export const REPORTS_NAV_ROUTES = {
 const REPORTS_VIS_FIELD = {
   [NAV_KEYS.analytics]: "analytics",
   [NAV_KEYS.statusPo]: "statusPo",
-  [NAV_KEYS.shipmentStatus]: "shipmentStatus",
   [NAV_KEYS.gajiOperator]: "gajiOperator",
   [NAV_KEYS.orderPrediction]: "orderPrediction",
 };
@@ -332,7 +330,6 @@ const REPORTS_VIS_FIELD = {
 export const REPORTS_TILE_TONES = {
   [NAV_KEYS.analytics]: "green",
   [NAV_KEYS.statusPo]: "blue",
-  [NAV_KEYS.shipmentStatus]: "orange",
   [NAV_KEYS.gajiOperator]: "purple",
   [NAV_KEYS.orderPrediction]: "green",
 };
@@ -340,7 +337,6 @@ export const REPORTS_TILE_TONES = {
 export const REPORTS_TILE_TESTIDS = {
   [NAV_KEYS.analytics]: "top-nav-analitik-output",
   [NAV_KEYS.statusPo]: "top-nav-status-po",
-  [NAV_KEYS.shipmentStatus]: "top-nav-status-pengiriman",
   [NAV_KEYS.gajiOperator]: "top-nav-gaji-operator",
   [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
 };
@@ -416,10 +412,11 @@ export function reportsNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
   const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
   const statusPo = parent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
-  const shipmentStatus = parent && canSeeNav(hasPerm, NAV_KEYS.shipmentStatus);
+  // Standalone Status Pengiriman menu removed — consolidated into Jadwal Pengiriman.
+  const shipmentStatus = false;
   const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
   const orderPrediction = parent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
-  return { parent: !!(analytics || statusPo || shipmentStatus || gajiOperator || orderPrediction), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
+  return { parent: !!(analytics || statusPo || gajiOperator || orderPrediction), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
 }
 
 export function purchasingNavVisible(hasPerm) {

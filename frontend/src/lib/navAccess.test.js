@@ -250,10 +250,10 @@ describe("reportsNavVisible", () => {
     expect(v.shipmentStatus).toBe(false);
   });
 
-  test("shows parent for shipment status only", () => {
+  test("shipment status alone no longer opens Laporan menu (consolidated to Jadwal)", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.shipmentStatus));
-    expect(v.parent).toBe(true);
-    expect(v.shipmentStatus).toBe(true);
+    expect(v.parent).toBe(false);
+    expect(v.shipmentStatus).toBe(false);
     expect(v.statusPo).toBe(false);
     expect(v.analytics).toBe(false);
   });

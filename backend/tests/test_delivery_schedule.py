@@ -183,7 +183,9 @@ def test_schedule_status_today_and_late():
 
 
 def test_filter_and_reset_semantics():
-    row = schedule_row(_po(deadline="2026-08-30", customer="PT Contoh"))
+    # Pin "today" so status is not calendar-flaky (deadline alone → belum when future).
+    row = schedule_row(_po(deadline="2026-08-30", customer="PT Contoh"), today="2026-08-20")
+    assert row["status"] == "belum_dijadwalkan"
     assert matches_schedule_filters(row, {"po": "PO/2026", "customer": "contoh", "status": "belum_dijadwalkan"})
     assert not matches_schedule_filters(row, {"po": "ZZZ"})
     assert not matches_schedule_filters(row, {"status": "terkirim"})
@@ -232,3 +234,19 @@ def test_schedule_hari_ini_follows_wib_today_key():
     # UTC calendar date would have treated 28 Aug as still "terjadwal"
     assert now.date().isoformat() == "2026-08-27"
     assert schedule_status_code(o, today=now.date().isoformat()) == "terjadwal"
+
+
+def test_schedule_row_embeds_canonical_shipment_percents():
+    o = _po(
+        total_quantity=10000,
+        line_items=[{"name": "Cetak", "quantity": 10000, "production_process": "print"}],
+        qty_delivered=5000,
+        operator_splits=[{"line_idx": 0, "qty_completed": 7500}],
+    )
+    row = schedule_row(o)
+    assert row["percent_delivered"] == 50
+    assert row["percent_delivered_display"] == 50
+    assert row["percent_ready_to_ship"] == 75
+    assert row["percent_ready_to_ship_display"] == 75
+    assert row["qty_delivered"] == 5000
+    assert row["item_label"] == "Cetak"  # still in API; UI may omit column
