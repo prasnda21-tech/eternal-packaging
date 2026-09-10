@@ -162,6 +162,9 @@ from services.employee_admin_http import register_employee_admin_routes
 from services.hr_payroll_http import register_hr_payroll_routes
 from services.chart_of_accounts_http import register_chart_of_accounts_routes
 from services.cash_bank_http import register_cash_bank_routes
+from services.chat_http import register_chat_routes
+from services.chat_indexes import ensure_indexes as ensure_chat_indexes
+from services.chat_membership import bootstrap_system_groups as bootstrap_chat_system_groups, on_user_changed as on_chat_user_changed
 from services.general_journal_http import register_general_journal_routes
 from services.opening_balance_http import register_opening_balance_routes
 from services.general_ledger_http import register_general_ledger_routes
@@ -448,6 +451,13 @@ def require(*roles):
             raise HTTPException(403, "Aksi ini tidak tersedia untuk role Anda")
         return user
     return checker
+
+
+async def _sync_chat_user_best_effort(user_id: str) -> None:
+    try:
+        await on_chat_user_changed(db, user_id)
+    except Exception as exc:
+        logger.warning("Chat membership sync failed for user %s: %s", user_id, exc)
 
 
 class LoginInput(BaseModel):
@@ -6430,7 +6440,9 @@ async def create_canonical_user(
         after=_sanitize_user(dict(doc)),
         note=f"Tambah karyawan {name_clean}",
     )
-    return await db.users.find_one({"id": doc["id"]}, {"password_hash": 0, "_id": 0})
+    saved = await db.users.find_one({"id": doc["id"]}, {"password_hash": 0, "_id": 0})
+    await _sync_chat_user_best_effort(doc["id"])
+    return saved
 
 
 @api_router.put("/admin/users/{user_id}")
@@ -6458,6 +6470,7 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
     await db.users.update_one({"id": user_id}, {"$set": updates})
     after = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
     await _write_audit("user.update", user, target_email=existing.get("email"), before=before, after=after, note=f"Update karyawan {existing.get('email')}")
+    await _sync_chat_user_best_effort(user_id)
     return {"user": after}
 
 
@@ -6537,6 +6550,7 @@ async def deactivate_user(user_id: str, user=Depends(require_perm("users.manage"
     await db.users.update_one({"id": user_id}, {"$set": {"status": "inactive", "deactivated_at": now_iso(), "updated_at": now_iso()}})
     after = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
     await _write_audit("user.deactivate", user, target_email=existing.get("email"), before=existing, after=after, note="Nonaktifkan karyawan")
+    await _sync_chat_user_best_effort(user_id)
     return {"user": after}
 
 
@@ -6548,6 +6562,7 @@ async def activate_user(user_id: str, user=Depends(require_perm("users.manage"))
     await db.users.update_one({"id": user_id}, {"$set": {"status": "active", "deactivated_at": None, "updated_at": now_iso()}})
     after = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
     await _write_audit("user.activate", user, target_email=existing.get("email"), before=existing, after=after, note="Aktifkan kembali karyawan")
+    await _sync_chat_user_best_effort(user_id)
     return {"user": after}
 
 
@@ -9089,6 +9104,14 @@ register_cash_bank_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+register_chat_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+    user_permissions=user_permissions,
+)
 register_general_journal_routes(
     api_router,
     get_db=lambda: db,
@@ -10647,6 +10670,7 @@ async def seed():
     await _cash_bank_recon_ensure_indexes(db)
     await _general_journal_ensure_indexes(db)
     await _opening_balance_ensure_indexes(db)
+    await ensure_chat_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
@@ -10759,6 +10783,11 @@ async def seed():
     # Seed roles collection (idempotent — one row per built-in role)
     await _seed_roles_collection()
 
+    try:
+        await bootstrap_chat_system_groups(db)
+    except Exception as e:
+        logger.warning("Chat system group bootstrap failed: %s", e)
+
     # Phase B migration: patch stale role_permissions overrides so newly added
     # built-in permissions (dashboard.production.*, po.cancel/po.delete on
     # head_operations) are added to any existing customization. This is idempotent.
@@ -10844,6 +10873,21 @@ async def seed():
                 {"$addToSet": {"permissions": {"$each": missing}}, "$set": {"updated_at": now_iso(), "updated_by": "system.migration.phaseB"}},
             )
             logger.info("Phase B migration: %s override topped-up with %s", role_slug, missing)
+
+    # Internal Work Chat: grant use/nav to every stored role override (idempotent).
+    # chat.group.manage / chat.moderate stay admin-only unless explicitly granted.
+    async for override in db.role_permissions.find({}, {"_id": 0, "role": 1, "permissions": 1}):
+        role_slug = override.get("role")
+        if not role_slug:
+            continue
+        need = ["chat.use", "nav.chat"]
+        missing = [p for p in need if p not in (override.get("permissions") or [])]
+        if missing:
+            await db.role_permissions.update_one(
+                {"role": role_slug},
+                {"$addToSet": {"permissions": {"$each": missing}}, "$set": {"updated_at": now_iso(), "updated_by": "system.migration.chat_v1"}},
+            )
+            logger.info("Chat V1 migration: %s override topped-up with %s", role_slug, missing)
 
     # Bootstrap Super Admin: if none exists, promote admin@eternalpackaging.com
     if await db.users.count_documents({"is_super_admin": True}) == 0:

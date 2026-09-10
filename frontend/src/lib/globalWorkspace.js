@@ -59,6 +59,10 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
     tabs.push({ id: "dashboard", path: "/dashboard", label: "Dashboard" });
   }
 
+  if (canSeeNav(hasPerm, NAV_KEYS.chat) || (typeof hasPerm === "function" && hasPerm("chat.use"))) {
+    tabs.push({ id: "chat", path: "/chat", label: "Chat", matchPrefix: true });
+  }
+
   productionMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   taskMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   salesMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item, salesIdByPath[item.to])));
