@@ -50,6 +50,13 @@ from services.delivery_outlets import (
 from services.delivery_vehicles import normalize_vehicle, public_vehicle
 from services.places_provider.base import PlacesNotConfigured, PlacesProviderError
 from services.places_provider.factory import get_places_provider
+from services.delivery_driver_assignment import (
+    ASSIGN_DRIVER_PERM,
+    LIST_DRIVER_PERMS,
+    assign_driver_bulk,
+    assign_driver_to_order,
+    list_eligible_drivers,
+)
 
 
 ROUTE_OPTIMIZATION_INACTIVE = "Route optimization bukan lagi workflow aktif. Data historis tetap tersimpan."
@@ -125,6 +132,17 @@ class PatchOutletPayload(BaseModel):
     lng: Optional[float] = None
 
 
+class AssignDriverPayload(BaseModel):
+    """Exact driver user id only — no name matching. Unassign not supported."""
+    driver_user_id: str
+
+
+class BulkAssignDriverPayload(BaseModel):
+    """Exact selected order IDs + exact driver_user_id."""
+    order_ids: List[str] = Field(default_factory=list)
+    driver_user_id: str
+
+
 def register(api_router: APIRouter, deps: dict) -> None:
     db = deps["db"]
     current_user = deps["current_user"]
@@ -132,6 +150,17 @@ def register(api_router: APIRouter, deps: dict) -> None:
     require_any_perm = deps["require_any_perm"]
     user_permissions = deps["user_permissions"]
     Depends = deps["Depends"]
+
+    def _live_db():
+        """Prefer rebound server.db (tests rebind Motor per event loop)."""
+        try:
+            import server as _srv
+            live = getattr(_srv, "db", None)
+            if live is not None:
+                return live
+        except Exception:
+            pass
+        return db
 
     async def _eff(user: dict):
         return await user_permissions(user)
@@ -570,16 +599,32 @@ def register(api_router: APIRouter, deps: dict) -> None:
 
     @api_router.get("/delivery/drivers")
     async def list_delivery_drivers(user=Depends(current_user)):
-        await require_any_perm(user, "delivery.schedule.create", "delivery.vehicle.manage")
-        docs = await db.users.find(
-            {"status": {"$ne": "inactive"}},
-            {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
-        ).to_list(200)
-        allowed_roles = {"driver", "admin", "head_production", "head_operations"}
-        return {"drivers": [
-            {"id": d.get("id"), "name": d.get("name") or d.get("email"), "email": d.get("email"), "role": d.get("role")}
-            for d in docs if d.get("role") in allowed_roles
-        ]}
+        """Read-only eligible driver directory (canonical users by role). ZERO writes."""
+        await require_any_perm(user, *LIST_DRIVER_PERMS)
+        return {"drivers": await list_eligible_drivers(_live_db())}
+
+    @api_router.patch("/delivery/orders/{order_id}/driver")
+    async def patch_order_driver(order_id: str, payload: AssignDriverPayload, user=Depends(current_user)):
+        """Assign/change canonical loading_checklist.driver_user_id. No Loading/Pengiriman mutation."""
+        await require_perm(user, ASSIGN_DRIVER_PERM)
+        result = await assign_driver_to_order(
+            _live_db(),
+            order_id=order_id,
+            driver_user_id=payload.driver_user_id,
+            actor=user,
+        )
+        return {"ok": True, "result": result}
+
+    @api_router.post("/delivery/orders/assign-driver")
+    async def post_assign_driver_bulk(payload: BulkAssignDriverPayload, user=Depends(current_user)):
+        """Bulk assign exact selected order IDs only. Per-row updated/unchanged/failed."""
+        await require_perm(user, ASSIGN_DRIVER_PERM)
+        return await assign_driver_bulk(
+            _live_db(),
+            order_ids=list(payload.order_ids or []),
+            driver_user_id=payload.driver_user_id,
+            actor=user,
+        )
 
     @api_router.get("/settings/depot")
     async def get_depot(user=Depends(current_user)):

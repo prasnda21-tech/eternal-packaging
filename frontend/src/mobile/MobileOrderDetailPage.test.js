@@ -5,10 +5,11 @@ import MobileOrderDetailPage from "./MobileOrderDetailPage";
 
 const mockHasPerm = jest.fn(() => false);
 const mockSetParams = jest.fn();
+const mockNavigate = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   useParams: () => ({ id: "po-1" }),
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
   useLocation: () => ({ state: { fromTask: true } }),
   useSearchParams: () => [new URLSearchParams("ws=prep"), mockSetParams],
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
@@ -27,7 +28,16 @@ jest.mock("../lib/api", () => ({
 
 jest.mock("./MobileTopBar", () => ({
   __esModule: true,
-  default: ({ title }) => <header>{title}</header>,
+  default: ({ kicker, title, meta, onBack }) => (
+    <header data-testid="mobile-topbar">
+      {onBack ? (
+        <button type="button" data-testid="mobile-back" onClick={onBack}>Kembali</button>
+      ) : null}
+      {kicker ? <p data-testid="mobile-topbar-kicker">{kicker}</p> : null}
+      {title ? <h1 data-testid="mobile-topbar-title">{title}</h1> : null}
+      {meta ? <p data-testid="mobile-topbar-meta">{meta}</p> : null}
+    </header>
+  ),
 }));
 
 jest.mock("./components/MobileStageFlow", () => ({
@@ -42,7 +52,7 @@ jest.mock("./workspaces/MobileHelperPrepWorkspace", () => ({
 
 jest.mock("./workspaces/MobilePackingWorkspace", () => ({
   __esModule: true,
-  default: () => <div data-testid="ws-packing" />,
+  default: () => <div data-testid="ws-packing">packing-body</div>,
 }));
 
 jest.mock("./workspaces/MobileLoadingWorkspace", () => ({
@@ -88,6 +98,7 @@ describe("MobileOrderDetailPage Ringkasan PO", () => {
     root = createRoot(container);
     mockHasPerm.mockReset();
     mockSetParams.mockReset();
+    mockNavigate.mockReset();
     api.getOrder.mockReset();
     api.getOrder.mockResolvedValue({
       order: {
@@ -123,5 +134,38 @@ describe("MobileOrderDetailPage Ringkasan PO", () => {
     await flush();
     expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-workspace-select"]')).toBeTruthy();
+  });
+
+  test("primary heading is customer; PO number is secondary meta", async () => {
+    mockHasPerm.mockImplementation((p) => ["po.view", "helper.prepare"].includes(p));
+    await act(async () => { root.render(<MobileOrderDetailPage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-topbar-title"]').textContent).toBe("PT Example");
+    expect(container.querySelector('[data-testid="mobile-topbar-meta"]').textContent).toBe("PO-1");
+    expect(container.querySelector('[data-testid="mobile-topbar-kicker"]').textContent).toMatch(/Tugas Saya/);
+    expect(container.querySelector('[data-testid="mobile-topbar-kicker"]').textContent).toMatch(/Persiapan/);
+    expect(container.querySelector('[data-testid="mobile-back"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-order-customer"]').textContent).toContain("PT Example");
+    expect(container.textContent).toContain("Pilih Tugas");
+  });
+
+  test("prefers canonical customer field over customer_name", async () => {
+    api.getOrder.mockResolvedValue({
+      order: {
+        id: "po-1",
+        po_number: "PO-QA15-DFAC2C",
+        customer: "TEST_QA reimport",
+        customer_name: "Should Not Win",
+        total_quantity: 1,
+        deadline: "2026-09-12",
+        line_items: [{ name: "Box", quantity: 1 }],
+      },
+    });
+    mockHasPerm.mockImplementation((p) => ["po.view", "packing.update"].includes(p));
+    await act(async () => { root.render(<MobileOrderDetailPage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-topbar-title"]').textContent).toBe("TEST_QA reimport");
+    expect(container.querySelector('[data-testid="mobile-topbar-meta"]').textContent).toBe("PO-QA15-DFAC2C");
+    expect(container.querySelector('[data-testid="mobile-order-customer"] strong').textContent).toBe("TEST_QA reimport");
   });
 });

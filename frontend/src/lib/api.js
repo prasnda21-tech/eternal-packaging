@@ -604,6 +604,15 @@ export const api = {
   scheduleRouteOptimizeStatus: (orderIds) => client.get(`/route-optimizer/from-schedule/status`, {
     params: { ids: (orderIds || []).join(",") },
   }).then((r) => r.data),
+  listEligibleDeliveryDrivers: () => client.get(`/delivery/drivers`).then((r) => r.data),
+  assignDeliveryDriver: (orderId, driverUserId) => client.patch(
+    `/delivery/orders/${encodeURIComponent(orderId)}/driver`,
+    { driver_user_id: driverUserId },
+  ).then((r) => r.data),
+  bulkAssignDeliveryDriver: (orderIds, driverUserId) => client.post(`/delivery/orders/assign-driver`, {
+    order_ids: orderIds || [],
+    driver_user_id: driverUserId,
+  }).then((r) => r.data),
 
   // Internal Work Chat
   chatUnreadSummary: () => client.get("/chat/unread-summary").then((r) => r.data),

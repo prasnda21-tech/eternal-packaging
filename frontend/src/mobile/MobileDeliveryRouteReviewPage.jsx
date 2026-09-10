@@ -5,10 +5,13 @@ import { useAuth } from "../lib/auth";
 import { formatApiError } from "../lib/errors";
 import { formatDate } from "../lib/constants";
 import {
+  canAssignDeliveryDriver,
   canOptimizeFromDeliverySchedule,
   MOBILE_DELIVERY_SCHEDULE_PATH,
 } from "../lib/mobileDeliverySchedule";
 import {
+  buildBulkAssignConfirm,
+  driverDisplayLabel,
   excludeFromSelection,
   parseReviewOrderIds,
   selectAllEligible,
@@ -22,6 +25,7 @@ export default function MobileDeliveryRouteReviewPage() {
   const [params] = useSearchParams();
   const { hasPerm } = useAuth();
   const allowed = canOptimizeFromDeliverySchedule(hasPerm);
+  const canAssign = canAssignDeliveryDriver(hasPerm);
   const orderIds = useMemo(() => parseReviewOrderIds(params.toString()), [params]);
 
   const [rows, setRows] = useState([]);
@@ -33,6 +37,14 @@ export default function MobileDeliveryRouteReviewPage() {
   const [err, setErr] = useState("");
   const [result, setResult] = useState(null);
 
+  const [drivers, setDrivers] = useState([]);
+  const [driversErr, setDriversErr] = useState("");
+  const [rowDraft, setRowDraft] = useState({});
+  const [rowSaving, setRowSaving] = useState({});
+  const [bulkDriverId, setBulkDriverId] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [assignMsg, setAssignMsg] = useState("");
+
   const load = useCallback(async () => {
     if (!allowed) return;
     setBusy(true);
@@ -43,6 +55,7 @@ export default function MobileDeliveryRouteReviewPage() {
       setSummary(data.summary || null);
       setGroups(data.groups || []);
       setSelected(selectAllEligible(data.rows || []));
+      setRowDraft({});
     } catch (e) {
       setErr(formatApiError(e, "Gagal memuat review optimasi."));
       setRows([]);
@@ -51,11 +64,31 @@ export default function MobileDeliveryRouteReviewPage() {
     }
   }, [allowed, orderIds]);
 
+  const loadDrivers = useCallback(async () => {
+    if (!canAssign) return;
+    setDriversErr("");
+    try {
+      const data = await api.listEligibleDeliveryDrivers();
+      setDrivers(data.drivers || []);
+    } catch (e) {
+      setDrivers([]);
+      setDriversErr(formatApiError(e, "Gagal memuat daftar driver."));
+    }
+  }, [canAssign]);
+
   useEffect(() => {
     load();
   }, [load]);
 
+  useEffect(() => {
+    loadDrivers();
+  }, [loadDrivers]);
+
   const selectionSummary = useMemo(() => summarizeSelection(rows, selected), [rows, selected]);
+  const bulkDriver = useMemo(
+    () => drivers.find((d) => String(d.id) === String(bulkDriverId)) || null,
+    [drivers, bulkDriverId],
+  );
 
   const onConfirm = async () => {
     if (submitting) return;
@@ -73,6 +106,78 @@ export default function MobileDeliveryRouteReviewPage() {
       setErr(formatApiError(e, "Gagal membuat/optimasi rute."));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const applyRowDriver = async (orderId) => {
+    const draftId = String(rowDraft[orderId] || "").trim();
+    if (!draftId || rowSaving[orderId]) return;
+    const current = rows.find((r) => String(r.sales_order_id) === String(orderId));
+    if (String(current?.driver_user_id || "") === draftId) {
+      setAssignMsg("Driver sudah sama — tidak diubah.");
+      return;
+    }
+    const driver = drivers.find((d) => String(d.id) === draftId);
+    const label = driver?.name || draftId;
+    if (!window.confirm(`Ubah driver menjadi: ${label}?`)) return;
+
+    setRowSaving((prev) => ({ ...prev, [orderId]: true }));
+    setAssignMsg("");
+    setErr("");
+    try {
+      const data = await api.assignDeliveryDriver(orderId, draftId);
+      const status = data?.result?.status;
+      setAssignMsg(
+        status === "unchanged"
+          ? `Driver tidak berubah untuk ${orderId}.`
+          : `Driver disimpan: ${data?.result?.driver_name || label}`,
+      );
+      await load();
+    } catch (e) {
+      setErr(formatApiError(e, "Gagal menyimpan driver."));
+    } finally {
+      setRowSaving((prev) => {
+        const next = { ...prev };
+        delete next[orderId];
+        return next;
+      });
+    }
+  };
+
+  const applyBulkDriver = async () => {
+    if (bulkBusy || !bulkDriver || !selected.length) return;
+    const confirmMeta = buildBulkAssignConfirm(rows, selected, bulkDriver);
+    if (confirmMeta.changeCount === 0) {
+      setAssignMsg("Semua baris terpilih sudah memakai driver ini.");
+      return;
+    }
+    const ok = window.confirm(
+      `${confirmMeta.selectedCount} pengiriman dipilih\n` +
+        `Driver akan diubah menjadi: ${confirmMeta.driverName}\n` +
+        (confirmMeta.unchangedCount
+          ? `(${confirmMeta.unchangedCount} sudah memakai driver ini — tidak ditulis ulang)\n`
+          : "") +
+        "Lanjutkan?",
+    );
+    if (!ok) return;
+
+    setBulkBusy(true);
+    setAssignMsg("");
+    setErr("");
+    try {
+      const data = await api.bulkAssignDeliveryDriver(selected, bulkDriver.id);
+      const c = data?.counts || {};
+      setAssignMsg(
+        `Bulk driver: updated ${c.updated || 0}, unchanged ${c.unchanged || 0}, failed ${c.failed || 0}`,
+      );
+      if (data?.ok === false && !(c.updated > 0)) {
+        setErr("Bulk assign gagal untuk semua baris terpilih.");
+      }
+      await load();
+    } catch (e) {
+      setErr(formatApiError(e, "Gagal menerapkan driver ke terpilih."));
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -112,8 +217,42 @@ export default function MobileDeliveryRouteReviewPage() {
               </button>
             </div>
 
+            {canAssign && (
+              <div className="mds-review-bulk-driver" data-testid="mds-review-bulk-driver">
+                <label className="mds-driver-label" htmlFor="mds-bulk-driver">
+                  Driver
+                </label>
+                <select
+                  id="mds-bulk-driver"
+                  className="mds-driver-select"
+                  data-testid="mds-review-bulk-driver-select"
+                  value={bulkDriverId}
+                  onChange={(e) => setBulkDriverId(e.target.value)}
+                  disabled={bulkBusy || busy || !!driversErr}
+                >
+                  <option value="">Pilih Driver</option>
+                  {drivers.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name || d.id}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="mop-btn-ghost"
+                  data-testid="mds-review-bulk-apply"
+                  disabled={bulkBusy || !bulkDriverId || !selected.length}
+                  onClick={applyBulkDriver}
+                >
+                  {bulkBusy ? "Menerapkan..." : "Terapkan ke Terpilih"}
+                </button>
+              </div>
+            )}
+
             {busy && <p className="mop-empty" data-testid="mds-review-loading">Memuat review...</p>}
             {err ? <div className="mop-error" data-testid="mds-review-error">{err}</div> : null}
+            {driversErr ? <div className="mop-error" data-testid="mds-review-drivers-error">{driversErr}</div> : null}
+            {assignMsg ? <div className="mds-review-assign-msg" data-testid="mds-review-assign-msg">{assignMsg}</div> : null}
 
             <div className="mds-review-summary" data-testid="mds-review-summary">
               <span>Dipilih: {selectionSummary.selected}</span>
@@ -138,6 +277,8 @@ export default function MobileDeliveryRouteReviewPage() {
               {rows.map((row) => {
                 const id = String(row.sales_order_id);
                 const checked = selected.includes(id);
+                const draft = rowDraft[id] !== undefined ? rowDraft[id] : (row.driver_user_id || "");
+                const dirty = String(draft || "") !== String(row.driver_user_id || "");
                 return (
                   <div
                     key={id}
@@ -160,13 +301,50 @@ export default function MobileDeliveryRouteReviewPage() {
                       <div className="mds-review-meta">
                         <span>{row.address || "Alamat —"}</span>
                         <span>SJ: {row.sj_label || "—"}</span>
-                        <span>Driver: {row.driver_name || "—"}</span>
+                        <span data-testid={`mds-review-driver-label-${id}`}>
+                          Driver: {driverDisplayLabel(row)}
+                        </span>
                         <span>Tanggal: {formatDate(row.effective_delivery_date, { dateOnly: true })}</span>
                         <span>{row.optimization_status_label}</span>
                       </div>
                       {!row.eligible && (
                         <div className="mds-review-reason" data-testid={`mds-review-reason-${id}`}>
                           {row.reason || (row.reasons || []).join(", ")}
+                        </div>
+                      )}
+                      {canAssign && (
+                        <div className="mds-review-row-driver" data-testid={`mds-review-pick-driver-${id}`}>
+                          <label className="mds-driver-label" htmlFor={`mds-driver-${id}`}>
+                            Pilih Driver
+                          </label>
+                          <select
+                            id={`mds-driver-${id}`}
+                            className="mds-driver-select"
+                            data-testid={`mds-review-driver-select-${id}`}
+                            value={draft || ""}
+                            onChange={(e) =>
+                              setRowDraft((prev) => ({ ...prev, [id]: e.target.value }))
+                            }
+                            disabled={!!rowSaving[id] || busy}
+                          >
+                            <option value="">
+                              {row.driver_user_id ? "— pilih driver —" : "Belum Ada Driver"}
+                            </option>
+                            {drivers.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name || d.id}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="mop-btn-ghost sm"
+                            data-testid={`mds-review-driver-save-${id}`}
+                            disabled={!dirty || !draft || !!rowSaving[id]}
+                            onClick={() => applyRowDriver(id)}
+                          >
+                            {rowSaving[id] ? "Menyimpan..." : "Simpan"}
+                          </button>
                         </div>
                       )}
                     </div>

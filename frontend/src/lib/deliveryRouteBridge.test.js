@@ -1,13 +1,18 @@
 import {
+  buildBulkAssignConfirm,
+  driverDisplayLabel,
   excludeFromSelection,
   parseReviewOrderIds,
+  rowsNeedingDriverChange,
   selectAllEligible,
   sourceTypeLabel,
   summarizeSelection,
   toggleId,
 } from "./deliveryRouteBridge";
 import {
+  canAssignDeliveryDriver,
   canOptimizeFromDeliverySchedule,
+  MOBILE_DELIVERY_ASSIGN_DRIVER_PERM,
   mobileScheduleReviewHref,
   optimizationStatusMeta,
   OPT_STATUS,
@@ -46,6 +51,27 @@ describe("deliveryRouteBridge helpers", () => {
     expect(summary.routes_to_create).toBe(2);
   });
 
+  test("driverDisplayLabel shows Belum Ada Driver when empty", () => {
+    expect(driverDisplayLabel({})).toBe("Belum Ada Driver");
+    expect(driverDisplayLabel({ driver_name: "Only Name" })).toBe("Belum Ada Driver");
+    expect(driverDisplayLabel({ driver_user_id: "u1", driver_name: "Nanda" })).toBe("Nanda");
+  });
+
+  test("rowsNeedingDriverChange uses exact selected ids only", () => {
+    const rows = [
+      { sales_order_id: "a", driver_user_id: null },
+      { sales_order_id: "b", driver_user_id: "d1" },
+      { sales_order_id: "c", driver_user_id: "d2" },
+    ];
+    const needing = rowsNeedingDriverChange(rows, ["a", "b"], "d1");
+    expect(needing.map((r) => r.sales_order_id)).toEqual(["a"]);
+    const confirm = buildBulkAssignConfirm(rows, ["a", "b", "c"], { id: "d1", name: "Driver A" });
+    expect(confirm.selectedCount).toBe(3);
+    expect(confirm.changeCount).toBe(2);
+    expect(confirm.message).toContain("3 pengiriman dipilih");
+    expect(confirm.message).toContain("Driver A");
+  });
+
   test("sourceTypeLabel", () => {
     expect(sourceTypeLabel("delivery_schedule")).toBe("Jadwal Pengiriman");
     expect(sourceTypeLabel("manual")).toBe("Manual");
@@ -56,6 +82,13 @@ describe("mobile delivery schedule opt helpers", () => {
   test("permission visibility uses route_optimizer perms", () => {
     expect(canOptimizeFromDeliverySchedule((p) => p === "route_optimizer.create")).toBe(true);
     expect(canOptimizeFromDeliverySchedule((p) => p === "delivery.schedule.view")).toBe(false);
+  });
+
+  test("assign driver UI gated by delivery.location.manage only", () => {
+    expect(MOBILE_DELIVERY_ASSIGN_DRIVER_PERM).toBe("delivery.location.manage");
+    expect(canAssignDeliveryDriver((p) => p === "delivery.location.manage")).toBe(true);
+    expect(canAssignDeliveryDriver((p) => p === "loading.update")).toBe(false);
+    expect(canAssignDeliveryDriver((p) => p === "route_optimizer.create")).toBe(false);
   });
 
   test("review href encodes current filtered ids", () => {
