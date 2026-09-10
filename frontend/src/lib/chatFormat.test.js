@@ -1,6 +1,9 @@
 import {
   canEditMessage,
+  memberDisplayName,
+  memberRoleLabel,
   previewText,
+  roomDisplayTitle,
   roomTypeFilter,
   roomInitials,
 } from "./chatFormat";
@@ -25,6 +28,30 @@ describe("chatFormat", () => {
     expect(canEditMessage({ created_at: "2026-09-10T09:50:00Z" }, now)).toBe(true);
     expect(canEditMessage({ created_at: "2026-09-10T09:40:00Z" }, now)).toBe(false);
     expect(canEditMessage({ created_at: "2026-09-10T09:50:00Z", deleted: true }, now)).toBe(false);
+  });
+
+  test("member display prefers human name and hides raw UUID", () => {
+    expect(memberDisplayName({
+      user_id: "d6cc9b04-a27e-4b84-b8c4-14e0da2dbe95",
+      user_name: "Dimas Aji Prasetya",
+      user_role: "admin",
+    })).toBe("Dimas Aji Prasetya");
+    expect(memberDisplayName({
+      user_id: "u-admin-482bc16d",
+      name: "u-admin-482bc16d",
+      email: "admin@example.com",
+    })).toBe("admin@example.com");
+    expect(memberRoleLabel({ role: "admin" })).toBe("admin");
+  });
+
+  test("DM title uses peer name; system/custom/work titles stay", () => {
+    expect(roomDisplayTitle(
+      { type: "dm", name: "Chat" },
+      { meId: "u1", members: [{ user_id: "u1", name: "Admin" }, { user_id: "u2", name: "Andi" }] },
+    )).toBe("Andi");
+    expect(roomDisplayTitle({ type: "system_group", name: "Operator" }, { meId: "u1" })).toBe("Operator");
+    expect(roomDisplayTitle({ type: "custom_group", name: "Ops Tim" }, { meId: "u1" })).toBe("Ops Tim");
+    expect(roomDisplayTitle({ type: "work", name: "PO-1 · Line" }, { meId: "u1" })).toBe("PO-1 · Line");
   });
 });
 

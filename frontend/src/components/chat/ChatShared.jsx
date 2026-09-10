@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { workContextHref, workContextLabel } from "../../lib/chatWorkLinks";
-import { formatBytes, isImageMime } from "../../lib/chatFormat";
+import { formatBytes, isImageMime, memberDisplayName, memberRoleLabel, roomInitials } from "../../lib/chatFormat";
 
 export function WorkContextCard({ workRef, mobile = false }) {
   const snap = workRef?.snapshot || {};
@@ -78,7 +78,9 @@ export function MessageBubble({
       data-message-id={message.message_id || message.id}
     >
       {!self ? (
-        <div className="chat-bubble-author">{message.sender_name || message.sender_user_id}</div>
+        <div className="chat-bubble-author">
+          {memberDisplayName({ display_name: message.sender_name, user_id: message.sender_user_id })}
+        </div>
       ) : null}
       {deleted ? (
         <div className="chat-bubble-deleted" data-testid="chat-message-deleted">Pesan dihapus</div>
@@ -103,12 +105,12 @@ export function MessageBubble({
         {edited ? <span data-testid="chat-edited-label">Diedit</span> : null}
         {self && !deleted ? (
           <span className="chat-bubble-actions">
-            <button type="button" data-testid="chat-edit-btn" onClick={() => onEdit?.(message)}>Edit</button>
-            <button type="button" data-testid="chat-delete-btn" onClick={() => onDelete?.(message)}>Hapus</button>
+            <button type="button" className="chat-btn chat-btn-ghost" data-testid="chat-edit-btn" onClick={() => onEdit?.(message)}>Edit</button>
+            <button type="button" className="chat-btn chat-btn-danger" data-testid="chat-delete-btn" onClick={() => onDelete?.(message)}>Hapus</button>
           </span>
         ) : null}
         {!self && canModerate && !deleted ? (
-          <button type="button" data-testid="chat-moderate-delete" onClick={() => onDelete?.(message)}>
+          <button type="button" className="chat-btn chat-btn-danger" data-testid="chat-moderate-delete" onClick={() => onDelete?.(message)}>
             Moderasi hapus
           </button>
         ) : null}
@@ -119,6 +121,7 @@ export function MessageBubble({
 
 export function RoomListItem({ room, active, onSelect }) {
   const unread = Number(room.unread_count || 0);
+  const title = room.display_name || room.name;
   return (
     <button
       type="button"
@@ -130,7 +133,7 @@ export function RoomListItem({ room, active, onSelect }) {
       <span className="chat-room-avatar" aria-hidden>{room.initials || "?"}</span>
       <span className="chat-room-body">
         <span className="chat-room-top">
-          <strong>{room.name}</strong>
+          <strong>{title}</strong>
           <time>{room.last_activity_label || ""}</time>
         </span>
         <span className="chat-room-preview">{room.preview || "—"}</span>
@@ -145,6 +148,20 @@ export function RoomListItem({ room, active, onSelect }) {
         <span className="chat-unread-badge" data-testid="chat-room-unread">{unread > 99 ? "99+" : unread}</span>
       ) : null}
     </button>
+  );
+}
+
+export function MemberListItem({ member }) {
+  const name = memberDisplayName(member);
+  const role = memberRoleLabel(member);
+  return (
+    <li className="chat-member-row" data-testid="chat-member-row" data-user-id={member.user_id || member.id}>
+      <span className="chat-member-avatar" aria-hidden>{roomInitials(name)}</span>
+      <span>
+        <div className="chat-member-name" data-testid="chat-member-name">{name}</div>
+        {role ? <div className="chat-member-meta" data-testid="chat-member-role">{role}</div> : null}
+      </span>
+    </li>
   );
 }
 
@@ -181,8 +198,10 @@ export function ChatComposer({
         </div>
       ) : null}
       <div className="chat-composer-tools">
-        <button type="button" data-testid="chat-tag-work-btn" onClick={onTagWork}>Tag Pekerjaan</button>
-        <button type="button" data-testid="chat-attach-btn" onClick={() => fileInputRef.current?.click()}>
+        <button type="button" className="chat-btn chat-btn-secondary" data-testid="chat-tag-work-btn" onClick={onTagWork}>
+          Tag Pekerjaan
+        </button>
+        <button type="button" className="chat-btn chat-btn-secondary" data-testid="chat-attach-btn" onClick={() => fileInputRef.current?.click()}>
           Lampiran
         </button>
         <input
@@ -203,13 +222,13 @@ export function ChatComposer({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
-        rows={3}
+        rows={2}
         placeholder="Tulis pesan… (Enter kirim, Shift+Enter baris baru)"
         data-testid="chat-composer-input"
       />
       <button
         type="button"
-        className="chat-send-btn"
+        className="chat-btn chat-btn-primary chat-send-btn"
         data-testid="chat-send-btn"
         disabled={sending}
         onClick={onSend}
@@ -264,117 +283,153 @@ export function WorkPickerModal({
 
   if (!open) return null;
 
+  const poLabel = order ? (order.po_number || order.order_number || order.id) : "";
+  const customerLabel = order ? (order.customer_name || order.customer || "") : "";
+  const lineStep = !!(order && !line && !task);
+
   return (
     <div className="modal" data-testid="chat-work-picker">
       <div className="modal-inner chat-work-picker-inner">
         <div className="modal-head">
           <strong>Tag / Chat Pekerjaan</strong>
-          <button type="button" onClick={onClose}>Tutup</button>
+          <button type="button" className="chat-btn chat-btn-ghost" data-testid="chat-work-close" onClick={onClose}>
+            Tutup
+          </button>
         </div>
-        {!order ? (
-          <>
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Cari PO…"
-              data-testid="chat-work-po-search"
-            />
-            <ul className="chat-picker-list">
-              {orders.map((o) => (
-                <li key={o.id || o.order_id}>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setOrder(o);
-                      const lr = await loadLines(o.id || o.order_id);
-                      setLines(lr?.items || lr || []);
-                    }}
-                  >
-                    <strong>{o.po_number || o.order_number}</strong>
-                    <span>{o.customer_name || o.customer || ""}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : !line && !task ? (
-          <>
-            <p>PO {order.po_number || order.order_number} — pilih line (opsional) atau lanjut PO saja.</p>
-            <ul className="chat-picker-list">
-              {lines.map((li) => (
-                <li key={`${li.line_id || "idx"}-${li.line_idx}`}>
-                  <button
-                    type="button"
-                    data-testid="chat-work-line-option"
-                    onClick={async () => {
-                      setLine(li);
-                      const tr = await loadTasks(order.id || order.order_id, li.line_idx);
-                      setTasks(tr?.items || tr || []);
-                    }}
-                  >
-                    <strong>{li.name || li.item_name}</strong>
-                    <span>Qty {li.qty ?? li.quantity} · line_idx {li.line_idx}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="chat-picker-actions">
-              <button
-                type="button"
-                data-testid="chat-work-po-only"
-                onClick={() => onConfirm({
-                  order_id: order.id || order.order_id,
+
+        <div className="chat-work-picker-body">
+          {!order ? (
+            <>
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Cari PO…"
+                data-testid="chat-work-po-search"
+              />
+              <ul className="chat-picker-list" data-testid="chat-work-po-list">
+                {orders.map((o) => (
+                  <li key={o.id || o.order_id}>
+                    <button
+                      type="button"
+                      className="chat-picker-row"
+                      onClick={async () => {
+                        setOrder(o);
+                        const lr = await loadLines(o.id || o.order_id);
+                        setLines(lr?.items || lr || []);
+                      }}
+                    >
+                      <strong>{o.po_number || o.order_number}</strong>
+                      <span>{o.customer_name || o.customer || ""}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : lineStep ? (
+            <>
+              <div className="chat-work-picker-context" data-testid="chat-work-context">
+                PO {poLabel}{customerLabel ? ` · ${customerLabel}` : ""} — pilih line (opsional) atau lanjut PO saja.
+              </div>
+              <ul className="chat-picker-list" data-testid="chat-work-line-list">
+                {lines.map((li) => (
+                  <li key={`${li.line_id || "idx"}-${li.line_idx}`}>
+                    <button
+                      type="button"
+                      className="chat-picker-row"
+                      data-testid="chat-work-line-option"
+                      onClick={async () => {
+                        setLine(li);
+                        const tr = await loadTasks(order.id || order.order_id, li.line_idx);
+                        setTasks(tr?.items || tr || []);
+                      }}
+                    >
+                      <strong>{li.name || li.item_name}</strong>
+                      <span>Qty {li.qty ?? li.quantity} · line_idx {li.line_idx}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <>
+              <div className="chat-work-picker-context">
+                PO {poLabel}
+                {line && !line.__po_task ? ` · ${line.name || line.item_name || `line ${line.line_idx}`}` : ""}
+                {" — pilih task/stage (opsional)."}
+              </div>
+              <ul className="chat-picker-list" data-testid="chat-work-task-list">
+                {tasks.map((tk) => {
+                  const selected = task?.task_id === tk.task_id;
+                  return (
+                    <li key={tk.task_id}>
+                      <button
+                        type="button"
+                        className={`chat-picker-row${selected ? " is-selected" : ""}`}
+                        data-testid="chat-work-task-option"
+                        aria-pressed={selected}
+                        onClick={() => setTask(tk)}
+                      >
+                        <strong>{tk.task_label || tk.division || tk.task_id}</strong>
+                        <span>{tk.division || tk.task_id}</span>
+                      </button>
+                    </li>
+                  );
                 })}
-              >
-                Gunakan PO saja
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const tr = await loadTasks(order.id || order.order_id);
-                  setTasks(tr?.items || tr || []);
-                  setLine({ __po_task: true });
-                }}
-              >
-                Pilih task PO
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p>Pilih task/stage (opsional).</p>
-            <ul className="chat-picker-list">
-              {tasks.map((tk) => (
-                <li key={tk.task_id}>
-                  <button
-                    type="button"
-                    data-testid="chat-work-task-option"
-                    onClick={() => setTask(tk)}
-                  >
-                    <strong>{tk.task_label || tk.division || tk.task_id}</strong>
-                    <span>{tk.task_id}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="chat-picker-actions">
-              <button
-                type="button"
-                data-testid="chat-work-confirm"
-                onClick={() => onConfirm({
-                  order_id: order.id || order.order_id,
-                  line_id: line?.line_id || undefined,
-                  line_idx: line?.__po_task ? undefined : line?.line_idx,
-                  task_id: task?.task_id || undefined,
-                })}
-              >
-                Pakai konteks ini
-              </button>
-              <button type="button" onClick={onClose}>Batal</button>
-            </div>
-          </>
-        )}
-        {error ? <div className="chat-error">{error}</div> : null}
+              </ul>
+            </>
+          )}
+          {error ? <div className="chat-error">{error}</div> : null}
+        </div>
+
+        {order ? (
+          <div className="chat-work-picker-foot" data-testid="chat-work-picker-actions">
+            {lineStep ? (
+              <>
+                <button
+                  type="button"
+                  className="chat-btn chat-btn-primary"
+                  data-testid="chat-work-po-only"
+                  onClick={() => onConfirm({
+                    order_id: order.id || order.order_id,
+                  })}
+                >
+                  Gunakan PO saja
+                </button>
+                <button
+                  type="button"
+                  className="chat-btn chat-btn-secondary"
+                  data-testid="chat-work-pick-task-po"
+                  onClick={async () => {
+                    const tr = await loadTasks(order.id || order.order_id);
+                    setTasks(tr?.items || tr || []);
+                    setLine({ __po_task: true });
+                  }}
+                >
+                  Pilih task PO
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="chat-btn chat-btn-primary"
+                  data-testid="chat-work-confirm"
+                  onClick={() => onConfirm({
+                    order_id: order.id || order.order_id,
+                    line_id: line?.line_id || undefined,
+                    line_idx: line?.__po_task ? undefined : line?.line_idx,
+                    task_id: task?.task_id || undefined,
+                  })}
+                >
+                  Pakai konteks ini
+                </button>
+                <button type="button" className="chat-btn chat-btn-ghost" onClick={onClose}>
+                  Batal
+                </button>
+              </>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -420,17 +475,17 @@ export function NewChatModal({
       <div className="modal-inner">
         <div className="modal-head">
           <strong>Chat Baru</strong>
-          <button type="button" onClick={onClose}>Tutup</button>
+          <button type="button" className="chat-btn chat-btn-ghost" onClick={onClose}>Tutup</button>
         </div>
         <div className="chat-new-modes">
-          <button type="button" className={mode === "dm" ? "is-active" : ""} onClick={() => setMode("dm")} data-testid="chat-new-dm">Personal</button>
+          <button type="button" className={`chat-btn${mode === "dm" ? " is-active chat-btn-primary" : " chat-btn-secondary"}`} onClick={() => setMode("dm")} data-testid="chat-new-dm">Personal</button>
           {canManageGroup ? (
-            <button type="button" className={mode === "group" ? "is-active" : ""} onClick={() => setMode("group")} data-testid="chat-new-group">Grup Custom</button>
+            <button type="button" className={`chat-btn${mode === "group" ? " is-active chat-btn-primary" : " chat-btn-secondary"}`} onClick={() => setMode("group")} data-testid="chat-new-group">Grup Custom</button>
           ) : null}
-          <button type="button" className={mode === "work" ? "is-active" : ""} onClick={() => setMode("work")} data-testid="chat-new-work">Chat Pekerjaan</button>
+          <button type="button" className={`chat-btn${mode === "work" ? " is-active chat-btn-primary" : " chat-btn-secondary"}`} onClick={() => setMode("work")} data-testid="chat-new-work">Chat Pekerjaan</button>
         </div>
         {mode === "work" ? (
-          <button type="button" className="btn" onClick={onCreateWork}>Pilih konteks pekerjaan…</button>
+          <button type="button" className="chat-btn chat-btn-primary" onClick={onCreateWork}>Pilih konteks pekerjaan…</button>
         ) : (
           <>
             {mode === "group" ? (
@@ -474,7 +529,7 @@ export function NewChatModal({
             {mode === "group" ? (
               <button
                 type="button"
-                className="btn"
+                className="chat-btn chat-btn-primary"
                 data-testid="chat-create-group-btn"
                 onClick={() => onCreateGroup(groupName, selected)}
               >

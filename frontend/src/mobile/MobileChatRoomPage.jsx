@@ -7,6 +7,7 @@ import {
   canEditMessage,
   formatChatTime,
   newClientMessageId,
+  roomDisplayTitle,
 } from "../lib/chatFormat";
 import { createChatRealtime } from "../lib/chatRealtime";
 import {
@@ -32,6 +33,7 @@ export default function MobileChatRoomPage() {
   const canModerate = hasPerm("chat.moderate");
 
   const [room, setRoom] = useState(null);
+  const [members, setMembers] = useState([]);
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState([]);
@@ -48,7 +50,9 @@ export default function MobileChatRoomPage() {
       api.chatGetRoom(roomId),
       api.chatListMessages(roomId, { limit: 40 }),
     ]);
-    setRoom(meta?.room || meta);
+    const metaRoom = meta?.room || meta;
+    setRoom(metaRoom);
+    setMembers(meta?.members || metaRoom?.members || []);
     const items = (hist?.messages || hist?.items || []).map(normalizeMessage);
     seenIds.current = new Set(items.map((m) => m.message_id));
     setMessages(items);
@@ -128,7 +132,9 @@ export default function MobileChatRoomPage() {
       <header className="mop-topbar" style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px" }}>
         <button type="button" onClick={() => navigate("/m/chat")} data-testid="mobile-chat-back">←</button>
         <div>
-          <strong>{room?.name || "Chat"}</strong>
+          <strong data-testid="mobile-chat-title">
+            {roomDisplayTitle(room, { members, meId })}
+          </strong>
           <div className="chat-ws-status">{wsStatus}</div>
         </div>
       </header>

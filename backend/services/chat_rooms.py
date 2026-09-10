@@ -164,13 +164,74 @@ async def create_or_get_work_room(db, creator: dict, work_context: dict, member_
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
+async def _bulk_users_by_id(db, user_ids: list[str]) -> dict[str, dict]:
+    ids = [str(x) for x in user_ids if x]
+    if not ids:
+        return {}
+    users = await db.users.find(
+        {"id": {"$in": ids}},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
+    ).to_list(len(ids))
+    return {str(u["id"]): u for u in users if u.get("id")}
+
+
+def _member_display_fields(member: dict, user: dict | None = None) -> dict:
+    """Presentation fields for room members. Canonical identity remains user_id."""
+    u = user or {}
+    uid = str(member.get("user_id") or "")
+    display = (
+        (u.get("name") or "").strip()
+        or (member.get("user_name") or "").strip()
+        or (member.get("name") or "").strip()
+        or (u.get("email") or "").strip()
+        or (member.get("user_email") or "").strip()
+        or "Pengguna"
+    )
+    role = u.get("role") or member.get("user_role") or member.get("role")
+    email = u.get("email") or member.get("user_email") or member.get("email")
+    return {
+        **member,
+        "user_id": uid,
+        "name": display,
+        "display_name": display,
+        "role": role,
+        "email": email,
+    }
+
+
+async def enrich_room_members(db, members: list[dict]) -> list[dict]:
+    by_id = await _bulk_users_by_id(db, [m.get("user_id") for m in members or []])
+    return [_member_display_fields(m, by_id.get(str(m.get("user_id") or ""))) for m in (members or [])]
+
+
+async def apply_room_display_name(db, room: dict, viewer_uid: str, users_by_id: dict[str, dict] | None = None) -> dict:
+    """Derive presentation title for DMs; leave system/custom/work titles intact."""
+    out = dict(room)
+    display_name = out.get("name")
+    if out.get("type") == ROOM_DM:
+        peer_id = next((p for p in (out.get("participant_ids") or []) if p != viewer_uid), None)
+        if peer_id:
+            peer = (users_by_id or {}).get(str(peer_id))
+            if peer is None and users_by_id is None:
+                peer = await db.users.find_one({"id": peer_id}, {"_id": 0, "name": 1, "email": 1})
+            display_name = (peer or {}).get("name") or (peer or {}).get("email") or "DM"
+    out["room_id"] = out.get("room_id") or out.get("id")
+    out["room_type"] = out.get("room_type") or out.get("type")
+    out["name"] = display_name or out.get("system_key") or out.get("work_key") or "Chat"
+    return out
+
+
 async def room_detail(db, room_id: str, uid: str) -> dict:
     await require_active_member(db, room_id, uid)
     room = await db[COLL_ROOMS].find_one({"id": str(room_id)}, {"_id": 0})
     if not room:
         raise HTTPException(404, "Room chat tidak ditemukan")
     members = await db[COLL_MEMBERS].find({"room_id": room_id, "active": True}, {"_id": 0}).to_list(200)
-    room["members"] = members
+    member_ids = [m.get("user_id") for m in members]
+    peer_ids = list(room.get("participant_ids") or [])
+    users_by_id = await _bulk_users_by_id(db, [*member_ids, *peer_ids])
+    room = await apply_room_display_name(db, room, uid, users_by_id=users_by_id)
+    room["members"] = [_member_display_fields(m, users_by_id.get(str(m.get("user_id") or ""))) for m in members]
     return room
 
 
@@ -193,6 +254,13 @@ async def list_my_rooms(db, user: dict, filter_type: Optional[str] = None) -> li
     elif room_type:
         q["type"] = room_type
     rooms = await db[COLL_ROOMS].find(q, {"_id": 0}).sort("last_activity_at", -1).to_list(1000)
+    peer_ids = []
+    for room in rooms:
+        if room.get("type") == ROOM_DM:
+            peer_id = next((p for p in (room.get("participant_ids") or []) if p != uid), None)
+            if peer_id:
+                peer_ids.append(peer_id)
+    users_by_id = await _bulk_users_by_id(db, peer_ids)
     out = []
     for room in rooms:
         member = by_room.get(room["id"], {})
@@ -206,15 +274,7 @@ async def list_my_rooms(db, user: dict, filter_type: Optional[str] = None) -> li
         if preview and preview.get("deleted_at"):
             preview["content"] = None
             preview["deleted"] = True
-        display_name = room.get("name")
-        if room.get("type") == ROOM_DM:
-            peer_id = next((p for p in (room.get("participant_ids") or []) if p != uid), None)
-            if peer_id:
-                peer = await db.users.find_one({"id": peer_id}, {"_id": 0, "name": 1, "email": 1})
-                display_name = (peer or {}).get("name") or (peer or {}).get("email") or "DM"
-        room["room_id"] = room["id"]
-        room["room_type"] = room.get("type")
-        room["name"] = display_name or room.get("system_key") or room.get("work_key") or "Chat"
+        room = await apply_room_display_name(db, room, uid, users_by_id=users_by_id)
         room["member"] = member
         room["unread"] = unread
         room["unread_count"] = unread
