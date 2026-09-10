@@ -67,3 +67,39 @@ export function sourceTypeLabel(sourceType) {
   if (key === "delivery_schedule") return "Jadwal Pengiriman";
   return "Manual";
 }
+
+export function driverDisplayLabel(row) {
+  const name = String(row?.driver_name || "").trim();
+  const uid = String(row?.driver_user_id || "").trim();
+  if (uid) return name || uid;
+  return "Belum Ada Driver";
+}
+
+/** Rows that would actually change if assigning driverUserId (exact id). */
+export function rowsNeedingDriverChange(rows, selectedIds, driverUserId) {
+  const selected = new Set((selectedIds || []).map(String));
+  const target = String(driverUserId || "").trim();
+  if (!target) return [];
+  return (rows || []).filter((r) => {
+    if (!selected.has(String(r.sales_order_id))) return false;
+    return String(r.driver_user_id || "").trim() !== target;
+  });
+}
+
+export function buildBulkAssignConfirm(rows, selectedIds, driver) {
+  const selected = (selectedIds || []).map(String);
+  const needing = rowsNeedingDriverChange(rows, selected, driver?.id);
+  return {
+    selectedCount: selected.length,
+    changeCount: needing.length,
+    unchangedCount: Math.max(0, selected.length - needing.length),
+    driverName: driver?.name || driver?.id || "",
+    driverId: driver?.id || "",
+    message:
+      `${selected.length} pengiriman dipilih\n` +
+      `Driver akan diubah menjadi: ${driver?.name || driver?.id || "—"}\n` +
+      (needing.length < selected.length
+        ? `(${selected.length - needing.length} sudah memakai driver ini — tidak ditulis ulang)`
+        : ""),
+  };
+}

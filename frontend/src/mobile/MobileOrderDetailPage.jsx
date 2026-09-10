@@ -74,7 +74,8 @@ export default function MobileOrderDetailPage() {
     <>
       <MobileTopBar
         kicker={fromTask && selected ? `Tugas Saya › ${selected.label}` : "PO"}
-        title={order?.po_number || "Detail PO"}
+        title={order ? getCanonicalCustomerName(order) : "Detail PO"}
+        meta={order?.po_number || ""}
         onBack={() => navigate(-1)}
       />
       <main className="mop-content" data-testid="mobile-order-detail">

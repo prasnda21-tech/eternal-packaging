@@ -10,6 +10,9 @@ export const MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS = [
 
 export const MOBILE_DELIVERY_SCHEDULE_EDIT_PERM = "delivery.location.manage";
 
+/** Assign/change driver on Jadwal / Route Review — same schedule-edit gate as location. */
+export const MOBILE_DELIVERY_ASSIGN_DRIVER_PERM = "delivery.location.manage";
+
 export const MOBILE_DELIVERY_SCHEDULE_PATH = "/m/delivery-schedule";
 
 export function canViewMobileDeliverySchedule(hasPerm) {
@@ -20,6 +23,11 @@ export function canViewMobileDeliverySchedule(hasPerm) {
 export function canEditMobileDeliveryScheduleLocation(hasPerm) {
   if (typeof hasPerm !== "function") return false;
   return hasPerm(MOBILE_DELIVERY_SCHEDULE_EDIT_PERM);
+}
+
+export function canAssignDeliveryDriver(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  return hasPerm(MOBILE_DELIVERY_ASSIGN_DRIVER_PERM);
 }
 
 export function mobileDeliveryScheduleHref() {

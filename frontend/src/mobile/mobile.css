@@ -86,11 +86,50 @@
   font-weight: 700;
 }
 
+.mop-topbar-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin-top: 2px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.mop-topbar-title,
 .mop-topbar h1 {
-  margin: 2px 0 0;
+  margin: 0;
   font-size: 18px;
   line-height: 1.2;
   font-weight: 800;
+  color: #fff;
+  min-width: 0;
+  flex: 1 1 12rem;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.mop-topbar-title-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mop-topbar-meta {
+  margin: 0;
+  flex: 0 1 auto;
+  max-width: 100%;
+  text-align: right;
+  font-size: 12px;
+  line-height: 1.25;
+  font-weight: 500;
+  color: #c5d4da;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .mop-topbar-sub {

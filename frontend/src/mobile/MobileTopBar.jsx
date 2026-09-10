@@ -4,12 +4,14 @@ import { useMobileNav } from "./MobileNavContext";
 export default function MobileTopBar({
   kicker = "ETERNAL PACKAGING",
   title,
+  meta,
   subtitle,
   onBack,
   dark = true,
   showMenu = true,
 }) {
   const { menuOpen, toggleMenu } = useMobileNav();
+  const hasTitleRow = Boolean(title || meta);
 
   return (
     <header
@@ -37,8 +39,23 @@ export default function MobileTopBar({
               <ChevronLeft size={18} /> Kembali
             </button>
           ) : null}
-          {kicker ? <p className="mop-topbar-kicker">{kicker}</p> : null}
-          {title ? <h1>{title}</h1> : null}
+          {kicker ? <p className="mop-topbar-kicker" data-testid="mobile-topbar-kicker">{kicker}</p> : null}
+          {hasTitleRow ? (
+            <div className="mop-topbar-title-row" data-testid="mobile-topbar-title-row">
+              {title ? (
+                <h1 className="mop-topbar-title" data-testid="mobile-topbar-title">
+                  {title}
+                </h1>
+              ) : (
+                <span className="mop-topbar-title-spacer" aria-hidden />
+              )}
+              {meta ? (
+                <p className="mop-topbar-meta" data-testid="mobile-topbar-meta">
+                  {meta}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {subtitle ? <p className="mop-topbar-sub">{subtitle}</p> : null}
         </div>
       </div>

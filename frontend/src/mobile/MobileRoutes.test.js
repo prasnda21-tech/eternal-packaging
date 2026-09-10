@@ -48,6 +48,14 @@ describe("mobile route wiring", () => {
     expect(detail).toMatch(/WORKSPACE_VIEWS\[selected\.id\]/);
   });
 
+  test("order detail topbar uses customer primary title and PO secondary meta", () => {
+    expect(detail).toMatch(/getCanonicalCustomerName\(order\)/);
+    expect(detail).toMatch(/meta=\{order\?\.po_number/);
+    expect(detail).not.toMatch(/title=\{order\?\.po_number/);
+    expect(topBar).toMatch(/mop-topbar-meta/);
+    expect(topBar).toMatch(/mobile-topbar-title/);
+  });
+
   test("top-left Menu opens left sidebar navigation", () => {
     expect(activeMobileNav("/m/tasks")).toBe("tasks");
     expect(activeMobileNav("/m/schedule")).toBe("schedule");
