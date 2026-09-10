@@ -185,6 +185,13 @@ export const api = {
   salesOrderOptions: () => client.get(`/sales-orders/options`).then((r) => r.data),
   createSalesOrder: (payload) => client.post(`/sales-orders`, payload).then((r) => r.data),
   listSalesOrders: (params = {}, config = {}) => client.get(`/sales-orders`, { params, ...config }).then((r) => r.data),
+  salesOrderRepeatSource: (customerId, config = {}) =>
+    client
+      .get(`/sales-orders/repeat-source`, {
+        params: { customer_id: customerId },
+        ...config,
+      })
+      .then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   masterItemDetail: (id) => client.get(`/master-items/${encodeURIComponent(id)}/detail`).then((r) => r.data),

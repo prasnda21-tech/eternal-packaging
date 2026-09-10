@@ -101,6 +101,10 @@ from services.order_prediction import (
     build_order_prediction_detail,
     can_view_order_prediction,
 )
+from services.sales_order_repeat import (
+    build_repeat_source_dto,
+    find_latest_valid_repeat_source,
+)
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
 from services import delivery_route_api as _delivery_route_api
@@ -7306,6 +7310,13 @@ class SalesOrderLineItemInput(BaseModel):
     master_item_id: Optional[str] = None
 
 
+class SalesOrderDesignFileInput(BaseModel):
+    """Optional design seed on create (e.g. Repeat Order). New file ids assigned server-side."""
+    name: str
+    data_url: str
+    content_type: Optional[str] = None
+
+
 class SalesOrderCreatePayload(BaseModel):
     po_number: Optional[str] = None
     order_date: Optional[str] = None
@@ -7328,6 +7339,7 @@ class SalesOrderCreatePayload(BaseModel):
     deadline: Optional[str] = None
     notes: Optional[str] = ""
     line_items: List[SalesOrderLineItemInput]
+    design_files: Optional[List[SalesOrderDesignFileInput]] = None
 
 
 # ---------- Sales Delivery (Pengiriman Pesanan) ----------
@@ -7573,6 +7585,35 @@ async def set_sales_customer_status_endpoint(
     }
 
 
+@api_router.get("/sales-orders/repeat-source")
+async def get_sales_order_repeat_source(
+    customer_id: str,
+    user=Depends(current_user),
+):
+    """Read-only: latest valid PO for exact customer_id as a copy-safe Repeat Order DTO.
+
+    Zero writes. Does not return raw order documents or workflow/operational fields.
+    """
+    await _require_any_perm(user, "sales_order.create", "po.edit", "po.import.view")
+    cid = (customer_id or "").strip()
+    if not cid:
+        raise HTTPException(400, "customer_id wajib diisi.")
+
+    source = await find_latest_valid_repeat_source(db, cid)
+    if not source:
+        return {"found": False, "customer_id": cid, "source": None}
+
+    # Authoritative match: selected customer remains the lookup authority.
+    if str(source.get("customer_id") or "").strip() != cid:
+        return {"found": False, "customer_id": cid, "source": None}
+
+    dto = build_repeat_source_dto(source)
+    if str(dto.get("customer_id") or "").strip() != cid:
+        return {"found": False, "customer_id": cid, "source": None}
+
+    return {"found": True, "customer_id": cid, "source": dto}
+
+
 @api_router.get("/sales-orders/options")
 async def get_sales_order_options(user=Depends(current_user)):
     """Fetch autocomplete suggestions for Customer, Outlet, Sales, Master Items, and next No PO."""
@@ -7722,6 +7763,37 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     item_cnt = len(normalized_lines)
     order_id = str(uuid.uuid4())
 
+    seeded_design_files = []
+    _ALLOWED_ATT_MIME = {
+        "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
+        "application/pdf",
+    }
+    for df in payload.design_files or []:
+        data_url = (df.data_url or "").strip()
+        if not data_url.startswith("data:"):
+            raise HTTPException(400, "Design file: format data URL tidak valid")
+        if len(data_url) > 8_000_000:
+            raise HTTPException(400, "Design file terlalu besar (maks ~6MB)")
+        try:
+            detected_ct = data_url[:40].split("data:", 1)[1].split(";", 1)[0].lower()
+        except Exception:
+            detected_ct = ""
+        if detected_ct not in _ALLOWED_ATT_MIME:
+            raise HTTPException(
+                400,
+                f"Design file tipe tidak didukung ({detected_ct or 'unknown'}). Gunakan JPG, PNG, WEBP, GIF, atau PDF.",
+            )
+        seeded_design_files.append({
+            "id": str(uuid.uuid4()),
+            "name": (df.name or "").strip() or "design",
+            "data_url": data_url,
+            "content_type": detected_ct,
+            "uploaded_by": user.get("email"),
+            "uploaded_by_role": user.get("role"),
+            "uploaded_by_name": user.get("name"),
+            "uploaded_at": now,
+        })
+
     new_order = {
         "id": order_id,
         "po_number": po_num,
@@ -7757,7 +7829,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "total_quantity": total_qty,
         "item_count": item_cnt,
         "operator_splits": [],
-        "design_files": [],
+        "design_files": seeded_design_files,
         "sample_files": [],
         "delivery_proofs": [],
         "notes": (payload.notes or "").strip(),

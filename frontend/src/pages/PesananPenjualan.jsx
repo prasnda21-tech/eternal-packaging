@@ -18,6 +18,11 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
+import {
+  REPEAT_NO_PREVIOUS_MESSAGE,
+  clearRepeatDerivedFormFields,
+  mapRepeatSourceToFormPatch,
+} from "../lib/salesOrderRepeat";
 
 function getTodayString() {
   const d = new Date();
@@ -115,6 +120,29 @@ export default function PesananPenjualan() {
   const [successMsg, setSuccessMsg] = useState("");
   const [lineSearchQuery, setLineSearchQuery] = useState("");
 
+  // Repeat Order (create-form prefill only)
+  const [repeatSourceIndicator, setRepeatSourceIndicator] = useState("");
+  const [repeatDesignFiles, setRepeatDesignFiles] = useState([]);
+  const [repeatBusy, setRepeatBusy] = useState(false);
+  const [repeatMsg, setRepeatMsg] = useState("");
+  const [repeatConfirm, setRepeatConfirm] = useState(null);
+  const repeatAbortRef = useRef(null);
+  const repeatRequestCustomerIdRef = useRef(null);
+  const selectedCustomerIdRef = useRef(null);
+
+  useEffect(() => {
+    selectedCustomerIdRef.current = formData.customer_id || null;
+  }, [formData.customer_id]);
+
+  const clearRepeatState = useCallback(() => {
+    setRepeatSourceIndicator("");
+    setRepeatDesignFiles([]);
+    setRepeatMsg("");
+    setRepeatConfirm(null);
+    repeatAbortRef.current?.abort();
+    repeatRequestCustomerIdRef.current = null;
+  }, []);
+
   const filteredLineItems = useMemo(
     () => filterPoLineItems(formData.line_items, lineSearchQuery),
     [formData.line_items, lineSearchQuery]
@@ -184,6 +212,8 @@ export default function PesananPenjualan() {
 
   // When customer changes, handle autofill suggestions for outlet/address/sales/payment_terms
   const handleCustomerChange = (newCustomer) => {
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    clearRepeatState();
     const outlets = options.outlets_by_customer?.[newCustomer] || [];
     let patch = { customer: newCustomer };
 
@@ -214,14 +244,30 @@ export default function PesananPenjualan() {
       patch = {
         ...patch,
         outlet: o.outlet || "",
-        address: o.address || patch.address || formData.address,
-        recipient: o.recipient || patch.recipient || formData.recipient,
-        delivery_zone: o.delivery_zone || formData.delivery_zone,
-        sales: o.sales || formData.sales,
-        payment_terms: o.payment_terms || formData.payment_terms,
+        address: o.address || patch.address || "",
+        recipient: o.recipient || patch.recipient || "",
+        delivery_zone: o.delivery_zone || "",
+        sales: o.sales || "",
+        payment_terms: o.payment_terms || "",
       };
     }
-    setFormData((prev) => ({ ...prev, ...patch }));
+
+    setFormData((prev) => {
+      // After a Repeat Order was applied, never leave previous customer's copied details.
+      const base = hadRepeat
+        ? clearRepeatDerivedFormFields(prev, { keepCustomer: true })
+        : prev;
+      return {
+        ...base,
+        ...patch,
+        po_number: prev.po_number,
+        order_date: prev.order_date,
+        created_by_user: prev.created_by_user,
+        estimated_delivery: hadRepeat ? prev.estimated_delivery : (patch.estimated_delivery ?? prev.estimated_delivery),
+        deadline: hadRepeat ? prev.deadline : (patch.deadline ?? prev.deadline),
+        expedition: patch.expedition || (hadRepeat ? "Internal fleet" : prev.expedition) || "Internal fleet",
+      };
+    });
   };
 
   // When outlet changes, autofill matching address/recipient if available
@@ -345,10 +391,17 @@ export default function PesananPenjualan() {
   };
 
   const resetForm = () => {
+    clearRepeatState();
     setFormData({
       po_number: options.suggested_po_number || "",
       order_date: getTodayString(),
       customer: "",
+      customer_id: null,
+      customer_phone: "",
+      customer_address: "",
+      customer_pic: "",
+      customer_email: "",
+      customer_city: "",
       outlet: "",
       recipient: "",
       address: "",
@@ -365,6 +418,79 @@ export default function PesananPenjualan() {
     setFormErr("");
     setSuccessMsg("");
     setLineSearchQuery("");
+  };
+
+  const handleRepeatOrderClick = async () => {
+    const customerId = formData.customer_id;
+    if (!customerId) {
+      setRepeatMsg("Pilih customer terdaftar terlebih dahulu.");
+      return;
+    }
+    setRepeatMsg("");
+    setRepeatBusy(true);
+    repeatAbortRef.current?.abort();
+    const ac = new AbortController();
+    repeatAbortRef.current = ac;
+    repeatRequestCustomerIdRef.current = customerId;
+    try {
+      const data = await api.salesOrderRepeatSource(customerId, { signal: ac.signal });
+      if (ac.signal.aborted) return;
+      if (repeatRequestCustomerIdRef.current !== customerId) return;
+      if (selectedCustomerIdRef.current !== customerId) return;
+      if (!data?.found || !data?.source) {
+        setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
+        setRepeatConfirm(null);
+        return;
+      }
+      if (String(data.source.customer_id || "").trim() !== String(customerId).trim()) {
+        setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
+        return;
+      }
+      setRepeatConfirm({
+        customerId,
+        source: data.source,
+      });
+    } catch (e) {
+      if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
+        return;
+      }
+      const det = e.response?.data?.detail;
+      setRepeatMsg(typeof det === "object" ? det.message : (det || "Gagal memuat pesanan sebelumnya."));
+    } finally {
+      if (!ac.signal.aborted) setRepeatBusy(false);
+    }
+  };
+
+  const applyRepeatOrder = () => {
+    if (!repeatConfirm?.source) return;
+    const customerId = formData.customer_id;
+    if (!customerId || repeatConfirm.customerId !== customerId) {
+      setRepeatConfirm(null);
+      setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
+      return;
+    }
+    const { formPatch, designFiles, sourcePoNumber } = mapRepeatSourceToFormPatch(
+      repeatConfirm.source,
+      { customer_id: customerId, customer: formData.customer }
+    );
+    if (!formPatch) {
+      setRepeatConfirm(null);
+      setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
+      return;
+    }
+    setFormData((prev) => ({
+      ...prev,
+      ...formPatch,
+      // Keep new-order identity fields
+      po_number: prev.po_number,
+      created_by_user: prev.created_by_user,
+      customer: prev.customer,
+      customer_id: prev.customer_id,
+    }));
+    setRepeatDesignFiles(designFiles);
+    setRepeatSourceIndicator(sourcePoNumber || "");
+    setRepeatConfirm(null);
+    setRepeatMsg("");
   };
 
   const handleFormSubmit = async (e) => {
@@ -419,6 +545,13 @@ export default function PesananPenjualan() {
           unit: (li.unit || "pcs").trim(),
           production_process: li.production_process === "non_print" ? "non_print" : "print",
         })),
+        design_files: (repeatDesignFiles || [])
+          .filter((f) => f?.data_url)
+          .map((f) => ({
+            name: f.name || "design",
+            data_url: f.data_url,
+            content_type: f.content_type || undefined,
+          })),
       };
 
       const res = await api.createSalesOrder(payload);
@@ -643,6 +776,42 @@ export default function PesananPenjualan() {
                     )}
                   </div>
                 )}
+                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    data-testid="btn-repeat-order"
+                    onClick={handleRepeatOrderClick}
+                    disabled={!formData.customer_id || repeatBusy || formBusy}
+                    title={formData.customer_id ? "Salin detail dari PO valid terakhir customer ini" : "Pilih customer terdaftar terlebih dahulu"}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: formData.customer_id ? "#f8fafc" : "#f1f5f9",
+                      color: formData.customer_id ? "#0f172a" : "#94a3b8",
+                      fontWeight: 600,
+                      fontSize: "0.82rem",
+                      cursor: formData.customer_id && !repeatBusy ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    {repeatBusy ? "Mencari…" : "Repeat Order"}
+                  </button>
+                  {repeatSourceIndicator ? (
+                    <span data-testid="repeat-source-indicator" style={{ fontSize: "0.78rem", color: "#0369a1", fontWeight: 500 }}>
+                      Repeat dari PO: {repeatSourceIndicator}
+                    </span>
+                  ) : null}
+                </div>
+                {repeatMsg ? (
+                  <div data-testid="repeat-empty-message" style={{ marginTop: 6, fontSize: "0.8rem", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "6px 10px" }}>
+                    {repeatMsg}
+                  </div>
+                ) : null}
+                {repeatDesignFiles.length > 0 ? (
+                  <div data-testid="repeat-design-files" style={{ marginTop: 6, fontSize: "0.78rem", color: "#475569" }}>
+                    Design file yang akan disalin: {repeatDesignFiles.map((f) => f.name).join(", ")}
+                  </div>
+                ) : null}
               </div>
 
               {/* No. HP / WhatsApp Pelanggan */}
@@ -1323,6 +1492,52 @@ export default function PesananPenjualan() {
               <button type="button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>Batal</button>
               <button type="button" data-testid="btn-confirm-delete" onClick={handleBulkDelete} disabled={deleteLoading} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}>
                 {deleteLoading ? "Menghapus..." : "Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {repeatConfirm && (
+        <div className="modal-overlay" data-testid="repeat-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460, margin: 16 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Salin detail dari PO terakhir ini?</h3>
+            <dl style={{ margin: "0 0 16px", fontSize: "0.9rem" }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                <dt style={{ color: "#64748b", minWidth: 110 }}>No PO</dt>
+                <dd data-testid="repeat-confirm-po" style={{ margin: 0, fontWeight: 700, color: "#0284c7" }}>{repeatConfirm.source?.source_po_number || "—"}</dd>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                <dt style={{ color: "#64748b", minWidth: 110 }}>Customer</dt>
+                <dd data-testid="repeat-confirm-customer" style={{ margin: 0 }}>{formData.customer || repeatConfirm.source?.customer || "—"}</dd>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                <dt style={{ color: "#64748b", minWidth: 110 }}>Tanggal</dt>
+                <dd data-testid="repeat-confirm-date" style={{ margin: 0 }}>
+                  {formatDisplayDate(repeatConfirm.source?.source_order_date || repeatConfirm.source?.source_created_at) || "—"}
+                </dd>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <dt style={{ color: "#64748b", minWidth: 110 }}>Jumlah baris</dt>
+                <dd data-testid="repeat-confirm-lines" style={{ margin: 0 }}>{repeatConfirm.source?.line_count ?? (repeatConfirm.source?.line_items || []).length}</dd>
+              </div>
+            </dl>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                data-testid="btn-repeat-cancel"
+                onClick={() => setRepeatConfirm(null)}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                data-testid="btn-repeat-confirm"
+                onClick={applyRepeatOrder}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#0284c7", color: "#fff", fontWeight: 600 }}
+              >
+                Gunakan Repeat Order
               </button>
             </div>
           </div>
