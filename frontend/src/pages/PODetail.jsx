@@ -35,6 +35,7 @@ import { openPaymentProofSource, paymentProofIsImage, paymentProofIsPdf, payment
 import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
+import LineProductReplaceControl from "../components/LineProductReplaceControl";
 
 export default function PODetail() {
   const { id } = useParams();
@@ -325,6 +326,7 @@ export default function PODetail() {
   const canCopyTrackingLink = hasPerm("po.view");
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
+  const canReplaceLineProduct = hasPerm("po.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
   const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const {
@@ -803,6 +805,12 @@ export default function PODetail() {
                   </span>
                 </div>
                 {li.notes && <p className="li-notes">Catatan sablon: {li.notes}</p>}
+                <LineProductReplaceControl
+                  order={order}
+                  lineIdx={i}
+                  canEdit={canReplaceLineProduct}
+                  onUpdated={setOrder}
+                />
               </div>
             );
           })}
