@@ -23,6 +23,7 @@ from quantity_rules import (
 )
 from services.status_po import STAGES
 from workflow_gates import (
+    customer_design_approved,
     group2_complete,
     helper_done,
     packing_unlocked,
@@ -123,7 +124,7 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
         return {"state": "current", "label": "Belum dikerjakan"}
 
     if idx == STAGE_APPROVAL_DESIGN:
-        if order.get("design_status") == "Approved":
+        if order.get("design_status") == "Approved" or customer_design_approved(order):
             return {"state": "done", "label": "Selesai"}
         if order.get("design_bypassed"):
             return {"state": "bypass", "label": "BYPASS"}

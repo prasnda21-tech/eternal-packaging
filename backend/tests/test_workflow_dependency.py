@@ -102,6 +102,27 @@ class TestParallelDesignPayment:
         assert o["design_status"] != "Approved"
         assert not design_ok(o)
 
+    def test_customer_approve_satisfies_approval_design_not_payment(self):
+        o = _po(
+            design_files=[{"id": "d", "name": "d.pdf", "data_url": "data:application/pdf;base64,xx", "uploaded_at": "2026-09-11T00:00:00+00:00"}],
+            design_status="Waiting",
+            current_stage=2,
+            customer_approval={"status": "approved", "approval_id": "ca-1"},
+        )
+        assert design_ok(o)
+        assert not payment_ok(o)
+        assert not group2_complete(o)
+        assert compute_compatible_stage(o) < 5
+
+    def test_customer_reject_does_not_satisfy_approval_design(self):
+        o = _po(
+            design_files=[{"id": "d", "name": "d.pdf", "uploaded_at": "2026-09-11T00:00:00+00:00"}],
+            design_status="Waiting",
+            current_stage=2,
+            customer_approval={"status": "rejected", "approval_id": "ca-1"},
+        )
+        assert not design_ok(o)
+
 
 # ---------- TEST C: scheduling auto-ready ----------
 

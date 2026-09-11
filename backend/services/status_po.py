@@ -15,6 +15,7 @@ from quantity_rules import (
 )
 from services.dashboard_today import is_shipment_today, is_work_today, wib_today
 from services.shipment_status import shipment_status_row, status_percent, status_percent_display
+from workflow_gates import customer_design_approved, design_ok
 
 STAGES = (
     "Order Masuk", "Design", "Approval Design", "Payment", "Approval Payment",
@@ -96,7 +97,7 @@ def effective_workflow_status(order: dict) -> str:
         return "Payment"
     if order.get("payment_files"):
         return "Payment"
-    if order.get("design_status") == "Approved":
+    if order.get("design_status") == "Approved" or customer_design_approved(order):
         return "Approval Design"
     if order.get("design_bypassed"):
         return "Design"
@@ -144,7 +145,7 @@ def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: 
     if key == "hold":
         return [o for o in active if o.get("hold")]
     if key == "design":
-        return [o for o in active if o.get("design_status") != "Approved" and not o.get("design_bypassed")]
+        return [o for o in active if not design_ok(o)]
     if key == "payment":
         return [o for o in active if o.get("payment_status") != "Approved" and not o.get("payment_bypassed")]
     if key == "due_today":
