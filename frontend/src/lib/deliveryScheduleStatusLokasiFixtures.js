@@ -1,6 +1,7 @@
 /**
  * Task-owned dummy PO rows for Status Lokasi sort focused tests / local preview helpers.
- * Imported by tests only — never wire into production page load paths.
+ * Loaded by DeliverySchedulePage ONLY in development when ?previewStatusLokasi=1.
+ * Never written to API/DB. Production builds eliminate the NODE_ENV branch.
  */
 
 function baseRow(overrides) {
@@ -23,7 +24,10 @@ function baseRow(overrides) {
   };
 }
 
-/** Minimum 3 cases: no coords / valid coords / address-only (still Belum Diatur). */
+/**
+ * Minimum 4 cases: no coords / valid coords / address-only (still Belum Diatur) / valid coords B.
+ * Progress values vary for ops-list chrome preview (bars + pills).
+ */
 export const STATUS_LOKASI_SORT_DUMMY_ROWS = [
   baseRow({
     id: "dummy-ord-001",
@@ -31,6 +35,10 @@ export const STATUS_LOKASI_SORT_DUMMY_ROWS = [
     customer_name: "Dummy Customer Belum A",
     lat: null,
     lng: null,
+    percent_delivered: 0,
+    percent_ready_to_ship: 25,
+    qty_delivered: 0,
+    qty_printed_operator: 250,
   }),
   baseRow({
     id: "dummy-ord-002",
@@ -38,6 +46,11 @@ export const STATUS_LOKASI_SORT_DUMMY_ROWS = [
     customer_name: "Dummy Customer Sudah",
     lat: -6.2088,
     lng: 106.8456,
+    percent_delivered: 40,
+    percent_ready_to_ship: 100,
+    qty_delivered: 400,
+    qty_printed_operator: 1000,
+    driver_name: "Dummy Driver",
   }),
   baseRow({
     id: "dummy-ord-003",
@@ -46,6 +59,10 @@ export const STATUS_LOKASI_SORT_DUMMY_ROWS = [
     address: "Jl Dummy Preview No. 3, Jakarta",
     lat: null,
     lng: null,
+    percent_delivered: 10,
+    percent_ready_to_ship: 60,
+    qty_delivered: 100,
+    qty_printed_operator: 600,
   }),
   baseRow({
     id: "dummy-ord-004",
@@ -53,5 +70,10 @@ export const STATUS_LOKASI_SORT_DUMMY_ROWS = [
     customer_name: "Dummy Customer Sudah B",
     lat: -6.9175,
     lng: 107.6191,
+    percent_delivered: 100,
+    percent_ready_to_ship: 100,
+    qty_delivered: 1000,
+    qty_printed_operator: 1000,
+    driver_name: "Dummy Driver B",
   }),
 ];

@@ -331,17 +331,8 @@ label { font-weight:600; }
   box-shadow:var(--shadow);
   overflow:auto;
 }
-.ship-table thead th {
-  background:var(--mod-soft) !important;
-  color:var(--mod-ink) !important;
-  border-bottom:1px solid var(--mod-border) !important;
-  font:600 11px/1.2 'IBM Plex Sans',sans-serif !important;
-  letter-spacing:.06em;
-  text-transform:uppercase;
-}
-.ship-table tbody td { color:#1E293B; }
-.ship-table tbody tr:hover td { background:#F0FDFA; }
-.ship-table tbody tr.is-selected td { background:var(--mod-soft); }
+/* Ops-list `.ship-table` chrome is owned by App.css (industrial cool-slate).
+   Do not re-skin headers/hover/selection with module-pastel !important here. */
 
 /* -------- Filters / tabs -------- */
 .sa-filters,
@@ -366,15 +357,16 @@ label { font-weight:600; }
 .settings-tabs button.active { border-bottom-color:var(--mod); color:var(--mod-ink); }
 
 /* -------- Status badges -------- */
+/* Capsule radius stays global for existing `.pill` consumers (prod sheet, settings, etc.).
+   Ops-list pages override to a 4px stamp via `.ship-status-page .pill` in App.css.
+   Semantic `.pill-ok` / `.pill-warn` colors are owned by App.css (no pastel re-theme here). */
 .pill,
 .iro-status,
 .hr-status,
 .pack-badge {
   border-radius:999px;
 }
-.pill-ok, .hr-status-final { background:#ECFDF5; color:#047857; }
-.pill-warn, .pill-hold { background:#FFFBEB; color:#B45309; }
-.pill-cancel, .pill-warn { }
+.hr-status-final { background:#ECFDF5; color:#047857; }
 .chip-done { color:#047857; border-color:#6EE7B7; background:#ECFDF5; }
 .chip-current { color:#B45309; border-color:#FCD34D; background:#FFFBEB; }
 

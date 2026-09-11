@@ -2602,12 +2602,13 @@
 .prod-op-name{display:block;font-weight:600;overflow-wrap:break-word;word-break:break-word}
 .prod-date-line{display:block;padding:1px 0;white-space:nowrap}
 .prod-helper-warn{color:#a53f2b;font-weight:600}
-.pill-ok{background:#dceadb;color:#3a6a3d}
-.pill-warn{background:#faece9;color:#a53f2b}
-.pill-muted{background:#eee7d5;color:#7a6f52}
-.pill.xs{font-size:10px;padding:2px 6px;border-radius:999px;letter-spacing:.02em}
-.pill-hold{background:#fff2c2;color:#7a5416}
-.pill-cancel{background:#faece9;color:#7a2a1a}
+/* Semantic status pills — green / amber / red / muted (ops-list + shared) */
+.pill-ok{background:#ECFDF5;color:#047857}
+.pill-warn{background:#FFFBEB;color:#B45309}
+.pill-muted{background:var(--muted);color:var(--soft)}
+.pill.xs{font-size:10px;padding:2px 6px;border-radius:var(--radius-sm,4px);letter-spacing:.02em}
+.pill-hold{background:#FFFBEB;color:#B45309}
+.pill-cancel{background:#FEF2F2;color:#B91C1C}
 .pill-bypass{background:#e0d4f4;color:#4c3d84;margin-left:4px}
 .prod-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}
 .prod-card{display:flex;flex-direction:column;gap:6px;padding:14px 16px;border:1px solid var(--line);background:var(--surface);text-decoration:none;color:var(--ink);transition:box-shadow .15s,border-color .15s}
@@ -3511,53 +3512,96 @@ html:has(.ship-status-page) #root{
   padding:12px 16px 48px;
   box-sizing:border-box;
 }
+/* -------- Ops-list chrome (Status PO / Jadwal Pengiriman / Prediksi Order) --------
+   Industrial cool-slate: dense, sharp, 1px borders. Source of truth for `.ship-*`. */
 .ship-status-page{
   display:flex;flex-direction:column;flex:1 1 auto;min-height:0;height:100%;overflow:hidden;
-  background:#fff;
+  background:var(--surface,#fff);
+  --ship-ctrl-h:var(--ctrl-h-compact,28px);
+  --ship-radius:var(--radius-sm,4px);
+  --ship-border:#CBD5E1;
+  --ship-head-bg:#475569;
+  --ship-head-border:#334155;
 }
+.ship-status-page .pill{
+  border-radius:var(--ship-radius);
+  border:1px solid transparent;
+  font:600 10.5px/1.2 'IBM Plex Mono',monospace;
+  letter-spacing:.04em;
+  padding:3px 8px;
+}
+.ship-status-page .pill.sm{padding:2px 7px;font-size:10px}
+.ship-status-page .pill-ok{border-color:#A7F3D0}
+.ship-status-page .pill-warn{border-color:#FCD34D}
+.ship-status-page .pill-cancel{border-color:#FECACA}
 .ship-status-chrome{flex:0 0 auto;min-width:0;overflow:visible}
 .ship-status-heading{margin:0 0 8px;overflow:visible}
 .ship-status-heading h1{
-  margin:0;font:700 16px/1.3 'IBM Plex Sans',sans-serif;color:#2c3e50;text-transform:none;letter-spacing:0;
+  margin:0;font:700 16px/1.3 'IBM Plex Sans',sans-serif;color:var(--ink,#0F172A);text-transform:none;letter-spacing:0;
 }
 .prediksi-order-page .ship-status-heading.page-heading h1{
   line-height:1.3;letter-spacing:0;
 }
 .ship-status-toolbar{display:flex;align-items:flex-end;gap:8px;margin:0 0 8px;flex-wrap:wrap}
-.ship-status-toolbar select,.ship-status-toolbar input{
-  min-height:28px;padding:3px 8px;font-size:12.5px;border:1px solid #c5ced6;background:#f4f6f8;color:#4a5560;border-radius:3px;
+.ship-status-toolbar select,
+.ship-status-toolbar input{
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);box-sizing:border-box;
+  padding:3px 8px;font-size:12.5px;border:1px solid var(--ship-border);background:var(--muted,#F1F5F9);color:var(--ink,#0F172A);
+  border-radius:var(--ship-radius);
 }
 .ship-status-toolbar input[type="text"]{min-width:140px}
+.ship-status-toolbar .ghost.sm,
+.ship-status-toolbar .primary.sm,
+.ship-status-toolbar button.ghost.sm,
+.ship-status-toolbar button.primary.sm{
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);box-sizing:border-box;
+  padding:0 10px;font-size:12.5px;border-radius:var(--ship-radius);display:inline-flex;align-items:center;gap:6px;
+}
+.ship-status-toolbar .primary.sm,
+.ship-status-toolbar button.primary.sm{
+  background:var(--ep-primary);border:1px solid var(--ep-primary);color:#fff;font-weight:600;
+}
+.ship-status-toolbar .primary.sm:hover:not(:disabled),
+.ship-status-toolbar button.primary.sm:hover:not(:disabled){background:var(--ep-dark);border-color:var(--ep-dark)}
+.ship-status-toolbar .ghost.sm,
+.ship-status-toolbar button.ghost.sm{
+  background:var(--surface,#fff);border:1px solid var(--ship-border);color:var(--ink,#0F172A);
+}
 .ship-filter-field{display:flex;flex-direction:column;gap:2px;min-width:0;overflow:visible}
 .ship-filter-field span{
-  display:block;font:10px/1.4 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#6a7680;overflow:visible;
+  display:block;font:10px/1.4 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--soft,#64748B);overflow:visible;
 }
 .ship-icon-btn{
-  width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
-  border:1px solid #c5ced6;background:#fff;border-radius:3px;cursor:pointer;color:#3d4f5f;
+  width:var(--ship-ctrl-h);height:var(--ship-ctrl-h);display:inline-flex;align-items:center;justify-content:center;
+  border:1px solid var(--ship-border);background:var(--surface,#fff);border-radius:var(--ship-radius);cursor:pointer;color:var(--ink,#0F172A);
 }
+.ship-icon-btn:hover:not(:disabled){background:var(--muted,#F1F5F9)}
+.ship-icon-btn:focus-visible{outline:2px solid var(--ep-primary);outline-offset:1px}
 .ship-icon-btn:disabled{opacity:.6;cursor:default}
 .ship-need-order{
-  min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#eef2f5;color:#6a7680;border-radius:3px;cursor:not-allowed;
+  min-height:var(--ship-ctrl-h);padding:3px 10px;font-size:12.5px;border:1px solid var(--ship-border);background:var(--muted,#F1F5F9);color:var(--soft,#64748B);border-radius:var(--ship-radius);cursor:not-allowed;
 }
 .ship-reset-btn{
-  min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer;
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);padding:0 10px;font-size:12.5px;border:1px solid var(--ship-border);background:var(--surface,#fff);color:var(--ink,#0F172A);border-radius:var(--ship-radius);cursor:pointer;
 }
+.ship-reset-btn:hover{background:var(--muted,#F1F5F9)}
 .ship-tool-btn{
-  min-height:28px;padding:3px 10px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer;
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);padding:0 10px;font-size:12.5px;border:1px solid var(--ship-border);background:var(--surface,#fff);color:var(--ink,#0F172A);border-radius:var(--ship-radius);cursor:pointer;
   display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-family:'IBM Plex Sans',sans-serif;font-weight:600;
 }
+.ship-tool-btn:hover{background:var(--muted,#F1F5F9)}
 .ship-tool-btn.is-active{
-  border-color:#1a9aa0;color:#0f6e73;background:#e8f7f7;
+  border-color:var(--ep-primary);color:var(--ep-dark);background:#ECFDF5;
 }
 .ship-th-sort{
   display:inline-flex;align-items:center;gap:4px;max-width:100%;
   margin:0;padding:0;border:0;background:transparent;color:inherit;
   font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer;white-space:nowrap;
 }
+.ship-th-sort:hover{color:#fff}
 .ship-th-sort svg{flex:0 0 auto;opacity:.55}
-.ship-th-sort.is-active{color:#b8f3f0}
-.ship-th-sort.is-active svg{opacity:1;color:#7fe0dc}
+.ship-th-sort.is-active{color:#ECFDF5;font-weight:700}
+.ship-th-sort.is-active svg{opacity:1;color:#A7F3D0}
 .ship-table thead th.num .ship-th-sort{justify-content:center;width:100%}
 .ship-filter-modal{max-width:520px;width:100%}
 .ship-filter-panel-body{
@@ -3565,25 +3609,25 @@ html:has(.ship-status-page) #root{
 }
 .ship-filter-panel-body .ship-filter-field input,
 .ship-filter-panel-body .ship-filter-field select{
-  min-height:28px;padding:3px 8px;font-size:12.5px;border:1px solid #c5ced6;background:#f4f6f8;color:#4a5560;border-radius:3px;width:100%;
+  min-height:var(--ship-ctrl-h);padding:3px 8px;font-size:12.5px;border:1px solid var(--ship-border);background:var(--muted,#F1F5F9);color:var(--ink,#0F172A);border-radius:var(--ship-radius);width:100%;
 }
 .ship-filter-range{display:grid;gap:6px}
 .ship-filter-range-label{
-  display:block;font:10px/1.4 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#6a7680;
+  display:block;font:10px/1.4 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--soft,#64748B);
 }
 .ship-filter-range-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .ship-filter-panel-foot{
   display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 18px;
-  border-top:1px solid #dbe2e8;background:#fff;flex-shrink:0;
+  border-top:1px solid var(--line,#E2E8F0);background:var(--surface,#fff);flex-shrink:0;
 }
 .ship-status-grid{
-  flex:1 1 0;min-height:0;overflow:auto;width:100%;border:1px solid #c5ced6;
-  -webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  flex:1 1 0;min-height:0;overflow:auto;width:100%;border:1px solid var(--ship-border);
+  -webkit-overflow-scrolling:touch;overscroll-behavior:contain;border-radius:var(--ship-radius);background:var(--surface,#fff);
 }
-.ship-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:auto;font-size:12.5px}
+.ship-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:auto;font-size:12.5px;color:var(--ink,#0F172A)}
 .ship-table thead th{
-  position:sticky;top:0;z-index:2;background:#6b8499;color:#fff;font:600 11px/1.35 'IBM Plex Sans',sans-serif;
-  letter-spacing:.04em;text-transform:uppercase;padding:8px 10px;text-align:left;white-space:nowrap;border-bottom:1px solid #5a7388;
+  position:sticky;top:0;z-index:2;background:var(--ship-head-bg);color:#fff;font:600 11px/1.35 'IBM Plex Sans',sans-serif;
+  letter-spacing:.04em;text-transform:uppercase;padding:8px 10px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--ship-head-border);
 }
 .ship-table thead th.num{text-align:center}
 .hr-payroll-accounting-preview .table-wrap{overflow:auto;-webkit-overflow-scrolling:touch}
@@ -3594,33 +3638,33 @@ html:has(.ship-status-page) #root{
   font-family:'IBM Plex Mono',monospace;
   white-space:nowrap;
 }
-.ship-table thead th.ship-check,.ship-table tbody td.ship-check{width:36px;text-align:center;padding-left:8px;padding-right:8px}
-.ship-table tbody td.ship-check input,.ship-table thead th.ship-check input{width:15px;height:15px;accent-color:var(--ep-primary)}
-.ship-table tbody tr.is-selected td{background:#e8f1f8}
+.ship-table thead th.ship-check,.ship-table tbody td.ship-check,.ship-table thead th.ship-th-check,.ship-table tbody td.ship-th-check{width:36px;text-align:center;padding-left:8px;padding-right:8px}
+.ship-table tbody td.ship-check input,.ship-table thead th.ship-check input,.ship-table tbody td.ship-th-check input,.ship-table thead th.ship-th-check input{width:15px;height:15px;accent-color:var(--ep-primary)}
+.ship-table tbody tr.is-selected td{background:#E2E8F0}
 .status-po-bulk-fields{display:grid;gap:8px;margin-top:8px}
 .status-po-bulk-fields label{display:grid;gap:4px;font-size:13px}
 .status-po-bulk-fields textarea,.status-po-bulk-fields input{width:100%}
 .ship-table tbody td{
-  padding:5px 10px;border-bottom:1px solid #e4e8ec;vertical-align:middle;background:#fff;line-height:1.25;
+  padding:5px 10px;border-bottom:1px solid var(--line,#E2E8F0);vertical-align:middle;background:var(--surface,#fff);line-height:1.25;
 }
-.ship-table tbody tr:nth-child(even) td{background:#f3f5f7}
-.ship-table tbody tr:hover td{background:#eaf1f6}
+.ship-table tbody tr:nth-child(even) td{background:#F8FAFC}
+.ship-table tbody tr:hover td{background:#F1F5F9}
 .ship-table tbody td.mono{font-family:'IBM Plex Mono',monospace;white-space:nowrap}
-.ship-cust{font-weight:600;color:#2c3e50}
+.ship-cust{font-weight:600;color:var(--ink,#0F172A)}
 .ship-bar{
-  position:relative;height:18px;min-width:88px;background:#eceff2;border:1px solid #d5dbe0;border-radius:2px;overflow:hidden;
+  position:relative;height:18px;min-width:88px;background:var(--muted,#F1F5F9);border:1px solid var(--ship-border);border-radius:2px;overflow:hidden;
 }
 .ship-bar-fill{position:absolute;inset:0 auto 0 0;height:100%;min-width:0}
 .ship-bar-label{
   position:relative;z-index:1;display:flex;align-items:center;justify-content:center;height:100%;
-  font:700 11px/1 'IBM Plex Mono',monospace;color:#1f2a33;
+  font:700 11px/1 'IBM Plex Mono',monospace;color:var(--ink,#0F172A);
 }
 .ship-bar-empty .ship-bar-fill{width:0;background:transparent}
-.ship-bar-low .ship-bar-fill{background:#f0a04b}
-.ship-bar-mid .ship-bar-fill{background:#e6c84a}
-.ship-bar-full .ship-bar-fill{background:#5aa85a}
-.ship-bar-ready .ship-bar-fill{background:#5aa85a}
-.ship-bar-full .ship-bar-label,.ship-bar-ready .ship-bar-label{color:#143214}
+.ship-bar-low .ship-bar-fill{background:#F59E0B}
+.ship-bar-mid .ship-bar-fill{background:#EAB308}
+.ship-bar-full .ship-bar-fill{background:var(--green,#059669)}
+.ship-bar-ready .ship-bar-fill{background:var(--green,#059669)}
+.ship-bar-full .ship-bar-label,.ship-bar-ready .ship-bar-label{color:#064E3B}
 @media (max-width:640px){
   .app-shell:has(.ship-status-page){grid-template-columns:1fr}
   .content:has(.ship-status-page){padding:4px 6px 0}
@@ -3628,8 +3672,13 @@ html:has(.ship-status-page) #root{
 
 .prediksi-kpi{margin:8px 0 10px}
 .prediksi-tabs{display:flex;gap:6px;margin:0 0 8px}
-.prediksi-tabs button{ min-height:28px;padding:3px 12px;font-size:12.5px;border:1px solid #c5ced6;background:#fff;color:#3d4f5f;border-radius:3px;cursor:pointer; }
-.prediksi-tabs button.is-active{background:#2c3e50;color:#fff;border-color:#2c3e50}
+.prediksi-order-page .prediksi-tabs button{
+  min-height:var(--ctrl-h-compact,28px);padding:0 12px;font-size:12.5px;border:1px solid var(--ship-border,#CBD5E1);
+  background:var(--surface,#fff);color:var(--ink,#0F172A);border-radius:var(--radius-sm,4px);cursor:pointer;
+}
+.prediksi-order-page .prediksi-tabs button.is-active{
+  background:var(--ship-head-bg,#475569);color:#fff;border-color:var(--ship-head-border,#334155);
+}
 .prediksi-row{cursor:pointer}
 .prediksi-order-page .ship-table tbody td{white-space:nowrap}
 .prediksi-order-page .ship-table tbody td:last-child{white-space:normal;min-width:180px}
