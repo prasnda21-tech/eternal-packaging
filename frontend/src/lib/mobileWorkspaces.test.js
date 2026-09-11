@@ -1,5 +1,6 @@
 import {
   MOBILE_WORKSPACES,
+  MOBILE_NAV_ITEMS,
   activeMobileNav,
   loadingAvailability,
   mobileTaskHref,
@@ -133,6 +134,22 @@ describe("mobile cards and nav", () => {
       .toEqual(["tasks", "orders", "notifications", "profile"]);
     expect(visibleMobileNavItems((p) => p === "driver").map((i) => i.id))
       .toEqual(["tasks", "orders", "notifications", "profile"]);
+  });
+
+  test("Optimasi Rute PWA nav uses existing permission model, not DRIVER role name", () => {
+    expect(visibleMobileNavItems((p) => p === "route_optimizer.view").map((i) => i.id))
+      .toContain("optimasiRute");
+    expect(visibleMobileNavItems((p) => p === "nav.route_optimizer").map((i) => i.id))
+      .toContain("optimasiRute");
+    expect(visibleMobileNavItems((p) => p === "route_optimizer.optimize").map((i) => i.id))
+      .toContain("optimasiRute");
+    expect(visibleMobileNavItems((p) => p === "DRIVER" || p === "driver").map((i) => i.id))
+      .not.toContain("optimasiRute");
+    expect(visibleMobileNavItems((p) => false).map((i) => i.id))
+      .not.toContain("optimasiRute");
+    const item = MOBILE_NAV_ITEMS.find((i) => i.id === "optimasiRute");
+    expect(item.to).toBe("/optimasi-rute");
+    expect(activeMobileNav("/optimasi-rute/iro-1")).toBe("optimasiRute");
   });
 
   test("task counts come from loaded list only", () => {

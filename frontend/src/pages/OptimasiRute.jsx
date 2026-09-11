@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { MapPinned, Plus, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -12,10 +12,13 @@ import {
   strategyLabel,
 } from "../lib/independentRoute";
 import { sourceTypeLabel } from "../lib/deliveryRouteBridge";
+import { navigateToOptimasiRute, preferMobileOpsShell } from "../lib/mobileOpsShell";
+import MobileTopBar from "../mobile/MobileTopBar";
 
 export default function OptimasiRute() {
   const { hasPerm } = useAuth();
   const navigate = useNavigate();
+  const inMobileShell = preferMobileOpsShell();
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
@@ -57,7 +60,8 @@ export default function OptimasiRute() {
   };
 
   return (
-    <div className="iro-page" data-testid="iro-list-page">
+    <div className={`iro-page${inMobileShell ? " iro-page--mobile" : ""}`} data-testid="iro-list-page">
+      {inMobileShell ? <MobileTopBar title="Optimasi Rute" /> : null}
       <div className="iro-hero">
         <div>
           <p className="eyebrow">Perencana rute</p>
@@ -115,7 +119,14 @@ export default function OptimasiRute() {
                 <td>{row.last_optimized_at ? String(row.last_optimized_at).replace("T", " ").slice(0, 16) : "—"}</td>
                 <td>{formatKm(row.estimated_distance_m)}</td>
                 <td className="iro-row-actions">
-                  <Link className="iro-link" to={`/optimasi-rute/${row.id}`} data-testid={`iro-open-${row.id}`}>Buka</Link>
+                  <button
+                    type="button"
+                    className="iro-link"
+                    data-testid={`iro-open-${row.id}`}
+                    onClick={() => navigateToOptimasiRute(navigate, row.id)}
+                  >
+                    Buka
+                  </button>
                   {canDelete && (
                     <button
                       type="button"

@@ -1,5 +1,6 @@
 /** Permission-driven mobile operational workspaces. Route/query never grants access. */
 
+import { canAccessRoutePage } from "./independentRoute";
 import { NAV_KEYS } from "./navAccess";
 import { MOBILE_DELIVERY_SCHEDULE_PATH, MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS } from "./mobileDeliverySchedule";
 
@@ -12,6 +13,11 @@ export const MOBILE_WORKSPACES = [
   { id: "loading", label: "Loading", permission: "loading.update", division: "loading" },
   { id: "delivery", label: "Pengiriman", permission: "delivery.update", division: "terkirim" },
 ];
+
+/** Nav visibility for Optimasi Rute — existing RBAC helper, never role-name hardcoding. */
+export function canSeeMobileOptimasiRute(hasPerm) {
+  return canAccessRoutePage(hasPerm);
+}
 
 export const MOBILE_NAV_ITEMS = [
   { id: "tasks", label: "Tugas Saya", to: "/m/tasks" },
@@ -30,6 +36,14 @@ export const MOBILE_NAV_ITEMS = [
     to: MOBILE_DELIVERY_SCHEDULE_PATH,
     anyOf: [...MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS],
   },
+  {
+    id: "optimasiRute",
+    label: "Optimasi Rute",
+    lines: ["Optimasi", "Rute"],
+    to: "/optimasi-rute",
+    // Predicate uses canAccessRoutePage (nav.route_optimizer + route_optimizer.*).
+    visibleWhen: canSeeMobileOptimasiRute,
+  },
   { id: "chat", label: "Chat", to: "/m/chat", anyOf: [NAV_KEYS.chat, "chat.use"] },
   { id: "notifications", label: "Notifikasi", to: "/m/notifications" },
   { id: "profile", label: "Profil", to: "/m/profile" },
@@ -42,6 +56,9 @@ export function permittedMobileWorkspaces(hasPerm) {
 
 export function visibleMobileNavItems(hasPerm) {
   return MOBILE_NAV_ITEMS.filter((item) => {
+    if (typeof item.visibleWhen === "function") {
+      return item.visibleWhen(hasPerm);
+    }
     if (!item.anyOf?.length) return true;
     if (typeof hasPerm !== "function") return false;
     return item.anyOf.some((perm) => hasPerm(perm));
@@ -93,6 +110,7 @@ export function activeMobileNav(pathname) {
   if (path.startsWith(MOBILE_DELIVERY_SCHEDULE_PATH) || path.startsWith("/m/delivery-schedule")) {
     return "deliverySchedule";
   }
+  if (path.startsWith("/optimasi-rute")) return "optimasiRute";
   if (path.startsWith("/m/schedule")) return "schedule";
   if (path.startsWith("/m/chat")) return "chat";
   if (path.startsWith("/m/notifications")) return "notifications";

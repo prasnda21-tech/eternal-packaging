@@ -4054,6 +4054,17 @@ button.ghost.sm.icon{padding:4px 6px}
   .iro-gmaps input{font-size:16px}
   .iro-gmaps-hits{max-height:42vh}
   .iro-modal-foot{padding-bottom:max(12px, env(safe-area-inset-bottom))}
+  .iro-page--mobile{padding:0 0 24px;max-width:100vw;overflow-x:hidden}
+  .iro-page--mobile .iro-hero{border-radius:0;margin:0;padding:14px 14px 16px}
+  .iro-page--mobile .iro-hero h1{font-size:22px;line-height:1.25;overflow-wrap:anywhere;word-break:break-word}
+  .iro-page--mobile .iro-hero-actions{width:100%}
+  .iro-page--mobile .iro-hero-actions .iro-btn-primary,
+  .iro-page--mobile .iro-hero-actions .iro-btn-secondary{flex:1 1 auto;min-height:44px;justify-content:center}
+  .iro-page--mobile .iro-card,
+  .iro-page--mobile .table-wrap{margin:0 12px;max-width:calc(100vw - 24px)}
+  .iro-page--mobile .iro-grid-2,
+  .iro-page--mobile .iro-grid-3{grid-template-columns:1fr}
+  .iro-page--mobile .iro-back{background:none;border:0;padding:0;cursor:pointer;font:inherit}
 }
 
 
@@ -4071,7 +4082,20 @@ button.ghost.sm.icon{padding:4px 6px}
 .mds-opt-badge.is-belum_dioptimasi{color:#64748b}
 .mds-opt-badge.is-sudah_dioptimasi{color:#0f766e}
 .mds-opt-badge.is-perlu_optimasi_ulang{color:#b45309}
-.mds-opt-link{font-size:11px;font-weight:700;color:#1d4ed8;text-decoration:underline}
+.mds-opt-link{
+  appearance:none;
+  background:none;
+  border:0;
+  padding:0;
+  cursor:pointer;
+  font:inherit;
+  font-size:11px;
+  font-weight:700;
+  color:#1d4ed8;
+  text-decoration:underline;
+  text-align:left;
+  min-height:32px;
+}
 .mds-review-page{display:grid;gap:12px;align-content:start}
 .mop-delivery-review-root .mop-content.mds-review-page{
   flex:1;

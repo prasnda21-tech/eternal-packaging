@@ -409,4 +409,45 @@ describe("MobileDeliveryRouteReviewPage driver assign", () => {
     const summary = container.querySelector('[data-testid="mds-review-summary"]').textContent;
     expect(summary).toMatch(/Eligible:\s*1/);
   });
+
+  test("Lihat Rute uses in-app navigate to /optimasi-rute/:id (no window.open / target=_blank)", async () => {
+    const open = jest.fn();
+    const origOpen = window.open;
+    window.open = open;
+    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create" || p === "route_optimizer.optimize");
+    mockOptimize.mockResolvedValue({
+      ok: true,
+      results: [{
+        driver_user_id: "drv-a",
+        driver_name: "Driver A",
+        ok: true,
+        route_id: "iro-42",
+      }],
+    });
+    mockReview.mockResolvedValue({
+      rows: [{ ...baseRows[1], eligible: true }],
+      summary: {},
+      groups: [],
+    });
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mds-review-confirm"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const openBtn = container.querySelector('[data-testid="mds-review-open-iro-42"]');
+    expect(openBtn).toBeTruthy();
+    expect(openBtn.tagName).toBe("BUTTON");
+    expect(openBtn.getAttribute("href")).toBeNull();
+    expect(openBtn.getAttribute("target")).toBeNull();
+    await act(async () => {
+      openBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/optimasi-rute/iro-42", expect.objectContaining({
+      state: expect.objectContaining({ from: expect.any(String) }),
+    }));
+    expect(open).not.toHaveBeenCalled();
+    window.open = origOpen;
+  });
 });

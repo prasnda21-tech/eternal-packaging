@@ -9,10 +9,11 @@ import {
 
 const mockHasPerm = jest.fn(() => false);
 const mockDeliverySchedule = jest.fn();
+const mockNavigate = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
@@ -89,6 +90,7 @@ describe("MobileDeliverySchedulePage", () => {
     root = createRoot(container);
     mockHasPerm.mockReset();
     mockDeliverySchedule.mockReset();
+    mockNavigate.mockReset();
     mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
   });
 
@@ -164,6 +166,54 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.textContent).not.toContain("Export Semua");
     expect(container.querySelector('[data-testid="mds-export-filtered"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-export-all"]')).toBeFalsy();
+  });
+
+  test("Lihat Rute navigates in-app to /optimasi-rute/:id without window.open", async () => {
+    const open = jest.fn();
+    const origOpen = window.open;
+    window.open = open;
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "route_optimizer.view" || p === "route_optimizer.create"
+    ));
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        optimization_status: "sudah_dioptimasi",
+        optimization_status_label: "Sudah Dioptimasi",
+        route_id: "iro-abc",
+      }],
+    });
+    await act(async () => {
+      root.render(<MobileDeliverySchedulePage />);
+    });
+    const btn = container.querySelector('[data-testid="mds-lihat-rute-PO-100"]');
+    expect(btn).toBeTruthy();
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.getAttribute("target")).toBeNull();
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/optimasi-rute/iro-abc", expect.objectContaining({
+      state: expect.objectContaining({ from: expect.any(String) }),
+    }));
+    expect(open).not.toHaveBeenCalled();
+    window.open = origOpen;
+  });
+
+  test("unauthorized user does not see Lihat Rute without route_optimizer perms", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        optimization_status: "sudah_dioptimasi",
+        optimization_status_label: "Sudah Dioptimasi",
+        route_id: "iro-abc",
+      }],
+    });
+    await act(async () => {
+      root.render(<MobileDeliverySchedulePage />);
+    });
+    expect(container.querySelector('[data-testid="mds-lihat-rute-PO-100"]')).toBeFalsy();
   });
 
   test("view+edit shows Atur Lokasi; view-only hides it", async () => {

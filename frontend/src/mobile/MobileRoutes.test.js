@@ -60,14 +60,18 @@ describe("mobile route wiring", () => {
     expect(activeMobileNav("/m/tasks")).toBe("tasks");
     expect(activeMobileNav("/m/schedule")).toBe("schedule");
     expect(activeMobileNav("/m/delivery-schedule")).toBe("deliverySchedule");
+    expect(activeMobileNav("/optimasi-rute/iro-1")).toBe("optimasiRute");
     expect(layout).toMatch(/MobileSidebar/);
     expect(layout).toMatch(/MobileNavProvider/);
+    expect(layout).toMatch(/markMobileOpsShell/);
     expect(layout).not.toMatch(/MobileBottomNav/);
     expect(topBar).toMatch(/mobile-nav-menu/);
     expect(topBar).toMatch(/Menu/);
     expect(sidebar).toMatch(/mop-sidebar/);
     expect(sidebar).toMatch(/Jadwal Pengiriman|deliverySchedule/);
+    expect(sidebar).toMatch(/optimasiRute/);
     expect(sidebar).not.toMatch(/mop-menu-popup/);
+    expect(app).toMatch(/RouteOptimizerLayout/);
   });
 
   test("delivery schedule page reuses canonical schedule API and production sheet zoom", () => {
