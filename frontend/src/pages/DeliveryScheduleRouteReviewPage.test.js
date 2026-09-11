@@ -112,6 +112,22 @@ describe("DeliveryScheduleRouteReviewPage desktop shell", () => {
     expect(container.querySelector('[data-testid="mds-review-page"]')).toBeTruthy();
   });
 
+  test("desktop review uses natural-scroll wrapper, not ship-status clipping viewport", async () => {
+    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
+    await act(async () => {
+      root.render(<DeliveryScheduleRouteReviewPage />);
+    });
+    const rootEl = container.querySelector('[data-testid="ds-review-root"]');
+    const mainEl = container.querySelector('[data-testid="mds-review-page"]');
+    expect(rootEl).toBeTruthy();
+    expect(rootEl.classList.contains("ds-delivery-review-root")).toBe(true);
+    // ship-status-page locks html/body/.content to 100dvh + overflow:hidden
+    expect(rootEl.classList.contains("ship-status-page")).toBe(false);
+    expect(mainEl.classList.contains("ds-review-page")).toBe(true);
+    expect(mainEl.classList.contains("mop-content")).toBe(false);
+    expect(container.querySelector(".mop-delivery-review-root")).toBeFalsy();
+  });
+
   test("Kembali returns to desktop Jadwal Pengiriman", async () => {
     mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
     await act(async () => {
@@ -243,6 +259,7 @@ describe("DeliveryScheduleRouteReviewPage desktop shell", () => {
 
 describe("desktop vs PWA review wiring (static)", () => {
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
   const desktopPage = fs.readFileSync(path.join(__dirname, "DeliveryScheduleRouteReviewPage.jsx"), "utf8");
   const mobilePage = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliveryRouteReviewPage.jsx"), "utf8");
   const shared = fs.readFileSync(path.join(__dirname, "../components/DeliveryRouteReviewContent.jsx"), "utf8");
@@ -272,6 +289,21 @@ describe("desktop vs PWA review wiring (static)", () => {
     expect(shared).toMatch(/assignDeliveryDriver/);
     expect(shared).not.toMatch(/markMobileOpsShell/);
     expect(layout).toMatch(/preferMobileOpsShell/);
+  });
+
+  test("desktop scroll contract: no ship-status-page; PWA keeps mop overflow scroller", () => {
+    expect(shared).toMatch(/ds-delivery-review-root/);
+    expect(shared).toMatch(/ds-review-page/);
+    expect(shared).toMatch(/mop-delivery-review-root/);
+    // Desktop root must not reuse the locked ship-status viewport.
+    expect(shared).not.toMatch(/ship-status-page ds-delivery-review-root/);
+    expect(shared).not.toMatch(/isDesktop\s*\?\s*["']ship-status-page/);
+    const desktopRootMatch = shared.match(/const rootClass = isDesktop\s*\n?\s*\?\s*["']([^"']+)["']/);
+    expect(desktopRootMatch?.[1]).toBe("ds-delivery-review-root");
+    expect(desktopRootMatch?.[1]).not.toMatch(/ship-status-page/);
+
+    expect(css).toMatch(/\.ds-delivery-review-root\s*\{[^}]*overflow\s*:\s*visible/s);
+    expect(css).toMatch(/\.mop-delivery-review-root \.mop-content\.mds-review-page\s*\{[^}]*overflow-y\s*:\s*auto/s);
   });
 
   test("shared content export is the single review controller", () => {

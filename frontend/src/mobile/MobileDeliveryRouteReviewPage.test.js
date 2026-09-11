@@ -112,6 +112,25 @@ describe("MobileDeliveryRouteReviewPage driver assign", () => {
     expect(mockListDrivers).toHaveBeenCalled();
   });
 
+  test("PWA review keeps mop scroll shell (not desktop ds-delivery-review-root)", async () => {
+    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+    const rootEl = container.querySelector('[data-testid="mds-review-root"]');
+    const mainEl = container.querySelector('[data-testid="mds-review-page"]');
+    expect(rootEl).toBeTruthy();
+    expect(rootEl.classList.contains("mop-schedule-root")).toBe(true);
+    expect(rootEl.classList.contains("mop-delivery-review-root")).toBe(true);
+    expect(rootEl.classList.contains("ds-delivery-review-root")).toBe(false);
+    expect(rootEl.classList.contains("ship-status-page")).toBe(false);
+    expect(mainEl.classList.contains("mop-content")).toBe(true);
+    expect(mainEl.classList.contains("mds-review-page")).toBe(true);
+    expect(mainEl.classList.contains("ds-review-page")).toBe(false);
+    expect(container.querySelector('[data-testid="mobile-top-bar"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-review-root"]')).toBeFalsy();
+  });
+
   test("hides assign UI without delivery.location.manage", async () => {
     mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
     await act(async () => {
