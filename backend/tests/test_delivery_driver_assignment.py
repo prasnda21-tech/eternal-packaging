@@ -418,6 +418,61 @@ async def test_optimized_delivery_driver_change_becomes_stale():
 
 
 @pytest.mark.anyio
+async def test_assign_when_loading_checklist_is_null_no_http_500():
+    """Imported/manual POs often store loading_checklist: null — must not 500 on dotted $set."""
+    await _clean()
+    a, _, _ = await _seed_drivers()
+    admin = await _upsert_user(_user())
+    client = await client_for(admin)
+    oid = f"{PREFIX}-NULL-LC"
+    doc = _order(oid, lat=-6.2, lng=106.8)
+    doc["loading_checklist"] = None  # exact legacy/current import shape
+    await server.db.orders.insert_one(doc)
+    before = await server.db.orders.find_one({"id": oid}, {"_id": 0})
+    guard_before = _workflow_guard(before)
+
+    r = await client.patch(f"/api/delivery/orders/{oid}/driver", json={"driver_user_id": a["id"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["result"]["status"] == "updated"
+    assert body["result"]["driver_user_id"] == a["id"]
+    assert body["result"]["driver_name"] == a["name"]
+
+    after = await server.db.orders.find_one({"id": oid}, {"_id": 0})
+    lc = after.get("loading_checklist")
+    assert isinstance(lc, dict)
+    assert lc.get("driver_user_id") == a["id"]
+    assert lc.get("driver_name") == a["name"]
+    assert _workflow_guard(after) == guard_before
+
+    # Persist readable on review reload (Driver: N source)
+    rev = await client.post("/api/route-optimizer/from-schedule/review", json={"order_ids": [oid]})
+    assert rev.status_code == 200, rev.text
+    row = rev.json()["rows"][0]
+    assert row["driver_user_id"] == a["id"]
+    assert row["driver_name"] == a["name"]
+    # Eligibility unchanged by assignment alone (still needs coords etc. — here coords present,
+    # but "Belum ada driver" cleared; do not assert eligible True if other rules apply).
+    assert "Belum ada driver" not in (row.get("reasons") or [])
+
+    # Idempotent second save
+    r2 = await client.patch(f"/api/delivery/orders/{oid}/driver", json={"driver_user_id": a["id"]})
+    assert r2.status_code == 200
+    assert r2.json()["result"]["status"] == "unchanged"
+
+    # Invalid/missing driver id → controlled 4xx, not uncontrolled 500
+    r_bad = await client.patch(f"/api/delivery/orders/{oid}/driver", json={"driver_user_id": ""})
+    assert r_bad.status_code == 400, r_bad.text
+    r_missing = await client.patch(
+        f"/api/delivery/orders/{oid}/driver",
+        json={"driver_user_id": f"{PREFIX}-NO-SUCH-DRIVER"},
+    )
+    assert r_missing.status_code in (400, 404), r_missing.text
+    assert r_missing.status_code != 500
+
+
+@pytest.mark.anyio
 async def test_unassign_not_supported():
     await _clean()
     a, _, _ = await _seed_drivers()
