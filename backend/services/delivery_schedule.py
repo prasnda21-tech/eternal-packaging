@@ -198,6 +198,10 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
     code = schedule_status_code(order, today)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
+    # Presentation-only coords for Status Lokasi (frontend locationSetupStatusLabel).
+    # Lazy import avoids circular import with delivery_stops.
+    from services.delivery_stops import parse_location
+    loc = parse_location(order.get("delivery_location"))
     sj_numbers = []
     for sh in order.get("shipments") or []:
         num = str(sh.get("number") or sh.get("sj_number") or "").strip()
@@ -218,6 +222,8 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
         "driver_user_id": _driver_user_id(order),
         "delivery_outlet_id": order.get("delivery_outlet_id"),
         "delivery_status": order.get("delivery_status") or "",
+        "lat": loc.get("lat"),
+        "lng": loc.get("lng"),
         "qty_total": ship.get("qty_total"),
         "qty_delivered": ship.get("qty_delivered"),
         "qty_packed": qty_packed(order),

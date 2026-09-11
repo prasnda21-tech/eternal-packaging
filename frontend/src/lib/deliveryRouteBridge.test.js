@@ -134,7 +134,11 @@ describe("deliveryRouteBridge helpers", () => {
     expect(hasCanonicalDeliveryCoordinates({})).toBe(false);
     expect(locationSetupStatusLabel({})).toBe("Belum Diatur");
     expect(locationSetupStatusLabel({ lat: null, lng: null, address: "Jl Ada Alamat" })).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel({ formatted_address: "Jl Hanya Alamat", customer_address: "Jakarta" })).toBe("Belum Diatur");
     expect(locationSetupStatusLabel({ lat: 0, lng: 0 })).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel({ lat: "abc", lng: "106.8" })).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel({ lat: 91, lng: 106.8 })).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel({ lat: -6.2, lng: 181 })).toBe("Belum Diatur");
 
     // CASE 3 — location set
     expect(hasCanonicalDeliveryCoordinates({ lat: -6.2, lng: 106.8 })).toBe(true);

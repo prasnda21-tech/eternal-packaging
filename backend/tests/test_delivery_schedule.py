@@ -251,3 +251,18 @@ def test_schedule_row_embeds_canonical_shipment_percents():
     assert row["qty_delivered"] == 5000
     assert row["qty_packed"] == 100
     assert row["item_label"] == "Cetak"  # still in API; UI may omit column
+
+
+def test_schedule_row_exposes_delivery_coords_for_status_lokasi():
+    """Presentation-only lat/lng for desktop Status Lokasi — not eligibility."""
+    with_coords = schedule_row(_po(delivery_location={"lat": -6.2, "lng": 106.8, "formatted_address": "Jl A"}))
+    assert with_coords["lat"] == -6.2
+    assert with_coords["lng"] == 106.8
+
+    address_only = schedule_row(_po(delivery_location={"formatted_address": "Jl Tanpa Koordinat"}, address="Jl Order"))
+    assert address_only["lat"] is None
+    assert address_only["lng"] is None
+
+    zero = schedule_row(_po(delivery_location={"lat": 0, "lng": 0}))
+    assert zero["lat"] == 0.0
+    assert zero["lng"] == 0.0
