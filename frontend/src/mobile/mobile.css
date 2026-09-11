@@ -594,6 +594,20 @@
   font-weight: 800;
 }
 
+.mop-delivery-schedule-root .mop-ws-select {
+  margin: 0 0 8px;
+}
+
+.mop-ds-task-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mop-ds-task-panel .mop-schedule-filter-actions {
+  justify-content: flex-end;
+}
+
 .mop-meta-grid-head {
   grid-column: 1 / -1;
   font-size: 12px;

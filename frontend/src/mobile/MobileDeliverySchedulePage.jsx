@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Filter, RefreshCw, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -27,7 +27,12 @@ import {
 } from "../lib/mobileDeliverySchedule";
 import { canAccessRoutePage } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
-import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
+import { sortOperationalTasks } from "../lib/mobileTaskCard";
+import {
+  deliveryScheduleShowsTable,
+  mobileScheduleWorkHref,
+  selectDeliveryScheduleTaskContext,
+} from "../lib/mobileWorkspaces";
 import {
   OPS_QUICK_FILTERS,
   deliveryOpsBadge,
@@ -57,6 +62,8 @@ import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import OutletLocationModal from "../components/OutletLocationModal";
 import MobileTopBar from "./MobileTopBar";
+import MobileTaskCard from "./components/MobileTaskCard";
+import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 
 function ProgressCell({ pct, tone, testid, title, primaryLabel, contextLabel }) {
   const p = clampPercent(pct);
@@ -125,10 +132,22 @@ export function deliveryScheduleLoadErrorMessage(err) {
 
 export default function MobileDeliverySchedulePage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
   const allowed = canViewMobileDeliverySchedule(hasPerm);
   const canSetLocation = canEditMobileDeliveryScheduleLocation(hasPerm);
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
+  const requestedWs = params.get("ws") || "";
+  const taskChoice = useMemo(
+    () => selectDeliveryScheduleTaskContext(hasPerm, requestedWs),
+    [hasPerm, requestedWs],
+  );
+  const taskContexts = taskChoice.permitted;
+  const selectedTask = taskChoice.selected;
+  const showTable = deliveryScheduleShowsTable(selectedTask?.id);
+  const listPathname = location.pathname || "/m/delivery-schedule";
+  const listSearch = location.search || "";
   const userKey = storageUserKey(user);
   const filterKey = scopedOpsKey(MOBILE_DELIVERY_FILTER_KEY, userKey);
   const scrollKey = scopedOpsKey(MOBILE_DELIVERY_SCROLL_KEY, userKey);
@@ -140,6 +159,9 @@ export default function MobileDeliverySchedulePage() {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [taskRows, setTaskRows] = useState([]);
+  const [taskBusy, setTaskBusy] = useState(false);
+  const [taskErr, setTaskErr] = useState("");
   const [filters, setFilters] = useState({ ...EMPTY_DELIVERY_FILTERS, ...(saved.filters || {}) });
   const [sort, setSort] = useState({ ...EMPTY_DELIVERY_SORT, ...(saved.sort || {}) });
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
@@ -149,6 +171,22 @@ export default function MobileDeliverySchedulePage() {
   const [reloadKey, setReloadKey] = useState(0);
   const sheetZoom = useProductionSheetZoom();
   const scrollRestored = useRef(false);
+
+  // Keep selected task context in ?ws= so refresh + Back restore it (presentation only).
+  useEffect(() => {
+    if (!allowed || !taskContexts.length || !selectedTask?.id) return;
+    if (params.get("ws") === selectedTask.id) return;
+    const next = new URLSearchParams(params);
+    next.set("ws", selectedTask.id);
+    setParams(next, { replace: true });
+  }, [allowed, taskContexts.length, selectedTask?.id, params, setParams]);
+
+  const setTaskContextId = (id) => {
+    if (!id) return;
+    const next = new URLSearchParams(params);
+    next.set("ws", id);
+    setParams(next, { replace: true });
+  };
 
   const load = useCallback(async () => {
     if (!allowed) {
@@ -170,9 +208,35 @@ export default function MobileDeliverySchedulePage() {
     }
   }, [allowed]);
 
+  const loadTasks = useCallback(async (division) => {
+    if (!allowed || !division) {
+      setTaskBusy(false);
+      setTaskRows([]);
+      setTaskErr("");
+      return;
+    }
+    setTaskBusy(true);
+    setTaskErr("");
+    try {
+      const d = await withTimeout(api.divisionTasks(division, "mine"), MOBILE_LOAD_TIMEOUT_MS);
+      setTaskRows(Array.isArray(d?.tasks) ? d.tasks : []);
+    } catch (e) {
+      setTaskRows([]);
+      setTaskErr(e?.response?.data?.detail || formatApiError(e, "Gagal memuat tugas."));
+    } finally {
+      setTaskBusy(false);
+    }
+  }, [allowed]);
+
   useEffect(() => {
-    load();
-  }, [load, reloadKey]);
+    if (showTable) load();
+  }, [load, reloadKey, showTable]);
+
+  useEffect(() => {
+    if (!showTable && selectedTask?.division) {
+      loadTasks(selectedTask.division);
+    }
+  }, [loadTasks, reloadKey, showTable, selectedTask?.id, selectedTask?.division]);
 
   useEffect(() => {
     writeJsonSession(filterKey, { filters, quick, sort });
@@ -187,9 +251,11 @@ export default function MobileDeliverySchedulePage() {
   const sorted = useMemo(() => sortDeliveryRows(filteredRows, sort), [filteredRows, sort]);
   const visible = useMemo(() => sortByOpsQueue(sorted, deliveryQueueRank), [sorted]);
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
+  const sortedTasks = useMemo(() => sortOperationalTasks(taskRows), [taskRows]);
+  const workWsId = selectedTask?.id;
 
   useLayoutEffect(() => {
-    if (busy || scrollRestored.current) return;
+    if (!showTable || busy || scrollRestored.current) return;
     const el = sheetZoom.viewportRef?.current;
     const savedScroll = readScrollSession(scrollKey);
     if (el && savedScroll) {
@@ -197,7 +263,7 @@ export default function MobileDeliverySchedulePage() {
       el.scrollTop = savedScroll.top;
     }
     scrollRestored.current = true;
-  }, [busy, sheetZoom.viewportRef, visible.length, scrollKey]);
+  }, [busy, sheetZoom.viewportRef, visible.length, scrollKey, showTable]);
 
   const persistScroll = () => {
     const el = sheetZoom.viewportRef?.current;
@@ -210,12 +276,12 @@ export default function MobileDeliverySchedulePage() {
     capturePoOpenFromList({
       user,
       orderId,
-      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/delivery-schedule",
-      search: typeof window !== "undefined" ? window.location.search : "",
+      pathname: listPathname,
+      search: listSearch,
     });
     return poNavStateFromList({
-      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/delivery-schedule",
-      search: typeof window !== "undefined" ? window.location.search : "",
+      pathname: listPathname,
+      search: listSearch,
     });
   };
 
@@ -241,8 +307,10 @@ export default function MobileDeliverySchedulePage() {
   const openRow = (r) => {
     if (!r?.id) return;
     const state = openPoReturnState(r.id);
-    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery"), { state });
+    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId), { state });
   };
+
+  const onRefresh = () => setReloadKey((n) => n + 1);
 
   return (
     <div className="mop-schedule-root mop-delivery-schedule-root">
@@ -255,6 +323,56 @@ export default function MobileDeliverySchedulePage() {
         )}
         {allowed && (
           <>
+            {taskContexts.length > 0 && (
+              <MobileWorkspaceSelect
+                workspaces={taskContexts}
+                value={selectedTask?.id}
+                onChange={setTaskContextId}
+                label="Tugas"
+                testid="mds-task-select"
+              />
+            )}
+
+            {!showTable && (
+              <div className="mop-ds-task-panel" data-testid="mds-task-list">
+                <div className="mop-schedule-filter-actions" data-testid="mds-task-actions">
+                  <button
+                    type="button"
+                    className="mop-btn-ghost"
+                    onClick={onRefresh}
+                    title="Muat ulang"
+                    data-testid="mds-refresh"
+                    disabled={taskBusy}
+                    aria-label="Muat ulang"
+                  >
+                    <RefreshCw size={14} className={taskBusy ? "spin" : ""} aria-hidden />
+                  </button>
+                </div>
+                {taskBusy && !sortedTasks.length && (
+                  <p className="mop-empty" data-testid="mds-task-loading">Memuat tugas...</p>
+                )}
+                {taskErr && (
+                  <div className="mop-error" data-testid="mds-task-error">
+                    <p>{taskErr}</p>
+                    <button type="button" className="mop-btn-primary" onClick={onRefresh} data-testid="mds-task-retry">
+                      Coba Lagi
+                    </button>
+                  </div>
+                )}
+                {!taskBusy && !taskErr && sortedTasks.map((task) => (
+                  <MobileTaskCard
+                    key={task.task_id || task.order_id}
+                    task={task}
+                    workspaceId={selectedTask.id}
+                  />
+                ))}
+                {!taskBusy && !taskErr && !sortedTasks.length && (
+                  <p className="mop-empty" data-testid="mds-task-empty">Tidak ada tugas.</p>
+                )}
+              </div>
+            )}
+
+            {showTable && (
             <div className="mop-schedule-toolbar mop-ds-toolbar" data-testid="mobile-delivery-schedule-toolbar">
               <div className="mop-ops-quick" data-testid="mds-quick-filters">
                 {OPS_QUICK_FILTERS.map((f) => (
@@ -297,7 +415,7 @@ export default function MobileDeliverySchedulePage() {
               <button
                 type="button"
                 className="mop-btn-ghost"
-                onClick={() => setReloadKey((n) => n + 1)}
+                onClick={onRefresh}
                 title="Muat ulang"
                 data-testid="mds-refresh"
                 disabled={busy}
@@ -321,28 +439,29 @@ export default function MobileDeliverySchedulePage() {
                 </button>
               )}
             </div>
+            )}
 
-            {busy && (
+            {showTable && busy && (
               <p className="mop-empty" data-testid="mds-loading">Memuat Jadwal Pengiriman...</p>
             )}
-            {!busy && err && (
+            {showTable && !busy && err && (
               <div className="mop-error" data-testid="mds-error">
                 <p>Gagal memuat Jadwal Pengiriman.</p>
                 {err !== "Gagal memuat Jadwal Pengiriman." ? <p className="mop-schedule-error-detail">{err}</p> : null}
                 <button
                   type="button"
                   className="mop-btn-primary"
-                  onClick={() => setReloadKey((n) => n + 1)}
+                  onClick={onRefresh}
                   data-testid="mds-retry"
                 >
                   Coba Lagi
                 </button>
               </div>
             )}
-            {!busy && !err && rows.length === 0 && (
+            {showTable && !busy && !err && rows.length === 0 && (
               <p className="mop-empty" data-testid="mds-empty">Tidak ada jadwal pengiriman.</p>
             )}
-            {!busy && !err && rows.length > 0 && (
+            {showTable && !busy && !err && rows.length > 0 && (
               <div
                 className="mop-schedule-scroll production-sheet production-sheet-viewport"
                 data-testid="mds-scroll"
@@ -383,7 +502,7 @@ export default function MobileDeliverySchedulePage() {
                   <tbody>
                     {visible.map((r) => {
                       const badge = deliveryOpsBadge(r);
-                      const workHref = mobileScheduleWorkHref(r.id, hasPerm, "delivery");
+                      const workHref = mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId);
                       return (
                         <tr
                           key={r.id || r.order_number}
@@ -455,7 +574,7 @@ export default function MobileDeliverySchedulePage() {
                                         e.stopPropagation();
                                         persistScroll();
                                         navigateToOptimasiRute(navigate, meta.routeId, {
-                                          from: `${window.location.pathname}${window.location.search}`,
+                                          from: `${listPathname}${listSearch}`,
                                         });
                                       }}
                                     >
@@ -481,8 +600,8 @@ export default function MobileDeliverySchedulePage() {
                                 className="ghost sm"
                                 to={workHref}
                                 state={poNavStateFromList({
-                                  pathname: typeof window !== "undefined" ? window.location.pathname : "/m/delivery-schedule",
-                                  search: typeof window !== "undefined" ? window.location.search : "",
+                                  pathname: listPathname,
+                                  search: listSearch,
                                 })}
                                 data-testid={`mds-kerja-${r.order_number}`}
                                 onClick={(e) => {
