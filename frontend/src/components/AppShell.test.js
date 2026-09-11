@@ -158,4 +158,9 @@ describe("sidebar flyout interaction", () => {
     expect(shell).not.toMatch(/Pengaturan Hub/);
     expect(grid).toMatch(/to=\{item\.to\}/);
   });
+
+  test("authenticated shell mounts web floating notification bell once", () => {
+    expect(shell).toMatch(/import FloatingNotificationBell from "\.\/FloatingNotificationBell"/);
+    expect(shell).toMatch(/<FloatingNotificationBell \/>/);
+  });
 });

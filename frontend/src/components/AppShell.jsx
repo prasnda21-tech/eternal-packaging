@@ -8,6 +8,7 @@ import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { moduleFromPath } from "../lib/uiModule";
 import BrandMark from "./BrandMark";
+import FloatingNotificationBell from "./FloatingNotificationBell";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
 import WorkspaceTabs from "./WorkspaceTabs";
 import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
@@ -685,6 +686,7 @@ export default function AppShell() {
           <Outlet />
         </main>
       </div>
+      <FloatingNotificationBell />
     </div>
   );
 }

@@ -849,6 +849,24 @@ def build_router(deps):
         })
         await persist_order(order)
 
+        # Side-effect: in-app notifications for Designer/CRM.
+        # Must not fail or roll back the authoritative customer decision.
+        try:
+            from services.notifications import emit_customer_design_approval_notifications
+            await emit_customer_design_approval_notifications(
+                db,
+                order=order,
+                approval=rec,
+                decision="approved" if action == "approve" else "rejected",
+                logger=logger,
+            )
+        except Exception:
+            logger.exception(
+                "customer_design_approval_notification_hook_failed approval_id=%s action=%s",
+                rec.get("id"),
+                action,
+            )
+
         # Audit (jangan pernah tulis plaintext token)
         await audit_po(order, f"customer_approval.{action}",
                        {"email": None, "name": f"Customer: {signer_name}", "role": "customer"},

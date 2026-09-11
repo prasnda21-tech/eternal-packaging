@@ -1408,3 +1408,60 @@
   color: var(--mop-muted);
   padding: 16px 8px !important;
 }
+
+/* Minimal notification inbox */
+.mop-notif-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.mop-notif-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #d7e2e7;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+}
+.mop-notif-item.is-unread {
+  border-color: #1aa6b7;
+  background: #f3fbfc;
+}
+.mop-notif-item-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.mop-notif-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #0f4c5c;
+}
+.mop-notif-badge--approved { color: #0f7a4a; }
+.mop-notif-badge--rejected { color: #a11919; }
+.mop-notif-time {
+  font-size: 11px;
+  color: #6b7c86;
+}
+.mop-notif-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #102027;
+}
+.mop-notif-body {
+  font-size: 13px;
+  color: #334851;
+  line-height: 1.35;
+}
+.mop-notif-meta {
+  font-size: 12px;
+  color: #5a6d76;
+}

@@ -9559,6 +9559,14 @@ register_chat_routes(
     Depends=Depends,
     user_permissions=user_permissions,
 )
+from services.notification_http import register_notification_routes
+register_notification_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=_require_perm,
+    Depends=Depends,
+)
 register_general_journal_routes(
     api_router,
     get_db=lambda: db,
@@ -11121,6 +11129,8 @@ async def seed():
     await _general_journal_ensure_indexes(db)
     await _opening_balance_ensure_indexes(db)
     await ensure_chat_indexes(db)
+    from services.notification_indexes import ensure_indexes as ensure_notification_indexes
+    await ensure_notification_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()
