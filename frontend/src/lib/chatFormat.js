@@ -113,3 +113,62 @@ export function roomDisplayTitle(room, { members = [], meId } = {}) {
 
 export const CHAT_ACCEPT =
   "image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx";
+
+/** Image MIME types accepted for chat paste/upload (subset of CHAT_ACCEPT). */
+export const CHAT_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+export function isAcceptedChatImageMime(ct) {
+  return CHAT_IMAGE_MIMES.has(String(ct || "").toLowerCase());
+}
+
+/**
+ * Extract image File objects from a ClipboardEvent's clipboardData.
+ * Does not touch text items — callers should not preventDefault when only
+ * attaching images alongside normal text paste.
+ */
+export function extractClipboardImageFiles(clipboardData) {
+  const items = clipboardData?.items;
+  if (!items || !items.length) return [];
+  const files = [];
+  const seen = new Set();
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (!item || item.kind !== "file") continue;
+    const type = String(item.type || "").toLowerCase();
+    if (!isAcceptedChatImageMime(type)) continue;
+    const file = item.getAsFile?.();
+    if (!file) continue;
+    const key = `${file.type}|${file.size}|${file.lastModified}|${file.name || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const ext = type === "image/jpeg" ? "jpg" : type === "image/webp" ? "webp" : "png";
+    const rawName = String(file.name || "").trim();
+    const name = rawName && rawName !== "image.png" && rawName !== "image.jpg"
+      ? rawName
+      : `clipboard-${Date.now()}-${files.length + 1}.${ext}`;
+    files.push(rawName === name ? file : new File([file], name, { type: file.type, lastModified: file.lastModified || Date.now() }));
+  }
+  return files;
+}
+
+/** Compact quote line for reply composer / bubble. */
+export function replyQuotePreview(messageOrReply) {
+  if (!messageOrReply) return { sender: "", text: "Pesan tidak tersedia", unavailable: true };
+  if (messageOrReply.unavailable || messageOrReply.deleted || messageOrReply.deleted_at) {
+    return {
+      sender: memberDisplayName({ display_name: messageOrReply.sender_name, name: messageOrReply.sender_name }),
+      text: "Pesan tidak tersedia",
+      unavailable: true,
+    };
+  }
+  const sender = memberDisplayName({
+    display_name: messageOrReply.sender_name,
+    name: messageOrReply.sender_name,
+  });
+  if (messageOrReply.content_preview != null) {
+    return { sender, text: messageOrReply.content_preview || (messageOrReply.has_image ? "[Gambar]" : ""), unavailable: false };
+  }
+  const text = previewText(messageOrReply);
+  const fallback = text || (messageOrReply.has_image ? "[Gambar]" : "");
+  return { sender, text: fallback || "—", unavailable: false };
+}

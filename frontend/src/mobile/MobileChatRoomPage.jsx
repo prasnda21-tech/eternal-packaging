@@ -37,12 +37,15 @@ export default function MobileChatRoomPage() {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState([]);
+  const [replyTo, setReplyTo] = useState(null);
   const [workTags, setWorkTags] = useState([]);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const [wsStatus, setWsStatus] = useState("connecting");
   const [showWorkPicker, setShowWorkPicker] = useState(false);
+  const [lightbox, setLightbox] = useState(null);
   const fileInputRef = useRef(null);
+  const messagesRef = useRef(null);
   const seenIds = useRef(new Set());
 
   const searchWorkOrders = useCallback(async (q) => {
@@ -108,6 +111,17 @@ export default function MobileChatRoomPage() {
 
   const attachmentUrl = (att) => api.chatAttachmentDownloadUrl(att.attachment_id || att.id);
 
+  const jumpToReply = (messageId) => {
+    const root = messagesRef.current;
+    if (!root || !messageId) return;
+    const safeId = String(messageId).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const el = root.querySelector(`[data-message-id="${safeId}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("is-flash");
+    window.setTimeout(() => el.classList.remove("is-flash"), 1200);
+  };
+
   const send = async () => {
     if (sending) return;
     const content = draft;
@@ -115,18 +129,21 @@ export default function MobileChatRoomPage() {
     setSending(true);
     setSendError("");
     const clientMessageId = newClientMessageId();
+    const replyId = replyTo?.message_id || replyTo?.id || null;
     try {
       const attachmentIds = [];
       for (const file of pendingFiles) {
         const up = await api.chatUploadAttachment(roomId, file);
         attachmentIds.push(up.attachment_id || up.id);
       }
-      const msg = await api.chatSendMessage(roomId, {
+      const payload = {
         content,
         client_message_id: clientMessageId,
         work_refs: workTags,
         attachment_ids: attachmentIds,
-      });
+      };
+      if (replyId) payload.reply_to_message_id = replyId;
+      const msg = await api.chatSendMessage(roomId, payload);
       const normalized = normalizeMessage(msg?.message || msg);
       if (!seenIds.current.has(normalized.message_id)) {
         seenIds.current.add(normalized.message_id);
@@ -135,6 +152,7 @@ export default function MobileChatRoomPage() {
       setDraft("");
       setPendingFiles([]);
       setWorkTags([]);
+      setReplyTo(null);
     } catch (err) {
       setSendError(err?.response?.data?.detail || "Gagal mengirim. Draft tetap ada.");
     } finally {
@@ -153,7 +171,7 @@ export default function MobileChatRoomPage() {
           <div className="chat-ws-status">{wsStatus}</div>
         </div>
       </header>
-      <div className="chat-messages" data-testid="mobile-chat-messages">
+      <div className="chat-messages" data-testid="mobile-chat-messages" ref={messagesRef}>
         {messages.map((m) => (
           <MessageBubble
             key={m.message_id}
@@ -162,7 +180,13 @@ export default function MobileChatRoomPage() {
             attachmentUrl={attachmentUrl}
             mobile
             canModerate={canModerate}
+            onReply={(msg) => setReplyTo(msg)}
+            onJumpToReply={jumpToReply}
             onEdit={async (message) => {
+              if (message?.type === "preview") {
+                setLightbox(message.attachment);
+                return;
+              }
               if (!canEditMessage(message)) return;
               const next = window.prompt("Edit pesan", message.content || "");
               if (next == null) return;
@@ -192,6 +216,10 @@ export default function MobileChatRoomPage() {
         onSend={send}
         sending={sending}
         onPickFiles={(files) => setPendingFiles((cur) => [...cur, ...files].slice(0, 5))}
+        onRemovePendingFile={(idx) => setPendingFiles((cur) => cur.filter((_, i) => i !== idx))}
+        pendingFiles={pendingFiles}
+        replyTo={replyTo}
+        onCancelReply={() => setReplyTo(null)}
         onTagWork={() => setShowWorkPicker(true)}
         fileInputRef={fileInputRef}
         accept={CHAT_ACCEPT}
@@ -207,6 +235,11 @@ export default function MobileChatRoomPage() {
           setShowWorkPicker(false);
         }}
       />
+      {lightbox ? (
+        <div className="lightbox" data-testid="chat-lightbox" onClick={() => setLightbox(null)}>
+          <img src={attachmentUrl(lightbox)} alt={lightbox.original_filename || "gambar"} />
+        </div>
+      ) : null}
     </div>
   );
 }

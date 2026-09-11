@@ -474,3 +474,106 @@ async def test_removed_member_unsubscribed_from_room_events():
     await manager.broadcast_to_room(room_id, {"type": "message.created", "probe": True})
     assert not any(e.get("probe") for e in ws.sent)
     await manager.disconnect(ws)
+
+
+@pytest.mark.anyio
+async def test_reply_same_room_accepted_and_enriches_preview():
+    a = await _insert_user(_user("admin"))
+    b = await _insert_user(_user("helper", perms=["chat.use"]))
+    async with await client_for(a) as c:
+        room = (await c.post("/api/chat/rooms/dm", json={"peer_user_id": b["id"]})).json()
+        first = await c.post(f"/api/chat/rooms/{room['id']}/messages", json={"content": "Tolong cek qty packing"})
+        assert first.status_code == 201, first.text
+        mid = first.json()["id"]
+        reply = await c.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "Baik, saya cek.", "reply_to_message_id": mid},
+        )
+        assert reply.status_code == 201, reply.text
+        body = reply.json()
+        assert body["reply_to_message_id"] == mid
+        assert body["reply_to"]["unavailable"] is False
+        assert body["reply_to"]["content_preview"] == "Tolong cek qty packing"
+        assert "Tolong" in (body["reply_to"].get("content_preview") or "")
+        stored = await server.db[COLL_MESSAGES].find_one({"id": body["id"]}, {"_id": 0})
+        assert stored["reply_to_message_id"] == mid
+        assert "reply_to" not in stored  # only id persisted; preview is read-model
+        listed = await c.get(f"/api/chat/rooms/{room['id']}/messages")
+        msgs = listed.json()["messages"]
+        legacy = next(m for m in msgs if m["id"] == mid)
+        assert legacy.get("reply_to_message_id") in (None, "")
+        answered = next(m for m in msgs if m["id"] == body["id"])
+        assert answered["reply_to"]["message_id"] == mid
+
+
+@pytest.mark.anyio
+async def test_reply_cross_conversation_and_invalid_id_rejected():
+    a = await _insert_user(_user("admin"))
+    b = await _insert_user(_user("helper", perms=["chat.use"]))
+    c_user = await _insert_user(_user("driver", perms=["chat.use"]))
+    async with await client_for(a) as c:
+        room_ab = (await c.post("/api/chat/rooms/dm", json={"peer_user_id": b["id"]})).json()
+        room_ac = (await c.post("/api/chat/rooms/dm", json={"peer_user_id": c_user["id"]})).json()
+        msg_ab = await c.post(f"/api/chat/rooms/{room_ab['id']}/messages", json={"content": "secret-ab"})
+        mid = msg_ab.json()["id"]
+        cross = await c.post(
+            f"/api/chat/rooms/{room_ac['id']}/messages",
+            json={"content": "cross", "reply_to_message_id": mid},
+        )
+        assert cross.status_code == 400
+        assert "percakapan lain" in (cross.json().get("detail") or "").lower() or cross.status_code == 400
+        invalid = await c.post(
+            f"/api/chat/rooms/{room_ab['id']}/messages",
+            json={"content": "x", "reply_to_message_id": "no-such-message"},
+        )
+        assert invalid.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_reply_to_deleted_message_shows_unavailable_preview():
+    a = await _insert_user(_user("admin"))
+    b = await _insert_user(_user("helper", perms=["chat.use"]))
+    async with await client_for(a) as c:
+        room = (await c.post("/api/chat/rooms/dm", json={"peer_user_id": b["id"]})).json()
+        first = await c.post(f"/api/chat/rooms/{room['id']}/messages", json={"content": "akan dihapus"})
+        mid = first.json()["id"]
+        await c.delete(f"/api/chat/messages/{mid}")
+        reply = await c.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "masih reply", "reply_to_message_id": mid},
+        )
+        assert reply.status_code == 201, reply.text
+        assert reply.json()["reply_to"]["unavailable"] is True
+        assert reply.json()["reply_to"].get("content_preview") in (None, "")
+
+
+@pytest.mark.anyio
+async def test_image_attachment_metadata_not_base64_in_message():
+    a = await _insert_user(_user("admin"))
+    b = await _insert_user(_user("helper", perms=["chat.use"]))
+    # Minimal valid PNG header + IHDR chunk-ish bytes accepted by magic checks
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    async with await client_for(a) as c:
+        room = (await c.post("/api/chat/rooms/dm", json={"peer_user_id": b["id"]})).json()
+        up = await c.post(
+            f"/api/chat/rooms/{room['id']}/attachments",
+            files={"file": ("shot.png", png, "image/png")},
+        )
+        assert up.status_code == 201, up.text
+        aid = up.json()["attachment_id"]
+        msg = await c.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "lihat", "attachment_ids": [aid]},
+        )
+        assert msg.status_code == 201, msg.text
+        body = msg.json()
+        raw = await server.db[COLL_MESSAGES].find_one({"id": body["id"]}, {"_id": 0})
+        blob = str(raw)
+        assert "data:image" not in blob
+        assert "base64," not in blob
+        assert raw["attachments"][0]["attachment_id"] == aid
+        assert raw["attachments"][0].get("original_filename") == "shot.png"

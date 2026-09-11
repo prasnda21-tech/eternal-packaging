@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { workContextHref, workContextLabel } from "../../lib/chatWorkLinks";
-import { formatBytes, isImageMime, memberDisplayName, memberRoleLabel, roomInitials } from "../../lib/chatFormat";
+import {
+  extractClipboardImageFiles,
+  formatBytes,
+  isImageMime,
+  memberDisplayName,
+  memberRoleLabel,
+  replyQuotePreview,
+  roomInitials,
+} from "../../lib/chatFormat";
 
 export function WorkContextCard({ workRef, mobile = false }) {
   const snap = workRef?.snapshot || workRef || {};
@@ -60,6 +68,25 @@ export function AttachmentCard({ att, onOpen, downloadUrl }) {
   );
 }
 
+export function ReplyQuote({ reply, onJump }) {
+  const quote = replyQuotePreview(reply);
+  const mid = reply?.message_id || reply?.id;
+  return (
+    <button
+      type="button"
+      className={`chat-reply-quote${quote.unavailable ? " is-unavailable" : ""}`}
+      data-testid="chat-reply-quote"
+      data-reply-to={mid || ""}
+      onClick={() => {
+        if (mid && onJump) onJump(mid);
+      }}
+    >
+      <span className="chat-reply-quote-sender">{quote.sender || "Pesan"}</span>
+      <span className="chat-reply-quote-text">{quote.text}</span>
+    </button>
+  );
+}
+
 export function MessageBubble({
   message,
   self,
@@ -67,10 +94,15 @@ export function MessageBubble({
   mobile,
   onEdit,
   onDelete,
+  onReply,
+  onJumpToReply,
   canModerate,
 }) {
   const deleted = !!(message.deleted || message.deleted_at);
   const edited = !!(message.edited_at && !deleted);
+  const replyMeta = message.reply_to || (message.reply_to_message_id
+    ? { message_id: message.reply_to_message_id, unavailable: true }
+    : null);
   return (
     <div
       className={`chat-bubble${self ? " is-self" : ""}${deleted ? " is-deleted" : ""}`}
@@ -86,6 +118,7 @@ export function MessageBubble({
         <div className="chat-bubble-deleted" data-testid="chat-message-deleted">Pesan dihapus</div>
       ) : (
         <>
+          {replyMeta ? <ReplyQuote reply={replyMeta} onJump={onJumpToReply} /> : null}
           {message.content ? <div className="chat-bubble-text">{message.content}</div> : null}
           {(message.work_refs || []).map((ref, idx) => (
             <WorkContextCard key={`${ref.order_id}-${idx}`} workRef={ref} mobile={mobile} />
@@ -103,16 +136,28 @@ export function MessageBubble({
       <div className="chat-bubble-foot">
         <span>{message.created_at_label || ""}</span>
         {edited ? <span data-testid="chat-edited-label">Diedit</span> : null}
-        {self && !deleted ? (
+        {!deleted ? (
           <span className="chat-bubble-actions">
-            <button type="button" className="chat-btn chat-btn-ghost" data-testid="chat-edit-btn" onClick={() => onEdit?.(message)}>Edit</button>
-            <button type="button" className="chat-btn chat-btn-danger" data-testid="chat-delete-btn" onClick={() => onDelete?.(message)}>Hapus</button>
+            <button
+              type="button"
+              className="chat-btn chat-btn-ghost chat-reply-btn"
+              data-testid="chat-reply-btn"
+              onClick={() => onReply?.(message)}
+            >
+              Balas
+            </button>
+            {self ? (
+              <>
+                <button type="button" className="chat-btn chat-btn-ghost" data-testid="chat-edit-btn" onClick={() => onEdit?.(message)}>Edit</button>
+                <button type="button" className="chat-btn chat-btn-danger" data-testid="chat-delete-btn" onClick={() => onDelete?.(message)}>Hapus</button>
+              </>
+            ) : null}
+            {!self && canModerate ? (
+              <button type="button" className="chat-btn chat-btn-danger" data-testid="chat-moderate-delete" onClick={() => onDelete?.(message)}>
+                Moderasi hapus
+              </button>
+            ) : null}
           </span>
-        ) : null}
-        {!self && canModerate && !deleted ? (
-          <button type="button" className="chat-btn chat-btn-danger" data-testid="chat-moderate-delete" onClick={() => onDelete?.(message)}>
-            Moderasi hapus
-          </button>
         ) : null}
       </div>
     </div>
@@ -165,6 +210,70 @@ export function MemberListItem({ member }) {
   );
 }
 
+export function PendingFilePreview({ files, onRemove }) {
+  if (!files?.length) return null;
+  return (
+    <div className="chat-pending-files" data-testid="chat-pending-files">
+      {files.map((file, idx) => {
+        const isImg = isImageMime(file.type);
+        const canThumb = isImg && typeof URL !== "undefined" && typeof URL.createObjectURL === "function";
+        const url = canThumb ? URL.createObjectURL(file) : null;
+        return (
+          <div key={`${file.name}-${file.size}-${idx}`} className="chat-pending-file" data-testid="chat-pending-file">
+            {url ? (
+              <img
+                src={url}
+                alt=""
+                className="chat-pending-thumb"
+                onLoad={(e) => {
+                  try { URL.revokeObjectURL(e.currentTarget.src); } catch { /* ignore */ }
+                }}
+              />
+            ) : (
+              <span className="chat-pending-file-icon" aria-hidden>FILE</span>
+            )}
+            <span className="chat-pending-file-meta">
+              <strong>{file.name || "lampiran"}</strong>
+              <em>{file.type || "file"} · {formatBytes(file.size)}</em>
+            </span>
+            <button
+              type="button"
+              className="chat-btn chat-btn-ghost"
+              data-testid="chat-pending-remove"
+              aria-label="Hapus lampiran"
+              onClick={() => onRemove?.(idx)}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function ReplyComposerBar({ replyTo, onCancel }) {
+  if (!replyTo) return null;
+  const quote = replyQuotePreview(replyTo.reply_to || replyTo);
+  return (
+    <div className="chat-reply-bar" data-testid="chat-reply-bar">
+      <div className="chat-reply-bar-body">
+        <strong>Balas ke {quote.sender || "pesan"}</strong>
+        <span>{quote.text}</span>
+      </div>
+      <button
+        type="button"
+        className="chat-btn chat-btn-ghost"
+        data-testid="chat-reply-cancel"
+        aria-label="Batalkan balasan"
+        onClick={onCancel}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 export function ChatComposer({
   draft,
   setDraft,
@@ -176,8 +285,13 @@ export function ChatComposer({
   onPickMention,
   fileInputRef,
   accept,
+  replyTo,
+  onCancelReply,
+  pendingFiles,
+  onRemovePendingFile,
 }) {
   const taRef = useRef(null);
+  const pasteGuardRef = useRef("");
 
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -186,8 +300,23 @@ export function ChatComposer({
     }
   };
 
+  const onPaste = (e) => {
+    const files = extractClipboardImageFiles(e.clipboardData);
+    if (!files.length) return;
+    const stamp = `${files.map((f) => `${f.size}:${f.type}:${f.lastModified}`).join("|")}`;
+    if (pasteGuardRef.current === stamp) return;
+    pasteGuardRef.current = stamp;
+    // Keep default text paste; only attach image draft(s).
+    onPickFiles?.(files);
+    window.setTimeout(() => {
+      if (pasteGuardRef.current === stamp) pasteGuardRef.current = "";
+    }, 400);
+  };
+
   return (
     <div className="chat-composer" data-testid="chat-composer">
+      <ReplyComposerBar replyTo={replyTo} onCancel={onCancelReply} />
+      <PendingFilePreview files={pendingFiles} onRemove={onRemovePendingFile} />
       {mentionSuggestions?.length ? (
         <div className="chat-mention-list" data-testid="chat-mention-list">
           {mentionSuggestions.map((m) => (
@@ -222,6 +351,7 @@ export function ChatComposer({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         rows={2}
         placeholder="Tulis pesan… (Enter kirim, Shift+Enter baris baru)"
         data-testid="chat-composer-input"

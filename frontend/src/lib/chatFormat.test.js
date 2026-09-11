@@ -1,8 +1,11 @@
 import {
   canEditMessage,
+  extractClipboardImageFiles,
+  isAcceptedChatImageMime,
   memberDisplayName,
   memberRoleLabel,
   previewText,
+  replyQuotePreview,
   roomDisplayTitle,
   roomTypeFilter,
   roomInitials,
@@ -52,6 +55,26 @@ describe("chatFormat", () => {
     expect(roomDisplayTitle({ type: "system_group", name: "Operator" }, { meId: "u1" })).toBe("Operator");
     expect(roomDisplayTitle({ type: "custom_group", name: "Ops Tim" }, { meId: "u1" })).toBe("Ops Tim");
     expect(roomDisplayTitle({ type: "work", name: "PO-1 · Line" }, { meId: "u1" })).toBe("PO-1 · Line");
+  });
+
+  test("clipboard image extraction accepts png/jpeg/webp only once", () => {
+    expect(isAcceptedChatImageMime("image/png")).toBe(true);
+    expect(isAcceptedChatImageMime("image/gif")).toBe(false);
+    const png = new File([new Uint8Array([1, 2, 3])], "a.png", { type: "image/png" });
+    const items = [
+      { kind: "file", type: "image/png", getAsFile: () => png },
+      { kind: "file", type: "image/png", getAsFile: () => png },
+      { kind: "string", type: "text/plain", getAsFile: () => null },
+    ];
+    const files = extractClipboardImageFiles({ items });
+    expect(files).toHaveLength(1);
+    expect(files[0].type).toBe("image/png");
+  });
+
+  test("reply quote preview fallback", () => {
+    expect(replyQuotePreview({ unavailable: true }).text).toBe("Pesan tidak tersedia");
+    expect(replyQuotePreview({ sender_name: "Budi", content_preview: "halo", unavailable: false }).sender).toBe("Budi");
+    expect(replyQuotePreview({ sender_name: "Budi", has_image: true, content_preview: "" }).text).toBe("[Gambar]");
   });
 });
 

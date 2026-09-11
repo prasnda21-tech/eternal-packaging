@@ -486,6 +486,148 @@ describe("Chat web UI", () => {
     await flush();
     expect(container.querySelector('[data-testid="chat-new-group"]')).toBeTruthy();
   });
+
+  test("mobile list mode uses is-list and keeps + Baru accessible", async () => {
+    mockRoomId = undefined;
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    const page = container.querySelector('[data-testid="chat-page"]');
+    expect(page?.className).toMatch(/is-list/);
+    expect(container.querySelector('[data-testid="chat-inbox"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-new-btn"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-room-row"]')).toBeTruthy();
+  });
+
+  test("selecting room navigates and back returns to list", async () => {
+    mockRoomId = undefined;
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="chat-room-row"]')?.click();
+    });
+    expect(mockNavigate).toHaveBeenCalled();
+    const navArg = mockNavigate.mock.calls.find((c) => String(c[0] || "").includes("/chat/"));
+    expect(navArg).toBeTruthy();
+
+    mockRoomId = "r1";
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-page"]')?.className).not.toMatch(/is-list/);
+    expect(container.querySelector('[data-testid="chat-back-btn"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="chat-back-btn"]')?.click();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/chat", expect.anything());
+  });
+
+  test("Balas activates reply bar; cancel clears reply only", async () => {
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    const input = container.querySelector('[data-testid="chat-composer-input"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(input, "draft teks");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="chat-reply-btn"]')?.click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-reply-bar"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-reply-bar"]')?.textContent).toMatch(/Balas/);
+    await act(async () => {
+      container.querySelector('[data-testid="chat-reply-cancel"]')?.click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-reply-bar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-composer-input"]').value).toBe("draft teks");
+  });
+
+  test("send includes reply_to_message_id and clears reply state", async () => {
+    api.chatSendMessage.mockResolvedValueOnce({
+      id: "m-reply",
+      message_id: "m-reply",
+      room_id: "r1",
+      sender_user_id: "u1",
+      content: "Ok",
+      sequence: 3,
+      reply_to_message_id: "m1",
+      reply_to: { message_id: "m1", sender_name: "Peer", content_preview: "Halo", unavailable: false },
+      created_at: "2026-09-10T01:02:00Z",
+    });
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="chat-reply-btn"]')?.click();
+    });
+    const input = container.querySelector('[data-testid="chat-composer-input"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(input, "Ok");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      container.querySelector('[data-testid="chat-send-btn"]').click();
+    });
+    await flush();
+    expect(api.chatSendMessage.mock.calls.at(-1)[1].reply_to_message_id).toBe("m1");
+    expect(container.querySelector('[data-testid="chat-reply-bar"]')).toBeNull();
+  });
+
+  test("reply quote renders and missing original falls back", () => {
+    act(() => {
+      root.render(
+        <MessageBubble
+          message={{
+            message_id: "m2",
+            content: "jawab",
+            reply_to: { message_id: "gone", unavailable: true },
+          }}
+          self={false}
+          attachmentUrl={() => "#"}
+        />,
+      );
+    });
+    expect(container.querySelector('[data-testid="chat-reply-quote"]')?.textContent).toMatch(/Pesan tidak tersedia/);
+  });
+
+  test("paste image creates pending preview without immediate send", async () => {
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+    await flush();
+    const input = container.querySelector('[data-testid="chat-composer-input"]');
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "clip.png", { type: "image/png" });
+    const item = {
+      kind: "file",
+      type: "image/png",
+      getAsFile: () => file,
+    };
+    await act(async () => {
+      const ev = new Event("paste", { bubbles: true });
+      Object.defineProperty(ev, "clipboardData", {
+        value: { items: [item], getData: () => "" },
+      });
+      input.dispatchEvent(ev);
+    });
+    await flush();
+    expect(api.chatSendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="chat-pending-files"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-pending-file"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="chat-pending-remove"]')?.click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="chat-pending-files"]')).toBeNull();
+  });
 });
 
 describe("Chat PWA", () => {

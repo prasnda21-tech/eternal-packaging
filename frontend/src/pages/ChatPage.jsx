@@ -26,6 +26,7 @@ import {
 } from "../components/chat/ChatShared";
 import "./chat.css";
 
+
 const FILTERS = [
   { id: "all", label: "Semua" },
   { id: "personal", label: "Personal" },
@@ -70,6 +71,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState([]);
+  const [replyTo, setReplyTo] = useState(null);
   const [workTags, setWorkTags] = useState([]);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
@@ -143,7 +145,16 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (routeRoomId) setActiveRoomId(routeRoomId);
+    else setActiveRoomId(null);
   }, [routeRoomId]);
+
+  useEffect(() => {
+    setReplyTo(null);
+    setPendingFiles([]);
+    setDraft("");
+    setWorkTags([]);
+    setSendError("");
+  }, [activeRoomId]);
 
   useEffect(() => {
     if (!activeRoomId) {
@@ -281,7 +292,23 @@ export default function ChatPage() {
     navigate(`/chat/${encodeURIComponent(id)}`, { replace: false });
   };
 
+  const backToList = () => {
+    setActiveRoomId(null);
+    navigate("/chat", { replace: false });
+  };
+
   const attachmentUrl = (att) => api.chatAttachmentDownloadUrl(att.attachment_id || att.id);
+
+  const jumpToReply = (messageId) => {
+    const root = messagesRef.current;
+    if (!root || !messageId) return;
+    const safeId = String(messageId).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const el = root.querySelector(`[data-message-id="${safeId}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("is-flash");
+    window.setTimeout(() => el.classList.remove("is-flash"), 1200);
+  };
 
   const send = async () => {
     if (!activeRoomId || sending) return;
@@ -290,18 +317,21 @@ export default function ChatPage() {
     setSending(true);
     setSendError("");
     const clientMessageId = newClientMessageId();
+    const replyId = replyTo?.message_id || replyTo?.id || null;
     try {
       const attachmentIds = [];
       for (const file of pendingFiles) {
         const up = await api.chatUploadAttachment(activeRoomId, file);
         attachmentIds.push(up.attachment_id || up.id);
       }
-      const msg = await api.chatSendMessage(activeRoomId, {
+      const payload = {
         content,
         client_message_id: clientMessageId,
         work_refs: workTags,
         attachment_ids: attachmentIds,
-      });
+      };
+      if (replyId) payload.reply_to_message_id = replyId;
+      const msg = await api.chatSendMessage(activeRoomId, payload);
       const normalized = normalizeMessage(msg?.message || msg);
       if (!seenIds.current.has(normalized.message_id)) {
         seenIds.current.add(normalized.message_id);
@@ -310,6 +340,7 @@ export default function ChatPage() {
       setDraft("");
       setPendingFiles([]);
       setWorkTags([]);
+      setReplyTo(null);
       loadRooms().catch(() => {});
     } catch (err) {
       setSendError(err?.response?.data?.detail || "Gagal mengirim. Draft tetap ada.");
@@ -350,7 +381,10 @@ export default function ChatPage() {
   };
 
   return (
-    <div className={`chat-page${infoOpen && activeRoomId ? " has-info" : ""}`} data-testid="chat-page">
+    <div
+      className={`chat-page${infoOpen && activeRoomId ? " has-info" : ""}${!activeRoomId ? " is-list" : ""}`}
+      data-testid="chat-page"
+    >
       <aside className="chat-inbox" data-testid="chat-inbox">
         <div className="chat-inbox-head" data-testid="chat-inbox-head">
           <h1>Chat</h1>
@@ -377,14 +411,28 @@ export default function ChatPage() {
           ))}
         </div>
         <div className="chat-room-list">
-          {filteredRooms.map((room) => (
-            <RoomListItem
-              key={room.room_id}
-              room={room}
-              active={room.room_id === activeRoomId}
-              onSelect={selectRoom}
-            />
-          ))}
+          {filteredRooms.length === 0 ? (
+            <div className="chat-inbox-empty" data-testid="chat-inbox-empty">
+              <p>Belum ada percakapan.</p>
+              <button
+                type="button"
+                className="chat-btn chat-btn-primary"
+                data-testid="chat-empty-new-btn"
+                onClick={() => setShowNew(true)}
+              >
+                Chat Baru
+              </button>
+            </div>
+          ) : (
+            filteredRooms.map((room) => (
+              <RoomListItem
+                key={room.room_id}
+                room={room}
+                active={room.room_id === activeRoomId}
+                onSelect={selectRoom}
+              />
+            ))
+          )}
         </div>
       </aside>
 
@@ -392,9 +440,19 @@ export default function ChatPage() {
         {activeRoomId ? (
           <>
             <header className="chat-conv-head">
-              <div>
-                <strong data-testid="chat-conversation-title">{conversationTitle}</strong>
-                <span className="chat-ws-status" data-testid="chat-ws-status">{wsStatus}</span>
+              <div className="chat-conv-head-main">
+                <button
+                  type="button"
+                  className="chat-btn chat-btn-secondary chat-back-btn"
+                  data-testid="chat-back-btn"
+                  onClick={backToList}
+                >
+                  ← Kembali
+                </button>
+                <div>
+                  <strong data-testid="chat-conversation-title">{conversationTitle}</strong>
+                  <span className="chat-ws-status" data-testid="chat-ws-status">{wsStatus}</span>
+                </div>
               </div>
               <button
                 type="button"
@@ -419,6 +477,8 @@ export default function ChatPage() {
                   attachmentUrl={attachmentUrl}
                   onEdit={onEdit}
                   onDelete={onDelete}
+                  onReply={(msg) => setReplyTo(msg)}
+                  onJumpToReply={jumpToReply}
                   canModerate={canModerate}
                 />
               ))}
@@ -433,9 +493,6 @@ export default function ChatPage() {
                 ))}
               </div>
             ) : null}
-            {pendingFiles.length ? (
-              <div className="chat-pending-files">{pendingFiles.map((f) => f.name).join(", ")}</div>
-            ) : null}
             {sendError ? <div className="chat-error" data-testid="chat-send-error">{sendError}</div> : null}
             <ChatComposer
               draft={draft}
@@ -443,6 +500,10 @@ export default function ChatPage() {
               onSend={send}
               sending={sending}
               onPickFiles={(files) => setPendingFiles((cur) => [...cur, ...files].slice(0, 5))}
+              onRemovePendingFile={(idx) => setPendingFiles((cur) => cur.filter((_, i) => i !== idx))}
+              pendingFiles={pendingFiles}
+              replyTo={replyTo}
+              onCancelReply={() => setReplyTo(null)}
               onTagWork={() => { setWorkPickerMode("tag"); setShowWorkPicker(true); }}
               mentionSuggestions={mentionSuggestions}
               onPickMention={(m) => {
@@ -453,7 +514,9 @@ export default function ChatPage() {
             />
           </>
         ) : (
-          <div className="chat-empty">Pilih percakapan atau buat chat baru.</div>
+          <div className="chat-empty" data-testid="chat-empty-desktop">
+            Pilih percakapan atau buat chat baru.
+          </div>
         )}
       </section>
 

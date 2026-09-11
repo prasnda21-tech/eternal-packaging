@@ -52,6 +52,7 @@ class MessagePayload(BaseModel):
     mentions: list[dict] = Field(default_factory=list)
     work_refs: list[dict] = Field(default_factory=list)
     attachment_ids: list[str] = Field(default_factory=list)
+    reply_to_message_id: Optional[str] = None
 
 
 class EditPayload(BaseModel):
