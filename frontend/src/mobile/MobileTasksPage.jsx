@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
@@ -11,17 +12,33 @@ import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 export default function MobileTasksPage() {
   const { user, hasPerm } = useAuth();
   const workspaces = permittedMobileWorkspaces(hasPerm);
-  const [wsId, setWsId] = useState(workspaces[0]?.id || "");
+  const [params, setParams] = useSearchParams();
+  const requestedWs = params.get("ws") || "";
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const selected = workspaces.find((w) => w.id === wsId) || workspaces[0] || null;
+  const selected = useMemo(() => {
+    if (!workspaces.length) return null;
+    return workspaces.find((w) => w.id === requestedWs) || workspaces[0];
+  }, [workspaces, requestedWs]);
 
+  // Keep Pengiriman / workspace selection in the URL so browser Back restores it.
   useEffect(() => {
     if (!workspaces.length) return;
-    if (!workspaces.some((w) => w.id === wsId)) setWsId(workspaces[0].id);
-  }, [workspaces, wsId]);
+    const nextId = selected?.id || workspaces[0].id;
+    if (params.get("ws") === nextId) return;
+    const next = new URLSearchParams(params);
+    next.set("ws", nextId);
+    setParams(next, { replace: true });
+  }, [workspaces, selected?.id, params, setParams]);
+
+  const setWsId = (id) => {
+    if (!id) return;
+    const next = new URLSearchParams(params);
+    next.set("ws", id);
+    setParams(next, { replace: true });
+  };
 
   const load = async (division) => {
     if (!division) return;

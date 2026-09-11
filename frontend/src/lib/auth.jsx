@@ -3,6 +3,8 @@ import api from "./api";
 import { loginThenLoadUser } from "./authSession";
 import { clearCashBankWorkspaceTabs } from "./cashBankWorkspace";
 import { clearGlobalWorkspaceTabs } from "./globalWorkspace";
+import { clearMobileOpsSessionForUser } from "./mobileOpsSession";
+import { clearPoListReturnForUser, storageUserKey } from "./poListReturn";
 import { clearSalesWorkspaceTabs } from "./salesWorkspace";
 
 const AuthContext = createContext(null);
@@ -51,6 +53,8 @@ export function AuthProvider({ children }) {
       clearCashBankWorkspaceTabs(null);
       clearSalesWorkspaceTabs(previous);
       clearSalesWorkspaceTabs(null);
+      clearPoListReturnForUser(previous);
+      clearMobileOpsSessionForUser(storageUserKey(previous));
       setUser(null);
     }
   };

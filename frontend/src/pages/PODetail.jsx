@@ -37,6 +37,7 @@ import { openPaymentProofSource, paymentProofIsImage, paymentProofIsPdf, payment
 import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
+import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
 import LineProductReplaceControl from "../components/LineProductReplaceControl";
 
 export default function PODetail() {
@@ -455,7 +456,21 @@ export default function PODetail() {
           <h1 className="po-hero-customer" data-testid="detail-customer-name">
             {order.customer || "Customer belum tersedia"}
           </h1>
-          <button type="button" className="ghost sm po-hero-back" onClick={() => navigate(-1)} data-testid="back-button">
+          <button
+            type="button"
+            className="ghost sm po-hero-back"
+            onClick={() => {
+              const target = resolvePoBackTarget({
+                location,
+                userId: storageUserKey(user),
+                orderId: id,
+                mobileFallback: "/m/tasks",
+                webFallback: "/",
+              });
+              navigate(target);
+            }}
+            data-testid="back-button"
+          >
             <ArrowLeft size={16} /> Kembali
           </button>
         </div>

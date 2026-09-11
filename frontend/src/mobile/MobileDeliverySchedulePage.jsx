@@ -41,9 +41,15 @@ import {
   MOBILE_DELIVERY_SCROLL_KEY,
   readJsonSession,
   readScrollSession,
+  scopedOpsKey,
   writeJsonSession,
   writeScrollSession,
 } from "../lib/mobileOpsSession";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+  storageUserKey,
+} from "../lib/poListReturn";
 import { formatIdQty } from "../lib/productionScheduleQty";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
@@ -119,19 +125,23 @@ export function deliveryScheduleLoadErrorMessage(err) {
 
 export default function MobileDeliverySchedulePage() {
   const navigate = useNavigate();
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
   const allowed = canViewMobileDeliverySchedule(hasPerm);
   const canSetLocation = canEditMobileDeliveryScheduleLocation(hasPerm);
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
-  const saved = readJsonSession(MOBILE_DELIVERY_FILTER_KEY, {
+  const userKey = storageUserKey(user);
+  const filterKey = scopedOpsKey(MOBILE_DELIVERY_FILTER_KEY, userKey);
+  const scrollKey = scopedOpsKey(MOBILE_DELIVERY_SCROLL_KEY, userKey);
+  const saved = readJsonSession(filterKey, {
     filters: EMPTY_DELIVERY_FILTERS,
     quick: "semua_aktif",
+    sort: EMPTY_DELIVERY_SORT,
   });
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [filters, setFilters] = useState({ ...EMPTY_DELIVERY_FILTERS, ...(saved.filters || {}) });
-  const [sort, setSort] = useState(EMPTY_DELIVERY_SORT);
+  const [sort, setSort] = useState({ ...EMPTY_DELIVERY_SORT, ...(saved.sort || {}) });
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
@@ -165,8 +175,8 @@ export default function MobileDeliverySchedulePage() {
   }, [load, reloadKey]);
 
   useEffect(() => {
-    writeJsonSession(MOBILE_DELIVERY_FILTER_KEY, { filters, quick });
-  }, [filters, quick]);
+    writeJsonSession(filterKey, { filters, quick, sort });
+  }, [filterKey, filters, quick, sort]);
 
   const filteredRows = useMemo(
     () => (rows || [])
@@ -181,18 +191,32 @@ export default function MobileDeliverySchedulePage() {
   useLayoutEffect(() => {
     if (busy || scrollRestored.current) return;
     const el = sheetZoom.viewportRef?.current;
-    const savedScroll = readScrollSession(MOBILE_DELIVERY_SCROLL_KEY);
+    const savedScroll = readScrollSession(scrollKey);
     if (el && savedScroll) {
       el.scrollLeft = savedScroll.left;
       el.scrollTop = savedScroll.top;
     }
     scrollRestored.current = true;
-  }, [busy, sheetZoom.viewportRef, visible.length]);
+  }, [busy, sheetZoom.viewportRef, visible.length, scrollKey]);
 
   const persistScroll = () => {
     const el = sheetZoom.viewportRef?.current;
     if (!el) return;
-    writeScrollSession(MOBILE_DELIVERY_SCROLL_KEY, el.scrollLeft, el.scrollTop);
+    writeScrollSession(scrollKey, el.scrollLeft, el.scrollTop);
+  };
+
+  const openPoReturnState = (orderId) => {
+    persistScroll();
+    capturePoOpenFromList({
+      user,
+      orderId,
+      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/delivery-schedule",
+      search: typeof window !== "undefined" ? window.location.search : "",
+    });
+    return poNavStateFromList({
+      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/delivery-schedule",
+      search: typeof window !== "undefined" ? window.location.search : "",
+    });
   };
 
   const setDraft = (key, value) => setDraftFilters((prev) => ({ ...prev, [key]: value }));
@@ -216,8 +240,8 @@ export default function MobileDeliverySchedulePage() {
 
   const openRow = (r) => {
     if (!r?.id) return;
-    persistScroll();
-    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery"));
+    const state = openPoReturnState(r.id);
+    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery"), { state });
   };
 
   return (
@@ -456,10 +480,14 @@ export default function MobileDeliverySchedulePage() {
                               <Link
                                 className="ghost sm"
                                 to={workHref}
+                                state={poNavStateFromList({
+                                  pathname: typeof window !== "undefined" ? window.location.pathname : "/m/delivery-schedule",
+                                  search: typeof window !== "undefined" ? window.location.search : "",
+                                })}
                                 data-testid={`mds-kerja-${r.order_number}`}
                                 onClick={(e) => {
                                   if (sheetZoom.consumeClickSuppression()) e.preventDefault();
-                                  else persistScroll();
+                                  else openPoReturnState(r.id);
                                 }}
                               >
                                 Kerjakan
