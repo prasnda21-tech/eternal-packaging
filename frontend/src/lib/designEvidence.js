@@ -26,13 +26,28 @@ export function resolveDesignChip(order, _currentStage) {
   return { state: "current", label: "Belum dikerjakan" };
 }
 
+/** True when the customer approval snapshot is an authoritative approve. */
+export function isCustomerDesignApproved(order) {
+  return String(order?.customer_approval?.status || "").trim().toLowerCase() === "approved";
+}
+
+/**
+ * Approval Design complete: internal approve, official bypass, or customer approve.
+ * Customer Approval is an alternate path for this gate, not a second mandatory internal gate.
+ */
+export function isApprovalDesignComplete(order) {
+  return !!(order?.design_bypassed) || order?.design_status === "Approved" || isCustomerDesignApproved(order);
+}
+
 /**
  * Chip for stage index 2 (Approval Design).
  * "Menunggu approval" requires real design upload — approval object / Waiting status alone is not enough.
  * Never infers done from current_stage (Payment-first must not mark Design approved).
  */
 export function resolveApprovalDesignChip(order, _currentStage) {
-  if (order?.design_status === "Approved") return { state: "done", label: "Selesai" };
+  if (order?.design_status === "Approved" || isCustomerDesignApproved(order)) {
+    return { state: "done", label: "Selesai" };
+  }
   if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
   if (!hasRealDesignUpload(order)) return { state: "pending", label: "Menunggu" };
   return { state: "current", label: "Menunggu approval" };

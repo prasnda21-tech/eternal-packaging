@@ -95,4 +95,25 @@ function chip(idx, order) {
   assert(chip(1, order).label === "Belum dikerjakan", "current_stage alone must not complete Design");
 }
 
+{
+  const order = {
+    current_stage: 2,
+    design_files: [{
+      id: "d1",
+      name: "art.pdf",
+      data_url: "data:application/pdf;base64,aa",
+      uploaded_at: "2026-09-11T00:00:00Z",
+    }],
+    design_status: "Waiting",
+    design_bypassed: false,
+    customer_approval: { status: "approved" },
+    payment_files: [],
+    payment_status: "Waiting",
+  };
+  const apprDesign = chip(2, order);
+  assert(apprDesign.state === "done" && apprDesign.label === "Selesai", `CA approved must complete Approval Design, got ${apprDesign.state}/${apprDesign.label}`);
+  assert(chip(3, order).state === "current", "Payment must become current, not skipped");
+  assert(chip(3, order).label === "Belum dikerjakan", `Payment must not auto-complete, got ${chip(3, order).label}`);
+}
+
 console.log("timeline design chip OK — fixtures A/B + regressions passed");

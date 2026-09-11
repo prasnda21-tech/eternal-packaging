@@ -1,7 +1,7 @@
 // Semantic stage completion — shared by Timeline + StageBar.
 // Design/Payment/Approval stages must NOT inherit "done" from current_stage alone.
 
-import { resolveDesignChip, resolveApprovalDesignChip } from "./designEvidence.js";
+import { isApprovalDesignComplete, resolveDesignChip, resolveApprovalDesignChip } from "./designEvidence.js";
 
 const STAGE_DESIGN = 1;
 const STAGE_APPROVAL_DESIGN = 2;
@@ -21,7 +21,7 @@ const STAGE_TERKIRIM = 14;
 const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== "";
 
 export function group2Complete(order) {
-  const designOk = !!(order?.design_bypassed) || order?.design_status === "Approved";
+  const designOk = isApprovalDesignComplete(order);
   const paymentOk = !!(order?.payment_bypassed) || order?.payment_status === "Approved";
   return designOk && paymentOk;
 }

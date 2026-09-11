@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { resolveStageState } from "./stageState";
+import { resolveApprovalDesignChip } from "./designEvidence";
 
 describe("SJ / Loading / Terkirim chips", () => {
   test("SJ uses shipment evidence, not a done-from-stage index", () => {
@@ -298,5 +299,31 @@ describe("Parallel Screener & Helper + Strict Downstream Gating", () => {
     expect(resolveStageState(6, order, 6).state).toBe("current");
     expect(resolveStageState(7, order, 6).state).toBe("done");
     expect(resolveStageState(8, order, 6).state).toBe("current");
+  });
+});
+
+describe("Customer Approval Design StageFlow", () => {
+  const uploaded = {
+    id: "df-1",
+    name: "art.pdf",
+    data_url: "data:application/pdf;base64,eA==",
+    uploaded_at: "2026-09-11T01:00:00+00:00",
+  };
+
+  test("CA approved advances Approval Design; Payment stays current and not auto-complete", () => {
+    const order = {
+      current_stage: 2,
+      design_status: "Waiting",
+      design_bypassed: false,
+      design_files: [uploaded],
+      payment_status: "Waiting",
+      payment_files: [],
+      customer_approval: { status: "approved" },
+    };
+    expect(resolveApprovalDesignChip(order, 2).state).toBe("done");
+    const payment = resolveStageState(3, order, 2);
+    expect(payment.state).toBe("current");
+    expect(payment.label).toBe("Belum dikerjakan");
+    expect(resolveStageState(4, order, 2).state).not.toBe("done");
   });
 });

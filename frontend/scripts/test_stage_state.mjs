@@ -82,6 +82,20 @@ function assert(cond, msg) {
 
 console.log("stageState OK — A/B/C/D passed");
 
+{
+  const order = {
+    design_files: [{ name: "d.pdf", uploaded_at: "2026-09-11T00:00:00+00:00" }],
+    design_status: "Waiting",
+    customer_approval: { status: "approved" },
+    payment_files: [],
+    payment_status: "Waiting",
+    current_stage: 2,
+  };
+  assert(resolveStageState(2, order, 2).state === "done", "CA approved must complete Approval Design");
+  assert(resolveStageState(3, order, 2).label === "Belum dikerjakan", "Payment must not auto-complete");
+}
+console.log("stageState OK — customer approval design passed");
+
 // Cetak status is qty-based, not current_stage / sample-approved alone
 {
   const base = {

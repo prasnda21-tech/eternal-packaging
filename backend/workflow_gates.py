@@ -29,8 +29,25 @@ def _has_value(v) -> bool:
     return v is not None and str(v).strip() != ""
 
 
+def customer_design_approved(order: dict) -> bool:
+    """True when the customer approval snapshot is an authoritative approve.
+
+    Customer Approval is an alternate path for the Approval Design gate,
+    not a second mandatory internal gate. Reject/expired/revoked do not count.
+    """
+    snap = order.get("customer_approval") or {}
+    if not isinstance(snap, dict):
+        return False
+    return str(snap.get("status") or "").strip().lower() == "approved"
+
+
 def design_ok(order: dict) -> bool:
-    return bool(order.get("design_bypassed")) or (order.get("design_status") == "Approved")
+    """Approval Design complete: internal approve, official bypass, or customer approve."""
+    return (
+        bool(order.get("design_bypassed"))
+        or (order.get("design_status") == "Approved")
+        or customer_design_approved(order)
+    )
 
 
 def payment_ok(order: dict) -> bool:

@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
+import { isApprovalDesignComplete, isCustomerDesignApproved } from "../lib/designEvidence";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
 import PackingPanel from "../components/PackingPanel";
@@ -667,8 +668,8 @@ export default function PODetail() {
         </div>
         <div>
           <span className="lbl">Status Design</span>
-          <strong className={order.design_status === "Approved" ? "status-ok" : "status-wait"} data-testid="design-status">
-            {order.design_status === "Approved"
+          <strong className={(order.design_status === "Approved" || isCustomerDesignApproved(order)) ? "status-ok" : "status-wait"} data-testid="design-status">
+            {(order.design_status === "Approved" || isCustomerDesignApproved(order))
               ? "Approved"
               : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
           </strong>
@@ -860,7 +861,7 @@ export default function PODetail() {
           <div className="po-pair-col">
             <h4 className="po-pair-col-title">Internal Approval</h4>
             <div className="workflow-stage-actions" data-testid="approval-design-actions">
-              {canApproveDesign && (order.design_files?.length || 0) > 0 && order.design_status !== "Approved" && !order.design_bypassed && (
+              {canApproveDesign && (order.design_files?.length || 0) > 0 && !isApprovalDesignComplete(order) && (
                 <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
                   <FileCheck2 size={16} /> Approve Design
                 </button>
@@ -870,12 +871,12 @@ export default function PODetail() {
                   Batalkan approve design
                 </button>
               )}
-              {canBypassDesign && !order.design_bypassed && order.design_status !== "Approved" && (
+              {canBypassDesign && !isApprovalDesignComplete(order) && (
                 <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
                   <ShieldOff size={14}/> Bypass Design
                 </button>
               )}
-              {!canApproveDesign && !canBypassDesign && order.design_status !== "Approved" && !order.design_bypassed && (
+              {!canApproveDesign && !canBypassDesign && !isApprovalDesignComplete(order) && (
                 <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
               )}
             </div>
@@ -1400,7 +1401,9 @@ function PaymentStatusBadge({ order }) {
 function DesignStatusBadge({ order }) {
   if (order.design_bypassed) return <span className="pill sm pill-bypass" data-testid="design-status-badge">Design Bypass</span>;
   const files = order.design_files || [];
-  if (order.design_status === "Approved") return <span className="pill sm pill-ok" data-testid="design-status-badge">Design Approved</span>;
+  if (order.design_status === "Approved" || isCustomerDesignApproved(order)) {
+    return <span className="pill sm pill-ok" data-testid="design-status-badge">Design Approved</span>;
+  }
   if (files.length === 0) return <span className="pill sm pill-warn" data-testid="design-status-badge">Belum Ada File Design</span>;
   return <span className="pill sm pill-warn" data-testid="design-status-badge">Menunggu Approval Design</span>;
 }

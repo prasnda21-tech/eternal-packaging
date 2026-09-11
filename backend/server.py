@@ -1446,7 +1446,7 @@ def _hold_reasons(order: dict) -> list:
     reasons = []
     if not order.get("design_files"):
         reasons.append("Belum ada design")
-    elif order.get("design_status") != "Approved" and not order.get("design_bypassed"):
+    elif not _design_ok(order):
         reasons.append("Menunggu approval design")
     if not order.get("payment_files"):
         reasons.append("Belum ada bukti payment")
@@ -1503,7 +1503,7 @@ def _compute_pending_queues(order: dict) -> List[str]:
     cs = int(order.get("current_stage") or 0)
     design_files = order.get("design_files") or []
     payment_files = order.get("payment_files") or []
-    design_approved = (order.get("design_status") == "Approved") or order.get("design_bypassed")
+    design_approved = _design_ok(order)
     payment_approved = (order.get("payment_status") == "Approved") or order.get("payment_bypassed")
 
     # Delivered (final): PO benar-benar sudah di stage terkirim (new index 14).
@@ -1515,11 +1515,11 @@ def _compute_pending_queues(order: dict) -> List[str]:
         queues.append("order_in")
 
     # 02 Design — belum ada file design (dan design belum bypass/approved)
-    if not design_files and not order.get("design_bypassed") and order.get("design_status") != "Approved":
+    if not design_files and not design_approved:
         queues.append("design")
 
     # 03 Approval Design — design file sudah ada tetapi belum approved dan tidak bypassed
-    if design_files and not order.get("design_bypassed") and order.get("design_status") != "Approved":
+    if design_files and not design_approved:
         queues.append("approval_design")
 
     # 04 Payment — bukti payment belum ada dan payment belum bypass/approved
