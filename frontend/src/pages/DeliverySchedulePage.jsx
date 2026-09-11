@@ -18,7 +18,7 @@ import {
 import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
 import {
   canOptimizeFromDeliverySchedule,
-  mobileScheduleReviewHref,
+  desktopScheduleReviewHref,
 } from "../lib/mobileDeliverySchedule";
 import {
   headerCheckState,
@@ -202,7 +202,7 @@ export default function DeliverySchedulePage() {
   const onOptimasiRute = () => {
     const ids = Array.from(selected).filter(Boolean).map(String);
     if (!ids.length) return;
-    navigate(mobileScheduleReviewHref(ids));
+    navigate(desktopScheduleReviewHref(ids));
   };
 
   const colCount = canOptimize ? 13 : 12;

@@ -96,10 +96,22 @@ export function optimizationStatusMeta(row) {
 
 export const MOBILE_SCHEDULE_REVIEW_PATH = "/m/delivery-schedule/review-optimasi";
 
-export function mobileScheduleReviewHref(orderIds) {
+/** Desktop Jadwal Pengiriman — stays in AppShell (never /m/...). */
+export const DESKTOP_DELIVERY_SCHEDULE_PATH = "/produksi/jadwal-pengiriman";
+export const DESKTOP_SCHEDULE_REVIEW_PATH = "/produksi/jadwal-pengiriman/review-optimasi";
+
+function scheduleReviewHref(basePath, orderIds) {
   const ids = (orderIds || []).filter(Boolean).map(String);
   const qs = ids.length ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
-  return `${MOBILE_SCHEDULE_REVIEW_PATH}${qs}`;
+  return `${basePath}${qs}`;
+}
+
+export function mobileScheduleReviewHref(orderIds) {
+  return scheduleReviewHref(MOBILE_SCHEDULE_REVIEW_PATH, orderIds);
+}
+
+export function desktopScheduleReviewHref(orderIds) {
+  return scheduleReviewHref(DESKTOP_SCHEDULE_REVIEW_PATH, orderIds);
 }
 
 export function mobileDeliverySheetColumnStyle(col) {

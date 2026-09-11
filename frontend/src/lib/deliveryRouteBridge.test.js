@@ -18,6 +18,7 @@ import {
 import {
   canAssignDeliveryDriver,
   canOptimizeFromDeliverySchedule,
+  desktopScheduleReviewHref,
   MOBILE_DELIVERY_ASSIGN_DRIVER_PERM,
   mobileScheduleReviewHref,
   optimizationStatusMeta,
@@ -241,6 +242,12 @@ describe("mobile delivery schedule opt helpers", () => {
 
   test("review href encodes current filtered ids", () => {
     expect(mobileScheduleReviewHref(["a", "b"])).toContain("ids=a%2Cb");
+    expect(mobileScheduleReviewHref(["a", "b"])).toMatch(/^\/m\/delivery-schedule\/review-optimasi/);
+    expect(desktopScheduleReviewHref(["a", "b"])).toContain("ids=a%2Cb");
+    expect(desktopScheduleReviewHref(["ord-a", "ord-b"])).toBe(
+      "/produksi/jadwal-pengiriman/review-optimasi?ids=ord-a%2Cord-b",
+    );
+    expect(desktopScheduleReviewHref(["a"])).not.toMatch(/\/m\//);
   });
 
   test("optimizationStatusMeta", () => {
