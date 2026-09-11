@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertCircle,
   ArrowLeft,
@@ -23,6 +23,10 @@ import {
   clearRepeatDerivedFormFields,
   mapRepeatSourceToFormPatch,
 } from "../lib/salesOrderRepeat";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+} from "../lib/poListReturn";
 
 function getTodayString() {
   const d = new Date();
@@ -63,6 +67,8 @@ export function filterPoLineItems(lineItems, searchQuery) {
 
 export default function PesananPenjualan() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
 
   const canCreate = hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
@@ -73,8 +79,8 @@ export default function PesananPenjualan() {
   const [orders, setOrders] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -195,6 +201,33 @@ export default function PesananPenjualan() {
     }
   }, [searchQuery, statusFilter]);
 
+  // Sync filter/search into URL so browser Back restores list presentation state.
+  useEffect(() => {
+    if (viewMode !== "list") return;
+    const next = new URLSearchParams();
+    if (searchQuery.trim()) next.set("q", searchQuery.trim());
+    if (statusFilter && statusFilter !== "all") next.set("status", statusFilter);
+    const nextStr = next.toString();
+    const curStr = searchParams.toString();
+    if (nextStr === curStr) return;
+    setSearchParams(next, { replace: true });
+  }, [searchQuery, statusFilter, viewMode, searchParams, setSearchParams]);
+
+  const poListNavState = (extra = {}) => poNavStateFromList({
+    pathname: location.pathname,
+    search: location.search,
+    extra,
+  });
+
+  const onOpenPo = (orderId) => {
+    capturePoOpenFromList({
+      user,
+      orderId,
+      pathname: location.pathname,
+      search: location.search,
+      scrollY: typeof window !== "undefined" ? window.scrollY : undefined,
+    });
+  };
   useEffect(() => {
     if (viewMode === "create") {
       loadOptions();
@@ -1395,7 +1428,13 @@ export default function PesananPenjualan() {
                           </td>
                         )}
                         <td style={{ padding: "10px 12px", fontWeight: 600 }}>
-                          <Link to={`/po/${o.id}`} state={{ po_number: o.po_number, customer: o.customer }} style={{ color: "#0284c7", textDecoration: "none" }} data-testid={`po-link-${o.po_number}`}>
+                          <Link
+                            to={`/po/${o.id}`}
+                            state={poListNavState({ po_number: o.po_number, customer: o.customer })}
+                            onClick={() => onOpenPo(o.id)}
+                            style={{ color: "#0284c7", textDecoration: "none" }}
+                            data-testid={`po-link-${o.po_number}`}
+                          >
                             {o.po_number}
                           </Link>
                         </td>
@@ -1451,7 +1490,8 @@ export default function PesananPenjualan() {
                           <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
                             <Link
                               to={`/po/${o.id}`}
-                              state={{ po_number: o.po_number, customer: o.customer }}
+                              state={poListNavState({ po_number: o.po_number, customer: o.customer })}
+                              onClick={() => onOpenPo(o.id)}
                               data-testid={`btn-view-po-${o.id}`}
                               style={{ display: "inline-block", padding: "4px 8px", background: "#f1f5f9", color: "#334155", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600 }}
                             >

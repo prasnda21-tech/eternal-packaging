@@ -6,9 +6,23 @@ import MobileOrdersPage, {
   ordersLoadErrorMessage,
 } from "./MobileOrdersPage";
 
+const mockOrdersRouter = {
+  search: "",
+  setParams: jest.fn((next) => {
+    if (next instanceof URLSearchParams) mockOrdersRouter.search = next.toString();
+    else if (next && typeof next === "object") mockOrdersRouter.search = new URLSearchParams(next).toString();
+  }),
+};
+
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useSearchParams: () => [new URLSearchParams(mockOrdersRouter.search), mockOrdersRouter.setParams],
+  useLocation: () => ({ pathname: "/m/orders", search: mockOrdersRouter.search ? `?${mockOrdersRouter.search}` : "" }),
 }), { virtual: true });
+
+jest.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-orders" } }),
+}));
 
 jest.mock("../lib/api", () => ({
   __esModule: true,
@@ -83,6 +97,8 @@ describe("MobileOrdersPage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    mockOrdersRouter.search = "";
+    mockOrdersRouter.setParams.mockClear();
     api.listOrders.mockReset();
     api.getOrder.mockReset();
   });

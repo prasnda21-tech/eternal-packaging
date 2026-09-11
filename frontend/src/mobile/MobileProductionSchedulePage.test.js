@@ -23,7 +23,7 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
-  useAuth: () => ({ hasPerm: (perm) => mockHasPerm(perm) }),
+  useAuth: () => ({ user: { id: "u-mps" }, hasPerm: (perm) => mockHasPerm(perm) }),
 }));
 
 jest.mock("../lib/api", () => ({
@@ -409,7 +409,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.getAttribute("data-to") === "/m/orders/po-1")).toBe(true);
     await act(async () => { rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1", expect.objectContaining({ state: expect.any(Object) }));
 
     mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "screen.update");
     await renderPage();
@@ -539,7 +539,7 @@ describe("MobileProductionSchedulePage", () => {
     await renderPage();
     const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
     await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1", expect.objectContaining({ state: expect.any(Object) }));
   });
 
   test("PWA Screen column is qty-only and screen_size column is absent", async () => {

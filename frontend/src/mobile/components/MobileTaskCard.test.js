@@ -3,8 +3,22 @@ import { createRoot } from "react-dom/client";
 import MobileTaskCard from "./MobileTaskCard";
 
 jest.mock("react-router-dom", () => ({
-  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  Link: ({ to, children, state, onClick, ...props }) => (
+    <a
+      href={to}
+      data-state={state ? JSON.stringify(state) : ""}
+      onClick={onClick}
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+  useLocation: () => ({ pathname: "/m/tasks", search: "?ws=delivery" }),
 }), { virtual: true });
+
+jest.mock("../../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1" } }),
+}));
 
 global.IS_REACT_ACT_ENVIRONMENT = true;
 

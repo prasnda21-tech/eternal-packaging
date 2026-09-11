@@ -1,5 +1,10 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { useAuth } from "../../lib/auth";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+} from "../../lib/poListReturn";
 import MobileStatusBadge from "./MobileStatusBadge";
 import { mobileWorkStatus } from "../../lib/mobileWorkspaces";
 import {
@@ -14,17 +19,35 @@ import {
 import ProductionSchedulePriorityBadges from "../../components/ProductionSchedulePriorityBadges";
 
 export default function MobileTaskCard({ task, workspaceId }) {
+  const { user } = useAuth();
+  const location = useLocation();
   const status = mobileWorkStatus(task.completed_qty, task.target_qty);
   if (task.status === "selesai") status.key = "done";
   if (task.status === "sebagian") { status.key = "process"; status.label = "Proses"; }
   if (task.status === "belum" || task.status === "siap") { status.key = task.status === "siap" ? "wait" : "idle"; status.label = task.status_label || status.label; }
   const operators = taskOperatorNames(task);
+  const to = `/m/orders/${encodeURIComponent(task.order_id)}?ws=${encodeURIComponent(workspaceId)}`;
+  const navState = poNavStateFromList({
+    pathname: location.pathname,
+    search: location.search,
+    extra: { fromTask: true },
+  });
   return (
     <Link
       className="mop-card"
-      to={`/m/orders/${encodeURIComponent(task.order_id)}?ws=${encodeURIComponent(workspaceId)}`}
+      to={to}
+      state={navState}
       data-testid={`mobile-task-${task.task_id || task.order_number}`}
       data-line-idx={task.line_idx ?? ""}
+      onClick={() => {
+        capturePoOpenFromList({
+          user,
+          orderId: task.order_id,
+          pathname: location.pathname,
+          search: location.search,
+          scrollY: typeof window !== "undefined" ? window.scrollY : undefined,
+        });
+      }}
     >
       <div className="mop-card-kicker-row">
         <div className="mop-card-kicker">{task.order_number}</div>

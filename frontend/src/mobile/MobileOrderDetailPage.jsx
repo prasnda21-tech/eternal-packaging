@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import { formatDeadline } from "../lib/constants";
 import { poCardPresentation, selectMobileWorkspace } from "../lib/mobileWorkspaces";
+import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
 import MobileTopBar from "./MobileTopBar";
 import MobileStageFlow from "./components/MobileStageFlow";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
@@ -31,7 +32,7 @@ export default function MobileOrderDetailPage() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
   const requested = params.get("ws");
   const choice = selectMobileWorkspace(hasPerm, requested);
   const selected = choice.selected;
@@ -67,6 +68,17 @@ export default function MobileOrderDetailPage() {
     else load({ background: true });
   };
 
+  const onBack = () => {
+    const target = resolvePoBackTarget({
+      location,
+      userId: storageUserKey(user),
+      orderId: id,
+      mobileFallback: "/m/tasks",
+      webFallback: "/m/tasks",
+    });
+    navigate(target);
+  };
+
   const card = poCardPresentation(order || {});
   const Workspace = selected ? WORKSPACE_VIEWS[selected.id] : null;
 
@@ -76,7 +88,7 @@ export default function MobileOrderDetailPage() {
         kicker={fromTask && selected ? `Tugas Saya › ${selected.label}` : "PO"}
         title={order ? getCanonicalCustomerName(order) : "Detail PO"}
         meta={order?.po_number || ""}
-        onBack={() => navigate(-1)}
+        onBack={onBack}
       />
       <main className="mop-content" data-testid="mobile-order-detail">
         {loading && !order && <p className="mop-empty">Memuat PO...</p>}

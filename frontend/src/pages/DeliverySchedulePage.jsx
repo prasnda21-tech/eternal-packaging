@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ArrowDown, ArrowUp, ArrowUpDown, Filter, RefreshCw, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -15,6 +15,13 @@ import {
   matchesDeliveryScheduleFilters,
   sortDeliveryRows,
 } from "../lib/deliverySchedule";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+  readListUiState,
+  storageUserKey,
+  writeListUiState,
+} from "../lib/poListReturn";
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import OutletLocationModal from "../components/OutletLocationModal";
 
@@ -75,13 +82,19 @@ async function outletRowForOrder({ orderId, customer, outlet }) {
 }
 
 export default function DeliverySchedulePage() {
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
+  const location = useLocation();
   const canSetLocation = hasPerm("delivery.location.manage");
+  const userKey = storageUserKey(user);
+  const saved = readListUiState(userKey, "delivery-schedule", {
+    filters: EMPTY_DELIVERY_FILTERS,
+    sort: EMPTY_DELIVERY_SORT,
+  });
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [filters, setFilters] = useState(EMPTY_DELIVERY_FILTERS);
-  const [sort, setSort] = useState(EMPTY_DELIVERY_SORT);
+  const [filters, setFilters] = useState({ ...EMPTY_DELIVERY_FILTERS, ...(saved.filters || {}) });
+  const [sort, setSort] = useState({ ...EMPTY_DELIVERY_SORT, ...(saved.sort || {}) });
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
   const [locRow, setLocRow] = useState(null);
@@ -101,6 +114,23 @@ export default function DeliverySchedulePage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    writeListUiState(userKey, "delivery-schedule", { filters, sort });
+  }, [userKey, filters, sort]);
+
+  const listNavState = poNavStateFromList({
+    pathname: location.pathname,
+    search: location.search,
+  });
+  const onOpenPo = (orderId) => {
+    capturePoOpenFromList({
+      user,
+      orderId,
+      pathname: location.pathname,
+      search: location.search,
+    });
+  };
 
   const filteredRows = useMemo(
     () => (rows || []).filter((r) => matchesDeliveryScheduleFilters(r, filters)),
@@ -258,7 +288,11 @@ export default function DeliverySchedulePage() {
               <tr key={r.id} data-testid={`ds-row-${r.order_number}`}>
                 <td className="mono">{formatDate(r.effective_delivery_date, { dateOnly: true })}</td>
                 <td className="mono">
-                  {r.id ? <Link to={`/po/${r.id}`}>{r.order_number}</Link> : (r.order_number || "-")}
+                  {r.id ? (
+                    <Link to={`/po/${r.id}`} state={listNavState} onClick={() => onOpenPo(r.id)}>
+                      {r.order_number}
+                    </Link>
+                  ) : (r.order_number || "-")}
                 </td>
                 <td>{r.customer_name || "-"}</td>
                 <td className="mono" data-testid={`ds-deadline-${r.order_number}`}>{formatDate(r.deadline, { dateOnly: true })}</td>
@@ -290,7 +324,16 @@ export default function DeliverySchedulePage() {
                   />
                 </td>
                 <td>
-                  {r.id && <Link className="ghost sm" to={`/po/${r.id}/kerja?divisi=terkirim`}>Kerjakan</Link>}
+                  {r.id && (
+                    <Link
+                      className="ghost sm"
+                      to={`/po/${r.id}/kerja?divisi=terkirim`}
+                      state={listNavState}
+                      onClick={() => onOpenPo(r.id)}
+                    >
+                      Kerjakan
+                    </Link>
+                  )}
                   {canSetLocation && r.id && (
                     <button
                       type="button"

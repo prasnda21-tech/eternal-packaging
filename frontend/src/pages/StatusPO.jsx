@@ -20,17 +20,27 @@ import {
   statusPoFilterOptions,
   statusPoViewLabel,
 } from "../lib/statusPo";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+  readListUiState,
+  storageUserKey,
+  writeListUiState,
+} from "../lib/poListReturn";
 
 export default function StatusPO() {
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
   const location = useLocation();
   const [params] = useSearchParams();
   const deliveryTodayPage = location.pathname.startsWith("/produksi/pengiriman-hari-ini");
   const view = deliveryTodayPage ? "delivery_today" : (params.get("view") || "");
+  const routeKey = deliveryTodayPage ? "pengiriman-hari-ini" : `status-po.${view || "default"}`;
+  const userKey = storageUserKey(user);
+  const savedFilters = readListUiState(userKey, routeKey, EMPTY_STATUS_PO_FILTERS);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [filters, setFilters] = useState(EMPTY_STATUS_PO_FILTERS);
+  const [filters, setFilters] = useState({ ...EMPTY_STATUS_PO_FILTERS, ...savedFilters });
   const [selected, setSelected] = useState(new Set());
   const [bulkAction, setBulkAction] = useState(null);
   const [bulkReason, setBulkReason] = useState("");
@@ -59,6 +69,10 @@ export default function StatusPO() {
   }, [view]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    writeListUiState(userKey, routeKey, filters);
+  }, [userKey, routeKey, filters]);
 
   const visible = useMemo(
     () => (rows || []).filter((r) => matchesStatusPoFilters(r, filters)),
@@ -301,7 +315,19 @@ export default function StatusPO() {
                 )}
                 <td className="mono">
                   {r.id ? (
-                    <Link to={`/po/${r.id}`} data-testid={`status-po-link-${r.po_number}`}>{r.po_number}</Link>
+                    <Link
+                      to={`/po/${r.id}`}
+                      state={poNavStateFromList({ pathname: location.pathname, search: location.search })}
+                      onClick={() => capturePoOpenFromList({
+                        user,
+                        orderId: r.id,
+                        pathname: location.pathname,
+                        search: location.search,
+                      })}
+                      data-testid={`status-po-link-${r.po_number}`}
+                    >
+                      {r.po_number}
+                    </Link>
                   ) : (r.po_number || "-")}
                 </td>
                 <td className="mono">{formatDisplayDate(r.order_date)}</td>

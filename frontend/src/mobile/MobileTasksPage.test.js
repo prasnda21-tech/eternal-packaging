@@ -4,14 +4,26 @@ import api from "../lib/api";
 import MobileTasksPage from "./MobileTasksPage";
 
 const mockHasPerm = jest.fn(() => false);
+const mockTasksRouter = {
+  search: "",
+  setParams: jest.fn((next) => {
+    if (next instanceof URLSearchParams) mockTasksRouter.search = next.toString();
+    else if (next && typeof next === "object") mockTasksRouter.search = new URLSearchParams(next).toString();
+  }),
+};
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useSearchParams: () => [new URLSearchParams(mockTasksRouter.search), mockTasksRouter.setParams],
+  useLocation: () => ({
+    pathname: "/m/tasks",
+    search: mockTasksRouter.search ? `?${mockTasksRouter.search}` : "",
+  }),
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
-    user: { name: "Budi", email: "budi@x.com", role: "operator" },
+    user: { id: "u-driver", name: "Budi", email: "budi@x.com", role: "operator" },
     hasPerm: (perm) => mockHasPerm(perm),
   }),
 }));
@@ -42,6 +54,8 @@ describe("MobileTasksPage sorting", () => {
     root = createRoot(container);
     mockHasPerm.mockReset();
     mockHasPerm.mockImplementation((p) => p === "operator.update");
+    mockTasksRouter.search = "";
+    mockTasksRouter.setParams.mockClear();
     api.divisionTasks.mockReset();
     api.getOrder.mockReset();
   });
@@ -105,8 +119,26 @@ describe("MobileTasksPage sorting", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flush();
+    expect(mockTasksRouter.setParams).toHaveBeenCalled();
+    const lastArg = mockTasksRouter.setParams.mock.calls.at(-1)[0];
+    expect(String(lastArg)).toContain("ws=packing");
+    // Simulate browser/router applying the replaced query, then remount.
+    mockTasksRouter.search = "ws=packing";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
     expect(api.divisionTasks).toHaveBeenCalledWith("packing", "mine");
     expect(container.textContent).toContain("Operator");
+  });
+
+  test("CASE B — Pengiriman workspace stays in URL for back restoration", async () => {
+    mockHasPerm.mockImplementation((p) => ["delivery.update", "loading.update"].includes(p));
+    api.divisionTasks.mockResolvedValue({ tasks: [] });
+    mockTasksRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledWith("terkirim", "mine");
+    expect(container.querySelector('[data-testid="mobile-workspace-select-current"]')?.textContent
+      || container.querySelector('[data-testid="mobile-workspace-select-input"]')?.value).toMatch(/delivery|Pengiriman/i);
   });
 
   test("sorts URGENT then H-1 then existing work_date order", async () => {

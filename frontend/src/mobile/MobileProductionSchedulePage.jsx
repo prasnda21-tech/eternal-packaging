@@ -37,9 +37,15 @@ import {
   MOBILE_PROD_SCROLL_KEY,
   readJsonSession,
   readScrollSession,
+  scopedOpsKey,
   writeJsonSession,
   writeScrollSession,
 } from "../lib/mobileOpsSession";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+  storageUserKey,
+} from "../lib/poListReturn";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import MobileTopBar from "./MobileTopBar";
 
@@ -56,9 +62,12 @@ export function scheduleLoadErrorMessage(err) {
 
 export default function MobileProductionSchedulePage() {
   const navigate = useNavigate();
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
   const allowed = canViewMobileSchedule(hasPerm);
-  const saved = readJsonSession(MOBILE_PROD_FILTER_KEY, {
+  const userKey = storageUserKey(user);
+  const filterKey = scopedOpsKey(MOBILE_PROD_FILTER_KEY, userKey);
+  const scrollKey = scopedOpsKey(MOBILE_PROD_SCROLL_KEY, userKey);
+  const saved = readJsonSession(filterKey, {
     q: FILTER_DEFAULTS.q,
     includeCancelled: FILTER_DEFAULTS.includeCancelled,
     includeCompleted: FILTER_DEFAULTS.includeCompleted,
@@ -87,13 +96,13 @@ export default function MobileProductionSchedulePage() {
   };
 
   useEffect(() => {
-    writeJsonSession(MOBILE_PROD_FILTER_KEY, {
+    writeJsonSession(filterKey, {
       q,
       includeCancelled,
       includeCompleted,
       quick,
     });
-  }, [q, includeCancelled, includeCompleted, quick]);
+  }, [filterKey, q, includeCancelled, includeCompleted, quick]);
 
   useEffect(() => {
     if (!allowed) {
@@ -136,18 +145,18 @@ export default function MobileProductionSchedulePage() {
   useLayoutEffect(() => {
     if (loading || scrollRestored.current) return;
     const el = sheetZoom.viewportRef?.current;
-    const savedScroll = readScrollSession(MOBILE_PROD_SCROLL_KEY);
+    const savedScroll = readScrollSession(scrollKey);
     if (el && savedScroll) {
       el.scrollLeft = savedScroll.left;
       el.scrollTop = savedScroll.top;
     }
     scrollRestored.current = true;
-  }, [loading, sheetZoom.viewportRef, displayRows.length]);
+  }, [loading, sheetZoom.viewportRef, displayRows.length, scrollKey]);
 
   const persistScroll = () => {
     const el = sheetZoom.viewportRef?.current;
     if (!el) return;
-    writeScrollSession(MOBILE_PROD_SCROLL_KEY, el.scrollLeft, el.scrollTop);
+    writeScrollSession(scrollKey, el.scrollLeft, el.scrollTop);
   };
 
   const resetFilters = () => {
@@ -160,7 +169,18 @@ export default function MobileProductionSchedulePage() {
   const openRow = (row) => {
     persistScroll();
     const href = mobileScheduleWorkHref(row.id, hasPerm, "production");
-    if (href) navigate(href);
+    if (!href || !row?.id) return;
+    const state = poNavStateFromList({
+      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/schedule",
+      search: typeof window !== "undefined" ? window.location.search : "",
+    });
+    capturePoOpenFromList({
+      user,
+      orderId: row.id,
+      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/schedule",
+      search: typeof window !== "undefined" ? window.location.search : "",
+    });
+    navigate(href, { state });
   };
 
   return (

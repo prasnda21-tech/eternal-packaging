@@ -10,13 +10,16 @@ const mockNavigate = jest.fn();
 jest.mock("react-router-dom", () => ({
   useParams: () => ({ id: "po-1" }),
   useNavigate: () => mockNavigate,
-  useLocation: () => ({ state: { fromTask: true } }),
+  useLocation: () => ({ pathname: "/m/orders/po-1", state: { fromTask: true, from: "/m/tasks?ws=delivery" } }),
   useSearchParams: () => [new URLSearchParams("ws=prep"), mockSetParams],
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
-  useAuth: () => ({ hasPerm: (perm) => mockHasPerm(perm) }),
+  useAuth: () => ({
+    user: { id: "u-1" },
+    hasPerm: (perm) => mockHasPerm(perm),
+  }),
 }));
 
 jest.mock("../lib/api", () => ({
@@ -167,5 +170,20 @@ describe("MobileOrderDetailPage Ringkasan PO", () => {
     expect(container.querySelector('[data-testid="mobile-topbar-title"]').textContent).toBe("TEST_QA reimport");
     expect(container.querySelector('[data-testid="mobile-topbar-meta"]').textContent).toBe("PO-QA15-DFAC2C");
     expect(container.querySelector('[data-testid="mobile-order-customer"] strong').textContent).toBe("TEST_QA reimport");
+  });
+
+  test("CASE D — app Back uses return context, not navigate(-1)", async () => {
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1", customer: "A", line_items: [] },
+    });
+    mockHasPerm.mockImplementation((p) => ["po.view", "delivery.update"].includes(p));
+    mockNavigate.mockClear();
+    await act(async () => { root.render(<MobileOrderDetailPage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-back"]').click();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/m/tasks?ws=delivery");
+    expect(mockNavigate).not.toHaveBeenCalledWith(-1);
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate, useLocation } from "react-router-dom";
+import { Link, Navigate, useLocation, useSearchParams } from "react-router-dom";
 import { RefreshCw, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -13,6 +13,10 @@ import {
   taskMatchesStatus,
   taskWorkHref,
 } from "../lib/divisionTasks";
+import {
+  capturePoOpenFromList,
+  poNavStateFromList,
+} from "../lib/poListReturn";
 import ProductionSchedulePriorityBadges from "../components/ProductionSchedulePriorityBadges";
 
 const STATUS_TABS = [
@@ -24,16 +28,17 @@ const STATUS_TABS = [
 ];
 
 export default function DivisionTaskPage() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const slug = (pathname.split("/").filter(Boolean).pop() || "").trim();
   const cfg = DIVISION_TASK_PAGES[slug];
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState("semua");
-  const [scope, setScope] = useState("mine");
+  const [q, setQ] = useState(() => searchParams.get("q") || "");
+  const [status, setStatus] = useState(() => searchParams.get("status") || "semua");
+  const [scope, setScope] = useState(() => searchParams.get("scope") || "mine");
 
   const load = async (nextScope = scope) => {
     if (!cfg) return;
@@ -51,12 +56,24 @@ export default function DivisionTaskPage() {
   };
 
   useEffect(() => {
-    setQ("");
-    setStatus("semua");
-    setScope("mine");
-    load("mine");
+    const urlQ = searchParams.get("q") || "";
+    const urlStatus = searchParams.get("status") || "semua";
+    const urlScope = searchParams.get("scope") || "mine";
+    setQ(urlQ);
+    setStatus(urlStatus);
+    setScope(urlScope);
+    load(urlScope);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (q.trim()) next.set("q", q.trim());
+    if (status && status !== "semua") next.set("status", status);
+    if (scope && scope !== "mine") next.set("scope", scope);
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [q, status, scope, searchParams, setSearchParams]);
 
   const rows = useMemo(() => {
     return (data?.tasks || []).filter((t) => taskMatchesQuery(t, q) && taskMatchesStatus(t, status));
@@ -70,6 +87,10 @@ export default function DivisionTaskPage() {
   const showStock = !!cfg.showCurrentStock;
   const extraCol = cfg.extra === "design" || cfg.extra === "sj" || cfg.extra === "driver" ? 1 : 0;
   const emptyCols = 6 + (qty ? 3 : 0) + (showStock ? 1 : 0) + extraCol;
+  const listNavState = poNavStateFromList({ pathname, search });
+  const onOpenPo = (orderId) => {
+    capturePoOpenFromList({ user, orderId, pathname, search });
+  };
 
   return (
     <div className="prod-page division-task-page" data-testid="division-task-page">
@@ -165,11 +186,25 @@ export default function DivisionTaskPage() {
                 <td data-testid={`division-task-input-${t.order_number}`}>{t.required_input}</td>
                 <td><span className={"pill sm " + statusTone(t.status)}>{t.status_label}</span></td>
                 <td className="division-task-actions">
-                  <Link className="primary sm" to={taskWorkHref(t)} data-testid={`division-task-kerja-${t.order_number}`}>
+                  <Link
+                    className="primary sm"
+                    to={taskWorkHref(t)}
+                    state={listNavState}
+                    onClick={() => onOpenPo(t.order_id)}
+                    data-testid={`division-task-kerja-${t.order_number}`}
+                  >
                     {t.action_label || "Kerjakan"}
                   </Link>
                   {canViewPo && (
-                    <Link className="ghost sm" to={`/po/${t.order_id}`} data-testid={`division-task-po-${t.order_number}`}>Lihat PO</Link>
+                    <Link
+                      className="ghost sm"
+                      to={`/po/${t.order_id}`}
+                      state={listNavState}
+                      onClick={() => onOpenPo(t.order_id)}
+                      data-testid={`division-task-po-${t.order_number}`}
+                    >
+                      Lihat PO
+                    </Link>
                   )}
                 </td>
               </tr>

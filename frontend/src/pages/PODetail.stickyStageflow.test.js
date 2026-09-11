@@ -16,7 +16,8 @@ describe("PO Detail compact header + sticky StageFlow", () => {
     expect(titleStart).toBeGreaterThan(-1);
     expect(back).toBeGreaterThan(titleStart);
     expect(back).toBeLessThan(toolbar);
-    expect(detail).toMatch(/onClick=\{\(\) => navigate\(-1\)\}/);
+    expect(detail).toMatch(/resolvePoBackTarget/);
+    expect(detail).not.toMatch(/navigate\(-1\)/);
     expect(detail.split("data-testid=\"back-button\"").length - 1).toBe(1);
   });
 

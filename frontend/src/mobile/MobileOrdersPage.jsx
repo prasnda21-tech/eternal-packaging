@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
@@ -26,11 +27,21 @@ export function ordersLoadErrorMessage(err) {
 }
 
 export default function MobileOrdersPage() {
+  const [params, setParams] = useSearchParams();
   const [orders, setOrders] = useState([]);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(() => params.get("q") || "");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
+
+  const onSearchChange = (value) => {
+    setQ(value);
+    const next = new URLSearchParams(params);
+    const trimmed = String(value || "").trim();
+    if (trimmed) next.set("q", trimmed);
+    else next.delete("q");
+    setParams(next, { replace: true });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +82,7 @@ export default function MobileOrdersPage() {
           <Search size={16} />
           <input
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Cari nomor PO / customer"
             data-testid="mobile-orders-search"
           />
