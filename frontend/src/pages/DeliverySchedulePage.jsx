@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowDown, ArrowUp, ArrowUpDown, Filter, RefreshCw, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -15,6 +15,18 @@ import {
   matchesDeliveryScheduleFilters,
   sortDeliveryRows,
 } from "../lib/deliverySchedule";
+import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
+import {
+  canOptimizeFromDeliverySchedule,
+  mobileScheduleReviewHref,
+} from "../lib/mobileDeliverySchedule";
+import {
+  headerCheckState,
+  pruneSelection,
+  selectAllVisible,
+  toggleId,
+  visibleRowIds,
+} from "../lib/rowSelection";
 import {
   capturePoOpenFromList,
   poNavStateFromList,
@@ -84,7 +96,9 @@ async function outletRowForOrder({ orderId, customer, outlet }) {
 export default function DeliverySchedulePage() {
   const { user, hasPerm } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const canSetLocation = hasPerm("delivery.location.manage");
+  const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
   const userKey = storageUserKey(user);
   const saved = readListUiState(userKey, "delivery-schedule", {
     filters: EMPTY_DELIVERY_FILTERS,
@@ -98,6 +112,8 @@ export default function DeliverySchedulePage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
   const [locRow, setLocRow] = useState(null);
+  const [selected, setSelected] = useState(() => new Set());
+  const selectAllRef = useRef(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -141,6 +157,18 @@ export default function DeliverySchedulePage() {
     [filteredRows, sort],
   );
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
+  const visibleIds = useMemo(() => visibleRowIds(visible), [visible]);
+  const headerCheck = useMemo(() => headerCheckState(selected, visibleIds), [selected, visibleIds]);
+
+  useEffect(() => {
+    setSelected((prev) => pruneSelection(prev, visibleIds));
+  }, [visibleIds]);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = headerCheck.indeterminate;
+    }
+  }, [headerCheck.indeterminate]);
 
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
   const setDraft = (key, value) => setDraftFilters((prev) => ({ ...prev, [key]: value }));
@@ -160,6 +188,14 @@ export default function DeliverySchedulePage() {
     setDraftFilters(empty);
     setFilters(empty);
   };
+
+  const onOptimasiRute = () => {
+    const ids = Array.from(selected).filter(Boolean).map(String);
+    if (!ids.length) return;
+    navigate(mobileScheduleReviewHref(ids));
+  };
+
+  const colCount = canOptimize ? 13 : 12;
 
   return (
     <div className="ship-status-page" data-testid="delivery-schedule-page">
@@ -207,13 +243,47 @@ export default function DeliverySchedulePage() {
           <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="ds-refresh" disabled={busy}>
             <RefreshCw size={14} className={busy ? "spin" : ""} />
           </button>
+          {canOptimize && (
+            <button
+              type="button"
+              className="primary sm"
+              data-testid="ds-optimasi-rute"
+              disabled={busy || selected.size === 0}
+              title={selected.size === 0 ? "Pilih PO terlebih dahulu" : `Optimasi Rute untuk ${selected.size} PO terpilih`}
+              onClick={onOptimasiRute}
+            >
+              Optimasi Rute{selected.size > 0 ? ` (${selected.size})` : ""}
+            </button>
+          )}
         </div>
+        {canOptimize && selected.size > 0 && (
+          <div className="bulk-bar" data-testid="ds-bulk-bar">
+            <span data-testid="ds-selected-count"><b>{selected.size}</b> PO dipilih</span>
+            <div className="bulk-actions">
+              <button type="button" className="ghost sm" onClick={() => setSelected(new Set())} data-testid="ds-bulk-clear">
+                Batal pilih
+              </button>
+            </div>
+          </div>
+        )}
         {err && <div className="error" data-testid="ds-error">{err}</div>}
       </div>
       <div className="ship-status-grid">
         <table className="ship-table" data-testid="delivery-schedule-table">
           <thead>
             <tr>
+              {canOptimize && (
+                <th className="ship-th-check">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={headerCheck.checked}
+                    onChange={() => setSelected(selectAllVisible(visibleIds, selected))}
+                    aria-label="Pilih semua baris tampilan"
+                    data-testid="ds-select-all"
+                  />
+                </th>
+              )}
               <SortableTh
                 label="Tanggal Pengiriman"
                 sortKey={DELIVERY_SORT_KEYS.effective_delivery_date}
@@ -256,6 +326,7 @@ export default function DeliverySchedulePage() {
                 onCycle={onHeaderSort}
                 testid="ds-sort-status"
               />
+              <th data-testid="ds-col-status-lokasi">Status Lokasi</th>
               <SortableTh
                 label="Driver"
                 sortKey={DELIVERY_SORT_KEYS.driver}
@@ -284,76 +355,102 @@ export default function DeliverySchedulePage() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((r) => (
-              <tr key={r.id} data-testid={`ds-row-${r.order_number}`}>
-                <td className="mono">{formatDate(r.effective_delivery_date, { dateOnly: true })}</td>
-                <td className="mono">
-                  {r.id ? (
-                    <Link to={`/po/${r.id}`} state={listNavState} onClick={() => onOpenPo(r.id)}>
-                      {r.order_number}
-                    </Link>
-                  ) : (r.order_number || "-")}
-                </td>
-                <td>{r.customer_name || "-"}</td>
-                <td className="mono" data-testid={`ds-deadline-${r.order_number}`}>{formatDate(r.deadline, { dateOnly: true })}</td>
-                <td className="mono" data-testid={`ds-manual-${r.order_number}`}>{r.jadwal_manual ? formatDate(r.jadwal_manual, { dateOnly: true }) : "—"}</td>
-                <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>
-                <td>{r.driver_name || "—"}</td>
-                <td>
-                  <ProgressCell
-                    pct={r.percent_delivered_display ?? r.percent_delivered}
-                    tone={terkirimTone(r.percent_delivered_display ?? r.percent_delivered)}
-                    testid={`ds-terkirim-${r.order_number}`}
-                    title={`Terkirim ${r.qty_delivered ?? 0} / ${r.qty_total ?? 0}`}
-                  />
-                </td>
-                <td>
-                  <ProgressCell
-                    pct={r.percent_ready_to_ship_display ?? r.percent_ready_to_ship}
-                    tone="ready"
-                    testid={`ds-dapat-${r.order_number}`}
-                    title={`Dicetak operator ${r.qty_printed_operator ?? 0} / ${r.print_qty_total ?? 0}`}
-                  />
-                </td>
-                <td>
-                  <SuratJalanViewButton
-                    order={{ id: r.id, po_number: r.order_number, customer_name: r.customer_name, sj_files: r.sj_files }}
-                    entries={r.sj_files}
-                    label={r.sj_file_count > 1 ? `Lihat Surat Jalan (${r.sj_file_count})` : "Lihat Surat Jalan"}
-                    testid={`ds-sj-lihat-${r.order_number}`}
-                  />
-                </td>
-                <td>
-                  {r.id && (
-                    <Link
-                      className="ghost sm"
-                      to={`/po/${r.id}/kerja?divisi=terkirim`}
-                      state={listNavState}
-                      onClick={() => onOpenPo(r.id)}
-                    >
-                      Kerjakan
-                    </Link>
+            {visible.map((r) => {
+              const locationStatus = locationSetupStatusLabel(r);
+              const locationOk = locationStatus === "Sudah Diatur";
+              return (
+                <tr
+                  key={r.id}
+                  data-testid={`ds-row-${r.order_number}`}
+                  className={canOptimize && r.id && selected.has(r.id) ? "is-selected" : undefined}
+                >
+                  {canOptimize && (
+                    <td>
+                      {r.id ? (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(r.id)}
+                          onChange={() => setSelected(toggleId(selected, r.id))}
+                          aria-label={`Pilih ${r.order_number}`}
+                          data-testid={`ds-checkbox-${r.order_number}`}
+                        />
+                      ) : null}
+                    </td>
                   )}
-                  {canSetLocation && r.id && (
-                    <button
-                      type="button"
-                      className="ghost sm"
-                      data-testid={`ds-atur-lokasi-${r.order_number}`}
-                      onClick={async () => {
-                        setLocRow(await outletRowForOrder({
-                          orderId: r.id,
-                          customer: r.customer_name,
-                        }));
-                      }}
-                    >
-                      Atur Lokasi
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+                  <td className="mono">{formatDate(r.effective_delivery_date, { dateOnly: true })}</td>
+                  <td className="mono">
+                    {r.id ? (
+                      <Link to={`/po/${r.id}`} state={listNavState} onClick={() => onOpenPo(r.id)}>
+                        {r.order_number}
+                      </Link>
+                    ) : (r.order_number || "-")}
+                  </td>
+                  <td>{r.customer_name || "-"}</td>
+                  <td className="mono" data-testid={`ds-deadline-${r.order_number}`}>{formatDate(r.deadline, { dateOnly: true })}</td>
+                  <td className="mono" data-testid={`ds-manual-${r.order_number}`}>{r.jadwal_manual ? formatDate(r.jadwal_manual, { dateOnly: true }) : "—"}</td>
+                  <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>
+                  <td data-testid={`ds-status-lokasi-${r.order_number}`}>
+                    <span className={"pill sm " + (locationOk ? "pill-ok" : "pill-warn")}>
+                      {locationStatus}
+                    </span>
+                  </td>
+                  <td>{r.driver_name || "—"}</td>
+                  <td>
+                    <ProgressCell
+                      pct={r.percent_delivered_display ?? r.percent_delivered}
+                      tone={terkirimTone(r.percent_delivered_display ?? r.percent_delivered)}
+                      testid={`ds-terkirim-${r.order_number}`}
+                      title={`Terkirim ${r.qty_delivered ?? 0} / ${r.qty_total ?? 0}`}
+                    />
+                  </td>
+                  <td>
+                    <ProgressCell
+                      pct={r.percent_ready_to_ship_display ?? r.percent_ready_to_ship}
+                      tone="ready"
+                      testid={`ds-dapat-${r.order_number}`}
+                      title={`Dicetak operator ${r.qty_printed_operator ?? 0} / ${r.print_qty_total ?? 0}`}
+                    />
+                  </td>
+                  <td>
+                    <SuratJalanViewButton
+                      order={{ id: r.id, po_number: r.order_number, customer_name: r.customer_name, sj_files: r.sj_files }}
+                      entries={r.sj_files}
+                      label={r.sj_file_count > 1 ? `Lihat Surat Jalan (${r.sj_file_count})` : "Lihat Surat Jalan"}
+                      testid={`ds-sj-lihat-${r.order_number}`}
+                    />
+                  </td>
+                  <td>
+                    {r.id && (
+                      <Link
+                        className="ghost sm"
+                        to={`/po/${r.id}/kerja?divisi=terkirim`}
+                        state={listNavState}
+                        onClick={() => onOpenPo(r.id)}
+                      >
+                        Kerjakan
+                      </Link>
+                    )}
+                    {canSetLocation && r.id && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        data-testid={`ds-atur-lokasi-${r.order_number}`}
+                        onClick={async () => {
+                          setLocRow(await outletRowForOrder({
+                            orderId: r.id,
+                            customer: r.customer_name,
+                          }));
+                        }}
+                      >
+                        Atur Lokasi
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
             {!visible.length && !busy && (
-              <tr><td colSpan={11} className="empty-state">Tidak ada jadwal pengiriman.</td></tr>
+              <tr><td colSpan={colCount} className="empty-state">Tidak ada jadwal pengiriman.</td></tr>
             )}
           </tbody>
         </table>
