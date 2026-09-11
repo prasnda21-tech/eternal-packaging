@@ -91,6 +91,45 @@ export function driverDisplayLabel(row) {
   return "Belum Ada Driver";
 }
 
+/**
+ * Mirror backend `is_valid_coordinate` (independent_route/geo.py).
+ * Canonical location readiness for route review = valid lat/lng on the review row
+ * (bridged from order delivery_location / outlet). Address text alone is NOT enough.
+ */
+export function hasCanonicalDeliveryCoordinates(row) {
+  const latRaw = row?.lat ?? row?.planning_snapshot?.lat;
+  const lngRaw = row?.lng ?? row?.planning_snapshot?.lng;
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (Math.abs(lat) < 1e-12 && Math.abs(lng) < 1e-12) return false;
+  return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+/** Derived read-only location setup status — does not change eligibility. */
+export function locationSetupStatusLabel(row) {
+  return hasCanonicalDeliveryCoordinates(row) ? "Sudah Diatur" : "Belum Diatur";
+}
+
+/** Presentation only — uses authoritative row.eligible from review API. */
+export function eligibilityStatusLabel(row) {
+  return row?.eligible ? "Eligible" : "Tidak Eligible";
+}
+
+/**
+ * Authoritative ineligibility reasons from review read-model.
+ * Prefer reasons[] (full list); fall back to reason. Do not invent copy.
+ */
+export function eligibilityReasonText(row) {
+  const list = Array.isArray(row?.reasons)
+    ? row.reasons.map((r) => String(r || "").trim()).filter(Boolean)
+    : [];
+  if (list.length) return list.join("; ");
+  const single = String(row?.reason || "").trim();
+  if (single) return single;
+  return row?.eligible ? "" : "Tidak eligible";
+}
+
 /** Rows that would actually change if assigning driverUserId (exact id). */
 export function rowsNeedingDriverChange(rows, selectedIds, driverUserId) {
   const selected = new Set((selectedIds || []).map(String));

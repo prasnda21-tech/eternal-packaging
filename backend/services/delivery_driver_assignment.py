@@ -144,12 +144,23 @@ async def assign_driver_to_order(
 
     before_snap = _loading_snapshot(order)
 
-    # Dotted $set ONLY — never replace whole loading_checklist.
     # Canonical fields only; no Loading completion timestamps.
-    update_fields = {
-        "loading_checklist.driver_user_id": driver["id"],
-        "loading_checklist.driver_name": driver["name"],
-    }
+    # When loading_checklist is null (common on imported/manual POs), MongoDB
+    # rejects dotted $set ("Cannot create field ... in element {loading_checklist: null}").
+    # Only then set a minimal object; otherwise dotted $set preserves sibling keys.
+    lc = order.get("loading_checklist")
+    if isinstance(lc, dict):
+        update_fields = {
+            "loading_checklist.driver_user_id": driver["id"],
+            "loading_checklist.driver_name": driver["name"],
+        }
+    else:
+        update_fields = {
+            "loading_checklist": {
+                "driver_user_id": driver["id"],
+                "driver_name": driver["name"],
+            },
+        }
     await db.orders.update_one({"id": oid}, {"$set": update_fields})
 
     after = await db.orders.find_one({"id": oid}, {"_id": 0})

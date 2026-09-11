@@ -12,7 +12,10 @@ import {
 import {
   buildBulkAssignConfirm,
   driverDisplayLabel,
+  eligibilityReasonText,
+  eligibilityStatusLabel,
   excludeFromSelection,
+  locationSetupStatusLabel,
   parseReviewOrderIds,
   selectAllReviewRows,
   summarizeSelection,
@@ -316,11 +319,22 @@ export default function MobileDeliveryRouteReviewPage() {
                         <span>Tanggal: {formatDate(row.effective_delivery_date, { dateOnly: true })}</span>
                         <span>{row.optimization_status_label}</span>
                       </div>
-                      {!row.eligible && (
-                        <div className="mds-review-reason" data-testid={`mds-review-reason-${id}`}>
-                          {row.reason || (row.reasons || []).join(", ")}
-                        </div>
-                      )}
+                      <div className="mds-review-status" data-testid={`mds-review-status-${id}`}>
+                        <span data-testid={`mds-review-location-status-${id}`}>
+                          Status Atur Lokasi: {locationSetupStatusLabel(row)}
+                        </span>
+                        <span data-testid={`mds-review-eligibility-status-${id}`}>
+                          Eligibility: {eligibilityStatusLabel(row)}
+                        </span>
+                        {!row.eligible ? (
+                          <span
+                            className="mds-review-reason"
+                            data-testid={`mds-review-reason-${id}`}
+                          >
+                            Alasan: {eligibilityReasonText(row)}
+                          </span>
+                        ) : null}
+                      </div>
                       {canAssign && (
                         <div className="mds-review-row-driver" data-testid={`mds-review-pick-driver-${id}`}>
                           <label className="mds-driver-label" htmlFor={`mds-driver-${id}`}>

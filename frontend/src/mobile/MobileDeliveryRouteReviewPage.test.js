@@ -328,4 +328,85 @@ describe("MobileDeliveryRouteReviewPage driver assign", () => {
     const confirm = container.querySelector('[data-testid="mds-review-confirm"]');
     expect(confirm.disabled).toBe(true);
   });
+
+  test("shows Status Atur Lokasi and authoritative eligibility reason per PO", async () => {
+    mockHasPerm.mockImplementation(
+      (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
+    );
+    mockReview.mockResolvedValue({
+      rows: [
+        {
+          sales_order_id: "ord-route",
+          customer_name: "Cust Route",
+          order_number: "PO-ROUTE",
+          eligible: false,
+          reason: "Already in active valid route",
+          reasons: ["Already in active valid route"],
+          lat: -6.2,
+          lng: 106.8,
+          driver_user_id: "drv-a",
+          driver_name: "Driver A",
+          optimization_status_label: "Sudah Dioptimasi",
+        },
+        {
+          sales_order_id: "ord-nocoords",
+          customer_name: "Cust NoCoords",
+          order_number: "PO-NC",
+          eligible: false,
+          reason: "Koordinat belum tersedia",
+          reasons: ["Koordinat belum tersedia"],
+          lat: null,
+          lng: null,
+          driver_user_id: null,
+          driver_name: null,
+          optimization_status_label: "Belum Dioptimasi",
+        },
+        {
+          sales_order_id: "ord-ok",
+          customer_name: "Cust OK",
+          order_number: "PO-OK",
+          eligible: true,
+          reason: null,
+          reasons: [],
+          lat: -6.21,
+          lng: 106.81,
+          driver_user_id: "drv-a",
+          driver_name: "Driver A",
+          optimization_status_label: "Belum Dioptimasi",
+        },
+      ],
+      summary: {},
+      groups: [],
+    });
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+
+    // CASE 1+4: active route + location set
+    expect(container.querySelector('[data-testid="mds-review-location-status-ord-route"]').textContent)
+      .toContain("Sudah Diatur");
+    expect(container.querySelector('[data-testid="mds-review-eligibility-status-ord-route"]').textContent)
+      .toContain("Tidak Eligible");
+    expect(container.querySelector('[data-testid="mds-review-reason-ord-route"]').textContent)
+      .toContain("Already in active valid route");
+    expect(container.querySelector('[data-testid="mds-review-driver-label-ord-route"]').textContent)
+      .toContain("Driver A");
+
+    // CASE 2: location missing + canonical location reason
+    expect(container.querySelector('[data-testid="mds-review-location-status-ord-nocoords"]').textContent)
+      .toContain("Belum Diatur");
+    expect(container.querySelector('[data-testid="mds-review-reason-ord-nocoords"]').textContent)
+      .toContain("Koordinat belum tersedia");
+
+    // CASE 3: location set + eligible (no reason block)
+    expect(container.querySelector('[data-testid="mds-review-location-status-ord-ok"]').textContent)
+      .toContain("Sudah Diatur");
+    expect(container.querySelector('[data-testid="mds-review-eligibility-status-ord-ok"]').textContent)
+      .toMatch(/Eligible/);
+    expect(container.querySelector('[data-testid="mds-review-reason-ord-ok"]')).toBeFalsy();
+
+    // Optimalkan Rute still requires eligible selection count
+    const summary = container.querySelector('[data-testid="mds-review-summary"]').textContent;
+    expect(summary).toMatch(/Eligible:\s*1/);
+  });
 });

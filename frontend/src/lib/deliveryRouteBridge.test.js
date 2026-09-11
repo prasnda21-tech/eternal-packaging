@@ -1,7 +1,11 @@
 import {
   buildBulkAssignConfirm,
   driverDisplayLabel,
+  eligibilityReasonText,
+  eligibilityStatusLabel,
   excludeFromSelection,
+  hasCanonicalDeliveryCoordinates,
+  locationSetupStatusLabel,
   parseReviewOrderIds,
   rowsNeedingDriverChange,
   selectAllEligible,
@@ -123,6 +127,70 @@ describe("deliveryRouteBridge helpers", () => {
     expect(driverDisplayLabel({})).toBe("Belum Ada Driver");
     expect(driverDisplayLabel({ driver_name: "Only Name" })).toBe("Belum Ada Driver");
     expect(driverDisplayLabel({ driver_user_id: "u1", driver_name: "Nanda" })).toBe("Nanda");
+  });
+
+  test("locationSetupStatusLabel mirrors canonical lat/lng readiness", () => {
+    // CASE 2 — location missing (no coords)
+    expect(hasCanonicalDeliveryCoordinates({})).toBe(false);
+    expect(locationSetupStatusLabel({})).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel({ lat: null, lng: null, address: "Jl Ada Alamat" })).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel({ lat: 0, lng: 0 })).toBe("Belum Diatur");
+
+    // CASE 3 — location set
+    expect(hasCanonicalDeliveryCoordinates({ lat: -6.2, lng: 106.8 })).toBe(true);
+    expect(locationSetupStatusLabel({ lat: -6.2, lng: 106.8 })).toBe("Sudah Diatur");
+    expect(locationSetupStatusLabel({ planning_snapshot: { lat: -6.2, lng: 106.8 } })).toBe("Sudah Diatur");
+  });
+
+  test("eligibility presentation uses authoritative reason; location status independent", () => {
+    // CASE 1 — active valid route
+    const activeRoute = {
+      eligible: false,
+      reason: "Already in active valid route",
+      reasons: ["Already in active valid route"],
+      lat: -6.2,
+      lng: 106.8,
+      driver_user_id: "drv-budi",
+      driver_name: "Budi Driver",
+    };
+    expect(eligibilityStatusLabel(activeRoute)).toBe("Tidak Eligible");
+    expect(eligibilityReasonText(activeRoute)).toBe("Already in active valid route");
+    expect(locationSetupStatusLabel(activeRoute)).toBe("Sudah Diatur");
+
+    // CASE 4 — location set + active route (both visible, eligibility unchanged)
+    expect(locationSetupStatusLabel(activeRoute)).toBe("Sudah Diatur");
+    expect(activeRoute.eligible).toBe(false);
+
+    // CASE 2/location reason — only when authoritative reason says so
+    const noCoords = {
+      eligible: false,
+      reasons: ["Belum ada driver", "Koordinat belum tersedia"],
+      lat: null,
+      lng: null,
+    };
+    expect(locationSetupStatusLabel(noCoords)).toBe("Belum Diatur");
+    expect(eligibilityReasonText(noCoords)).toBe("Belum ada driver; Koordinat belum tersedia");
+
+    // CASE 5 — other authoritative reason preserved
+    const delivered = {
+      eligible: false,
+      reasons: ["Sudah terkirim"],
+      lat: -6.2,
+      lng: 106.8,
+    };
+    expect(eligibilityReasonText(delivered)).toBe("Sudah terkirim");
+    expect(locationSetupStatusLabel(delivered)).toBe("Sudah Diatur");
+
+    // CASE 6 — driver assignment does not change location/eligibility presentation inputs
+    const before = { ...activeRoute, sales_order_id: "a" };
+    const afterDriver = { ...before, driver_user_id: "drv-new", driver_name: "New" };
+    expect(locationSetupStatusLabel(afterDriver)).toBe(locationSetupStatusLabel(before));
+    expect(eligibilityReasonText(afterDriver)).toBe(eligibilityReasonText(before));
+    expect(eligibilityStatusLabel(afterDriver)).toBe(eligibilityStatusLabel(before));
+    const summary = summarizeSelection([afterDriver], ["a"]);
+    expect(summary.eligible).toBe(0);
+    expect(summary.ineligible).toBe(1);
+    expect(summary.drivers).toBe(1);
   });
 
   test("rowsNeedingDriverChange uses exact selected ids only", () => {
