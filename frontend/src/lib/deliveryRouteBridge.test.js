@@ -5,6 +5,7 @@ import {
   eligibilityStatusLabel,
   excludeFromSelection,
   hasCanonicalDeliveryCoordinates,
+  locationSetupSortValue,
   locationSetupStatusLabel,
   parseReviewOrderIds,
   rowsNeedingDriverChange,
@@ -145,6 +146,13 @@ describe("deliveryRouteBridge helpers", () => {
     expect(hasCanonicalDeliveryCoordinates({ lat: -6.2, lng: 106.8 })).toBe(true);
     expect(locationSetupStatusLabel({ lat: -6.2, lng: 106.8 })).toBe("Sudah Diatur");
     expect(locationSetupStatusLabel({ planning_snapshot: { lat: -6.2, lng: 106.8 } })).toBe("Sudah Diatur");
+  });
+
+  test("locationSetupSortValue ranks Belum below Sudah from canonical helper", () => {
+    expect(locationSetupSortValue({ lat: null, lng: null, address: "Jl Ada" })).toBe(0);
+    expect(locationSetupSortValue({ lat: 0, lng: 0 })).toBe(0);
+    expect(locationSetupSortValue({ lat: -6.2, lng: 106.8 })).toBe(1);
+    expect(locationSetupSortValue({ planning_snapshot: { lat: -6.2, lng: 106.8 } })).toBe(1);
   });
 
   test("eligibility presentation uses authoritative reason; location status independent", () => {

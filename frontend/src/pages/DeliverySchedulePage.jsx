@@ -47,12 +47,12 @@ function ProgressCell({ pct, tone, testid, title }) {
   );
 }
 
-function SortableTh({ label, sortKey, sort, onCycle, className = "", testid }) {
+function SortableTh({ label, sortKey, sort, onCycle, className = "", testid, thTestid }) {
   const active = sort?.key === sortKey && !!sort?.direction;
   const ariaSort = !active ? "none" : (sort.direction === "asc" ? "ascending" : "descending");
   const Icon = !active ? ArrowUpDown : (sort.direction === "asc" ? ArrowUp : ArrowDown);
   return (
-    <th className={className} aria-sort={ariaSort}>
+    <th className={className} aria-sort={ariaSort} data-testid={thTestid}>
       <button
         type="button"
         className={"ship-th-sort" + (active ? " is-active" : "")}
@@ -120,14 +120,24 @@ export default function DeliverySchedulePage() {
     setErr("");
     try {
       const d = await api.deliverySchedule();
-      setRows(d.rows || []);
+      let nextRows = d.rows || [];
+      // Local visual preview only — dead-code-eliminated from production builds.
+      if (process.env.NODE_ENV === "development") {
+        const params = new URLSearchParams(location.search || "");
+        if (params.get("previewStatusLokasi") === "1") {
+          // eslint-disable-next-line global-require
+          const { STATUS_LOKASI_SORT_DUMMY_ROWS } = require("../lib/deliveryScheduleStatusLokasiFixtures");
+          nextRows = [...STATUS_LOKASI_SORT_DUMMY_ROWS, ...nextRows];
+        }
+      }
+      setRows(nextRows);
     } catch (e) {
       const det = e.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Jadwal Pengiriman"));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [location.search]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -326,7 +336,14 @@ export default function DeliverySchedulePage() {
                 onCycle={onHeaderSort}
                 testid="ds-sort-status"
               />
-              <th data-testid="ds-col-status-lokasi">Status Lokasi</th>
+              <SortableTh
+                label="Status Lokasi"
+                sortKey={DELIVERY_SORT_KEYS.location_status}
+                sort={sort}
+                onCycle={onHeaderSort}
+                testid="ds-sort-status-lokasi"
+                thTestid="ds-col-status-lokasi"
+              />
               <SortableTh
                 label="Driver"
                 sortKey={DELIVERY_SORT_KEYS.driver}

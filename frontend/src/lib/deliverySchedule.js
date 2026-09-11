@@ -1,5 +1,6 @@
 /** Delivery schedule display helpers. Dates are YYYY-MM-DD keys. */
 
+import { locationSetupSortValue } from "./deliveryRouteBridge";
 import {
   EMPTY_SHIP_SORT,
   countActiveShipFilters,
@@ -74,6 +75,7 @@ export const DELIVERY_SORT_KEYS = {
   deadline: "deadline",
   jadwal_manual: "jadwal_manual",
   status: "status",
+  location_status: "location_status",
   driver: "driver",
   shipped: "shipped",
   shippable: "shippable",
@@ -84,6 +86,19 @@ export function cycleDeliverySort(current, key) {
 }
 
 export function sortDeliveryRows(rows, sort = EMPTY_DELIVERY_SORT) {
+  if (sort?.key === DELIVERY_SORT_KEYS.location_status && sort?.direction) {
+    const list = Array.isArray(rows) ? rows : [];
+    const next = list.slice();
+    const direction = sort.direction;
+    next.sort((a, b) => {
+      const va = locationSetupSortValue(a);
+      const vb = locationSetupSortValue(b);
+      if (va === vb) return 0;
+      const cmp = va < vb ? -1 : 1;
+      return direction === "desc" ? -cmp : cmp;
+    });
+    return next;
+  }
   return sortShipRows(rows, sort);
 }
 
