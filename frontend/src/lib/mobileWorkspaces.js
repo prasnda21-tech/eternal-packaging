@@ -83,14 +83,43 @@ export function mobileTaskHref(orderId, workspaceId) {
 }
 
 /**
- * Prefer workspace for schedule table row click — permission-based, never role-name.
- * production → screener / prep / print; delivery → packing / loading / delivery.
+ * Task contexts selectable on Jadwal Pengiriman (presentation only).
+ * Same packing → loading → delivery order as preferredMobileWorkspaceForTable("delivery").
+ * Prefer workspace for schedule row click — permission-based, never role-name.
  */
+export const DELIVERY_SCHEDULE_TASK_IDS = ["packing", "loading", "delivery"];
+
+export function permittedDeliveryScheduleTaskContexts(hasPerm) {
+  const allowed = new Set(DELIVERY_SCHEDULE_TASK_IDS);
+  return permittedMobileWorkspaces(hasPerm).filter((ws) => allowed.has(ws.id));
+}
+
+/**
+ * Resolve Jadwal Pengiriman task-context from ?ws=.
+ * Unauthorized/missing query never grants access — falls back without mutating auth.
+ * Default prefers Pengiriman (schedule page identity) when eligible; else first permitted.
+ */
+export function selectDeliveryScheduleTaskContext(hasPerm, requestedId) {
+  const permitted = permittedDeliveryScheduleTaskContexts(hasPerm);
+  if (!permitted.length) {
+    return { permitted, selected: null, unauthorized: Boolean(requestedId) };
+  }
+  const match = permitted.find((ws) => ws.id === requestedId);
+  if (match) return { permitted, selected: match, unauthorized: false };
+  const fallback = permitted.find((ws) => ws.id === "delivery") || permitted[0];
+  return { permitted, selected: fallback, unauthorized: Boolean(requestedId) };
+}
+
+/** Pengiriman (+ packing) keep the schedule spreadsheet; Loading uses division task cards. */
+export function deliveryScheduleShowsTable(workspaceId) {
+  return workspaceId == null || workspaceId === "delivery" || workspaceId === "packing";
+}
+
 export function preferredMobileWorkspaceForTable(hasPerm, table) {
   const permitted = permittedMobileWorkspaces(hasPerm);
   if (!permitted.length) return null;
   const order = table === "delivery"
-    ? ["packing", "loading", "delivery"]
+    ? DELIVERY_SCHEDULE_TASK_IDS
     : ["screener", "prep", "print", "sample"];
   for (const id of order) {
     const match = permitted.find((ws) => ws.id === id);
@@ -99,7 +128,8 @@ export function preferredMobileWorkspaceForTable(hasPerm, table) {
   return permitted[0];
 }
 
-export function mobileScheduleWorkHref(orderId, hasPerm, table) {
+export function mobileScheduleWorkHref(orderId, hasPerm, table, workspaceId) {
+  if (workspaceId) return mobileTaskHref(orderId, workspaceId);
   const ws = preferredMobileWorkspaceForTable(hasPerm, table);
   return mobileTaskHref(orderId, ws?.id);
 }

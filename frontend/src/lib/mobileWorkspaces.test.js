@@ -2,12 +2,15 @@ import {
   MOBILE_WORKSPACES,
   MOBILE_NAV_ITEMS,
   activeMobileNav,
+  deliveryScheduleShowsTable,
   loadingAvailability,
   mobileTaskHref,
   mobileWorkStatus,
   packingMetrics,
+  permittedDeliveryScheduleTaskContexts,
   permittedMobileWorkspaces,
   poCardPresentation,
+  selectDeliveryScheduleTaskContext,
   selectMobileWorkspace,
   taskSummaryFromList,
   visibleMobileNavItems,
@@ -51,6 +54,43 @@ describe("mobile workspace permissions", () => {
 
   test("catalog has no Semua workspace", () => {
     expect(MOBILE_WORKSPACES.some((w) => /semua/i.test(w.label) || w.id === "all")).toBe(false);
+  });
+});
+
+describe("Jadwal Pengiriman task-context selector", () => {
+  test("CASE A — Loading + Pengiriman options only from eligibility", () => {
+    const opts = permittedDeliveryScheduleTaskContexts(permSet("loading.update", "delivery.update"));
+    expect(opts.map((w) => w.id)).toEqual(["loading", "delivery"]);
+    expect(opts.map((w) => w.label)).toEqual(["Loading", "Pengiriman"]);
+    expect(opts.some((w) => /semua/i.test(w.label))).toBe(false);
+  });
+
+  test("CASE B — delivery-only user does not see Loading", () => {
+    const opts = permittedDeliveryScheduleTaskContexts(permSet("delivery.update"));
+    expect(opts.map((w) => w.id)).toEqual(["delivery"]);
+    const denied = selectDeliveryScheduleTaskContext(permSet("delivery.update"), "loading");
+    expect(denied.unauthorized).toBe(true);
+    expect(denied.selected.id).toBe("delivery");
+    expect(denied.permitted.some((w) => w.id === "loading")).toBe(false);
+  });
+
+  test("default prefers Pengiriman when eligible; honors valid ?ws=", () => {
+    const both = permSet("loading.update", "delivery.update");
+    expect(selectDeliveryScheduleTaskContext(both, null).selected.id).toBe("delivery");
+    expect(selectDeliveryScheduleTaskContext(both, "loading").selected.id).toBe("loading");
+    expect(selectDeliveryScheduleTaskContext(both, "delivery").selected.id).toBe("delivery");
+    expect(selectDeliveryScheduleTaskContext(permSet("loading.update"), null).selected.id).toBe("loading");
+  });
+
+  test("Pengiriman/packing keep schedule table; Loading uses task list", () => {
+    expect(deliveryScheduleShowsTable("delivery")).toBe(true);
+    expect(deliveryScheduleShowsTable("packing")).toBe(true);
+    expect(deliveryScheduleShowsTable(null)).toBe(true);
+    expect(deliveryScheduleShowsTable("loading")).toBe(false);
+  });
+
+  test("screener/print permissions are not Jadwal Pengiriman task contexts", () => {
+    expect(permittedDeliveryScheduleTaskContexts(permSet("screen.update", "operator.update"))).toEqual([]);
   });
 });
 

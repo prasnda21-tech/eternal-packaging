@@ -6,14 +6,32 @@ import MobileDeliverySchedulePage from "./MobileDeliverySchedulePage";
 import {
   EMPTY_DELIVERY_FILTERS,
 } from "../lib/deliverySchedule";
+import {
+  capturePoOpenFromList,
+  resolvePoBackTarget,
+  storageUserKey,
+} from "../lib/poListReturn";
 
 const mockHasPerm = jest.fn(() => false);
 const mockDeliverySchedule = jest.fn();
+const mockDivisionTasks = jest.fn();
 const mockNavigate = jest.fn();
+const mockDsRouter = {
+  search: "",
+  setParams: jest.fn((next) => {
+    if (next instanceof URLSearchParams) mockDsRouter.search = next.toString();
+    else if (next && typeof next === "object") mockDsRouter.search = new URLSearchParams(next).toString();
+  }),
+};
 
 jest.mock("react-router-dom", () => ({
-  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  Link: ({ to, children, state, ...props }) => <a href={to} data-state={state ? JSON.stringify(state) : undefined} {...props}>{children}</a>,
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [new URLSearchParams(mockDsRouter.search), mockDsRouter.setParams],
+  useLocation: () => ({
+    pathname: "/m/delivery-schedule",
+    search: mockDsRouter.search ? `?${mockDsRouter.search}` : "",
+  }),
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
@@ -24,6 +42,7 @@ jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
     deliverySchedule: (...args) => mockDeliverySchedule(...args),
+    divisionTasks: (...args) => mockDivisionTasks(...args),
     listDeliveryOutlets: jest.fn(async () => ({ outlets: [] })),
   },
 }));
@@ -80,6 +99,12 @@ const sampleRows = [
   },
 ];
 
+const flush = async () => {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+};
+
 describe("MobileDeliverySchedulePage", () => {
   let container;
   let root;
@@ -90,8 +115,13 @@ describe("MobileDeliverySchedulePage", () => {
     root = createRoot(container);
     mockHasPerm.mockReset();
     mockDeliverySchedule.mockReset();
+    mockDivisionTasks.mockReset();
     mockNavigate.mockReset();
+    mockDsRouter.search = "";
+    mockDsRouter.setParams.mockClear();
     mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    mockDivisionTasks.mockResolvedValue({ tasks: [] });
+    sessionStorage.clear();
   });
 
   afterEach(() => {
@@ -113,6 +143,7 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => {
       root.render(<MobileDeliverySchedulePage />);
     });
+    await flush();
     expect(mockDeliverySchedule).toHaveBeenCalledTimes(1);
     expect(mockDeliverySchedule).toHaveBeenCalledWith();
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
@@ -221,6 +252,7 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => {
       root.render(<MobileDeliverySchedulePage />);
     });
+    await flush();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]').getAttribute("href")).toBe("/m/orders/o1?ws=delivery");
   });
@@ -292,5 +324,152 @@ describe("MobileDeliverySchedulePage", () => {
     expect(src).toMatch(/canOptimizeFromDeliverySchedule/);
     expect(src).toMatch(/mds-optimasi-rute/);
     expect(src).not.toMatch(/delivery\.route\.optimize/);
+  });
+
+  test("CASE A — Loading + Pengiriman dropdown options from eligibility", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "delivery.update"
+    ));
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const select = container.querySelector('[data-testid="mds-task-select-input"]');
+    expect(select).toBeTruthy();
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Loading", "Pengiriman"]);
+    expect([...select.options].map((o) => o.value)).not.toContain("all");
+    expect(container.textContent).toContain("Tugas");
+  });
+
+  test("CASE B — delivery-only hides Loading; unauthorized ?ws=loading does not grant it", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.update");
+    mockDsRouter.search = "ws=loading";
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-task-select-current"]')?.textContent).toBe("Pengiriman");
+    expect(container.querySelector("select")).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(mockDivisionTasks).not.toHaveBeenCalled();
+  });
+
+  test("CASE C — select Pengiriman shows schedule table and updates ?ws=", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "delivery.update"
+    ));
+    mockDsRouter.search = "ws=loading";
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockDivisionTasks).toHaveBeenCalledWith("loading", "mine");
+    expect(container.querySelector('[data-testid="mds-task-list"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+
+    const select = container.querySelector('[data-testid="mds-task-select-input"]');
+    await act(async () => {
+      select.value = "delivery";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=delivery");
+    mockDsRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]').getAttribute("href")).toBe("/m/orders/o1?ws=delivery");
+    expect(mockDeliverySchedule).toHaveBeenCalled();
+  });
+
+  test("CASE D — select Loading shows Loading task list without mutating deliverySchedule write APIs", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "delivery.update"
+    ));
+    mockDivisionTasks.mockResolvedValue({
+      tasks: [{
+        task_id: "t1",
+        order_id: "o1",
+        order_number: "PO-100",
+        work_date: "2026-09-10",
+        item: "Cup",
+        target_qty: 10,
+        completed_qty: 0,
+        status: "belum",
+        status_label: "Belum Mulai",
+      }],
+    });
+    mockDsRouter.search = "ws=loading";
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockDivisionTasks).toHaveBeenCalledWith("loading", "mine");
+    expect(container.querySelector('[data-testid="mds-task-list"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-task-t1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-task-t1"]').getAttribute("href")).toBe("/m/orders/o1?ws=loading");
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+  });
+
+  test("CASE E/F/G — Pengiriman ?ws= survives open-PO return context and refresh", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const kerja = container.querySelector('[data-testid="mds-kerja-PO-100"]');
+    expect(kerja.getAttribute("href")).toBe("/m/orders/o1?ws=delivery");
+    const state = JSON.parse(kerja.getAttribute("data-state"));
+    expect(state.from).toBe("/m/delivery-schedule?ws=delivery");
+
+    capturePoOpenFromList({
+      user: { id: "u-mds" },
+      orderId: "o1",
+      pathname: "/m/delivery-schedule",
+      search: "?ws=delivery",
+    });
+    expect(resolvePoBackTarget({
+      location: { pathname: "/m/orders/o1", state: { from: "/m/delivery-schedule?ws=delivery" } },
+      userId: storageUserKey({ id: "u-mds" }),
+      orderId: "o1",
+      mobileFallback: "/m/tasks",
+    })).toBe("/m/delivery-schedule?ws=delivery");
+
+    // Refresh keeps query-backed selection (CASE G)
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-task-select-current"]')?.textContent
+      || container.querySelector('[data-testid="mds-task-select-input"]')?.value).toMatch(/delivery|Pengiriman/i);
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+  });
+
+  test("CASE H — session return after refresh-detail still restores Pengiriman", () => {
+    capturePoOpenFromList({
+      user: { id: "u-mds" },
+      orderId: "o9",
+      pathname: "/m/delivery-schedule",
+      search: "ws=delivery",
+    });
+    expect(resolvePoBackTarget({
+      location: { pathname: "/m/orders/o9", state: null },
+      userId: "u-mds",
+      orderId: "o9",
+      mobileFallback: "/m/tasks",
+    })).toBe("/m/delivery-schedule?ws=delivery");
+  });
+
+  test("CASE I — direct PO link falls back safely", () => {
+    expect(resolvePoBackTarget({
+      location: { pathname: "/m/orders/orphan", state: null },
+      userId: "u-mds",
+      orderId: "orphan",
+      mobileFallback: "/m/tasks",
+    })).toBe("/m/tasks");
+  });
+
+  test("CASE L — changing task selector does not call deliverySchedule mutation endpoints", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "delivery.update"
+    ));
+    mockDsRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const select = container.querySelector('[data-testid="mds-task-select-input"]');
+    await act(async () => {
+      select.value = "loading";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(mockDeliverySchedule.mock.calls.every((c) => c.length === 0 || c[0] === undefined)).toBe(true);
+    expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=loading");
   });
 });
