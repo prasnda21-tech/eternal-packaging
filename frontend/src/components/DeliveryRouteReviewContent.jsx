@@ -204,8 +204,11 @@ export default function DeliveryRouteReviewContent({
     }
   };
 
+  // Desktop must NOT use ship-status-page: that class locks html/body/.content to
+  // 100dvh + overflow:hidden (for Jadwal Pengiriman's internal .ship-status-grid scroller)
+  // and would clip this growing review list with no reachable bottom actions.
   const rootClass = isDesktop
-    ? "ship-status-page ds-delivery-review-root"
+    ? "ds-delivery-review-root"
     : "mop-schedule-root mop-delivery-review-root";
   const mainClass = isDesktop
     ? "mds-review-page ds-review-page"
