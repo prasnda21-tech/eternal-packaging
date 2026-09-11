@@ -39,6 +39,81 @@ def public_message(doc: Optional[dict]) -> Optional[dict]:
     return msg
 
 
+def _reply_preview_from_doc(orig: Optional[dict], *, reply_to_message_id: str) -> dict:
+    """Compact read-model for a reply target. Never leaks deleted body content."""
+    if not orig:
+        return {"message_id": reply_to_message_id, "unavailable": True}
+    if orig.get("deleted_at"):
+        return {
+            "message_id": reply_to_message_id,
+            "unavailable": True,
+            "sender_name": orig.get("sender_name"),
+        }
+    content = str(orig.get("content") or "").strip()
+    atts = orig.get("attachments") or []
+    has_image = any(str(a.get("content_type") or "").lower().startswith("image/") for a in atts)
+    if content:
+        preview = content if len(content) <= 120 else f"{content[:120]}…"
+    elif has_image:
+        preview = "[Gambar]"
+    elif atts:
+        preview = "Lampiran"
+    else:
+        preview = ""
+    return {
+        "message_id": reply_to_message_id,
+        "unavailable": False,
+        "sender_name": orig.get("sender_name"),
+        "content_preview": preview,
+        "has_image": has_image,
+        "has_attachment": bool(atts),
+    }
+
+
+async def enrich_reply_previews(db, messages: list[dict] | None, *, room_id: Optional[str] = None) -> list[dict]:
+    """Attach reply_to previews for messages that reference another message in-room."""
+    msgs = [m for m in (messages or []) if m]
+    reply_ids = []
+    for m in msgs:
+        rid = str(m.get("reply_to_message_id") or "").strip()
+        if rid:
+            reply_ids.append(rid)
+    if not reply_ids:
+        return msgs
+    q = {"id": {"$in": list(dict.fromkeys(reply_ids))}}
+    if room_id:
+        q["room_id"] = room_id
+    docs = await db[COLL_MESSAGES].find(q, {"_id": 0}).to_list(len(reply_ids) + 5)
+    by_id = {d["id"]: d for d in docs}
+    out = []
+    for m in msgs:
+        mid = str(m.get("reply_to_message_id") or "").strip()
+        if not mid:
+            out.append(m)
+            continue
+        orig = by_id.get(mid)
+        if orig and room_id and orig.get("room_id") != room_id:
+            orig = None
+        enriched = dict(m)
+        enriched["reply_to"] = _reply_preview_from_doc(orig, reply_to_message_id=mid)
+        out.append(enriched)
+    return out
+
+
+async def _validate_reply_to(db, room_id: str, reply_to_message_id: Optional[str]) -> Optional[str]:
+    if reply_to_message_id is None:
+        return None
+    mid = str(reply_to_message_id or "").strip()
+    if not mid:
+        return None
+    orig = await db[COLL_MESSAGES].find_one({"id": mid}, {"_id": 0, "id": 1, "room_id": 1})
+    if not orig:
+        raise HTTPException(400, "Pesan balasan tidak ditemukan")
+    if orig.get("room_id") != room_id:
+        raise HTTPException(400, "Tidak dapat membalas pesan dari percakapan lain")
+    return mid
+
+
 async def _validate_mentions(db, room: dict, mentions: list[dict] | None) -> list[dict]:
     out = []
     for m in mentions or []:
@@ -82,7 +157,7 @@ async def _validate_attachments(db, room_id: str, attachment_ids: list[str] | No
     return out
 
 
-async def send_message(db, room_id: str, sender: dict, *, content: str = "", client_message_id: Optional[str] = None, mentions=None, work_refs=None, attachment_ids=None) -> dict:
+async def send_message(db, room_id: str, sender: dict, *, content: str = "", client_message_id: Optional[str] = None, mentions=None, work_refs=None, attachment_ids=None, reply_to_message_id=None) -> dict:
     uid = user_id(sender)
     await require_active_member(db, room_id, uid)
     room = await db[COLL_ROOMS].find_one({"id": room_id}, {"_id": 0})
@@ -93,11 +168,13 @@ async def send_message(db, room_id: str, sender: dict, *, content: str = "", cli
     if client_message_id:
         existing = await db[COLL_MESSAGES].find_one({"sender_user_id": uid, "client_message_id": str(client_message_id)}, {"_id": 0})
         if existing:
-            return public_message(existing)
+            enriched = await enrich_reply_previews(db, [public_message(existing)], room_id=room_id)
+            return enriched[0]
     clean_content = str(content or "").strip()
     if not clean_content and not attachment_ids and not work_refs:
         raise HTTPException(400, "Pesan tidak boleh kosong")
     clean_mentions = await _validate_mentions(db, room, mentions)
+    clean_reply_to = await _validate_reply_to(db, room_id, reply_to_message_id)
     snapshots = []
     for ref in work_refs or []:
         if not isinstance(ref, dict):
@@ -131,6 +208,7 @@ async def send_message(db, room_id: str, sender: dict, *, content: str = "", cli
         "mentions": clean_mentions,
         "work_refs": snapshots,
         "attachments": attachments,
+        "reply_to_message_id": clean_reply_to,
         "created_at": now,
         "updated_at": now,
         "edited_at": None,
@@ -142,11 +220,13 @@ async def send_message(db, room_id: str, sender: dict, *, content: str = "", cli
         if client_message_id:
             existing = await db[COLL_MESSAGES].find_one({"sender_user_id": uid, "client_message_id": str(client_message_id)}, {"_id": 0})
             if existing:
-                return public_message(existing)
+                enriched = await enrich_reply_previews(db, [public_message(existing)], room_id=room_id)
+                return enriched[0]
         raise
     await db[COLL_ATTACHMENTS].update_many({"attachment_id": {"$in": [a["attachment_id"] for a in attachments]}}, {"$set": {"message_id": doc["id"], "updated_at": now}})
     await db[COLL_MEMBERS].update_one({"room_id": room_id, "user_id": uid}, {"$max": {"last_read_sequence": sequence}, "$set": {"updated_at": now}})
-    return public_message(doc)
+    enriched = await enrich_reply_previews(db, [public_message(doc)], room_id=room_id)
+    return enriched[0]
 
 
 async def list_messages(db, room_id: str, uid: str, *, before_sequence=None, limit=None) -> list[dict]:
@@ -156,7 +236,8 @@ async def list_messages(db, room_id: str, uid: str, *, before_sequence=None, lim
     if before_sequence is not None and str(before_sequence).strip() != "":
         q["sequence"] = {"$lt": int(before_sequence)}
     docs = await db[COLL_MESSAGES].find(q, {"_id": 0}).sort("sequence", -1).limit(lim).to_list(lim)
-    return [public_message(d) for d in reversed(docs)]
+    msgs = [public_message(d) for d in reversed(docs)]
+    return await enrich_reply_previews(db, msgs, room_id=room_id)
 
 
 async def edit_message(db, message_id: str, editor: dict, content: str) -> dict:
@@ -178,7 +259,9 @@ async def edit_message(db, message_id: str, editor: dict, content: str) -> dict:
         {"id": message_id},
         {"$set": {"content": str(content or "").strip(), "edited_at": now, "updated_at": now}, "$push": {"revisions": rev}},
     )
-    return public_message(await db[COLL_MESSAGES].find_one({"id": message_id}, {"_id": 0}))
+    updated = public_message(await db[COLL_MESSAGES].find_one({"id": message_id}, {"_id": 0}))
+    enriched = await enrich_reply_previews(db, [updated], room_id=msg["room_id"])
+    return enriched[0]
 
 
 async def delete_message(db, message_id: str, actor: dict, *, can_moderate: bool = False) -> dict:
@@ -194,7 +277,9 @@ async def delete_message(db, message_id: str, actor: dict, *, can_moderate: bool
             {"id": message_id},
             {"$set": {"deleted_at": now_iso(), "deleted_by": uid, "updated_at": now_iso()}},
         )
-    return public_message(await db[COLL_MESSAGES].find_one({"id": message_id}, {"_id": 0}))
+    updated = public_message(await db[COLL_MESSAGES].find_one({"id": message_id}, {"_id": 0}))
+    enriched = await enrich_reply_previews(db, [updated], room_id=msg["room_id"])
+    return enriched[0]
 
 
 async def mark_read(db, room_id: str, uid: str, sequence: int) -> dict:
