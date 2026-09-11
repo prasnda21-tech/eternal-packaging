@@ -15,10 +15,28 @@ describe("Optimasi Rute pages", () => {
     expect(NAV_KEYS.routeOptimizer).toBe("nav.route_optimizer");
     expect(app).toMatch(/path="\/optimasi-rute"/);
     expect(app).toMatch(/path="\/optimasi-rute\/baru"/);
+    expect(app).toMatch(/RouteOptimizerLayout/);
     expect(app).toMatch(/path="\/produksi\/rute-saya" element=\{<Navigate to="\/" replace \/>\}/);
     expect(app).not.toMatch(/delivery\.route\.optimize/);
     expect(shell).toMatch(/top-nav-optimasi-rute/);
+    expect(shell).toMatch(/canAccessRoutePage\(hasPerm\)/);
     expect(shell).not.toMatch(/Rute Saya/);
+  });
+
+  test("PWA Lihat Rute stays on shared /optimasi-rute/:id via in-app navigate", () => {
+    const schedule = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliverySchedulePage.jsx"), "utf8");
+    const review = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliveryRouteReviewPage.jsx"), "utf8");
+    expect(schedule).toMatch(/navigateToOptimasiRute/);
+    expect(schedule).toMatch(/mds-lihat-rute-/);
+    expect(schedule).not.toMatch(/window\.open\(/);
+    expect(schedule).not.toMatch(/target=["']_blank["']/);
+    expect(review).toMatch(/navigateToOptimasiRute/);
+    expect(review).toMatch(/mds-review-open-/);
+    expect(review).not.toMatch(/window\.open\(/);
+    expect(review).not.toMatch(/target=["']_blank["']/);
+    expect(editor).toMatch(/target="_blank"/); // Google Maps remains external
+    expect(editor).toMatch(/iro-open-route-maps/);
+    expect(editor).toMatch(/preferMobileOpsShell/);
   });
 
   test("create route, add stop, location and GPS controls", () => {
@@ -69,6 +87,6 @@ describe("Optimasi Rute pages", () => {
     expect(settings).toMatch(/RouteOptimizerSettings/);
     expect(editor).toMatch(/ROUTE_ONLY/);
     expect(editor).toMatch(/tidak membuat master/);
-    expect(list).toMatch(/Tidak terhubung ke Pesanan Penjualan/);
+    expect(list).toMatch(/Rute terhubung ke Pengiriman hanya jika dibuat dari Jadwal Pengiriman/);
   });
 });

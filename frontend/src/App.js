@@ -70,6 +70,7 @@ import OptimasiRuteEditor from "./pages/OptimasiRuteEditor";
 import ChatPage from "./pages/ChatPage";
 import MobileChatPage from "./mobile/MobileChatPage";
 import MobileChatRoomPage from "./mobile/MobileChatRoomPage";
+import RouteOptimizerLayout from "./mobile/RouteOptimizerLayout";
 import "@/App.css";
 import "@/productionSheet.css";
 import "@/ui-system.css";
@@ -203,6 +204,12 @@ export default function App() {
             <Route path="/m/chat/:roomId" element={<MobileChatRoomPage />} />
             <Route path="/m/profile" element={<MobileProfilePage />} />
           </Route>
+          {/* Optimasi Rute: same paths for desktop + PWA; adaptive shell keeps standalone in-app. */}
+          <Route element={<Protected><RouteOptimizerLayout /></Protected>}>
+            <Route path="/optimasi-rute/baru" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.create", "route_optimizer.manage"]}><OptimasiRuteEditor /></PermGate>} />
+            <Route path="/optimasi-rute/:id" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.view", "route_optimizer.create", "route_optimizer.edit_own", "route_optimizer.optimize", "route_optimizer.manage"]}><OptimasiRuteEditor /></PermGate>} />
+            <Route path="/optimasi-rute" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.view", "route_optimizer.create", "route_optimizer.edit_own", "route_optimizer.optimize", "route_optimizer.manage"]}><OptimasiRute /></PermGate>} />
+          </Route>
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
@@ -224,9 +231,6 @@ export default function App() {
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />
             <Route path="/produksi/pengiriman-hari-ini" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
-            <Route path="/optimasi-rute/baru" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.create", "route_optimizer.manage"]}><OptimasiRuteEditor /></PermGate>} />
-            <Route path="/optimasi-rute/:id" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.view", "route_optimizer.create", "route_optimizer.edit_own", "route_optimizer.optimize", "route_optimizer.manage"]}><OptimasiRuteEditor /></PermGate>} />
-            <Route path="/optimasi-rute" element={<PermGate anyOf={[NAV_KEYS.routeOptimizer, "route_optimizer.view", "route_optimizer.create", "route_optimizer.edit_own", "route_optimizer.optimize", "route_optimizer.manage"]}><OptimasiRute /></PermGate>} />
             <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />

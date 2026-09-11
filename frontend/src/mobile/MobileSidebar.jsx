@@ -1,4 +1,4 @@
-import { Bell, CalendarDays, ClipboardList, MessageCircle, Package, Truck, UserRound, X } from "lucide-react";
+import { Bell, CalendarDays, ClipboardList, MessageCircle, Package, Route, Truck, UserRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../lib/auth";
@@ -11,6 +11,7 @@ const ICONS = {
   orders: Package,
   schedule: CalendarDays,
   deliverySchedule: Truck,
+  optimasiRute: Route,
   chat: MessageCircle,
   notifications: Bell,
   profile: UserRound,

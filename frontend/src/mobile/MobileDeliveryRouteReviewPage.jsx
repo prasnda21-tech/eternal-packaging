@@ -21,6 +21,7 @@ import {
   summarizeSelection,
   toggleId,
 } from "../lib/deliveryRouteBridge";
+import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
 import MobileTopBar from "./MobileTopBar";
 
 export default function MobileDeliveryRouteReviewPage() {
@@ -413,9 +414,16 @@ export default function MobileDeliveryRouteReviewPage() {
                     <span>{g.driver_name || g.driver_user_id}</span>
                     <span>{g.ok ? "OK" : g.error || "Gagal"}</span>
                     {g.route_id ? (
-                      <Link to={`/optimasi-rute/${encodeURIComponent(g.route_id)}`} data-testid={`mds-review-open-${g.route_id}`}>
+                      <button
+                        type="button"
+                        className="mds-opt-link"
+                        data-testid={`mds-review-open-${g.route_id}`}
+                        onClick={() => navigateToOptimasiRute(navigate, g.route_id, {
+                          from: `${window.location.pathname}${window.location.search}`,
+                        })}
+                      >
                         Lihat Rute
-                      </Link>
+                      </button>
                     ) : null}
                   </div>
                 ))}

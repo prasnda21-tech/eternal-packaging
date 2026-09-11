@@ -1,12 +1,14 @@
-/** Preserve /m/* after login without changing desktop default (/). */
+/** Preserve /m/* (and PWA Optimasi Rute) after login without changing desktop default (/). */
 
 export function isSafeMobileNextPath(path) {
   if (typeof path !== "string") return false;
   const value = path.trim();
-  if (!value.startsWith("/m")) return false;
   if (value.startsWith("//") || value.includes("://")) return false;
   if (value.includes("\\")) return false;
-  return true;
+  if (value.startsWith("/m")) return true;
+  // Keep installed-PWA users on the shared in-app Optimasi Rute editor after re-auth.
+  if (value === "/optimasi-rute" || value.startsWith("/optimasi-rute/")) return true;
+  return false;
 }
 
 export function loginPathForLocation(pathname, search = "") {

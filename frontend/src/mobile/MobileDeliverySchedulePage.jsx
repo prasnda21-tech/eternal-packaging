@@ -25,7 +25,9 @@ import {
   mobileScheduleReviewHref,
   optimizationStatusMeta,
 } from "../lib/mobileDeliverySchedule";
-import { ROUTE_PERMS } from "../lib/independentRoute";import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
+import { canAccessRoutePage } from "../lib/independentRoute";
+import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
+import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
 import {
   OPS_QUICK_FILTERS,
   deliveryOpsBadge,
@@ -420,18 +422,21 @@ export default function MobileDeliverySchedulePage() {
                               return (
                                 <span className={`mds-opt-badge is-${meta.code}`} title={meta.label}>
                                   {meta.label}
-                                  {meta.code === "sudah_dioptimasi" && meta.routeId && hasPerm(ROUTE_PERMS.view) ? (
-                                    <Link
+                                  {meta.code === "sudah_dioptimasi" && meta.routeId && canAccessRoutePage(hasPerm) ? (
+                                    <button
+                                      type="button"
                                       className="mds-opt-link"
-                                      to={`/optimasi-rute/${encodeURIComponent(meta.routeId)}`}
                                       data-testid={`mds-lihat-rute-${r.order_number}`}
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         persistScroll();
+                                        navigateToOptimasiRute(navigate, meta.routeId, {
+                                          from: `${window.location.pathname}${window.location.search}`,
+                                        });
                                       }}
                                     >
                                       Lihat Rute
-                                    </Link>
+                                    </button>
                                   ) : null}
                                 </span>
                               );

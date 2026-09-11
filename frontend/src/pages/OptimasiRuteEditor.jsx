@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowDown, ArrowUp, MapPin, Navigation, Plus, RefreshCw, Save, Sparkles } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -34,6 +34,9 @@ import {
   startModeLabel,
   statusLabel,
 } from "../lib/independentRoute";
+import { preferMobileOpsShell } from "../lib/mobileOpsShell";
+import { MOBILE_DELIVERY_SCHEDULE_PATH } from "../lib/mobileDeliverySchedule";
+import MobileTopBar from "../mobile/MobileTopBar";
 
 const emptyDraft = {
   name: "",
@@ -50,7 +53,12 @@ export default function OptimasiRuteEditor() {
   const { id } = useParams();
   const isNew = !id || id === "baru";
   const navigate = useNavigate();
+  const location = useLocation();
   const { hasPerm } = useAuth();
+  const inMobileShell = preferMobileOpsShell();
+  const backTo = (typeof location.state?.from === "string" && location.state.from.startsWith("/"))
+    ? location.state.from
+    : (inMobileShell ? MOBILE_DELIVERY_SCHEDULE_PATH : "/optimasi-rute");
   const [route, setRoute] = useState(null);
   const [settings, setSettings] = useState(null);
   const [draft, setDraft] = useState(emptyDraft);
@@ -226,10 +234,22 @@ export default function OptimasiRuteEditor() {
   }, [mapPoints, stops]);
 
   return (
-    <div className="iro-page iro-editor" data-testid="iro-editor-page">
+    <div className={`iro-page iro-editor${inMobileShell ? " iro-page--mobile" : ""}`} data-testid="iro-editor-page">
+      {inMobileShell ? (
+        <MobileTopBar
+          title={isNew ? "Buat Rute" : (draft.name || "Detail Rute")}
+          onBack={() => navigate(backTo)}
+        />
+      ) : null}
       <div className="iro-hero">
         <div>
-          <Link to="/optimasi-rute" className="iro-back">← Daftar rute</Link>
+          {!inMobileShell ? (
+            <Link to={backTo} className="iro-back">← Daftar rute</Link>
+          ) : (
+            <button type="button" className="iro-back" onClick={() => navigate(backTo)} data-testid="iro-mobile-back">
+              ← Kembali
+            </button>
+          )}
           <h1>{isNew ? "Buat Rute" : draft.name || "Detail Rute"}</h1>
           {!isNew && (
             <div className="iro-hero-meta">
@@ -271,7 +291,7 @@ export default function OptimasiRuteEditor() {
                 setError("");
                 try {
                   await api.deleteIndependentRoute(route.id);
-                  navigate("/optimasi-rute");
+                  navigate(backTo);
                 } catch (e) {
                   setError(e?.response?.data?.detail || "Gagal menghapus rute.");
                 } finally {

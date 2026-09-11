@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react"
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
+import { canAccessRoutePage } from "../lib/independentRoute";
 import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { moduleFromPath } from "../lib/uiModule";
@@ -278,7 +279,7 @@ export default function AppShell() {
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
   const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
-  const showRouteOptimizer = hasPerm(NAV_KEYS.routeOptimizer) || hasPerm("route_optimizer.view") || hasPerm("route_optimizer.create") || hasPerm("route_optimizer.manage");
+  const showRouteOptimizer = canAccessRoutePage(hasPerm);
   const showSettings = hasPerm(NAV_KEYS.settings);
 
   const flyoutOpen = !!activeSidebarMenu;
