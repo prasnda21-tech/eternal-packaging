@@ -5,6 +5,7 @@ import {
   parseReviewOrderIds,
   rowsNeedingDriverChange,
   selectAllEligible,
+  selectAllReviewRows,
   sourceTypeLabel,
   summarizeSelection,
   toggleId,
@@ -33,10 +34,24 @@ describe("deliveryRouteBridge helpers", () => {
       { sales_order_id: "c", eligible: true },
     ];
     expect(selectAllEligible(rows)).toEqual(["a", "c"]);
+    expect(selectAllReviewRows(rows)).toEqual(["a", "b", "c"]);
     expect(excludeFromSelection(["a", "c"], ["a"])).toEqual(["c"]);
   });
 
-  test("summarizeSelection groups by driver id", () => {
+  test("selectAllReviewRows keeps ineligible ids for bulk driver selection", () => {
+    const rows = [
+      { sales_order_id: "x", eligible: false },
+      { sales_order_id: "y", eligible: false },
+    ];
+    expect(selectAllEligible(rows)).toEqual([]);
+    expect(selectAllReviewRows(rows)).toEqual(["x", "y"]);
+    const summary = summarizeSelection(rows, selectAllReviewRows(rows));
+    expect(summary.selected).toBe(2);
+    expect(summary.eligible).toBe(0);
+    expect(summary.ineligible).toBe(2);
+  });
+
+  test("summarizeSelection Driver counts persisted assignments; route groups stay eligible-only", () => {
     const rows = [
       { sales_order_id: "a", eligible: true, driver_user_id: "d1", driver_name: "A" },
       { sales_order_id: "b", eligible: true, driver_user_id: "d1", driver_name: "A" },
@@ -47,8 +62,61 @@ describe("deliveryRouteBridge helpers", () => {
     expect(summary.selected).toBe(4);
     expect(summary.eligible).toBe(3);
     expect(summary.ineligible).toBe(1);
-    expect(summary.drivers).toBe(2);
+    // Driver:N = selected rows with persisted driver (a,b,c), not unique eligible groups.
+    expect(summary.drivers).toBe(3);
     expect(summary.routes_to_create).toBe(2);
+    expect(summary.groups).toHaveLength(2);
+  });
+
+  test("summarizeSelection Driver count after save with ineligible rows (regression)", () => {
+    // CASE 1: none assigned
+    expect(
+      summarizeSelection(
+        [
+          { sales_order_id: "a", eligible: false, driver_user_id: null },
+          { sales_order_id: "b", eligible: false, driver_user_id: "" },
+        ],
+        ["a", "b"],
+      ).drivers,
+    ).toBe(0);
+
+    // CASE 2: one persisted
+    expect(
+      summarizeSelection(
+        [
+          { sales_order_id: "a", eligible: false, driver_user_id: "drv-budi" },
+          { sales_order_id: "b", eligible: false, driver_user_id: null },
+        ],
+        ["a", "b"],
+      ).drivers,
+    ).toBe(1);
+
+    // CASE 3: both persisted but still ineligible (e.g. already in active valid route)
+    const both = summarizeSelection(
+      [
+        {
+          sales_order_id: "a",
+          eligible: false,
+          driver_user_id: "drv-budi",
+          driver_name: "Budi Driver",
+          reason: "Already in active valid route",
+        },
+        {
+          sales_order_id: "b",
+          eligible: false,
+          driver_user_id: "drv-budi",
+          driver_name: "Budi Driver",
+          reason: "Already in active valid route",
+        },
+      ],
+      ["a", "b"],
+    );
+    expect(both.selected).toBe(2);
+    expect(both.eligible).toBe(0);
+    expect(both.ineligible).toBe(2);
+    expect(both.drivers).toBe(2);
+    expect(both.routes_to_create).toBe(0);
+    expect(both.groups).toEqual([]);
   });
 
   test("driverDisplayLabel shows Belum Ada Driver when empty", () => {

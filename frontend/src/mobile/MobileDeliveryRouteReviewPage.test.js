@@ -34,7 +34,14 @@ jest.mock("../lib/api", () => ({
 
 jest.mock("./MobileTopBar", () => ({
   __esModule: true,
-  default: ({ title }) => <header data-testid="mobile-top-bar">{title}</header>,
+  default: ({ title, onBack }) => (
+    <header data-testid="mobile-top-bar">
+      {title}
+      {onBack ? (
+        <button type="button" data-testid="mobile-back" onClick={onBack}>Kembali</button>
+      ) : null}
+    </header>
+  ),
 }));
 
 global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -154,6 +161,78 @@ describe("MobileDeliveryRouteReviewPage driver assign", () => {
     expect(container.querySelector('[data-testid="mds-review-driver-label-ord-a"]').textContent).toContain("Driver B");
   });
 
+  test("Driver summary uses persisted driver after Save even when still ineligible", async () => {
+    mockHasPerm.mockImplementation(
+      (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
+    );
+    mockAssign.mockResolvedValue({
+      ok: true,
+      result: { status: "updated", driver_user_id: "drv-b", driver_name: "Driver B", sales_order_id: "ord-a" },
+    });
+    mockReview
+      .mockResolvedValueOnce({
+        rows: [
+          { ...baseRows[0], sales_order_id: "ord-a", eligible: false, reason: "Already in active valid route", driver_user_id: null, driver_name: null },
+          { ...baseRows[0], sales_order_id: "ord-b", eligible: false, reason: "Already in active valid route", driver_user_id: null, driver_name: null },
+        ],
+        summary: {},
+        groups: [],
+      })
+      .mockResolvedValueOnce({
+        // After save: draft cleared via reload; persisted drivers present; still ineligible.
+        rows: [
+          {
+            ...baseRows[0],
+            sales_order_id: "ord-a",
+            eligible: false,
+            reason: "Already in active valid route",
+            driver_user_id: "drv-b",
+            driver_name: "Driver B",
+          },
+          {
+            ...baseRows[0],
+            sales_order_id: "ord-b",
+            eligible: false,
+            reason: "Already in active valid route",
+            driver_user_id: "drv-b",
+            driver_name: "Driver B",
+          },
+        ],
+        summary: {},
+        groups: [],
+      });
+
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+    const summaryBefore = container.querySelector('[data-testid="mds-review-summary"]').textContent;
+    expect(summaryBefore).toMatch(/Dipilih:\s*2/);
+    expect(summaryBefore).toMatch(/Eligible:\s*0/);
+    expect(summaryBefore).toMatch(/Tidak eligible:\s*2/);
+    expect(summaryBefore).toMatch(/Driver:\s*0/);
+
+    const select = container.querySelector('[data-testid="mds-review-driver-select-ord-a"]');
+    await act(async () => {
+      select.value = "drv-b";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mds-review-driver-save-ord-a"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockAssign).toHaveBeenCalledWith("ord-a", "drv-b");
+    expect(container.querySelector('[data-testid="mds-review-driver-label-ord-a"]').textContent).toContain("Driver B");
+    expect(container.querySelector('[data-testid="mds-review-driver-label-ord-b"]').textContent).toContain("Driver B");
+    const summaryAfter = container.querySelector('[data-testid="mds-review-summary"]').textContent;
+    expect(summaryAfter).toMatch(/Dipilih:\s*2/);
+    expect(summaryAfter).toMatch(/Eligible:\s*0/);
+    expect(summaryAfter).toMatch(/Tidak eligible:\s*2/);
+    expect(summaryAfter).toMatch(/Driver:\s*2/);
+    expect(summaryAfter).toMatch(/Rute dibuat:\s*0/);
+    expect(container.querySelector('[data-testid="mds-review-confirm"]').disabled).toBe(true);
+  });
+
   test("bulk Terapkan ke Terpilih posts exact selected ids", async () => {
     mockHasPerm.mockImplementation(
       (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
@@ -166,7 +245,7 @@ describe("MobileDeliveryRouteReviewPage driver assign", () => {
     await act(async () => {
       root.render(<MobileDeliveryRouteReviewPage />);
     });
-    // deselect eligible ord-b (auto-selected); keep ord-a by checking it
+    // Initial select-all now includes ineligible ord-a; deselect eligible ord-b.
     const checkB = container.querySelector('[data-testid="mds-review-check-ord-b"]');
     await act(async () => {
       checkB.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -191,5 +270,62 @@ describe("MobileDeliveryRouteReviewPage driver assign", () => {
     expect(ids).toEqual(["ord-a"]);
     expect(driverId).toBe("drv-b");
     expect(window.confirm).toHaveBeenCalled();
+  });
+
+  test("Pilih Semua selects ineligible rows and Keluarkan clears selection", async () => {
+    mockHasPerm.mockImplementation(
+      (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
+    );
+    mockReview.mockResolvedValue({
+      rows: [baseRows[0]],
+      summary: {},
+      groups: [],
+    });
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+    // After load, ineligible row is pre-selected for bulk driver workflow.
+    expect(container.querySelector('[data-testid="mds-review-check-ord-a"]').checked).toBe(true);
+    expect(container.querySelector('[data-testid="mds-review-summary"]').textContent).toMatch(/Dipilih:\s*1/);
+    expect(container.querySelector('[data-testid="mds-review-summary"]').textContent).toMatch(/Eligible:\s*0/);
+
+    await act(async () => {
+      container.querySelector('[data-testid="mds-review-exclude"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mds-review-check-ord-a"]').checked).toBe(false);
+    expect(container.querySelector('[data-testid="mds-review-summary"]').textContent).toMatch(/Dipilih:\s*0/);
+
+    await act(async () => {
+      container.querySelector('[data-testid="mds-review-select-all"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mds-review-check-ord-a"]').checked).toBe(true);
+    expect(container.querySelector('[data-testid="mds-review-summary"]').textContent).toMatch(/Dipilih:\s*1/);
+  });
+
+  test("Kembali links to canonical delivery schedule path", async () => {
+    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+    const back = container.querySelector('[data-testid="mds-review-back"]');
+    expect(back.getAttribute("href")).toBe("/m/delivery-schedule");
+  });
+
+  test("Optimalkan Rute stays disabled when selected rows are ineligible", async () => {
+    mockHasPerm.mockImplementation(
+      (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
+    );
+    mockReview.mockResolvedValue({
+      rows: [baseRows[0]],
+      summary: {},
+      groups: [],
+    });
+    await act(async () => {
+      root.render(<MobileDeliveryRouteReviewPage />);
+    });
+    const confirm = container.querySelector('[data-testid="mds-review-confirm"]');
+    expect(confirm.disabled).toBe(true);
   });
 });

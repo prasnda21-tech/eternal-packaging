@@ -14,7 +14,7 @@ import {
   driverDisplayLabel,
   excludeFromSelection,
   parseReviewOrderIds,
-  selectAllEligible,
+  selectAllReviewRows,
   summarizeSelection,
   toggleId,
 } from "../lib/deliveryRouteBridge";
@@ -26,7 +26,9 @@ export default function MobileDeliveryRouteReviewPage() {
   const { hasPerm } = useAuth();
   const allowed = canOptimizeFromDeliverySchedule(hasPerm);
   const canAssign = canAssignDeliveryDriver(hasPerm);
-  const orderIds = useMemo(() => parseReviewOrderIds(params.toString()), [params]);
+  // Stabilize on search string — URLSearchParams identity can churn and re-fire load().
+  const idsQuery = params.toString();
+  const orderIds = useMemo(() => parseReviewOrderIds(idsQuery), [idsQuery]);
 
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -54,7 +56,8 @@ export default function MobileDeliveryRouteReviewPage() {
       setRows(data.rows || []);
       setSummary(data.summary || null);
       setGroups(data.groups || []);
-      setSelected(selectAllEligible(data.rows || []));
+      // Selection includes ineligible rows so bulk driver assign works before Optimalkan Rute.
+      setSelected(selectAllReviewRows(data.rows || []));
       setRowDraft({});
     } catch (e) {
       setErr(formatApiError(e, "Gagal memuat review optimasi."));
@@ -183,8 +186,14 @@ export default function MobileDeliveryRouteReviewPage() {
 
   return (
     <div className="mop-schedule-root mop-delivery-review-root">
-      <MobileTopBar kicker="ETERNAL PACKAGING" title="Review Pengiriman Terpilih" />
-      <main className="mop-content mop-schedule-page mds-review-page" data-testid="mds-review-page">
+      <MobileTopBar
+        kicker="ETERNAL PACKAGING"
+        title="Review Pengiriman Terpilih"
+        onBack={() => navigate(MOBILE_DELIVERY_SCHEDULE_PATH)}
+      />
+      {/* Do not use mop-schedule-page here: its overflow:hidden + non-scrolling flex layout
+          traps native <select> / toolbar taps on PWA/mobile WebKit. */}
+      <main className="mop-content mds-review-page" data-testid="mds-review-page">
         {!allowed && (
           <div className="mop-error" data-testid="mds-review-forbidden">
             <p>Anda tidak punya izin optimasi rute.</p>
@@ -201,8 +210,8 @@ export default function MobileDeliveryRouteReviewPage() {
                 type="button"
                 className="mop-btn-ghost"
                 data-testid="mds-review-select-all"
-                onClick={() => setSelected(selectAllEligible(rows))}
-                disabled={busy}
+                onClick={() => setSelected(selectAllReviewRows(rows))}
+                disabled={busy || rows.length === 0}
               >
                 Pilih Semua
               </button>
@@ -227,12 +236,12 @@ export default function MobileDeliveryRouteReviewPage() {
                   className="mds-driver-select"
                   data-testid="mds-review-bulk-driver-select"
                   value={bulkDriverId}
-                  onChange={(e) => setBulkDriverId(e.target.value)}
+                  onChange={(e) => setBulkDriverId(String(e.target.value))}
                   disabled={bulkBusy || busy || !!driversErr}
                 >
                   <option value="">Pilih Driver</option>
                   {drivers.map((d) => (
-                    <option key={d.id} value={d.id}>
+                    <option key={String(d.id)} value={String(d.id)}>
                       {d.name || d.id}
                     </option>
                   ))}
@@ -321,9 +330,9 @@ export default function MobileDeliveryRouteReviewPage() {
                             id={`mds-driver-${id}`}
                             className="mds-driver-select"
                             data-testid={`mds-review-driver-select-${id}`}
-                            value={draft || ""}
+                            value={draft ? String(draft) : ""}
                             onChange={(e) =>
-                              setRowDraft((prev) => ({ ...prev, [id]: e.target.value }))
+                              setRowDraft((prev) => ({ ...prev, [id]: String(e.target.value) }))
                             }
                             disabled={!!rowSaving[id] || busy}
                           >
@@ -331,7 +340,7 @@ export default function MobileDeliveryRouteReviewPage() {
                               {row.driver_user_id ? "— pilih driver —" : "Belum Ada Driver"}
                             </option>
                             {drivers.map((d) => (
-                              <option key={d.id} value={d.id}>
+                              <option key={String(d.id)} value={String(d.id)}>
                                 {d.name || d.id}
                               </option>
                             ))}

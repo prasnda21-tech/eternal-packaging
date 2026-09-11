@@ -29,9 +29,20 @@ export function selectAllEligible(rows) {
   return (rows || []).filter((r) => r.eligible).map((r) => String(r.sales_order_id));
 }
 
+/** All review rows (selection for bulk driver / exclude). Eligibility is enforced separately by Optimalkan Rute. */
+export function selectAllReviewRows(rows) {
+  return (rows || [])
+    .map((r) => String(r?.sales_order_id || "").trim())
+    .filter(Boolean);
+}
+
 export function excludeFromSelection(selected, ids) {
   const drop = new Set((ids || []).map(String));
   return (selected || []).filter((id) => !drop.has(String(id)));
+}
+
+function persistedDriverUserId(row) {
+  return String(row?.driver_user_id || "").trim();
 }
 
 export function summarizeSelection(rows, selectedIds) {
@@ -39,9 +50,14 @@ export function summarizeSelection(rows, selectedIds) {
   const chosen = (rows || []).filter((r) => selected.has(String(r.sales_order_id)));
   const eligible = chosen.filter((r) => r.eligible);
   const ineligible = chosen.filter((r) => !r.eligible);
+  // Driver: N = selected rows that already have a persisted driver assignment.
+  // Do NOT derive this from eligible-only route groups — ineligible POs can still have drivers.
+  const driversAssigned = chosen.filter((r) => Boolean(persistedDriverUserId(r))).length;
+  // Route groups remain eligible-only (Optimalkan Rute semantics unchanged).
   const byDriver = new Map();
   for (const row of eligible) {
-    const key = String(row.driver_user_id || "");
+    const key = persistedDriverUserId(row);
+    if (!key) continue;
     if (!byDriver.has(key)) {
       byDriver.set(key, {
         driver_user_id: key,
@@ -56,7 +72,7 @@ export function summarizeSelection(rows, selectedIds) {
     selected: chosen.length,
     eligible: eligible.length,
     ineligible: ineligible.length,
-    drivers: groups.length,
+    drivers: driversAssigned,
     routes_to_create: groups.length,
     groups,
   };
