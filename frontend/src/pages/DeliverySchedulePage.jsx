@@ -126,8 +126,15 @@ export default function DeliverySchedulePage() {
         const params = new URLSearchParams(location.search || "");
         if (params.get("previewStatusLokasi") === "1") {
           // eslint-disable-next-line global-require
-          const { STATUS_LOKASI_SORT_DUMMY_ROWS } = require("../lib/deliveryScheduleStatusLokasiFixtures");
-          nextRows = [...STATUS_LOKASI_SORT_DUMMY_ROWS, ...nextRows];
+          const {
+            STATUS_LOKASI_SORT_DUMMY_ROWS,
+            TABLE_UI_PREVIEW_DUMMY_ROWS,
+          } = require("../lib/deliveryScheduleStatusLokasiFixtures");
+          nextRows = [
+            ...STATUS_LOKASI_SORT_DUMMY_ROWS,
+            ...TABLE_UI_PREVIEW_DUMMY_ROWS,
+            ...nextRows,
+          ];
         }
       }
       setRows(nextRows);
@@ -382,7 +389,7 @@ export default function DeliverySchedulePage() {
                   className={canOptimize && r.id && selected.has(r.id) ? "is-selected" : undefined}
                 >
                   {canOptimize && (
-                    <td>
+                    <td className="ship-check">
                       {r.id ? (
                         <input
                           type="checkbox"
@@ -402,7 +409,7 @@ export default function DeliverySchedulePage() {
                       </Link>
                     ) : (r.order_number || "-")}
                   </td>
-                  <td>{r.customer_name || "-"}</td>
+                  <td className="ship-cust" title={r.customer_name || undefined}>{r.customer_name || "-"}</td>
                   <td className="mono" data-testid={`ds-deadline-${r.order_number}`}>{formatDate(r.deadline, { dateOnly: true })}</td>
                   <td className="mono" data-testid={`ds-manual-${r.order_number}`}>{r.jadwal_manual ? formatDate(r.jadwal_manual, { dateOnly: true }) : "—"}</td>
                   <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>

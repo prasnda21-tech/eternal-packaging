@@ -77,3 +77,77 @@ export const STATUS_LOKASI_SORT_DUMMY_ROWS = [
     driver_name: "Dummy Driver B",
   }),
 ];
+
+/**
+ * Batch 1B table-UI preview rows (long customer text, mixed progress / pills).
+ * Concatenated after STATUS_LOKASI_SORT_DUMMY_ROWS in the same dev-only preview path.
+ * Kept separate so Status Lokasi ASC/DESC contract tests stay on the original four IDs.
+ */
+export const TABLE_UI_PREVIEW_DUMMY_ROWS = [
+  baseRow({
+    id: "dummy-table-ord-001",
+    order_number: "DUMMY-TABLE-PO-001",
+    customer_name:
+      "PT Eternal Packaging Nusantara Cabang Industri Timur — Outlet Cikarang Blok F12 Long Name Preview",
+    lat: null,
+    lng: null,
+    percent_delivered: 5,
+    percent_ready_to_ship: 35,
+    qty_delivered: 50,
+    qty_printed_operator: 350,
+    status_label: "Belum Dijadwalkan",
+    status: "belum_dijadwalkan",
+  }),
+  baseRow({
+    id: "dummy-table-ord-002",
+    order_number: "DUMMY-TABLE-PO-002",
+    customer_name: "CV Sumber Makmur Abadi Sejahtera Cabang Bekasi Utara Preview Ellipsis",
+    lat: -6.2383,
+    lng: 106.9756,
+    percent_delivered: 55,
+    percent_ready_to_ship: 80,
+    qty_delivered: 550,
+    qty_printed_operator: 800,
+    driver_name: "Driver Preview 2",
+  }),
+  baseRow({
+    id: "dummy-table-ord-003",
+    order_number: "DUMMY-TABLE-PO-003",
+    customer_name: "UD Maju Jaya Packindo",
+    address: "Jl Preview Tanpa Koordinat No. 99",
+    lat: null,
+    lng: null,
+    percent_delivered: 0,
+    percent_ready_to_ship: 0,
+    qty_delivered: 0,
+    qty_printed_operator: 0,
+  }),
+  baseRow({
+    id: "dummy-table-ord-004",
+    order_number: "DUMMY-TABLE-PO-004",
+    customer_name: "PT Indo Box Multipack International Distribution Center Serpong",
+    lat: -6.3015,
+    lng: 106.6527,
+    percent_delivered: 90,
+    percent_ready_to_ship: 100,
+    qty_delivered: 900,
+    qty_printed_operator: 1000,
+    driver_name: "Driver Preview 4",
+    status_label: "Terkirim Sebagian",
+    status: "terkirim_sebagian",
+  }),
+  baseRow({
+    id: "dummy-table-ord-005",
+    order_number: "DUMMY-TABLE-PO-005",
+    customer_name: "Toko Packaging Ringkas",
+    lat: -6.1754,
+    lng: 106.8272,
+    percent_delivered: 100,
+    percent_ready_to_ship: 100,
+    qty_delivered: 1000,
+    qty_printed_operator: 1000,
+    driver_name: "Driver Preview 5",
+    status_label: "Terkirim",
+    status: "terkirim",
+  }),
+];

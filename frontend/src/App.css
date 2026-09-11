@@ -3593,16 +3593,20 @@ html:has(.ship-status-page) #root{
 .ship-tool-btn.is-active{
   border-color:var(--ep-primary);color:var(--ep-dark);background:#ECFDF5;
 }
+/* ---- Batch 1B: ops-list `.ship-table` interaction density ---- */
 .ship-th-sort{
   display:inline-flex;align-items:center;gap:4px;max-width:100%;
   margin:0;padding:0;border:0;background:transparent;color:inherit;
   font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer;white-space:nowrap;
+  border-radius:2px;
 }
 .ship-th-sort:hover{color:#fff}
+.ship-th-sort:focus{outline:none}
+.ship-th-sort:focus-visible{outline:2px solid #A7F3D0;outline-offset:2px;color:#fff}
 .ship-th-sort svg{flex:0 0 auto;opacity:.55}
 .ship-th-sort.is-active{color:#ECFDF5;font-weight:700}
 .ship-th-sort.is-active svg{opacity:1;color:#A7F3D0}
-.ship-table thead th.num .ship-th-sort{justify-content:center;width:100%}
+.ship-table thead th.num .ship-th-sort{justify-content:flex-end;width:100%}
 .ship-filter-modal{max-width:520px;width:100%}
 .ship-filter-panel-body{
   display:grid;gap:10px;padding:14px 18px;overflow-y:auto;min-height:0;flex:1 1 auto;
@@ -3627,9 +3631,16 @@ html:has(.ship-status-page) #root{
 .ship-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:auto;font-size:12.5px;color:var(--ink,#0F172A)}
 .ship-table thead th{
   position:sticky;top:0;z-index:2;background:var(--ship-head-bg);color:#fff;font:600 11px/1.35 'IBM Plex Sans',sans-serif;
-  letter-spacing:.04em;text-transform:uppercase;padding:8px 10px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--ship-head-border);
+  letter-spacing:.04em;text-transform:uppercase;padding:7px 10px;text-align:left;white-space:nowrap;
+  border-bottom:1px solid var(--ship-head-border);
+  /* readable separation while scrolling without table drop-shadow */
+  box-shadow:inset 0 -1px 0 var(--ship-head-border);
+  vertical-align:middle;
 }
-.ship-table thead th.num{text-align:center}
+.ship-table thead th.num{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+}
 .hr-payroll-accounting-preview .table-wrap{overflow:auto;-webkit-overflow-scrolling:touch}
 .hr-payroll-accounting-preview .ship-table thead th.num,
 .hr-payroll-accounting-preview .ship-table tbody td.num{
@@ -3638,9 +3649,31 @@ html:has(.ship-status-page) #root{
   font-family:'IBM Plex Mono',monospace;
   white-space:nowrap;
 }
-.ship-table thead th.ship-check,.ship-table tbody td.ship-check,.ship-table thead th.ship-th-check,.ship-table tbody td.ship-th-check{width:36px;text-align:center;padding-left:8px;padding-right:8px}
-.ship-table tbody td.ship-check input,.ship-table thead th.ship-check input,.ship-table tbody td.ship-th-check input,.ship-table thead th.ship-th-check input{width:15px;height:15px;accent-color:var(--ep-primary)}
-.ship-table tbody tr.is-selected td{background:#E2E8F0}
+.ship-table tbody td.num{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.ship-table thead th.ship-check,
+.ship-table tbody td.ship-check,
+.ship-table thead th.ship-th-check,
+.ship-table tbody td.ship-th-check,
+.ship-table thead th:has(> input[type="checkbox"]),
+.ship-table tbody td:has(> input[type="checkbox"]){
+  width:36px;text-align:center;padding-left:8px;padding-right:8px;vertical-align:middle;
+}
+.ship-table tbody td.ship-check input,
+.ship-table thead th.ship-check input,
+.ship-table tbody td.ship-th-check input,
+.ship-table thead th.ship-th-check input,
+.ship-table thead th > input[type="checkbox"],
+.ship-table tbody td > input[type="checkbox"]{
+  width:15px;height:15px;margin:0;accent-color:var(--ep-primary);vertical-align:middle;
+}
+.ship-table thead th > input[type="checkbox"]:focus-visible,
+.ship-table tbody td > input[type="checkbox"]:focus-visible{
+  outline:2px solid var(--ep-primary);outline-offset:2px;
+}
 .status-po-bulk-fields{display:grid;gap:8px;margin-top:8px}
 .status-po-bulk-fields label{display:grid;gap:4px;font-size:13px}
 .status-po-bulk-fields textarea,.status-po-bulk-fields input{width:100%}
@@ -3648,9 +3681,50 @@ html:has(.ship-status-page) #root{
   padding:5px 10px;border-bottom:1px solid var(--line,#E2E8F0);vertical-align:middle;background:var(--surface,#fff);line-height:1.25;
 }
 .ship-table tbody tr:nth-child(even) td{background:#F8FAFC}
-.ship-table tbody tr:hover td{background:#F1F5F9}
+.ship-table tbody tr:hover td{background:#EEF2F7}
+/* Selected must win over zebra + hover; keep pills/progress readable */
+.ship-table tbody tr.is-selected td{
+  background:#E2E8F0;
+  box-shadow:inset 3px 0 0 var(--ep-primary);
+}
+.ship-table tbody tr.is-selected:hover td{background:#D9E2EC}
 .ship-table tbody td.mono{font-family:'IBM Plex Mono',monospace;white-space:nowrap}
-.ship-cust{font-weight:600;color:var(--ink,#0F172A)}
+.ship-cust{
+  font-weight:600;color:var(--ink,#0F172A);
+  max-width:16rem;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.ship-table tbody td:has(.ghost.sm),
+.ship-table tbody td:has(a.ghost.sm){
+  white-space:nowrap;
+}
+.ship-table tbody td .ghost.sm,
+.ship-table tbody td a.ghost.sm,
+.ship-table tbody td button.ghost.sm{
+  vertical-align:middle;
+  margin-right:4px;
+}
+/* Compact empty/muted cells — override global dashed .empty-state card look */
+.ship-table tbody td.empty-state,
+.ship-table tbody td.muted{
+  padding:16px 12px;
+  text-align:center;
+  color:var(--soft,#64748B);
+  background:var(--surface,#fff);
+  border:0;
+  border-style:none;
+  border-radius:0;
+  font-size:12.5px;
+  line-height:1.4;
+}
+.ship-table tbody tr:has(td.empty-state) td,
+.ship-table tbody tr:has(td.muted):only-child td,
+.ship-table tbody tr:hover:has(td.empty-state) td{
+  background:var(--surface,#fff);
+  box-shadow:none;
+}
 .ship-bar{
   position:relative;height:18px;min-width:88px;background:var(--muted,#F1F5F9);border:1px solid var(--ship-border);border-radius:2px;overflow:hidden;
 }
@@ -3681,6 +3755,7 @@ html:has(.ship-status-page) #root{
 }
 .prediksi-row{cursor:pointer}
 .prediksi-order-page .ship-table tbody td{white-space:nowrap}
+.prediksi-order-page .ship-table tbody td.ship-cust{white-space:nowrap}
 .prediksi-order-page .ship-table tbody td:last-child{white-space:normal;min-width:180px}
 
 .workflow-table-wrap{overflow:auto;border:1px solid var(--line)}
