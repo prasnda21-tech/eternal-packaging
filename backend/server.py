@@ -7902,6 +7902,80 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     return {"order": new_order, "message": "Pesanan Penjualan berhasil dibuat"}
 
 
+class OrderInfoUpdatePayload(BaseModel):
+    """Field-scoped Informasi PO edit — only address / deadline / estimated_delivery."""
+    address: Optional[str] = None
+    deadline: Optional[str] = None
+    estimated_delivery: Optional[str] = None
+
+
+@api_router.patch("/orders/{order_id}/info")
+async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user=Depends(current_user)):
+    """Update Alamat / Deadline / Estimasi Kirim on Detail PO.
+
+    Permission: po.edit (existing). Field-scoped $set only — does not touch
+    workflow, quantities, delivery_location, delivery_deadline_manual, or lines.
+    """
+    await _require_perm(user, "po.edit")
+    data = payload.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(400, "Tidak ada field yang diubah. Kirim address, deadline, dan/atau estimated_delivery.")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+
+    before = {
+        "address": order.get("address"),
+        "deadline": order.get("deadline"),
+        "estimated_delivery": order.get("estimated_delivery"),
+    }
+    patch: dict = {}
+    if "address" in data:
+        patch["address"] = (data.get("address") or "").strip() or None
+    if "deadline" in data:
+        raw = data.get("deadline")
+        if raw is None or not str(raw).strip():
+            raise HTTPException(400, "Deadline tidak boleh kosong")
+        patch["deadline"] = _parse_order_date_iso(str(raw).strip(), default_days_ahead=3)
+    if "estimated_delivery" in data:
+        raw = data.get("estimated_delivery")
+        if raw is None or not str(raw).strip():
+            raise HTTPException(400, "Estimasi kirim tidak boleh kosong")
+        patch["estimated_delivery"] = _parse_order_date_iso(str(raw).strip(), default_days_ahead=3)
+
+    for k, v in patch.items():
+        order[k] = v
+
+    changed = [k for k in ("address", "deadline", "estimated_delivery") if k in patch and patch[k] != before.get(k)]
+    note_bits = []
+    if "address" in changed:
+        note_bits.append("alamat")
+    if "deadline" in changed:
+        note_bits.append("deadline")
+    if "estimated_delivery" in changed:
+        note_bits.append("estimasi kirim")
+    note = "Edit Informasi PO: " + (", ".join(note_bits) if note_bits else "tanpa perubahan nilai")
+    add_timeline(order, order.get("current_stage") or 0, user, note=note)
+
+    persist_keys = tuple(patch.keys()) + ("timeline",)
+    await _persist_order(order, persist_keys=persist_keys)
+    await _audit_po(
+        order,
+        "po.info.update",
+        user,
+        before=before,
+        after={
+            "address": order.get("address"),
+            "deadline": order.get("deadline"),
+            "estimated_delivery": order.get("estimated_delivery"),
+        },
+        note=note,
+    )
+    return {"order": order}
+
+
 class LineProductReplacePayload(BaseModel):
     """Exact catalog identity only — never product name."""
     master_item_id: Optional[str] = None

@@ -47,6 +47,7 @@ export const api = {
   bulkCancel: (ids, reason) => client.post(`/orders-bulk/cancel`, { ids, reason }).then((r) => r.data),
   bulkDelete: (ids, reason, confirm) => client.post(`/orders-bulk/delete`, { ids, reason, confirm }).then((r) => r.data),
   getOrder: (id) => client.get(`/orders/${id}`).then((r) => r.data),
+  updateOrderInfo: (id, payload) => client.patch(`/orders/${id}/info`, payload).then((r) => r.data),
   advance: (id, payload = {}) => client.post(`/orders/${id}/advance`, payload).then((r) => r.data),
   approveDesign: (id, approved = true, note = "") => client.post(`/orders/${id}/approve-design`, { approved, note }).then((r) => r.data),
   approvePayment: (id, approved = true, note = "") => client.post(`/orders/${id}/approve-payment`, { approved, note }).then((r) => r.data),
