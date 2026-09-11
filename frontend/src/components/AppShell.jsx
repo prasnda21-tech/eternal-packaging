@@ -1,6 +1,6 @@
 import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
@@ -8,6 +8,7 @@ import { canAccessRoutePage } from "../lib/independentRoute";
 import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import { moduleFromPath } from "../lib/uiModule";
+import { mergeWorkspaceTabsPreview } from "../lib/workspaceTabsPreview";
 import BrandMark from "./BrandMark";
 import FloatingNotificationBell from "./FloatingNotificationBell";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
@@ -139,6 +140,11 @@ export default function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const workspace = useGlobalWorkspaceTabs();
+  const workspaceTabs = useMemo(
+    () => mergeWorkspaceTabsPreview(workspace.tabs, location.search),
+    [workspace.tabs, location.search],
+  );
+  const workspaceTabsVisible = workspace.visible || workspaceTabs.length > 0;
   const settingsActive = location.pathname.startsWith("/settings");
   const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
   const reportsActive = location.pathname.startsWith("/laporan");
@@ -671,10 +677,10 @@ export default function AppShell() {
             </button>
           </div>
         </header>
-        <main className={"content" + (workspace.visible || cashBankActive || salesActive ? " content-workspace content-kas-bank-workspace content-penjualan-workspace" : "")}>
-          {workspace.visible && (
+        <main className={"content" + (workspaceTabsVisible || cashBankActive || salesActive ? " content-workspace content-kas-bank-workspace content-penjualan-workspace" : "")}>
+          {workspaceTabsVisible && (
             <WorkspaceTabs
-              tabs={workspace.tabs}
+              tabs={workspaceTabs}
               activePath={workspace.activePath}
               onActivate={workspace.activateTab}
               onClose={workspace.closeTab}

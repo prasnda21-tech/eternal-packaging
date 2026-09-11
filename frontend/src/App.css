@@ -1915,17 +1915,17 @@
   align-items:center;
   flex:0 0 auto;
   max-width:min(240px,46vw);
-  margin:4px 2px 0;
-  border:1.5px solid transparent;
+  margin:4px 3px 0;
+  border:1px solid var(--line);
   border-bottom:0;
   border-radius:6px 6px 0 0;
-  background:transparent;
-  color:var(--soft);
+  background:color-mix(in srgb, #fff 62%, var(--mod-soft));
+  color:var(--ink);
 }
-.kb-workspace-tab:hover{background:color-mix(in srgb, #fff 70%, var(--mod-soft))}
+.kb-workspace-tab:hover{background:color-mix(in srgb, #fff 82%, var(--mod-soft))}
 .kb-workspace-tab.is-active{
   background:var(--surface);
-  border-color:var(--mod-border);
+  border-color:var(--mod);
   color:var(--ink);
   box-shadow:inset 0 -2px 0 var(--mod);
 }
@@ -1941,10 +1941,14 @@
   text-overflow:ellipsis;
   min-width:0;
 }
+.kb-workspace-tab.is-active .kb-workspace-tab-label{
+  font-weight:700;
+  color:var(--mod-ink);
+}
 .kb-workspace-tab-close{
   border:0;
   background:transparent;
-  color:var(--soft);
+  color:color-mix(in srgb, var(--ink) 55%, var(--soft));
   width:24px;
   height:24px;
   margin-right:2px;
@@ -1958,7 +1962,7 @@
   background:rgba(15,40,30,.08);
   color:var(--ink);
 }
-.kb-workspace-tab.is-active .kb-workspace-tab-label{color:var(--mod-ink)}
+.kb-workspace-tab.is-active .kb-workspace-tab-close{color:var(--ink)}
 
 /* -------- Penjualan page chrome (Kas & Bank density / outlines) -------- */
 .penjualan-page{
