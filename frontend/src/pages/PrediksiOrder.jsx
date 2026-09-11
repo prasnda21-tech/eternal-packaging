@@ -212,7 +212,7 @@ export default function PrediksiOrder() {
                   data-testid={`prediksi-row-${r.customer_key}`}
                   onClick={() => openDetail(r)}
                 >
-                  <td className="ship-cust">{r.customer || "-"}</td>
+                  <td className="ship-cust" title={r.customer || undefined}>{r.customer || "-"}</td>
                   <td
                     title={r.outlet || ""}
                     style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -262,7 +262,7 @@ export default function PrediksiOrder() {
             <tbody>
               {orderRows.map((r) => (
                 <tr key={`${r.id}-${r.po_number}`} data-testid={`prediksi-order-row-${r.po_number}`}>
-                  <td className="ship-cust">{r.customer || "-"}</td>
+                  <td className="ship-cust" title={r.customer || undefined}>{r.customer || "-"}</td>
                   <td
                     title={r.outlet || ""}
                     style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}

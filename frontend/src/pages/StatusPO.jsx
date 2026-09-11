@@ -331,7 +331,7 @@ export default function StatusPO() {
                   ) : (r.po_number || "-")}
                 </td>
                 <td className="mono">{formatDisplayDate(r.order_date)}</td>
-                <td className="ship-cust">{r.customer || "-"}</td>
+                <td className="ship-cust" title={r.customer || undefined}>{r.customer || "-"}</td>
                 <td data-testid={`status-po-status-${r.po_number}`}>{r.status || "-"}</td>
                 <td className="num mono" data-testid={`status-po-delivered-${r.po_number}`}>
                   {deliveredPercentLabel(r.percent_delivered)}
