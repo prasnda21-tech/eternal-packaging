@@ -3593,6 +3593,182 @@ html:has(.ship-status-page) #root{
 .ship-tool-btn.is-active{
   border-color:var(--ep-primary);color:var(--ep-dark);background:#ECFDF5;
 }
+
+/* ---- Batch 2A: ops-list filter / button / form control standard ----
+   Compact industrial toolbar (~28px, 1px border, 4px radius).
+   High specificity reclaim vs ui-system colorful 42px inputs (loads after App.css).
+   Presentation only — no filter/query/reset/refresh behavior changes. */
+.content .ship-status-page .ship-status-toolbar input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .ship-status-page .ship-status-toolbar select,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field select{
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);max-height:var(--ship-ctrl-h);box-sizing:border-box;
+  padding:0 8px;font-size:12.5px;line-height:1.2;
+  border:1px solid var(--ship-border);border-radius:var(--ship-radius);
+  background:var(--muted,#F1F5F9);color:var(--ink,#0F172A);
+  box-shadow:none;
+}
+.content .ship-status-page .ship-status-toolbar input::placeholder,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field input::placeholder{
+  color:var(--soft,#64748B);opacity:1;
+}
+.content .ship-status-page .ship-status-toolbar input:hover:not(:disabled):not(:focus-visible),
+.content .ship-status-page .ship-status-toolbar select:hover:not(:disabled):not(:focus-visible),
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field input:hover:not(:disabled):not(:focus-visible),
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field select:hover:not(:disabled):not(:focus-visible){
+  border-color:#94A3B8;background:#E8EEF4;box-shadow:none;
+}
+.content .ship-status-page .ship-status-toolbar input:focus,
+.content .ship-status-page .ship-status-toolbar select:focus,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field input:focus,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field select:focus{
+  outline:none;box-shadow:none;border-color:var(--ship-border);
+}
+.content .ship-status-page .ship-status-toolbar input:focus-visible,
+.content .ship-status-page .ship-status-toolbar select:focus-visible,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field input:focus-visible,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field select:focus-visible{
+  outline:2px solid var(--ep-primary);outline-offset:1px;
+  border-color:var(--ep-primary);box-shadow:none;background:#fff;
+}
+.content .ship-status-page .ship-status-toolbar input:disabled,
+.content .ship-status-page .ship-status-toolbar select:disabled,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field input:disabled,
+.content .ship-status-page .ship-filter-panel-body .ship-filter-field select:disabled{
+  opacity:.62;cursor:not-allowed;background:#E2E8F0;color:var(--soft,#64748B);box-shadow:none;
+}
+
+/* Toolbar button hierarchy: primary (Eternal green) > secondary/ghost/reset/tool > icon */
+.content .ship-status-page .ship-status-toolbar .primary.sm,
+.content .ship-status-page .ship-status-toolbar button.primary.sm,
+.content .ship-status-page .ship-filter-panel-foot .primary.sm,
+.content .ship-status-page .ship-filter-panel-foot button.primary.sm{
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);box-sizing:border-box;
+  padding:0 10px;font-size:12.5px;font-weight:600;line-height:1;
+  border-radius:var(--ship-radius);border:1px solid var(--ep-primary);
+  background:var(--ep-primary);color:#fff;box-shadow:none;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.content .ship-status-page .ship-status-toolbar .primary.sm:hover:not(:disabled),
+.content .ship-status-page .ship-status-toolbar button.primary.sm:hover:not(:disabled),
+.content .ship-status-page .ship-filter-panel-foot .primary.sm:hover:not(:disabled),
+.content .ship-status-page .ship-filter-panel-foot button.primary.sm:hover:not(:disabled){
+  background:var(--ep-dark);border-color:var(--ep-dark);box-shadow:none;
+}
+.content .ship-status-page .ship-status-toolbar .primary.sm:focus-visible,
+.content .ship-status-page .ship-status-toolbar button.primary.sm:focus-visible,
+.content .ship-status-page .ship-filter-panel-foot .primary.sm:focus-visible,
+.content .ship-status-page .ship-filter-panel-foot button.primary.sm:focus-visible{
+  outline:2px solid var(--ep-primary);outline-offset:1px;
+}
+.content .ship-status-page .ship-status-toolbar .primary.sm:disabled,
+.content .ship-status-page .ship-status-toolbar button.primary.sm:disabled{
+  opacity:.55;cursor:not-allowed;box-shadow:none;
+}
+.content .ship-status-page .ship-status-toolbar .ghost.sm,
+.content .ship-status-page .ship-status-toolbar button.ghost.sm,
+.content .ship-status-page .ship-status-toolbar .ship-reset-btn,
+.content .ship-status-page .ship-status-toolbar .ship-tool-btn,
+.content .ship-status-page .ship-filter-panel-foot .ship-reset-btn,
+.content .ship-status-page .ship-filter-panel-foot .ghost.sm{
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);box-sizing:border-box;
+  padding:0 10px;font-size:12.5px;font-weight:600;line-height:1;
+  border-radius:var(--ship-radius);border:1px solid var(--ship-border);
+  background:var(--surface,#fff);color:var(--ink,#0F172A);box-shadow:none;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.content .ship-status-page .ship-status-toolbar .ghost.sm:hover:not(:disabled),
+.content .ship-status-page .ship-status-toolbar button.ghost.sm:hover:not(:disabled),
+.content .ship-status-page .ship-status-toolbar .ship-reset-btn:hover:not(:disabled),
+.content .ship-status-page .ship-status-toolbar .ship-tool-btn:hover:not(:disabled),
+.content .ship-status-page .ship-filter-panel-foot .ship-reset-btn:hover:not(:disabled){
+  background:var(--muted,#F1F5F9);box-shadow:none;
+}
+.content .ship-status-page .ship-status-toolbar .ghost.sm:focus-visible,
+.content .ship-status-page .ship-status-toolbar button.ghost.sm:focus-visible,
+.content .ship-status-page .ship-status-toolbar .ship-reset-btn:focus-visible,
+.content .ship-status-page .ship-status-toolbar .ship-tool-btn:focus-visible,
+.content .ship-status-page .ship-filter-panel-foot .ship-reset-btn:focus-visible{
+  outline:2px solid var(--ep-primary);outline-offset:1px;
+}
+.content .ship-status-page .ship-status-toolbar .ship-tool-btn.is-active{
+  border-color:var(--ep-primary);color:var(--ep-dark);background:#ECFDF5;
+}
+.content .ship-status-page .ship-status-toolbar .ship-icon-btn{
+  width:var(--ship-ctrl-h);height:var(--ship-ctrl-h);min-width:var(--ship-ctrl-h);
+  border:1px solid var(--ship-border);border-radius:var(--ship-radius);
+  background:var(--surface,#fff);color:var(--ink,#0F172A);box-shadow:none;
+}
+.content .ship-status-page .ship-status-toolbar .ship-icon-btn:hover:not(:disabled){background:var(--muted,#F1F5F9)}
+.content .ship-status-page .ship-status-toolbar .ship-icon-btn:focus-visible{
+  outline:2px solid var(--ep-primary);outline-offset:1px;
+}
+.content .ship-status-page .ship-status-toolbar .ship-icon-btn:disabled{opacity:.6;cursor:default}
+/* Danger only where already semantic (bulk delete) — compact, not oversized */
+.content .ship-status-page .bulk-bar .ghost.sm.danger,
+.content .ship-status-page .bulk-actions .ghost.sm.danger{
+  min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);box-sizing:border-box;
+  padding:0 10px;font-size:12.5px;border-radius:var(--ship-radius);
+  border:1px solid #FECACA;color:#B91C1C;background:#FEF2F2;box-shadow:none;
+}
+.content .ship-status-page .bulk-bar .ghost.sm.danger:hover:not(:disabled),
+.content .ship-status-page .bulk-actions .ghost.sm.danger:hover:not(:disabled){
+  background:#FEE2E2;
+}
+.content .ship-status-page .bulk-bar .ghost.sm:focus-visible,
+.content .ship-status-page .bulk-actions .ghost.sm:focus-visible{
+  outline:2px solid var(--ep-primary);outline-offset:1px;
+}
+
+/* ---- Batch 2B: ops-list semantic status + feedback states ----
+   Industrial stamp pills (text + color). Labels unchanged (Belum/Sudah Diatur, etc.).
+   Do not restyle production qty/iro/hr/ea badges or prod-table chrome. */
+.ship-status-page .pill{
+  border-radius:var(--ship-radius);
+  border:1px solid transparent;
+  box-shadow:none;
+  font:600 10.5px/1.2 'IBM Plex Mono',monospace;
+  letter-spacing:.04em;
+  padding:3px 8px;
+  display:inline-flex;align-items:center;gap:4px;vertical-align:middle;
+}
+.ship-status-page .pill.sm{padding:2px 7px;font-size:10px}
+.ship-status-page .pill-ok{
+  background:#ECFDF5;color:#047857;border-color:#A7F3D0;
+}
+.ship-status-page .pill-warn{
+  background:#FFFBEB;color:#B45309;border-color:#FCD34D;
+}
+.ship-status-page .pill-cancel{
+  background:#FEF2F2;color:#B91C1C;border-color:#FECACA;
+}
+.ship-status-page .pill-muted{
+  background:#F1F5F9;color:#475569;border-color:#CBD5E1;
+}
+.ship-status-page .pill-hold{
+  background:#FFFBEB;color:#B45309;border-color:#FCD34D;
+}
+/* Inline error / empty / loading affordances — presentation only */
+.ship-status-page .error{
+  margin:0 0 8px;padding:6px 10px;
+  border:1px solid #FECACA;border-radius:var(--ship-radius);
+  background:#FEF2F2;color:#B91C1C;
+  font-size:12.5px;line-height:1.35;
+}
+.ship-status-page .ship-table tbody td.empty-state{
+  padding:18px 12px;text-align:center;
+  color:var(--soft,#64748B);background:var(--surface,#fff);
+  border:0;font-size:12.5px;line-height:1.4;
+}
+.ship-status-page .ship-icon-btn .spin,
+.ship-status-page .spin{
+  /* keep existing spin animation; ensure visibility on compact icon buttons */
+  opacity:1;
+}
+.ship-status-page .muted.small{
+  color:var(--soft,#64748B);font-size:12px;line-height:1.35;
+}
+
 /* ---- Batch 1B: ops-list `.ship-table` interaction density ---- */
 .ship-th-sort{
   display:inline-flex;align-items:center;gap:4px;max-width:100%;

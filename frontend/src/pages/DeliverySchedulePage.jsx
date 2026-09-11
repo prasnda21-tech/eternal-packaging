@@ -129,10 +129,12 @@ export default function DeliverySchedulePage() {
           const {
             STATUS_LOKASI_SORT_DUMMY_ROWS,
             TABLE_UI_PREVIEW_DUMMY_ROWS,
+            BATCH2_UI_PREVIEW_DUMMY_ROWS,
           } = require("../lib/deliveryScheduleStatusLokasiFixtures");
           nextRows = [
             ...STATUS_LOKASI_SORT_DUMMY_ROWS,
             ...TABLE_UI_PREVIEW_DUMMY_ROWS,
+            ...BATCH2_UI_PREVIEW_DUMMY_ROWS,
             ...nextRows,
           ];
         }
@@ -256,7 +258,7 @@ export default function DeliverySchedulePage() {
             <Filter size={13} />
             <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
           </button>
-          <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset">Reset</button>
+          <button type="button" className="ship-reset-btn" onClick={resetFilters} data-testid="ds-filter-reset" title="Reset filter">Reset</button>
           <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="ds-refresh" disabled={busy}>
             <RefreshCw size={14} className={busy ? "spin" : ""} />
           </button>
