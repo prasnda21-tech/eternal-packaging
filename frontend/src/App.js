@@ -59,6 +59,7 @@ import PublicHargaPage from "./pages/PublicHargaPage";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
 import DeliverySchedulePage from "./pages/DeliverySchedulePage";
+import DeliveryScheduleRouteReviewPage from "./pages/DeliveryScheduleRouteReviewPage";
 import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
 import DeliveryBatchPage from "./pages/DeliveryBatchPage";
 import EmployeeAdmin from "./pages/EmployeeAdmin";
@@ -226,6 +227,7 @@ export default function App() {
             <Route path="/tasks/loading" element={<PermGate anyOf={[NAV_KEYS.tasksLoading, "loading.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/delivery" element={<PermGate anyOf={[NAV_KEYS.tasksDelivery, "delivery.update"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "schedule.view"]}><DeliverySchedulePage /></PermGate>} />
+            <Route path="/produksi/jadwal-pengiriman/review-optimasi" element={<PermGate anyOf={["route_optimizer.create", "route_optimizer.optimize", "route_optimizer.manage"]}><DeliveryScheduleRouteReviewPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman/buat" element={<Navigate to="/produksi/jadwal-pengiriman" replace />} />
             <Route path="/produksi/jadwal-pengiriman/batch/:batchId" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "delivery.update"]}><DeliveryBatchPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />

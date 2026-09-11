@@ -25,7 +25,8 @@ describe("Optimasi Rute pages", () => {
 
   test("PWA Lihat Rute stays on shared /optimasi-rute/:id via in-app navigate", () => {
     const schedule = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliverySchedulePage.jsx"), "utf8");
-    const review = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliveryRouteReviewPage.jsx"), "utf8");
+    const review = fs.readFileSync(path.join(__dirname, "../components/DeliveryRouteReviewContent.jsx"), "utf8");
+    const mobileReview = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliveryRouteReviewPage.jsx"), "utf8");
     expect(schedule).toMatch(/navigateToOptimasiRute/);
     expect(schedule).toMatch(/mds-lihat-rute-/);
     expect(schedule).not.toMatch(/window\.open\(/);
@@ -34,6 +35,8 @@ describe("Optimasi Rute pages", () => {
     expect(review).toMatch(/mds-review-open-/);
     expect(review).not.toMatch(/window\.open\(/);
     expect(review).not.toMatch(/target=["']_blank["']/);
+    expect(mobileReview).toMatch(/DeliveryRouteReviewContent/);
+    expect(mobileReview).toMatch(/shell="mobile"/);
     expect(editor).toMatch(/target="_blank"/); // Google Maps remains external
     expect(editor).toMatch(/iro-open-route-maps/);
     expect(editor).toMatch(/preferMobileOpsShell/);

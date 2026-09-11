@@ -25,6 +25,8 @@ describe("mobile route wiring", () => {
     expect(app).toMatch(/path="\/m\/orders\/:id"/);
     expect(app).toMatch(/path="\/m\/schedule"/);
     expect(app).toMatch(/path="\/m\/delivery-schedule"/);
+    expect(app).toMatch(/path="\/m\/delivery-schedule\/review-optimasi"/);
+    expect(app).toMatch(/MobileDeliveryRouteReviewPage/);
     expect(app).toMatch(/path="\/m\/notifications"/);
     expect(app).toMatch(/path="\/m\/profile"/);
     expect(app).toMatch(/MobileOperationalLayout/);

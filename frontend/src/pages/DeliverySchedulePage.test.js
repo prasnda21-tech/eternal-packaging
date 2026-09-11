@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import DeliverySchedulePage from "./DeliverySchedulePage";
 import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
-import { mobileScheduleReviewHref } from "../lib/mobileDeliverySchedule";
+import { desktopScheduleReviewHref } from "../lib/mobileDeliverySchedule";
 
 const mockHasPerm = jest.fn(() => false);
 const mockDeliverySchedule = jest.fn();
@@ -157,9 +157,10 @@ describe("delivery reschedule UI (static)", () => {
     expect(schedule).toMatch(/ds-sort-customer/);
   });
 
-  test("desktop Optimasi Rute reuses PWA bridge helpers and permissions", () => {
+  test("desktop Optimasi Rute uses desktop review href (not /m/...) and permissions", () => {
     expect(schedule).toMatch(/canOptimizeFromDeliverySchedule/);
-    expect(schedule).toMatch(/mobileScheduleReviewHref/);
+    expect(schedule).toMatch(/desktopScheduleReviewHref/);
+    expect(schedule).not.toMatch(/mobileScheduleReviewHref/);
     expect(schedule).toMatch(/locationSetupStatusLabel/);
     expect(schedule).toMatch(/ds-optimasi-rute/);
     expect(schedule).toMatch(/Status Lokasi/);
@@ -171,6 +172,8 @@ describe("delivery reschedule UI (static)", () => {
     expect(schedule).not.toMatch(/OPTIMIZE RUTE/);
     expect(schedule).not.toMatch(/Rute Saya/);
     expect(schedule).not.toMatch(/Buat Jadwal Pengiriman/);
+    expect(app).toMatch(/path="\/produksi\/jadwal-pengiriman\/review-optimasi"/);
+    expect(app).toMatch(/DeliveryScheduleRouteReviewPage/);
   });
 
   test("reschedule page has reason history and set date action", () => {
@@ -235,7 +238,7 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     expect(btn.disabled).toBe(true);
   });
 
-  test("clicking Optimasi Rute navigates internally with selected canonical ids", async () => {
+  test("clicking Optimasi Rute navigates to desktop review with selected canonical ids", async () => {
     const open = jest.fn();
     const origOpen = window.open;
     window.open = open;
@@ -256,8 +259,9 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     await act(async () => {
       btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockNavigate).toHaveBeenCalledWith(mobileScheduleReviewHref(["ord-a", "ord-b"]));
-    expect(mockNavigate.mock.calls[0][0]).toMatch(/\/m\/delivery-schedule\/review-optimasi\?ids=/);
+    expect(mockNavigate).toHaveBeenCalledWith(desktopScheduleReviewHref(["ord-a", "ord-b"]));
+    expect(mockNavigate.mock.calls[0][0]).toMatch(/\/produksi\/jadwal-pengiriman\/review-optimasi\?ids=/);
+    expect(mockNavigate.mock.calls[0][0]).not.toMatch(/\/m\//);
     expect(mockNavigate.mock.calls[0][0]).toContain("ord-a");
     expect(mockNavigate.mock.calls[0][0]).toContain("ord-b");
     expect(mockNavigate.mock.calls[0][0]).not.toContain("PO-100");
