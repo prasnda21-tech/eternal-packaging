@@ -141,20 +141,40 @@ async def test_settings_default_active_designer_crm_no_write():
     assert s["enabled"] is True
     assert s["notify_designer"] is True
     assert s["notify_crm"] is True
+    assert s["additional_recipient_user_ids"] == []
     assert db.app_settings.docs == []
 
 
 @pytest.mark.anyio
 async def test_settings_persist_reload():
-    db = FakeDb()
+    db = FakeDb(users=_users())
     await notif.update_notification_settings(
         db,
-        {"enabled": True, "notify_designer": False, "notify_crm": True},
+        {
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": True,
+            "additional_recipient_user_ids": ["u-ops", "u-ops", "u-missing"],
+        },
         user={"id": "admin-1", "email": "a@x.com", "role": "admin", "name": "A"},
     )
     s = await notif.get_notification_settings(db)
     assert s["notify_designer"] is False
     assert s["notify_crm"] is True
+    assert s["additional_recipient_user_ids"] == ["u-ops"]
+
+
+@pytest.mark.anyio
+async def test_settings_backward_compat_missing_additional_field():
+    db = FakeDb(settings=[{
+        "key": notif.SETTINGS_KEY,
+        "enabled": True,
+        "notify_designer": True,
+        "notify_crm": True,
+    }])
+    s = await notif.get_notification_settings(db)
+    assert s["additional_recipient_user_ids"] == []
+    assert db.app_settings.docs[0].get("additional_recipient_user_ids") is None
 
 
 @pytest.mark.anyio
@@ -193,6 +213,7 @@ async def test_disabled_setting_no_notifications():
             "enabled": False,
             "notify_designer": True,
             "notify_crm": True,
+            "additional_recipient_user_ids": ["u-ops"],
         }],
     )
     created = await notif.emit_customer_design_approval_notifications(
@@ -238,6 +259,211 @@ async def test_same_user_id_across_roles_deduped():
     )
     assert len(created) == 1
     assert created[0]["user_id"] == "u-both"
+
+
+@pytest.mark.anyio
+async def test_explicit_non_role_user_receives():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": True,
+            "notify_crm": True,
+            "additional_recipient_user_ids": ["u-ops"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-explicit"), decision="approved",
+    )
+    assert "u-ops" in {c["user_id"] for c in created}
+    assert {c["user_id"] for c in created} == {"u-designer-1", "u-designer-2", "u-crm-1", "u-ops"}
+
+
+@pytest.mark.anyio
+async def test_role_plus_explicit_designer_deduped():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": True,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-designer-1"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-dup-des"), decision="approved",
+    )
+    recipients = [c["user_id"] for c in created]
+    assert recipients.count("u-designer-1") == 1
+    assert set(recipients) == {"u-designer-1", "u-designer-2"}
+
+
+@pytest.mark.anyio
+async def test_role_plus_explicit_crm_deduped():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": True,
+            "additional_recipient_user_ids": ["u-crm-1"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-dup-crm"), decision="approved",
+    )
+    recipients = [c["user_id"] for c in created]
+    assert recipients.count("u-crm-1") == 1
+    assert set(recipients) == {"u-crm-1"}
+
+
+@pytest.mark.anyio
+async def test_multiple_explicit_members_each_once():
+    users = _users() + [
+        {"id": "u-a", "role": "helper", "status": "active"},
+        {"id": "u-b", "role": "helper", "status": "active"},
+        {"id": "u-c", "role": "helper", "status": "active"},
+    ]
+    db = FakeDb(
+        users=users,
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-a", "u-b", "u-c"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-multi"), decision="approved",
+    )
+    assert sorted(c["user_id"] for c in created) == ["u-a", "u-b", "u-c"]
+
+
+@pytest.mark.anyio
+async def test_inactive_explicit_member_skipped():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-crm-inactive"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-inactive"), decision="approved",
+    )
+    assert created == []
+
+
+@pytest.mark.anyio
+async def test_designer_off_but_explicit_designer_receives():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-designer-1"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-des-explicit"), decision="approved",
+    )
+    assert {c["user_id"] for c in created} == {"u-designer-1"}
+
+
+@pytest.mark.anyio
+async def test_crm_off_but_explicit_crm_receives():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-crm-1"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-crm-explicit"), decision="rejected",
+    )
+    assert {c["user_id"] for c in created} == {"u-crm-1"}
+
+
+@pytest.mark.anyio
+async def test_both_roles_off_explicit_only():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-ops"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-roles-off"), decision="approved",
+    )
+    assert {c["user_id"] for c in created} == {"u-ops"}
+
+
+@pytest.mark.anyio
+async def test_duplicate_ids_in_config_one_recipient():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-ops", "u-ops", "u-ops"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-dup-cfg"), decision="approved",
+    )
+    assert [c["user_id"] for c in created] == ["u-ops"]
+
+
+@pytest.mark.anyio
+async def test_nonexistent_explicit_id_no_notification():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": False,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-does-not-exist"],
+        }],
+    )
+    created = await notif.emit_customer_design_approval_notifications(
+        db, order=_order(), approval=_approval(id="ca-ghost"), decision="approved",
+    )
+    assert created == []
+
+
+@pytest.mark.anyio
+async def test_update_rejects_user_objects_as_ids():
+    db = FakeDb(users=_users())
+    with pytest.raises(ValueError, match="canonical user id"):
+        await notif.update_notification_settings(
+            db,
+            {
+                "enabled": True,
+                "notify_designer": True,
+                "notify_crm": True,
+                "additional_recipient_user_ids": [{"id": "u-ops", "name": "Ops"}],
+            },
+        )
 
 
 @pytest.mark.anyio

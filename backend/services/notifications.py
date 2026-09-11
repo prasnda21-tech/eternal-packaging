@@ -2,7 +2,7 @@
 
 Scope (locked):
   - Events: customer design approved / rejected
-  - Recipients: active users with role designer and/or crm (configurable)
+  - Recipients: active Designer/CRM roles UNION explicitly selected members
   - Settings: app_settings key customer_design_approval_notification
   - Side effect only: never rolls back customer approval mutations
 
@@ -32,6 +32,7 @@ DEFAULT_SETTINGS = {
     "enabled": True,
     "notify_designer": True,
     "notify_crm": True,
+    "additional_recipient_user_ids": [],
     "updated_at": None,
     "updated_by": None,
 }
@@ -45,6 +46,26 @@ def default_settings() -> Dict[str, Any]:
     return dict(DEFAULT_SETTINGS)
 
 
+def normalize_additional_recipient_user_ids(raw: Any) -> List[str]:
+    """Canonical user id list. Missing/invalid → []. Dedupes preserving order."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return []
+    seen: Set[str] = set()
+    out: List[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            uid = str(item.get("id") or item.get("user_id") or "").strip()
+        else:
+            uid = str(item or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
 def sanitize_settings(doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     base = default_settings()
     if not isinstance(doc, dict):
@@ -56,6 +77,10 @@ def sanitize_settings(doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         out["notify_designer"] = bool(doc["notify_designer"])
     if "notify_crm" in doc and doc["notify_crm"] is not None:
         out["notify_crm"] = bool(doc["notify_crm"])
+    # Backward compat: missing field → []
+    out["additional_recipient_user_ids"] = normalize_additional_recipient_user_ids(
+        doc.get("additional_recipient_user_ids")
+    )
     out["updated_at"] = doc.get("updated_at")
     out["updated_by"] = doc.get("updated_by")
     out["key"] = SETTINGS_KEY
@@ -66,6 +91,18 @@ async def get_notification_settings(db) -> Dict[str, Any]:
     """Pure read. Missing doc → in-memory defaults (no write)."""
     doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
     return sanitize_settings(doc)
+
+
+async def _filter_existing_user_ids(db, user_ids: Sequence[str]) -> List[str]:
+    """Keep only IDs that exist in users (active or inactive). Preserve order."""
+    clean = normalize_additional_recipient_user_ids(list(user_ids))
+    if not clean:
+        return []
+    cursor = db.users.find({"id": {"$in": clean}}, {"_id": 0, "id": 1})
+    rows = await cursor.to_list(len(clean) + 50)
+    existing = {str((u or {}).get("id") or "").strip() for u in rows}
+    existing.discard("")
+    return [uid for uid in clean if uid in existing]
 
 
 async def update_notification_settings(
@@ -88,6 +125,28 @@ async def update_notification_settings(
     if not isinstance(payload["notify_crm"], bool):
         raise ValueError("Field 'notify_crm' harus boolean")
 
+    if "additional_recipient_user_ids" in payload:
+        raw_ids = payload["additional_recipient_user_ids"]
+        if raw_ids is None:
+            raw_ids = []
+        if not isinstance(raw_ids, list):
+            raise ValueError("Field 'additional_recipient_user_ids' harus list")
+        for item in raw_ids:
+            if isinstance(item, dict):
+                raise ValueError(
+                    "Field 'additional_recipient_user_ids' hanya menerima canonical user id (string)"
+                )
+            if item is not None and not isinstance(item, str):
+                raise ValueError(
+                    "Field 'additional_recipient_user_ids' hanya menerima canonical user id (string)"
+                )
+        # Dedupe input; drop nonexistent IDs (ignore invalid refs)
+        candidate_ids = normalize_additional_recipient_user_ids(raw_ids)
+        additional_ids = await _filter_existing_user_ids(db, candidate_ids)
+    else:
+        # Older clients: omit field → persist empty explicit list
+        additional_ids = []
+
     actor = None
     if isinstance(user, dict):
         actor = {
@@ -102,6 +161,7 @@ async def update_notification_settings(
         "enabled": payload["enabled"],
         "notify_designer": payload["notify_designer"],
         "notify_crm": payload["notify_crm"],
+        "additional_recipient_user_ids": additional_ids,
         "updated_at": now_iso(),
         "updated_by": actor,
     }
@@ -163,6 +223,38 @@ async def resolve_recipient_user_ids(db, roles: Sequence[str]) -> List[str]:
     out: List[str] = []
     for u in users:
         uid = str((u or {}).get("id") or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+async def resolve_explicit_recipient_user_ids(db, user_ids: Sequence[str]) -> List[str]:
+    """Active accounts matching explicit canonical IDs. Inactive/unknown skipped."""
+    clean = normalize_additional_recipient_user_ids(list(user_ids or []))
+    if not clean:
+        return []
+    cursor = db.users.find(
+        {"id": {"$in": clean}, "status": {"$ne": "inactive"}},
+        {"_id": 0, "id": 1},
+    )
+    users = await cursor.to_list(len(clean) + 50)
+    found = {str((u or {}).get("id") or "").strip() for u in users}
+    found.discard("")
+    return [uid for uid in clean if uid in found]
+
+
+async def resolve_final_recipient_user_ids(db, settings: Dict[str, Any]) -> List[str]:
+    """Role recipients UNION explicit members, deduped by canonical user id."""
+    roles = enabled_recipient_roles(settings or {})
+    role_ids = await resolve_recipient_user_ids(db, roles)
+    explicit_ids = await resolve_explicit_recipient_user_ids(
+        db, (settings or {}).get("additional_recipient_user_ids") or [],
+    )
+    seen: Set[str] = set()
+    out: List[str] = []
+    for uid in list(role_ids) + list(explicit_ids):
         if not uid or uid in seen:
             continue
         seen.add(uid)
@@ -257,10 +349,7 @@ async def emit_customer_design_approval_notifications(
         settings = await get_notification_settings(db)
         if not settings.get("enabled", True):
             return []
-        roles = enabled_recipient_roles(settings)
-        if not roles:
-            return []
-        user_ids = await resolve_recipient_user_ids(db, roles)
+        user_ids = await resolve_final_recipient_user_ids(db, settings)
         if not user_ids:
             return []
 

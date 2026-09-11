@@ -1363,15 +1363,85 @@ function CustomerApprovalSettingsTab({ notify, canEdit }) {
 /* ---------------- Root ---------------- */
 
 function NotificationsSettingsTab({ notify, canEdit }) {
+  const { hasPerm } = useAuth();
+  const canSearchUsers = hasPerm("users.view") || hasPerm("users.manage");
   const [state, setState] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [memberQuery, setMemberQuery] = useState("");
+  const [directory, setDirectory] = useState([]);
+  const [directoryErr, setDirectoryErr] = useState("");
+  const [directoryLoading, setDirectoryLoading] = useState(false);
 
   useEffect(() => {
     api.customerDesignApprovalNotificationSettings()
-      .then((d) => setState(d.settings))
+      .then((d) => {
+        const s = d.settings || {};
+        setState({
+          ...s,
+          additional_recipient_user_ids: Array.isArray(s.additional_recipient_user_ids)
+            ? s.additional_recipient_user_ids
+            : [],
+        });
+      })
       .catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat pengaturan notifikasi"));
   }, []);
+
+  useEffect(() => {
+    if (!canSearchUsers) return undefined;
+    let cancelled = false;
+    setDirectoryLoading(true);
+    setDirectoryErr("");
+    api.adminListUsers()
+      .then((d) => {
+        if (cancelled) return;
+        setDirectory(Array.isArray(d?.users) ? d.users : []);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setDirectory([]);
+        setDirectoryErr(e?.response?.data?.detail || "Gagal memuat daftar anggota");
+      })
+      .finally(() => {
+        if (!cancelled) setDirectoryLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [canSearchUsers]);
+
+  const selectedIds = Array.isArray(state?.additional_recipient_user_ids)
+    ? state.additional_recipient_user_ids
+    : [];
+  const selectedKey = selectedIds.join("|");
+
+  const userById = useMemo(() => {
+    const map = new Map();
+    for (const u of directory) {
+      const id = String(u?.id || "").trim();
+      if (id) map.set(id, u);
+    }
+    return map;
+  }, [directory]);
+
+  const searchHits = useMemo(() => {
+    const selectedSet = new Set(selectedIds.map((id) => String(id)));
+    const t = memberQuery.trim().toLowerCase();
+    if (!t) return [];
+    return directory
+      .filter((u) => {
+        const id = String(u?.id || "").trim();
+        if (!id || selectedSet.has(id)) return false;
+        if (u?.status === "inactive") return false;
+        return (
+          (u.name || "").toLowerCase().includes(t) ||
+          (u.email || "").toLowerCase().includes(t) ||
+          (u.employee_id || "").toLowerCase().includes(t) ||
+          (u.role || "").toLowerCase().includes(t)
+        );
+      })
+      .slice(0, 8);
+    // selectedKey tracks selectedIds membership without depending on array identity
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [directory, memberQuery, selectedKey]);
 
   if (!state) {
     return (
@@ -1383,6 +1453,26 @@ function NotificationsSettingsTab({ notify, canEdit }) {
 
   const set = (k, v) => setState((s) => ({ ...s, [k]: v }));
 
+  const addMember = (user) => {
+    const id = String(user?.id || "").trim();
+    if (!id) return;
+    setState((s) => {
+      const cur = Array.isArray(s.additional_recipient_user_ids) ? s.additional_recipient_user_ids : [];
+      if (cur.includes(id)) return s;
+      return { ...s, additional_recipient_user_ids: [...cur, id] };
+    });
+    setMemberQuery("");
+  };
+
+  const removeMember = (id) => {
+    const uid = String(id || "").trim();
+    setState((s) => ({
+      ...s,
+      additional_recipient_user_ids: (Array.isArray(s.additional_recipient_user_ids) ? s.additional_recipient_user_ids : [])
+        .filter((x) => x !== uid),
+    }));
+  };
+
   const save = async () => {
     setSaving(true);
     setErr("");
@@ -1391,9 +1481,16 @@ function NotificationsSettingsTab({ notify, canEdit }) {
         enabled: !!state.enabled,
         notify_designer: !!state.notify_designer,
         notify_crm: !!state.notify_crm,
+        additional_recipient_user_ids: selectedIds.map((id) => String(id)),
       };
       const r = await api.updateCustomerDesignApprovalNotificationSettings(payload);
-      setState(r.settings);
+      const next = r.settings || {};
+      setState({
+        ...next,
+        additional_recipient_user_ids: Array.isArray(next.additional_recipient_user_ids)
+          ? next.additional_recipient_user_ids
+          : [],
+      });
       notify?.("Pengaturan notifikasi disimpan");
     } catch (e) {
       setErr(e?.response?.data?.detail || "Gagal menyimpan");
@@ -1402,12 +1499,14 @@ function NotificationsSettingsTab({ notify, canEdit }) {
     }
   };
 
+  const roleLabel = (slug) => ROLE_LABELS[slug] || slug || "";
+
   return (
     <div data-testid="notifications-settings-tab" style={{ display: "grid", gap: 16, maxWidth: 620 }}>
       <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
         <h3 style={{ marginTop: 0 }}>Approval Design Customer</h3>
         <p className="muted small" style={{ marginTop: 0 }}>
-          Notifikasi ke Designer dan CRM ketika customer menyetujui atau menolak design.
+          Notifikasi ke Designer, CRM, dan anggota tambahan ketika customer menyetujui atau menolak design.
         </p>
         <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }} data-testid="notif-toggle-enabled">
           <input
@@ -1436,6 +1535,133 @@ function NotificationsSettingsTab({ notify, canEdit }) {
           />
           <span>CRM</span>
         </label>
+
+        <div
+          data-testid="notif-additional-recipients"
+          style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Anggota Penerima Tambahan</div>
+          <p className="muted small" style={{ marginTop: 0, marginBottom: 8 }}>
+            Ditambahkan ke penerima role (Designer/CRM). Satu user hanya menerima satu notifikasi.
+          </p>
+          {canEdit && canSearchUsers && (
+            <div style={{ position: "relative" }} data-testid="notif-member-picker">
+              <div className="search-inline" style={{ marginBottom: 6 }}>
+                <Search size={14} />
+                <input
+                  placeholder="Cari anggota..."
+                  value={memberQuery}
+                  onChange={(e) => setMemberQuery(e.target.value)}
+                  disabled={saving || directoryLoading}
+                  data-testid="notif-member-search"
+                  autoComplete="off"
+                />
+              </div>
+              {directoryErr && (
+                <p className="muted small" style={{ color: "#8f1f1f" }} data-testid="notif-member-search-error">
+                  {typeof directoryErr === "string" ? directoryErr : "Gagal memuat daftar anggota"}
+                </p>
+              )}
+              {memberQuery.trim() && !directoryErr && (
+                <ul
+                  data-testid="notif-member-search-results"
+                  style={{
+                    listStyle: "none",
+                    margin: "0 0 8px",
+                    padding: 0,
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    maxHeight: 180,
+                    overflow: "auto",
+                    background: "var(--surface)",
+                  }}
+                >
+                  {searchHits.length === 0 ? (
+                    <li className="muted small" style={{ padding: "8px 10px" }}>Tidak ada anggota</li>
+                  ) : (
+                    searchHits.map((u) => (
+                      <li key={u.id}>
+                        <button
+                          type="button"
+                          className="ghost"
+                          style={{
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "8px 10px",
+                            borderRadius: 0,
+                            borderBottom: "1px solid var(--line)",
+                          }}
+                          onClick={() => addMember(u)}
+                          data-testid={`notif-member-option-${u.id}`}
+                        >
+                          <strong>{u.name || u.email || u.id}</strong>
+                          <span className="muted small" style={{ marginLeft: 8 }}>
+                            {roleLabel(u.role)}
+                          </span>
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
+          {canEdit && !canSearchUsers && (
+            <p className="muted small" data-testid="notif-member-need-users-view">
+              Butuh permission <code>users.view</code> untuk mencari anggota.
+            </p>
+          )}
+          <div
+            data-testid="notif-member-selected"
+            style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}
+          >
+            {selectedIds.length === 0 ? (
+              <span className="muted small">Belum ada anggota tambahan.</span>
+            ) : (
+              selectedIds.map((id) => {
+                const u = userById.get(String(id));
+                const label = u?.name || u?.email || id;
+                const role = u?.role ? roleLabel(u.role) : "";
+                const inactive = u?.status === "inactive";
+                return (
+                  <span
+                    key={id}
+                    data-testid={`notif-member-chip-${id}`}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "4px 8px",
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      background: "var(--bg)",
+                      fontSize: 13,
+                    }}
+                  >
+                    <span>
+                      {label}
+                      {role ? ` · ${role}` : ""}
+                      {inactive ? " · tidak aktif" : ""}
+                    </span>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        aria-label={`Hapus ${label}`}
+                        onClick={() => removeMember(id)}
+                        disabled={saving}
+                        data-testid={`notif-member-remove-${id}`}
+                        style={{ padding: "0 4px", minWidth: 0, lineHeight: 1 }}
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </span>
+                );
+              })
+            )}
+          </div>
+        </div>
       </div>
       {err && <p style={{ color: "#8f1f1f" }} data-testid="notifications-settings-error">{err}</p>}
       {canEdit && (
