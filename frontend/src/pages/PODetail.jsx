@@ -18,6 +18,7 @@ import HelperPrepPanel from "../components/HelperPrepPanel";
 import ProductionRoutePanel from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
 import OutletLocationModal from "../components/OutletLocationModal";
+import EditPoInfoModal from "../components/EditPoInfoModal";
 import StageBar from "../components/StageBar";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import { terkirimQtySummary } from "../lib/deliveryHistory";
@@ -70,6 +71,7 @@ export default function PODetail() {
   const [trackingCopyMsg, setTrackingCopyMsg] = useState("");
   const [trackingBusy, setTrackingBusy] = useState(false);
   const [locRow, setLocRow] = useState(null);
+  const [editInfoOpen, setEditInfoOpen] = useState(false);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -327,6 +329,7 @@ export default function PODetail() {
   const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
   const canReplaceLineProduct = hasPerm("po.edit");
+  const canEditPoInfo = hasPerm("po.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
   const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const {
@@ -343,7 +346,7 @@ export default function PODetail() {
     canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
     canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
-    canManageSuratJalan || canCreateDelivery
+    canManageSuratJalan || canCreateDelivery || canEditPoInfo || canReplaceLineProduct
   );
 
   const copyTrackingLink = async () => {
@@ -556,6 +559,16 @@ export default function PODetail() {
       <section className="panel po-info-panel" data-testid="detail-info">
         <header className="panel-head">
           <h3>Informasi PO</h3>
+          {canEditPoInfo && !order.cancelled && (
+            <button
+              type="button"
+              className="ghost sm"
+              data-testid="po-edit-info"
+              onClick={() => setEditInfoOpen(true)}
+            >
+              Edit Informasi
+            </button>
+          )}
         </header>
         <div className="po-info-grid">
         <div>
@@ -612,7 +625,7 @@ export default function PODetail() {
         </div>
         <div>
           <span className="lbl">Estimasi kirim</span>
-          <strong>{formatDate(order.estimated_delivery)}</strong>
+          <strong data-testid="detail-estimated-delivery">{formatDate(order.estimated_delivery)}</strong>
         </div>
         <div>
           <span className="lbl">Penerima</span>
@@ -626,7 +639,7 @@ export default function PODetail() {
         </div>
         <div className="po-info-address">
           <span className="lbl"><MapPin size={12} /> Alamat</span>
-          <strong>{order.address || <span className="po-info-empty">—</span>}</strong>
+          <strong data-testid="detail-address">{order.address || <span className="po-info-empty">—</span>}</strong>
         </div>
         <div>
           <span className="lbl">Ekspedisi</span>
@@ -1359,6 +1372,18 @@ export default function PODetail() {
         canEdit={canSetLocation}
         onClose={() => setLocRow(null)}
         onSaved={() => refreshPO()}
+      />
+      <EditPoInfoModal
+        open={editInfoOpen}
+        order={order}
+        onClose={() => setEditInfoOpen(false)}
+        onSaved={(updated) => {
+          if (updated && typeof updated === "object") {
+            setOrder((prev) => ({ ...(prev || {}), ...updated }));
+          }
+          refreshPO();
+          showToast("Informasi PO diperbarui");
+        }}
       />
     </div>
   );

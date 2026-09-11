@@ -3650,6 +3650,15 @@ html:has(.ship-status-page) #root{
 .confirm-action-dl > div{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:baseline}
 .confirm-action-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
 .confirm-action-dl dd{margin:0;font-weight:650}
+.edit-po-info-modal{max-width:440px}
+.edit-po-info-form{display:flex;flex-direction:column;gap:10px}
+.edit-po-info-field{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.edit-po-info-field > span{font:10px 'IBM Plex Mono';letter-spacing:.08em;text-transform:uppercase;color:var(--soft)}
+.edit-po-info-field textarea,
+.edit-po-info-field input[type="date"]{
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font:inherit;background:#fff
+}
+.edit-po-info-field textarea{resize:vertical;min-height:72px}
 .delivery-history{display:flex;flex-direction:column;gap:8px;padding:8px 16px 12px}
 .delivery-history-entry{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fafaf7}
 .delivery-history-dl{margin:0;display:grid;grid-template-columns:132px 1fr;gap:3px 10px;font-size:13px}
