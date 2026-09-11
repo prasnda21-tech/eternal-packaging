@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import DeliverySchedulePage from "./DeliverySchedulePage";
 import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
+import { STATUS_LOKASI_SORT_DUMMY_ROWS } from "../lib/deliveryScheduleStatusLokasiFixtures";
 import { mobileScheduleReviewHref } from "../lib/mobileDeliverySchedule";
 
 const mockHasPerm = jest.fn(() => false);
@@ -163,6 +164,8 @@ describe("delivery reschedule UI (static)", () => {
     expect(schedule).toMatch(/locationSetupStatusLabel/);
     expect(schedule).toMatch(/ds-optimasi-rute/);
     expect(schedule).toMatch(/Status Lokasi/);
+    expect(schedule).toMatch(/ds-sort-status-lokasi/);
+    expect(schedule).toMatch(/DELIVERY_SORT_KEYS\.location_status/);
     expect(schedule).toMatch(/navigate\(/);
     expect(schedule).not.toMatch(/window\.open/);
     expect(schedule).not.toMatch(/target=["']_blank["']/);
@@ -298,6 +301,7 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
       root.render(<DeliverySchedulePage />);
     });
     expect(container.querySelector('[data-testid="ds-col-status-lokasi"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-sort-status-lokasi"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-100"]').textContent).toBe("Sudah Diatur");
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-200"]').textContent).toBe("Belum Diatur");
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-ZERO"]').textContent).toBe("Belum Diatur");
@@ -305,5 +309,70 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-OOR"]').textContent).toBe("Belum Diatur");
     // Address alone never flips helper
     expect(locationSetupStatusLabel({ address: "Jl Ada", lat: null, lng: null })).toBe("Belum Diatur");
+  });
+
+  test("Status Lokasi header sorts ASC then DESC using canonical coords and dummy POs", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    expect(STATUS_LOKASI_SORT_DUMMY_ROWS.length).toBeGreaterThanOrEqual(3);
+    mockDeliverySchedule.mockResolvedValue({ rows: STATUS_LOKASI_SORT_DUMMY_ROWS });
+    await act(async () => {
+      root.render(<DeliverySchedulePage />);
+    });
+
+    const sortBtn = container.querySelector('[data-testid="ds-sort-status-lokasi"]');
+    expect(sortBtn).toBeTruthy();
+
+    const labelsInOrder = () => Array.from(
+      container.querySelectorAll('[data-testid^="ds-status-lokasi-"]'),
+    ).map((el) => el.textContent);
+
+    const poInOrder = () => Array.from(
+      container.querySelectorAll('tbody tr[data-testid^="ds-row-"]'),
+    ).map((el) => el.getAttribute("data-testid").replace("ds-row-", ""));
+
+    // ASC: Belum before Sudah; address-only DUMMY-PO-003 stays Belum
+    await act(async () => {
+      sortBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(labelsInOrder()).toEqual([
+      "Belum Diatur",
+      "Belum Diatur",
+      "Sudah Diatur",
+      "Sudah Diatur",
+    ]);
+    expect(poInOrder()).toEqual([
+      "DUMMY-PO-001",
+      "DUMMY-PO-003",
+      "DUMMY-PO-002",
+      "DUMMY-PO-004",
+    ]);
+    expect(container.querySelector('[data-testid="ds-status-lokasi-DUMMY-PO-003"]').textContent)
+      .toBe("Belum Diatur");
+    expect(container.querySelector('[data-testid="ds-status-lokasi-DUMMY-PO-002"]').textContent)
+      .toBe("Sudah Diatur");
+
+    // DESC: Sudah before Belum
+    await act(async () => {
+      sortBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(labelsInOrder()).toEqual([
+      "Sudah Diatur",
+      "Sudah Diatur",
+      "Belum Diatur",
+      "Belum Diatur",
+    ]);
+    expect(poInOrder()).toEqual([
+      "DUMMY-PO-002",
+      "DUMMY-PO-004",
+      "DUMMY-PO-001",
+      "DUMMY-PO-003",
+    ]);
+
+    // Customer sort still works after location sort
+    const customerBtn = container.querySelector('[data-testid="ds-sort-customer"]');
+    await act(async () => {
+      customerBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(poInOrder()[0]).toBe("DUMMY-PO-003"); // "Dummy Customer Alamat Saja"
   });
 });

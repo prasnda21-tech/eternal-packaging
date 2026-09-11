@@ -1,6 +1,7 @@
 import {
   EMPTY_DELIVERY_FILTERS,
   EMPTY_DELIVERY_SORT,
+  DELIVERY_SORT_KEYS,
   countActiveDeliveryFilters,
   cycleDeliverySort,
   dateKey,
@@ -8,6 +9,8 @@ import {
   rescheduleConfirmLabel,
   sortDeliveryRows,
 } from "./deliverySchedule";
+import { locationSetupStatusLabel } from "./deliveryRouteBridge";
+import { STATUS_LOKASI_SORT_DUMMY_ROWS } from "./deliveryScheduleStatusLokasiFixtures";
 
 describe("delivery schedule filters", () => {
   const row = {
@@ -94,6 +97,65 @@ describe("delivery schedule header sort", () => {
       { id: "2", customer_name: "PT Test Customer", order_number: "PO-B", percent_delivered: 10 },
     ];
     expect(sortDeliveryRows(same, { key: "shipped", direction: "asc" }).map((r) => r.id)).toEqual(["1", "2"]);
+  });
+
+  test("Status Lokasi ASC/DESC uses canonical coords not address", () => {
+    const dummy = STATUS_LOKASI_SORT_DUMMY_ROWS;
+    expect(dummy.length).toBeGreaterThanOrEqual(3);
+    expect(locationSetupStatusLabel(dummy[0])).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel(dummy[1])).toBe("Sudah Diatur");
+    expect(locationSetupStatusLabel(dummy[2])).toBe("Belum Diatur");
+    expect(dummy[2].address).toBeTruthy();
+
+    const asc = sortDeliveryRows(dummy, { key: DELIVERY_SORT_KEYS.location_status, direction: "asc" });
+    expect(asc.map((r) => locationSetupStatusLabel(r))).toEqual([
+      "Belum Diatur",
+      "Belum Diatur",
+      "Sudah Diatur",
+      "Sudah Diatur",
+    ]);
+    expect(asc.map((r) => r.order_number)).toEqual([
+      "DUMMY-PO-001",
+      "DUMMY-PO-003",
+      "DUMMY-PO-002",
+      "DUMMY-PO-004",
+    ]);
+
+    const desc = sortDeliveryRows(dummy, { key: DELIVERY_SORT_KEYS.location_status, direction: "desc" });
+    expect(desc.map((r) => locationSetupStatusLabel(r))).toEqual([
+      "Sudah Diatur",
+      "Sudah Diatur",
+      "Belum Diatur",
+      "Belum Diatur",
+    ]);
+    expect(desc.map((r) => r.order_number)).toEqual([
+      "DUMMY-PO-002",
+      "DUMMY-PO-004",
+      "DUMMY-PO-001",
+      "DUMMY-PO-003",
+    ]);
+  });
+
+  test("Status Lokasi sort leaves other-column sort unchanged", () => {
+    expect(sortDeliveryRows(rows, { key: "customer", direction: "asc" }).map((r) => r.id)).toEqual(["a", "b", "c"]);
+    expect(cycleDeliverySort(EMPTY_DELIVERY_SORT, DELIVERY_SORT_KEYS.location_status))
+      .toEqual({ key: "location_status", direction: "asc" });
+  });
+});
+
+describe("Status Lokasi dummy fixtures", () => {
+  test("exports at least 3 task-owned dummy POs with required location cases", () => {
+    expect(STATUS_LOKASI_SORT_DUMMY_ROWS.length).toBeGreaterThanOrEqual(3);
+    expect(STATUS_LOKASI_SORT_DUMMY_ROWS.map((r) => r.order_number)).toEqual([
+      "DUMMY-PO-001",
+      "DUMMY-PO-002",
+      "DUMMY-PO-003",
+      "DUMMY-PO-004",
+    ]);
+    expect(locationSetupStatusLabel(STATUS_LOKASI_SORT_DUMMY_ROWS[0])).toBe("Belum Diatur");
+    expect(locationSetupStatusLabel(STATUS_LOKASI_SORT_DUMMY_ROWS[1])).toBe("Sudah Diatur");
+    expect(STATUS_LOKASI_SORT_DUMMY_ROWS[2].address).toBeTruthy();
+    expect(locationSetupStatusLabel(STATUS_LOKASI_SORT_DUMMY_ROWS[2])).toBe("Belum Diatur");
   });
 });
 

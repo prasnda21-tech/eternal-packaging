@@ -111,6 +111,14 @@ export function locationSetupStatusLabel(row) {
   return hasCanonicalDeliveryCoordinates(row) ? "Sudah Diatur" : "Belum Diatur";
 }
 
+/**
+ * Stable sortable value for Status Lokasi (reuse canonical coordinates rule).
+ * Belum Diatur => 0 (lower); Sudah Diatur => 1 (higher).
+ */
+export function locationSetupSortValue(row) {
+  return hasCanonicalDeliveryCoordinates(row) ? 1 : 0;
+}
+
 /** Presentation only — uses authoritative row.eligible from review API. */
 export function eligibilityStatusLabel(row) {
   return row?.eligible ? "Eligible" : "Tidak Eligible";
