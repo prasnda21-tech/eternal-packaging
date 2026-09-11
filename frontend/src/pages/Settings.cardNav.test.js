@@ -26,6 +26,7 @@ describe("Settings category card navigation", () => {
       "payroll-accounting",
       "customer-pricing",
       "customer-approval",
+      "notifications",
       "delivery-deadline",
       "operator-target",
       "work-panel",

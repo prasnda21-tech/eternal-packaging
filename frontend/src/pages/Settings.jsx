@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Users, Shield, ScrollText, Plus, Edit3, Power, PowerOff, Key, Trash2, ShieldCheck, ShieldAlert, ArrowRightLeft,
-  Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck,
+  Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck, Bell,
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route, Tags,
   BookOpen,
   Package,
@@ -1361,6 +1361,97 @@ function CustomerApprovalSettingsTab({ notify, canEdit }) {
 }
 
 /* ---------------- Root ---------------- */
+
+function NotificationsSettingsTab({ notify, canEdit }) {
+  const [state, setState] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.customerDesignApprovalNotificationSettings()
+      .then((d) => setState(d.settings))
+      .catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat pengaturan notifikasi"));
+  }, []);
+
+  if (!state) {
+    return (
+      <div data-testid="notifications-settings-tab" className="settings-card">
+        <p className="muted">{err || "Memuat..."}</p>
+      </div>
+    );
+  }
+
+  const set = (k, v) => setState((s) => ({ ...s, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const payload = {
+        enabled: !!state.enabled,
+        notify_designer: !!state.notify_designer,
+        notify_crm: !!state.notify_crm,
+      };
+      const r = await api.updateCustomerDesignApprovalNotificationSettings(payload);
+      setState(r.settings);
+      notify?.("Pengaturan notifikasi disimpan");
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "Gagal menyimpan");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div data-testid="notifications-settings-tab" style={{ display: "grid", gap: 16, maxWidth: 620 }}>
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
+        <h3 style={{ marginTop: 0 }}>Approval Design Customer</h3>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          Notifikasi ke Designer dan CRM ketika customer menyetujui atau menolak design.
+        </p>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }} data-testid="notif-toggle-enabled">
+          <input
+            type="checkbox"
+            checked={!!state.enabled}
+            onChange={(e) => set("enabled", e.target.checked)}
+            disabled={!canEdit || saving}
+          />
+          <span>Aktif</span>
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }} data-testid="notif-toggle-designer">
+          <input
+            type="checkbox"
+            checked={!!state.notify_designer}
+            onChange={(e) => set("notify_designer", e.target.checked)}
+            disabled={!canEdit || saving}
+          />
+          <span>Designer</span>
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }} data-testid="notif-toggle-crm">
+          <input
+            type="checkbox"
+            checked={!!state.notify_crm}
+            onChange={(e) => set("notify_crm", e.target.checked)}
+            disabled={!canEdit || saving}
+          />
+          <span>CRM</span>
+        </label>
+      </div>
+      {err && <p style={{ color: "#8f1f1f" }} data-testid="notifications-settings-error">{err}</p>}
+      {canEdit && (
+        <div>
+          <button className="primary" onClick={save} disabled={saving} data-testid="notifications-settings-save">
+            <Save size={14} /> Simpan
+          </button>
+        </div>
+      )}
+      {!canEdit && (
+        <p className="muted small">Anda hanya bisa melihat. Butuh permission <code>customer_approval.settings</code> untuk mengubah.</p>
+      )}
+    </div>
+  );
+}
+
 function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
   const [state, setState] = useState(null);
   const [choices, setChoices] = useState([1, 3, 5]);
@@ -1890,6 +1981,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
+  { id: "notifications", label: "Notifikasi", description: "Notifikasi operasional", Icon: Bell, tone: "cyan", testid: "settings-tab-notifications" },
   { id: "delivery-deadline", label: "Deadline Pengiriman", description: "Batas waktu kirim", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
   { id: "operator-target", label: "Target Output Operator", description: "Target harian/mingguan", Icon: TargetIcon, tone: "cyan", testid: "settings-tab-operator-target" },
   { id: "work-panel", label: "Form Pekerjaan Divisi", description: "Form & akses divisi", Icon: ClipboardList, tone: "violet", testid: "settings-tab-work-panel" },
@@ -1995,6 +2087,7 @@ export default function Settings() {
     "payroll-accounting": canViewPayrollAccounting,
     "customer-pricing": canViewCustomerPricing,
     "customer-approval": canViewCaSettings,
+    notifications: canViewCaSettings,
     "delivery-deadline": canViewDdSettings,
     "operator-target": canViewOpTarget,
     "work-panel": canViewWorkPanel,
@@ -2118,6 +2211,7 @@ export default function Settings() {
         />
       )}
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
+      {tab === "notifications" && canViewCaSettings && <NotificationsSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
       {tab === "work-panel" && canViewWorkPanel && (
