@@ -1,6 +1,8 @@
 """HTTP routes for minimal in-app notifications + Customer Design Approval settings."""
 from __future__ import annotations
 
+from typing import List, Optional
+
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
@@ -12,6 +14,7 @@ class NotificationSettingsPayload(BaseModel):
     enabled: bool
     notify_designer: bool
     notify_crm: bool
+    additional_recipient_user_ids: Optional[List[str]] = None
 
 
 def _uid(user: dict) -> str:
