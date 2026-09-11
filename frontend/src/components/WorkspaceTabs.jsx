@@ -28,6 +28,8 @@ export default function WorkspaceTabs({
             role="tab"
             aria-selected={isActive}
             data-testid={`${testidPrefix}-${tab.id}`}
+            data-workspace-tab="1"
+            data-active={isActive ? "1" : "0"}
           >
             <button
               type="button"
