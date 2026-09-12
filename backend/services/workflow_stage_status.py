@@ -266,6 +266,12 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
         return {"state": "pending", "label": "Menunggu"}
 
     if idx == STAGE_LOADING:
+        verification = order.get("loading_verification_status") if isinstance(order.get("loading_verification_status"), dict) else None
+        if verification and verification.get("label"):
+            code = str(verification.get("code") or "")
+            if "complete" in code:
+                return {"state": "done", "label": verification.get("label")}
+            return {"state": "current", "label": verification.get("label")}
         confirmations = order.get("loading_confirmations") if isinstance(order.get("loading_confirmations"), list) else []
         has_confirm = len(confirmations) > 0
         qty_status = order.get("loading_qty_status") or loading_status_semantic(order)
@@ -281,10 +287,10 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
                 return {"state": "done", "label": "Selesai"}
             if qty_status == "partial":
                 return {"state": "current", "label": "Parsial"}
-            return {"state": "current", "label": "Konfirmasi qty SJ"}
+            return {"state": "current", "label": "Verifikasi Kesesuaian SJ"}
         created = surat_jalan_created(order) or bool(order.get("surat_jalan_created"))
         if created:
-            return {"state": "current", "label": "Konfirmasi qty SJ"}
+            return {"state": "current", "label": "Verifikasi Kesesuaian SJ"}
         if has_legacy and not has_confirm:
             return {"state": "done", "label": "Riwayat Loading"}
         if _terkirim_confirmed(order) or order.get("delivery_status") == "Terkirim":

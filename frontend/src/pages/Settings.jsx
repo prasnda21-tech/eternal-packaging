@@ -12,7 +12,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsTabFromPath } from "../lib/navAccess";
-import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload } from "../lib/settingsPermissionUi";
+import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import PhysicalStockSettings from "./PhysicalStockSettings";
@@ -866,16 +866,16 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
       setRoles(d.roles || []);
       const target = keepSelected && selected ? d.roles.find((r) => r.role === selected) : null;
       if (target) {
-        setPermsDraft(new Set(target.permissions));
-        setInitial(new Set(target.permissions));
+        setPermsDraft(expandLoadingDraftForEdit(target.permissions));
+        setInitial(expandLoadingDraftForEdit(target.permissions));
         setLabelDraft(target.label || "");
         setDescDraft(target.description || "");
         setMetaInitial({ label: target.label || "", description: target.description || "" });
       } else if (d.roles?.length) {
         const first = d.roles.find((r) => r.role !== "admin") || d.roles[0];
         setSelected(first.role);
-        setPermsDraft(new Set(first.permissions));
-        setInitial(new Set(first.permissions));
+        setPermsDraft(expandLoadingDraftForEdit(first.permissions));
+        setInitial(expandLoadingDraftForEdit(first.permissions));
         setLabelDraft(first.label || "");
         setDescDraft(first.description || "");
         setMetaInitial({ label: first.label || "", description: first.description || "" });
@@ -887,8 +887,8 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
 
   const selectRole = (r) => {
     setSelected(r.role);
-    setPermsDraft(new Set(r.permissions));
-    setInitial(new Set(r.permissions));
+    setPermsDraft(expandLoadingDraftForEdit(r.permissions));
+    setInitial(expandLoadingDraftForEdit(r.permissions));
     setLabelDraft(r.label || "");
     setDescDraft(r.description || "");
     setMetaInitial({ label: r.label || "", description: r.description || "" });
@@ -1094,6 +1094,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
                           <span className="perm-check-label">
                             <span>{p.label}</span>
                             <span className="mono muted">{p.key}</span>
+                            {p.description ? <span className="muted small" data-testid={`perm-desc-${p.key}`}>{p.description}</span> : null}
                           </span>
                         </label>
                       ))}

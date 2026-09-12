@@ -507,11 +507,25 @@ export const TASK_NAV_LABELS = {
 };
 
 /** Parent hidden unless at least one child is granted via nav.* or matching submit perm. */
+function hasLoadingNavAccess(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  return (
+    canSeeNav(hasPerm, TASK_SUBMIT_PERMS.loading)
+    || hasPerm("loading.view")
+    || hasPerm("loading.confirm_match")
+    || hasPerm("loading.report_discrepancy")
+    || hasPerm("loading.view_discrepancy_history")
+    || hasPerm("loading.resolve_discrepancy")
+  );
+}
+
 export function tasksNavVisible(hasPerm) {
   const children = {};
   let any = false;
   for (const [id, key] of TASK_CHILDREN) {
-    const on = canSeeNav(hasPerm, key) || canSeeNav(hasPerm, TASK_SUBMIT_PERMS[id]);
+    const on = id === "loading"
+      ? (canSeeNav(hasPerm, key) || hasLoadingNavAccess(hasPerm))
+      : (canSeeNav(hasPerm, key) || canSeeNav(hasPerm, TASK_SUBMIT_PERMS[id]));
     children[id] = on;
     if (on) any = true;
   }

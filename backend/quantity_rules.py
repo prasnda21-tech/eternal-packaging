@@ -672,9 +672,17 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     eligible = eligible_delivery_qty(order)
     if new_delivered > eligible:
         return f"Qty dikirim ({new_delivered}) melebihi qty Loading terkonfirmasi ({eligible})."
-    packed = qty_packed(order)
-    if packed > 0 and new_delivered > packed:
-        return f"Qty dikirim ({new_delivered}) melebihi qty Packing ({packed})."
+    # Physical ceiling that already authorized Loading (print=packed, non_print=PO).
+    # Do not use raw packing aggregate — inventory-only / non_print lines intentionally
+    # have packed=0 and must not block Delivery after valid Loading.
+    physical = sum(
+        physical_qty_for_loading_line(order, i) for i in range(_line_count(order))
+    )
+    if physical > 0 and new_delivered > physical:
+        return (
+            f"Qty dikirim ({new_delivered}) melebihi qty fisik eligible "
+            f"untuk Loading ({physical})."
+        )
     shipped = qty_shipped(order)
     if shipped > 0 and new_delivered > shipped:
         return f"Qty dikirim ({new_delivered}) melebihi alokasi Surat Jalan ({shipped})."
@@ -690,7 +698,20 @@ def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
 
     Historical SJ line quantities remain eligible when no loading_confirmations exist.
     Upload of photos does NOT call this — confirmation does.
+
+    When the order uses SJ-linked Loading (loading_confirmations present and/or
+    sales-delivery shipments that require Loading), Confirm must pass the same
+    Loading-vs-SJ per-line readiness as photo upload — aggregate totals with the
+    wrong item composition must not succeed.
+
+    If no active delivery batch/SJ shipment exists yet (reason_code SJ_NOT_READY),
+    keep the legacy eligible-qty path from loading_confirmations — the composition
+    gate applies only when a concrete SJ batch is present to compare against.
     """
+    if loading_confirmations_stored(order) or _shipments_require_loading_confirm(order):
+        ready = delivery_batch_photo_readiness(order)
+        if not ready.get("allowed") and ready.get("reason_code") != REASON_SJ_NOT_READY:
+            return None
     eligible = eligible_delivery_qty(order)
     if eligible <= 0:
         return None
@@ -761,6 +782,15 @@ def confirm_delivery_block_reason(order: dict) -> Optional[str]:
     sig_blocked = signature_confirm_block_reason(order)
     if sig_blocked:
         return sig_blocked
+    # Authoritative Loading-vs-SJ gate when this PO uses the Loading workflow.
+    # Historical SJ-only deliveries (no loading_confirmations / no sales_delivery_id
+    # requirement) keep the legacy eligible path and are not blocked here.
+    # SJ_NOT_READY (no active batch) also keeps the eligible path — composition
+    # checks require a concrete SJ shipment to evaluate.
+    if loading_confirmations_stored(order) or _shipments_require_loading_confirm(order):
+        ready = delivery_batch_photo_readiness(order)
+        if not ready.get("allowed") and ready.get("reason_code") != REASON_SJ_NOT_READY:
+            return ready.get("reason") or MSG_PHOTO_LOADING_INSUFFICIENT
     return None
 
 
@@ -1803,6 +1833,423 @@ def loading_status_semantic(order: dict) -> str:
     return SJ_STATUS_PARTIAL
 
 
+
+# ---------------------------------------------------------------------------
+# Loading SJ one-click match + qty discrepancy (Packing → SJ → Loading → Delivery)
+# ---------------------------------------------------------------------------
+
+LOADING_STATUS_WAITING = "waiting_verification"
+LOADING_STATUS_PACKING_SHORT = "packing_insufficient"
+LOADING_STATUS_READY = "ready_to_verify"
+LOADING_STATUS_HELD_MISMATCH = "held_qty_mismatch"
+LOADING_STATUS_COMPLETE = "loading_complete"
+
+MSG_LOADING_PACKING_SHORT_FMT = (
+    "Packing belum mencukupi untuk {item}: diperlukan {need}, tersedia {have}."
+)
+
+
+def _fmt_qty_id(n: int) -> str:
+    return f"{int(n):,}".replace(",", ".")
+
+
+
+def sj_fingerprint(order: dict, surat_jalan_id: str) -> str:
+    """Deterministic fingerprint of current SJ line composition for snapshot binding."""
+    import hashlib
+    sid = str(surat_jalan_id or "").strip()
+    parts = [sid]
+    lines = sj_lines_stored(order, sid)
+    if lines:
+        for ln in sorted(lines, key=lambda x: _safe_int((x or {}).get("line_idx"), default=-1)):
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            if idx < 0 or qty <= 0:
+                continue
+            parts.append(f"{idx}:{qty}")
+    else:
+        entry = find_sj_file(order, sid) or {}
+        parts.append(f"0:{max(0, _safe_int(entry.get('total_qty') or entry.get('qty') or 0))}")
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def build_sj_loading_lines(order: dict, surat_jalan_id: str) -> list:
+    """Authoritative Loading lines = exact current SJ required qtys (remaining)."""
+    sid = str(surat_jalan_id or "").strip()
+    out = []
+    lines = sj_lines_stored(order, sid)
+    if lines:
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            need = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            if idx < 0 or need <= 0:
+                continue
+            already = loaded_qty_for_sj_line(order, sid, idx)
+            rem = max(0, need - already)
+            if rem <= 0:
+                continue
+            out.append({
+                "line_idx": idx,
+                "qty": rem,
+                "name": _line_name(order, idx),
+                "accurate_item_id": _line_accurate_item_id(order, idx),
+                "is_print": bool(0 <= idx < len(order.get("line_items") or []) and is_print_line((order.get("line_items") or [])[idx])),
+            })
+        return out
+    # Legacy total-only SJ
+    entry = find_sj_file(order, sid) or {}
+    total = max(0, _safe_int(entry.get("total_qty") or entry.get("qty") or 0))
+    already = loaded_qty_for_sj_line(order, sid, 0)
+    rem = max(0, total - already)
+    if rem > 0:
+        out.append({
+            "line_idx": 0,
+            "qty": rem,
+            "name": _line_name(order, 0),
+            "accurate_item_id": _line_accurate_item_id(order, 0),
+            "is_print": bool(_line_count(order) and is_print_line((order.get("line_items") or [ {}])[0])),
+        })
+    return out
+
+
+def packing_shortfall_for_sj_match(order: dict, surat_jalan_id: str) -> Optional[str]:
+    """Print lines need packing >= SJ required. Non-print exempt from production Packing."""
+    sid = str(surat_jalan_id or "").strip()
+    lis = order.get("line_items") or []
+    for ln in build_sj_loading_lines(order, sid) or []:
+        idx = int(ln.get("line_idx"))
+        need = int(ln.get("qty") or 0)
+        if idx < 0 or need <= 0:
+            continue
+        if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
+            continue
+        have = packed_qty_for_line(order, idx)
+        # remaining packing after prior loads on this PO line
+        already_loaded = qty_loaded_for_line(order, idx)
+        avail_pack = max(0, have - already_loaded) if is_print_line(lis[idx] if 0 <= idx < len(lis) else {"production_process": "print"}) else need
+        # For print: physical available must cover this SJ remainder
+        physical = physical_qty_for_loading_line(order, idx)
+        remain_phys = max(0, physical - qty_loaded_for_line(order, idx))
+        if remain_phys < need:
+            name = _line_name(order, idx)
+            return MSG_LOADING_PACKING_SHORT_FMT.format(item=name, need=_fmt_qty_id(need), have=_fmt_qty_id(remain_phys))
+    return None
+
+
+def validate_loading_match_confirmation(order: dict, surat_jalan_id: str) -> Optional[str]:
+    """Validate one-click 'Semua Barang Sesuai SJ'.
+
+    Already-complete verification for the same SJ fingerprint is idempotent success.
+    Fingerprint mismatch (SJ changed) allows re-verify even when remaining qty is 0.
+    """
+    sid = str(surat_jalan_id or "").strip()
+    if not find_sj_file(order, sid):
+        return "Surat Jalan tidak ditemukan. Loading harus terhubung ke file Surat Jalan."
+    fp = sj_fingerprint(order, sid)
+    snaps = [
+        s for s in (order.get("loading_snapshots") or [])
+        if isinstance(s, dict)
+        and str(s.get("surat_jalan_id") or "").strip() == sid
+        and s.get("status") not in ("cancelled", "superseded", "deleted")
+    ]
+    fingerprint_ok = bool(snaps and fp and str(snaps[-1].get("sj_fingerprint") or "") == fp)
+    open_disc = [
+        d for d in (order.get("loading_discrepancies") or [])
+        if isinstance(d, dict)
+        and d.get("status") in ("open", "held", None, "")
+        and str(d.get("surat_jalan_id") or "").strip() == sid
+    ]
+    lines = build_sj_loading_lines(order, sid)
+    if not lines:
+        if fingerprint_ok and not open_disc:
+            return None  # idempotent complete
+        # SJ changed or open discrepancy while qty already covers → allow snapshot refresh
+        if open_disc or (snaps and not fingerprint_ok):
+            return None
+        return "Tidak ada qty Surat Jalan yang tersisa untuk diverifikasi."
+    short = packing_shortfall_for_sj_match(order, sid)
+    if short:
+        return short
+    payload = [{"line_idx": ln["line_idx"], "qty": ln["qty"]} for ln in lines]
+    return validate_loading_confirmation(order, sid, payload)
+
+
+def apply_loading_match_confirmation(
+    order: dict,
+    *,
+    surat_jalan_id: str,
+    actor: Optional[dict] = None,
+    confirmation_id: Optional[str] = None,
+    confirmed_at: Optional[str] = None,
+    action_id: Optional[str] = None,
+) -> dict:
+    """Generate Loading lines from current SJ and persist match snapshot.
+
+    When remaining SJ qty is already covered but fingerprint/discrepancy requires
+    re-verify, persist a fresh snapshot without duplicating Loading quantities.
+    """
+    sid = str(surat_jalan_id or "").strip()
+    actor = actor or {}
+    gen = build_sj_loading_lines(order, sid)
+    fp = sj_fingerprint(order, sid)
+    if gen:
+        payload = [{"line_idx": ln["line_idx"], "qty": ln["qty"]} for ln in gen]
+        record = apply_loading_confirmation(
+            order,
+            surat_jalan_id=sid,
+            lines=payload,
+            actor=actor,
+            confirmation_id=confirmation_id,
+            confirmed_at=confirmed_at,
+            action_id=action_id,
+        )
+        record["source"] = "sj_match"
+        record["sj_fingerprint"] = fp
+        confs = order.get("loading_confirmations") or []
+        if confs and isinstance(confs[-1], dict):
+            confs[-1]["source"] = "sj_match"
+            confs[-1]["sj_fingerprint"] = fp
+        snap_lines = list(record.get("lines") or [])
+        rec_id = record.get("id") or confirmation_id
+    else:
+        # Snapshot-only attestation from current SJ composition
+        snap_lines = []
+        stored = sj_lines_stored(order, sid)
+        if stored:
+            for ln in stored:
+                if not isinstance(ln, dict):
+                    continue
+                idx = _safe_int(ln.get("line_idx"), default=-1)
+                qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+                if idx < 0 or qty <= 0:
+                    continue
+                snap_lines.append({
+                    "line_idx": idx,
+                    "qty": qty,
+                    "name": _line_name(order, idx),
+                    "accurate_item_id": _line_accurate_item_id(order, idx),
+                })
+        rec_id = confirmation_id or str(__import__("uuid").uuid4())
+        record = {
+            "id": rec_id,
+            "surat_jalan_id": sid,
+            "lines": snap_lines,
+            "source": "sj_match",
+            "sj_fingerprint": fp,
+            "confirmed_by": actor.get("email"),
+            "confirmed_by_name": actor.get("name") or actor.get("email"),
+            "confirmed_at": confirmed_at,
+            "action_id": action_id,
+            "snapshot_only": True,
+        }
+    # Supersede prior snapshots for this SJ
+    for s in order.get("loading_snapshots") or []:
+        if isinstance(s, dict) and str(s.get("surat_jalan_id") or "").strip() == sid and s.get("status") == "complete":
+            s["status"] = "superseded"
+    snap = {
+        "id": rec_id,
+        "surat_jalan_id": sid,
+        "sj_fingerprint": fp,
+        "lines": snap_lines,
+        "source": "sj_match",
+        "status": "complete",
+        "confirmed_by": actor.get("email"),
+        "confirmed_by_name": actor.get("name") or actor.get("email"),
+        "confirmed_at": confirmed_at,
+        "action_id": action_id,
+    }
+    order.setdefault("loading_snapshots", []).append(snap)
+    for d in order.get("loading_discrepancies") or []:
+        if not isinstance(d, dict):
+            continue
+        if str(d.get("surat_jalan_id") or "").strip() != sid:
+            continue
+        if d.get("status") in ("open", "held", None, ""):
+            d["status"] = "resolved"
+            d["resolved_at"] = confirmed_at
+            d["resolved_by"] = actor.get("email")
+            d["resolved_via"] = "sj_match_reverify"
+    return record
+
+
+def loading_discrepancies_open(order: dict) -> list:
+    return loading_discrepancies_stored(order)
+
+
+def loading_discrepancies_stored(order: dict) -> list:
+    raw = order.get("loading_discrepancies")
+    if not isinstance(raw, list):
+        return []
+    return [d for d in raw if isinstance(d, dict) and d.get("status") in ("open", "held", None, "")]
+
+
+def validate_loading_discrepancy(
+    order: dict,
+    surat_jalan_id: str,
+    mismatches: list,
+) -> Optional[str]:
+    sid = str(surat_jalan_id or "").strip()
+    if not find_sj_file(order, sid):
+        return "Surat Jalan tidak ditemukan."
+    if not isinstance(mismatches, list) or not mismatches:
+        return "Pilih minimal satu baris yang qty fisiknya berbeda dari Surat Jalan."
+    seen = set()
+    genuine = 0
+    for row in mismatches:
+        if not isinstance(row, dict):
+            return "Data selisih tidak valid."
+        idx = _safe_int(row.get("line_idx"), default=-1)
+        if idx < 0 or idx in seen:
+            return "Baris selisih tidak valid atau duplikat."
+        seen.add(idx)
+        sj_qty = sj_qty_for_line(order, sid, idx)
+        if sj_qty <= 0:
+            return f"Baris {idx} tidak ada pada Surat Jalan terpilih."
+        if "actual_qty" not in row and "qty_fisik" not in row and row.get("qty") is None:
+            return "Qty Fisik Aktual wajib diisi untuk baris yang ditandai."
+        actual = row.get("actual_qty")
+        if actual is None:
+            actual = row.get("qty_fisik")
+        if actual is None:
+            actual = row.get("qty")
+        try:
+            if actual is None or str(actual).strip() == "":
+                return "Qty Fisik Aktual tidak boleh kosong."
+            actual_i = int(actual)
+        except (TypeError, ValueError):
+            return "Qty Fisik Aktual harus angka."
+        if actual_i < 0:
+            return "Qty Fisik Aktual tidak boleh negatif."
+        if actual_i == sj_qty:
+            return (
+                f"Qty Fisik Aktual untuk '{_line_name(order, idx)}' sama dengan Qty SJ "
+                f"({sj_qty}). Hapus tanda selisih atau ubah qty."
+            )
+        genuine += 1
+    if genuine <= 0:
+        return "Tidak ada selisih qty yang valid."
+    return None
+
+
+def apply_loading_discrepancy(
+    order: dict,
+    *,
+    surat_jalan_id: str,
+    mismatches: list,
+    note: Optional[str] = None,
+    actor: Optional[dict] = None,
+    discrepancy_id: Optional[str] = None,
+    reported_at: Optional[str] = None,
+    action_id: Optional[str] = None,
+) -> dict:
+    """Persist qty mismatch report. Does NOT complete Loading / unlock Delivery."""
+    sid = str(surat_jalan_id or "").strip()
+    actor = actor or {}
+    lines_out = []
+    for row in mismatches:
+        idx = _safe_int(row.get("line_idx"), default=-1)
+        sj_qty = sj_qty_for_line(order, sid, idx)
+        actual = row.get("actual_qty")
+        if actual is None:
+            actual = row.get("qty_fisik")
+        if actual is None:
+            actual = row.get("qty")
+        actual_i = int(actual)
+        diff = actual_i - sj_qty
+        lines_out.append({
+            "line_idx": idx,
+            "name": _line_name(order, idx),
+            "accurate_item_id": _line_accurate_item_id(order, idx),
+            "is_print": bool(0 <= idx < len(order.get("line_items") or []) and is_print_line((order.get("line_items") or [])[idx])),
+            "qty_sj": sj_qty,
+            "qty_actual": actual_i,
+            "difference": diff,
+            "classification": "lebih" if diff > 0 else "kurang",
+        })
+    rec = {
+        "id": discrepancy_id or "",
+        "surat_jalan_id": sid,
+        "sj_fingerprint": sj_fingerprint(order, sid),
+        "lines": lines_out,
+        "note": (note or "").strip() or None,
+        "status": "open",
+        "reported_by": actor.get("email"),
+        "reported_by_name": actor.get("name") or actor.get("email"),
+        "reported_at": reported_at,
+        "action_id": action_id,
+        "branch_id": order.get("branch_id") or order.get("cabang_id"),
+    }
+    order.setdefault("loading_discrepancies", []).append(rec)
+    return rec
+
+
+def loading_verification_status(order: dict, surat_jalan_id: Optional[str] = None) -> dict:
+    """UI/status helper for Loading SJ verification stage (stage name remains Loading)."""
+    ships = shipments_stored(order)
+    sid = str(surat_jalan_id or "").strip()
+    if not sid:
+        sh = active_delivery_batch(order)
+        sid = delivery_batch_identity(sh) if sh else ""
+        if not sid and ships:
+            sid = delivery_batch_identity(ships[-1])
+    open_disc = [
+        d for d in (order.get("loading_discrepancies") or [])
+        if isinstance(d, dict)
+        and d.get("status") in ("open", "held", None, "")
+        and (not sid or str(d.get("surat_jalan_id") or "").strip() == sid)
+    ]
+    if open_disc:
+        return {
+            "code": LOADING_STATUS_HELD_MISMATCH,
+            "label": "Tertahan — Qty Tidak Sesuai SJ",
+            "surat_jalan_id": sid,
+            "discrepancies": open_disc,
+        }
+    if not sid or not find_sj_file(order, sid):
+        return {"code": LOADING_STATUS_WAITING, "label": "Menunggu Verifikasi", "surat_jalan_id": sid or ""}
+
+    snaps = [
+        s for s in (order.get("loading_snapshots") or [])
+        if isinstance(s, dict)
+        and str(s.get("surat_jalan_id") or "").strip() == sid
+        and s.get("status") not in ("cancelled", "superseded", "deleted")
+    ]
+    fp = sj_fingerprint(order, sid)
+    if snaps and fp and not any(str(s.get("sj_fingerprint") or "") == fp for s in snaps):
+        return {
+            "code": LOADING_STATUS_WAITING,
+            "label": "Menunggu Verifikasi",
+            "surat_jalan_id": sid,
+            "reason": "Surat Jalan berubah — verifikasi ulang diperlukan.",
+            "sj_changed": True,
+        }
+
+    if delivery_batch_photo_readiness(order).get("allowed"):
+        return {
+            "code": LOADING_STATUS_COMPLETE,
+            "label": "Loading Selesai",
+            "surat_jalan_id": sid,
+        }
+    short = packing_shortfall_for_sj_match(order, sid)
+    if short:
+        return {
+            "code": LOADING_STATUS_PACKING_SHORT,
+            "label": "Packing Belum Mencukupi",
+            "surat_jalan_id": sid,
+            "reason": short,
+        }
+    return {
+        "code": LOADING_STATUS_READY,
+        "label": "Siap Diverifikasi",
+        "surat_jalan_id": sid,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Delivery-batch photo/gallery readiness + SJ reconcile on actual delivery
 # ---------------------------------------------------------------------------
@@ -1817,6 +2264,17 @@ MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT = (
     "Foto pengiriman dapat diinput setelah qty Packing dan Loading untuk pengiriman "
     "ini mencukupi."
 )
+MSG_PHOTO_SJ_NOT_READY = (
+    "Surat Jalan untuk pengiriman ini belum siap."
+)
+MSG_PHOTO_LOADING_ITEM_MISMATCH = (
+    "Qty Loading per item belum mencukupi untuk Surat Jalan pengiriman ini."
+)
+
+# Machine-readable Delivery readiness codes (UI must not parse Indonesian text alone).
+REASON_SJ_NOT_READY = "SJ_NOT_READY"
+REASON_LOADING_INCOMPLETE = "LOADING_INCOMPLETE"
+REASON_LOADING_ITEM_MISMATCH = "LOADING_ITEM_MISMATCH"
 
 
 def active_delivery_batch(order: dict) -> Optional[dict]:
@@ -1928,55 +2386,189 @@ def loaded_qty_for_delivery_batch(order: dict, shipment: Optional[dict] = None) 
     return qty_loaded(order) if len(shipments_stored(order)) <= 1 else 0
 
 
+def _delivery_batch_resolved_lines(order: dict, shipment: dict) -> list:
+    """SJ line rows for readiness: shipment.lines, else surat_jalan_files linkage."""
+    raw = shipment.get("lines") if isinstance(shipment.get("lines"), list) else []
+    lines = [ln for ln in raw if isinstance(ln, dict)]
+    if lines:
+        return lines
+    sid = delivery_batch_identity(shipment)
+    if not sid:
+        return []
+    return list(sj_lines_stored(order, sid) or [])
+
+
+def delivery_batch_line_readiness(order: dict, shipment: Optional[dict] = None) -> List[dict]:
+    """Per SJ-line Loading readiness for the active delivery batch.
+
+    Packing is intentionally not consulted here — Packing already gated Loading
+    for packable (print) lines via physical_qty_for_loading_line.
+
+    Legacy shipments without line identity are only safe when the PO has a single
+    attributable line. Multi-item POs without resolvable SJ lines must not pass
+    via aggregate Loading totals alone.
+    """
+    sh = shipment if isinstance(shipment, dict) else active_delivery_batch(order)
+    if not sh:
+        return []
+    sid = delivery_batch_identity(sh)
+    if not sid:
+        return []
+    lines = _delivery_batch_resolved_lines(order, sh)
+    out: List[dict] = []
+    if lines:
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            if idx < 0:
+                continue
+            required = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            if required <= 0:
+                continue
+            loaded = loaded_qty_for_sj_line(order, sid, idx)
+            shortage = max(0, required - loaded)
+            lis = order.get("line_items") or []
+            li = lis[idx] if 0 <= idx < len(lis) else {}
+            out.append({
+                "line_idx": idx,
+                "name": _line_name(order, idx),
+                "item_code": li.get("item_code") if isinstance(li, dict) else None,
+                "accurate_item_id": _line_accurate_item_id(order, idx) if 0 <= idx < len(lis) else None,
+                "production_process": (
+                    "non_print" if isinstance(li, dict) and not is_print_line(li) else "print"
+                ),
+                "required": required,
+                "loaded": loaded,
+                "shortage": shortage,
+            })
+        return out
+    # Multi-item PO without SJ line identity → refuse aggregate-only bypass
+    if _line_count(order) > 1:
+        return []
+    # Legacy single-line shipment without line breakdown: one synthetic line
+    required = delivery_batch_qty(sh)
+    if required <= 0:
+        return []
+    loaded = loaded_qty_for_delivery_batch(order, sh)
+    out.append({
+        "line_idx": 0,
+        "name": _line_name(order, 0),
+        "item_code": None,
+        "accurate_item_id": None,
+        "production_process": "print",
+        "required": required,
+        "loaded": loaded,
+        "shortage": max(0, required - loaded),
+    })
+    return out
+
+
 def delivery_batch_photo_readiness(order: dict, shipment: Optional[dict] = None) -> dict:
     """Photo/gallery write eligibility for one delivery batch.
 
-    Actual delivered qty does NOT exist until confirm-delivered. Until then, the
-    physically-ready batch is the exact shipment-linked LOADED quantity.
+    Authoritative Delivery readiness (shared by web + PWA):
 
-    PHOTO allowed when:
-      loaded_ready > 0
-      AND packed_available_for_batch >= loaded_ready
+      delivery_ready = every required SJ line is fully covered by valid confirmed Loading
 
-    SJ planned qty is NOT required to be fully loaded. Whole-PO completion is NOT
-    required. Loaded>packed excess cannot bypass packing.
+    Packing is NOT re-checked at Delivery. Packing protects Loading; Loading protects
+    Delivery. Aggregate equality alone must not hide a per-line shortage.
     """
     sh = shipment if isinstance(shipment, dict) else active_delivery_batch(order)
     sj_qty = delivery_batch_qty(sh)
     packed_avail = packed_available_for_delivery_batch(order, sh)
     loaded = loaded_qty_for_delivery_batch(order, sh)
-    # Physically ready batch = loaded, never above current SJ allocation
-    ready_q = min(loaded, sj_qty) if sj_qty > 0 else 0
-    loaded_ok = ready_q > 0
-    # Packing must cover the physically ready (loaded) batch — not necessarily full SJ
-    packed_ok = loaded_ok and packed_avail >= ready_q
-    # Defensive invalid state: loaded > packed available
-    if loaded > packed_avail:
-        packed_ok = False
-    allowed = bool(loaded_ok and packed_ok)
+    line_rows = delivery_batch_line_readiness(order, sh)
+    sid = delivery_batch_identity(sh) if sh else ""
+
     reason = None
-    if not allowed:
-        if not loaded_ok and packed_avail <= 0:
-            reason = MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT
-        elif not loaded_ok:
-            reason = MSG_PHOTO_LOADING_INSUFFICIENT
-        elif not packed_ok:
-            reason = MSG_PHOTO_PACKING_INSUFFICIENT
+    reason_code = None
+    allowed = False
+
+    if not sh or not sid or sj_qty <= 0:
+        reason = MSG_PHOTO_SJ_NOT_READY
+        reason_code = REASON_SJ_NOT_READY
+    elif loading_discrepancies_open(order) and any(
+        str(d.get("surat_jalan_id") or "").strip() == sid
+        for d in loading_discrepancies_open(order)
+    ):
+        reason = "Loading tertahan — qty fisik tidak sesuai Surat Jalan. Selesaikan selisih dan verifikasi ulang."
+        reason_code = REASON_LOADING_INCOMPLETE
+    elif not line_rows:
+        # Empty rows: either no SJ qty breakdown, or multi-item PO refused aggregate-only
+        if sh and _line_count(order) > 1 and not _delivery_batch_resolved_lines(order, sh):
+            reason = (
+                f"{MSG_PHOTO_LOADING_ITEM_MISMATCH} "
+                "Komposisi item Loading tidak dapat diverifikasi untuk Surat Jalan multi-item."
+            )
+            reason_code = REASON_LOADING_ITEM_MISMATCH
         else:
-            reason = MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT
+            reason = MSG_PHOTO_LOADING_INSUFFICIENT
+            reason_code = REASON_LOADING_INCOMPLETE
+    else:
+        short_rows = [r for r in line_rows if r.get("shortage", 0) > 0]
+        if not short_rows:
+            # Loading snapshot must match current SJ fingerprint when snapshots exist
+            snaps = [
+                s for s in (order.get("loading_snapshots") or [])
+                if isinstance(s, dict)
+                and str(s.get("surat_jalan_id") or "").strip() == sid
+                and s.get("status") not in ("cancelled", "superseded", "deleted")
+            ]
+            fp = sj_fingerprint(order, sid) if sid else ""
+            if snaps and fp and not any(str(s.get("sj_fingerprint") or "") == fp for s in snaps):
+                allowed = False
+                reason = "Surat Jalan berubah — verifikasi Loading ulang diperlukan."
+                reason_code = REASON_LOADING_INCOMPLETE
+            else:
+                allowed = True
+        else:
+            total_short = sum(int(r.get("shortage") or 0) for r in short_rows)
+            # Aggregate loaded covers SJ but composition wrong → item mismatch
+            if loaded >= sj_qty and total_short > 0:
+                reason = MSG_PHOTO_LOADING_ITEM_MISMATCH
+                reason_code = REASON_LOADING_ITEM_MISMATCH
+                names = [str(r.get("name") or f"line {r.get('line_idx')}") for r in short_rows[:3]]
+                if names:
+                    detail = ", ".join(names)
+                    reason = (
+                        f"{MSG_PHOTO_LOADING_ITEM_MISMATCH} "
+                        f"Kekurangan: {detail}."
+                    )
+            else:
+                reason = MSG_PHOTO_LOADING_INSUFFICIENT
+                reason_code = REASON_LOADING_INCOMPLETE
+                first = short_rows[0]
+                name = str(first.get("name") or "").strip()
+                if name and first.get("shortage"):
+                    reason = (
+                        f"Qty Loading '{name}' belum mencukupi "
+                        f"(kurang {int(first['shortage'])} dari {int(first['required'])})."
+                    )
+
+    ready_q = sj_qty if allowed else min(loaded, sj_qty) if sj_qty > 0 else 0
     return {
         "allowed": allowed,
+        "delivery_ready": allowed,
         "batch_qty": sj_qty,
+        "required_total": sj_qty,
+        "loaded_total": loaded,
         "ready_qty": ready_q,
         "packed_available": packed_avail,
         "loaded": loaded,
-        "shipment_id": delivery_batch_identity(sh) if sh else "",
+        "shipment_id": sid,
         "reason": reason,
+        "reason_code": reason_code,
+        "lines": line_rows,
     }
 
 
 def delivery_batch_photo_block_reason(order: dict, shipment: Optional[dict] = None) -> Optional[str]:
     return delivery_batch_photo_readiness(order, shipment).get("reason")
+
+
+def delivery_batch_photo_block_code(order: dict, shipment: Optional[dict] = None) -> Optional[str]:
+    return delivery_batch_photo_readiness(order, shipment).get("reason_code")
 
 
 def _set_line_qty(ln: dict, qty: int) -> None:

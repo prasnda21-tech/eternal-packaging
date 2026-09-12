@@ -317,7 +317,7 @@ export default function PODetail() {
   const canMarkDelivered = hasPerm("delivery.update");
   const canManageSuratJalan = hasPerm("delivery_note.manage");
   const canViewSjFile = hasPerm("delivery_note.view_file");
-  const canLoadingUpdate = hasPerm("loading.update");
+  const canLoadingUpdate = hasPerm("loading.update") || hasPerm("loading.confirm_match") || hasPerm("loading.report_discrepancy");
   const canBypassDesign = hasPerm("design.bypass_approval");
   const canBypassPayment = hasPerm("payment.bypass_approval");
   const canRollback = hasPerm("workflow.rollback");

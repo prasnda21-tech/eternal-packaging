@@ -16,9 +16,10 @@ import {
   canUploadDeliveryBatchPhoto,
   deliveryBatchPhotoBlockReason,
   deliveryBatchPhotoReadiness,
-  MSG_PHOTO_LOADING_INSUFFICIENT,
-  MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT,
-  MSG_PHOTO_PACKING_INSUFFICIENT,
+  deliveryBatchPhotoBlockCode,
+  REASON_LOADING_INCOMPLETE,
+  REASON_LOADING_ITEM_MISMATCH,
+  MSG_PHOTO_SJ_NOT_READY,
 } from "./deliveryProof";
 
 describe("deliveryProof helpers", () => {
@@ -147,23 +148,22 @@ describe("deliveryProof helpers", () => {
     expect(deliveryProofCompressedSizeError({ size: 100 })).toBeNull();
   });
 
-  test("batch photo readiness uses physically-ready loaded qty, not full SJ", () => {
+  test("batch photo readiness follows Loading vs SJ per line, not Packing", () => {
     const base = {
-      line_items: [{ name: "Cup", quantity: 10000, line_id: "L0" }],
+      line_items: [{ name: "Cup", quantity: 10000, line_id: "L0", production_process: "print" }],
       packing_info: { qty_packed: 3000, lines: [{ line_idx: 0, packed_qty: 3000 }] },
       shipments: [{ id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 3000 }] }],
       loading_confirmations: [],
     };
-    expect(deliveryBatchPhotoBlockReason(base)).toBe(MSG_PHOTO_LOADING_INSUFFICIENT);
+    expect(deliveryBatchPhotoBlockCode(base)).toBe(REASON_LOADING_INCOMPLETE);
     expect(canUploadDeliveryBatchPhoto(base)).toBe(false);
 
     const partialReady = {
       ...base,
       loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 2000 }] }],
     };
-    expect(canUploadDeliveryBatchPhoto(partialReady)).toBe(true);
-    expect(deliveryBatchPhotoReadiness(partialReady).readyQty).toBe(2000);
-    expect(deliveryBatchPhotoReadiness(partialReady).reason).toBeNull();
+    expect(canUploadDeliveryBatchPhoto(partialReady)).toBe(false);
+    expect(deliveryBatchPhotoBlockCode(partialReady)).toBe(REASON_LOADING_INCOMPLETE);
 
     const ready = {
       ...base,
@@ -172,19 +172,110 @@ describe("deliveryProof helpers", () => {
       loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 4000 }] }],
     };
     expect(canUploadDeliveryBatchPhoto(ready)).toBe(true);
+    expect(deliveryBatchPhotoReadiness(ready).reason).toBeNull();
 
-    const noPack = {
+    const noLoading = {
       ...ready,
       packing_info: { qty_packed: 0, lines: [{ line_idx: 0, packed_qty: 0 }] },
       loading_confirmations: [],
     };
-    expect(deliveryBatchPhotoBlockReason(noPack)).toBe(MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT);
+    expect(deliveryBatchPhotoBlockCode(noLoading)).toBe(REASON_LOADING_INCOMPLETE);
 
-    const packLtLoaded = {
+    // Packing lower than loaded must NOT independently block Delivery readiness
+    const packLtLoadedButSjLoaded = {
       ...base,
       packing_info: { qty_packed: 1500, lines: [{ line_idx: 0, packed_qty: 1500 }] },
-      loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 2000 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 3000 }] }],
     };
-    expect(deliveryBatchPhotoBlockReason(packLtLoaded)).toBe(MSG_PHOTO_PACKING_INSUFFICIENT);
+    expect(canUploadDeliveryBatchPhoto(packLtLoadedButSjLoaded)).toBe(true);
+  });
+
+  test("cup + LID: packing excludes LID but full Loading enables photos", () => {
+    const order = {
+      line_items: [
+        { name: "Cup", quantity: 5000, line_id: "L0", production_process: "print" },
+        { name: "LID", quantity: 5000, line_id: "L1", production_process: "non_print" },
+      ],
+      packing_info: { qty_packed: 5000, lines: [{ line_idx: 0, packed_qty: 5000 }] },
+      shipments: [{
+        id: "s1",
+        number: "SJ-1",
+        lines: [{ line_idx: 0, qty: 5000 }, { line_idx: 1, qty: 5000 }],
+        total_qty: 10000,
+      }],
+      loading_confirmations: [{
+        id: "c1",
+        surat_jalan_id: "s1",
+        lines: [{ line_idx: 0, qty: 5000 }, { line_idx: 1, qty: 5000 }],
+      }],
+    };
+    expect(canUploadDeliveryBatchPhoto(order)).toBe(true);
+    expect(deliveryBatchPhotoReadiness(order).packedAvailable).toBe(5000);
+    expect(deliveryBatchPhotoReadiness(order).loadedTotal).toBe(10000);
+
+    const missingLid = {
+      ...order,
+      loading_confirmations: [{
+        id: "c1",
+        surat_jalan_id: "s1",
+        lines: [{ line_idx: 0, qty: 5000 }, { line_idx: 1, qty: 0 }],
+      }],
+    };
+    expect(canUploadDeliveryBatchPhoto(missingLid)).toBe(false);
+    expect(deliveryBatchPhotoBlockReason(missingLid)).toMatch(/LID|Loading/i);
+
+    const wrongComposition = {
+      ...order,
+      loading_confirmations: [{
+        id: "c1",
+        surat_jalan_id: "s1",
+        lines: [{ line_idx: 0, qty: 10000 }, { line_idx: 1, qty: 0 }],
+      }],
+    };
+    expect(canUploadDeliveryBatchPhoto(wrongComposition)).toBe(false);
+    expect([REASON_LOADING_INCOMPLETE, REASON_LOADING_ITEM_MISMATCH]).toContain(
+      deliveryBatchPhotoBlockCode(wrongComposition),
+    );
+  });
+
+  test("proof gates still require photos, name, and both signatures", () => {
+    const proofs = [{ id: "p1" }, { id: "p2" }];
+    expect(canSubmitConfirmDelivered(proofs, "", null, null, null, null)).toBe(false);
+    expect(canSubmitConfirmDelivered(proofs, "Budi", "data:image/png;base64,x", null, "data:image/png;base64,y", null)).toBe(true);
+  });
+
+  test("no SJ yields SJ_NOT_READY", () => {
+    const o = { line_items: [{ name: "Cup", quantity: 100 }], shipments: [], loading_confirmations: [] };
+    expect(deliveryBatchPhotoBlockReason(o)).toBe(MSG_PHOTO_SJ_NOT_READY);
+  });
+
+  test("legacy multi-item shipment without SJ lines blocks aggregate bypass", () => {
+    const o = {
+      line_items: [
+        { name: "Cup", quantity: 5000, production_process: "print" },
+        { name: "LID", quantity: 5000, production_process: "non_print" },
+      ],
+      packing_info: { qty_packed: 5000, lines: [{ line_idx: 0, packed_qty: 5000 }] },
+      shipments: [{ id: "s1", number: "SJ-1", total_qty: 10000 }],
+      loading_confirmations: [{
+        id: "c1", surat_jalan_id: "s1",
+        lines: [{ line_idx: 0, qty: 10000 }],
+      }],
+    };
+    expect(canUploadDeliveryBatchPhoto(o)).toBe(false);
+    expect(deliveryBatchPhotoBlockCode(o)).toBe(REASON_LOADING_ITEM_MISMATCH);
+  });
+
+  test("legacy single-item shipment without SJ lines remains supported", () => {
+    const o = {
+      line_items: [{ name: "Cup", quantity: 3000, production_process: "print" }],
+      packing_info: { qty_packed: 3000, lines: [{ line_idx: 0, packed_qty: 3000 }] },
+      shipments: [{ id: "s1", number: "SJ-1", total_qty: 3000 }],
+      loading_confirmations: [{
+        id: "c1", surat_jalan_id: "s1",
+        lines: [{ line_idx: 0, qty: 3000 }],
+      }],
+    };
+    expect(canUploadDeliveryBatchPhoto(o)).toBe(true);
   });
 });

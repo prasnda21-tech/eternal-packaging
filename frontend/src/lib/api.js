@@ -69,6 +69,8 @@ export const api = {
 
   addNote: (id, note) => client.post(`/orders/${id}/note`, { note }).then((r) => r.data),
   confirmLoading: (id, payload) => client.post(`/orders/${id}/loading-confirm`, payload).then((r) => r.data),
+  confirmLoadingMatch: (id, payload) => client.post(`/orders/${id}/loading-confirm-match`, payload).then((r) => r.data),
+  reportLoadingDiscrepancy: (id, payload) => client.post(`/orders/${id}/loading-report-discrepancy`, payload).then((r) => r.data),
   deleteLoadingConfirm: (id, confirmationId) =>
     client.delete(`/orders/${id}/loading-confirm/${encodeURIComponent(confirmationId)}`).then((r) => r.data),
   updateLoading: (id, payload) => client.post(`/orders/${id}/loading`, payload).then((r) => r.data),

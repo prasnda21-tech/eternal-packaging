@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Truck } from "lucide-react";
+import { Truck } from "lucide-react";
 import { formatDate, formatDisplayDateTime } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { entriesForLine, newActionId } from "../lib/workflowEntries";
@@ -9,13 +9,20 @@ import ConfirmActionModal from "./ConfirmActionModal";
 import SuratJalanViewButton from "./SuratJalanViewButton";
 import api from "../lib/api";
 import {
-  emptyLoadingLine,
   loadingConfirmations,
   loadingLineLabel,
   loadingPoLines,
   sjFilesForLoading,
-  validateLoadingDraftLines,
   canDeleteLoadingConfirmation,
+  loadingVerificationStatus,
+  sjLinesForDiscrepancy,
+  discrepancyDiff,
+  validateDiscrepancySelection,
+  loadingDiscrepancies,
+  loadingDiscrepancyHistory,
+  LOADING_CONFIRM_MATCH_PERM,
+  LOADING_REPORT_DISCREPANCY_PERM,
+  LOADING_VIEW_DISCREPANCY_HISTORY_PERM,
 } from "../lib/loadingConfirm";
 
 function fmt(n) {
@@ -34,82 +41,131 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const { user, hasPerm } = useAuth();
   const files = sjFilesForLoading(order);
   const [sjId, setSjId] = useState(files[0]?.id || "");
-  const [rows, setRows] = useState([emptyLoadingLine()]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [confirm, setConfirm] = useState(null);
+  const [mode, setMode] = useState("actions");
+  const [selected, setSelected] = useState({});
+  const [note, setNote] = useState("");
+  const [confirmMatch, setConfirmMatch] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const canConfirmMatch = canManage && hasPerm(LOADING_CONFIRM_MATCH_PERM);
+  const canReportDisc = canManage && hasPerm(LOADING_REPORT_DISCREPANCY_PERM);
+  const canViewHistory = hasPerm(LOADING_VIEW_DISCREPANCY_HISTORY_PERM) || hasPerm("loading.update") || canManage;
+  const canDelete = hasPerm("loading.delete");
 
   const fileIdsKey = files.map((f) => f.id).join("|");
   useEffect(() => {
-    if (!files.some((f) => f.id === sjId)) {
-      setSjId(files[0]?.id || "");
-    }
+    if (!files.some((f) => f.id === sjId)) setSjId(files[0]?.id || "");
   }, [fileIdsKey, sjId, files]);
 
   const activeSj = files.find((f) => f.id === sjId) || files[0] || null;
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
+  const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const confirmations = loadingConfirmations(order);
-  const canDelete = hasPerm("loading.delete");
+  const openDisc = loadingDiscrepancies(order).filter(
+    (d) => !activeSj?.id || String(d.surat_jalan_id || "") === String(activeSj.id),
+  );
+  const discHistory = loadingDiscrepancyHistory(order);
+  const verification = loadingVerificationStatus(order, activeSj?.id);
 
   const hasSj = files.length > 0;
   const totalSjQty = poLines.reduce((s, r) => s + Number(r.qty_sj || 0), 0);
   const totalLoaded = poLines.reduce((s, r) => s + Number(r.loaded || 0), 0);
   const remaining = poLines.reduce((s, r) => s + Number(r.available || 0), 0);
-  const physicalReady = remaining > 0;
-  const waitingPhysical = hasSj && !physicalReady && confirmations.length === 0 && !hasLegacyLoading(order);
+  const isComplete = String(verification?.code || "").includes("complete");
 
-  const setRow = (i, patch) => {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-  };
-  const addRow = () => setRows((prev) => [...prev, emptyLoadingLine()]);
-  const removeRow = (i) => setRows((prev) => (prev.length <= 1 ? [emptyLoadingLine()] : prev.filter((_, idx) => idx !== i)));
+  const showActive = hasSj || canManage || canViewHistory;
+  if (!showActive && !hasLegacyLoading(order) && confirmations.length === 0) return null;
 
-  const openConfirm = () => {
-    if (!canManage || busy) return;
-    if (!physicalReady) {
-      const totalPhysicalAvailable = poLines.reduce((s, r) => s + Number(r.physical_available || 0), 0);
-      if (totalPhysicalAvailable <= 0) {
-        setErr("Loading tidak dapat dilakukan karena belum ada qty Packing.");
-      } else {
-        setErr("Qty Loading belum bisa diisi. Seluruh kuantitas Surat Jalan untuk item ini sudah selesai di-loading.");
+  const rowsSnap = shipmentLinesForOrder(order);
+  const loadingEvents = order?.loading_info?.events || [];
+  const lc = order?.loading_checklist || {};
+
+  const toggleMark = (lineIdx) => {
+    setSelected((prev) => {
+      const cur = prev[lineIdx];
+      if (cur?.marked) {
+        const next = { ...prev };
+        delete next[lineIdx];
+        return next;
       }
-      return;
-    }
+      return { ...prev, [lineIdx]: { marked: true, actual_qty: "" } };
+    });
+  };
+
+  const setActual = (lineIdx, value) => {
+    setSelected((prev) => ({
+      ...prev,
+      [lineIdx]: { ...(prev[lineIdx] || { marked: true }), marked: true, actual_qty: value },
+    }));
+  };
+
+  const openMatchConfirm = () => {
+    if (!canConfirmMatch || busy) return;
     if (!activeSj?.id) {
-      setErr("Pilih Surat Jalan yang dikonfirmasi.");
+      setErr("Pilih Surat Jalan yang diverifikasi.");
       return;
     }
-    const check = validateLoadingDraftLines(rows, poLines);
-    if (!check.ok) {
-      setErr(check.error);
+    if (String(verification?.code || "").includes("packing")) {
+      setErr(verification?.reason || "Packing belum mencukupi untuk konfirmasi Loading.");
       return;
     }
     setErr("");
-    setConfirm({
+    setConfirmMatch({
       sj: activeSj,
-      lines: check.lines,
       time: formatDisplayDateTime(new Date().toISOString()),
       actionId: newActionId(),
     });
   };
 
-  const execute = async () => {
-    if (!confirm || busy) return;
+  const executeMatch = async () => {
+    if (!confirmMatch || busy) return;
     setBusy(true);
     setErr("");
     try {
-      const result = await api.confirmLoading(order.id, {
-        surat_jalan_id: confirm.sj.id,
-        lines: confirm.lines,
-        action_id: confirm.actionId,
+      const result = await api.confirmLoadingMatch(order.id, {
+        surat_jalan_id: confirmMatch.sj.id,
+        action_id: confirmMatch.actionId,
       });
       onUpdated?.(result?.order || result);
-      setConfirm(null);
-      setRows([emptyLoadingLine()]);
+      setConfirmMatch(null);
+      setMode("actions");
     } catch (e) {
       const d = e?.response?.data?.detail;
       setErr(typeof d === "string" ? d : (d?.message || "Konfirmasi Loading gagal."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDiscrepancy = async () => {
+    if (!canReportDisc || busy) return;
+    if (!activeSj?.id) {
+      setErr("Pilih Surat Jalan.");
+      return;
+    }
+    const check = validateDiscrepancySelection(selected, sjLines);
+    if (!check.ok) {
+      setErr(check.error);
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await api.reportLoadingDiscrepancy(order.id, {
+        surat_jalan_id: activeSj.id,
+        mismatches: check.mismatches,
+        note: note.trim() || null,
+        action_id: newActionId(),
+      });
+      onUpdated?.(result?.order || result);
+      setSelected({});
+      setNote("");
+      setMode("actions");
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setErr(typeof d === "string" ? d : (d?.message || "Laporan selisih gagal."));
     } finally {
       setBusy(false);
     }
@@ -132,32 +188,20 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
     }
   };
 
-  const summaryLines = useMemo(() => {
-    if (!confirm) return [];
-    return confirm.lines.map((ln) => ({
-      ...ln,
-      label: loadingLineLabel(ln, order),
-    }));
-  }, [confirm, order]);
-
-  const showActive = hasSj || canManage;
-  if (!showActive && !hasLegacyLoading(order) && confirmations.length === 0) return null;
-
-  const rowsSnap = shipmentLinesForOrder(order);
-  const loadingEvents = order?.loading_info?.events || [];
-  const lc = order?.loading_checklist || {};
-
   return (
     <section className="panel packing-panel" data-testid="loading-panel">
       <QtyOpsHead icon={Truck} title="LOADING">
-        <span className={`qty-status ${statusClassFor(remaining <= 0 && (confirmations.length || hasLegacyLoading(order)) ? "DONE" : "READY")}`} data-testid="loading-status-badge">
-          {confirmations.length ? "Konfirmasi SJ" : (hasSj ? "Menunggu konfirmasi" : "Legacy")}
+        <span
+          className={`qty-status ${statusClassFor(isComplete ? "DONE" : "READY")}`}
+          data-testid="loading-status-badge"
+        >
+          {verification?.label || (hasSj ? "Menunggu Verifikasi" : "Legacy")}
         </span>
       </QtyOpsHead>
 
       <div className="qty-ops-body" style={{ display: "grid", gap: 10, padding: "8px 16px 16px" }}>
         <p className="muted small" data-testid="loading-purpose-note">
-          Konfirmasi Item + Qty manual berdasarkan file Surat Jalan.
+          Verifikasi Kesesuaian SJ — normal satu klik; input qty hanya jika ada selisih.
         </p>
         <div><strong>No PO</strong> {order?.po_number || "—"}</div>
         <div><strong>Customer</strong> {order?.customer_name || order?.customer || "—"}</div>
@@ -165,11 +209,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
         {hasSj ? (
           <label data-testid="loading-sj-select-wrap">
             <span>Surat Jalan</span>
-            <select
-              value={activeSj?.id || ""}
-              onChange={(e) => setSjId(e.target.value)}
-              data-testid="loading-sj-select"
-            >
+            <select value={activeSj?.id || ""} onChange={(e) => setSjId(e.target.value)} data-testid="loading-sj-select">
               {files.map((f) => (
                 <option key={f.id} value={f.id}>{f.sj_number || f.name}</option>
               ))}
@@ -180,10 +220,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
         )}
 
         {hasSj && activeSj && (
-          <div
-            data-testid="loading-sj-file-row"
-            style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
-          >
+          <div data-testid="loading-sj-file-row" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span data-testid="loading-sj-number">
               <strong>Surat Jalan:</strong> {activeSj.sj_number || activeSj.name}
             </span>
@@ -234,75 +271,149 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
           </div>
         )}
 
-        {canManage && hasSj && (
-          <div className="sj-item-block" data-testid="loading-item-block">
-            <h4 className="sj-item-heading">KONFIRMASI ITEM & QTY</h4>
-            {waitingPhysical && (
-              <p className="muted small" data-testid="loading-physical-gate">
-                Qty Loading dapat diisi setelah qty fisik (packing) siap.
-              </p>
-            )}
-            {rows.map((row, i) => (
-              <div key={i} className="sj-item-row" data-testid={`loading-item-row-${i}`}>
-                <label>
-                  <span>Item</span>
-                  <select
-                    value={row.line_idx}
-                    onChange={(e) => setRow(i, { line_idx: e.target.value })}
-                    disabled={!physicalReady}
-                    data-testid={`loading-item-select-${i}`}
-                  >
-                    <option value="">Pilih item</option>
-                    {poLines.map((ln) => (
-                      <option key={ln.line_idx} value={ln.line_idx}>
-                        {ln.label} (sisa {fmt(ln.available)})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Qty</span>
-                  <input
-                    type="number"
-                    min="1"
-                    inputMode="numeric"
-                    className={`manual-qty-input is-manual${!physicalReady ? " is-disabled" : ""}`}
-                    value={row.qty}
-                    onChange={(e) => setRow(i, { qty: e.target.value })}
-                    disabled={!physicalReady}
-                    data-testid={`loading-qty-input-${i}`}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="ghost sm"
-                  onClick={() => removeRow(i)}
-                  disabled={rows.length <= 1}
-                  data-testid={`loading-item-remove-${i}`}
-                  aria-label="Hapus item"
-                >
-                  <Trash2 size={14} />
-                </button>
+        {verification?.reason ? (
+          <div className="error" data-testid="loading-verification-reason">{verification.reason}</div>
+        ) : null}
+
+        {openDisc.length > 0 ? (
+          <div data-testid="loading-open-discrepancy" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 6, padding: 10 }}>
+            <strong>Tertahan — Qty Tidak Sesuai SJ</strong>
+            {openDisc.map((d) => (
+              <div key={d.id} className="muted small" style={{ marginTop: 6 }}>
+                {(d.lines || []).map((ln, i) => (
+                  <div key={`${d.id}-${i}`}>
+                    {ln.name} — SJ {fmt(ln.qty_sj)}, fisik {fmt(ln.qty_actual)}, {ln.classification} {fmt(Math.abs(ln.difference || 0))}
+                  </div>
+                ))}
+                {d.notification_count != null ? (
+                  <div data-testid="loading-crm-notified">
+                    Notifikasi CRM: {d.notification_count > 0 ? "terkirim" : "tidak ada penerima"}
+                  </div>
+                ) : null}
               </div>
             ))}
-            <button type="button" className="ghost sm" onClick={addRow} data-testid="loading-item-add">
-              <Plus size={14} /> Tambah Item
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={openConfirm}
-              disabled={busy || !physicalReady}
-              data-testid="loading-confirm-button"
-            >
-              KONFIRMASI LOADING
-            </button>
           </div>
-        )}
+        ) : null}
 
-        {err && <div className="error" data-testid="loading-error">{err}</div>}
+        {hasSj && mode === "actions" && (canConfirmMatch || canReportDisc) && !isComplete ? (
+          <div className="sj-item-block" data-testid="loading-verify-actions" style={{ display: "grid", gap: 8 }}>
+            <h4 className="sj-item-heading">VERIFIKASI KESESUAIAN SJ</h4>
+            {canConfirmMatch ? (
+              <button
+                type="button"
+                className="primary"
+                onClick={openMatchConfirm}
+                disabled={busy || !activeSj?.id}
+                data-testid="loading-confirm-match-button"
+              >
+                Semua Barang Sesuai SJ
+              </button>
+            ) : null}
+            {canReportDisc ? (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => { setMode("discrepancy"); setErr(""); }}
+                disabled={busy || !activeSj?.id}
+                data-testid="loading-open-discrepancy-button"
+              >
+                Ada Selisih Qty
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
-        {confirmations.length > 0 && (
+        {hasSj && mode === "discrepancy" && canReportDisc ? (
+          <div className="sj-item-block" data-testid="loading-discrepancy-editor" style={{ display: "grid", gap: 10 }}>
+            <h4 className="sj-item-heading">LAPORKAN SELISIH QTY</h4>
+            <p className="muted small">Centang hanya baris yang berbeda. Baris tidak dicentang dianggap sesuai Qty SJ.</p>
+            <div style={{ overflowX: "auto" }}>
+              <table className="packing-lines-table" data-testid="loading-discrepancy-table">
+                <thead>
+                  <tr>
+                    <th>Selisih</th>
+                    <th>Item</th>
+                    <th className="num">Qty SJ</th>
+                    <th className="num">Qty Fisik Aktual</th>
+                    <th>Hasil</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sjLines.map((ln) => {
+                    const row = selected[ln.line_idx];
+                    const marked = !!row?.marked;
+                    const diff = marked ? discrepancyDiff(ln.qty_sj, row?.actual_qty) : null;
+                    return (
+                      <tr key={ln.line_idx} data-testid={`loading-disc-row-${ln.line_idx}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={marked}
+                            onChange={() => toggleMark(ln.line_idx)}
+                            data-testid={`loading-disc-mark-${ln.line_idx}`}
+                          />
+                        </td>
+                        <td><strong>{ln.name}</strong></td>
+                        <td className="num mono">{fmt(ln.qty_sj)}</td>
+                        <td className="num">
+                          {marked ? (
+                            <input
+                              type="number"
+                              min="0"
+                              inputMode="numeric"
+                              className="manual-qty-input is-manual"
+                              value={row?.actual_qty ?? ""}
+                              onChange={(e) => setActual(ln.line_idx, e.target.value)}
+                              data-testid={`loading-disc-actual-${ln.line_idx}`}
+                            />
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                        <td data-testid={`loading-disc-diff-${ln.line_idx}`}>
+                          {marked && diff?.label ? diff.label : (marked ? "" : "Sesuai SJ")}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <label>
+              <span>Catatan (opsional)</span>
+              <input
+                type="text"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                data-testid="loading-discrepancy-note"
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => { setMode("actions"); setSelected({}); setNote(""); setErr(""); }}
+                data-testid="loading-discrepancy-cancel"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={submitDiscrepancy}
+                data-testid="loading-discrepancy-submit"
+              >
+                {busy ? "Mengirim…" : "Laporkan Selisih Qty"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {err ? <div className="error" data-testid="loading-error">{err}</div> : null}
+
+        {confirmations.length > 0 ? (
           <ul className="sj-file-list" data-testid="loading-confirm-history" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
             {confirmations.map((c) => {
               const deletable = canDelete && canDeleteLoadingConfirmation(order, c);
@@ -319,9 +430,10 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                       <span className="muted small">
                         {c.confirmed_by_name || c.confirmed_by}
                         {c.confirmed_at ? ` · ${formatDate(c.confirmed_at)}` : ""}
+                        {c.source === "sj_match" ? " · Sesuai SJ" : ""}
                       </span>
                     </div>
-                    {deletable && (
+                    {deletable ? (
                       <button
                         type="button"
                         className="ghost sm"
@@ -331,21 +443,40 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                       >
                         Hapus
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 </li>
               );
             })}
           </ul>
-        )}
+        ) : null}
 
-        {hasLegacyLoading(order) && (
+        {canViewHistory && discHistory.length > 0 ? (
+          <div data-testid="loading-discrepancy-history">
+            <h4 className="sj-item-heading">RIWAYAT SELISIH LOADING</h4>
+            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
+              {discHistory.map((d) => (
+                <li key={d.id} className="muted small" data-testid={`loading-disc-hist-${d.id}`}>
+                  {d.status || "open"} · {d.reported_by_name || d.reported_by}
+                  {d.reported_at ? ` · ${formatDate(d.reported_at)}` : ""}
+                  {(d.lines || []).map((ln, i) => (
+                    <div key={`${d.id}-h-${i}`}>
+                      {ln.name}: SJ {fmt(ln.qty_sj)} / fisik {fmt(ln.qty_actual)} ({ln.classification})
+                    </div>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {hasLegacyLoading(order) ? (
           <>
             <p className="muted small" data-testid="loading-legacy-note">Riwayat Loading lama (tanpa referensi Surat Jalan).</p>
             <MetricRow testid="loading-summary">
               <MetricCell label="Sudah Loading" value={rowsSnap.reduce((s, r) => s + Number(r.loaded || 0), 0)} testid="loading-loaded-total" />
             </MetricRow>
-            {rowsSnap.length > 0 && (
+            {rowsSnap.length > 0 ? (
               <div className="packing-lines-wrap">
                 <table className="packing-lines-table" data-testid="loading-lines-table">
                   <thead>
@@ -363,7 +494,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                           <td><strong>{row.name}</strong></td>
                           <td className="num mono pack-cell-done" data-testid={`loading-line-loaded-${idx}`}>
                             <span data-testid={`loading-line-status-${idx}`}>{loadingStatusText(loaded)}</span>
-                            {hist.length > 0 && <div className="muted small">{hist.length} entri riwayat</div>}
+                            {hist.length > 0 ? <div className="muted small">{hist.length} entri riwayat</div> : null}
                           </td>
                         </tr>
                       );
@@ -371,55 +502,59 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                   </tbody>
                 </table>
               </div>
-            )}
-            {(lc.vehicle_plate || lc.driver_name || lc.notes) && (
+            ) : null}
+            {(lc.vehicle_plate || lc.driver_name || lc.notes) ? (
               <div className="prep-grid packing-form" data-testid="loading-form">
-                {lc.vehicle_plate && <p className="muted small">Plat kendaraan: {lc.vehicle_plate}</p>}
-                {lc.driver_name && <p className="muted small">Nama pengantar: {lc.driver_name}</p>}
-                {lc.notes && <p className="muted small">Catatan: {lc.notes}</p>}
+                {lc.vehicle_plate ? <p className="muted small">Plat kendaraan: {lc.vehicle_plate}</p> : null}
+                {lc.driver_name ? <p className="muted small">Nama pengantar: {lc.driver_name}</p> : null}
+                {lc.notes ? <p className="muted small">Catatan: {lc.notes}</p> : null}
               </div>
-            )}
+            ) : null}
           </>
-        )}
+        ) : null}
       </div>
 
       <ConfirmActionModal
-        open={!!confirm}
-        title="KONFIRMASI LOADING"
+        open={!!confirmMatch}
+        title="Semua Barang Sesuai SJ"
         stage="Loading"
-        poNumber={order.po_number}
-        customer={order.customer_name || order.customer}
-        action={confirm ? `Surat Jalan: ${confirm.sj.name}` : "Konfirmasi Loading"}
+        poNumber={order?.po_number}
+        customer={order?.customer_name || order?.customer}
+        action={confirmMatch ? `Sesuai SJ ${confirmMatch.sj.sj_number || confirmMatch.sj.name}` : "Sesuai SJ"}
         name={user?.name || user?.email}
-        time={confirm?.time}
+        time={confirmMatch?.time}
         busy={busy}
         error={err}
-        confirmLabel="Konfirmasi"
-        extra={summaryLines.length ? (
-          <ul data-testid="loading-confirm-items">
-            {summaryLines.map((ln) => (
-              <li key={`${ln.line_idx}-${ln.qty}`}>{ln.label} — Qty {fmt(ln.qty)}</li>
-            ))}
-          </ul>
-        ) : null}
-        onCancel={() => { if (!busy) { setConfirm(null); setErr(""); } }}
-        onConfirm={execute}
+        confirmLabel={busy ? "Memproses…" : "Konfirmasi Sesuai SJ"}
+        onCancel={() => { if (!busy) setConfirmMatch(null); }}
+        onConfirm={executeMatch}
+        extra={(
+          <>
+            <p data-testid="loading-match-confirm-copy">
+              Sistem membuat Loading dari qty Surat Jalan saat ini. Tidak perlu input qty manual.
+            </p>
+            <ul data-testid="loading-confirm-items">
+              {sjLines.map((ln) => (
+                <li key={ln.line_idx}>{ln.name} — Qty SJ {fmt(ln.qty_sj)}</li>
+              ))}
+            </ul>
+          </>
+        )}
       />
 
       <ConfirmActionModal
         open={!!deleteTarget}
-        title="HAPUS LOADING"
+        title="Hapus Konfirmasi Loading"
         stage="Loading"
-        poNumber={order.po_number}
-        customer={order.customer_name || order.customer}
+        poNumber={order?.po_number}
+        customer={order?.customer_name || order?.customer}
         action={deleteTarget ? `Hapus konfirmasi ${deleteTarget.id}` : "Hapus data Loading"}
         name={user?.name || user?.email}
         time={formatDisplayDateTime(new Date().toISOString())}
         busy={busy}
         error={err}
         confirmLabel="Hapus"
-        extra={<p data-testid="loading-delete-confirm-text">Hapus data Loading ini?</p>}
-        onCancel={() => { if (!busy) { setDeleteTarget(null); setErr(""); } }}
+        onCancel={() => { if (!busy) setDeleteTarget(null); }}
         onConfirm={executeDelete}
       />
     </section>

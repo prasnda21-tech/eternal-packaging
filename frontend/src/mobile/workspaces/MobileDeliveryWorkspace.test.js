@@ -73,6 +73,27 @@ const partialReadyOrder = {
   eligible_delivery_qty: 2000,
 };
 
+const cupLidReadyOrder = {
+  ...baseOrder,
+  line_items: [
+    { name: "Cup", quantity: 5000, line_id: "l0", production_process: "print" },
+    { name: "LID", quantity: 5000, line_id: "l1", production_process: "non_print" },
+  ],
+  packing_info: { qty_packed: 5000, lines: [{ line_idx: 0, packed_qty: 5000 }] },
+  shipments: [{
+    id: "s1",
+    number: "SJ-1",
+    lines: [{ line_idx: 0, qty: 5000 }, { line_idx: 1, qty: 5000 }],
+    total_qty: 10000,
+  }],
+  loading_confirmations: [{
+    id: "c1",
+    surat_jalan_id: "s1",
+    lines: [{ line_idx: 0, qty: 5000 }, { line_idx: 1, qty: 5000 }],
+  }],
+  eligible_delivery_qty: 10000,
+};
+
 describe("PWA Pengiriman gallery picker", () => {
   let container;
   let root;
@@ -116,9 +137,17 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(container.querySelector('[data-testid="mobile-proof-batch-readiness-hint"]')?.textContent || "").toMatch(/Loading/i);
   });
 
-  test("SJ3000 Packed3000 Loaded2000 enables photo for physical partial batch", () => {
+  test("partial Loading still blocks photos until SJ lines are fully loaded", () => {
     act(() => {
       root.render(<MobileDeliveryWorkspace order={partialReadyOrder} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-proof-batch-readiness-hint"]')?.textContent || "").toMatch(/Loading/i);
+  });
+
+  test("cup + LID full Loading enables photos even when Packing excludes LID", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={cupLidReadyOrder} canEdit onUpdated={() => {}} />);
     });
     expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-proof-batch-readiness-hint"]')).toBeFalsy();

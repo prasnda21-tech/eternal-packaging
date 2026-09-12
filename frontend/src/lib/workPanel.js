@@ -33,9 +33,23 @@ export function workPanelPath(orderId, divisionId = "operator") {
   return `/po/${encodeURIComponent(orderId)}/kerja?divisi=${encodeURIComponent(divisionId)}`;
 }
 
+function hasLoadingDivisionAccess(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  return (
+    hasPerm("loading.update")
+    || hasPerm("loading.view")
+    || hasPerm("loading.confirm_match")
+    || hasPerm("loading.report_discrepancy")
+    || hasPerm("loading.view_discrepancy_history")
+    || hasPerm("loading.resolve_discrepancy")
+  );
+}
+
 export function permittedDivisionIds(hasPerm) {
   if (typeof hasPerm !== "function") return [];
-  return DIVISION_SUBMIT_PERMS.filter(([, perm]) => hasPerm(perm)).map(([id]) => id);
+  const ids = DIVISION_SUBMIT_PERMS.filter(([, perm]) => hasPerm(perm)).map(([id]) => id);
+  if (!ids.includes("loading") && hasLoadingDivisionAccess(hasPerm)) ids.push("loading");
+  return ids;
 }
 
 export function defaultDivisionId(hasPerm, preferred) {
@@ -223,6 +237,13 @@ export function operatorMyAssignmentModels(order, user) {
 
 export function canSubmitDivision(hasPerm, division) {
   if (!division || division.active === false || division.implemented === false) return false;
+  if (division.id === "loading" || division.submit_perm === "loading.update") {
+    return typeof hasPerm === "function" && (
+      hasPerm("loading.update")
+      || hasPerm("loading.confirm_match")
+      || hasPerm("loading.report_discrepancy")
+    );
+  }
   const perm = division.submit_perm;
   return typeof hasPerm === "function" && perm ? !!hasPerm(perm) : false;
 }

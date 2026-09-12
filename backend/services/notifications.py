@@ -420,3 +420,117 @@ async def mark_notification_read(db, user_id: str, notification_id: str) -> Opti
     )
     existing["read_at"] = read_at
     return _public_notification(existing)
+
+
+# ---------------------------------------------------------------------------
+# Loading qty discrepancy → CRM (branch-aware role recipients)
+# ---------------------------------------------------------------------------
+
+EVENT_LOADING_QTY_MISMATCH = "loading_qty_mismatch"
+
+
+async def resolve_crm_recipient_user_ids_for_branch(db, branch_id: Optional[str] = None) -> List[str]:
+    """Active CRM-role users, optionally scoped to branch_id when users carry branch."""
+    query: Dict[str, Any] = {"role": ROLE_CRM, "status": {"$ne": "inactive"}}
+    bid = str(branch_id or "").strip()
+    if bid:
+        query["$or"] = [
+            {"branch_id": bid},
+            {"cabang_id": bid},
+            {"branch_id": {"$exists": False}},
+            {"branch_id": None},
+            {"branch_id": ""},
+        ]
+    cursor = db.users.find(query, {"_id": 0, "id": 1, "branch_id": 1, "cabang_id": 1})
+    users = await cursor.to_list(500)
+    seen: Set[str] = set()
+    out: List[str] = []
+    for u in users:
+        uid = str((u or {}).get("id") or "").strip()
+        if not uid or uid in seen:
+            continue
+        if bid:
+            ub = str((u or {}).get("branch_id") or (u or {}).get("cabang_id") or "").strip()
+            # Include unscoped CRM + matching branch
+            if ub and ub != bid:
+                continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+async def emit_loading_qty_discrepancy_notifications(
+    db,
+    *,
+    order: Dict[str, Any],
+    discrepancy: Dict[str, Any],
+    logger: Optional[logging.Logger] = None,
+) -> List[Dict[str, Any]]:
+    """Notify CRM after a genuine physical qty mismatch vs SJ.
+
+    Idempotent via dedupe_key on discrepancy id. Never raises to caller.
+    """
+    log = logger or logging.getLogger("notifications")
+    try:
+        disc_id = str((discrepancy or {}).get("id") or "").strip()
+        if not disc_id:
+            return []
+        branch_id = (
+            (discrepancy or {}).get("branch_id")
+            or order.get("branch_id")
+            or order.get("cabang_id")
+        )
+        user_ids = await resolve_crm_recipient_user_ids_for_branch(db, branch_id)
+        if not user_ids:
+            log.info("loading_qty_mismatch: no CRM recipients for branch=%s", branch_id)
+            return []
+
+        po = str(order.get("po_number") or order.get("number") or "").strip() or "-"
+        customer = order.get("customer") or order.get("customer_name") or order.get("outlet_name") or ""
+        sj = str(discrepancy.get("surat_jalan_id") or "").strip()
+        lines = discrepancy.get("lines") or []
+        parts = []
+        for ln in lines[:5]:
+            if not isinstance(ln, dict):
+                continue
+            name = ln.get("name") or f"line {ln.get('line_idx')}"
+            sj_q = ln.get("qty_sj")
+            act = ln.get("qty_actual")
+            cls = ln.get("classification") or ""
+            diff = abs(int(ln.get("difference") or 0))
+            parts.append(f"{name} — SJ {sj_q}, fisik {act}, {cls} {diff}.")
+        body_lines = " ".join(parts) or "Terdapat selisih qty fisik terhadap Surat Jalan."
+        note = discrepancy.get("note")
+        title = "Qty Barang Tidak Sesuai SJ"
+        body = f"PO {po}"
+        if customer:
+            body += f" / {customer}"
+        body += f". SJ {sj}. {body_lines}"
+        if note:
+            body += f" Catatan: {note}"
+        reporter = discrepancy.get("reported_by_name") or discrepancy.get("reported_by") or ""
+        if reporter:
+            body += f" Dilaporkan oleh {reporter}."
+        order_id = str(order.get("id") or "")
+        link = deep_link_for_order(order_id)
+
+        created: List[Dict[str, Any]] = []
+        for uid in user_ids:
+            doc = await create_notification(
+                db,
+                user_id=uid,
+                event_type=EVENT_LOADING_QTY_MISMATCH,
+                approval_id=disc_id,
+                order_id=order_id,
+                po_number=po,
+                decision="qty_mismatch",
+                title=title,
+                body=body,
+                deep_link=link,
+            )
+            if doc:
+                created.append(doc)
+        return created
+    except Exception:
+        log.exception("emit_loading_qty_discrepancy_notifications failed")
+        return []

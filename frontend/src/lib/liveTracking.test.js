@@ -17,6 +17,11 @@ describe("Live Tracking shares Alur Pekerjaan stages", () => {
   test("each stage status matches Timeline chip", () => {
     const order = {
       current_stage: 13,
+      requires_printing: false,
+      work_date: "2026-01-15",
+      design_bypassed: true,
+      payment_bypassed: true,
+      payment_status: "Approved",
       surat_jalan_created: true,
       surat_jalan_status_semantic: "completed",
       loading_qty_status: "completed",
@@ -35,7 +40,7 @@ describe("Live Tracking shares Alur Pekerjaan stages", () => {
     });
     expect(rows[11].label).toBe("Selesai");
     expect(rows[12].label).toBe("Selesai");
-    expect(rows[13].label).toBe("Selesai");
+    expect(rows[13].label).toBe("Loading Selesai");
     expect(rows[14].label).toBe("Menunggu bukti pengiriman");
   });
 

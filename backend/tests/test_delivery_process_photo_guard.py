@@ -1,13 +1,12 @@
-"""Early Pengiriman create + physically-ready photo guard + SJ/remain reconcile."""
+"""Early Pengiriman create + Loading-based photo guard + SJ/remain reconcile."""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from quantity_rules import (
-    MSG_PHOTO_LOADING_INSUFFICIENT,
-    MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT,
-    MSG_PHOTO_PACKING_INSUFFICIENT,
+    REASON_LOADING_INCOMPLETE,
+    REASON_SJ_NOT_READY,
     apply_delivery_from_proof_evidence,
     delivery_batch_photo_block_reason,
     delivery_batch_photo_readiness,
@@ -34,7 +33,12 @@ def _order(
         order = {
             "id": "po1",
             "line_items": [
-                {"name": ln["name"], "quantity": ln["po_qty"], "line_id": ln.get("line_id") or f"L{i}"}
+                {
+                    "name": ln["name"],
+                    "quantity": ln["po_qty"],
+                    "line_id": ln.get("line_id") or f"L{i}",
+                    "production_process": ln.get("production_process", "print"),
+                }
                 for i, ln in enumerate(lines)
             ],
             "total_quantity": sum(ln["po_qty"] for ln in lines),
@@ -70,7 +74,7 @@ def _order(
     batch = sj_qty if sj_qty is not None else 0
     order = {
         "id": "po1",
-        "line_items": [{"name": "Cup", "quantity": po_qty, "line_id": "L0"}],
+        "line_items": [{"name": "Cup", "quantity": po_qty, "line_id": "L0", "production_process": "print"}],
         "total_quantity": po_qty,
         "packing_info": {
             "qty_packed": packed,
@@ -111,47 +115,55 @@ def test_photo_case_a_sj3000_packed0_loaded0_blocked():
     o = _order(packed=0, loaded=0, sj_qty=3000)
     r = delivery_batch_photo_readiness(o)
     assert r["allowed"] is False
-    assert r["reason"] == MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT
+    assert r["reason_code"] == REASON_LOADING_INCOMPLETE
 
 
 def test_photo_case_b_sj3000_packed3000_loaded0_blocked():
     o = _order(packed=3000, loaded=0, sj_qty=3000)
-    assert delivery_batch_photo_block_reason(o) == MSG_PHOTO_LOADING_INSUFFICIENT
+    r = delivery_batch_photo_readiness(o)
+    assert r["allowed"] is False
+    assert r["reason_code"] == REASON_LOADING_INCOMPLETE
 
 
-def test_photo_case_c_sj3000_packed3000_loaded2000_allowed():
-    """Partial physical batch ready — SJ shortfall must NOT block photo."""
+def test_photo_case_c_partial_loading_blocked_until_sj_complete():
+    """Delivery readiness requires full SJ line Loading — partial no longer unlocks photos."""
     o = _order(packed=3000, loaded=2000, sj_qty=3000)
     r = delivery_batch_photo_readiness(o)
+    assert r["allowed"] is False
+    assert r["reason_code"] == REASON_LOADING_INCOMPLETE
+    assert r["loaded"] == 2000
+
+
+def test_photo_case_d_full_loading_allows_even_if_packed_diag_lower():
+    """Packing aggregate must not re-block Delivery after Loading completed for SJ."""
+    o = _order(packed=1500, loaded=3000, sj_qty=3000)
+    r = delivery_batch_photo_readiness(o)
     assert r["allowed"] is True
-    assert r["ready_qty"] == 2000
-    assert r["reason"] is None
+    assert r["delivery_ready"] is True
 
 
-def test_photo_case_d_packed_lt_loaded_blocked():
-    o = _order(packed=1500, loaded=2000, sj_qty=3000)
-    assert delivery_batch_photo_block_reason(o) == MSG_PHOTO_PACKING_INSUFFICIENT
-
-
-def test_photo_case_e_po_incomplete_batch_ready_allowed():
+def test_photo_case_e_full_batch_loaded_allowed():
     o = _order(po_qty=10000, packed=4000, loaded=4000, sj_qty=4000)
     r = delivery_batch_photo_readiness(o)
     assert r["allowed"] is True
     assert r["batch_qty"] == 4000
 
 
-def test_confirm_sj3000_loaded2000_delivered2000_accepted():
+def test_confirm_sj3000_partial_loaded2000_blocked_until_sj_complete():
+    """Confirm Delivery requires full SJ-line Loading — same gate as photo upload."""
     o = _order(packed=3000, loaded=2000, sj_qty=3000, delivered=0)
-    assert validate_delivery_qty(2000, o) is None
-    ev = apply_delivery_from_proof_evidence(o)
+    assert validate_delivery_qty(2000, o) is None  # qty ceiling alone still ok
+    assert apply_delivery_from_proof_evidence(o) is None  # readiness gate blocks
+    full = _order(packed=3000, loaded=3000, sj_qty=3000, delivered=0)
+    ev = apply_delivery_from_proof_evidence(full)
     assert ev is not None
-    assert ev["qty_delivered"] == 2000
-    o["qty_delivered"] = ev["qty_delivered"]
-    result = reconcile_sj_quantities_to_loaded_delivery(o)
-    assert result["returned_qty"] == 1000
-    assert qty_shipped(o) == 2000
-    assert qty_packed(o) == 3000
-    assert qty_loaded(o) == 2000
+    assert ev["qty_delivered"] == 3000
+    full["qty_delivered"] = ev["qty_delivered"]
+    result = reconcile_sj_quantities_to_loaded_delivery(full)
+    assert result["returned_qty"] == 0
+    assert qty_shipped(full) == 3000
+    assert qty_packed(full) == 3000
+    assert qty_loaded(full) == 3000
 
 
 def test_confirm_delivered2500_with_loaded2000_rejected():
@@ -161,11 +173,11 @@ def test_confirm_delivered2500_with_loaded2000_rejected():
     assert "Loading" in err or "loading" in err.lower() or "2500" in err
 
 
-def test_confirm_packed1500_loaded2000_delivered2000_rejected():
+def test_confirm_packed1500_loaded2000_delivered2000_rejected_by_physical():
     o = _order(packed=1500, loaded=2000, sj_qty=3000)
     err = validate_delivery_qty(2000, o)
     assert err is not None
-    assert "Packing" in err or "packing" in err.lower() or "1500" in err
+    assert "1500" in err or "fisik" in err.lower() or "eligible" in err.lower()
 
 
 def test_confirm_loaded3000_delivered2000_accepted_loading_unchanged():
@@ -176,7 +188,7 @@ def test_confirm_loaded3000_delivered2000_accepted_loading_unchanged():
     result = reconcile_sj_quantities_to_loaded_delivery(o)
     assert result["returned_qty"] == 1000
     assert qty_shipped(o) == 2000
-    assert qty_loaded(o) == loaded_before == 3000  # no silent unload
+    assert qty_loaded(o) == loaded_before == 3000
     assert qty_packed(o) == 3000
 
 
@@ -233,28 +245,24 @@ def test_create_sales_delivery_source_no_longer_has_packing_gate():
 
 
 def test_early_sales_delivery_does_not_inflate_eligible_without_loading():
-    """Delivery process existence must NOT make Pengiriman current via eligible qty."""
     from quantity_rules import eligible_delivery_qty, loading_status_semantic
 
     o = _order(po_qty=10000, packed=0, loaded=0, sj_qty=4000)
-    # Fixture uses sales_delivery_id (same as create_sales_delivery shipment mirror)
     assert o["shipments"][0].get("sales_delivery_id")
     assert eligible_delivery_qty(o) == 0
     assert loading_status_semantic(o) != "completed"
 
-    # After physical Loading for the partial batch, eligible follows loaded — not full SJ
-    o["packing_info"] = {"qty_packed": 3000, "lines": [{"line_idx": 0, "packed_qty": 3000}]}
+    o["packing_info"] = {"qty_packed": 4000, "lines": [{"line_idx": 0, "packed_qty": 4000}]}
     o["loading_confirmations"] = [{
         "id": "c1",
         "surat_jalan_id": "s1",
-        "lines": [{"line_idx": 0, "qty": 2000}],
+        "lines": [{"line_idx": 0, "qty": 4000}],
     }]
-    assert eligible_delivery_qty(o) == 2000
+    assert eligible_delivery_qty(o) == 4000
     assert delivery_batch_photo_readiness(o)["allowed"] is True
 
 
 def test_historical_shipment_without_sales_delivery_id_still_eligible():
-    """Legacy SJ-only records (no sales_delivery_id) keep historical deliverable fallback."""
     from quantity_rules import eligible_delivery_qty
 
     o = {
@@ -279,3 +287,10 @@ def test_confirm_delivered_calls_sj_reconcile():
     assert "_qr_reconcile_sj_quantities_to_loaded_delivery" in src
     block = src[src.index("async def confirm_delivered") : src.index("async def confirm_delivered") + 3500]
     assert "_qr_reconcile_sj_quantities_to_loaded_delivery" in block
+
+
+def test_no_sj_returns_sj_not_ready_code():
+    o = _order(packed=0, loaded=0, sj_qty=None)
+    r = delivery_batch_photo_readiness(o)
+    assert r["reason_code"] == REASON_SJ_NOT_READY
+    assert delivery_batch_photo_block_reason(o)

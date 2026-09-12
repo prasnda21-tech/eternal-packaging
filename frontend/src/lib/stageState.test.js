@@ -112,7 +112,7 @@ describe("SJ / Loading / Terkirim chips", () => {
       surat_jalan_created: true,
       current_stage: 12,
     }, 12);
-    expect(loading.label).toMatch(/konfirmasi/i);
+    expect(loading.label).toMatch(/verifikasi|kesesuaian|sj/i);
     expect(loading.state).toBe("current");
   });
 
@@ -149,7 +149,7 @@ describe("SJ / Loading / Terkirim chips", () => {
       current_stage: 12,
     }, 12);
     expect(loading.state).toBe("current");
-    expect(loading.label).toMatch(/konfirmasi/i);
+    expect(loading.label).toMatch(/verifikasi|kesesuaian|sj/i);
 
     const terkirim = resolveStageState(14, {
       surat_jalan_created: true,
@@ -244,10 +244,12 @@ describe("PODetail / SuratJalan source: no generic next or checkboxes", () => {
     expect(suratJalan).not.toMatch(/type="checkbox"/);
   });
 
-  test("Loading and SJ panels have no checkbox", () => {
-    expect(loadingPanel).not.toMatch(/type="checkbox"/);
-    expect(sjPanel).not.toMatch(/type="checkbox"/);
+  test("Loading discrepancy uses line checkboxes; no stage-completion checkbox", () => {
+    // Exception path marks mismatched SJ lines with checkboxes; matching path stays one-click.
+    expect(loadingPanel).toMatch(/type="checkbox"/);
+    expect(loadingPanel).toMatch(/Ada Selisih Qty|loading-disc-mark/);
     expect(loadingPanel).not.toMatch(/Lanjut Loading/);
+    expect(sjPanel).not.toMatch(/type="checkbox"/);
     expect(sjPanel).not.toMatch(/Lanjut Loading/);
   });
 });
