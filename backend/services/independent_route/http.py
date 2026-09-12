@@ -30,9 +30,21 @@ class ScheduleReviewPayload(BaseModel):
     order_ids: List[str] = Field(default_factory=list)
 
 
-class ScheduleOptimizePayload(BaseModel):
+class SchedulePreviewFleetsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     order_ids: List[str] = Field(default_factory=list)
+    fleet_count: int
+
+
+class ScheduleOptimizePayload(BaseModel):
+    """Create+optimize from schedule.
+
+    Legacy clients: `{ order_ids }` only → isolated driver-grouped path.
+    New UI: `{ order_ids, fleet_count: 1|2 }` → driverless 1/2-armada create.
+    """
+    model_config = ConfigDict(extra="allow")
+    order_ids: List[str] = Field(default_factory=list)
+    fleet_count: Optional[int] = None
 
 
 def _actor(user: dict) -> dict:
@@ -166,11 +178,34 @@ def register_independent_route_routes(
         await require_any_perm(user, PERM_VIEW, PERM_CREATE, PERM_OPTIMIZE, PERM_MANAGE, PERM_NAV)
         return await delivery_bridge.build_review_rows(get_db(), list(payload.order_ids or []))
 
+    @api_router.post("/route-optimizer/from-schedule/preview-fleets")
+    async def schedule_preview_fleets(payload: SchedulePreviewFleetsPayload, user=Depends(current_user)):
+        """Non-persistent 1/2-armada optimization preview. ZERO route writes."""
+        await require_any_perm(user, PERM_VIEW, PERM_CREATE, PERM_OPTIMIZE, PERM_MANAGE, PERM_NAV)
+        return await delivery_bridge.preview_fleets_from_schedule(
+            get_db(),
+            list(payload.order_ids or []),
+            fleet_count=payload.fleet_count,
+        )
+
     @api_router.post("/route-optimizer/from-schedule/optimize")
     async def schedule_optimize(payload: ScheduleOptimizePayload, user=Depends(current_user)):
+        """One-stage create+optimize from Jadwal Pengiriman.
+
+        When fleet_count is 1 or 2: driverless persist of exactly that many routes.
+        When fleet_count is omitted: legacy isolated path for cached/old clients.
+        """
         await require_any_perm(user, PERM_CREATE, PERM_MANAGE)
         await require_perm(user, PERM_OPTIMIZE)
-        return await delivery_bridge.create_and_optimize_from_schedule(
+        if payload.fleet_count is not None:
+            return await delivery_bridge.create_fleets_from_schedule(
+                get_db(),
+                list(payload.order_ids or []),
+                fleet_count=payload.fleet_count,
+                actor=_actor(user),
+                perms=await _perms(user),
+            )
+        return await delivery_bridge.create_and_optimize_from_schedule_legacy(
             get_db(),
             order_ids=list(payload.order_ids or []),
             actor=_actor(user),

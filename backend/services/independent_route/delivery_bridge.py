@@ -7,6 +7,7 @@ Does NOT mutate Pengiriman / SJ / Packing / Loading / PO workflow data.
 from __future__ import annotations
 
 import hashlib
+import uuid
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -33,9 +34,32 @@ from services.independent_route.constants import (
     OPT_STATUS_OPTIMIZED,
     OPT_STATUS_STALE,
     OPT_STATUS_LABELS,
+    PRIORITY_ID_URGENT,
+    PRIORITY_ID_NORMAL,
+    PRIORITY_RANK_URGENT,
+    PRIORITY_RANK_NORMAL,
+    FLEET_LABEL_1,
+    FLEET_LABEL_2,
+    FLEET_PARTITION_VERSION,
+    SCHEDULE_FLEET_CREATE_VERSION,
+    FLEET_GROUP_ID_PREFIX,
+    START_WAREHOUSE,
+    START_MANUAL,
+    END_LAST,
+    STRATEGY_NEAREST,
 )
 from services.independent_route.geo import is_valid_coordinate
-from services.independent_route.settings import now_iso
+from services.independent_route.settings import now_iso, load_settings, warehouse_point
+from services.independent_route.optimizer import optimize_route, OptimizerError
+from services.independent_route.fleet_partition import (
+    FleetPartitionError,
+    assert_partition_invariants,
+    partition_into_two_fleets,
+)
+from services.surat_jalan_files import shipment_is_schedule_ready
+from services.delivery_driver_assignment import resolve_eligible_driver
+from quantity_rules import shipments_stored
+import json
 
 # Extra order fields needed for bridge (additive to schedule projection).
 BRIDGE_ORDER_PROJECTION = {
@@ -50,6 +74,19 @@ BRIDGE_ORDER_PROJECTION = {
     "shipments.id": 1,
     "shipments.number": 1,
     "shipments.sj_number": 1,
+    "shipments.file_id": 1,
+    "shipments.lines": 1,
+    "shipments.accurate_shipment_id": 1,
+    "surat_jalan_files.id": 1,
+    "surat_jalan_files.name": 1,
+    "surat_jalan_files.content_type": 1,
+    "surat_jalan_files.uploaded_at": 1,
+    "surat_jalan_files.storage_path": 1,
+    "surat_jalan_files.data_url": 1,
+    "surat_jalan_files.shipment_id": 1,
+    "surat_jalan_files.lines": 1,
+    "surat_jalan_files.source": 1,
+    "priority": 1,
 }
 
 
@@ -139,8 +176,7 @@ def planning_snapshot_from_order(order: dict, loc: dict) -> dict:
 def snapshots_match(current: dict, snap: Optional[dict]) -> bool:
     if not snap:
         return False
-    if _text(current.get("driver_user_id")) != _text(snap.get("driver_user_id")):
-        return False
+    # Route driver is chosen at save-time; order loading_checklist driver must not stale a route.
     if _text(current.get("scheduled_delivery_date")) != _text(snap.get("scheduled_delivery_date")):
         return False
     cur_fp = current.get("address_fingerprint") or address_fingerprint(
@@ -196,7 +232,15 @@ async def _active_delivery_stops_for_orders(db, order_ids: List[str]) -> List[di
     route_ids = list({s.get("route_id") for s in stops if s.get("route_id")})
     routes = await db[COL_PLANS].find(
         {"id": {"$in": route_ids}, **_active_route_filter()},
-        {"_id": 0, "id": 1, "status": 1, "optimization_stale": 1, "current_optimization_version": 1, "deleted_at": 1},
+        {
+            "_id": 0,
+            "id": 1,
+            "status": 1,
+            "optimization_stale": 1,
+            "current_optimization_version": 1,
+            "deleted_at": 1,
+            "fleet_group_id": 1,
+        },
     ).to_list(2000)
     active_ids = {r["id"] for r in routes}
     route_by_id = {r["id"]: r for r in routes}
@@ -227,16 +271,26 @@ def derive_opt_status(order: dict, stop: Optional[dict], loc: dict) -> Tuple[str
     return OPT_STATUS_OPTIMIZED, route_id
 
 
+def order_is_urgent(order: dict) -> bool:
+    return str((order or {}).get("priority") or "").strip().lower() == "urgent"
+
+
+def order_has_schedule_ready_sj(order: dict) -> bool:
+    for sh in shipments_stored(order):
+        if shipment_is_schedule_ready(order, sh):
+            return True
+    return False
+
+
 def eligibility_for_order(order: dict, loc: dict, *, existing_stop: Optional[dict] = None) -> dict:
-    """Return eligibility without inventing coords or drivers."""
+    """Eligibility: SJ ready + coords. Order driver is NOT a gate."""
     oid = _text(order.get("id"))
-    driver_id = canonical_driver_user_id(order)
     delivery_status = _text(order.get("delivery_status"))
     reasons: List[str] = []
     if delivery_status.lower() == "terkirim":
         reasons.append("Sudah terkirim")
-    if not driver_id:
-        reasons.append("Belum ada driver")
+    if not order_has_schedule_ready_sj(order):
+        reasons.append("Surat Jalan belum siap.")
     address = _text(loc.get("formatted_address") or order.get("address"))
     has_coords = is_valid_coordinate(loc.get("lat"), loc.get("lng"))
     if not address and not has_coords:
@@ -347,6 +401,8 @@ async def build_review_rows(db, order_ids: List[str]) -> dict:
             "outlet_id": snap.get("outlet_id"),
             "lat": snap.get("lat"),
             "lng": snap.get("lng"),
+            "urgent": order_is_urgent(order),
+            "priority": _text(order.get("priority")) or "normal",
             "eligible": elig["eligible"],
             "reasons": elig["reasons"],
             "reason": elig["reason"],
@@ -360,7 +416,10 @@ async def build_review_rows(db, order_ids: List[str]) -> dict:
     eligible_rows = [r for r in rows if r.get("eligible")]
     groups_map: Dict[str, list] = {}
     for r in eligible_rows:
-        groups_map.setdefault(r["driver_user_id"], []).append(r)
+        did = _text(r.get("driver_user_id"))
+        if not did:
+            continue
+        groups_map.setdefault(did, []).append(r)
     groups = []
     for driver_id, items in groups_map.items():
         groups.append({
@@ -405,72 +464,696 @@ def _route_name(driver_name: Optional[str], date_key: Optional[str], driver_id: 
     return f"Pengiriman {date_part} - {name_part}"
 
 
-async def create_and_optimize_from_schedule(
+def _preview_fingerprint(eligible_rows: List[dict], fleet_id_lists: List[List[str]], fleet_count: int) -> str:
+    payload = {
+        "v": FLEET_PARTITION_VERSION,
+        "fleet_count": int(fleet_count),
+        "eligible": [
+            {
+                "id": _text(r.get("sales_order_id")),
+                "lat": r.get("lat"),
+                "lng": r.get("lng"),
+                "urgent": bool(r.get("urgent")),
+            }
+            for r in sorted(eligible_rows, key=lambda x: _text(x.get("sales_order_id")))
+        ],
+        "fleets": [list(ids) for ids in fleet_id_lists],
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _google_maps_dir_url(
+    *,
+    ordered_rows: List[dict],
+    warehouse: Optional[dict] = None,
+) -> str:
+    """Build a Google Maps directions URL from optimizer start + ordered stops.
+
+    Mirrors frontend `googleMapsDirUrl` (path form). No silent drop of stops.
+    """
+    points: List[tuple] = []
+    if warehouse and is_valid_coordinate(warehouse.get("lat"), warehouse.get("lng")):
+        points.append((float(warehouse["lat"]), float(warehouse["lng"])))
+    for r in ordered_rows:
+        if is_valid_coordinate(r.get("lat"), r.get("lng")):
+            points.append((float(r["lat"]), float(r["lng"])))
+    if not points:
+        return ""
+    if len(points) == 1:
+        lat, lng = points[0]
+        return f"https://www.google.com/maps?q={lat},{lng}"
+    path = "/".join(f"{lat},{lng}" for lat, lng in points)
+    return f"https://www.google.com/maps/dir/{path}"
+
+
+def _order_stops_for_fleet(
+    rows: List[dict],
+    *,
+    warehouse: Optional[dict],
+    strategy: str = "NEAREST",
+) -> dict:
+    if not rows:
+        return {
+            "ordered_rows": [],
+            "ordered_order_ids": [],
+            "total_estimated_m": 0.0,
+            "segments": [],
+            "strategy": strategy,
+            "start": None,
+            "end": None,
+        }
+    by_id = {}
+    stops_payload = []
+    for r in rows:
+        oid = _text(r.get("sales_order_id"))
+        urgent = bool(r.get("urgent"))
+        by_id[oid] = r
+        stops_payload.append({
+            "stop_id": oid,
+            "lat": r.get("lat"),
+            "lng": r.get("lng"),
+            "priority_rank": PRIORITY_RANK_URGENT if urgent else PRIORITY_RANK_NORMAL,
+            "priority_id": PRIORITY_ID_URGENT if urgent else PRIORITY_ID_NORMAL,
+            "display_name": r.get("customer_name") or r.get("order_number") or oid,
+        })
+    start_mode = "WAREHOUSE" if warehouse else "MANUAL"
+    start_snapshot = None if warehouse else {"lat": rows[0].get("lat"), "lng": rows[0].get("lng")}
+    result = optimize_route(
+        stops=stops_payload,
+        strategy=strategy,
+        start_mode=start_mode,
+        start_snapshot=start_snapshot,
+        end_mode="LAST_STOP",
+        end_snapshot=None,
+        warehouse=warehouse,
+    )
+    ordered_rows = []
+    for seq, sid in enumerate(result.ordered_stop_ids, start=1):
+        row = dict(by_id[sid])
+        row["stop_sequence"] = seq
+        row["priority_id"] = PRIORITY_ID_URGENT if row.get("urgent") else PRIORITY_ID_NORMAL
+        ordered_rows.append(row)
+    return {
+        "ordered_rows": ordered_rows,
+        "ordered_order_ids": list(result.ordered_stop_ids),
+        "total_estimated_m": float(result.total_estimated_m or 0.0),
+        "segments": list(result.segments or []),
+        "strategy": result.strategy,
+        "start": result.start,
+        "end": result.end,
+    }
+
+
+def _fleet_panel(label: str, ordered: dict, *, warehouse: Optional[dict] = None) -> dict:
+    rows = ordered.get("ordered_rows") or []
+    maps_url = _google_maps_dir_url(ordered_rows=rows, warehouse=warehouse)
+    return {
+        "label": label,
+        "fleet_key": "armada_2" if "2" in str(label) else "armada_1",
+        "order_ids": [_text(r.get("sales_order_id")) for r in rows],
+        "stops": rows,
+        "total_orders": len(rows),
+        "total_urgent": sum(1 for r in rows if r.get("urgent")),
+        "estimated_distance_m": ordered.get("total_estimated_m"),
+        "segments": ordered.get("segments") or [],
+        "strategy": ordered.get("strategy"),
+        "google_maps_url": maps_url,
+        "start": ordered.get("start"),
+        "end": ordered.get("end"),
+    }
+
+
+async def preview_fleets_from_schedule(
+    db,
+    order_ids: List[str],
+    *,
+    fleet_count: int,
+) -> dict:
+    """Non-persistent 1/2-armada optimization preview. ZERO route/order writes."""
+    try:
+        fleet_count_n = int(fleet_count)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "fleet_count harus 1 atau 2.")
+    if fleet_count_n not in (1, 2):
+        raise HTTPException(400, "fleet_count harus 1 atau 2.")
+
+    review = await build_review_rows(db, order_ids)
+    selected = {_text(i) for i in order_ids if _text(i)}
+    eligible = [
+        r for r in review["rows"]
+        if r.get("eligible") and _text(r.get("sales_order_id")) in selected
+    ]
+    ineligible = [
+        r for r in review["rows"]
+        if (not r.get("eligible")) and _text(r.get("sales_order_id")) in selected
+    ]
+    eligible_ids = [_text(r.get("sales_order_id")) for r in eligible]
+
+    if fleet_count_n == 1:
+        if len(eligible) < 1:
+            raise HTTPException(
+                400,
+                "Optimasi 1 Armada membutuhkan minimal 1 PO eligible (SJ siap + koordinat valid).",
+            )
+        fleet_id_lists = [list(eligible_ids)]
+    else:
+        if len(eligible) < 2:
+            raise HTTPException(
+                400,
+                "Optimasi 2 Armada membutuhkan minimal 2 PO eligible (SJ siap + koordinat valid).",
+            )
+        partition_input = [
+            {
+                "id": _text(r.get("sales_order_id")),
+                "lat": r.get("lat"),
+                "lng": r.get("lng"),
+                "urgent": bool(r.get("urgent")),
+            }
+            for r in eligible
+        ]
+        try:
+            parted = partition_into_two_fleets(partition_input)
+        except FleetPartitionError as exc:
+            raise HTTPException(400, exc.message) from exc
+        a1_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["armada_1"]]
+        a2_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["armada_2"]]
+        # Support alternate key names from partition helper
+        if not a1_ids and "fleet_1" in parted:
+            a1_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["fleet_1"]]
+            a2_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["fleet_2"]]
+        assert_partition_invariants(eligible_ids, a1_ids, a2_ids)
+        fleet_id_lists = [a1_ids, a2_ids]
+
+    by_id = {_text(r.get("sales_order_id")): r for r in eligible}
+    settings = await load_settings(db)
+    wp = warehouse_point(settings)
+    warehouse = {"lat": wp[0], "lng": wp[1]} if wp else None
+
+    labels = [FLEET_LABEL_1] if fleet_count_n == 1 else [FLEET_LABEL_1, FLEET_LABEL_2]
+    fleets = []
+    for label, ids in zip(labels, fleet_id_lists):
+        rows = [by_id[i] for i in ids if i in by_id]
+        ordered = _order_stops_for_fleet(rows, warehouse=warehouse)
+        fleets.append(_fleet_panel(label, ordered, warehouse=warehouse))
+
+    # Hard invariants
+    seen = []
+    for f in fleets:
+        for oid in f["order_ids"]:
+            if oid in seen:
+                raise HTTPException(500, "Invariant gagal: PO duplikat antar armada.")
+            seen.append(oid)
+        if not f["order_ids"]:
+            raise HTTPException(500, "Invariant gagal: armada kosong.")
+    if set(seen) != set(eligible_ids):
+        raise HTTPException(500, "Invariant gagal: PO eligible hilang dari hasil optimasi.")
+
+    fingerprint = _preview_fingerprint(eligible, [f["order_ids"] for f in fleets], fleet_count_n)
+    return {
+        "ok": True,
+        "preview": True,
+        "preview_fingerprint": fingerprint,
+        "fleet_count": fleet_count_n,
+        "eligible_order_ids": eligible_ids,
+        "excluded_rows": ineligible,
+        "fleets": fleets,
+        "review": review,
+        "summary": {
+            **review["summary"],
+            "eligible": len(eligible),
+            "fleet_count": fleet_count_n,
+            "fleet_order_counts": [f["total_orders"] for f in fleets],
+        },
+    }
+
+
+
+
+
+def _schedule_fleet_input_fingerprint(eligible_ids: List[str], fleet_count: int) -> str:
+    payload = {
+        "v": SCHEDULE_FLEET_CREATE_VERSION,
+        "fleet_count": int(fleet_count),
+        "eligible": sorted(_text(i) for i in eligible_ids if _text(i)),
+        "partition_version": FLEET_PARTITION_VERSION,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _soft_delete_routes(db, route_ids: List[str], actor: dict, perms: set) -> None:
+    for rid in route_ids:
+        rid = _text(rid)
+        if not rid:
+            continue
+        try:
+            await store.soft_delete_route(db, rid, actor, perms | {PERM_MANAGE, PERM_EDIT_OWN})
+        except Exception:
+            # Best-effort compensation only for routes created in this attempt.
+            pass
+
+
+async def create_fleets_from_schedule(
+    db,
+    order_ids: List[str],
+    *,
+    fleet_count: int,
+    actor: dict,
+    perms: set,
+) -> dict:
+    """One-stage driverless create+optimize for 1 or 2 armada from Jadwal Pengiriman.
+
+    Persists exactly fleet_count routes. Never requires/infers/assigns a driver.
+    Never mutates source-order driver fields.
+    """
+    if not (PERM_CREATE in perms or PERM_MANAGE in perms):
+        raise HTTPException(403, "Anda tidak boleh membuat rute.")
+    if PERM_OPTIMIZE not in perms and PERM_MANAGE not in perms:
+        raise HTTPException(403, "Anda tidak boleh mengoptimasi rute.")
+
+    try:
+        fleet_count_n = int(fleet_count)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "fleet_count harus 1 atau 2.")
+    if fleet_count_n not in (1, 2):
+        raise HTTPException(400, "fleet_count harus 1 atau 2.")
+
+    review = await build_review_rows(db, order_ids)
+    selected = {_text(i) for i in order_ids if _text(i)}
+    eligible = [
+        r for r in review["rows"]
+        if r.get("eligible") and _text(r.get("sales_order_id")) in selected
+    ]
+    ineligible = [
+        r for r in review["rows"]
+        if (not r.get("eligible")) and _text(r.get("sales_order_id")) in selected
+    ]
+    eligible_ids = [_text(r.get("sales_order_id")) for r in eligible]
+
+    def _only_active_route_block(row: dict) -> bool:
+        reasons = [str(x) for x in (row.get("reasons") or []) if x]
+        if not reasons:
+            return False
+        return all(
+            ("already in active" in x.lower())
+            or ("rute aktif" in x.lower())
+            for x in reasons
+        )
+
+    # Idempotency fingerprint uses currently-eligible POs plus POs blocked only because
+    # they already sit on an active route (covers successful-create retries).
+    fingerprint_ids = sorted({
+        _text(r.get("sales_order_id"))
+        for r in (eligible + [x for x in ineligible if _only_active_route_block(x)])
+        if _text(r.get("sales_order_id"))
+    })
+
+    fingerprint = _schedule_fleet_input_fingerprint(fingerprint_ids or eligible_ids, fleet_count_n)
+    existing = await store.find_active_routes_by_schedule_fingerprint(db, fingerprint)
+    if len(existing) == fleet_count_n and all(int(r.get("stop_count") or 0) > 0 for r in existing):
+        # Idempotent reuse of a completed prior create.
+        routes_out = []
+        for doc in existing:
+            full = await store.get_route(db, doc["id"], actor, perms | {PERM_MANAGE, PERM_CREATE, PERM_OPTIMIZE, PERM_EDIT_OWN})
+            routes_out.append({
+                "route_id": full["id"],
+                "label": full.get("name"),
+                "fleet_group_id": full.get("fleet_group_id"),
+                "order_ids": [
+                    _text(s.get("sales_order_id"))
+                    for s in (full.get("stops") or [])
+                    if _text(s.get("sales_order_id"))
+                ],
+                "stop_count": int(full.get("stop_count") or len(full.get("stops") or [])),
+                "urgent_count": sum(
+                    1 for s in (full.get("stops") or [])
+                    if str(s.get("priority_id") or "") == PRIORITY_ID_URGENT
+                ),
+                "estimated_distance_m": full.get("estimated_distance_m"),
+                "status": full.get("status"),
+                "route": full,
+            })
+        return {
+            "ok": True,
+            "created": False,
+            "reused": True,
+            "fleet_count": fleet_count_n,
+            "created_route_count": len(routes_out),
+            "fleet_group_id": routes_out[0].get("fleet_group_id") if routes_out else None,
+            "schedule_input_fingerprint": fingerprint,
+            "eligible_order_ids": eligible_ids,
+            "excluded_rows": ineligible,
+            "routes": routes_out,
+            "review": review,
+            "summary": {
+                **review["summary"],
+                "eligible": len(eligible),
+                "fleet_count": fleet_count_n,
+                "created_route_count": len(routes_out),
+                "reused": True,
+            },
+        }
+    if existing:
+        # Incomplete prior attempt — remove only fingerprint-matched orphans.
+        await _soft_delete_routes(db, [r.get("id") for r in existing], actor, perms)
+
+
+    if fleet_count_n == 1:
+        if len(eligible) < 1:
+            raise HTTPException(
+                400,
+                "Optimasi 1 Armada membutuhkan minimal 1 PO eligible (SJ siap + koordinat valid).",
+            )
+        fleet_id_lists = [list(eligible_ids)]
+    else:
+        if len(eligible) < 2:
+            raise HTTPException(
+                400,
+                "Optimasi 2 Armada membutuhkan minimal 2 PO eligible (SJ siap + koordinat valid).",
+            )
+        partition_input = [
+            {
+                "id": _text(r.get("sales_order_id")),
+                "lat": r.get("lat"),
+                "lng": r.get("lng"),
+                "urgent": bool(r.get("urgent")),
+            }
+            for r in eligible
+        ]
+        try:
+            parted = partition_into_two_fleets(partition_input)
+        except FleetPartitionError as exc:
+            raise HTTPException(400, exc.message) from exc
+        a1_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["armada_1"]]
+        a2_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["armada_2"]]
+        if not a1_ids and "fleet_1" in parted:
+            a1_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["fleet_1"]]
+            a2_ids = [_text(s.get("id") if isinstance(s, dict) else s) for s in parted["fleet_2"]]
+        assert_partition_invariants(eligible_ids, a1_ids, a2_ids)
+        fleet_id_lists = [a1_ids, a2_ids]
+
+    by_id = {_text(r.get("sales_order_id")): r for r in eligible}
+    settings = await load_settings(db)
+    wp = warehouse_point(settings)
+    if wp:
+        start_mode = START_WAREHOUSE
+        start_location = None
+    else:
+        start_mode = START_MANUAL
+        first = eligible[0]
+        start_location = {
+            "lat": first.get("lat"),
+            "lng": first.get("lng"),
+            "location_source": LOC_MANUAL,
+        }
+
+    labels = [FLEET_LABEL_1] if fleet_count_n == 1 else [FLEET_LABEL_1, FLEET_LABEL_2]
+    fleet_group_id = None
+    if fleet_count_n == 2:
+        fleet_group_id = f"{FLEET_GROUP_ID_PREFIX}_{uuid.uuid4().hex}"
+
+    created_ids: List[str] = []
+    routes_out = []
+    try:
+        for label, ids in zip(labels, fleet_id_lists):
+            rows = [by_id[i] for i in ids if i in by_id]
+            if not rows:
+                raise HTTPException(500, "Invariant gagal: armada kosong sebelum persist.")
+            # Ensure none of these PO are already on an active delivery stop / route.
+            active = await _active_delivery_stops_for_orders(db, [_text(r.get("sales_order_id")) for r in rows])
+            if active:
+                blocked = sorted({_text(s.get("sales_order_id")) for s in active if _text(s.get("sales_order_id"))})
+                raise HTTPException(
+                    409,
+                    f"PO sudah berada pada rute aktif: {', '.join(blocked)}",
+                )
+            route = await store.create_route(
+                db,
+                {
+                    "name": label,
+                    "notes": "Dibuat dari Jadwal Pengiriman",
+                    "start_mode": start_mode,
+                    "start_location": start_location,
+                    "end_mode": END_LAST,
+                    "strategy": STRATEGY_NEAREST,
+                    "source_type": SOURCE_DELIVERY_SCHEDULE,
+                    "driver_user_id": None,
+                    "driver_name": None,
+                    "fleet_group_id": fleet_group_id,
+                    "schedule_input_fingerprint": fingerprint,
+                },
+                actor,
+            )
+            route_id = route["id"]
+            created_ids.append(route_id)
+            stop_ids = []
+            for item in rows:
+                snap = item.get("planning_snapshot") or {
+                    "lat": item.get("lat"),
+                    "lng": item.get("lng"),
+                    "address": item.get("address"),
+                }
+                added = await store.add_stop(
+                    db,
+                    route_id,
+                    {
+                        "display_name": item.get("customer_name") or item.get("order_number") or item["sales_order_id"],
+                        "address": snap.get("address") or item.get("address") or "",
+                        "ref_kind": REF_ROUTE_ONLY,
+                        "lat": snap.get("lat") if snap.get("lat") is not None else item.get("lat"),
+                        "lng": snap.get("lng") if snap.get("lng") is not None else item.get("lng"),
+                        "location_source": LOC_MANUAL,
+                        "priority_id": PRIORITY_ID_URGENT if item.get("urgent") else PRIORITY_ID_NORMAL,
+                        "source_type": SOURCE_DELIVERY_SCHEDULE,
+                        "sales_order_id": item["sales_order_id"],
+                        "delivery_id": item["sales_order_id"],
+                        "delivery_schedule_id": item["sales_order_id"],
+                        "driver_user_id": None,
+                        "order_number": item.get("order_number"),
+                        "planning_snapshot": snap,
+                    },
+                    actor,
+                    perms | {PERM_EDIT_OWN, PERM_CREATE, PERM_MANAGE},
+                )
+                stop_ids.append(added["stop"]["id"])
+            if not stop_ids:
+                raise HTTPException(500, "Invariant gagal: tidak ada stop yang tersimpan.")
+            route_doc = await store._route_or_404(db, route_id)
+            opt = await store.optimize(
+                db,
+                route_id,
+                {"revision": route_doc.get("revision") or 1},
+                actor,
+                perms | {PERM_OPTIMIZE, PERM_MANAGE},
+            )
+            full = opt.get("route") or await store.get_route(
+                db, route_id, actor, perms | {PERM_MANAGE, PERM_CREATE, PERM_OPTIMIZE, PERM_EDIT_OWN}
+            )
+            routes_out.append({
+                "route_id": full["id"],
+                "label": full.get("name") or label,
+                "fleet_group_id": full.get("fleet_group_id") or fleet_group_id,
+                "order_ids": [
+                    _text(s.get("sales_order_id"))
+                    for s in (full.get("stops") or [])
+                    if _text(s.get("sales_order_id"))
+                ],
+                "stop_count": int(full.get("stop_count") or len(full.get("stops") or [])),
+                "urgent_count": sum(
+                    1 for s in (full.get("stops") or [])
+                    if str(s.get("priority_id") or "") == PRIORITY_ID_URGENT
+                ),
+                "estimated_distance_m": full.get("estimated_distance_m"),
+                "status": full.get("status"),
+                "route": full,
+            })
+    except HTTPException:
+        await _soft_delete_routes(db, created_ids, actor, perms)
+        raise
+    except Exception as exc:
+        await _soft_delete_routes(db, created_ids, actor, perms)
+        raise HTTPException(500, f"Gagal membuat rute armada: {exc}") from exc
+
+    # Final union invariant
+    seen = []
+    for r in routes_out:
+        for oid in r["order_ids"]:
+            if oid in seen:
+                await _soft_delete_routes(db, created_ids, actor, perms)
+                raise HTTPException(500, "Invariant gagal: PO duplikat antar armada.")
+            seen.append(oid)
+        if not r["order_ids"]:
+            await _soft_delete_routes(db, created_ids, actor, perms)
+            raise HTTPException(500, "Invariant gagal: armada kosong setelah persist.")
+    if set(seen) != set(eligible_ids):
+        await _soft_delete_routes(db, created_ids, actor, perms)
+        raise HTTPException(500, "Invariant gagal: PO eligible hilang dari rute tersimpan.")
+
+    return {
+        "ok": True,
+        "created": True,
+        "reused": False,
+        "fleet_count": fleet_count_n,
+        "created_route_count": len(routes_out),
+        "fleet_group_id": fleet_group_id,
+        "schedule_input_fingerprint": fingerprint,
+        "eligible_order_ids": eligible_ids,
+        "excluded_rows": ineligible,
+        "routes": routes_out,
+        "review": review,
+        "summary": {
+            **review["summary"],
+            "eligible": len(eligible),
+            "fleet_count": fleet_count_n,
+            "created_route_count": len(routes_out),
+            "reused": False,
+        },
+    }
+
+
+LEGACY_MISSING_DRIVER_REASON = "Belum ada driver"
+LEGACY_INVALID_DRIVER_REASON = "Driver pada order tidak valid"
+
+
+async def _legacy_resolve_order_driver(db, driver_user_id: str) -> Optional[dict]:
+    """Validate existing order driver only — never auto-select another driver."""
+    uid = _text(driver_user_id)
+    if not uid:
+        return None
+    try:
+        return await resolve_eligible_driver(db, uid)
+    except HTTPException:
+        return None
+
+
+async def create_and_optimize_from_schedule_legacy(
     db,
     *,
     order_ids: List[str],
     actor: dict,
     perms: set,
 ) -> dict:
-    """Mutation: create one route per driver group and optimize via existing store."""
+    """Isolated compatibility path for POST /from-schedule/optimize.
+
+    Preserves released `{order_ids}` request + driver-grouped response shape.
+    Uses current SJ + coordinate safety. Uses existing order driver only —
+    never auto-assigns, never rewrites source-order driver fields, never
+    touches fleet_group_id route pairs.
+    """
     if not (PERM_CREATE in perms or PERM_MANAGE in perms):
         raise HTTPException(403, "Anda tidak boleh membuat rute.")
     if PERM_OPTIMIZE not in perms and PERM_MANAGE not in perms:
         raise HTTPException(403, "Anda tidak boleh mengoptimasi rute.")
 
     review = await build_review_rows(db, order_ids)
-    # Only process rows that were requested AND currently eligible.
     selected = {_text(i) for i in order_ids if _text(i)}
-    eligible = [r for r in review["rows"] if r.get("eligible") and r["sales_order_id"] in selected]
 
-    # Group by exact driver_user_id
+    # Response-local review copy: apply legacy driver gate without changing
+    # shared eligibility used by non-persistent preview-fleets.
+    rows_out: List[dict] = []
+    driver_cache: Dict[str, Optional[dict]] = {}
+    for r in review["rows"]:
+        row = dict(r)
+        reasons = list(row.get("reasons") or [])
+        if row.get("eligible") and row.get("sales_order_id") in selected:
+            did = _text(row.get("driver_user_id"))
+            if not did:
+                reasons = reasons + [LEGACY_MISSING_DRIVER_REASON]
+                row["eligible"] = False
+                row["reasons"] = reasons
+                row["reason"] = reasons[0] if reasons else LEGACY_MISSING_DRIVER_REASON
+            else:
+                if did not in driver_cache:
+                    driver_cache[did] = await _legacy_resolve_order_driver(db, did)
+                if not driver_cache[did]:
+                    reasons = reasons + [LEGACY_INVALID_DRIVER_REASON]
+                    row["eligible"] = False
+                    row["reasons"] = reasons
+                    row["reason"] = reasons[0] if reasons else LEGACY_INVALID_DRIVER_REASON
+        rows_out.append(row)
+
+    eligible = [
+        r for r in rows_out
+        if r.get("eligible") and r.get("sales_order_id") in selected
+    ]
+
     groups: Dict[str, List[dict]] = {}
     for r in eligible:
-        groups.setdefault(r["driver_user_id"], []).append(r)
+        groups.setdefault(_text(r.get("driver_user_id")), []).append(r)
 
     results = []
     any_fail = False
     for driver_id, items in groups.items():
+        driver_doc = driver_cache.get(driver_id) or await _legacy_resolve_order_driver(db, driver_id)
+        if not driver_doc:
+            any_fail = True
+            results.append({
+                "driver_user_id": driver_id,
+                "driver_name": items[0].get("driver_name"),
+                "requested_order_ids": [i["sales_order_id"] for i in items],
+                "ok": False,
+                "route_id": None,
+                "stop_ids": [],
+                "error": LEGACY_INVALID_DRIVER_REASON,
+                "skipped_already_optimized": [],
+                "reoptimized_order_ids": [],
+                "created_order_ids": [],
+            })
+            continue
+
+        driver_name = _text(driver_doc.get("name")) or items[0].get("driver_name") or driver_id
         group_result = {
             "driver_user_id": driver_id,
-            "driver_name": items[0].get("driver_name"),
+            "driver_name": driver_name,
             "requested_order_ids": [i["sales_order_id"] for i in items],
             "ok": False,
             "route_id": None,
             "stop_ids": [],
             "error": None,
             "skipped_already_optimized": [],
+            "skipped_fleet_pair": [],
             "reoptimized_order_ids": [],
             "created_order_ids": [],
         }
         try:
-            # Idempotency: separate already-valid from stale/missing
             to_create = []
             for item in items:
                 status = item.get("optimization_status")
+                rid = item.get("route_id")
+                # Never mutate or pull stops from two-fleet pair routes.
+                if rid:
+                    route_meta = await db[COL_PLANS].find_one(
+                        {"id": rid, **_active_route_filter()},
+                        {"_id": 0, "id": 1, "fleet_group_id": 1},
+                    )
+                    if _text((route_meta or {}).get("fleet_group_id")):
+                        group_result["skipped_fleet_pair"].append(item["sales_order_id"])
+                        continue
                 if status == OPT_STATUS_OPTIMIZED and item.get("route_id"):
                     group_result["skipped_already_optimized"].append(item["sales_order_id"])
                     continue
                 if status == OPT_STATUS_STALE and item.get("route_id") and item.get("existing_stop_id"):
-                    # Controlled re-optimization: remove old stop linkage then recreate in this group route.
                     old_route_id = item["route_id"]
                     old_stop_id = item["existing_stop_id"]
                     try:
-                        await store.delete_stop(db, old_route_id, old_stop_id, actor, perms | {PERM_EDIT_OWN, PERM_MANAGE})
+                        await store.delete_stop(
+                            db, old_route_id, old_stop_id, actor, perms | {PERM_EDIT_OWN, PERM_MANAGE}
+                        )
                     except HTTPException:
-                        # If cannot edit old route (ownership), fall through to create new — but still protect duplicates via check.
                         pass
                     group_result["reoptimized_order_ids"].append(item["sales_order_id"])
                     to_create.append(item)
                 else:
                     to_create.append(item)
 
-            if not to_create and group_result["skipped_already_optimized"]:
-                # All already optimized — success with existing route ids
+            if not to_create and (
+                group_result["skipped_already_optimized"] or group_result["skipped_fleet_pair"]
+            ):
                 existing_route = items[0].get("route_id")
                 group_result.update({
                     "ok": True,
-                    "route_id": existing_route,
+                    "route_id": existing_route if group_result["skipped_already_optimized"] else None,
                     "message": "Semua pengiriman sudah dioptimasi; tidak ada duplikat.",
                 })
                 results.append(group_result)
@@ -482,7 +1165,6 @@ async def create_and_optimize_from_schedule(
                 results.append(group_result)
                 continue
 
-            # Final duplicate guard before insert (exact active valid linkage).
             existing_active = await _active_delivery_stops_for_orders(
                 db, [i["sales_order_id"] for i in to_create]
             )
@@ -491,6 +1173,10 @@ async def create_and_optimize_from_schedule(
             for s in existing_active:
                 soid = _text(s.get("sales_order_id"))
                 route = s.get("_route") or {}
+                if _text(route.get("fleet_group_id")):
+                    active_orders.add(soid)
+                    group_result["skipped_fleet_pair"].append(soid)
+                    continue
                 if route.get("optimization_stale"):
                     continue
                 if int(route.get("current_optimization_version") or 0) <= 0:
@@ -499,11 +1185,16 @@ async def create_and_optimize_from_schedule(
                     active_orders.add(soid)
             to_create = [i for i in to_create if i["sales_order_id"] not in active_orders]
 
-            date_keys = sorted({i.get("effective_delivery_date") for i in to_create if i.get("effective_delivery_date")})
+            if not to_create:
+                group_result["ok"] = True
+                group_result["message"] = "Tidak ada stop baru (idempotent)."
+                results.append(group_result)
+                continue
+
+            date_keys = sorted({
+                i.get("effective_delivery_date") for i in to_create if i.get("effective_delivery_date")
+            })
             date_label = date_keys[0] if len(date_keys) == 1 else (date_keys[0] + "+" if date_keys else None)
-            # Prefer warehouse when configured; otherwise MANUAL start at first stop coords.
-            settings = await store.load_settings(db) if hasattr(store, "load_settings") else None
-            from services.independent_route.settings import load_settings, warehouse_point
             settings = await load_settings(db)
             wp = warehouse_point(settings)
             if wp:
@@ -520,7 +1211,7 @@ async def create_and_optimize_from_schedule(
             route = await store.create_route(
                 db,
                 {
-                    "name": _route_name(items[0].get("driver_name"), date_label, driver_id),
+                    "name": _route_name(driver_name, date_label, driver_id),
                     "route_date": date_keys[0] if date_keys else None,
                     "notes": "Dibuat dari Jadwal Pengiriman",
                     "start_mode": start_mode,
@@ -529,14 +1220,13 @@ async def create_and_optimize_from_schedule(
                     "strategy": "NEAREST",
                     "source_type": SOURCE_DELIVERY_SCHEDULE,
                     "driver_user_id": driver_id,
-                    "driver_name": items[0].get("driver_name"),
+                    "driver_name": driver_name,
                 },
                 actor,
             )
             route_id = route["id"]
             stop_ids = []
             for item in to_create:
-                # Race-safe: skip if another active stop appeared
                 again = await _active_delivery_stops_for_orders(db, [item["sales_order_id"]])
                 if again:
                     group_result["skipped_already_optimized"].append(item["sales_order_id"])
@@ -581,7 +1271,6 @@ async def create_and_optimize_from_schedule(
                 group_result["optimized"] = True
                 group_result["route"] = opt.get("route")
             else:
-                # Created empty route — soft-delete it to avoid orphans
                 await store.soft_delete_route(db, route_id, actor, perms | {PERM_MANAGE, PERM_EDIT_OWN})
                 group_result["ok"] = True
                 group_result["message"] = "Tidak ada stop baru (idempotent)."
@@ -596,16 +1285,60 @@ async def create_and_optimize_from_schedule(
             group_result["error"] = str(exc)
         results.append(group_result)
 
+    eligible_out = [r for r in rows_out if r.get("eligible")]
+    groups_map: Dict[str, list] = {}
+    for r in eligible_out:
+        did = _text(r.get("driver_user_id"))
+        if not did:
+            continue
+        groups_map.setdefault(did, []).append(r)
+    groups_out = []
+    for driver_id, items in groups_map.items():
+        groups_out.append({
+            "driver_user_id": driver_id,
+            "driver_name": items[0].get("driver_name"),
+            "count": len(items),
+            "sales_order_ids": [i["sales_order_id"] for i in items],
+        })
+    groups_out.sort(key=lambda g: (g.get("driver_name") or "", g["driver_user_id"]))
+    review_out = {
+        "rows": rows_out,
+        "summary": {
+            "selected": len(rows_out),
+            "eligible": len(eligible_out),
+            "ineligible": len(rows_out) - len(eligible_out),
+            "drivers": len(groups_out),
+            "routes_to_create": len(groups_out),
+        },
+        "groups": groups_out,
+    }
+
     ok_count = sum(1 for r in results if r.get("ok"))
     return {
         "ok": (not any_fail) and ok_count == len(results),
         "partial": any_fail and ok_count > 0,
         "summary": {
-            **review["summary"],
+            **review_out["summary"],
             "groups_attempted": len(results),
             "groups_ok": ok_count,
             "groups_failed": len(results) - ok_count,
         },
         "results": results,
-        "review": review,
+        "review": review_out,
     }
+
+
+async def create_and_optimize_from_schedule(
+    db,
+    *,
+    order_ids: List[str],
+    actor: dict,
+    perms: set,
+) -> dict:
+    """Compatibility alias — isolated legacy optimize only."""
+    return await create_and_optimize_from_schedule_legacy(
+        db,
+        order_ids=order_ids,
+        actor=actor,
+        perms=perms,
+    )

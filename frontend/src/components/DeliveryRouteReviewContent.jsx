@@ -3,482 +3,479 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatApiError } from "../lib/errors";
-import { formatDate } from "../lib/constants";
 import {
-  canAssignDeliveryDriver,
   canOptimizeFromDeliverySchedule,
   DESKTOP_DELIVERY_SCHEDULE_PATH,
   MOBILE_DELIVERY_SCHEDULE_PATH,
 } from "../lib/mobileDeliverySchedule";
 import {
-  buildBulkAssignConfirm,
-  driverDisplayLabel,
   eligibilityReasonText,
   eligibilityStatusLabel,
-  excludeFromSelection,
   locationSetupStatusLabel,
   parseReviewOrderIds,
   selectAllReviewRows,
   summarizeSelection,
   toggleId,
 } from "../lib/deliveryRouteBridge";
+import {
+  buildRouteOptEligibilityCreateFleets,
+  getRouteOptEligibilityPreviewReview,
+  isRouteOptEligibilityPreviewEnabled,
+} from "../lib/deliveryRouteOptEligibilityFixtures";
+import { formatKm, statusLabel } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
 import MobileTopBar from "../mobile/MobileTopBar";
 
+const PANEL = {
+  border: "1px solid #1e293b",
+  background: "#f8fafc",
+  borderRadius: 4,
+  padding: 14,
+};
+
+const CARD_BASE = {
+  flex: "1 1 160px",
+  border: "1px solid #94a3b8",
+  borderRadius: 4,
+  padding: "12px 14px",
+  cursor: "pointer",
+  background: "#fff",
+  textAlign: "left",
+  minHeight: 88,
+};
+
+const CARD_SELECTED = {
+  ...CARD_BASE,
+  border: "2px solid #0f172a",
+  background: "#e2e8f0",
+  boxShadow: "inset 0 0 0 1px #0f172a",
+};
+
+const PRIMARY_BTN = {
+  background: "#0f172a",
+  color: "#f8fafc",
+  border: "1px solid #020617",
+  borderRadius: 4,
+  padding: "12px 18px",
+  fontWeight: 700,
+  fontSize: 15,
+  minHeight: 44,
+  cursor: "pointer",
+};
+
+const PRIMARY_BTN_DISABLED = {
+  ...PRIMARY_BTN,
+  background: "#64748b",
+  borderColor: "#475569",
+  cursor: "not-allowed",
+  opacity: 0.75,
+};
+
+function CreatedRouteSummary({ route, index }) {
+  const label = route?.label || `Armada ${index + 1}`;
+  const stopCount = Number(route?.stop_count || (route?.order_ids || []).length || 0);
+  const urgentCount = Number(route?.urgent_count || 0);
+  const status = statusLabel(route?.status) || route?.status || "Dioptimasi";
+  const distance =
+    route?.estimated_distance_m != null ? formatKm(route.estimated_distance_m) : "—";
+  return (
+    <div
+      data-testid={`mds-review-created-route-${index + 1}`}
+      style={{
+        border: "1px solid #cbd5e1",
+        borderRadius: 4,
+        padding: 10,
+        background: "#fff",
+        display: "grid",
+        gap: 4,
+      }}
+    >
+      <strong>{label}</strong>
+      <div className="muted" style={{ fontSize: 12 }}>
+        {stopCount} PO · {urgentCount} urgent · {distance} · {status}
+      </div>
+    </div>
+  );
+}
+
 /**
- * Shared delivery-schedule → route-optimize review UI.
- * shell="mobile" → PWA chrome (MobileTopBar); shell="desktop" → AppShell page chrome.
+ * Shared Jadwal Pengiriman → Optimasi Rute review (desktop + PWA).
+ * One-stage create+optimize: persists 1 or 2 routes; open via Optimasi Rute.
  */
-export default function DeliveryRouteReviewContent({
-  backPath,
-  shell = "mobile",
-} = {}) {
-  const navigate = useNavigate();
+export default function DeliveryRouteReviewContent({ backPath, shell = "desktop" } = {}) {
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const { hasPerm } = useAuth();
-  const allowed = canOptimizeFromDeliverySchedule(hasPerm);
-  const canAssign = canAssignDeliveryDriver(hasPerm);
+  const isMobile = shell === "mobile";
   const scheduleBack =
-    backPath
-    || (shell === "desktop" ? DESKTOP_DELIVERY_SCHEDULE_PATH : MOBILE_DELIVERY_SCHEDULE_PATH);
-  const isDesktop = shell === "desktop";
-  // Stabilize on search string — URLSearchParams identity can churn and re-fire load().
+    backPath || (isMobile ? MOBILE_DELIVERY_SCHEDULE_PATH : DESKTOP_DELIVERY_SCHEDULE_PATH);
   const idsQuery = params.toString();
+  const fixtureMode = isRouteOptEligibilityPreviewEnabled(idsQuery);
+  const allowed = canOptimizeFromDeliverySchedule(hasPerm) || fixtureMode;
   const orderIds = useMemo(() => parseReviewOrderIds(idsQuery), [idsQuery]);
 
   const [rows, setRows] = useState([]);
-  const [summary, setSummary] = useState(null);
-  const [groups, setGroups] = useState([]);
   const [selected, setSelected] = useState([]);
+  const [fleetCount, setFleetCount] = useState(2);
+  const [createResult, setCreateResult] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const [err, setErr] = useState("");
-  const [result, setResult] = useState(null);
 
-  const [drivers, setDrivers] = useState([]);
-  const [driversErr, setDriversErr] = useState("");
-  const [rowDraft, setRowDraft] = useState({});
-  const [rowSaving, setRowSaving] = useState({});
-  const [bulkDriverId, setBulkDriverId] = useState("");
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [assignMsg, setAssignMsg] = useState("");
+  const clearOutcome = useCallback(() => {
+    setCreateResult(null);
+    setErr("");
+  }, []);
 
   const load = useCallback(async () => {
+    // Fixture preview wins before allowed / empty-ID handling.
+    if (isRouteOptEligibilityPreviewEnabled(idsQuery)) {
+      const data = getRouteOptEligibilityPreviewReview();
+      const nextRows = Array.isArray(data?.rows) ? data.rows : [];
+      setRows(nextRows);
+      setSelected(selectAllReviewRows(nextRows));
+      setCreateResult(null);
+      setErr("");
+      setBusy(false);
+      return;
+    }
     if (!allowed) return;
     setBusy(true);
     setErr("");
+    setCreateResult(null);
     try {
+      if (!orderIds.length) {
+        setRows([]);
+        setSelected([]);
+        setErr("Tidak ada PO yang dipilih. Kembali ke Jadwal Pengiriman lalu pilih PO.");
+        return;
+      }
       const data = await api.reviewScheduleRouteOptimize(orderIds);
-      setRows(data.rows || []);
-      setSummary(data.summary || null);
-      setGroups(data.groups || []);
-      // Selection includes ineligible rows so bulk driver assign works before Optimalkan Rute.
-      setSelected(selectAllReviewRows(data.rows || []));
-      setRowDraft({});
+      const nextRows = Array.isArray(data?.rows) ? data.rows : [];
+      setRows(nextRows);
+      setSelected(selectAllReviewRows(nextRows));
     } catch (e) {
-      setErr(formatApiError(e, "Gagal memuat review optimasi."));
       setRows([]);
+      setSelected([]);
+      setErr(formatApiError(e, "Gagal memuat review optimasi."));
     } finally {
       setBusy(false);
     }
-  }, [allowed, orderIds]);
-
-  const loadDrivers = useCallback(async () => {
-    if (!canAssign) return;
-    setDriversErr("");
-    try {
-      const data = await api.listEligibleDeliveryDrivers();
-      setDrivers(data.drivers || []);
-    } catch (e) {
-      setDrivers([]);
-      setDriversErr(formatApiError(e, "Gagal memuat daftar driver."));
-    }
-  }, [canAssign]);
+  }, [allowed, idsQuery, orderIds]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
-  useEffect(() => {
-    loadDrivers();
-  }, [loadDrivers]);
-
   const selectionSummary = useMemo(() => summarizeSelection(rows, selected), [rows, selected]);
-  const bulkDriver = useMemo(
-    () => drivers.find((d) => String(d.id) === String(bulkDriverId)) || null,
-    [drivers, bulkDriverId],
+
+  const eligibleSelectedIds = useMemo(() => {
+    const set = new Set(selected.map(String));
+    return rows
+      .filter((r) => set.has(String(r.sales_order_id)) && r.eligible)
+      .map((r) => String(r.sales_order_id));
+  }, [rows, selected]);
+
+  const urgentSelectedCount = useMemo(() => {
+    const set = new Set(selected.map(String));
+    return rows.filter((r) => set.has(String(r.sales_order_id)) && r.eligible && r.urgent).length;
+  }, [rows, selected]);
+
+  const disabledReason = useMemo(() => {
+    if (busy || optimizing) return "";
+    if (fleetCount !== 1 && fleetCount !== 2) return "Pilih 1 atau 2 armada.";
+    if (fleetCount === 1 && eligibleSelectedIds.length < 1) {
+      return "Optimasi 1 Armada membutuhkan minimal 1 PO eligible.";
+    }
+    if (fleetCount === 2 && eligibleSelectedIds.length < 2) {
+      return "Optimasi 2 Armada membutuhkan minimal 2 PO eligible.";
+    }
+    return "";
+  }, [busy, optimizing, fleetCount, eligibleSelectedIds.length]);
+
+  const canRunOptimize = !disabledReason && !busy && !optimizing;
+
+  const onToggle = (id) => {
+    clearOutcome();
+    setSelected((prev) => toggleId(prev, id));
+  };
+
+  const onFleetCountChange = (next) => {
+    const value = Number(next);
+    if (value !== 1 && value !== 2) return;
+    clearOutcome();
+    setFleetCount(value);
+  };
+
+  const runOptimize = async () => {
+    if (!canRunOptimize) return;
+    setOptimizing(true);
+    setErr("");
+    setCreateResult(null);
+    try {
+      const data = fixtureMode
+        ? buildRouteOptEligibilityCreateFleets({
+            orderIds: eligibleSelectedIds,
+            fleetCount,
+          })
+        : await api.createFleetsFromSchedule(eligibleSelectedIds, fleetCount);
+      setCreateResult(data);
+    } catch (e) {
+      setErr(formatApiError(e, "Gagal membuat dan mengoptimalkan rute."));
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
+  const openOptimasiRute = () => {
+    navigateToOptimasiRute(navigate, "", { from: scheduleBack });
+  };
+
+  const createdRoutes = Array.isArray(createResult?.routes) ? createResult.routes : [];
+  const createdCount = Number(
+    createResult?.created_route_count || createdRoutes.length || createResult?.fleet_count || 0,
   );
+  const rootTestId = isMobile ? "mds-review-root" : "ds-review-root";
 
-  const btnGhost = isDesktop ? "ghost sm" : "mop-btn-ghost";
-  const btnGhostSm = isDesktop ? "ghost sm" : "mop-btn-ghost sm";
-  const btnPrimary = isDesktop ? "primary" : "mop-btn-primary";
-
-  const onConfirm = async () => {
-    if (submitting) return;
-    const ids = selectionSummary.groups.flatMap((g) => g.rows.map((r) => r.sales_order_id));
-    if (!ids.length) return;
-    setSubmitting(true);
-    setErr("");
-    try {
-      const data = await api.optimizeFromSchedule(ids);
-      setResult(data);
-      if (data?.ok || data?.partial) {
-        await load();
-      }
-    } catch (e) {
-      setErr(formatApiError(e, "Gagal membuat/optimasi rute."));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const applyRowDriver = async (orderId) => {
-    const draftId = String(rowDraft[orderId] || "").trim();
-    if (!draftId || rowSaving[orderId]) return;
-    const current = rows.find((r) => String(r.sales_order_id) === String(orderId));
-    if (String(current?.driver_user_id || "") === draftId) {
-      setAssignMsg("Driver sudah sama — tidak diubah.");
-      return;
-    }
-    const driver = drivers.find((d) => String(d.id) === draftId);
-    const label = driver?.name || draftId;
-    if (!window.confirm(`Ubah driver menjadi: ${label}?`)) return;
-
-    setRowSaving((prev) => ({ ...prev, [orderId]: true }));
-    setAssignMsg("");
-    setErr("");
-    try {
-      const data = await api.assignDeliveryDriver(orderId, draftId);
-      const status = data?.result?.status;
-      setAssignMsg(
-        status === "unchanged"
-          ? `Driver tidak berubah untuk ${orderId}.`
-          : `Driver disimpan: ${data?.result?.driver_name || label}`,
-      );
-      await load();
-    } catch (e) {
-      setErr(formatApiError(e, "Gagal menyimpan driver."));
-    } finally {
-      setRowSaving((prev) => {
-        const next = { ...prev };
-        delete next[orderId];
-        return next;
-      });
-    }
-  };
-
-  const applyBulkDriver = async () => {
-    if (bulkBusy || !bulkDriver || !selected.length) return;
-    const confirmMeta = buildBulkAssignConfirm(rows, selected, bulkDriver);
-    if (confirmMeta.changeCount === 0) {
-      setAssignMsg("Semua baris terpilih sudah memakai driver ini.");
-      return;
-    }
-    const ok = window.confirm(
-      `${confirmMeta.selectedCount} pengiriman dipilih\n` +
-        `Driver akan diubah menjadi: ${confirmMeta.driverName}\n` +
-        (confirmMeta.unchangedCount
-          ? `(${confirmMeta.unchangedCount} sudah memakai driver ini — tidak ditulis ulang)\n`
-          : "") +
-        "Lanjutkan?",
+  if (!allowed) {
+    return (
+      <div className={isMobile ? "mapp-page" : "page"} data-testid={rootTestId}>
+        {isMobile ? <MobileTopBar title="Optimasi Rute" onBack={() => window.history.back()} /> : null}
+        <div className="mds-card" style={{ margin: isMobile ? 12 : 0 }}>
+          <div className="mds-card-bd">
+            <strong>Akses ditolak</strong>
+            <p className="muted">Anda tidak memiliki izin untuk optimasi rute dari jadwal pengiriman.</p>
+            <Link className="btn secondary" to={scheduleBack}>
+              Kembali
+            </Link>
+          </div>
+        </div>
+      </div>
     );
-    if (!ok) return;
-
-    setBulkBusy(true);
-    setAssignMsg("");
-    setErr("");
-    try {
-      const data = await api.bulkAssignDeliveryDriver(selected, bulkDriver.id);
-      const c = data?.counts || {};
-      setAssignMsg(
-        `Bulk driver: updated ${c.updated || 0}, unchanged ${c.unchanged || 0}, failed ${c.failed || 0}`,
-      );
-      if (data?.ok === false && !(c.updated > 0)) {
-        setErr("Bulk assign gagal untuk semua baris terpilih.");
-      }
-      await load();
-    } catch (e) {
-      setErr(formatApiError(e, "Gagal menerapkan driver ke terpilih."));
-    } finally {
-      setBulkBusy(false);
-    }
-  };
-
-  // Desktop must NOT use ship-status-page: that class locks html/body/.content to
-  // 100dvh + overflow:hidden (for Jadwal Pengiriman's internal .ship-status-grid scroller)
-  // and would clip this growing review list with no reachable bottom actions.
-  const rootClass = isDesktop
-    ? "ds-delivery-review-root"
-    : "mop-schedule-root mop-delivery-review-root";
-  const mainClass = isDesktop
-    ? "mds-review-page ds-review-page"
-    : "mop-content mds-review-page";
-  const errClass = isDesktop ? "error" : "mop-error";
-  const emptyClass = isDesktop ? "empty" : "mop-empty";
+  }
 
   return (
-    <div className={rootClass} data-testid={isDesktop ? "ds-review-root" : "mds-review-root"}>
-      {!isDesktop ? (
-        <MobileTopBar
-          kicker="ETERNAL PACKAGING"
-          title="Review Pengiriman Terpilih"
-          onBack={() => navigate(scheduleBack)}
-        />
-      ) : null}
-      {/* Do not use mop-schedule-page here: its overflow:hidden + non-scrolling flex layout
-          traps native <select> / toolbar taps on PWA/mobile WebKit. */}
-      <main className={mainClass} data-testid="mds-review-page">
-        {isDesktop ? (
-          <header className="ship-status-heading" data-testid="ds-review-heading">
-            <p className="eyebrow">Produksi</p>
-            <h1>Review Pengiriman Terpilih</h1>
-          </header>
-        ) : null}
-        {!allowed && (
-          <div className={errClass} data-testid="mds-review-forbidden">
-            <p>Anda tidak punya izin optimasi rute.</p>
-            <Link to={scheduleBack} className={btnGhost}>Kembali</Link>
+    <div className={isMobile ? "mapp-page" : "page"} data-testid={rootTestId}>
+      {isMobile ? (
+        <MobileTopBar title="Optimasi Rute" onBack={() => window.history.back()} />
+      ) : (
+        <div
+          className="page-header"
+          style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+        >
+          <div>
+            <h1 style={{ margin: 0 }}>Optimasi Rute</h1>
+            <p className="muted" style={{ margin: "6px 0 0" }}>
+              Buat dan simpan rute dari PO eligible, lalu buka melalui menu Optimasi Rute.
+            </p>
           </div>
-        )}
-        {allowed && (
-          <>
-            <div className="mds-review-toolbar">
-              <Link to={scheduleBack} className={btnGhost} data-testid="mds-review-back">
-                Kembali
-              </Link>
-              <button
-                type="button"
-                className={btnGhost}
-                data-testid="mds-review-select-all"
-                onClick={() => setSelected(selectAllReviewRows(rows))}
-                disabled={busy || rows.length === 0}
-              >
-                Pilih Semua
-              </button>
-              <button
-                type="button"
-                className={btnGhost}
-                data-testid="mds-review-exclude"
-                onClick={() => setSelected(excludeFromSelection(selected, selected))}
-                disabled={!selected.length}
-              >
-                Keluarkan dari Pilihan
-              </button>
-            </div>
+          <Link className="btn secondary" to={scheduleBack} data-testid="mds-review-back">
+            Kembali ke Jadwal
+          </Link>
+        </div>
+      )}
 
-            {canAssign && (
-              <div className="mds-review-bulk-driver" data-testid="mds-review-bulk-driver">
-                <label className="mds-driver-label" htmlFor="mds-bulk-driver">
-                  Driver
-                </label>
-                <select
-                  id="mds-bulk-driver"
-                  className="mds-driver-select"
-                  data-testid="mds-review-bulk-driver-select"
-                  value={bulkDriverId}
-                  onChange={(e) => setBulkDriverId(String(e.target.value))}
-                  disabled={bulkBusy || busy || !!driversErr}
-                >
-                  <option value="">Pilih Driver</option>
-                  {drivers.map((d) => (
-                    <option key={String(d.id)} value={String(d.id)}>
-                      {d.name || d.id}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className={btnGhost}
-                  data-testid="mds-review-bulk-apply"
-                  disabled={bulkBusy || !bulkDriverId || !selected.length}
-                  onClick={applyBulkDriver}
-                >
-                  {bulkBusy ? "Menerapkan..." : "Terapkan ke Terpilih"}
-                </button>
+      <div style={{ padding: isMobile ? 12 : 0, display: "grid", gap: 12 }}>
+        {fixtureMode ? (
+          <div className="mds-card" data-testid="mds-review-fixture-banner">
+            <div className="mds-card-bd">
+              <strong>DATA DUMMY — DEVELOPMENT PREVIEW</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                Mode fixture lokal. Tidak memanggil API review/create/optimasi/penyimpanan. Data tidak
+                dipersist.
               </div>
-            )}
-
-            {busy && <p className={emptyClass} data-testid="mds-review-loading">Memuat review...</p>}
-            {err ? <div className={errClass} data-testid="mds-review-error">{err}</div> : null}
-            {driversErr ? <div className={errClass} data-testid="mds-review-drivers-error">{driversErr}</div> : null}
-            {assignMsg ? <div className="mds-review-assign-msg" data-testid="mds-review-assign-msg">{assignMsg}</div> : null}
-
-            <div className="mds-review-summary" data-testid="mds-review-summary">
-              <span>Dipilih: {selectionSummary.selected}</span>
-              <span>Eligible: {selectionSummary.eligible}</span>
-              <span>Tidak eligible: {selectionSummary.ineligible}</span>
-              <span>Driver: {selectionSummary.drivers}</span>
-              <span>Rute dibuat: {selectionSummary.routes_to_create}</span>
             </div>
+          </div>
+        ) : null}
 
-            {selectionSummary.groups.length > 0 && (
-              <div className="mds-review-groups" data-testid="mds-review-groups">
-                {selectionSummary.groups.map((g) => (
-                  <div key={g.driver_user_id} className="mds-review-group">
-                    <strong>{g.driver_name || g.driver_user_id}</strong>
-                    <span>{g.rows.length} pengiriman</span>
-                  </div>
-                ))}
-              </div>
-            )}
+        {err ? (
+          <div className="mds-card" data-testid="mds-review-error">
+            <div className="mds-card-bd" style={{ color: "var(--danger, #b00020)" }}>
+              {err}
+            </div>
+          </div>
+        ) : null}
 
-            <div className="mds-review-list" data-testid="mds-review-list">
-              {rows.map((row) => {
-                const id = String(row.sales_order_id);
-                const checked = selected.includes(id);
-                const draft = rowDraft[id] !== undefined ? rowDraft[id] : (row.driver_user_id || "");
-                const dirty = String(draft || "") !== String(row.driver_user_id || "");
-                return (
-                  <div
-                    key={id}
-                    className={`mds-review-row${row.eligible ? "" : " is-ineligible"}`}
-                    data-testid={`mds-review-row-${id}`}
-                  >
-                    <label className="mds-review-check">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        data-testid={`mds-review-check-${id}`}
-                        onChange={() => setSelected((prev) => toggleId(prev, id))}
-                      />
-                    </label>
-                    <div className="mds-review-body">
-                      <div className="mds-review-title">
-                        <strong>{row.customer_name || "—"}</strong>
-                        <span className="mono">{row.order_number || id}</span>
-                      </div>
-                      <div className="mds-review-meta">
-                        <span>{row.address || "Alamat —"}</span>
-                        <span>SJ: {row.sj_label || "—"}</span>
-                        <span data-testid={`mds-review-driver-label-${id}`}>
-                          Driver: {driverDisplayLabel(row)}
-                        </span>
-                        <span>Tanggal: {formatDate(row.effective_delivery_date, { dateOnly: true })}</span>
-                        <span>{row.optimization_status_label}</span>
-                      </div>
-                      <div className="mds-review-status" data-testid={`mds-review-status-${id}`}>
-                        <span data-testid={`mds-review-location-status-${id}`}>
-                          Status Atur Lokasi: {locationSetupStatusLabel(row)}
-                        </span>
-                        <span data-testid={`mds-review-eligibility-status-${id}`}>
-                          Eligibility: {eligibilityStatusLabel(row)}
-                        </span>
-                        {!row.eligible ? (
-                          <span
-                            className="mds-review-reason"
-                            data-testid={`mds-review-reason-${id}`}
-                          >
-                            Alasan: {eligibilityReasonText(row)}
-                          </span>
-                        ) : null}
-                      </div>
-                      {canAssign && (
-                        <div className="mds-review-row-driver" data-testid={`mds-review-pick-driver-${id}`}>
-                          <label className="mds-driver-label" htmlFor={`mds-driver-${id}`}>
-                            Pilih Driver
-                          </label>
-                          <select
-                            id={`mds-driver-${id}`}
-                            className="mds-driver-select"
-                            data-testid={`mds-review-driver-select-${id}`}
-                            value={draft ? String(draft) : ""}
-                            onChange={(e) =>
-                              setRowDraft((prev) => ({ ...prev, [id]: String(e.target.value) }))
-                            }
-                            disabled={!!rowSaving[id] || busy}
-                          >
-                            <option value="">
-                              {row.driver_user_id ? "— pilih driver —" : "Belum Ada Driver"}
-                            </option>
-                            {drivers.map((d) => (
-                              <option key={String(d.id)} value={String(d.id)}>
-                                {d.name || d.id}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            className={btnGhostSm}
-                            data-testid={`mds-review-driver-save-${id}`}
-                            disabled={!dirty || !draft || !!rowSaving[id]}
-                            onClick={() => applyRowDriver(id)}
-                          >
-                            {rowSaving[id] ? "Menyimpan..." : "Simpan"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className={btnGhostSm}
-                      data-testid={`mds-review-exclude-${id}`}
-                      onClick={() => setSelected((prev) => excludeFromSelection(prev, [id]))}
+        <section className="mds-card">
+          <div className="mds-card-hd">
+            <strong>PO Terpilih</strong>
+          </div>
+          <div className="mds-card-bd" style={{ display: "grid", gap: 8 }}>
+            <div className="muted" style={{ fontSize: 12 }} data-testid="mds-review-selection-summary">
+              Dipilih {selectionSummary.selected} · Eligible {selectionSummary.eligible} · Tidak eligible{" "}
+              {selectionSummary.ineligible}
+            </div>
+            {busy ? (
+              <div className="muted">Memuat…</div>
+            ) : rows.length === 0 ? (
+              <div className="muted">Tidak ada baris untuk direview.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {rows.map((row) => {
+                  const id = String(row.sales_order_id);
+                  const checked = selected.includes(id);
+                  return (
+                    <label
+                      key={id}
+                      className="mds-card"
+                      style={{ padding: 10, display: "grid", gap: 4, cursor: "pointer" }}
+                      data-testid={`mds-review-row-${id}`}
                     >
-                      Keluarkan
-                    </button>
-                  </div>
-                );
-              })}
-              {!busy && rows.length === 0 && (
-                <p className={emptyClass} data-testid="mds-review-empty">Tidak ada pengiriman dalam filter aktif.</p>
-              )}
-            </div>
-
-            <div className="mds-review-actions">
-              <button
-                type="button"
-                className={btnPrimary}
-                data-testid="mds-review-confirm"
-                disabled={submitting || selectionSummary.eligible === 0}
-                onClick={onConfirm}
-              >
-                {submitting ? "Mengoptimasi..." : "Optimalkan Rute"}
-              </button>
-            </div>
-
-            {result && (
-              <div className="mds-review-result" data-testid="mds-review-result">
-                <p>
-                  {result.ok
-                    ? "Optimasi selesai."
-                    : result.partial
-                      ? "Sebagian rute berhasil dibuat."
-                      : "Optimasi gagal."}
-                </p>
-                {(result.results || []).map((g) => (
-                  <div key={g.driver_user_id} className="mds-review-result-row">
-                    <span>{g.driver_name || g.driver_user_id}</span>
-                    <span>{g.ok ? "OK" : g.error || "Gagal"}</span>
-                    {g.route_id ? (
-                      <button
-                        type="button"
-                        className="mds-opt-link"
-                        data-testid={`mds-review-open-${g.route_id}`}
-                        onClick={() => navigateToOptimasiRute(navigate, g.route_id, {
-                          from: `${window.location.pathname}${window.location.search}`,
-                        })}
-                      >
-                        Lihat Rute
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  className={btnGhost}
-                  data-testid="mds-review-done"
-                  onClick={() => navigate(scheduleBack)}
-                >
-                  Selesai
-                </button>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => onToggle(id)}
+                          data-testid={`mds-review-check-${id}`}
+                        />
+                        <div style={{ flex: 1, display: "grid", gap: 2 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 8,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <strong>{row.order_number || id}</strong>
+                            <span className={`pill ${row.urgent ? "warn" : ""}`}>
+                              {row.urgent ? "Urgent" : "Normal"}
+                            </span>
+                          </div>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {row.customer_name || "—"}
+                            {row.sj_label ? ` · SJ ${row.sj_label}` : ""}
+                          </div>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            Status Lokasi: {locationSetupStatusLabel(row)} · {eligibilityStatusLabel(row)}
+                          </div>
+                          {!row.eligible ? (
+                            <div
+                              className="muted"
+                              style={{ fontSize: 12 }}
+                              data-testid={`mds-review-reason-${id}`}
+                            >
+                              {eligibilityReasonText(row)}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
             )}
+          </div>
+        </section>
 
-            {/* keep groups from server for debug density without clutter */}
-            {groups.length === 0 && summary ? null : null}
-          </>
-        )}
-      </main>
+        <section style={PANEL} data-testid="mds-review-create-panel">
+          <div style={{ display: "grid", gap: 10 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18, color: "#0f172a" }}>Buat Optimasi Rute</h2>
+              <p className="muted" style={{ margin: "6px 0 0", fontSize: 13 }}>
+                Pilih jumlah armada. Sistem akan membuat dan menyimpan rute yang dapat dibuka melalui menu
+                Optimasi Rute.
+              </p>
+            </div>
+
+            <div
+              data-testid="mds-review-create-summary"
+              style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}
+            >
+              <span>
+                Eligible: <strong>{eligibleSelectedIds.length}</strong>
+              </span>
+              <span>
+                Excluded: <strong>{selectionSummary.ineligible}</strong>
+              </span>
+              <span>
+                Urgent: <strong>{urgentSelectedCount}</strong>
+              </span>
+            </div>
+
+            <div data-testid="mds-review-fleet-count">
+              <div style={{ fontWeight: 700, marginBottom: 8, color: "#0f172a" }}>Jumlah Armada</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  style={fleetCount === 1 ? CARD_SELECTED : CARD_BASE}
+                  data-testid="mds-review-fleet-count-1"
+                  aria-pressed={fleetCount === 1}
+                  onClick={() => onFleetCountChange(1)}
+                >
+                  <div style={{ fontWeight: 700 }}>1 Armada</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Semua PO eligible disusun dalam satu rute.
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  style={fleetCount === 2 ? CARD_SELECTED : CARD_BASE}
+                  data-testid="mds-review-fleet-count-2"
+                  aria-pressed={fleetCount === 2}
+                  onClick={() => onFleetCountChange(2)}
+                >
+                  <div style={{ fontWeight: 700 }}>2 Armada</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    PO eligible dibagi secara geografis menjadi dua rute.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <button
+                type="button"
+                style={canRunOptimize ? PRIMARY_BTN : PRIMARY_BTN_DISABLED}
+                data-testid="mds-review-optimasi-armada"
+                disabled={!canRunOptimize}
+                onClick={() => void runOptimize()}
+              >
+                {optimizing ? "Membuat dan Mengoptimalkan Rute..." : "Optimasi Rute"}
+              </button>
+              {!canRunOptimize && disabledReason ? (
+                <div className="muted" style={{ fontSize: 12 }} data-testid="mds-review-disabled-reason">
+                  {disabledReason}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        {createResult ? (
+          <section style={PANEL} data-testid="mds-review-success">
+            <div style={{ display: "grid", gap: 10 }}>
+              <strong style={{ color: "#0f172a", fontSize: 15 }}>
+                {createdCount === 1
+                  ? "1 rute berhasil dibuat dan dioptimalkan."
+                  : `${createdCount} rute berhasil dibuat dan dioptimalkan.`}
+              </strong>
+              {fixtureMode ? (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Simulasi lokal — data tidak tersimpan di database.
+                </div>
+              ) : createResult.reused ? (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Hasil sebelumnya dipakai ulang (tanpa duplikasi).
+                </div>
+              ) : null}
+              <div style={{ display: "grid", gap: 8 }} data-testid="mds-review-created-routes">
+                {createdRoutes.map((route, index) => (
+                  <CreatedRouteSummary key={route.route_id || index} route={route} index={index} />
+                ))}
+              </div>
+              <button
+                type="button"
+                style={PRIMARY_BTN}
+                data-testid="mds-review-open-optimasi-rute"
+                onClick={openOptimasiRute}
+              >
+                Buka Optimasi Rute
+              </button>
+            </div>
+          </section>
+        ) : null}
+      </div>
     </div>
   );
 }

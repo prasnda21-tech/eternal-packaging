@@ -82,3 +82,16 @@ DEFAULT_PRIORITIES = (
     {"id": "p3", "rank": 3, "label": "Normal", "color": "#0ea5e9", "enabled": True},
     {"id": "p4", "rank": 4, "label": "Low", "color": "#10b981", "enabled": True},
 )
+
+# Schedule fleet optimization preview (1 or 2 armada)
+PRIORITY_ID_URGENT = "p1"
+PRIORITY_ID_NORMAL = "p3"
+PRIORITY_RANK_URGENT = 1
+PRIORITY_RANK_NORMAL = 3
+FLEET_LABEL_1 = "Armada 1"
+FLEET_LABEL_2 = "Armada 2"
+FLEET_PARTITION_VERSION = "fleet_partition_v1"
+
+# Persistent schedule→armada create (driverless)
+SCHEDULE_FLEET_CREATE_VERSION = "schedule_fleet_create_v1"
+FLEET_GROUP_ID_PREFIX = "ifg"

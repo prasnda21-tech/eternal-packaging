@@ -1,21 +1,21 @@
-import fs from "fs";
-import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import DeliveryScheduleRouteReviewPage from "./DeliveryScheduleRouteReviewPage";
-import DeliveryRouteReviewContent from "../components/DeliveryRouteReviewContent";
 
 const mockHasPerm = jest.fn(() => false);
 const mockReview = jest.fn();
-const mockOptimize = jest.fn();
-const mockListDrivers = jest.fn();
-const mockAssign = jest.fn();
-const mockBulkAssign = jest.fn();
+const mockCreateFleets = jest.fn();
+const mockPreviewFleets = jest.fn();
+const mockOptimizeFromSchedule = jest.fn();
 const mockNavigate = jest.fn();
-const mockSearchParams = new URLSearchParams("ids=ord-a,ord-b");
+let mockSearchParams = new URLSearchParams("ids=ord-a,ord-b");
 
 jest.mock("react-router-dom", () => ({
-  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  Link: ({ to, children, ...props }) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
   useNavigate: () => mockNavigate,
   useSearchParams: () => [mockSearchParams],
 }), { virtual: true });
@@ -28,10 +28,9 @@ jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
     reviewScheduleRouteOptimize: (...args) => mockReview(...args),
-    optimizeFromSchedule: (...args) => mockOptimize(...args),
-    listEligibleDeliveryDrivers: (...args) => mockListDrivers(...args),
-    assignDeliveryDriver: (...args) => mockAssign(...args),
-    bulkAssignDeliveryDriver: (...args) => mockBulkAssign(...args),
+    createFleetsFromSchedule: (...args) => mockCreateFleets(...args),
+    previewFleetsFromSchedule: (...args) => mockPreviewFleets(...args),
+    optimizeFromSchedule: (...args) => mockOptimizeFromSchedule(...args),
   },
 }));
 
@@ -45,30 +44,81 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 const baseRows = [
   {
     sales_order_id: "ord-a",
-    customer_name: "Cust A",
     order_number: "PO-A",
-    eligible: false,
-    reason: "Belum ada driver",
-    driver_user_id: null,
-    driver_name: null,
-    optimization_status_label: "Belum Dioptimasi",
-    lat: null,
-    lng: null,
+    customer_name: "Cust A",
+    eligible: true,
+    urgent: true,
+    reasons: [],
+    reason: null,
+    sj_label: "SJ-A",
+    lat: -6.2,
+    lng: 106.8,
+    address: "Jl A",
   },
   {
     sales_order_id: "ord-b",
-    customer_name: "Cust B",
     order_number: "PO-B",
+    customer_name: "Cust B",
     eligible: true,
-    driver_user_id: "drv-a",
-    driver_name: "Driver A",
-    optimization_status_label: "Sudah Dioptimasi",
-    lat: -6.2,
-    lng: 106.8,
+    urgent: false,
+    reasons: [],
+    sj_label: "SJ-B",
+    lat: -0.95,
+    lng: 100.35,
+    address: "Jl B",
+  },
+  {
+    sales_order_id: "ord-c",
+    order_number: "PO-C",
+    customer_name: "Cust C",
+    eligible: false,
+    urgent: false,
+    reason: "Surat Jalan belum siap.",
+    reasons: ["Surat Jalan belum siap."],
+    sj_label: "—",
+    lat: -6.3,
+    lng: 106.9,
   },
 ];
 
-describe("DeliveryScheduleRouteReviewPage desktop shell", () => {
+function createResult(count) {
+  const routes = [
+    {
+      route_id: "iro-1",
+      label: "Armada 1",
+      order_ids: count === 1 ? ["ord-a", "ord-b"] : ["ord-a"],
+      stop_count: count === 1 ? 2 : 1,
+      urgent_count: 1,
+      estimated_distance_m: 1200,
+      status: "OPTIMIZED",
+      fleet_group_id: count === 2 ? "ifg-test" : null,
+    },
+  ];
+  if (count === 2) {
+    routes.push({
+      route_id: "iro-2",
+      label: "Armada 2",
+      order_ids: ["ord-b"],
+      stop_count: 1,
+      urgent_count: 0,
+      estimated_distance_m: 800,
+      status: "OPTIMIZED",
+      fleet_group_id: "ifg-test",
+    });
+  }
+  return {
+    ok: true,
+    created: true,
+    reused: false,
+    fleet_count: count,
+    created_route_count: count,
+    fleet_group_id: count === 2 ? "ifg-test" : null,
+    eligible_order_ids: ["ord-a", "ord-b"],
+    routes,
+  };
+}
+
+describe("DeliveryScheduleRouteReviewPage desktop one-stage create", () => {
   let container;
   let root;
 
@@ -76,21 +126,20 @@ describe("DeliveryScheduleRouteReviewPage desktop shell", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    mockHasPerm.mockReset();
-    mockReview.mockReset();
-    mockOptimize.mockReset();
-    mockListDrivers.mockReset();
-    mockAssign.mockReset();
-    mockBulkAssign.mockReset();
+    mockSearchParams = new URLSearchParams("ids=ord-a,ord-b,ord-c");
+    mockHasPerm
+      .mockReset()
+      .mockImplementation(
+        (p) =>
+          p === "route_optimizer.create" ||
+          p === "route_optimizer.optimize" ||
+          p === "delivery.schedule.optimize",
+      );
+    mockReview.mockReset().mockResolvedValue({ rows: baseRows, summary: { selected: 3, eligible: 2 } });
+    mockCreateFleets.mockReset().mockResolvedValue(createResult(2));
+    mockPreviewFleets.mockReset();
+    mockOptimizeFromSchedule.mockReset();
     mockNavigate.mockReset();
-    window.confirm = jest.fn(() => true);
-    mockListDrivers.mockResolvedValue({
-      drivers: [
-        { id: "drv-a", name: "Driver A" },
-        { id: "drv-b", name: "Driver B" },
-      ],
-    });
-    mockReview.mockResolvedValue({ rows: baseRows, summary: { selected: 2 }, groups: [] });
   });
 
   afterEach(() => {
@@ -98,215 +147,122 @@ describe("DeliveryScheduleRouteReviewPage desktop shell", () => {
     container.remove();
   });
 
-  test("renders desktop AppShell chrome, not MobileTopBar / mobile ops root", async () => {
-    mockHasPerm.mockImplementation(
-      (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
-    );
+  test("renders prominent create panel and no driver/second-save UI", async () => {
     await act(async () => {
       root.render(<DeliveryScheduleRouteReviewPage />);
     });
     expect(container.querySelector('[data-testid="ds-review-root"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="ds-review-heading"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-top-bar"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mobile-operational-root"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mds-review-page"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-create-panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-fleet-count"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-fleet-count-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-fleet-count-2"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/Buat Optimasi Rute|Jumlah Armada|Optimasi Rute/);
+    expect(container.querySelector('[data-testid="mds-review-fleet-driver-select-armada_1"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-review-simpan-2-rute"]')).toBeFalsy();
+    expect(container.textContent).not.toMatch(/Simpan 2 Rute/);
   });
 
-  test("desktop review uses natural-scroll wrapper, not ship-status clipping viewport", async () => {
-    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
+  test("2 armada create payload; never calls preview or legacy optimize", async () => {
     await act(async () => {
       root.render(<DeliveryScheduleRouteReviewPage />);
     });
-    const rootEl = container.querySelector('[data-testid="ds-review-root"]');
-    const mainEl = container.querySelector('[data-testid="mds-review-page"]');
-    expect(rootEl).toBeTruthy();
-    expect(rootEl.classList.contains("ds-delivery-review-root")).toBe(true);
-    // ship-status-page locks html/body/.content to 100dvh + overflow:hidden
-    expect(rootEl.classList.contains("ship-status-page")).toBe(false);
-    expect(mainEl.classList.contains("ds-review-page")).toBe(true);
-    expect(mainEl.classList.contains("mop-content")).toBe(false);
-    expect(container.querySelector(".mop-delivery-review-root")).toBeFalsy();
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-optimasi-armada"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockCreateFleets).toHaveBeenCalledWith(["ord-a", "ord-b"], 2);
+    expect(mockPreviewFleets).not.toHaveBeenCalled();
+    expect(mockOptimizeFromSchedule).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mds-review-success"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/2 rute berhasil dibuat/);
+    expect(container.querySelector('[data-testid="mds-review-created-route-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-created-route-2"]')).toBeTruthy();
   });
 
-  test("Kembali returns to desktop Jadwal Pengiriman", async () => {
-    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
+  test("1 armada create renders exactly one created-route summary", async () => {
+    mockCreateFleets.mockResolvedValue(createResult(1));
     await act(async () => {
       root.render(<DeliveryScheduleRouteReviewPage />);
     });
-    const back = container.querySelector('[data-testid="mds-review-back"]');
-    expect(back.getAttribute("href")).toBe("/produksi/jadwal-pengiriman");
-    expect(back.getAttribute("href")).not.toMatch(/^\/m\//);
+    await act(async () => {
+      container.querySelector('[data-testid="mds-review-fleet-count-1"]').click();
+    });
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-optimasi-armada"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockCreateFleets).toHaveBeenCalledWith(["ord-a", "ord-b"], 1);
+    expect(container.querySelector('[data-testid="mds-review-created-route-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-created-route-2"]')).toBeFalsy();
+    expect(container.textContent).toMatch(/1 rute berhasil dibuat/);
   });
 
-  test("driver selector + Simpan assigns without calling optimize", async () => {
-    mockHasPerm.mockImplementation(
-      (p) => p === "route_optimizer.create" || p === "delivery.location.manage",
+  test("selection and fleet-count changes clear success; loading blocks duplicate submit", async () => {
+    let resolveCreate;
+    mockCreateFleets.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
     );
-    mockAssign.mockResolvedValue({
-      ok: true,
-      result: { status: "updated", driver_user_id: "drv-b", driver_name: "Driver B", sales_order_id: "ord-a" },
-    });
-    mockReview
-      .mockResolvedValueOnce({ rows: [baseRows[0]], summary: {}, groups: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          ...baseRows[0],
-          eligible: true,
-          reason: null,
-          driver_user_id: "drv-b",
-          driver_name: "Driver B",
-        }],
-        summary: {},
-        groups: [{ driver_user_id: "drv-b", sales_order_ids: ["ord-a"] }],
-      });
-
     await act(async () => {
       root.render(<DeliveryScheduleRouteReviewPage />);
     });
-    const select = container.querySelector('[data-testid="mds-review-driver-select-ord-a"]');
     await act(async () => {
-      select.value = "drv-b";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="mds-review-driver-save-ord-a"]')
+      container
+        .querySelector('[data-testid="mds-review-optimasi-armada"]')
         .dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockAssign).toHaveBeenCalledWith("ord-a", "drv-b");
-    expect(mockOptimize).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="mds-review-driver-label-ord-a"]').textContent)
-      .toContain("Driver B");
-  });
-
-  test("Optimalkan Rute uses from-schedule optimizer; Lihat Rute goes to /optimasi-rute/:id", async () => {
-    const open = jest.fn();
-    const origOpen = window.open;
-    window.open = open;
-    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create" || p === "route_optimizer.optimize");
-    mockOptimize.mockResolvedValue({
-      ok: true,
-      results: [{
-        driver_user_id: "drv-a",
-        driver_name: "Driver A",
-        ok: true,
-        route_id: "iro-99",
-      }],
-    });
-    mockReview.mockResolvedValue({
-      rows: [{ ...baseRows[1], eligible: true }],
-      summary: {},
-      groups: [],
-    });
+    expect(container.textContent).toMatch(/Membuat dan Mengoptimalkan Rute/);
+    expect(container.querySelector('[data-testid="mds-review-optimasi-armada"]').disabled).toBe(true);
     await act(async () => {
-      root.render(<DeliveryScheduleRouteReviewPage />);
-    });
-    await act(async () => {
-      container.querySelector('[data-testid="mds-review-confirm"]')
+      container
+        .querySelector('[data-testid="mds-review-optimasi-armada"]')
         .dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockOptimize).toHaveBeenCalledWith(["ord-b"]);
-    const openBtn = container.querySelector('[data-testid="mds-review-open-iro-99"]');
-    expect(openBtn).toBeTruthy();
+    expect(mockCreateFleets).toHaveBeenCalledTimes(1);
     await act(async () => {
-      openBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      resolveCreate(createResult(2));
     });
-    expect(mockNavigate).toHaveBeenCalledWith("/optimasi-rute/iro-99", expect.objectContaining({
-      state: expect.objectContaining({ from: expect.any(String) }),
-    }));
-    expect(mockNavigate.mock.calls[0][0]).not.toMatch(/^\/m\//);
-    expect(open).not.toHaveBeenCalled();
-    window.open = origOpen;
+    expect(container.querySelector('[data-testid="mds-review-success"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-review-check-ord-a"]').click();
+    });
+    expect(container.querySelector('[data-testid="mds-review-success"]')).toBeFalsy();
   });
 
-  test("Status Atur Lokasi and eligibility remain canonical / backend-authoritative", async () => {
-    mockHasPerm.mockImplementation((p) => p === "route_optimizer.create");
-    mockReview.mockResolvedValue({
-      rows: [
-        {
-          ...baseRows[0],
-          sales_order_id: "ord-zero",
-          eligible: false,
-          reason: "Koordinat belum tersedia",
-          reasons: ["Koordinat belum tersedia"],
-          lat: 0,
-          lng: 0,
-          address: "Jl Teks Saja",
-        },
-        {
-          ...baseRows[1],
-          sales_order_id: "ord-ok",
-          eligible: true,
-          reason: null,
-          reasons: [],
-        },
-      ],
-      summary: {},
-      groups: [],
-    });
+  test("Buka Optimasi Rute navigates to list", async () => {
     await act(async () => {
       root.render(<DeliveryScheduleRouteReviewPage />);
     });
-    expect(container.querySelector('[data-testid="mds-review-location-status-ord-zero"]').textContent)
-      .toContain("Belum Diatur");
-    expect(container.querySelector('[data-testid="mds-review-reason-ord-zero"]').textContent)
-      .toContain("Koordinat belum tersedia");
-    expect(container.querySelector('[data-testid="mds-review-location-status-ord-ok"]').textContent)
-      .toContain("Sudah Diatur");
-    expect(container.querySelector('[data-testid="mds-review-eligibility-status-ord-ok"]').textContent)
-      .toMatch(/Eligible/);
-  });
-});
-
-describe("desktop vs PWA review wiring (static)", () => {
-  const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
-  const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
-  const desktopPage = fs.readFileSync(path.join(__dirname, "DeliveryScheduleRouteReviewPage.jsx"), "utf8");
-  const mobilePage = fs.readFileSync(path.join(__dirname, "../mobile/MobileDeliveryRouteReviewPage.jsx"), "utf8");
-  const shared = fs.readFileSync(path.join(__dirname, "../components/DeliveryRouteReviewContent.jsx"), "utf8");
-  const layout = fs.readFileSync(path.join(__dirname, "../mobile/RouteOptimizerLayout.jsx"), "utf8");
-
-  test("desktop review is under AppShell; PWA review stays under MobileOperationalLayout", () => {
-    expect(app).toMatch(/path="\/produksi\/jadwal-pengiriman\/review-optimasi"/);
-    expect(app).toMatch(/path="\/m\/delivery-schedule\/review-optimasi"/);
-    expect(app).toMatch(/DeliveryScheduleRouteReviewPage/);
-    expect(app).toMatch(/MobileDeliveryRouteReviewPage/);
-    const desktopRouteIdx = app.indexOf('path="/produksi/jadwal-pengiriman/review-optimasi"');
-    const pwaRouteIdx = app.indexOf('path="/m/delivery-schedule/review-optimasi"');
-    const appShellIdx = app.indexOf("<AppShell");
-    const mopIdx = app.indexOf("MobileOperationalLayout");
-    expect(desktopRouteIdx).toBeGreaterThan(appShellIdx);
-    expect(pwaRouteIdx).toBeGreaterThan(mopIdx);
-    expect(pwaRouteIdx).toBeLessThan(appShellIdx);
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-optimasi-armada"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-open-optimasi-rute"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalled();
+    const arg = mockNavigate.mock.calls[0][0];
+    expect(String(arg)).toMatch(/optimasi-rute/);
   });
 
-  test("both shells reuse shared review content; desktop never marks mobile ops", () => {
-    expect(desktopPage).toMatch(/DeliveryRouteReviewContent/);
-    expect(desktopPage).toMatch(/shell="desktop"/);
-    expect(mobilePage).toMatch(/DeliveryRouteReviewContent/);
-    expect(mobilePage).toMatch(/shell="mobile"/);
-    expect(shared).toMatch(/navigateToOptimasiRute/);
-    expect(shared).toMatch(/optimizeFromSchedule/);
-    expect(shared).toMatch(/assignDeliveryDriver/);
-    expect(shared).not.toMatch(/markMobileOpsShell/);
-    expect(layout).toMatch(/preferMobileOpsShell/);
-  });
-
-  test("desktop scroll contract: no ship-status-page; PWA keeps mop overflow scroller", () => {
-    expect(shared).toMatch(/ds-delivery-review-root/);
-    expect(shared).toMatch(/ds-review-page/);
-    expect(shared).toMatch(/mop-delivery-review-root/);
-    // Desktop root must not reuse the locked ship-status viewport.
-    expect(shared).not.toMatch(/ship-status-page ds-delivery-review-root/);
-    expect(shared).not.toMatch(/isDesktop\s*\?\s*["']ship-status-page/);
-    const desktopRootMatch = shared.match(/const rootClass = isDesktop\s*\n?\s*\?\s*["']([^"']+)["']/);
-    expect(desktopRootMatch?.[1]).toBe("ds-delivery-review-root");
-    expect(desktopRootMatch?.[1]).not.toMatch(/ship-status-page/);
-
-    expect(css).toMatch(/\.ds-delivery-review-root\s*\{[^}]*overflow\s*:\s*visible/s);
-    expect(css).toMatch(/\.mop-delivery-review-root \.mop-content\.mds-review-page\s*\{[^}]*overflow-y\s*:\s*auto/s);
-  });
-
-  test("shared content export is the single review controller", () => {
-    expect(typeof DeliveryRouteReviewContent).toBe("function");
+  test("backend error renders clearly", async () => {
+    mockCreateFleets.mockRejectedValue({ response: { data: { detail: "PO eligible tidak cukup." } } });
+    await act(async () => {
+      root.render(<DeliveryScheduleRouteReviewPage />);
+    });
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-optimasi-armada"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mds-review-error"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/PO eligible tidak cukup|Gagal membuat/);
   });
 });

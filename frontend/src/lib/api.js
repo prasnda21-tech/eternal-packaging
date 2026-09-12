@@ -607,6 +607,11 @@ export const api = {
   reorderIndependentRoute: (id, payload) => client.post(`/route-optimizer/routes/${encodeURIComponent(id)}/reorder`, payload).then((r) => r.data),
   listIndependentRouteVersions: (id) => client.get(`/route-optimizer/routes/${encodeURIComponent(id)}/versions`).then((r) => r.data),
   reviewScheduleRouteOptimize: (orderIds) => client.post(`/route-optimizer/from-schedule/review`, { order_ids: orderIds || [] }).then((r) => r.data),
+  /** Non-persistent 1/2-armada optimization preview. */
+  previewFleetsFromSchedule: (orderIds, fleetCount) => client.post(`/route-optimizer/from-schedule/preview-fleets`, { order_ids: orderIds || [], fleet_count: fleetCount }).then((r) => r.data),
+  /** One-stage driverless create+optimize (1 or 2 armada). */
+  createFleetsFromSchedule: (orderIds, fleetCount) => client.post(`/route-optimizer/from-schedule/optimize`, { order_ids: orderIds || [], fleet_count: fleetCount }).then((r) => r.data),
+  /** Legacy compatibility only — released `{ order_ids }` payload. New UI must not call this. */
   optimizeFromSchedule: (orderIds) => client.post(`/route-optimizer/from-schedule/optimize`, { order_ids: orderIds || [] }).then((r) => r.data),
   scheduleRouteOptimizeStatus: (orderIds) => client.get(`/route-optimizer/from-schedule/status`, {
     params: { ids: (orderIds || []).join(",") },
