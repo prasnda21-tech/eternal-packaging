@@ -371,18 +371,20 @@ label { font-weight:600; }
 .chip-current { color:#B45309; border-color:#FCD34D; background:#FFFBEB; }
 
 /* -------- Modals -------- */
+/* Batch 4A: restrained Eternal panel chrome (cascade winner over App.css).
+   Presentation only — no dismiss/focus/behavior changes. */
 .modal-inner {
-  border-radius:var(--radius-2xl);
-  box-shadow:0 24px 64px rgba(15,23,42,.22);
+  border-radius:var(--radius);
+  box-shadow:0 8px 28px rgba(15,23,42,.12);
   overflow:hidden;
   max-height:min(88vh, 860px);
   display:flex;
   flex-direction:column;
 }
 .modal-head {
-  background:var(--mod-soft);
-  border-bottom:1px solid var(--mod-border);
-  border-top:4px solid var(--mod);
+  background:#fafaf7;
+  border-bottom:1px solid var(--line);
+  border-top:none;
 }
 .modal-inner > form,
 .modal-inner > .confirm-action-body,
