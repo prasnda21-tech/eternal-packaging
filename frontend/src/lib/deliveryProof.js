@@ -176,6 +176,14 @@ export const MSG_PHOTO_LOADING_INSUFFICIENT =
   "Qty Loading untuk pengiriman ini belum mencukupi.";
 export const MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT =
   "Foto pengiriman dapat diinput setelah qty Packing dan Loading untuk pengiriman ini mencukupi.";
+export const MSG_PHOTO_SJ_NOT_READY =
+  "Surat Jalan untuk pengiriman ini belum siap.";
+export const MSG_PHOTO_LOADING_ITEM_MISMATCH =
+  "Qty Loading per item belum mencukupi untuk Surat Jalan pengiriman ini.";
+
+export const REASON_SJ_NOT_READY = "SJ_NOT_READY";
+export const REASON_LOADING_INCOMPLETE = "LOADING_INCOMPLETE";
+export const REASON_LOADING_ITEM_MISMATCH = "LOADING_ITEM_MISMATCH";
 
 function _safeInt(v, fallback = 0) {
   const n = Number(v);
@@ -184,6 +192,19 @@ function _safeInt(v, fallback = 0) {
 
 function _shipments(order) {
   return Array.isArray(order?.shipments) ? order.shipments.filter((s) => s && typeof s === "object") : [];
+}
+
+function _lineName(order, lineIdx) {
+  const li = (order?.line_items || [])[lineIdx];
+  if (li && typeof li === "object") {
+    return String(li.name || li.item_name || li.product_name || "").trim() || `Line ${lineIdx}`;
+  }
+  return `Line ${lineIdx}`;
+}
+
+function _isPrintLine(li) {
+  const p = String(li?.production_process || "").trim().toLowerCase();
+  return p !== "non_print";
 }
 
 export function activeDeliveryBatch(order) {
@@ -246,7 +267,7 @@ function _loadedQtyForSjLine(order, suratJalanId, lineIdx) {
   }
   let total = 0;
   for (const conf of order?.loading_confirmations || []) {
-    if (conf?.cancelled) continue;
+    if (conf?.cancelled || conf?.deleted) continue;
     if (!targetIds.has(String(conf?.surat_jalan_id || "").trim())) continue;
     for (const ln of conf.lines || []) {
       if (_safeInt(ln?.line_idx, -1) === Number(lineIdx)) {
@@ -257,6 +278,7 @@ function _loadedQtyForSjLine(order, suratJalanId, lineIdx) {
   return total;
 }
 
+/** Diagnostic only — Delivery readiness does not gate on Packing. */
 export function packedAvailableForDeliveryBatch(order, shipment = null) {
   const sh = shipment || activeDeliveryBatch(order);
   if (!sh) return 0;
@@ -281,13 +303,109 @@ export function loadedQtyForDeliveryBatch(order, shipment = null) {
   const sid = deliveryBatchIdentity(sh);
   if (!sid) return 0;
   const lines = Array.isArray(sh.lines) ? sh.lines : [];
-  if (!lines.length) return 0;
-  return lines.reduce((sum, ln) => {
-    if (!ln || typeof ln !== "object") return sum;
-    const idx = _safeInt(ln.line_idx, -1);
-    if (idx < 0) return sum;
-    return sum + _loadedQtyForSjLine(order, sid, idx);
-  }, 0);
+  if (lines.length) {
+    return lines.reduce((sum, ln) => {
+      if (!ln || typeof ln !== "object") return sum;
+      const idx = _safeInt(ln.line_idx, -1);
+      if (idx < 0) return sum;
+      return sum + _loadedQtyForSjLine(order, sid, idx);
+    }, 0);
+  }
+  // Legacy shipment without line breakdown: sum confirmations linked to this SJ
+  const targetIds = new Set([sid]);
+  ["id", "number", "sales_delivery_id"].forEach((k) => {
+    const v = String(sh[k] || "").trim();
+    if (v) targetIds.add(v);
+  });
+  let total = 0;
+  for (const conf of order?.loading_confirmations || []) {
+    if (conf?.cancelled || conf?.deleted) continue;
+    if (!targetIds.has(String(conf?.surat_jalan_id || "").trim())) continue;
+    for (const ln of conf.lines || []) {
+      total += Math.max(0, _safeInt(ln?.qty ?? ln?.quantity));
+    }
+  }
+  return total;
+}
+
+function _resolvedSjLines(order, shipment) {
+  const raw = Array.isArray(shipment?.lines) ? shipment.lines.filter((ln) => ln && typeof ln === "object") : [];
+  if (raw.length) return raw;
+  const sid = deliveryBatchIdentity(shipment);
+  if (!sid) return [];
+  const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  for (const f of files) {
+    if (!f || typeof f !== "object") continue;
+    const ids = [f.id, f.shipment_id, f.sj_number, f.number]
+      .map((v) => String(v || "").trim())
+      .filter(Boolean);
+    if (!ids.includes(sid) && !ids.some((id) => id === sid)) continue;
+    const fl = Array.isArray(f.lines) ? f.lines.filter((ln) => ln && typeof ln === "object") : [];
+    if (fl.length) return fl;
+  }
+  // Also match when shipment id appears on file.shipment_id while sid is number, etc.
+  for (const f of files) {
+    if (!f || typeof f !== "object") continue;
+    const ids = [f.id, f.shipment_id, f.sj_number, f.number, f.sales_delivery_id]
+      .map((v) => String(v || "").trim())
+      .filter(Boolean);
+    const shIds = [shipment.id, shipment.number, shipment.sales_delivery_id]
+      .map((v) => String(v || "").trim())
+      .filter(Boolean);
+    if (!ids.some((id) => shIds.includes(id))) continue;
+    const fl = Array.isArray(f.lines) ? f.lines.filter((ln) => ln && typeof ln === "object") : [];
+    if (fl.length) return fl;
+  }
+  return [];
+}
+
+export function deliveryBatchLineReadiness(order, shipment = null) {
+  const sh = shipment || activeDeliveryBatch(order);
+  if (!sh) return [];
+  const sid = deliveryBatchIdentity(sh);
+  if (!sid) return [];
+  const lines = _resolvedSjLines(order, sh);
+  if (lines.length) {
+    const out = [];
+    for (const ln of lines) {
+      if (!ln || typeof ln !== "object") continue;
+      const idx = _safeInt(ln.line_idx, -1);
+      if (idx < 0) continue;
+      const required = Math.max(0, _safeInt(ln.qty ?? ln.quantity));
+      if (required <= 0) continue;
+      const loaded = _loadedQtyForSjLine(order, sid, idx);
+      const li = (order?.line_items || [])[idx];
+      out.push({
+        lineIdx: idx,
+        name: _lineName(order, idx),
+        itemCode: li?.item_code ?? null,
+        accurateItemId: li?.accurate_item_id ?? null,
+        productionProcess: li && !_isPrintLine(li) ? "non_print" : "print",
+        required,
+        loaded,
+        shortage: Math.max(0, required - loaded),
+      });
+    }
+    return out;
+  }
+  // Multi-item PO without resolvable SJ lines → refuse aggregate-only bypass
+  if ((order?.line_items || []).length > 1) {
+    return [];
+  }
+  // Legacy single-line shipment without line breakdown
+  const required = deliveryBatchQty(sh);
+  if (required <= 0) return [];
+  const loaded = loadedQtyForDeliveryBatch(order, sh);
+  return [{
+    lineIdx: 0,
+    name: _lineName(order, 0),
+    itemCode: null,
+    accurateItemId: null,
+    productionProcess: "print",
+    required,
+    loaded,
+    shortage: Math.max(0, required - loaded),
+  }];
 }
 
 /** UX mirror of backend delivery_batch_photo_readiness — server remains authoritative. */
@@ -296,32 +414,70 @@ export function deliveryBatchPhotoReadiness(order, shipment = null) {
   const sjQty = deliveryBatchQty(sh);
   const packedAvail = packedAvailableForDeliveryBatch(order, sh);
   const loaded = loadedQtyForDeliveryBatch(order, sh);
-  // Physically ready batch = loaded (not full SJ). Cap by SJ allocation.
-  const readyQty = sjQty > 0 ? Math.min(loaded, sjQty) : 0;
-  const loadedOk = readyQty > 0;
-  let packedOk = loadedOk && packedAvail >= readyQty;
-  if (loaded > packedAvail) packedOk = false;
-  const allowed = Boolean(loadedOk && packedOk);
+  const lineRows = deliveryBatchLineReadiness(order, sh);
+  const sid = deliveryBatchIdentity(sh);
+
   let reason = null;
-  if (!allowed) {
-    if (!loadedOk && packedAvail <= 0) reason = MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT;
-    else if (!loadedOk) reason = MSG_PHOTO_LOADING_INSUFFICIENT;
-    else if (!packedOk) reason = MSG_PHOTO_PACKING_INSUFFICIENT;
-    else reason = MSG_PHOTO_PACKING_AND_LOADING_INSUFFICIENT;
+  let reasonCode = null;
+  let allowed = false;
+
+  if (!sh || !sid || sjQty <= 0) {
+    reason = MSG_PHOTO_SJ_NOT_READY;
+    reasonCode = REASON_SJ_NOT_READY;
+  } else if (!lineRows.length) {
+    const multiWithoutLines = (order?.line_items || []).length > 1 && !_resolvedSjLines(order, sh).length;
+    if (multiWithoutLines) {
+      reasonCode = REASON_LOADING_ITEM_MISMATCH;
+      reason = `${MSG_PHOTO_LOADING_ITEM_MISMATCH} Komposisi item Loading tidak dapat diverifikasi untuk Surat Jalan multi-item.`;
+    } else {
+      reason = MSG_PHOTO_LOADING_INSUFFICIENT;
+      reasonCode = REASON_LOADING_INCOMPLETE;
+    }
+  } else {
+    const shortRows = lineRows.filter((r) => (r.shortage || 0) > 0);
+    if (!shortRows.length) {
+      allowed = true;
+    } else {
+      const totalShort = shortRows.reduce((s, r) => s + (r.shortage || 0), 0);
+      if (loaded >= sjQty && totalShort > 0) {
+        reasonCode = REASON_LOADING_ITEM_MISMATCH;
+        const names = shortRows.slice(0, 3).map((r) => r.name || `line ${r.lineIdx}`);
+        reason = names.length
+          ? `${MSG_PHOTO_LOADING_ITEM_MISMATCH} Kekurangan: ${names.join(", ")}.`
+          : MSG_PHOTO_LOADING_ITEM_MISMATCH;
+      } else {
+        reasonCode = REASON_LOADING_INCOMPLETE;
+        const first = shortRows[0];
+        reason = first?.name && first.shortage
+          ? `Qty Loading '${first.name}' belum mencukupi (kurang ${first.shortage} dari ${first.required}).`
+          : MSG_PHOTO_LOADING_INSUFFICIENT;
+      }
+    }
   }
+
+  const readyQty = allowed ? sjQty : (sjQty > 0 ? Math.min(loaded, sjQty) : 0);
   return {
     allowed,
+    deliveryReady: allowed,
     batchQty: sjQty,
+    requiredTotal: sjQty,
+    loadedTotal: loaded,
     readyQty,
     packedAvailable: packedAvail,
     loaded,
-    shipmentId: deliveryBatchIdentity(sh),
+    shipmentId: sid,
     reason,
+    reasonCode,
+    lines: lineRows,
   };
 }
 
 export function deliveryBatchPhotoBlockReason(order, shipment = null) {
   return deliveryBatchPhotoReadiness(order, shipment).reason || null;
+}
+
+export function deliveryBatchPhotoBlockCode(order, shipment = null) {
+  return deliveryBatchPhotoReadiness(order, shipment).reasonCode || null;
 }
 
 export function canUploadDeliveryBatchPhoto(order, shipment = null) {

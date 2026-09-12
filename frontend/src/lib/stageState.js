@@ -244,6 +244,14 @@ export function resolveStageState(idx, order, currentStage) {
     return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_LOADING) {
+    const verification = order?.loading_verification_status;
+    if (verification?.label) {
+      const code = String(verification.code || "");
+      if (code.includes("complete")) return { state: "done", label: verification.label };
+      if (code.includes("held") || code.includes("mismatch")) return { state: "current", label: verification.label };
+      if (code.includes("packing")) return { state: "current", label: verification.label };
+      if (suratJalanCreated(order) || code) return { state: "current", label: verification.label };
+    }
     const confirmations = Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [];
     const hasConfirm = confirmations.length > 0;
     const qtyStatus = order?.loading_qty_status;
@@ -254,13 +262,13 @@ export function resolveStageState(idx, order, currentStage) {
       || qtyStatus === "partial";
     if (hasConfirm) {
       if (qtyStatus === "completed" || loadingCompleted(order)) {
-        return { state: "done", label: "Selesai" };
+        return { state: "done", label: "Loading Selesai" };
       }
-      if (qtyStatus === "partial") return { state: "current", label: "Parsial" };
-      return { state: "current", label: "Konfirmasi qty SJ" };
+      if (qtyStatus === "partial") return { state: "current", label: "Siap Diverifikasi" };
+      return { state: "current", label: "Verifikasi Kesesuaian SJ" };
     }
     if (suratJalanCreated(order)) {
-      return { state: "current", label: "Konfirmasi qty SJ" };
+      return { state: "current", label: "Verifikasi Kesesuaian SJ" };
     }
     if (hasLegacy) {
       return { state: "done", label: "Riwayat Loading" };

@@ -17,17 +17,18 @@ describe("Loading restored as SJ qty confirmation", () => {
     expect(fallbackDivision("loading").id).toBe("loading");
   });
 
-  test("LoadingPanel has manual item/qty and confirm, no SJ item/qty on that card purpose", () => {
+  test("LoadingPanel keeps Loading stage with one-click SJ match and exception qty only", () => {
     const panel = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
-    expect(panel).toMatch(/KONFIRMASI ITEM & QTY/);
-    expect(panel).toMatch(/loading-qty-input/);
-    expect(panel).toMatch(/loading-physical-gate/);
-    expect(panel).toMatch(/confirmLoading/);
-    expect(panel).toMatch(/KONFIRMASI LOADING/);
+    expect(panel).toMatch(/Semua Barang Sesuai SJ/);
+    expect(panel).toMatch(/Ada Selisih Qty/);
+    expect(panel).toMatch(/confirmLoadingMatch/);
+    expect(panel).toMatch(/reportLoadingDiscrepancy/);
+    expect(panel).not.toMatch(/loading-qty-input/);
+    expect(panel).not.toMatch(/KONFIRMASI ITEM & QTY/);
     expect(panel).toMatch(/surat_jalan_id/);
     expect(panel).toMatch(/Lihat Surat Jalan|loading-sj-lihat/);
     expect(panel).toMatch(/loading-sj-number/);
-    expect(panel).toMatch(/loading-sj-file-row/);
+    expect(panel).toMatch(/loading-sj-file-row|loading-sj-file-row/);
   });
 
   test("PO detail has active Loading action", () => {

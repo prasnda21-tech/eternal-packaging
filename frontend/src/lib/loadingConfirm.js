@@ -242,3 +242,115 @@ export function loadingLineLabel(ln, order) {
   const li = (order?.line_items || [])[idx] || {};
   return ln?.name || poLineLabel(li, idx);
 }
+
+
+export const LOADING_VIEW_PERM = "loading.view";
+export const LOADING_CONFIRM_MATCH_PERM = "loading.confirm_match";
+export const LOADING_REPORT_DISCREPANCY_PERM = "loading.report_discrepancy";
+export const LOADING_VIEW_DISCREPANCY_HISTORY_PERM = "loading.view_discrepancy_history";
+export const LOADING_RESOLVE_DISCREPANCY_PERM = "loading.resolve_discrepancy";
+
+export function loadingDiscrepancies(order) {
+  return (Array.isArray(order?.loading_discrepancies) ? order.loading_discrepancies : []).filter(
+    (d) => d && !["resolved", "cancelled", "superseded"].includes(String(d.status || "")),
+  );
+}
+
+export function loadingDiscrepancyHistory(order) {
+  return (Array.isArray(order?.loading_discrepancies) ? order.loading_discrepancies : []).filter(Boolean);
+}
+
+/** Client-side mirror of backend loading_verification_status when enrich absent. */
+export function loadingVerificationStatus(order, suratJalanId = null) {
+  const enriched = order?.loading_verification_status;
+  if (enriched && typeof enriched === "object" && (!suratJalanId || String(enriched.surat_jalan_id || "") === String(suratJalanId))) {
+    return enriched;
+  }
+  const sid = String(suratJalanId || "").trim();
+  const open = loadingDiscrepancies(order).filter((d) => !sid || String(d.surat_jalan_id || "") === sid);
+  if (open.length) {
+    return { code: "held_qty_mismatch", label: "Tertahan — Qty Tidak Sesuai SJ", surat_jalan_id: sid, discrepancies: open };
+  }
+  const files = sjFilesForLoading(order);
+  if (!files.length) return { code: "waiting_verification", label: "Menunggu Verifikasi", surat_jalan_id: sid };
+  const poLines = loadingPoLines(order, sid || files[0]?.id);
+  const printShort = poLines.find((ln) => ln.production_process !== "non_print" && Number(ln.qty_sj || 0) > 0 && Number(ln.physical_available || 0) < Number(ln.sj_available || ln.qty_sj || 0) && Number(ln.available || 0) <= 0 && Number(ln.loaded || 0) < Number(ln.qty_sj || 0));
+  // Prefer backend; soft client hint only
+  const remaining = poLines.reduce((s, r) => s + Number(r.available || 0), 0);
+  const loaded = poLines.reduce((s, r) => s + Number(r.loaded || 0), 0);
+  const need = poLines.reduce((s, r) => s + Number(r.qty_sj || 0), 0);
+  if (need > 0 && loaded >= need && remaining <= 0) {
+    return { code: "loading_complete", label: "Loading Selesai", surat_jalan_id: sid || files[0]?.id };
+  }
+  if (printShort) {
+    return { code: "packing_insufficient", label: "Packing Belum Mencukupi", surat_jalan_id: sid || files[0]?.id };
+  }
+  return { code: "ready_to_verify", label: "Siap Diverifikasi", surat_jalan_id: sid || files[0]?.id };
+}
+
+export function sjLinesForDiscrepancy(order, selectedSjId = null) {
+  return loadingPoLines(order, selectedSjId)
+    .filter((ln) => Number(ln.qty_sj || 0) > 0)
+    .map((ln) => ({
+      line_idx: ln.line_idx,
+      name: ln.name,
+      label: ln.label,
+      qty_sj: Number(ln.qty_sj || 0),
+      unit: ln.unit || "pcs",
+      production_process: ln.production_process,
+    }));
+}
+
+export function discrepancyDiff(qtySj, actualQty) {
+  const sj = Number(qtySj);
+  const actual = actualQty === "" || actualQty == null ? null : Number(actualQty);
+  if (actual == null || !Number.isFinite(actual)) {
+    return { ok: false, diff: null, classification: null, label: "" };
+  }
+  if (actual < 0) return { ok: false, diff: null, classification: null, label: "Qty tidak boleh negatif" };
+  if (actual === sj) return { ok: false, diff: 0, classification: null, label: "Sama dengan Qty SJ — bukan selisih" };
+  const diff = actual - sj;
+  const classification = diff > 0 ? "lebih" : "kurang";
+  const label = `${classification === "kurang" ? "Kurang" : "Lebih"} ${Math.abs(diff).toLocaleString("id-ID")}`;
+  return { ok: true, diff, classification, label };
+}
+
+export function validateDiscrepancySelection(selectedMap, sjLines) {
+  const mismatches = [];
+  for (const ln of sjLines || []) {
+    const row = selectedMap?.[ln.line_idx];
+    if (!row || !row.marked) continue;
+    if (row.actual_qty === "" || row.actual_qty == null) {
+      return { ok: false, error: `Qty Fisik Aktual wajib diisi untuk ${ln.name}.`, mismatches: [] };
+    }
+    const check = discrepancyDiff(ln.qty_sj, row.actual_qty);
+    if (!check.ok) {
+      return { ok: false, error: `${ln.name}: ${check.label || "Qty selisih tidak valid."}`, mismatches: [] };
+    }
+    mismatches.push({ line_idx: Number(ln.line_idx), actual_qty: Number(row.actual_qty) });
+  }
+  if (!mismatches.length) {
+    return { ok: false, error: "Tandai minimal satu baris yang qty fisiknya berbeda dari Surat Jalan.", mismatches: [] };
+  }
+  return { ok: true, error: "", mismatches };
+}
+
+export function canManageLoadingActions(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  return (
+    hasPerm(LOADING_CONFIRM_MATCH_PERM)
+    || hasPerm(LOADING_REPORT_DISCREPANCY_PERM)
+    || hasPerm(LOADING_UPDATE_PERM)
+  );
+}
+
+export function canViewLoading(hasPerm) {
+  if (typeof hasPerm !== "function") return false;
+  return (
+    canManageLoadingActions(hasPerm)
+    || hasPerm(LOADING_VIEW_PERM)
+    || hasPerm(LOADING_VIEW_DISCREPANCY_HISTORY_PERM)
+    || hasPerm(LOADING_RESOLVE_DISCREPANCY_PERM)
+    || hasPerm(LOADING_DELETE_PERM)
+  );
+}

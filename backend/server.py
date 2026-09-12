@@ -240,6 +240,12 @@ from quantity_rules import (
     valid_delivery_proof_count as _qr_valid_delivery_proof_count,
     apply_loading_increments as _qr_apply_loading_increments,
     apply_loading_confirmation as _qr_apply_loading_confirmation,
+    validate_loading_match_confirmation as _qr_validate_loading_match_confirmation,
+    apply_loading_match_confirmation as _qr_apply_loading_match_confirmation,
+    validate_loading_discrepancy as _qr_validate_loading_discrepancy,
+    apply_loading_discrepancy as _qr_apply_loading_discrepancy,
+    loading_verification_status as _qr_loading_verification_status,
+    build_sj_loading_lines as _qr_build_sj_loading_lines,
     cancel_loading_confirmation as _qr_cancel_loading_confirmation,
     effective_loaded_qty as _qr_effective_loaded_qty,
     eligible_delivery_qty as _qr_eligible_delivery_qty,
@@ -604,6 +610,23 @@ class LoadingConfirmLineInput(BaseModel):
 class LoadingConfirmPayload(BaseModel):
     surat_jalan_id: str
     lines: List[LoadingConfirmLineInput]
+    action_id: Optional[str] = None
+
+
+class LoadingMatchConfirmPayload(BaseModel):
+    surat_jalan_id: str
+    action_id: Optional[str] = None
+
+
+class LoadingDiscrepancyLineInput(BaseModel):
+    line_idx: int
+    actual_qty: int
+
+
+class LoadingDiscrepancyPayload(BaseModel):
+    surat_jalan_id: str
+    mismatches: List[LoadingDiscrepancyLineInput]
+    note: Optional[str] = None
     action_id: Optional[str] = None
 
 
@@ -1215,6 +1238,7 @@ _DERIVED_ORDER_KEYS = (
     "surat_jalan_status_semantic",
     "sj_files",
     "loading_qty_status",
+    "loading_verification_status",
     "eligible_delivery_qty",
     "effective_delivery_date", "delivery_schedule_status",
     "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
@@ -1243,6 +1267,7 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["surat_jalan_status_semantic"] = _qr_surat_jalan_status_semantic(order)
     order["sj_files"] = _sj_history_entries(order)
     order["loading_qty_status"] = _qr_loading_status_semantic(order)
+    order["loading_verification_status"] = _qr_loading_verification_status(order)
     order["eligible_delivery_qty"] = _qr_eligible_delivery_qty(order)
     attach_delivery_history(order)
     _attach_workflow_snapshot(order)
@@ -3857,6 +3882,163 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
     return {"order": _strip_sj_bytes(order)}
 
 
+
+
+@api_router.post("/orders/{order_id}/loading-confirm-match")
+async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPayload, user=Depends(current_user)):
+    """One-click: Semua Barang Sesuai SJ — backend generates lines from current SJ."""
+    # Granular key only. Legacy loading.update expands via with_loading_permission_defaults
+    # until Role & Hak Akses stamps loading.granular_configured (then revocation sticks).
+    await _require_perm(user, "loading.confirm_match")
+    existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not existing_order:
+        raise HTTPException(404, "PO tidak ditemukan")
+
+    # Preview generated lines for stock precheck (authoritative SJ, not client qty)
+    preview_lines = _qr_build_sj_loading_lines(existing_order, payload.surat_jalan_id)
+    if preview_lines:
+        from services.physical_stock_engine import precheck_loading_confirmed
+        await precheck_loading_confirmed(db, existing_order, preview_lines)
+
+    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
+    claimed_stock = None
+    if preview_lines:
+        from services.physical_stock_engine import should_claim_loading_stock, claim_loading_stock
+        if await should_claim_loading_stock(db, existing_order):
+            claimed_stock = await claim_loading_stock(db, existing_order, preview_lines, act_id, user)
+
+    record_holder = {}
+
+    def _mutate(order):
+        _ensure_not_cancelled(order)
+        if act_id:
+            for existing in order.get("loading_confirmations") or []:
+                if isinstance(existing, dict) and existing.get("action_id") == act_id:
+                    record_holder["record"] = existing
+                    record_holder["idempotent"] = True
+                    return
+            for snap in order.get("loading_snapshots") or []:
+                if isinstance(snap, dict) and snap.get("action_id") == act_id:
+                    record_holder["record"] = snap
+                    record_holder["idempotent"] = True
+                    return
+        err = _qr_validate_loading_match_confirmation(order, payload.surat_jalan_id)
+        if err:
+            raise HTTPException(400, err)
+        # Already complete for this SJ → idempotent no-op success
+        remaining = _qr_build_sj_loading_lines(order, payload.surat_jalan_id)
+        if not remaining:
+            record_holder["record"] = {"id": None, "surat_jalan_id": payload.surat_jalan_id, "lines": [], "source": "sj_match"}
+            record_holder["idempotent"] = True
+            return
+        stamp = now_iso()
+        record = _qr_apply_loading_match_confirmation(
+            order,
+            surat_jalan_id=payload.surat_jalan_id,
+            actor=user,
+            confirmation_id=str(uuid.uuid4()),
+            confirmed_at=stamp,
+            action_id=act_id,
+        )
+        if not record.get("id"):
+            record["id"] = str(uuid.uuid4())
+            if order.get("loading_confirmations"):
+                order["loading_confirmations"][-1]["id"] = record["id"]
+        record_holder["record"] = record
+        names = ", ".join(f"{ln.get('name')} {ln.get('qty')}" for ln in record.get("lines") or [])
+        add_timeline(order, 13, user, note=f"Loading sesuai SJ ({record.get('surat_jalan_name') or payload.surat_jalan_id}): {names}")
+        _sync_workflow_stage(order)
+
+    try:
+        order = await _with_quantity_lock(order_id, _mutate)
+    except Exception:
+        if claimed_stock:
+            from services.physical_stock_engine import release_loading_stock
+            await release_loading_stock(db, claimed_stock)
+        raise
+
+    if claimed_stock and not record_holder.get("idempotent"):
+        from services.physical_stock_engine import finalize_loading_stock
+        await finalize_loading_stock(db, claimed_stock, user)
+    elif record_holder.get("record") and not record_holder.get("idempotent"):
+        from services.physical_stock_engine import handle_loading_confirmed
+        await handle_loading_confirmed(db, order, record_holder["record"], user)
+    await _audit_po(order, "loading.confirm_match", user, note=payload.surat_jalan_id)
+    return {"order": _strip_sj_bytes(order), "confirmation": record_holder.get("record"), "idempotent": bool(record_holder.get("idempotent"))}
+
+
+@api_router.post("/orders/{order_id}/loading-report-discrepancy")
+async def report_loading_discrepancy(order_id: str, payload: LoadingDiscrepancyPayload, user=Depends(current_user)):
+    """Exception path: physical qty differs from SJ — holds Loading, notifies CRM."""
+    await _require_perm(user, "loading.report_discrepancy")
+
+    act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
+    disc_holder = {}
+
+    def _mutate(order):
+        _ensure_not_cancelled(order)
+        if act_id:
+            for existing in order.get("loading_discrepancies") or []:
+                if isinstance(existing, dict) and existing.get("action_id") == act_id:
+                    disc_holder["disc"] = existing
+                    disc_holder["idempotent"] = True
+                    return
+        mismatches = [m.model_dump() for m in (payload.mismatches or [])]
+        err = _qr_validate_loading_discrepancy(order, payload.surat_jalan_id, mismatches)
+        if err:
+            raise HTTPException(400, err)
+        stamp = now_iso()
+        disc = _qr_apply_loading_discrepancy(
+            order,
+            surat_jalan_id=payload.surat_jalan_id,
+            mismatches=mismatches,
+            note=payload.note,
+            actor=user,
+            discrepancy_id=str(uuid.uuid4()),
+            reported_at=stamp,
+            action_id=act_id,
+        )
+        if not disc.get("id"):
+            disc["id"] = str(uuid.uuid4())
+            order["loading_discrepancies"][-1]["id"] = disc["id"]
+        disc_holder["disc"] = disc
+        summary = ", ".join(
+            f"{ln.get('name')} SJ {ln.get('qty_sj')} fisik {ln.get('qty_actual')} ({ln.get('classification')})"
+            for ln in disc.get("lines") or []
+        )
+        add_timeline(order, 13, user, note=f"Selisih qty Loading vs SJ: {summary}")
+        _sync_workflow_stage(order)
+
+    order = await _with_quantity_lock(order_id, _mutate)
+    notifications = []
+    if disc_holder.get("disc") and not disc_holder.get("idempotent"):
+        try:
+            from services.notifications import emit_loading_qty_discrepancy_notifications
+            notifications = await emit_loading_qty_discrepancy_notifications(
+                db, order=order, discrepancy=disc_holder["disc"],
+            )
+            if notifications and order.get("loading_discrepancies"):
+                # stamp notification ids on last discrepancy (best-effort, non-fatal)
+                def _stamp(o):
+                    for d in o.get("loading_discrepancies") or []:
+                        if isinstance(d, dict) and d.get("id") == disc_holder["disc"].get("id"):
+                            d["notification_ids"] = [n.get("id") for n in notifications if n.get("id")]
+                            d["notification_count"] = len(d["notification_ids"])
+                            break
+                try:
+                    order = await _with_quantity_lock(order_id, _stamp)
+                except Exception:
+                    pass
+        except Exception:
+            logging.getLogger(__name__).exception("CRM discrepancy notification failed")
+    await _audit_po(order, "loading.report_discrepancy", user, note=payload.surat_jalan_id)
+    return {
+        "order": _strip_sj_bytes(order),
+        "discrepancy": disc_holder.get("disc"),
+        "notifications_created": len(notifications),
+        "idempotent": bool(disc_holder.get("idempotent")),
+    }
+
 @api_router.delete("/orders/{order_id}/loading-confirm/{confirmation_id}")
 async def delete_loading_confirmation(order_id: str, confirmation_id: str, user=Depends(current_user)):
     """Soft-cancel one Loading confirmation when eligible (not fully delivered, no delivered qty)."""
@@ -6181,10 +6363,15 @@ async def _next_employee_id() -> str:
 async def perm_catalog(user=Depends(require_perm("users.view"))):
     """List all permission keys grouped by module — for the Hak Akses matrix."""
     modules = {}
+    from permissions import PERMISSION_DESCRIPTIONS
     for module, key, label in PERMISSION_CATALOG:
         if key == NAV_CONFIGURED:
             continue
-        modules.setdefault(module, []).append({"key": key, "label": label})
+        item = {"key": key, "label": label}
+        desc = PERMISSION_DESCRIPTIONS.get(key)
+        if desc:
+            item["description"] = desc
+        modules.setdefault(module, []).append(item)
     return {
         "modules": modules,
         "all_keys": [k for k in ALL_PERMISSIONS if k != NAV_CONFIGURED],

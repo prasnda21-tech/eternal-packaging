@@ -117,6 +117,12 @@ PERMISSION_CATALOG = [
     ("Surat Jalan", "delivery_note.delete_file", "Hapus File Surat Jalan"),
     ("Loading", "loading.update", "Konfirmasi Loading"),
     ("Loading", "loading.delete", "Hapus Line Loading"),
+    ("Loading", "loading.view", "Lihat Loading"),
+    ("Loading", "loading.confirm_match", "Konfirmasi Barang Sesuai SJ"),
+    ("Loading", "loading.report_discrepancy", "Laporkan Selisih Qty Loading"),
+    ("Loading", "loading.view_discrepancy_history", "Lihat Riwayat Selisih Loading"),
+    ("Loading", "loading.resolve_discrepancy", "Selesaikan Selisih Loading"),
+    ("Loading", "loading.granular_configured", "Hak akses Loading granular sudah dikonfigurasi"),
     ("Pengiriman", "delivery.update", "Update status kirim"),
     ("Pengiriman", "delivery.reschedule", "Ajukan penjadwalan ulang pengiriman"),
     ("Pengiriman", "delivery.reschedule.set_date", "Tetapkan tanggal penjadwalan ulang"),
@@ -260,6 +266,15 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
+
+PERMISSION_DESCRIPTIONS = {
+    "loading.view": "Akses lihat tahap Loading tanpa mengubah data.",
+    "loading.confirm_match": "Izinkan konfirmasi satu klik bahwa barang fisik sesuai Surat Jalan.",
+    "loading.report_discrepancy": "Izinkan melaporkan selisih qty fisik terhadap Surat Jalan.",
+    "loading.view_discrepancy_history": "Izinkan melihat riwayat laporan selisih Loading.",
+    "loading.resolve_discrepancy": "Izinkan penanganan administratif selisih (tidak membuka Pengiriman sendiri).",
+}
+
 ALL_PERMISSIONS = tuple(p for _mod, p, _lbl in PERMISSION_CATALOG)
 
 # Sidebar visibility keys (excludes the internal "already configured" sentinel).
@@ -268,6 +283,13 @@ NAV_PERMISSION_KEYS = tuple(
     if p.startswith("nav.") and p != "nav.configured"
 )
 NAV_CONFIGURED = "nav.configured"
+LOADING_GRANULAR_CONFIGURED = "loading.granular_configured"
+LOADING_DEFAULTS_FROM_UPDATE = (
+    "loading.view",
+    "loading.confirm_match",
+    "loading.report_discrepancy",
+    "loading.view_discrepancy_history",
+)
 
 # Menus that were previously always visible in the sidebar. Used only to derive
 # defaults for roles that have not stored any nav.* keys yet.
@@ -425,7 +447,12 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.surat_jalan")
-    if "loading.update" in existing:
+    if (
+        "loading.update" in existing
+        or "loading.view" in existing
+        or "loading.confirm_match" in existing
+        or "loading.report_discrepancy" in existing
+    ):
         nav.add("nav.production")
         nav.add("nav.tasks")
         nav.add("nav.tasks.loading")
@@ -672,6 +699,32 @@ STAGE_PERMISSION = {
 }
 
 
+def loading_granular_is_configured(perms: set) -> bool:
+    """True once Role & Hak Akses has stamped explicit Loading action keys."""
+    return LOADING_GRANULAR_CONFIGURED in (perms or set())
+
+
+def with_loading_permission_defaults(perms: set) -> set:
+    """Compat expand Loading action keys from legacy loading.update — only until configured.
+
+    Before loading.granular_configured is stamped, roles that already had loading.update
+    keep confirm_match / report_discrepancy / view / history without a migration.
+
+    After an administrator saves Role & Hak Akses (stamp present), loading.update alone
+    no longer re-grants those actions — explicit disables are honored and revocable.
+    """
+    base = set(perms or [])
+    if not loading_granular_is_configured(base) and "loading.update" in base:
+        for key in LOADING_DEFAULTS_FROM_UPDATE:
+            base.add(key)
+        # resolve_discrepancy stays admin/explicit — not auto-granted from update
+    if "loading.confirm_match" in base or "loading.report_discrepancy" in base:
+        base.add("loading.view")
+    if "loading.view_discrepancy_history" in base:
+        base.add("loading.view")
+    return base
+
+
 def effective_permissions(role: str, override: dict | None, role_defaults_override: dict | None = None) -> set:
     """Compute effective permissions for a user.
 
@@ -685,11 +738,22 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
     else:
         base = set(ROLE_DEFAULT_PERMISSIONS.get(role, []))
     base = with_nav_defaults(base)
+    base = with_loading_permission_defaults(base)
     for perm, allowed in (override or {}).items():
         if allowed:
             base.add(perm)
         else:
             base.discard(perm)
+    # Re-apply loading defaults after overrides only while granular keys are not configured,
+    # so legacy loading.update still expands; explicit False on a child stays discarded.
+    # Once loading.granular_configured is set, do not re-expand — revocation must stick.
+    if not loading_granular_is_configured(base):
+        if (override or {}).get("loading.update") is True or "loading.update" in base:
+            denied = {k for k, v in (override or {}).items() if v is False}
+            expanded = with_loading_permission_defaults(base | {"loading.update"})
+            for k in expanded:
+                if k not in denied:
+                    base.add(k)
     return base
 
 
