@@ -831,6 +831,26 @@ async def handle_goods_receipt_created(
     return movements
 
 
+async def is_operator_cetak_physical_stock_active(
+    db,
+    order: Dict[str, Any],
+    *,
+    live_enabled: Optional[bool] = None,
+) -> bool:
+    """Effective Cetak physical-stock gate: live_enabled AND order snapshot.enabled.
+
+    Snapshot short-circuits first. When live_enabled is provided by the request
+    path, settings are not re-read. When omitted, live settings are loaded once.
+    """
+    snap = order.get("physical_stock_snapshot") or {}
+    if not snap.get("enabled"):
+        return False
+    if live_enabled is None:
+        settings = await get_physical_stock_settings(db)
+        live_enabled = bool(settings.get("enabled"))
+    return bool(live_enabled)
+
+
 async def handle_operator_progress(
     db,
     order: Dict[str, Any],
@@ -838,10 +858,13 @@ async def handle_operator_progress(
     increment: int,
     action_id: str,
     user: Optional[Dict[str, Any]] = None,
+    *,
+    live_enabled: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     """Converts Belum Dicetak -> Sudah Dicetak for print lines on operator progress."""
-    snapshot = order.get("physical_stock_snapshot") or {}
-    if not snapshot.get("enabled"):
+    if not await is_operator_cetak_physical_stock_active(
+        db, order, live_enabled=live_enabled
+    ):
         return None
 
     inc = safe_float(increment)
@@ -1169,10 +1192,13 @@ async def precheck_operator_progress(
     order: Dict[str, Any],
     split: Dict[str, Any],
     increment: int,
+    *,
+    live_enabled: Optional[bool] = None,
 ) -> None:
     """Pre-checks that Belum Dicetak stock is available for print conversion."""
-    snap = order.get("physical_stock_snapshot") or {}
-    if not snap.get("enabled"):
+    if not await is_operator_cetak_physical_stock_active(
+        db, order, live_enabled=live_enabled
+    ):
         return
 
     inc = safe_float(increment)
@@ -1342,9 +1368,12 @@ async def should_claim_operator_stock(
     db,
     order: Dict[str, Any],
     split: Dict[str, Any],
+    *,
+    live_enabled: Optional[bool] = None,
 ) -> bool:
-    snap = order.get("physical_stock_snapshot") or {}
-    if not snap.get("enabled"):
+    if not await is_operator_cetak_physical_stock_active(
+        db, order, live_enabled=live_enabled
+    ):
         return False
     idx = int(split.get("line_idx", 0))
     lis = order.get("line_items") or []

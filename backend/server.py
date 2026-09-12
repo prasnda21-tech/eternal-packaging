@@ -3120,13 +3120,24 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         raise HTTPException(404, "Order tidak ditemukan")
     splits_pre = existing_order.get("operator_splits", [])
     found_split_pre = next((s for s in splits_pre if s["id"] == payload.operator_id), None)
+
+    # Resolve live physical-stock enablement once per request for Cetak helpers.
+    # Skip the settings read when the order snapshot is already inactive.
+    snap_enabled = bool((existing_order.get("physical_stock_snapshot") or {}).get("enabled"))
+    live_enabled = False
+    if snap_enabled:
+        from services.physical_stock_settings import get_physical_stock_settings
+        live_enabled = bool((await get_physical_stock_settings(db)).get("enabled"))
+
     if found_split_pre:
         inc_check = payload.qty
         if inc_check is None and payload.qty_completed is not None and not found_split_pre.get("progress_entries"):
             inc_check = int(payload.qty_completed)
         if inc_check and int(inc_check) > 0:
             from services.physical_stock_engine import precheck_operator_progress
-            await precheck_operator_progress(db, existing_order, found_split_pre, int(inc_check))
+            await precheck_operator_progress(
+                db, existing_order, found_split_pre, int(inc_check), live_enabled=live_enabled
+            )
 
     act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
     payload.action_id = act_id
@@ -3140,7 +3151,9 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
                 should_claim_operator_stock,
                 claim_operator_stock,
             )
-            if await should_claim_operator_stock(db, existing_order, found_split_pre):
+            if await should_claim_operator_stock(
+                db, existing_order, found_split_pre, live_enabled=live_enabled
+            ):
                 claimed_stock = await claim_operator_stock(
                     db, existing_order, found_split_pre, int(inc_val), act_id, user
                 )
@@ -3240,7 +3253,13 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
     elif op_applied.get("created") and op_applied.get("increment", 0) > 0 and payload.action_id:
         from services.physical_stock_engine import handle_operator_progress
         await handle_operator_progress(
-            db, order, op_applied["split"], op_applied["increment"], payload.action_id, user
+            db,
+            order,
+            op_applied["split"],
+            op_applied["increment"],
+            payload.action_id,
+            user,
+            live_enabled=live_enabled,
         )
     return {"order": order}
 
