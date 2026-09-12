@@ -143,7 +143,9 @@ describe("Physical Stock Settings Component & Integration", () => {
   test("6. HPP separation disclaimer text is rendered", () => {
     expect(physicalStockSrc).toMatch(/data-testid="physical-stock-disclaimer"/);
     expect(physicalStockSrc).toMatch(/Pengaturan stok fisik terpisah dari Pengakuan HPP/);
-    expect(physicalStockSrc).toMatch(/Perubahan pengaturan tidak menghitung ulang transaksi lama/);
+    expect(physicalStockSrc).toMatch(
+      /Menonaktifkan stok fisik berlaku segera untuk aksi berikutnya pada order lama maupun baru \(termasuk Cetak\), tanpa menghitung ulang atau mengubah mutasi yang sudah tercatat\. Saat stok fisik aktif kembali, order tetap memakai snapshot-nya untuk menentukan apakah pengakuan stok berlaku\./
+    );
   });
 
   test("7. API client exports methods for physical stock settings", () => {

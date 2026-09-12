@@ -56,6 +56,7 @@ import asyncio
 import copy
 import uuid
 import pytest
+from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -93,6 +94,8 @@ from services.physical_stock_engine import (
     handle_purchase_order_created,
     handle_goods_receipt_created,
     handle_operator_progress,
+    should_claim_operator_stock,
+    is_operator_cetak_physical_stock_active,
     handle_packing_completed,
     handle_loading_confirmed,
     handle_sales_delivery_created,
@@ -670,7 +673,7 @@ async def test_16_status_cetak_print_line_conversion(mock_db):
         ],
     }
     split = {"line_idx": 0, "operator_name": "Budi"}
-    mov = await handle_operator_progress(mock_db, order, split, increment=400, action_id="act-401")
+    mov = await handle_operator_progress(mock_db, order, split, increment=400, action_id="act-401", live_enabled=True)
     assert mov["movement_type"] == MOVEMENT_STATUS_CETAK
     state = await get_product_stock_state(mock_db, "prod-1")
     assert state["unprinted_qty"] == 600.0
@@ -688,7 +691,7 @@ async def test_17_status_cetak_total_stock_unchanged(mock_db):
         "line_items": [{"master_item_id": "prod-1", "production_process": "print", "line_id": "l-402"}],
     }
     split = {"line_idx": 0}
-    mov = await handle_operator_progress(mock_db, order, split, increment=250, action_id="act-402")
+    mov = await handle_operator_progress(mock_db, order, split, increment=250, action_id="act-402", live_enabled=True)
     assert mov["delta"] == 0.0
     assert mov["delta_unprinted"] == -250.0
     assert mov["delta_printed"] == 250.0
@@ -704,7 +707,7 @@ async def test_18_status_cetak_non_print_skipped(mock_db):
         "line_items": [{"master_item_id": "prod-1", "production_process": "non_print", "line_id": "l-403"}],
     }
     split = {"line_idx": 0}
-    mov = await handle_operator_progress(mock_db, order, split, increment=300, action_id="act-403")
+    mov = await handle_operator_progress(mock_db, order, split, increment=300, action_id="act-403", live_enabled=True)
     assert mov is None
     state = await get_product_stock_state(mock_db, "prod-1")
     assert state["unprinted_qty"] == 1000.0
@@ -722,7 +725,7 @@ async def test_19_status_cetak_insufficient_unprinted_blocked(mock_db):
     }
     split = {"line_idx": 0}
     with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(mock_db, order, split, increment=200)
+        await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
     assert exc.value.status_code == 400
     assert "Stok fisik belum dicetak tidak mencukupi untuk proses cetak" in exc.value.detail
 
@@ -738,7 +741,7 @@ async def test_20_status_cetak_uninitialized_blocked(mock_db):
     }
     split = {"line_idx": 0}
     with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(mock_db, order, split, increment=50)
+        await precheck_operator_progress(mock_db, order, split, increment=50, live_enabled=True)
     assert exc.value.status_code == 400
     assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
 
@@ -753,8 +756,8 @@ async def test_21_status_cetak_idempotency_action_id(mock_db):
         "line_items": [{"master_item_id": "prod-1", "production_process": "print", "line_id": "l-406"}],
     }
     split = {"line_idx": 0}
-    mov1 = await handle_operator_progress(mock_db, order, split, increment=200, action_id="act-same")
-    mov2 = await handle_operator_progress(mock_db, order, split, increment=200, action_id="act-same")
+    mov1 = await handle_operator_progress(mock_db, order, split, increment=200, action_id="act-same", live_enabled=True)
+    mov2 = await handle_operator_progress(mock_db, order, split, increment=200, action_id="act-same", live_enabled=True)
     assert mov1["id"] == mov2["id"]
     state = await get_product_stock_state(mock_db, "prod-1")
     assert state["unprinted_qty"] == 800.0  # NOT 600.0
@@ -776,10 +779,241 @@ async def test_22_status_cetak_with_uom_factor(mock_db):
         "line_items": [{"master_item_id": "prod-1", "unit": "RIM", "production_process": "print", "line_id": "l-407"}],
     }
     split = {"line_idx": 0}
-    await handle_operator_progress(mock_db, order, split, increment=2, action_id="act-rim")
+    await handle_operator_progress(mock_db, order, split, increment=2, action_id="act-rim", live_enabled=True)
     state = await get_product_stock_state(mock_db, "prod-1")
     assert state["unprinted_qty"] == 4000.0  # 5000 - (2 * 500)
     assert state["printed_qty"] == 1000.0
+
+
+# ==============================================================================
+# LIVE + SNAPSHOT CETAK GATE (physical_stock_active = live && snapshot)
+# ==============================================================================
+
+async def _cetak_order(order_id, master_item_id, *, snapshot_enabled=True, qty_name="Cup"):
+    return {
+        "id": order_id,
+        "po_number": f"PO-{order_id}",
+        "physical_stock_snapshot": {"enabled": snapshot_enabled},
+        "line_items": [
+            {
+                "master_item_id": master_item_id,
+                "name": qty_name,
+                "production_process": "print",
+                "line_id": f"l-{order_id}",
+            }
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_cetak_live_false_snapshot_true_missing_opening_balance_allowed(mock_db):
+    """live=false + snapshot=true + missing OB → Cetak helpers allow; no claim/mutation."""
+    await seed_master_product(mock_db, "prod-live-off-1")
+    order = await _cetak_order("ord-live-off-1", "prod-live-off-1", snapshot_enabled=True)
+    split = {"line_idx": 0, "operator_name": "Budi"}
+
+    with patch(
+        "services.physical_stock_engine.require_product_stock_initialized",
+        new_callable=AsyncMock,
+    ) as req_init, patch(
+        "services.physical_stock_engine.check_stock_availability",
+        new_callable=AsyncMock,
+    ) as check_avail, patch(
+        "services.physical_stock_engine.execute_durable_stock_event",
+        new_callable=AsyncMock,
+    ) as exec_evt, patch(
+        "services.physical_stock_engine.claim_operator_stock",
+        new_callable=AsyncMock,
+    ) as claim_fn, patch(
+        "services.physical_stock_engine.finalize_operator_stock",
+        new_callable=AsyncMock,
+    ) as fin_fn:
+        await precheck_operator_progress(
+            mock_db, order, split, increment=200, live_enabled=False
+        )
+        assert await should_claim_operator_stock(
+            mock_db, order, split, live_enabled=False
+        ) is False
+        mov = await handle_operator_progress(
+            mock_db, order, split, increment=200, action_id="act-off-1", live_enabled=False
+        )
+        assert mov is None
+        req_init.assert_not_called()
+        check_avail.assert_not_called()
+        exec_evt.assert_not_called()
+        claim_fn.assert_not_called()
+        fin_fn.assert_not_called()
+
+    assert await get_product_stock_state(mock_db, "prod-live-off-1") is None
+    ledger = await list_product_mutations(mock_db, "prod-live-off-1")
+    assert ledger.get("total", 0) == 0 or ledger.get("items") == []
+
+
+@pytest.mark.anyio
+async def test_cetak_live_false_snapshot_true_initialized_no_mutation(mock_db):
+    """live=false + snapshot=true + initialized stock → allowed; no claim/mutation."""
+    await setup_initialized_product(mock_db, "prod-live-off-2", unprinted=1000.0, printed=0.0)
+    order = await _cetak_order("ord-live-off-2", "prod-live-off-2", snapshot_enabled=True)
+    split = {"line_idx": 0}
+
+    with patch(
+        "services.physical_stock_engine.execute_durable_stock_event",
+        new_callable=AsyncMock,
+    ) as exec_evt, patch(
+        "services.physical_stock_engine.check_stock_availability",
+        new_callable=AsyncMock,
+    ) as check_avail:
+        await precheck_operator_progress(
+            mock_db, order, split, increment=300, live_enabled=False
+        )
+        assert await should_claim_operator_stock(
+            mock_db, order, split, live_enabled=False
+        ) is False
+        mov = await handle_operator_progress(
+            mock_db, order, split, increment=300, action_id="act-off-2", live_enabled=False
+        )
+        assert mov is None
+        exec_evt.assert_not_called()
+        check_avail.assert_not_called()
+
+    state = await get_product_stock_state(mock_db, "prod-live-off-2")
+    assert state["unprinted_qty"] == 1000.0
+    assert state["printed_qty"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_cetak_live_false_snapshot_false_allowed(mock_db):
+    """live=false + snapshot=false → allowed; no enforcement."""
+    await seed_master_product(mock_db, "prod-live-off-3")
+    order = await _cetak_order("ord-live-off-3", "prod-live-off-3", snapshot_enabled=False)
+    split = {"line_idx": 0}
+    await precheck_operator_progress(mock_db, order, split, increment=50, live_enabled=False)
+    assert await should_claim_operator_stock(mock_db, order, split, live_enabled=False) is False
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=50, action_id="act-off-3", live_enabled=False
+    ) is None
+
+
+@pytest.mark.anyio
+async def test_cetak_live_true_snapshot_true_missing_opening_balance_blocked(mock_db):
+    """live=true + snapshot=true + missing OB → existing 400 remains."""
+    await seed_master_product(mock_db, "prod-live-on-miss")
+    order = await _cetak_order("ord-live-on-miss", "prod-live-on-miss", snapshot_enabled=True)
+    split = {"line_idx": 0}
+    with pytest.raises(HTTPException) as exc:
+        await precheck_operator_progress(
+            mock_db, order, split, increment=50, live_enabled=True
+        )
+    assert exc.value.status_code == 400
+    assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
+    assert await should_claim_operator_stock(
+        mock_db, order, split, live_enabled=True
+    ) is True
+
+
+@pytest.mark.anyio
+async def test_cetak_live_true_snapshot_true_sufficient_stock_mutates(mock_db):
+    """live=true + snapshot=true + sufficient stock → existing validation/mutation remains."""
+    await setup_initialized_product(mock_db, "prod-live-on-ok", unprinted=1000.0, printed=0.0)
+    order = await _cetak_order("ord-live-on-ok", "prod-live-on-ok", snapshot_enabled=True)
+    split = {"line_idx": 0, "operator_name": "Budi"}
+    await precheck_operator_progress(mock_db, order, split, increment=400, live_enabled=True)
+    assert await should_claim_operator_stock(mock_db, order, split, live_enabled=True) is True
+    mov = await handle_operator_progress(
+        mock_db, order, split, increment=400, action_id="act-on-ok", live_enabled=True
+    )
+    assert mov is not None
+    assert mov["movement_type"] == MOVEMENT_STATUS_CETAK
+    state = await get_product_stock_state(mock_db, "prod-live-on-ok")
+    assert state["unprinted_qty"] == 600.0
+    assert state["printed_qty"] == 400.0
+
+
+@pytest.mark.anyio
+async def test_cetak_live_true_snapshot_true_insufficient_stock_blocked(mock_db):
+    """live=true + snapshot=true + insufficient stock → existing rejection remains."""
+    await setup_initialized_product(mock_db, "prod-live-on-short", unprinted=100.0, printed=0.0)
+    order = await _cetak_order("ord-live-on-short", "prod-live-on-short", snapshot_enabled=True)
+    split = {"line_idx": 0}
+    with pytest.raises(HTTPException) as exc:
+        await precheck_operator_progress(
+            mock_db, order, split, increment=200, live_enabled=True
+        )
+    assert exc.value.status_code == 400
+    assert "Stok fisik belum dicetak tidak mencukupi untuk proses cetak" in exc.value.detail
+    state = await get_product_stock_state(mock_db, "prod-live-on-short")
+    assert state["unprinted_qty"] == 100.0
+    assert state["printed_qty"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_cetak_live_true_snapshot_false_no_enforcement(mock_db):
+    """live=true + snapshot=false → no enforcement (frozen snapshot-off)."""
+    await seed_master_product(mock_db, "prod-snap-off")
+    order = await _cetak_order("ord-snap-off", "prod-snap-off", snapshot_enabled=False)
+    split = {"line_idx": 0}
+    await precheck_operator_progress(mock_db, order, split, increment=50, live_enabled=True)
+    assert await should_claim_operator_stock(mock_db, order, split, live_enabled=True) is False
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=50, action_id="act-snap-off", live_enabled=True
+    ) is None
+
+
+@pytest.mark.anyio
+async def test_cetak_live_false_then_true_resumes_enforcement_no_retroactive(mock_db):
+    """live false→true on snapshot-enabled order: future Cetak resumes; no retroactive mutation."""
+    await seed_master_product(mock_db, "prod-reenable")
+    order = await _cetak_order("ord-reenable", "prod-reenable", snapshot_enabled=True)
+    split = {"line_idx": 0}
+
+    # While disabled: progress helpers allow and do not mutate.
+    await precheck_operator_progress(mock_db, order, split, increment=100, live_enabled=False)
+    assert await should_claim_operator_stock(mock_db, order, split, live_enabled=False) is False
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=100, action_id="act-while-off", live_enabled=False
+    ) is None
+    assert await get_product_stock_state(mock_db, "prod-reenable") is None
+    ledger_off = await list_product_mutations(mock_db, "prod-reenable")
+    assert ledger_off.get("total", 0) == 0 or ledger_off.get("items") == []
+
+    # Re-enable: future Cetak resumes existing opening-balance enforcement.
+    with pytest.raises(HTTPException) as exc:
+        await precheck_operator_progress(
+            mock_db, order, split, increment=100, live_enabled=True
+        )
+    assert exc.value.status_code == 400
+    assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
+
+    # Replaying the disabled action_id must raise (no silent backfill / ledger mutation).
+    with pytest.raises(HTTPException) as exc_handle:
+        await handle_operator_progress(
+            mock_db, order, split, increment=100, action_id="act-while-off", live_enabled=True
+        )
+    assert exc_handle.value.status_code == 400
+    assert "Saldo awal stok fisik produk belum ditetapkan" in exc_handle.value.detail
+    ledger_on = await list_product_mutations(mock_db, "prod-reenable")
+    assert ledger_on.get("total", 0) == 0
+    assert ledger_on.get("items") == []
+
+
+@pytest.mark.anyio
+async def test_cetak_gate_helper_and_semantics(mock_db):
+    """Shared helper: physical_stock_active = live_enabled && snapshot_enabled."""
+    order_on = {"physical_stock_snapshot": {"enabled": True}}
+    order_off = {"physical_stock_snapshot": {"enabled": False}}
+    order_missing = {}
+    assert await is_operator_cetak_physical_stock_active(
+        mock_db, order_on, live_enabled=True
+    ) is True
+    assert await is_operator_cetak_physical_stock_active(
+        mock_db, order_on, live_enabled=False
+    ) is False
+    assert await is_operator_cetak_physical_stock_active(
+        mock_db, order_off, live_enabled=True
+    ) is False
+    assert await is_operator_cetak_physical_stock_active(
+        mock_db, order_missing, live_enabled=True
+    ) is False
 
 
 # ==============================================================================
@@ -1127,7 +1361,7 @@ async def test_44_legacy_order_without_snapshot_never_mutates(mock_db):
         "line_items": [{"master_item_id": "prod-1", "production_process": "print"}],
     }
     # 1. operator progress
-    mov1 = await handle_operator_progress(mock_db, legacy_order, {"line_idx": 0}, increment=100, action_id="act-leg")
+    mov1 = await handle_operator_progress(mock_db, legacy_order, {"line_idx": 0}, increment=100, action_id="act-leg", live_enabled=True)
     assert mov1 is None
     # 2. packing
     mov2 = await handle_packing_completed(mock_db, legacy_order, [{"line_idx": 0, "qty": 100}])
@@ -1399,10 +1633,10 @@ async def test_51_partial_operator_actual_delta_vs_po_target(mock_db):
     split = order["operator_splits"][0]
 
     # Precheck with actual delta = 1,000 must SUCCEED even though target (1,200) > unprinted (1,000)
-    await precheck_operator_progress(mock_db, order, split, increment=1000)
+    await precheck_operator_progress(mock_db, order, split, increment=1000, live_enabled=True)
 
     # Execute operator completion of 1,000
-    mov1 = await handle_operator_progress(mock_db, order, split, increment=1000, action_id="act-op-1000")
+    mov1 = await handle_operator_progress(mock_db, order, split, increment=1000, action_id="act-op-1000", live_enabled=True)
     assert mov1 is not None
     assert mov1["delta_unprinted"] == -1000.0
     assert mov1["delta_printed"] == 1000.0
@@ -1414,7 +1648,7 @@ async def test_51_partial_operator_actual_delta_vs_po_target(mock_db):
 
     # 2. Operator attempts another 200 with unprinted = 0 -> MUST BLOCK
     with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(mock_db, order, split, increment=200)
+        await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
     assert exc.value.status_code == 400
     assert "Stok fisik belum dicetak tidak mencukupi" in exc.value.detail
 
@@ -1441,8 +1675,8 @@ async def test_51_partial_operator_actual_delta_vs_po_target(mock_db):
     assert st3["total_qty"] == 1500.0
 
     # 4. Operator completes remaining 200 PCS -> MUST SUCCEED
-    await precheck_operator_progress(mock_db, order, split, increment=200)
-    mov2 = await handle_operator_progress(mock_db, order, split, increment=200, action_id="act-op-200")
+    await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
+    mov2 = await handle_operator_progress(mock_db, order, split, increment=200, action_id="act-op-200", live_enabled=True)
     assert mov2 is not None
     assert mov2["delta_unprinted"] == -200.0
     assert mov2["delta_printed"] == 200.0
@@ -1467,13 +1701,13 @@ async def test_52_operator_cumulative_storage_applies_only_incremental_delta(moc
     split = order["operator_splits"][0]
 
     # Event 1: 600
-    await handle_operator_progress(mock_db, order, split, increment=600, action_id="act-inc-1")
+    await handle_operator_progress(mock_db, order, split, increment=600, action_id="act-inc-1", live_enabled=True)
     st1 = await get_product_stock_state(mock_db, "prod-inc")
     assert st1["unprinted_qty"] == 900.0
     assert st1["printed_qty"] == 600.0
 
     # Event 2: 400 (cumulative becomes 1000)
-    await handle_operator_progress(mock_db, order, split, increment=400, action_id="act-inc-2")
+    await handle_operator_progress(mock_db, order, split, increment=400, action_id="act-inc-2", live_enabled=True)
     st2 = await get_product_stock_state(mock_db, "prod-inc")
     assert st2["unprinted_qty"] == 500.0
     assert st2["printed_qty"] == 1000.0
@@ -1509,8 +1743,8 @@ async def test_53_operator_concurrency_race_safety(mock_db):
     split_b = order["operator_splits"][1]
 
     # Precheck for both passes concurrently if evaluated against 1000
-    await precheck_operator_progress(mock_db, order, split_a, increment=700)
-    await precheck_operator_progress(mock_db, order, split_b, increment=700)
+    await precheck_operator_progress(mock_db, order, split_a, increment=700, live_enabled=True)
+    await precheck_operator_progress(mock_db, order, split_b, increment=700, live_enabled=True)
 
     # 1. Operator A acquires durable stock claim
     claim_a = await claim_operator_stock(mock_db, order, split_a, increment=700, action_id="act-op-a")

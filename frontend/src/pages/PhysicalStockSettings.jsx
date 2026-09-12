@@ -104,7 +104,7 @@ export default function PhysicalStockSettings({ notify, canEdit }) {
         <div>
           <p><strong>Pengaturan stok fisik terpisah dari Pengakuan HPP.</strong></p>
           <p className="muted small" style={{ marginTop: 2 }}>
-            Perubahan pengaturan tidak menghitung ulang transaksi lama. Transaksi sebelumnya tetap mengikuti snapshot pengakuan saat transaksi diproses.
+            Menonaktifkan stok fisik berlaku segera untuk aksi berikutnya pada order lama maupun baru (termasuk Cetak), tanpa menghitung ulang atau mengubah mutasi yang sudah tercatat. Saat stok fisik aktif kembali, order tetap memakai snapshot-nya untuk menentukan apakah pengakuan stok berlaku.
           </p>
         </div>
       </div>
