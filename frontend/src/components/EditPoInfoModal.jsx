@@ -16,18 +16,41 @@ export function toDateInputValue(raw) {
   return `${y}-${m}-${day}`;
 }
 
+/** Prefill Tanggal Pengiriman only when a manual override exists.
+ * Automatic dates stay empty so saving without edits does not lock them in as manual.
+ */
+export function resolveTanggalPengirimanInput(order) {
+  if (!order) return "";
+  const isManual =
+    order.tanggal_pengiriman_source === "manual"
+    || order.delivery_deadline_source === "manual"
+    || Boolean(order.delivery_deadline_manual)
+    || Boolean(order.scheduled_delivery_date);
+  if (!isManual) return "";
+  return (
+    toDateInputValue(order.tanggal_pengiriman)
+    || toDateInputValue(order.scheduled_delivery_date)
+    || toDateInputValue(order.delivery_deadline_manual)
+    || ""
+  );
+}
+
 /** Build field-scoped payload from draft (canonical order fields only). */
 export function buildPoInfoUpdatePayload(draft) {
-  return {
+  const payload = {
     address: draft?.address ?? "",
-    deadline: draft?.deadline || "",
     estimated_delivery: draft?.estimated_delivery || "",
   };
+  // Empty string clears manual override → automatic latest approval + 3 days.
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "tanggal_pengiriman")) {
+    payload.tanggal_pengiriman = draft.tanggal_pengiriman || "";
+  }
+  return payload;
 }
 
 export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
   const [address, setAddress] = useState("");
-  const [deadline, setDeadline] = useState("");
+  const [tanggalPengiriman, setTanggalPengiriman] = useState("");
   const [estimatedDelivery, setEstimatedDelivery] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -35,7 +58,7 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
   useEffect(() => {
     if (!open || !order) return;
     setAddress(order.address || "");
-    setDeadline(toDateInputValue(order.deadline));
+    setTanggalPengiriman(resolveTanggalPengirimanInput(order));
     setEstimatedDelivery(toDateInputValue(order.estimated_delivery));
     setErr("");
     setBusy(false);
@@ -52,13 +75,9 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
     if (busy) return;
     const payload = buildPoInfoUpdatePayload({
       address,
-      deadline,
+      tanggal_pengiriman: tanggalPengiriman,
       estimated_delivery: estimatedDelivery,
     });
-    if (!payload.deadline) {
-      setErr("Deadline wajib diisi");
-      return;
-    }
     if (!payload.estimated_delivery) {
       setErr("Estimasi kirim wajib diisi");
       return;
@@ -100,13 +119,16 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
             />
           </label>
           <label className="edit-po-info-field">
-            <span>Deadline</span>
+            <span>Tanggal Pengiriman</span>
             <input
               type="date"
-              value={deadline}
-              onChange={(e) => setDeadline(e.target.value)}
-              data-testid="edit-po-info-deadline"
+              value={tanggalPengiriman}
+              onChange={(e) => setTanggalPengiriman(e.target.value)}
+              data-testid="edit-po-info-tanggal-pengiriman"
             />
+            <span className="muted small" style={{ marginTop: 4, display: "block" }}>
+              Kosongkan untuk memakai tanggal otomatis (approval terakhir + 3 hari).
+            </span>
           </label>
           <label className="edit-po-info-field">
             <span>Estimasi Kirim</span>

@@ -3,7 +3,7 @@ import { Link, Navigate, useLocation, useNavigate, useParams } from "react-route
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, Package, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { STAGES, canAdvance, formatDate, formatDeadline, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
+import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
 import { getWorkflowReady } from "../lib/stageState";
 import { isApprovalDesignComplete, isCustomerDesignApproved } from "../lib/designEvidence";
 import Timeline from "../components/Timeline";
@@ -14,7 +14,6 @@ import AttachmentsPanel from "../components/AttachmentsPanel";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import CustomerApprovalPanel from "../components/CustomerApprovalPanel";
-import DeliveryDeadlinePanel from "../components/DeliveryDeadlinePanel";
 import HelperPrepPanel from "../components/HelperPrepPanel";
 import ProductionRoutePanel from "../components/ProductionRoutePanel";
 import LoadingPanel from "../components/LoadingPanel";
@@ -328,7 +327,6 @@ export default function PODetail() {
   const canViewCustomerApproval = hasPerm("customer_approval.view");
   const canManageCustomerApproval = hasPerm("customer_approval.manage");
   const canCopyTrackingLink = hasPerm("po.view");
-  const canEditDeliveryDeadline = hasPerm("delivery.deadline.edit");
   const canEditRoute = hasPerm("production.route.edit");
   const canReplaceLineProduct = hasPerm("po.edit");
   const canEditPoInfo = hasPerm("po.edit");
@@ -636,8 +634,21 @@ export default function PODetail() {
           <strong>{formatDate(order.order_date)}</strong>
         </div>
         <div>
-          <span className="lbl">Deadline</span>
-          <strong data-testid="detail-deadline">{formatDeadline(order.deadline)}</strong>
+          <span className="lbl">Tanggal Pengiriman</span>
+          <strong data-testid="detail-tanggal-pengiriman">
+            {formatDate(
+              order.tanggal_pengiriman
+              || order.effective_delivery_date
+              || order.delivery_deadline_effective
+              || order.scheduled_delivery_date
+              || order.delivery_deadline_manual
+            )}
+            {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
+              <span className="muted small" style={{ marginLeft: 6 }}>Manual</span>
+            ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
+              <span className="muted small" style={{ marginLeft: 6 }}>Otomatis</span>
+            ) : null}
+          </strong>
         </div>
         <div>
           <span className="lbl">Estimasi kirim</span>
@@ -1066,7 +1077,6 @@ export default function PODetail() {
           </div>
         </div>
       </section>
-      <DeliveryDeadlinePanel order={order} canEdit={canEditDeliveryDeadline} onUpdated={setOrder} />
       </div>
 
       <div className="workflow-group" data-testid="workflow-group-4">

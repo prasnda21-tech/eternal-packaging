@@ -64,7 +64,7 @@ export default function HoPDashboard() {
 
   const openDeliveryToday = () => {
     if (!canStatusPo) return;
-    navigate("/produksi/pengiriman-hari-ini");
+    navigate("/produksi/jadwal-pengiriman?status=hari_ini");
   };
 
   const load = async () => {
@@ -162,10 +162,10 @@ export default function HoPDashboard() {
           onClick={canStatusPo ? openDeliveryToday : undefined}
         />
         <KpiCard icon={Flame} label="PO Urgent" value={kpi.total_urgent} tone="urgent" testid="kpi-urgent" onClick={click("urgent")} />
-        <KpiCard icon={CalendarClock} label="Deadline Hari Ini" value={kpi.due_today} tone="warn" testid="kpi-today" onClick={click("today")} />
+        <KpiCard icon={CalendarClock} label="Kirim Hari Ini" value={kpi.due_today} tone="warn" testid="kpi-today" onClick={click("today")} />
         <KpiCard icon={CalendarClock} label="H-1 Pengiriman" value={kpi.deadline_h1 || 0} tone="warn" testid="kpi-deadline-h1" onClick={click("h1")} />
-        <KpiCard icon={ShieldAlert} label="Deadline ≤ 6 Jam" value={kpi.deadline_h6 || 0} tone="danger" testid="kpi-deadline-h6" onClick={click("h6")} />
-        <KpiCard icon={ShieldAlert} label="Overdue" value={kpi.overdue} tone="danger" testid="kpi-overdue" onClick={click("overdue")} />
+        <KpiCard icon={ShieldAlert} label="Kirim ≤ 6 Jam" value={kpi.deadline_h6 || 0} tone="danger" testid="kpi-deadline-h6" onClick={click("h6")} />
+        <KpiCard icon={ShieldAlert} label="Terlambat Kirim" value={kpi.overdue} tone="danger" testid="kpi-overdue" onClick={click("overdue")} />
         <KpiCard icon={FileWarning} label="Menunggu Approval Design" value={kpi.waiting_design_approval} testid="kpi-waiting-design" onClick={click("design")} />
         <KpiCard icon={Clock} label="Menunggu Approval Payment" value={kpi.waiting_payment_approval} testid="kpi-waiting-payment" onClick={click("payment")} />
         <KpiCard icon={PauseCircle} label="HOLD" value={kpi.hold} tone="warn" testid="kpi-hold" onClick={click("hold")} />
@@ -174,8 +174,8 @@ export default function HoPDashboard() {
 
       <section className="panel" data-testid="reminders-panel">
         <header className="panel-head">
-          <h3><AlertTriangle size={14} /> Reminder Deadline</h3>
-          <span className="muted small">Otomatis dihitung dari deadline PO · H-1 &amp; 6 jam sebelum deadline · overdue setelah lewat</span>
+          <h3><AlertTriangle size={14} /> Reminder Tanggal Pengiriman</h3>
+          <span className="muted small">Otomatis dari Tanggal Pengiriman · H-1 &amp; 6 jam sebelum · overdue setelah lewat</span>
         </header>
         {reminders && <ReminderList {...reminders} testid="hop-reminders" />}
         <ActionCenter />

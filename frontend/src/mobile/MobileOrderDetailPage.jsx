@@ -107,7 +107,26 @@ export default function MobileOrderDetailPage() {
                 <div data-testid="mobile-order-customer"><span>Customer</span><strong>{getCanonicalCustomerName(order)}</strong></div>
                 <div><span>Product</span><strong>{card.product}</strong></div>
                 <div><span>Qty</span><strong>{card.qty != null ? Number(card.qty).toLocaleString("id-ID") : (card.lines.length ? card.lines.map((l) => l.qty).join(" / ") : "—")}</strong></div>
-                <div><span>Deadline</span><strong>{formatDeadline(order.deadline) !== "-" ? formatDeadline(order.deadline) : (order.work_date || "—")}</strong></div>
+                <div>
+                  <span>Tanggal Pengiriman</span>
+                  <strong data-testid="mobile-order-tanggal-pengiriman">
+                    {formatDeadline(
+                      order.tanggal_pengiriman
+                      || order.effective_delivery_date
+                      || order.delivery_deadline_effective
+                      || order.scheduled_delivery_date
+                      || order.delivery_deadline_manual
+                    ) !== "-"
+                      ? formatDeadline(
+                        order.tanggal_pengiriman
+                        || order.effective_delivery_date
+                        || order.delivery_deadline_effective
+                        || order.scheduled_delivery_date
+                        || order.delivery_deadline_manual
+                      )
+                      : (order.work_date || "—")}
+                  </strong>
+                </div>
               </div>
             ) : null}
             <MobileStageFlow order={order} />

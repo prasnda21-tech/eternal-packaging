@@ -74,10 +74,11 @@ describe("mobileDeliverySchedule access", () => {
       "driver",
       "opt_route",
       "status",
-      "deadline",
-      "jadwal_manual",
       "actions",
     ]);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Deadline")).toBe(false);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Jadwal Manual")).toBe(false);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tanggal Pengiriman")).toBe(true);
   });
 });
 

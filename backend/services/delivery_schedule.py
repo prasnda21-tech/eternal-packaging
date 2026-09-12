@@ -1,21 +1,28 @@
-"""Delivery schedule + reschedule — append-only history, original deadline preserved.
+"""Delivery schedule + reschedule — append-only history.
 
-effective_delivery_date:
-  confirmed scheduled_delivery_date / latest scheduled reschedule
-  else delivery_deadline_manual (existing manual)
-  else original order.deadline
+effective_delivery_date / Tanggal Pengiriman (authoritative):
+  1. Manual Tanggal Pengiriman (delivery_deadline_manual / scheduled_delivery_date)
+  2. Else latest(Approval Design, Approval Payment) + lead_time calendar days
 
-Never mutates order.deadline, packing, loading, proofs, or delivery_status.
+Legacy order.deadline is preserved on the document for backward compatibility
+but never drives scheduling. See services.tanggal_pengiriman.
+
+Never mutates packing, loading, proofs, or delivery_status.
 """
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.dashboard_today import wib_today
 from services.shipment_status import shipment_status_row
+from services.tanggal_pengiriman import (
+    DEFAULT_LEAD_TIME_DAYS,
+    effective_tanggal_pengiriman,
+    manual_tanggal_pengiriman,
+    parse_calendar_date,
+)
 from quantity_rules import qty_packed
 
 STATUS_PENDING = "pending"
@@ -27,8 +34,6 @@ DISPLAY_HARI_INI = "Hari Ini"
 DISPLAY_TERLAMBAT = "Terlambat"
 DISPLAY_TERKIRIM = "Terkirim"
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
 SCHEDULE_PROJECTION = {
     "_id": 0,
     "id": 1,
@@ -39,6 +44,10 @@ SCHEDULE_PROJECTION = {
     "deadline": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
+    "design_approved_at": 1,
+    "design_bypassed_at": 1,
+    "payment_approved_at": 1,
+    "payment_bypassed_at": 1,
     "delivery_reschedules": 1,
     "delivery_status": 1,
     "current_stage": 1,
@@ -85,47 +94,30 @@ class RescheduleError(ValueError):
 
 
 def parse_date_key(raw: Any) -> Optional[str]:
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    if not text:
-        return None
-    key = text[:10] if len(text) >= 10 and text[4] == "-" and text[7] == "-" else text
-    if not DATE_RE.match(key):
-        return None
-    try:
-        datetime.strptime(key, "%Y-%m-%d")
-    except ValueError:
-        return None
-    return key
+    return parse_calendar_date(raw)
 
 
 def today_key(now: Optional[datetime] = None) -> str:
-    """Business date for Jadwal / Pengiriman Hari Ini — WIB, same as dashboard_today.wib_today."""
+    """Business date for Jadwal Pengiriman — WIB, same as dashboard_today.wib_today."""
     return wib_today(now).isoformat()
 
 
 def original_deadline(order: dict) -> Optional[str]:
+    """Legacy deadline field (audit only — not authoritative for scheduling)."""
     return parse_date_key(order.get("deadline"))
 
 
 def manual_schedule_date(order: dict) -> Optional[str]:
-    scheduled = parse_date_key(order.get("scheduled_delivery_date"))
-    if scheduled:
-        return scheduled
-    for rec in reversed(order.get("delivery_reschedules") or []):
-        if rec.get("status") == STATUS_SCHEDULED:
-            d = parse_date_key(rec.get("new_date"))
-            if d:
-                return d
-    return parse_date_key(order.get("delivery_deadline_manual"))
+    """Manual Tanggal Pengiriman only (Detail Informasi PO / reschedule)."""
+    return manual_tanggal_pengiriman(order)
 
 
-def effective_delivery_date(order: dict) -> Optional[str]:
-    manual = manual_schedule_date(order)
-    if manual:
-        return manual
-    return original_deadline(order)
+def effective_delivery_date(
+    order: dict,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+) -> Optional[str]:
+    """Authoritative Tanggal Pengiriman — never falls back to legacy deadline."""
+    return effective_tanggal_pengiriman(order, lead_time_days)
 
 
 def is_delivered(order: dict) -> bool:
@@ -138,10 +130,14 @@ def is_delivered(order: dict) -> bool:
     return stage >= 14 and str(order.get("delivery_status") or "") == "Terkirim"
 
 
-def schedule_status_code(order: dict, today: Optional[str] = None) -> str:
+def schedule_status_code(
+    order: dict,
+    today: Optional[str] = None,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+) -> str:
     if is_delivered(order):
         return "terkirim"
-    eff = effective_delivery_date(order)
+    eff = effective_delivery_date(order, lead_time_days)
     if not eff:
         return "belum_dijadwalkan"
     day = today or today_key()
@@ -149,9 +145,8 @@ def schedule_status_code(order: dict, today: Optional[str] = None) -> str:
         return "hari_ini"
     if eff < day:
         return "terlambat"
-    if manual_schedule_date(order):
-        return "terjadwal"
-    return "belum_dijadwalkan"
+    # Any future authoritative Tanggal Pengiriman (manual or automatic) is scheduled.
+    return "terjadwal"
 
 
 def schedule_status_label(code: str) -> str:
@@ -194,8 +189,12 @@ def _driver_user_id(order: dict) -> Optional[str]:
     return uid or None
 
 
-def schedule_row(order: dict, today: Optional[str] = None) -> dict:
-    code = schedule_status_code(order, today)
+def schedule_row(
+    order: dict,
+    today: Optional[str] = None,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+) -> dict:
+    code = schedule_status_code(order, today, lead_time_days)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
     # Presentation-only coords for Status Lokasi (frontend locationSetupStatusLabel).
@@ -207,15 +206,19 @@ def schedule_row(order: dict, today: Optional[str] = None) -> dict:
         num = str(sh.get("number") or sh.get("sj_number") or "").strip()
         if num and num not in sj_numbers:
             sj_numbers.append(num)
+    tanggal = effective_delivery_date(order, lead_time_days)
     return {
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
         "customer_name": order.get("customer_name") or order.get("customer") or "",
         "customer_id": order.get("customer_id"),
         "item_label": _item_label(order),
-        "deadline": original_deadline(order),
-        "jadwal_manual": manual_schedule_date(order),
-        "effective_delivery_date": effective_delivery_date(order),
+        # Authoritative scheduling date only — Deadline / Jadwal Manual columns removed.
+        "tanggal_pengiriman": tanggal,
+        "effective_delivery_date": tanggal,
+        # Legacy keys kept null/omitted from UI; deadline retained for audit consumers only.
+        "deadline": None,
+        "jadwal_manual": None,
         "status": code,
         "status_label": schedule_status_label(code),
         "driver_name": _driver_name(order) or None,
@@ -458,6 +461,11 @@ def public_reschedule_snippet(order: dict) -> Optional[Dict[str, str]]:
     return {"scheduled_date": date_key}
 
 
-def attach_schedule_snapshot(order: dict) -> None:
-    order["effective_delivery_date"] = effective_delivery_date(order)
-    order["delivery_schedule_status"] = schedule_status_code(order)
+def attach_schedule_snapshot(
+    order: dict,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+) -> None:
+    from services.tanggal_pengiriman import attach_tanggal_pengiriman_snapshot
+
+    attach_tanggal_pengiriman_snapshot(order, lead_time_days)
+    order["delivery_schedule_status"] = schedule_status_code(order, lead_time_days=lead_time_days)

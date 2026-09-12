@@ -515,7 +515,7 @@ export default function AppShell() {
           ]}
         />
       )}
-      {/* Pengiriman Hari Ini + TASK_NAV_ORDER.map stay in productionMenuItems / taskMenuItems */}
+      {/* TASK_NAV_ORDER.map stay in productionMenuItems / taskMenuItems */}
 
       {salesOpen && salesItems.length > 0 && (
         <SidebarFlyoutGrid

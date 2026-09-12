@@ -46,6 +46,10 @@ QUEUE_PROJECTION = {
     "deadline": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
+    "design_approved_at": 1,
+    "design_bypassed_at": 1,
+    "payment_approved_at": 1,
+    "payment_bypassed_at": 1,
     "delivery_reschedules": 1,
     "delivery_status": 1,
     "current_stage": 1,
@@ -242,7 +246,7 @@ def build_queue_stops(
             continue
         loc = order_location(order, outlets_index)
         loc_status = loc["location_status"]
-        deadline = original_deadline(order)
+        deadline = None  # Legacy — not authoritative; UI uses effective_delivery_date.
         outlet_name = loc.get("outlet_name") or (order.get("outlet") or "").strip() or None
         for part in split_remaining_by_shipment(order, remaining):
             stop_id = _stable_stop_id(oid, part.get("shipment_id"))
@@ -267,6 +271,7 @@ def build_queue_stops(
                 "package_count": None,
                 "deadline": deadline,
                 "effective_delivery_date": effective_delivery_date(order),
+                "tanggal_pengiriman": effective_delivery_date(order),
                 "priority": PRIORITY_MENDESAK if order.get("urgent") else PRIORITY_NORMAL,
                 "priority_label": PRIORITY_LABELS[PRIORITY_MENDESAK if order.get("urgent") else PRIORITY_NORMAL],
                 "outlet_closing_time": None,

@@ -1699,7 +1699,7 @@ function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
     try {
       const r = await api.updateDeliveryDeadlineSettings({ lead_time_days: days });
       setState(r.settings);
-      notify?.(`Deadline diatur ke ${days} hari`);
+      notify?.(`Lead time Tanggal Pengiriman diatur ke ${days} hari`);
     } catch (e) {
       setErr(e?.response?.data?.detail || "Gagal menyimpan");
     } finally { setSaving(false); }
@@ -1708,10 +1708,10 @@ function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
   return (
     <div data-testid="dd-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 560 }}>
       <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-        <h3 style={{ marginTop: 0 }}>Deadline setelah Approval Lengkap</h3>
+        <h3 style={{ marginTop: 0 }}>Tanggal Pengiriman setelah Approval Lengkap</h3>
         <p className="muted small" style={{ marginTop: 0 }}>
-          Deadline dihitung dari <b>approval terakhir</b> (Design ATAU Payment yang lebih akhir, termasuk bypass) + jumlah hari di bawah.
-          Satuan: <b>calendar days</b> (bukan working days).
+          Tanggal Pengiriman otomatis dihitung dari <b>approval terakhir</b> (Design ATAU Payment yang lebih akhir, termasuk bypass) + jumlah hari di bawah.
+          Satuan: <b>calendar days</b> (bukan working days). Manual Tanggal Pengiriman di Detail Informasi PO selalu menang.
         </p>
         <div style={{ display: "flex", gap: 8, marginTop: 8 }} data-testid="dd-choices">
           {choices.map((d) => (
@@ -2209,7 +2209,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
   { id: "notifications", label: "Notifikasi", description: "Notifikasi operasional", Icon: Bell, tone: "cyan", testid: "settings-tab-notifications" },
-  { id: "delivery-deadline", label: "Deadline Pengiriman", description: "Batas waktu kirim", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
+  { id: "delivery-deadline", label: "Tanggal Pengiriman", description: "Lead time otomatis setelah approval", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
   { id: "operator-target", label: "Target Output Operator", description: "Target harian/mingguan", Icon: TargetIcon, tone: "cyan", testid: "settings-tab-operator-target" },
   { id: "work-panel", label: "Form Pekerjaan Divisi", description: "Form & akses divisi", Icon: ClipboardList, tone: "violet", testid: "settings-tab-work-panel" },
   { id: "employee-admin", label: "Administrasi Karyawan", description: "Data administrasi", Icon: IdCard, tone: "fuchsia", testid: "settings-tab-employee-admin" },

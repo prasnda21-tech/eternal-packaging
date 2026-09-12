@@ -48,8 +48,7 @@ describe("sidebar flyout interaction", () => {
   test("menu names routes and permission helpers stay the same", () => {
     expect(shell).toMatch(/Produksi/);
     expect(nav).toMatch(/Jadwal Produksi/);
-    expect(shell).toMatch(/Pengiriman Hari Ini/);
-    expect(nav).toMatch(/to: "\/produksi\/pengiriman-hari-ini"/);
+    expect(nav).not.toMatch(/to: "\/produksi\/pengiriman-hari-ini"/);
     expect(nav).toMatch(/Jadwal Pengiriman/);
     expect(nav).toMatch(/Jadwal Pengiriman Ulang/);
     expect(shell).not.toMatch(/Rute Saya/);
@@ -76,7 +75,7 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/productionNav\.deliveryToday/);
     const reportsFlyout = shell.slice(shell.indexOf('id="sidebar-flyout-reports"'));
     expect(reportsFlyout).not.toMatch(/Pengiriman Hari Ini/);
-    expect(shell).toMatch(/id="sidebar-flyout-produksi"[\s\S]*Pengiriman Hari Ini[\s\S]*id="sidebar-flyout-sales"/);
+    expect(shell).not.toMatch(/id="sidebar-flyout-produksi"[\s\S]*Pengiriman Hari Ini[\s\S]*id="sidebar-flyout-sales"/);
   });
 
   test("Penjualan flyout is a permission-filtered tile grid that still toggles closed", () => {

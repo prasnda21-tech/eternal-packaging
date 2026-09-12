@@ -1144,49 +1144,29 @@ async def _get_delivery_deadline_settings() -> dict:
 
 
 def _latest_approval_at(order: dict) -> Optional[str]:
-    """Base timestamp untuk perhitungan deadline otomatis.
-    Ambil timestamp completion semantik dari Design & Payment approval:
-      - Design: `design_approved_at` (approved) atau `design_bypassed_at` (bypass).
-      - Payment: `payment_approved_at` (approved) atau `payment_bypassed_at` (bypass).
-    Precedence eksplisit: approved_at > bypassed_at. Jika salah satu belum
-    complete (baik approved maupun bypass), return None → tidak menghitung
-    deadline otomatis.
-    """
-    design_at = order.get("design_approved_at") or order.get("design_bypassed_at")
-    payment_at = order.get("payment_approved_at") or order.get("payment_bypassed_at")
-    if not (design_at and payment_at):
-        return None
-    try:
-        dd = datetime.fromisoformat(str(design_at).replace("Z", "+00:00"))
-        pd_ = datetime.fromisoformat(str(payment_at).replace("Z", "+00:00"))
-    except Exception:
-        return None
-    latest = max(dd, pd_)
-    if latest.tzinfo is None:
-        latest = latest.replace(tzinfo=timezone.utc)
-    return latest.isoformat()
+    """Compatibility wrapper — authoritative logic lives in tanggal_pengiriman."""
+    from services.tanggal_pengiriman import latest_required_approval_at
+
+    latest = latest_required_approval_at(order)
+    return latest.isoformat() if latest else None
 
 
 def _calculated_delivery_deadline(order: dict, lead_time_days: int) -> Optional[str]:
-    base = _latest_approval_at(order)
-    if not base:
-        return None
-    try:
-        dt = datetime.fromisoformat(base.replace("Z", "+00:00"))
-    except Exception:
-        return None
-    return (dt + timedelta(days=int(lead_time_days))).isoformat()
+    from services.tanggal_pengiriman import automatic_tanggal_pengiriman, calendar_date_to_wib_iso
+
+    key = automatic_tanggal_pengiriman(order, lead_time_days)
+    return calendar_date_to_wib_iso(key) if key else None
 
 
 def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     """Predicate priority: overdue > h6 > h1 > normal. Kalau PO Terkirim →
-    'terkirim' (warning aktif hilang tapi deadline tetap ditampilkan untuk audit)."""
+    'terkirim' (warning aktif hilang; Tanggal Pengiriman tetap untuk audit)."""
     if order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14:
         return "terkirim"
     if not deadline_iso:
         return "unknown"
     try:
-        dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(deadline_iso).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
     except Exception:
@@ -1204,27 +1184,28 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
 
 
 def _attach_deadline_snapshot(order: dict, lead_time_days: int):
-    """Compute derived fields (non-persisted): calculated + effective + status.
-    Manual override disimpan permanent di order["delivery_deadline_manual"];
-    calculated selalu dihitung ulang dari approvals + settings."""
-    calc = _calculated_delivery_deadline(order, lead_time_days)
-    manual = order.get("delivery_deadline_manual")
-    effective = manual if manual else calc
-    source = "manual" if manual else ("automatic" if calc else "none")
-    order["delivery_deadline_calculated"] = calc
-    order["delivery_deadline_effective"] = effective
-    order["delivery_deadline_source"] = source
-    order["delivery_deadline_lead_time_days"] = int(lead_time_days)
-    order["delivery_deadline_status"] = _deadline_status_for(effective, order)
+    """Attach authoritative Tanggal Pengiriman (+ legacy delivery_deadline_* mirrors).
+
+    Manual override lives in delivery_deadline_manual / scheduled_delivery_date.
+    Legacy order.deadline is never used as the scheduling source.
+    """
+    from services.tanggal_pengiriman import attach_tanggal_pengiriman_snapshot
+
+    attach_tanggal_pengiriman_snapshot(order, lead_time_days)
+    order["delivery_deadline_status"] = _deadline_status_for(
+        order.get("delivery_deadline_effective"), order
+    )
 
 
 _DERIVED_ORDER_KEYS = (
     "packing_prereq_reasons", "packing_ready", "packing_status_semantic",
     "surat_jalan_created", "loading_prereq_reasons", "loading_ready",
     "loading_completed", "terkirim_prereq_reasons", "terkirim_ready",
-    "terkirim_confirmed", "delivery_deadline_calculated",
+    "terkirim_confirmed",     "delivery_deadline_calculated",
     "delivery_deadline_effective", "delivery_deadline_source",
     "delivery_deadline_lead_time_days", "delivery_deadline_status",
+    "tanggal_pengiriman", "tanggal_pengiriman_source",
+    "tanggal_pengiriman_calculated", "tanggal_pengiriman_lead_time_days",
     "requires_printing", "print_qty_total", "packing_required_total",
     "non_print_qty_total", "print_completed_qty", "available_for_packing",
     "operator_assigned_qty", "helper_prepared_print_qty",
@@ -5458,43 +5439,48 @@ async def verify_accurate_creator(payload: AccurateCreatorVerifyPayload, user=De
 
 @api_router.post("/orders/{order_id}/delivery-deadline")
 async def set_delivery_deadline_manual(order_id: str, payload: DeliveryDeadlineManualPayload, user=Depends(current_user)):
+    """Legacy endpoint — sets authoritative Tanggal Pengiriman (manual).
+
+    Prefer PATCH /orders/{id}/info with tanggal_pengiriman. Kept for API
+    compatibility; does not expose Deadline terminology in new UI.
+    """
     await _require_perm(user, "delivery.deadline.edit")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    # Parse & normalise datetime
+    from services.tanggal_pengiriman import apply_manual_tanggal_pengiriman, parse_calendar_date, wib_calendar_date
+
     raw = (payload.deadline_at or "").strip()
     if not raw:
-        raise HTTPException(400, "Tanggal + Jam Pengiriman wajib diisi")
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            # No tz info → assume WIB (UTC+7) — konsisten dengan area operasional Eternal.
-            dt = dt.replace(tzinfo=timezone(timedelta(hours=7)))
-        dt_utc = dt.astimezone(timezone.utc)
-    except Exception:
-        raise HTTPException(400, "Format datetime tidak valid — gunakan ISO 8601 (YYYY-MM-DDTHH:MM)")
+        raise HTTPException(400, "Tanggal Pengiriman wajib diisi")
+    # Accept date-only or datetime; store as WIB calendar date (no UTC day shift).
+    key = parse_calendar_date(raw) or wib_calendar_date(raw)
+    if not key:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone(timedelta(hours=7)))
+            key = wib_calendar_date(dt.isoformat())
+        except Exception:
+            key = None
+    if not key:
+        raise HTTPException(400, "Format datetime tidak valid — gunakan ISO 8601 (YYYY-MM-DD atau YYYY-MM-DDTHH:MM)")
     before = order.get("delivery_deadline_manual")
-    order["delivery_deadline_manual"] = dt_utc.isoformat()
-    order["delivery_deadline_manual_by"] = user.get("email")
-    order["delivery_deadline_manual_by_name"] = user.get("name")
-    order["delivery_deadline_manual_at"] = now_iso()
-    order["delivery_deadline_manual_reason"] = (payload.reason or "").strip() or None
-    order.setdefault("delivery_deadline_history", []).append({
-        "action": "manual.set",
-        "by_email": user.get("email"),
-        "by_name": user.get("name"),
-        "at": now_iso(),
-        "before": before,
-        "after": order["delivery_deadline_manual"],
-        "note": (payload.reason or "").strip() or "",
-    })
+    apply_manual_tanggal_pengiriman(
+        order,
+        key,
+        user=user,
+        reason=(payload.reason or "").strip() or "",
+    )
     await _persist_order(order)
     await _audit_po(order, "delivery.deadline.manual.set", user,
                     before={"deadline_manual": before},
-                    after={"deadline_manual": order["delivery_deadline_manual"]},
+                    after={"deadline_manual": order["delivery_deadline_manual"], "tanggal_pengiriman": key},
                     note=payload.reason or "")
+    dd_settings = await _get_delivery_deadline_settings()
+    _attach_deadline_snapshot(order, dd_settings["lead_time_days"])
+    attach_schedule_snapshot(order, dd_settings["lead_time_days"])
     return {"order": order}
 
 
@@ -5505,25 +5491,18 @@ async def reset_delivery_deadline_manual(order_id: str, user=Depends(current_use
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    if not order.get("delivery_deadline_manual"):
-        raise HTTPException(400, "Tidak ada manual override yang perlu direset")
+    from services.tanggal_pengiriman import clear_manual_tanggal_pengiriman, manual_tanggal_pengiriman
+
+    if not manual_tanggal_pengiriman(order):
+        raise HTTPException(400, "Tidak ada Tanggal Pengiriman manual yang perlu direset")
     before = order.get("delivery_deadline_manual")
-    order["delivery_deadline_manual"] = None
-    order["delivery_deadline_manual_by"] = None
-    order["delivery_deadline_manual_by_name"] = None
-    order["delivery_deadline_manual_at"] = None
-    order["delivery_deadline_manual_reason"] = None
-    order.setdefault("delivery_deadline_history", []).append({
-        "action": "manual.reset",
-        "by_email": user.get("email"),
-        "by_name": user.get("name"),
-        "at": now_iso(),
-        "before": before,
-        "after": None,
-    })
+    clear_manual_tanggal_pengiriman(order, user=user)
     await _persist_order(order)
     await _audit_po(order, "delivery.deadline.manual.reset", user,
                     before={"deadline_manual": before}, after={"deadline_manual": None})
+    dd_settings = await _get_delivery_deadline_settings()
+    _attach_deadline_snapshot(order, dd_settings["lead_time_days"])
+    attach_schedule_snapshot(order, dd_settings["lead_time_days"])
     return {"order": order}
 
 
@@ -7956,6 +7935,10 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
     deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)
     estimated_delivery = _parse_order_date_iso(payload.estimated_delivery or payload.deadline, default_days_ahead=3)
+    # Legacy ``deadline`` on create is retained for historical fields only.
+    # Authoritative Tanggal Pengiriman is resolved after required approvals
+    # (or when set manually in Detail Informasi PO) — do not treat the create
+    # form default date as a permanent manual override.
 
     po_num = (payload.po_number or "").strip()
     if not po_num:
@@ -8109,42 +8092,84 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
 
 
 class OrderInfoUpdatePayload(BaseModel):
-    """Field-scoped Informasi PO edit — only address / deadline / estimated_delivery."""
+    """Field-scoped Informasi PO edit — address / Tanggal Pengiriman / estimasi.
+
+    ``tanggal_pengiriman`` is the authoritative manual delivery date.
+    Legacy ``deadline`` is accepted only for backward-compatible clients and is
+    mapped to Tanggal Pengiriman (never used as a competing schedule source).
+    """
     address: Optional[str] = None
-    deadline: Optional[str] = None
+    tanggal_pengiriman: Optional[str] = None
+    deadline: Optional[str] = None  # legacy alias → tanggal_pengiriman
     estimated_delivery: Optional[str] = None
 
 
 @api_router.patch("/orders/{order_id}/info")
 async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user=Depends(current_user)):
-    """Update Alamat / Deadline / Estimasi Kirim on Detail PO.
+    """Update Alamat / Tanggal Pengiriman / Estimasi Kirim on Detail PO.
 
-    Permission: po.edit (existing). Field-scoped $set only — does not touch
-    workflow, quantities, delivery_location, delivery_deadline_manual, or lines.
+    Permission: po.edit (existing). Field-scoped $set — does not touch
+    workflow quantities, delivery_location, or line items.
+
+    Tanggal Pengiriman (manual) becomes the authoritative schedule date and is
+    written to delivery_deadline_manual + scheduled_delivery_date. Clearing it
+    falls back to automatic latest-approval + lead days.
     """
     await _require_perm(user, "po.edit")
     data = payload.model_dump(exclude_unset=True)
     if not data:
-        raise HTTPException(400, "Tidak ada field yang diubah. Kirim address, deadline, dan/atau estimated_delivery.")
+        raise HTTPException(
+            400,
+            "Tidak ada field yang diubah. Kirim address, tanggal_pengiriman, dan/atau estimated_delivery.",
+        )
 
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
 
+    from services.tanggal_pengiriman import (
+        apply_manual_tanggal_pengiriman,
+        clear_manual_tanggal_pengiriman,
+        parse_calendar_date,
+    )
+
     before = {
         "address": order.get("address"),
         "deadline": order.get("deadline"),
         "estimated_delivery": order.get("estimated_delivery"),
+        "delivery_deadline_manual": order.get("delivery_deadline_manual"),
+        "scheduled_delivery_date": order.get("scheduled_delivery_date"),
+        "tanggal_pengiriman": order.get("scheduled_delivery_date")
+        or (str(order.get("delivery_deadline_manual") or "")[:10] or None),
     }
     patch: dict = {}
     if "address" in data:
         patch["address"] = (data.get("address") or "").strip() or None
-    if "deadline" in data:
-        raw = data.get("deadline")
-        if raw is None or not str(raw).strip():
-            raise HTTPException(400, "Deadline tidak boleh kosong")
-        patch["deadline"] = _parse_order_date_iso(str(raw).strip(), default_days_ahead=3)
+
+    tanggal_raw = None
+    tanggal_provided = False
+    if "tanggal_pengiriman" in data:
+        tanggal_provided = True
+        tanggal_raw = data.get("tanggal_pengiriman")
+    elif "deadline" in data:
+        # Legacy clients still posting deadline → treat as Tanggal Pengiriman.
+        tanggal_provided = True
+        tanggal_raw = data.get("deadline")
+
+    if tanggal_provided:
+        raw = (str(tanggal_raw).strip() if tanggal_raw is not None else "")
+        if not raw:
+            clear_manual_tanggal_pengiriman(order, user=user)
+        else:
+            key = parse_calendar_date(raw)
+            if not key:
+                raise HTTPException(400, "Tanggal Pengiriman tidak valid")
+            apply_manual_tanggal_pengiriman(order, key, user=user, reason="Detail Informasi PO")
+            # Keep legacy deadline column in sync for historical exports only —
+            # it is not the scheduling source.
+            patch["deadline"] = _parse_order_date_iso(key, default_days_ahead=0)
+
     if "estimated_delivery" in data:
         raw = data.get("estimated_delivery")
         if raw is None or not str(raw).strip():
@@ -8154,19 +8179,30 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
     for k, v in patch.items():
         order[k] = v
 
-    changed = [k for k in ("address", "deadline", "estimated_delivery") if k in patch and patch[k] != before.get(k)]
     note_bits = []
-    if "address" in changed:
+    if "address" in patch and patch.get("address") != before.get("address"):
         note_bits.append("alamat")
-    if "deadline" in changed:
-        note_bits.append("deadline")
-    if "estimated_delivery" in changed:
+    if tanggal_provided:
+        note_bits.append("tanggal pengiriman")
+    if "estimated_delivery" in patch and patch.get("estimated_delivery") != before.get("estimated_delivery"):
         note_bits.append("estimasi kirim")
     note = "Edit Informasi PO: " + (", ".join(note_bits) if note_bits else "tanpa perubahan nilai")
     add_timeline(order, order.get("current_stage") or 0, user, note=note)
 
-    persist_keys = tuple(patch.keys()) + ("timeline",)
-    await _persist_order(order, persist_keys=persist_keys)
+    persist_keys = list(patch.keys()) + [
+        "timeline",
+        "delivery_deadline_manual",
+        "delivery_deadline_manual_by",
+        "delivery_deadline_manual_by_name",
+        "delivery_deadline_manual_at",
+        "delivery_deadline_manual_reason",
+        "delivery_deadline_history",
+        "scheduled_delivery_date",
+    ]
+    await _persist_order(order, persist_keys=tuple(dict.fromkeys(persist_keys)))
+    dd_settings = await _get_delivery_deadline_settings()
+    _attach_deadline_snapshot(order, dd_settings["lead_time_days"])
+    attach_schedule_snapshot(order, dd_settings["lead_time_days"])
     await _audit_po(
         order,
         "po.info.update",
@@ -8176,6 +8212,9 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
             "address": order.get("address"),
             "deadline": order.get("deadline"),
             "estimated_delivery": order.get("estimated_delivery"),
+            "tanggal_pengiriman": order.get("tanggal_pengiriman"),
+            "delivery_deadline_manual": order.get("delivery_deadline_manual"),
+            "scheduled_delivery_date": order.get("scheduled_delivery_date"),
         },
         note=note,
     )

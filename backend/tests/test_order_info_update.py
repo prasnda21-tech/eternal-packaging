@@ -169,7 +169,11 @@ async def test_update_order_info_persists_canonical_fields_only():
         assert fresh["delivery_status"] == "Belum Terkirim"
         assert fresh["delivery_location"]["lat"] == -6.2
         assert fresh["delivery_outlet_id"] == "outlet-geo-1"
-        assert fresh["delivery_deadline_manual"] == "2026-09-11T03:00:00+00:00"
+        # Legacy deadline alias maps to authoritative Tanggal Pengiriman (manual).
+        assert fresh["delivery_deadline_manual"].startswith("2026-09-20")
+        assert fresh["scheduled_delivery_date"] == "2026-09-20"
+        assert body.get("tanggal_pengiriman") == "2026-09-20"
+        assert body.get("effective_delivery_date") == "2026-09-20"
         assert fresh["line_items"][0]["quantity"] == 100
     finally:
         app.dependency_overrides.pop(current_user, None)
@@ -199,7 +203,8 @@ async def test_update_order_info_address_only_partial():
 
 
 @pytest.mark.anyio
-async def test_update_order_info_rejects_empty_deadline():
+async def test_update_order_info_empty_tanggal_clears_manual():
+    """Clearing Tanggal Pengiriman is allowed — falls back to automatic."""
     order = await _seed_order()
     app.dependency_overrides[current_user] = _admin
     try:
@@ -207,11 +212,12 @@ async def test_update_order_info_rejects_empty_deadline():
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.patch(
                 f"/api/orders/{order['id']}/info",
-                json={"deadline": ""},
+                json={"tanggal_pengiriman": ""},
             )
-        assert r.status_code == 400
+        assert r.status_code == 200, r.text
         fresh = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
-        assert fresh["deadline"] == "2026-09-10T00:00:00+00:00"
+        assert fresh.get("delivery_deadline_manual") in (None, "")
+        assert fresh.get("scheduled_delivery_date") in (None, "")
     finally:
         app.dependency_overrides.pop(current_user, None)
         await db().orders.delete_many({"id": order["id"]})

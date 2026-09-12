@@ -84,7 +84,13 @@ export default function SuratJalan() {
             <p><b>Sales:</b> {order.sales || order.sales_user || <em style={{ color: "#9ea6ab" }}>Perlu verifikasi</em>}</p>
             <p><b>User / Pembuat PO:</b> {order.created_by_user || <em style={{ color: "#9ea6ab" }}>Perlu verifikasi</em>}</p>
             <p><b>Termin bayar:</b> {order.payment_terms}</p>
-            <p><b>Deadline PO:</b> {formatDeadline(order.deadline)}</p>
+            <p><b>Tanggal Pengiriman:</b> {formatDeadline(
+              order.tanggal_pengiriman
+              || order.effective_delivery_date
+              || order.delivery_deadline_effective
+              || order.scheduled_delivery_date
+              || order.delivery_deadline_manual
+            )}</p>
             {order.priority === "urgent" && <p className="urgent-badge inline">URGENT</p>}
           </div>
         </section>

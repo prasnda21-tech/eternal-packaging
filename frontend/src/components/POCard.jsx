@@ -29,9 +29,18 @@ export default function POCard({ order }) {
             {order.priority === "urgent" ? "URGENT" : "NORMAL"}
           </span>
         </div>
-        <span className="deadline" data-testid={`order-deadline-${order.po_number}`}>
-          {formatDeadline(order.deadline)}
-        </span>
+        <div>
+          <span className="lbl">Tanggal Pengiriman</span>
+          <strong data-testid={`order-tanggal-pengiriman-${order.po_number}`}>
+            {formatDeadline(
+              order.tanggal_pengiriman
+              || order.effective_delivery_date
+              || order.delivery_deadline_effective
+              || order.scheduled_delivery_date
+              || order.delivery_deadline_manual
+            )}
+          </strong>
+        </div>
       </div>
       <h3 data-testid={`order-outlet-${order.po_number}`}>{order.outlet}</h3>
       <div className="job-meta">

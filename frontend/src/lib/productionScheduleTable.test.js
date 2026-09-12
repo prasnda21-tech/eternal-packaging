@@ -39,8 +39,8 @@ const UNIFIED_LABELS = [
   "Total Qty",
   "Prio",
   "Buffer",
-  "Deadline",
-  "Deadline Pengiriman",
+  "Tanggal Pengiriman",
+  "Sumber Jadwal",
   "Outlet",
   "Screen",
   "Persiapan Screen",
@@ -75,7 +75,7 @@ describe("productionScheduleTable canonical columns", () => {
       "Total Qty",
       "Prio",
       "Buffer",
-      "Deadline",
+      "Tanggal Pengiriman",
     ]);
     expect(new Set(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).size).toBe(22);
   });

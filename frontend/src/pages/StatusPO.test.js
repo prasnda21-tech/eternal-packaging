@@ -62,11 +62,13 @@ describe("Status PO header filters", () => {
     expect(src).toMatch(/removeSucceeded/);
   });
 
-  test("pengiriman hari ini page reuses Status PO without duplicating the table", () => {
-    expect(src).toMatch(/\/produksi\/pengiriman-hari-ini/);
-    expect(src).toMatch(/delivery_today/);
-    expect(src).toMatch(/Pengiriman Hari Ini/);
+  test("pengiriman hari ini bookmarks redirect to Jadwal Pengiriman", () => {
     expect(app).toMatch(/path="\/produksi\/pengiriman-hari-ini"/);
-    expect(app).toMatch(/<StatusPO \/>/);
+    expect(app).toMatch(/Navigate to="\/produksi\/jadwal-pengiriman\?status=hari_ini"/);
+    const routeChunk = app.slice(
+      app.indexOf('path="/produksi/pengiriman-hari-ini"'),
+      app.indexOf('path="/produksi/pengiriman-hari-ini"') + 180,
+    );
+    expect(routeChunk).not.toMatch(/StatusPO/);
   });
 });

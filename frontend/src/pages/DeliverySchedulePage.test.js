@@ -138,16 +138,24 @@ describe("delivery reschedule UI (static)", () => {
     expect(app).toMatch(/path="\/tasks\/delivery"/);
   });
 
-  test("jadwal pengiriman table distinguishes deadline and manual", () => {
-    expect(schedule).toMatch(/Deadline/);
-    expect(schedule).toMatch(/Jadwal Manual/);
+  test("jadwal pengiriman table uses single Tanggal Pengiriman column", () => {
+    expect(schedule).toMatch(/Tanggal Pengiriman/);
     expect(schedule).toMatch(/effective_delivery_date/);
+    expect(schedule).not.toMatch(/>Deadline</);
+    expect(schedule).not.toMatch(/Jadwal Manual/);
+    expect(schedule).not.toMatch(/ds-sort-deadline/);
+    expect(schedule).not.toMatch(/ds-sort-manual/);
     expect(schedule).toMatch(/Tanggal Mulai/);
     expect(schedule).toMatch(/ds-filter-reset/);
     expect(schedule).not.toMatch(/Buat Jadwal Pengiriman/);
     expect(schedule).not.toMatch(/delivery.schedule.create/);
     expect(schedule).toMatch(/Atur Lokasi/);
     expect(schedule).toMatch(/OutletLocationModal/);
+  });
+
+  test("old Pengiriman Hari Ini route redirects to Jadwal Pengiriman", () => {
+    expect(app).toMatch(/path="\/produksi\/pengiriman-hari-ini"/);
+    expect(app).toMatch(/Navigate to="\/produksi\/jadwal-pengiriman\?status=hari_ini"/);
   });
 
   test("jadwal has progress columns and no shipment item", () => {

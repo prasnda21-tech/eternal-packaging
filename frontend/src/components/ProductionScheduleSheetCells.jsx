@@ -10,25 +10,30 @@ import {
 import { isProductionScheduleH1, isProductionScheduleUrgent } from "../lib/productionSchedulePriority";
 
 function DeadlineShipCell({ row, variant }) {
-  if (!row.delivery_deadline_effective) {
+  const tanggal =
+    row.tanggal_pengiriman
+    || row.effective_delivery_date
+    || row.delivery_deadline_effective;
+  if (!tanggal) {
     return <span className="muted small">Menunggu approval</span>;
   }
+  const isManual = row.delivery_deadline_source === "manual" || row.tanggal_pengiriman_source === "manual";
   const sourceTestId = variant === "desktop" ? `prod-deadline-source-${row.po_number}` : undefined;
   const statusTestId = variant === "desktop" ? `prod-deadline-status-${row.po_number}` : undefined;
   return (
     <>
-      {formatDate(row.delivery_deadline_effective)}
+      {formatDate(tanggal)}
       {" "}
       <span
         className="pill sm"
-        title={row.delivery_deadline_source === "manual" ? "Manual override" : "Otomatis"}
+        title={isManual ? "Manual" : "Otomatis"}
         style={{
-          background: row.delivery_deadline_source === "manual" ? "#ffe9b8" : "#e6ecf3",
-          color: row.delivery_deadline_source === "manual" ? "#7a5a1e" : "#3a4b60",
+          background: isManual ? "#ffe9b8" : "#e6ecf3",
+          color: isManual ? "#7a5a1e" : "#3a4b60",
         }}
         data-testid={sourceTestId}
       >
-        {row.delivery_deadline_source === "manual" ? "Manual" : "Otomatis"}
+        {isManual ? "Manual" : "Otomatis"}
       </span>
       {row.delivery_deadline_status === "overdue" && (
         <span className="urgent-badge" data-testid={statusTestId}>OVERDUE</span>
@@ -183,7 +188,13 @@ function cellContent(col, ctx) {
     case "outlet":
       return row.outlet || "-";
     case "deadline":
-      return formatDate(row.deadline);
+      return formatDate(
+        row.tanggal_pengiriman
+        || row.effective_delivery_date
+        || row.delivery_deadline_effective
+        || row.scheduled_delivery_date
+        || row.delivery_deadline_manual
+      );
     case "deadline_ship":
       return <DeadlineShipCell row={row} variant={variant} />;
     case "work_date":

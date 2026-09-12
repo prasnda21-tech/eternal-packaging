@@ -50,6 +50,9 @@ describe("Edit Informasi PO — Informasi PO card", () => {
     expect(detail).toMatch(/delivery\.location\.manage/);
     expect(detail).toMatch(/data-testid="detail-address"/);
     expect(detail).toMatch(/data-testid="detail-estimated-delivery"/);
+    expect(detail).toMatch(/data-testid="detail-tanggal-pengiriman"/);
+    expect(detail).not.toMatch(/DeliveryDeadlinePanel/);
+    expect(detail).not.toMatch(/data-testid="detail-deadline"/);
   });
 
   test("API client patches canonical /orders/{id}/info only", () => {
@@ -60,15 +63,17 @@ describe("Edit Informasi PO — Informasi PO card", () => {
     expect(outletSrc).toMatch(/saveDeliveryOutlet/);
   });
 
-  test("modal form only exposes Alamat / Deadline / Estimasi Kirim + Batal/Simpan", () => {
+  test("modal form only exposes Alamat / Tanggal Pengiriman / Estimasi Kirim + Batal/Simpan", () => {
     expect(modalSrc).toMatch(/edit-po-info-address/);
-    expect(modalSrc).toMatch(/edit-po-info-deadline/);
+    expect(modalSrc).toMatch(/edit-po-info-tanggal-pengiriman/);
     expect(modalSrc).toMatch(/edit-po-info-estimated-delivery/);
     expect(modalSrc).toMatch(/edit-po-info-cancel/);
     expect(modalSrc).toMatch(/edit-po-info-save/);
     expect(modalSrc).toMatch(/>Alamat</);
-    expect(modalSrc).toMatch(/>Deadline</);
+    expect(modalSrc).toMatch(/>Tanggal Pengiriman</);
     expect(modalSrc).toMatch(/>Estimasi Kirim</);
+    expect(modalSrc).not.toMatch(/>Deadline</);
+    expect(modalSrc).not.toMatch(/edit-po-info-deadline/);
     expect(modalSrc).not.toMatch(/Customer/);
     expect(modalSrc).not.toMatch(/Ekspedisi/);
     expect(modalSrc).not.toMatch(/current_stage/);
@@ -87,20 +92,20 @@ describe("Edit Informasi PO — helpers", () => {
   test("buildPoInfoUpdatePayload is field-scoped to canonical keys", () => {
     const payload = buildPoInfoUpdatePayload({
       address: "Jl. Baru 1",
-      deadline: "2026-09-20",
+      tanggal_pengiriman: "2026-09-20",
       estimated_delivery: "2026-09-18",
       customer: "SHOULD_NOT_APPEAR",
       current_stage: 9,
     });
     expect(payload).toEqual({
       address: "Jl. Baru 1",
-      deadline: "2026-09-20",
+      tanggal_pengiriman: "2026-09-20",
       estimated_delivery: "2026-09-18",
     });
     expect(Object.keys(payload).sort()).toEqual([
       "address",
-      "deadline",
       "estimated_delivery",
+      "tanggal_pengiriman",
     ]);
   });
 });
@@ -126,20 +131,24 @@ describe("Edit Informasi PO — modal behavior", () => {
   const order = {
     id: "ord-info-1",
     address: "Jl. Lama No. 1",
-    deadline: "2026-09-10T00:00:00+00:00",
+    delivery_deadline_manual: "2026-09-10T00:00:00+07:00",
+    delivery_deadline_source: "manual",
+    tanggal_pengiriman: "2026-09-10",
+    tanggal_pengiriman_source: "manual",
+    scheduled_delivery_date: "2026-09-10",
     estimated_delivery: "2026-09-12T00:00:00+00:00",
     customer: "PT Fixture",
     current_stage: 3,
   };
 
-  test("CASE 1 — open editor shows persisted alamat/deadline/estimasi", async () => {
+  test("CASE 1 — open editor shows persisted alamat/tanggal pengiriman/estimasi", async () => {
     await act(async () => {
       root.render(<EditPoInfoModal open order={order} onClose={() => {}} onSaved={() => {}} />);
     });
     expect(container.querySelector('[data-testid="edit-po-info-address"]').value).toBe(
       "Jl. Lama No. 1"
     );
-    expect(container.querySelector('[data-testid="edit-po-info-deadline"]').value).toBe(
+    expect(container.querySelector('[data-testid="edit-po-info-tanggal-pengiriman"]').value).toBe(
       "2026-09-10"
     );
     expect(
@@ -167,7 +176,7 @@ describe("Edit Informasi PO — modal behavior", () => {
       order: {
         ...order,
         address: "Jl. Baru No. 9",
-        deadline: "2026-09-20T00:00:00+00:00",
+        tanggal_pengiriman: "2026-09-20",
         estimated_delivery: "2026-09-19T00:00:00+00:00",
       },
     });
@@ -179,7 +188,7 @@ describe("Edit Informasi PO — modal behavior", () => {
 
     await act(async () => {
       setInputValue(container.querySelector('[data-testid="edit-po-info-address"]'), "Jl. Baru No. 9");
-      setInputValue(container.querySelector('[data-testid="edit-po-info-deadline"]'), "2026-09-20");
+      setInputValue(container.querySelector('[data-testid="edit-po-info-tanggal-pengiriman"]'), "2026-09-20");
       setInputValue(
         container.querySelector('[data-testid="edit-po-info-estimated-delivery"]'),
         "2026-09-19"
@@ -193,13 +202,14 @@ describe("Edit Informasi PO — modal behavior", () => {
     expect(mockUpdateOrderInfo).toHaveBeenCalledTimes(1);
     expect(mockUpdateOrderInfo).toHaveBeenCalledWith("ord-info-1", {
       address: "Jl. Baru No. 9",
-      deadline: "2026-09-20",
+      tanggal_pengiriman: "2026-09-20",
       estimated_delivery: "2026-09-19",
     });
     const sent = mockUpdateOrderInfo.mock.calls[0][1];
     expect(sent.customer).toBeUndefined();
     expect(sent.current_stage).toBeUndefined();
     expect(sent.delivery_location).toBeUndefined();
+    expect(sent.deadline).toBeUndefined();
     expect(onSaved).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
