@@ -84,7 +84,7 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/viewMode === "create"/);
     expect(src).toMatch(/viewMode === "list"/);
     expect(src).toMatch(/to=\{`\/po\/\$\{o\.id\}`\}/);
-    expect(src).toMatch(/state=\{\{ po_number: o\.po_number, customer: o\.customer \}\}/);
+    expect(src).toMatch(/state=\{poListNavState\(\{ po_number: o\.po_number, customer: o\.customer \}\)\}/);
     expect(src).toMatch(/Lihat PO/);
   });
 
@@ -120,6 +120,40 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(picker).toMatch(/onClick=\{\(\) => selectItem\(item\)\}/);
     expect(pickerCss).toMatch(/--mis-list-max:\s*calc\(\(var\(--mis-option-height\) \* 5\)/);
     expect(picker).not.toMatch(/Array\.from\(\s*\{\s*length:\s*5/);
+  });
+});
+
+
+describe("Pesanan Penjualan customer live search contracts", () => {
+  const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+  const searchSrc = fs.readFileSync(
+    path.join(__dirname, "../components/CustomerSearchSelect.jsx"),
+    "utf8"
+  );
+
+  test("create form uses CustomerSearchSelect instead of datalist", () => {
+    expect(src).toMatch(/CustomerSearchSelect/);
+    expect(src).toMatch(/handleCustomerSelect/);
+    expect(src).toMatch(/handleCustomerTextChange/);
+    expect(src).toMatch(/handleCustomerClear/);
+    expect(src).not.toMatch(/list="customer-suggestions"/);
+    expect(src).not.toMatch(/<datalist id="customer-suggestions"/);
+  });
+
+  test("CustomerSearchSelect filters active masters and requires explicit select", () => {
+    expect(searchSrc).toMatch(/filterActiveMasterCustomers/);
+    expect(searchSrc).toMatch(/isActiveMasterCustomer/);
+    expect(searchSrc).toMatch(/onSelectCustomer/);
+    expect(searchSrc).toMatch(/onTextChange/);
+    expect(searchSrc).toMatch(/data-testid=\{testId\}/);
+    expect(searchSrc).toMatch(/masterItemSearchSelect\.css/);
+  });
+
+  test("registered badge and repeat gate follow customer_id only", () => {
+    expect(src).toMatch(/data-testid="badge-customer-registered"/);
+    expect(src).toMatch(/data-testid="badge-customer-new"/);
+    expect(src).toMatch(/\{formData\.customer_id \?/);
+    expect(src).toMatch(/disabled=\{!formData\.customer_id/);
   });
 });
 
@@ -280,5 +314,27 @@ describe("Pesanan Penjualan Line Items UX & Live Search", () => {
     expect(src).toMatch(/maxHeight:\s*"560px"/);
     expect(src).toMatch(/minHeight:\s*"380px"/);
     expect(src).toMatch(/position:\s*"sticky"/);
+  });
+});
+
+describe("Pesanan Penjualan previewRepeatOrder fixture gate", () => {
+  const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+  const fixSrc = fs.readFileSync(
+    path.join(__dirname, "../lib/salesOrderRepeatPreviewFixtures.js"),
+    "utf8"
+  );
+
+  test("preview helpers require development + previewRepeatOrder=1", () => {
+    expect(fixSrc).toMatch(/String\(nodeEnv\) !== "development"/);
+    expect(fixSrc).toMatch(/PREVIEW_REPEAT_ORDER_PARAM/);
+    expect(fixSrc).toMatch(/previewRepeatOrder/);
+    expect(src).toMatch(/isSalesOrderRepeatPreviewActive/);
+    expect(src).toMatch(/process\.env\.NODE_ENV/);
+  });
+
+  test("normal mode still calls real repeat-source API", () => {
+    expect(src).toMatch(/api\.salesOrderRepeatSource/);
+    expect(src).toMatch(/previewRepeatOrderActive/);
+    expect(src).toMatch(/getPreviewRepeatSource\(customerId\)/);
   });
 });
