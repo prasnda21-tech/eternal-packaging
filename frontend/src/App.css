@@ -2619,14 +2619,15 @@
 
 
 
-/* B3 — Stage detail drawer (read-only) */
-.drawer{position:fixed;inset:0;background:rgba(23,33,38,.36);z-index:80;display:flex;justify-content:flex-end;animation:drawerFade .12s ease-out}
+/* B3 — Stage detail drawer (read-only)
+   Batch 4B: restrained Eternal drawer chrome (presentation only). */
+.drawer{position:fixed;inset:0;background:rgba(23,33,38,.28);z-index:80;display:flex;justify-content:flex-end;animation:drawerFade .12s ease-out}
 @keyframes drawerFade{from{opacity:0}to{opacity:1}}
-.drawer-panel{width:min(520px,100%);background:var(--surface);height:100%;overflow-y:auto;box-shadow:-14px 0 40px rgba(23,33,38,.18);animation:drawerSlide .18s ease-out;display:flex;flex-direction:column}
+.drawer-panel{width:min(520px,100%);background:var(--surface);height:100%;overflow-y:auto;border-left:1px solid var(--line);border-radius:8px 0 0 8px;box-shadow:-6px 0 20px rgba(23,33,38,.10);animation:drawerSlide .18s ease-out;display:flex;flex-direction:column}
 @keyframes drawerSlide{from{transform:translateX(24px)}to{transform:translateX(0)}}
-.drawer-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:18px 22px;border-bottom:1px solid var(--line);background:#fafaf7}
-.drawer-head h3{margin:2px 0 4px;font-size:20px;letter-spacing:-.01em}
-.drawer-body{padding:18px 22px;display:flex;flex-direction:column;gap:18px}
+.drawer-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 18px;border-bottom:1px solid var(--line);background:#fafaf7}
+.drawer-head h3{margin:2px 0 4px;font-size:18px;letter-spacing:-.01em;color:var(--ink)}
+.drawer-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
 .drawer-block{display:flex;flex-direction:column;gap:8px}
 .drawer-block h4{margin:0;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--soft);font:600 13px 'IBM Plex Mono'}
 .drawer-sub{margin:8px 0 0;font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--soft)}
