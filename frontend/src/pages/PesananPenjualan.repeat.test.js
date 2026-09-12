@@ -3,6 +3,20 @@ import {
   clearRepeatDerivedFormFields,
   mapRepeatSourceToFormPatch,
 } from "../lib/salesOrderRepeat";
+import {
+  PREVIEW_CUSTOMER_BAKSO_ROSSO_ID,
+  PREVIEW_CUSTOMER_BAKSO_ROSSO_UTARA_ID,
+  PREVIEW_CUSTOMER_INACTIVE_ID,
+  PREVIEW_CUSTOMER_NO_HISTORY_ID,
+  PREVIEW_REPEAT_ORDER_PARAM,
+  PREVIEW_REPEAT_ORDER_VALUE,
+  getPreviewMasterCustomers,
+  getPreviewRepeatSource,
+  isSalesOrderRepeatPreviewActive,
+} from "../lib/salesOrderRepeatPreviewFixtures";
+import {
+  filterActiveMasterCustomers,
+} from "../components/CustomerSearchSelect";
 import fs from "fs";
 import path from "path";
 
@@ -86,6 +100,17 @@ describe("salesOrderRepeat mapping", () => {
     expect(sourcePoNumber).toBe("PO/10/09/26/001");
   });
 
+  test("does not copy customer_phone or old dates", () => {
+    const { formPatch } = mapRepeatSourceToFormPatch(sampleSource(), {
+      customer_id: "cust-1",
+      customer: "Selected Name",
+    });
+    expect(formPatch.customer_phone).toBeUndefined();
+    expect(formPatch.order_date).toBeUndefined();
+    expect(formPatch.estimated_delivery).toBeUndefined();
+    expect(formPatch.deadline).toBeUndefined();
+  });
+
   test("rejects mismatched customer_id (in-flight / stale guard)", () => {
     const result = mapRepeatSourceToFormPatch(sampleSource({ customer_id: "cust-old" }), {
       customer_id: "cust-new",
@@ -138,6 +163,10 @@ describe("salesOrderRepeat mapping", () => {
 describe("PesananPenjualan Repeat Order UI contracts", () => {
   const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
   const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
+  const searchSrc = fs.readFileSync(
+    path.join(__dirname, "../components/CustomerSearchSelect.jsx"),
+    "utf8"
+  );
 
   test("repeat button gated on customer_id and confirmation before apply", () => {
     expect(src).toMatch(/data-testid="btn-repeat-order"/);
@@ -182,10 +211,13 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(src).not.toMatch(/packing_status/);
     expect(src).not.toMatch(/surat_jalan/);
     expect(src).not.toMatch(/delivery_proofs/);
-    // apply path uses explicit mapper — never spreads source into form
     expect(src).toMatch(/mapRepeatSourceToFormPatch\(/);
     expect(src).toMatch(/po_number: prev\.po_number/);
     expect(src).toMatch(/customer_id: prev\.customer_id/);
+    expect(src).toMatch(/order_date: prev\.order_date/);
+    expect(src).toMatch(/estimated_delivery: prev\.estimated_delivery/);
+    expect(src).toMatch(/deadline: prev\.deadline/);
+    expect(src).toMatch(/customer_phone: prev\.customer_phone/);
     const mapped = mapRepeatSourceToFormPatch(
       {
         source_po_number: "PO/X",
@@ -194,6 +226,10 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
         current_stage: 12,
         packing_status: "Selesai",
         discount_amount: 99,
+        customer_phone: "000",
+        order_date: "2020-01-01",
+        estimated_delivery: "2020-01-02",
+        deadline: "2020-01-03",
         line_items: [{ name: "X", quantity: 1, unit: "pcs", production_process: "print" }],
         design_files: [],
       },
@@ -203,5 +239,117 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(mapped.formPatch.packing_status).toBeUndefined();
     expect(mapped.formPatch.discount_amount).toBeUndefined();
     expect(mapped.formPatch.po_number).toBeUndefined();
+    expect(mapped.formPatch.customer_phone).toBeUndefined();
+    expect(mapped.formPatch.order_date).toBeUndefined();
+    expect(mapped.formPatch.estimated_delivery).toBeUndefined();
+    expect(mapped.formPatch.deadline).toBeUndefined();
+  });
+
+  test("customer live search requires explicit selection for customer_id", () => {
+    expect(src).toMatch(/CustomerSearchSelect/);
+    expect(src).toMatch(/handleCustomerSelect/);
+    expect(src).toMatch(/handleCustomerTextChange/);
+    expect(src).not.toMatch(/list="customer-suggestions"/);
+    expect(src).not.toMatch(/<datalist id="customer-suggestions"/);
+    expect(searchSrc).toMatch(/onSelectCustomer/);
+    expect(searchSrc).toMatch(/filterActiveMasterCustomers/);
+    expect(searchSrc).toMatch(/isActiveMasterCustomer/);
+    expect(searchSrc).toMatch(/data-testid=\{testId\}/);
+  });
+});
+
+describe("salesOrderRepeatPreviewFixtures (dev-only)", () => {
+  test("activation requires development env and exact query param", () => {
+    const params = new URLSearchParams({ [PREVIEW_REPEAT_ORDER_PARAM]: PREVIEW_REPEAT_ORDER_VALUE });
+    expect(isSalesOrderRepeatPreviewActive({ searchParams: params, nodeEnv: "development" })).toBe(true);
+    expect(isSalesOrderRepeatPreviewActive({ searchParams: params, nodeEnv: "production" })).toBe(false);
+    expect(isSalesOrderRepeatPreviewActive({ searchParams: params, nodeEnv: "test" })).toBe(false);
+    expect(
+      isSalesOrderRepeatPreviewActive({
+        searchParams: new URLSearchParams({ previewRepeatOrder: "true" }),
+        nodeEnv: "development",
+      })
+    ).toBe(false);
+    expect(
+      isSalesOrderRepeatPreviewActive({
+        searchParams: new URLSearchParams(),
+        nodeEnv: "development",
+      })
+    ).toBe(false);
+  });
+
+  test("fixture stays inactive outside development regardless of query", () => {
+    const params = new URLSearchParams("previewRepeatOrder=1");
+    expect(isSalesOrderRepeatPreviewActive({ searchParams: params, nodeEnv: "production" })).toBe(false);
+    expect(isSalesOrderRepeatPreviewActive({ searchParams: params, nodeEnv: "" })).toBe(false);
+  });
+
+  test("preview customers expose similar active names and exclude inactive", () => {
+    const all = getPreviewMasterCustomers();
+    expect(all.some((c) => c.id === PREVIEW_CUSTOMER_INACTIVE_ID && c.is_active === false)).toBe(true);
+    const filtered = filterActiveMasterCustomers(all, "BAKSO");
+    const ids = filtered.map((c) => c.id);
+    expect(ids).toContain(PREVIEW_CUSTOMER_BAKSO_ROSSO_ID);
+    expect(ids).toContain(PREVIEW_CUSTOMER_BAKSO_ROSSO_UTARA_ID);
+    expect(ids).not.toContain(PREVIEW_CUSTOMER_INACTIVE_ID);
+    expect(filtered.find((c) => c.id === PREVIEW_CUSTOMER_BAKSO_ROSSO_ID).name).toBe("BAKSO ROSSO");
+    expect(filtered.find((c) => c.id === PREVIEW_CUSTOMER_BAKSO_ROSSO_UTARA_ID).name).toBe(
+      "BAKSO ROSSO CABANG UTARA"
+    );
+  });
+
+  test("repeat source for BAKSO ROSSO maps without phone/dates/history identity", () => {
+    const { found, source } = getPreviewRepeatSource(PREVIEW_CUSTOMER_BAKSO_ROSSO_ID);
+    expect(found).toBe(true);
+    expect(source.customer_phone).toBe("0812-OLD-PHONE");
+    expect(source.line_items.filter((l) => l.name === "Paper Cup 8oz")).toHaveLength(2);
+
+    const master = getPreviewMasterCustomers().find((c) => c.id === PREVIEW_CUSTOMER_BAKSO_ROSSO_ID);
+    const { formPatch } = mapRepeatSourceToFormPatch(source, {
+      customer_id: master.id,
+      customer: master.name,
+    });
+    expect(formPatch.customer).toBe("BAKSO ROSSO");
+    expect(formPatch.customer_id).toBe(PREVIEW_CUSTOMER_BAKSO_ROSSO_ID);
+    expect(formPatch.customer_phone).toBeUndefined();
+    expect(formPatch.order_date).toBeUndefined();
+    expect(formPatch.estimated_delivery).toBeUndefined();
+    expect(formPatch.deadline).toBeUndefined();
+    expect(formPatch.id).toBeUndefined();
+    expect(formPatch.current_stage).toBeUndefined();
+    expect(formPatch.packing_status).toBeUndefined();
+    expect(formPatch.line_items).toHaveLength(3);
+    expect(formPatch.line_items[0].name).toBe("Paper Cup 8oz");
+    expect(formPatch.line_items[1].name).toBe("Paper Cup 8oz");
+    expect(formPatch.line_items[0].quantity).toBe(1000);
+    expect(formPatch.line_items[1].quantity).toBe(500);
+    expect(formPatch.line_items[0].color).toBe("Navy");
+    expect(formPatch.line_items[1].color).toBe("Merah");
+    expect(formPatch.line_items[0].id).toBeUndefined();
+    expect(formPatch.line_items[0].line_id).toBeUndefined();
+    expect(formPatch.line_items[0].master_item_id).toBe("mst-preview-1");
+    expect(formPatch.line_items[1].master_item_id).toBe("mst-preview-2");
+  });
+
+  test("customer without prior PO returns safe empty found=false", () => {
+    expect(getPreviewRepeatSource(PREVIEW_CUSTOMER_NO_HISTORY_ID)).toEqual({
+      found: false,
+      customer_id: PREVIEW_CUSTOMER_NO_HISTORY_ID,
+      source: null,
+    });
+    expect(getPreviewRepeatSource(PREVIEW_CUSTOMER_BAKSO_ROSSO_UTARA_ID).found).toBe(false);
+  });
+
+  test("page wires preview gate without altering normal API path when inactive", () => {
+    const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+    expect(src).toMatch(/isSalesOrderRepeatPreviewActive/);
+    expect(src).toMatch(/getPreviewMasterCustomers/);
+    expect(src).toMatch(/getPreviewRepeatSource/);
+    expect(src).toMatch(/previewRepeatOrderActive/);
+    expect(src).toMatch(/if \(previewRepeatOrderActive\)/);
+    expect(src).toMatch(/api\.salesOrderRepeatSource\(customerId/);
+    expect(src).not.toMatch(/localStorage/);
+    expect(src).not.toMatch(/sessionStorage/);
+    expect(src).not.toMatch(/indexedDB/);
   });
 });

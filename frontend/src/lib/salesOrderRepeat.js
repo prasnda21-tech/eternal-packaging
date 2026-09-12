@@ -6,8 +6,9 @@
 export const REPEAT_NO_PREVIOUS_MESSAGE =
   "Tidak ada pesanan sebelumnya untuk customer ini.";
 
+// Order-specific create-form fields only.
+// Do NOT copy: customer_phone (master baseline), order_date / estimated_delivery / deadline (new-form dates).
 const HEADER_FIELDS = [
-  "customer_phone",
   "outlet",
   "recipient",
   "address",
@@ -15,10 +16,7 @@ const HEADER_FIELDS = [
   "payment_terms",
   "sales",
   "expedition",
-  "estimated_delivery",
-  "deadline",
   "notes",
-  "order_date",
 ];
 
 function mapLineItem(raw) {
@@ -79,18 +77,7 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
 
   for (const key of HEADER_FIELDS) {
     if (source[key] == null) continue;
-    const val = source[key];
-    if (typeof val === "string") {
-      // Keep ISO date prefix for date inputs when present.
-      if (key === "order_date" || key === "estimated_delivery" || key === "deadline") {
-        const iso = String(val).trim();
-        formPatch[key] = iso.includes("T") ? iso.slice(0, 10) : iso.slice(0, 10);
-      } else {
-        formPatch[key] = val;
-      }
-    } else {
-      formPatch[key] = val;
-    }
+    formPatch[key] = source[key];
   }
 
   if (lineItems.length) {

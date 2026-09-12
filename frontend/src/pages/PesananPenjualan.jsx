@@ -18,11 +18,17 @@ import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
+import CustomerSearchSelect from "../components/CustomerSearchSelect";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   clearRepeatDerivedFormFields,
   mapRepeatSourceToFormPatch,
 } from "../lib/salesOrderRepeat";
+import {
+  getPreviewMasterCustomers,
+  getPreviewRepeatSource,
+  isSalesOrderRepeatPreviewActive,
+} from "../lib/salesOrderRepeatPreviewFixtures";
 import {
   capturePoOpenFromList,
   poNavStateFromList,
@@ -244,34 +250,19 @@ export default function PesananPenjualan() {
   }, [viewMode, loadOrders]);
 
   // When customer changes, handle autofill suggestions for outlet/address/sales/payment_terms
-  const handleCustomerChange = (newCustomer) => {
-    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
-    clearRepeatState();
-    const outlets = options.outlets_by_customer?.[newCustomer] || [];
-    let patch = { customer: newCustomer };
-
-    const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
-    const masterMatch = options.master_customers?.find(
-      (c) => norm(c.name) === norm(newCustomer)
-    );
-
-    if (masterMatch) {
-      patch.customer_id = masterMatch.id;
-      patch.customer_phone = masterMatch.phone || "";
-      if (masterMatch.address) {
-        patch.address = masterMatch.address;
-        patch.customer_address = masterMatch.address;
-      }
-      if (masterMatch.pic) {
-        patch.recipient = masterMatch.pic;
-        patch.customer_pic = masterMatch.pic;
-      }
-      if (masterMatch.email) patch.customer_email = masterMatch.email;
-      if (masterMatch.city) patch.customer_city = masterMatch.city;
-    } else {
-      patch.customer_id = null;
-    }
-
+  const applyMasterCustomerBaseline = (masterMatch, customerName) => {
+    const outlets = options.outlets_by_customer?.[customerName] || [];
+    let patch = {
+      customer: customerName,
+      customer_id: masterMatch.id,
+      customer_phone: masterMatch.phone || "",
+      customer_address: masterMatch.address || "",
+      customer_pic: masterMatch.pic || "",
+      customer_email: masterMatch.email || "",
+      customer_city: masterMatch.city || "",
+    };
+    if (masterMatch.address) patch.address = masterMatch.address;
+    if (masterMatch.pic) patch.recipient = masterMatch.pic;
     if (outlets.length === 1) {
       const o = outlets[0];
       patch = {
@@ -284,9 +275,29 @@ export default function PesananPenjualan() {
         payment_terms: o.payment_terms || "",
       };
     }
+    return patch;
+  };
 
+  // Free typing never silently binds customer_id.
+
+  const previewRepeatOrderActive = useMemo(
+    () => isSalesOrderRepeatPreviewActive({ searchParams, nodeEnv: process.env.NODE_ENV }),
+    [searchParams]
+  );
+
+  const masterCustomersForSearch = useMemo(() => {
+    if (previewRepeatOrderActive) return getPreviewMasterCustomers();
+    return options.master_customers || [];
+  }, [previewRepeatOrderActive, options.master_customers]);
+
+  const handleCustomerTextChange = (newCustomer) => {
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    clearRepeatState();
+    const patch = {
+      customer: newCustomer,
+      customer_id: null,
+    };
     setFormData((prev) => {
-      // After a Repeat Order was applied, never leave previous customer's copied details.
       const base = hadRepeat
         ? clearRepeatDerivedFormFields(prev, { keepCustomer: true })
         : prev;
@@ -296,9 +307,58 @@ export default function PesananPenjualan() {
         po_number: prev.po_number,
         order_date: prev.order_date,
         created_by_user: prev.created_by_user,
-        estimated_delivery: hadRepeat ? prev.estimated_delivery : (patch.estimated_delivery ?? prev.estimated_delivery),
-        deadline: hadRepeat ? prev.deadline : (patch.deadline ?? prev.deadline),
+        estimated_delivery: prev.estimated_delivery,
+        deadline: prev.deadline,
+        expedition: hadRepeat ? "Internal fleet" : prev.expedition,
+      };
+    });
+  };
+
+  const handleCustomerSelect = (masterMatch) => {
+    if (!masterMatch?.id) return;
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    clearRepeatState();
+    const customerName = String(masterMatch.name || "").trim();
+    const patch = applyMasterCustomerBaseline(masterMatch, customerName);
+    setFormData((prev) => {
+      const base = hadRepeat
+        ? clearRepeatDerivedFormFields(prev, { keepCustomer: true })
+        : prev;
+      return {
+        ...base,
+        ...patch,
+        po_number: prev.po_number,
+        order_date: prev.order_date,
+        created_by_user: prev.created_by_user,
+        estimated_delivery: prev.estimated_delivery,
+        deadline: prev.deadline,
         expedition: patch.expedition || (hadRepeat ? "Internal fleet" : prev.expedition) || "Internal fleet",
+      };
+    });
+  };
+
+  const handleCustomerClear = () => {
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    clearRepeatState();
+    setFormData((prev) => {
+      const base = hadRepeat
+        ? clearRepeatDerivedFormFields(prev, { keepCustomer: false })
+        : prev;
+      return {
+        ...base,
+        customer: "",
+        customer_id: null,
+        customer_phone: "",
+        customer_address: "",
+        customer_pic: "",
+        customer_email: "",
+        customer_city: "",
+        po_number: prev.po_number,
+        order_date: prev.order_date,
+        created_by_user: prev.created_by_user,
+        estimated_delivery: prev.estimated_delivery,
+        deadline: prev.deadline,
+        expedition: hadRepeat ? "Internal fleet" : prev.expedition,
       };
     });
   };
@@ -466,7 +526,13 @@ export default function PesananPenjualan() {
     repeatAbortRef.current = ac;
     repeatRequestCustomerIdRef.current = customerId;
     try {
-      const data = await api.salesOrderRepeatSource(customerId, { signal: ac.signal });
+      let data;
+      if (previewRepeatOrderActive) {
+        // Dev-only in-memory fixture — no network / no writes.
+        data = getPreviewRepeatSource(customerId);
+      } else {
+        data = await api.salesOrderRepeatSource(customerId, { signal: ac.signal });
+      }
       if (ac.signal.aborted) return;
       if (repeatRequestCustomerIdRef.current !== customerId) return;
       if (selectedCustomerIdRef.current !== customerId) return;
@@ -514,11 +580,19 @@ export default function PesananPenjualan() {
     setFormData((prev) => ({
       ...prev,
       ...formPatch,
-      // Keep new-order identity fields
+      // Keep new-order identity + date defaults + selected customer master baseline
       po_number: prev.po_number,
       created_by_user: prev.created_by_user,
       customer: prev.customer,
       customer_id: prev.customer_id,
+      customer_phone: prev.customer_phone,
+      customer_address: prev.customer_address,
+      customer_pic: prev.customer_pic,
+      customer_email: prev.customer_email,
+      customer_city: prev.customer_city,
+      order_date: prev.order_date,
+      estimated_delivery: prev.estimated_delivery,
+      deadline: prev.deadline,
     }));
     setRepeatDesignFiles(designFiles);
     setRepeatSourceIndicator(sourcePoNumber || "");
@@ -536,9 +610,8 @@ export default function PesananPenjualan() {
       setFormErr("Customer wajib diisi.");
       return;
     }
-    const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
-    const isMaster = options.master_customers?.some((c) => norm(c.name) === norm(formData.customer));
-    if (!isMaster && !formData.customer_id) {
+    // Registered only when canonical customer_id was explicitly selected.
+    if (!formData.customer_id) {
       if (!formData.customer_phone?.trim()) {
         setFormErr("Pelanggan baru terdeteksi: No. HP / WhatsApp pelanggan wajib diisi.");
         return;
@@ -779,26 +852,20 @@ export default function PesananPenjualan() {
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
                   Customer <span style={{ color: "#ef4444" }}>*</span>
                 </label>
-                <input
-                  type="text"
-                  list="customer-suggestions"
+                <CustomerSearchSelect
+                  customers={masterCustomersForSearch}
                   value={formData.customer}
-                  onChange={(e) => handleCustomerChange(e.target.value)}
-                  placeholder="Ketik atau pilih nama customer"
-                  data-testid="input-customer"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
+                  selectedId={formData.customer_id}
+                  onTextChange={handleCustomerTextChange}
+                  onSelectCustomer={handleCustomerSelect}
+                  onClear={handleCustomerClear}
+                  disabled={formBusy}
                   required
+                  testId="input-customer"
                 />
-                <datalist id="customer-suggestions">
-                  {options.customers?.map((c) => (
-                    <option key={c} value={c} />
-                  ))}
-                </datalist>
                 {formData.customer?.trim() && (
                   <div style={{ marginTop: 4, fontSize: "0.78rem" }}>
-                    {options.master_customers?.some(
-                      (c) => (c.name || "").trim().toLowerCase() === formData.customer.trim().toLowerCase()
-                    ) || formData.customer_id ? (
+                    {formData.customer_id ? (
                       <span data-testid="badge-customer-registered" style={{ color: "#059669", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 4 }}>
                         ✓ Pelanggan Terdaftar di Master
                       </span>
