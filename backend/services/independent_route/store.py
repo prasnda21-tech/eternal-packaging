@@ -295,6 +295,8 @@ def public_route(doc: dict, stops: list[dict], settings: dict | None = None) -> 
         "source_type": _normalize_source_type(doc.get("source_type")),
         "driver_user_id": doc.get("driver_user_id"),
         "driver_name": doc.get("driver_name"),
+        "fleet_group_id": doc.get("fleet_group_id"),
+        "schedule_input_fingerprint": doc.get("schedule_input_fingerprint"),
         "deleted_at": doc.get("deleted_at"),
         "created_at": doc.get("created_at"),
         "created_by": doc.get("created_by"),
@@ -306,6 +308,8 @@ def public_route(doc: dict, stops: list[dict], settings: dict | None = None) -> 
 
 def public_route_list_item(doc: dict) -> dict:
     return {
+        "fleet_group_id": doc.get("fleet_group_id"),
+        "schedule_input_fingerprint": doc.get("schedule_input_fingerprint"),
         "id": doc.get("id"),
         "name": doc.get("name"),
         "route_date": doc.get("route_date"),
@@ -326,6 +330,7 @@ def public_route_list_item(doc: dict) -> dict:
         "created_by": doc.get("created_by"),
         "updated_at": doc.get("updated_at"),
     }
+
 
 
 async def _stops_for(db, route_id: str) -> list[dict]:
@@ -431,6 +436,8 @@ async def create_route(db, payload: dict, actor: dict) -> dict:
         "source_type": source_type,
         "driver_user_id": str(payload.get("driver_user_id") or "").strip() or None,
         "driver_name": str(payload.get("driver_name") or "").strip() or None,
+        "fleet_group_id": str(payload.get("fleet_group_id") or "").strip() or None,
+        "schedule_input_fingerprint": str(payload.get("schedule_input_fingerprint") or "").strip() or None,
         "deleted_at": None,
         "created_at": now,
         "created_by": actor,
@@ -952,3 +959,14 @@ async def search_stop_candidates(db, q: str) -> list[dict]:
             "coord_hint": bool(hint),
         })
     return results[:30]
+
+async def find_active_routes_by_schedule_fingerprint(db, fingerprint: str) -> list[dict]:
+    """Active (non-deleted) routes matching a schedule create fingerprint."""
+    fp = str(fingerprint or "").strip()
+    if not fp:
+        return []
+    docs = await db[COL_PLANS].find(
+        {"schedule_input_fingerprint": fp, "deleted_at": None},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(20)
+    return docs

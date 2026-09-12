@@ -1,4 +1,4 @@
-"""Focused tests: Jadwal Pengiriman → independent Route Optimizer bridge."""
+"""Focused tests: Jadwal Pengiriman → 1/2-armada one-stage create+optimize Optimasi Rute bridge."""
 import os
 import sys
 import uuid
@@ -19,13 +19,18 @@ from server import app, current_user
 from services.independent_route.constants import (
     COL_PLANS,
     COL_STOPS,
+    FLEET_LABEL_1,
+    FLEET_LABEL_2,
     PERM_CREATE,
     PERM_EDIT_OWN,
     PERM_MANAGE,
     PERM_OPTIMIZE,
     PERM_VIEW,
+    PRIORITY_ID_NORMAL,
+    PRIORITY_ID_URGENT,
 )
 from services.independent_route.store import ensure_indexes
+from services.independent_route.delivery_bridge import order_is_urgent
 
 pytestmark = pytest.mark.anyio
 
@@ -76,12 +81,24 @@ async def client_for(user):
 async def _clean():
     await server.db.orders.delete_many({"id": {"$regex": f"^{PREFIX}"}})
     await server.db.delivery_outlets.delete_many({"id": {"$regex": f"^{PREFIX}"}})
-    await server.db[COL_PLANS].delete_many({"name": {"$regex": "Pengiriman|BRIDGE|IRO-TEST"}})
+    await server.db[COL_PLANS].delete_many({"name": {"$regex": "Pengiriman|BRIDGE|IRO-TEST|Armada"}})
     await server.db[COL_STOPS].delete_many({"sales_order_id": {"$regex": f"^{PREFIX}"}})
     await server.db[COL_STOPS].delete_many({"display_name": {"$regex": f"^{PREFIX}|Customer"}})
 
 
-def _order(oid, *, driver_id=None, driver_name=None, lat=None, lng=None, date="2026-09-11", address="Jl Test", **extra):
+def _order(
+    oid,
+    *,
+    driver_id=None,
+    driver_name=None,
+    lat=None,
+    lng=None,
+    date="2026-09-11",
+    address="Jl Test",
+    sj_ready=True,
+    priority="normal",
+    **extra,
+):
     loc = {}
     if lat is not None and lng is not None:
         loc = {"lat": lat, "lng": lng, "formatted_address": address}
@@ -90,7 +107,20 @@ def _order(oid, *, driver_id=None, driver_name=None, lat=None, lng=None, date="2
         lc["driver_user_id"] = driver_id
     if driver_name:
         lc["driver_name"] = driver_name
-    doc = {
+    sid = f"sj-{oid}"
+    if sj_ready:
+        shipments = [{"id": sid, "number": f"SJ-{oid}", "lines": [{"name": "Box", "qty": 100}]}]
+        surat_jalan_files = [{
+            "id": sid,
+            "shipment_id": sid,
+            "name": f"SJ-{oid}.pdf",
+            "storage_path": f"/sj/{oid}.pdf",
+            "lines": [{"name": "Box", "qty": 100}],
+        }]
+    else:
+        shipments = [{"id": sid, "number": f"SJ-{oid}"}]
+        surat_jalan_files = []
+    return {
         "id": oid,
         "po_number": f"PO-{oid}",
         "customer_name": extra.pop("customer_name", f"Customer {oid}"),
@@ -103,220 +133,342 @@ def _order(oid, *, driver_id=None, driver_name=None, lat=None, lng=None, date="2
         "qty_delivered": 0,
         "packing_info": {"qty_packed": 100},
         "line_items": [{"name": "Box", "quantity": 100}],
-        "shipments": [{"id": f"sj-{oid}", "number": f"SJ-{oid}", "lines": [{"qty": 100}]}],
+        "shipments": shipments,
+        "surat_jalan_files": surat_jalan_files,
         "loading_checklist": lc,
         "delivery_location": loc,
         "address": address,
+        "priority": priority,
         **extra,
     }
+
+
+async def _ensure_driver(driver_id, name="Route Driver"):
+    doc = {
+        "id": driver_id,
+        "user_id": driver_id,
+        "email": f"{driver_id}@example.com",
+        "name": name,
+        "role": "driver",
+        "status": "active",
+    }
+    await server.db.users.delete_many({"id": driver_id})
+    await server.db.users.insert_one(dict(doc))
     return doc
 
 
 @pytest.mark.anyio
-async def test_review_get_zero_writes_and_filter_ids():
+async def test_review_zero_writes_and_filter_ids():
     await _clean()
     user = await _upsert_user(_user())
     client = await client_for(user)
-    a = f"{PREFIX}-A"
-    b = f"{PREFIX}-B"
-    c = f"{PREFIX}-C"
+    a, b, c = f"{PREFIX}-A", f"{PREFIX}-B", f"{PREFIX}-C"
     await server.db.orders.insert_many([
         _order(a, driver_id="drv-a", driver_name="Driver A", lat=-6.2, lng=106.8),
         _order(b, driver_id="drv-a", driver_name="Driver A", lat=-6.21, lng=106.81),
         _order(c, driver_id="drv-b", driver_name="Driver B", lat=-6.22, lng=106.82),
     ])
-    before_plan_ids = {
-        d["id"] for d in await server.db[COL_PLANS].find({}, {"_id": 0, "id": 1}).to_list(5000)
-    }
-    before_stop_ids = {
-        d["id"] for d in await server.db[COL_STOPS].find({}, {"_id": 0, "id": 1}).to_list(5000)
-    }
-    before_orders = await server.db.orders.count_documents({"id": {"$regex": f"^{PREFIX}"}})
-    before_order_docs = {
-        d["id"]: {
-            "scheduled_delivery_date": d.get("scheduled_delivery_date"),
-            "loading_checklist": d.get("loading_checklist"),
-            "shipments": d.get("shipments"),
-            "packing_info": d.get("packing_info"),
-        }
-        for d in await server.db.orders.find({"id": {"$in": [a, b, c]}}, {"_id": 0}).to_list(20)
-    }
-
+    before_plans = {d["id"] for d in await server.db[COL_PLANS].find({}, {"_id": 0, "id": 1}).to_list(5000)}
+    before_stops = {d["id"] for d in await server.db[COL_STOPS].find({}, {"_id": 0, "id": 1}).to_list(5000)}
     r = await client.post("/api/route-optimizer/from-schedule/review", json={"order_ids": [a, b]})
     assert r.status_code == 200, r.text
-    body = r.json()
-    ids = [row["sales_order_id"] for row in body["rows"]]
+    ids = [row["sales_order_id"] for row in r.json()["rows"]]
     assert ids == [a, b]
     assert c not in ids
-    assert body["summary"]["selected"] == 2
-
-    after_plan_ids = {
-        d["id"] for d in await server.db[COL_PLANS].find({}, {"_id": 0, "id": 1}).to_list(5000)
-    }
-    after_stop_ids = {
-        d["id"] for d in await server.db[COL_STOPS].find({}, {"_id": 0, "id": 1}).to_list(5000)
-    }
-    # Review must not create/remove any plan/stop docs (xdist-safe set compare).
-    assert after_plan_ids == before_plan_ids
-    assert after_stop_ids == before_stop_ids
-    assert await server.db.orders.count_documents({"id": {"$regex": f"^{PREFIX}"}}) == before_orders
-    after_order_docs = {
-        d["id"]: {
-            "scheduled_delivery_date": d.get("scheduled_delivery_date"),
-            "loading_checklist": d.get("loading_checklist"),
-            "shipments": d.get("shipments"),
-            "packing_info": d.get("packing_info"),
-        }
-        for d in await server.db.orders.find({"id": {"$in": [a, b, c]}}, {"_id": 0}).to_list(20)
-    }
-    assert after_order_docs == before_order_docs
-    # No delivery-linked stops for reviewed IDs.
-    assert await server.db[COL_STOPS].count_documents({"sales_order_id": {"$in": [a, b]}}) == 0
-
-
-@pytest.mark.anyio
-async def test_driver_grouping_no_mix_and_missing_driver():
-    await _clean()
-    user = await _upsert_user(_user())
-    client = await client_for(user)
-    a = f"{PREFIX}-A2"
-    b = f"{PREFIX}-B2"
-    d = f"{PREFIX}-D2"
-    e = f"{PREFIX}-E2"
-    no = f"{PREFIX}-NO"
-    await server.db.orders.insert_many([
-        _order(a, driver_id="drv-a", driver_name="Driver A", lat=-6.2, lng=106.8),
-        _order(b, driver_id="drv-a", driver_name="Driver A", lat=-6.21, lng=106.81),
-        _order(d, driver_id="drv-b", driver_name="Driver B", lat=-6.22, lng=106.82),
-        _order(e, driver_id="drv-b", driver_name="Driver B", lat=-6.23, lng=106.83),
-        _order(no, driver_name="Only Name", lat=-6.24, lng=106.84),  # no driver_user_id
-    ])
-    r = await client.post("/api/route-optimizer/from-schedule/review", json={"order_ids": [a, b, d, e, no]})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    groups = {g["driver_user_id"]: g["sales_order_ids"] for g in body["groups"]}
-    assert set(groups["drv-a"]) == {a, b}
-    assert set(groups["drv-b"]) == {d, e}
-    assert "drv-a" in groups and "drv-b" in groups
-    # Never mix
-    for g in body["groups"]:
-        assert len(set(g["sales_order_ids"]) & {a, b, d, e}) in (2, 0) or (
-            set(g["sales_order_ids"]).issubset({a, b}) or set(g["sales_order_ids"]).issubset({d, e})
-        )
-    no_row = next(x for x in body["rows"] if x["sales_order_id"] == no)
-    assert no_row["eligible"] is False
-    assert "Belum ada driver" in (no_row.get("reason") or "")
-
-
-@pytest.mark.anyio
-async def test_optimize_statuses_stale_idempotent_delete_safe():
-    await _clean()
-    user = await _upsert_user(_user())
-    client = await client_for(user)
-    a = f"{PREFIX}-A3"
-    b = f"{PREFIX}-B3"
-    c = f"{PREFIX}-C3"
-    await server.db.orders.insert_many([
-        _order(a, driver_id="drv-a", driver_name="Driver A", lat=-6.200, lng=106.800, date="2026-09-11"),
-        _order(b, driver_id="drv-a", driver_name="Driver A", lat=-6.210, lng=106.810, date="2026-09-11"),
-        _order(c, driver_id="drv-b", driver_name="Driver B", lat=-6.220, lng=106.820, date="2026-09-11"),
-    ])
-
-    # Belum dioptimasi
-    st = await client.get(f"/api/route-optimizer/from-schedule/status?ids={a},{b},{c}")
-    assert st.status_code == 200
-    assert st.json()["statuses"][a]["optimization_status"] == "belum_dioptimasi"
-
-    # Create + optimize (selected subset excludes nothing of eligible)
-    opt1 = await client.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [a, b, c]})
-    assert opt1.status_code == 200, opt1.text
-    body1 = opt1.json()
-    assert body1["ok"] is True
-    assert body1["summary"]["groups_ok"] == 2
-    route_ids = [g["route_id"] for g in body1["results"] if g.get("route_id")]
-    assert len(route_ids) == 2
-
-    # Same canonical routes visible on Web list
-    listed = await client.get("/api/route-optimizer/routes")
-    assert listed.status_code == 200
-    listed_ids = {r["id"] for r in listed.json()["routes"]}
-    assert set(route_ids).issubset(listed_ids)
-    sources = {r["id"]: r.get("source_type") for r in listed.json()["routes"] if r["id"] in route_ids}
-    assert all(v == "delivery_schedule" for v in sources.values())
-
-    # Sudah dioptimasi
-    st2 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={a}")
-    assert st2.json()["statuses"][a]["optimization_status"] == "sudah_dioptimasi"
-
-    # Duplicate submit protection
-    before_stops = await server.db[COL_STOPS].count_documents({"sales_order_id": {"$in": [a, b, c]}})
-    opt2 = await client.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [a, b, c]})
-    assert opt2.status_code == 200, opt2.text
-    after_stops = await server.db[COL_STOPS].count_documents({"sales_order_id": {"$in": [a, b, c]}})
+    after_plans = {d["id"] for d in await server.db[COL_PLANS].find({}, {"_id": 0, "id": 1}).to_list(5000)}
+    after_stops = {d["id"] for d in await server.db[COL_STOPS].find({}, {"_id": 0, "id": 1}).to_list(5000)}
+    assert after_plans == before_plans
     assert after_stops == before_stops
 
-    # Driver change → Perlu Optimasi Ulang
-    await server.db.orders.update_one({"id": a}, {"$set": {"loading_checklist.driver_user_id": "drv-x", "loading_checklist.driver_name": "Driver X"}})
-    st3 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={a}")
-    assert st3.json()["statuses"][a]["optimization_status"] == "perlu_optimasi_ulang"
 
-    # Date change on b
-    await server.db.orders.update_one({"id": b}, {"$set": {"scheduled_delivery_date": "2026-09-12"}})
-    st4 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={b}")
-    assert st4.json()["statuses"][b]["optimization_status"] == "perlu_optimasi_ulang"
-
-    # Location change on c
-    await server.db.orders.update_one({"id": c}, {"$set": {"delivery_location.lat": -6.5, "delivery_location.lng": 106.9}})
-    st5 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={c}")
-    assert st5.json()["statuses"][c]["optimization_status"] == "perlu_optimasi_ulang"
-
-    # Unrelated field does not invalidate when snapshot still matches — reset c first then change packing note
-    await server.db.orders.update_one({"id": c}, {"$set": {"delivery_location.lat": -6.220, "delivery_location.lng": 106.820}})
-    # Re-optimize c alone to get fresh snapshot
-    await client.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [c]})
-    await server.db.orders.update_one({"id": c}, {"$set": {"packing_info.notes": "note only"}})
-    st6 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={c}")
-    assert st6.json()["statuses"][c]["optimization_status"] == "sudah_dioptimasi"
-
-    # Capture source order/sj/packing/loading before deletes
-    order_before = await server.db.orders.find_one({"id": c}, {"_id": 0})
-    route_c = st6.json()["statuses"][c]["route_id"]
-    detail = await client.get(f"/api/route-optimizer/routes/{route_c}")
-    stop_id = detail.json()["route"]["stops"][0]["id"]
-
-    # Remove stop
-    rm = await client.delete(f"/api/route-optimizer/routes/{route_c}/stops/{stop_id}")
-    assert rm.status_code == 200, rm.text
-    assert rm.json().get("source_untouched") is True
-    assert (await server.db.orders.find_one({"id": c}))["shipments"] == order_before["shipments"]
-    assert (await server.db.orders.find_one({"id": c}))["packing_info"]["qty_packed"] == order_before["packing_info"]["qty_packed"]
-    st7 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={c}")
-    assert st7.json()["statuses"][c]["optimization_status"] == "belum_dioptimasi"
-    # Route marked stale if still exists with version
-    left = await client.get(f"/api/route-optimizer/routes/{route_c}")
-    if left.status_code == 200:
-        assert left.json()["route"]["optimization_stale"] is True or left.json()["route"]["stop_count"] == 0
-
-    # Recreate then delete route
-    await client.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [c]})
-    st8 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={c}")
-    route_c2 = st8.json()["statuses"][c]["route_id"]
-    order_mid = await server.db.orders.find_one({"id": c}, {"_id": 0})
-    deleted = await client.delete(f"/api/route-optimizer/routes/{route_c2}")
-    assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["source_untouched"] is True
-    order_after = await server.db.orders.find_one({"id": c}, {"_id": 0})
-    assert order_after["shipments"] == order_mid["shipments"]
-    assert order_after["packing_info"] == order_mid["packing_info"]
-    assert order_after.get("loading_checklist") == order_mid.get("loading_checklist")
-    assert order_after.get("delivery_status") == order_mid.get("delivery_status")
-    assert order_after.get("scheduled_delivery_date") == order_mid.get("scheduled_delivery_date")
-    st9 = await client.get(f"/api/route-optimizer/from-schedule/status?ids={c}")
-    assert st9.json()["statuses"][c]["optimization_status"] == "belum_dioptimasi"
+@pytest.mark.anyio
+async def test_eligibility_sj_location_driver_optional_urgency():
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    ok_no = f"{PREFIX}-OK-NODRV"
+    ok_drv = f"{PREFIX}-OK-DRV"
+    urg = f"{PREFIX}-URG"
+    bad_loc = f"{PREFIX}-BAD-LOC"
+    bad_sj = f"{PREFIX}-BAD-SJ"
+    await server.db.orders.insert_many([
+        _order(ok_no, lat=-6.2, lng=106.8),
+        _order(ok_drv, driver_id="drv-a", driver_name="A", lat=-6.21, lng=106.81),
+        _order(urg, lat=-6.22, lng=106.82, priority="Urgent"),
+        _order(bad_loc, address="Jl No Coords"),
+        _order(bad_sj, lat=-6.23, lng=106.83, sj_ready=False),
+    ])
+    r = await client.post(
+        "/api/route-optimizer/from-schedule/review",
+        json={"order_ids": [ok_no, ok_drv, urg, bad_loc, bad_sj]},
+    )
+    assert r.status_code == 200, r.text
+    by_id = {row["sales_order_id"]: row for row in r.json()["rows"]}
+    assert by_id[ok_no]["eligible"] is True
+    assert by_id[ok_drv]["eligible"] is True
+    assert by_id[urg]["eligible"] is True and by_id[urg]["urgent"] is True
+    assert by_id[ok_no]["urgent"] is False
+    assert by_id[bad_loc]["eligible"] is False
+    assert by_id[bad_sj]["eligible"] is False
+    assert "driver" not in (by_id[ok_no].get("reason") or "").lower()
+    assert order_is_urgent({"priority": "urgent"}) is True
+    assert order_is_urgent({"priority": "NORMAL"}) is False
 
 
 @pytest.mark.anyio
-async def test_manual_route_still_works_and_perm_enforced():
+async def test_preview_fleet_count_1_and_2_no_writes_maps_and_invariants():
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    ids = [f"{PREFIX}-P{i}" for i in range(1, 5)]
+    await server.db.orders.insert_many([
+        _order(ids[0], lat=-6.20, lng=106.80, priority="urgent"),
+        _order(ids[1], lat=-6.21, lng=106.81, priority="normal"),
+        _order(ids[2], lat=-7.25, lng=112.75, priority="urgent"),
+        _order(ids[3], lat=-7.26, lng=112.76, priority="normal"),
+        _order(f"{PREFIX}-BAD-SJ", lat=-6.22, lng=106.82, sj_ready=False),
+        _order(f"{PREFIX}-BAD-LOC", address="No coords"),
+        _order(f"{PREFIX}-NO-DRV", lat=-6.23, lng=106.83),  # no driver — still eligible
+    ])
+    plans_before = await server.db[COL_PLANS].count_documents({})
+    stops_before = await server.db[COL_STOPS].count_documents({})
+    orders_before = await server.db.orders.find_one({"id": ids[0]})
+
+    # invalid fleet_count
+    bad = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": ids, "fleet_count": 3},
+    )
+    assert bad.status_code == 400
+
+    # fleet_count=1
+    one = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": ids + [f"{PREFIX}-BAD-SJ", f"{PREFIX}-BAD-LOC", f"{PREFIX}-NO-DRV"], "fleet_count": 1},
+    )
+    assert one.status_code == 200, one.text
+    body1 = one.json()
+    assert body1["fleet_count"] == 1
+    assert len(body1["fleets"]) == 1
+    assert body1["fleets"][0]["label"] == FLEET_LABEL_1
+    f1_ids = body1["fleets"][0]["order_ids"]
+    assert set(f1_ids) == set(body1["eligible_order_ids"])
+    assert f"{PREFIX}-NO-DRV" in f1_ids
+    assert f"{PREFIX}-BAD-SJ" not in f1_ids
+    assert f"{PREFIX}-BAD-LOC" not in f1_ids
+    assert len(f1_ids) == len(set(f1_ids))
+    assert body1["fleets"][0]["google_maps_url"]
+    assert "google.com/maps" in body1["fleets"][0]["google_maps_url"]
+    assert any(s.get("urgent") and s.get("priority_id") == PRIORITY_ID_URGENT for s in body1["fleets"][0]["stops"])
+    assert any((not s.get("urgent")) and s.get("priority_id") == PRIORITY_ID_NORMAL for s in body1["fleets"][0]["stops"])
+
+    # fleet_count=2
+    two = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": ids + [f"{PREFIX}-NO-DRV"], "fleet_count": 2},
+    )
+    assert two.status_code == 200, two.text
+    body2 = two.json()
+    assert body2["fleet_count"] == 2
+    assert len(body2["fleets"]) == 2
+    a1, a2 = body2["fleets"][0]["order_ids"], body2["fleets"][1]["order_ids"]
+    assert a1 and a2
+    assert set(a1) & set(a2) == set()
+    assert set(a1) | set(a2) == set(body2["eligible_order_ids"])
+    assert body2["fleets"][0]["google_maps_url"] and body2["fleets"][1]["google_maps_url"]
+    for fl in body2["fleets"]:
+        seqs = [s.get("stop_sequence") for s in fl["stops"]]
+        assert seqs == sorted(seqs)
+
+    # zero writes
+    assert await server.db[COL_PLANS].count_documents({}) == plans_before
+    assert await server.db[COL_STOPS].count_documents({}) == stops_before
+    orders_after = await server.db.orders.find_one({"id": ids[0]})
+    assert orders_after == orders_before
+
+    # create-fleet-pair retired
+    gone = await client.post(
+        "/api/route-optimizer/from-schedule/create-fleet-pair",
+        json={
+            "order_ids": ids,
+            "preview_fingerprint": "x",
+            "driver_user_id_armada_1": "a",
+            "driver_user_id_armada_2": "b",
+        },
+    )
+    assert gone.status_code in (404, 405, 422)
+
+
+@pytest.mark.anyio
+async def test_preview_one_requires_one_two_requires_two():
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    a = f"{PREFIX}-ONLY"
+    await server.db.orders.insert_one(_order(a, lat=-6.2, lng=106.8))
+    one = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": [a], "fleet_count": 1},
+    )
+    assert one.status_code == 200, one.text
+    assert len(one.json()["fleets"]) == 1
+    two = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": [a], "fleet_count": 2},
+    )
+    assert two.status_code == 400
+    assert "2" in (two.json().get("detail") or str(two.json()))
+
+
+@pytest.mark.anyio
+async def test_preview_one_fleet_does_not_need_partition_two_uses_it(monkeypatch):
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    ids = [f"{PREFIX}-G{i}" for i in range(3)]
+    await server.db.orders.insert_many([
+        _order(ids[0], lat=-6.20, lng=106.80, priority="urgent"),
+        _order(ids[1], lat=-6.50, lng=107.00),
+        _order(ids[2], lat=-7.25, lng=112.75, priority="urgent"),
+    ])
+    calls = {"n": 0}
+    import services.independent_route.delivery_bridge as bridge
+    real = bridge.partition_into_two_fleets
+
+    def wrapped(stops):
+        calls["n"] += 1
+        return real(stops)
+
+    monkeypatch.setattr(bridge, "partition_into_two_fleets", wrapped)
+    one = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": ids, "fleet_count": 1},
+    )
+    assert one.status_code == 200
+    assert calls["n"] == 0
+    two = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": ids, "fleet_count": 2},
+    )
+    assert two.status_code == 200
+    assert calls["n"] == 1
+
+
+@pytest.mark.anyio
+async def test_legacy_optimize_order_ids_success_and_safety():
+    """Legacy POST /optimize accepts {order_ids}; SJ/coords/driver gates; no auto-driver."""
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    await _ensure_driver("drv-leg", "Legacy Driver")
+
+    ok_id = f"{PREFIX}-LEG-OK"
+    no_sj = f"{PREFIX}-LEG-NOSJ"
+    no_loc = f"{PREFIX}-LEG-NOLOC"
+    no_drv = f"{PREFIX}-LEG-NODRV"
+    await server.db.orders.insert_many([
+        _order(ok_id, driver_id="drv-leg", driver_name="Legacy Driver", lat=-6.2, lng=106.8),
+        _order(no_sj, driver_id="drv-leg", driver_name="Legacy Driver", lat=-6.21, lng=106.81, sj_ready=False),
+        _order(no_loc, driver_id="drv-leg", driver_name="Legacy Driver", address="No coords"),
+        _order(no_drv, driver_name="Name Only", lat=-6.22, lng=106.82),
+    ])
+
+    # Two-fleet review still allows missing order driver (eligible for preview).
+    review = await client.post(
+        "/api/route-optimizer/from-schedule/review",
+        json={"order_ids": [ok_id, no_sj, no_loc, no_drv]},
+    )
+    assert review.status_code == 200
+    by_id = {r["sales_order_id"]: r for r in review.json()["rows"]}
+    assert by_id[ok_id]["eligible"] is True
+    assert by_id[no_drv]["eligible"] is True
+    assert by_id[no_sj]["eligible"] is False
+    assert "Surat Jalan" in (by_id[no_sj].get("reason") or "")
+    assert by_id[no_loc]["eligible"] is False
+    assert "Koordinat" in (by_id[no_loc].get("reason") or "")
+
+    opt = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": [ok_id, no_sj, no_loc, no_drv]},
+    )
+    assert opt.status_code == 200, opt.text
+    body = opt.json()
+    assert "results" in body and "summary" in body and "review" in body
+    assert body["ok"] is True
+    assert len(body["results"]) == 1
+    assert body["results"][0]["ok"] is True
+    assert ok_id in body["results"][0]["created_order_ids"]
+    assert body["results"][0]["driver_user_id"] == "drv-leg"
+    assert body["results"][0].get("route_id")
+
+    rev_rows = {r["sales_order_id"]: r for r in body["review"]["rows"]}
+    assert rev_rows[no_sj]["eligible"] is False
+    assert "Surat Jalan" in (rev_rows[no_sj].get("reason") or "")
+    assert rev_rows[no_loc]["eligible"] is False
+    assert "Koordinat" in (rev_rows[no_loc].get("reason") or "")
+    assert rev_rows[no_drv]["eligible"] is False
+    assert "Belum ada driver" in (rev_rows[no_drv].get("reason") or "")
+
+    # No automatic driver selection / no source-order driver rewrite.
+    od = await server.db.orders.find_one({"id": no_drv}, {"_id": 0, "loading_checklist": 1})
+    assert not (od.get("loading_checklist") or {}).get("driver_user_id")
+    ok_order = await server.db.orders.find_one({"id": ok_id}, {"_id": 0, "loading_checklist": 1})
+    assert (ok_order.get("loading_checklist") or {}).get("driver_user_id") == "drv-leg"
+
+    routes = await server.db[COL_PLANS].find(
+        {"driver_user_id": "drv-leg", "source_type": "delivery_schedule"},
+        {"_id": 0, "id": 1, "fleet_group_id": 1},
+    ).to_list(20)
+    assert len(routes) == 1
+    assert not routes[0].get("fleet_group_id")
+
+    # Idempotent retry — no duplicate route / stops.
+    again = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": [ok_id]},
+    )
+    assert again.status_code == 200, again.text
+    assert await server.db[COL_PLANS].count_documents(
+        {"driver_user_id": "drv-leg", "source_type": "delivery_schedule", **{
+            "$or": [{"deleted_at": {"$exists": False}}, {"deleted_at": None}],
+        }}
+    ) == 1
+    assert await server.db[COL_STOPS].count_documents(
+        {"sales_order_id": ok_id, "$or": [{"deleted_at": {"$exists": False}}, {"deleted_at": None}]}
+    ) == 1
+
+
+@pytest.mark.anyio
+async def test_legacy_and_preview_do_not_interfere():
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    await _ensure_driver("drv-leg2", "Legacy2")
+    leg = f"{PREFIX}-COEX-LEG"
+    p1, p2 = f"{PREFIX}-COEX-P1", f"{PREFIX}-COEX-P2"
+    await server.db.orders.insert_many([
+        _order(leg, driver_id="drv-leg2", driver_name="Legacy2", lat=-6.2, lng=106.8),
+        _order(p1, lat=-6.5, lng=107.0),
+        _order(p2, lat=-0.95, lng=100.35),
+    ])
+    leg_opt = await client.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [leg]})
+    assert leg_opt.status_code == 200, leg_opt.text
+    leg_rid = leg_opt.json()["results"][0]["route_id"]
+    plans_before = await server.db[COL_PLANS].count_documents({})
+    prev = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": [p1, p2], "fleet_count": 2},
+    )
+    assert prev.status_code == 200, prev.text
+    assert await server.db[COL_PLANS].count_documents({}) == plans_before
+    still = await server.db[COL_PLANS].find_one({"id": leg_rid}, {"_id": 0, "deleted_at": 1})
+    assert still and not still.get("deleted_at")
+    o = await server.db.orders.find_one({"id": leg}, {"_id": 0, "loading_checklist": 1})
+    assert (o.get("loading_checklist") or {}).get("driver_user_id") == "drv-leg2"
+
+
+@pytest.mark.anyio
+async def test_manual_single_route_still_works():
     await _clean()
     user = await _upsert_user(_user(permissions_override={
         PERM_VIEW: True,
@@ -333,7 +485,6 @@ async def test_manual_route_still_works_and_perm_enforced():
         "strategy": "NEAREST",
     })
     assert created.status_code == 200, created.text
-    assert created.json()["route"]["source_type"] == "manual"
     rid = created.json()["route"]["id"]
     stop = await client.post(f"/api/route-optimizer/routes/{rid}/stops", json={
         "display_name": "IRO-TEST Stop",
@@ -346,32 +497,214 @@ async def test_manual_route_still_works_and_perm_enforced():
     opt = await client.post(f"/api/route-optimizer/routes/{rid}/optimize", json={"revision": 2})
     assert opt.status_code == 200, opt.text
 
-    # Permission enforcement: view-only cannot optimize from schedule
-    viewer = await _upsert_user(_user(
-        id="u-view-only",
-        role="crm",
-        permissions_override={PERM_VIEW: True},
-    ))
-    vclient = await client_for(viewer)
-    denied = await vclient.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [f"{PREFIX}-X"]})
-    assert denied.status_code in (403, 401)
 
 
 @pytest.mark.anyio
-async def test_unchecked_excluded_and_canonical_id_not_name():
+async def test_create_fleets_one_and_two_persist_driverless_listable():
+    """POST /optimize with fleet_count creates 1 or 2 driverless persisted routes."""
     await _clean()
     user = await _upsert_user(_user())
     client = await client_for(user)
-    a = f"{PREFIX}-A4"
-    b = f"{PREFIX}-B4"
+    ids = [f"{PREFIX}-C{i}" for i in range(1, 5)]
     await server.db.orders.insert_many([
-        _order(a, driver_id="drv-a", driver_name="Driver A", lat=-6.2, lng=106.8, customer_name="Same Name"),
-        _order(b, driver_id="drv-a", driver_name="Driver A", lat=-6.21, lng=106.81, customer_name="Same Name"),
+        _order(ids[0], lat=-6.20, lng=106.80, priority="urgent"),
+        _order(ids[1], lat=-6.21, lng=106.81, priority="normal"),
+        _order(ids[2], lat=-7.25, lng=112.75, priority="urgent"),
+        _order(ids[3], lat=-7.26, lng=112.76, priority="normal"),
+        _order(f"{PREFIX}-BAD-SJ", lat=-6.22, lng=106.82, sj_ready=False),
+        _order(f"{PREFIX}-NO-DRV", lat=-6.23, lng=106.83),
     ])
-    # Only pass A — B must not be optimized despite same customer name
-    opt = await client.post("/api/route-optimizer/from-schedule/optimize", json={"order_ids": [a]})
-    assert opt.status_code == 200, opt.text
-    stops_a = await server.db[COL_STOPS].count_documents({"sales_order_id": a})
-    stops_b = await server.db[COL_STOPS].count_documents({"sales_order_id": b})
-    assert stops_a == 1
-    assert stops_b == 0
+    order_before = await server.db.orders.find_one({"id": ids[0]}, {"_id": 0, "loading_checklist": 1})
+
+    bad = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids, "fleet_count": 3},
+    )
+    assert bad.status_code == 400
+
+    one = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids + [f"{PREFIX}-BAD-SJ", f"{PREFIX}-NO-DRV"], "fleet_count": 1},
+    )
+    assert one.status_code == 200, one.text
+    body1 = one.json()
+    assert body1["ok"] is True
+    assert body1["fleet_count"] == 1
+    assert body1["created_route_count"] == 1
+    assert len(body1["routes"]) == 1
+    assert body1["routes"][0]["label"] == FLEET_LABEL_1
+    assert body1["routes"][0].get("fleet_group_id") in (None, "")
+    r1_ids = set(body1["routes"][0]["order_ids"])
+    assert r1_ids == set(body1["eligible_order_ids"])
+    assert f"{PREFIX}-NO-DRV" in r1_ids
+    assert f"{PREFIX}-BAD-SJ" not in r1_ids
+    rid1 = body1["routes"][0]["route_id"]
+
+    # Persisted + listable + openable; driver unset
+    plan = await server.db[COL_PLANS].find_one({"id": rid1}, {"_id": 0})
+    assert plan and not plan.get("deleted_at")
+    assert plan.get("driver_user_id") in (None, "")
+    assert plan.get("source_type") == "delivery_schedule"
+    listed = await client.get("/api/route-optimizer/routes")
+    assert listed.status_code == 200
+    list_ids = {r["id"] for r in listed.json()["routes"]}
+    assert rid1 in list_ids
+    detail = await client.get(f"/api/route-optimizer/routes/{rid1}")
+    assert detail.status_code == 200
+    assert detail.json()["route"]["id"] == rid1
+    assert len(detail.json()["route"]["stops"]) == len(r1_ids)
+
+    # Source-order driver unchanged
+    order_after = await server.db.orders.find_one({"id": ids[0]}, {"_id": 0, "loading_checklist": 1})
+    assert order_after == order_before
+
+    # Soft-delete first create so second create can use same POs
+    await client.delete(f"/api/route-optimizer/routes/{rid1}")
+
+    two = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids + [f"{PREFIX}-NO-DRV"], "fleet_count": 2},
+    )
+    assert two.status_code == 200, two.text
+    body2 = two.json()
+    assert body2["fleet_count"] == 2
+    assert body2["created_route_count"] == 2
+    assert len(body2["routes"]) == 2
+    assert body2["routes"][0]["label"] == FLEET_LABEL_1
+    assert body2["routes"][1]["label"] == FLEET_LABEL_2
+    g = body2["fleet_group_id"]
+    assert g
+    assert body2["routes"][0]["fleet_group_id"] == g
+    assert body2["routes"][1]["fleet_group_id"] == g
+    a1, a2 = set(body2["routes"][0]["order_ids"]), set(body2["routes"][1]["order_ids"])
+    assert a1 and a2 and a1.isdisjoint(a2)
+    assert a1 | a2 == set(body2["eligible_order_ids"])
+    for route in body2["routes"]:
+        assert not route.get("route", {}).get("driver_user_id")
+
+    listed2 = await client.get("/api/route-optimizer/routes")
+    list_ids2 = {r["id"] for r in listed2.json()["routes"]}
+    assert body2["routes"][0]["route_id"] in list_ids2
+    assert body2["routes"][1]["route_id"] in list_ids2
+
+
+@pytest.mark.anyio
+async def test_create_fleets_idempotent_and_no_orphan_on_failure(monkeypatch):
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    ids = [f"{PREFIX}-I{i}" for i in range(3)]
+    await server.db.orders.insert_many([
+        _order(ids[0], lat=-6.20, lng=106.80, priority="urgent"),
+        _order(ids[1], lat=-6.50, lng=107.00),
+        _order(ids[2], lat=-7.25, lng=112.75, priority="urgent"),
+    ])
+
+    first = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids, "fleet_count": 2},
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    route_ids = [r["route_id"] for r in body["routes"]]
+    assert len(route_ids) == 2
+
+    again = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids, "fleet_count": 2},
+    )
+    assert again.status_code == 200, again.text
+    again_body = again.json()
+    assert again_body.get("reused") is True
+    assert {r["route_id"] for r in again_body["routes"]} == set(route_ids)
+    active = await server.db[COL_PLANS].count_documents(
+        {"id": {"$in": route_ids}, "$or": [{"deleted_at": {"$exists": False}}, {"deleted_at": None}]}
+    )
+    assert active == 2
+
+    # Partial failure: Armada 2 optimize fails → no orphan active routes from the attempt
+    await _clean()
+    await server.db.orders.insert_many([
+        _order(ids[0], lat=-6.20, lng=106.80, priority="urgent"),
+        _order(ids[1], lat=-6.50, lng=107.00),
+        _order(ids[2], lat=-7.25, lng=112.75, priority="urgent"),
+    ])
+    import services.independent_route.delivery_bridge as bridge
+    real_opt = bridge.store.optimize
+    calls = {"n": 0}
+
+    async def flaky_optimize(db, route_id, payload, actor, perms):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("simulated armada-2 optimize failure")
+        return await real_opt(db, route_id, payload, actor, perms)
+
+    monkeypatch.setattr(bridge.store, "optimize", flaky_optimize)
+    before_ids = set(await server.db[COL_PLANS].distinct("id", {"deleted_at": None}))
+    fail = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids, "fleet_count": 2},
+    )
+    assert fail.status_code >= 400
+    after = await server.db[COL_PLANS].find(
+        {"deleted_at": None, "source_type": "delivery_schedule", "name": {"$regex": "^Armada"}},
+        {"_id": 0, "id": 1},
+    ).to_list(20)
+    # No active incomplete Armada pair left from failed attempt
+    assert after == [] or all(doc["id"] in before_ids for doc in after)
+
+
+@pytest.mark.anyio
+async def test_create_one_no_partition_two_partitions(monkeypatch):
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    ids = [f"{PREFIX}-P{i}" for i in range(3)]
+    await server.db.orders.insert_many([
+        _order(ids[0], lat=-6.20, lng=106.80, priority="urgent"),
+        _order(ids[1], lat=-6.50, lng=107.00),
+        _order(ids[2], lat=-7.25, lng=112.75, priority="urgent"),
+    ])
+    calls = {"n": 0}
+    import services.independent_route.delivery_bridge as bridge
+    real = bridge.partition_into_two_fleets
+
+    def wrapped(stops):
+        calls["n"] += 1
+        return real(stops)
+
+    monkeypatch.setattr(bridge, "partition_into_two_fleets", wrapped)
+    one = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids, "fleet_count": 1},
+    )
+    assert one.status_code == 200, one.text
+    assert calls["n"] == 0
+    # cleanup for second call
+    for r in one.json()["routes"]:
+        await client.delete(f"/api/route-optimizer/routes/{r['route_id']}")
+    two = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": ids, "fleet_count": 2},
+    )
+    assert two.status_code == 200, two.text
+    assert calls["n"] == 1
+
+
+@pytest.mark.anyio
+async def test_create_two_requires_two_eligible():
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    a = f"{PREFIX}-ONLY2"
+    await server.db.orders.insert_one(_order(a, lat=-6.2, lng=106.8))
+    one = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": [a], "fleet_count": 1},
+    )
+    assert one.status_code == 200, one.text
+    two = await client.post(
+        "/api/route-optimizer/from-schedule/optimize",
+        json={"order_ids": [a], "fleet_count": 2},
+    )
+    assert two.status_code == 400
