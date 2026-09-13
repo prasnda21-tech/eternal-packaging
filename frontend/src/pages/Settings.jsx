@@ -13,6 +13,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsTabFromPath } from "../lib/navAccess";
 import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
+import RolePermissionWorkspace from "../components/RolePermissionWorkspace";
 import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import PhysicalStockSettings from "./PhysicalStockSettings";
@@ -856,6 +857,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [permQuery, setPermQuery] = useState("");
+  const [permStateFilter, setPermStateFilter] = useState("all");
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({ role: "", label: "", description: "" });
 
@@ -893,6 +895,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
     setDescDraft(r.description || "");
     setMetaInitial({ label: r.label || "", description: r.description || "" });
     setPermQuery("");
+    setPermStateFilter("all");
     setErr("");
   };
 
@@ -900,6 +903,17 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
     setPermsDraft((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleCategoryKeys = (keys, enable) => {
+    setPermsDraft((prev) => {
+      const next = new Set(prev);
+      for (const key of keys || []) {
+        if (enable) next.add(key);
+        else next.delete(key);
+      }
       return next;
     });
   };
@@ -966,19 +980,6 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
 
   const currentRole = roles.find((r) => r.role === selected);
   const isAdminRole = selected === "admin";
-  const dirty = useMemo(() => {
-    if (labelDraft !== metaInitial.label || descDraft !== metaInitial.description) return true;
-    const a = [...permsDraft].filter((k) => !isSidebarNavPermissionKey(k));
-    const b = new Set([...initial].filter((k) => !isSidebarNavPermissionKey(k)));
-    if (a.length !== b.size) return true;
-    for (const k of a) if (!b.has(k)) return true;
-    return false;
-  }, [permsDraft, initial, labelDraft, descDraft, metaInitial]);
-
-  const filteredModules = useMemo(
-    () => businessPermissionModules(permissionCatalog, permQuery),
-    [permissionCatalog, permQuery]
-  );
 
   return (
     <div className="settings-body" data-testid="roles-tab">
@@ -1018,106 +1019,32 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           })}
         </aside>
 
-        <div className="role-detail" data-testid="role-detail">
-          {currentRole ? (
-            <>
-              <div className="role-detail-head">
-                <div style={{flex:1}}>
-                  {isAdminRole ? (
-                    <h3 data-testid="role-detail-title">{currentRole.label}</h3>
-                  ) : (
-                    <>
-                      <input
-                        className="role-label-input"
-                        value={labelDraft}
-                        onChange={(e) => setLabelDraft(e.target.value)}
-                        placeholder="Nama Role"
-                        disabled={!canManagePerms}
-                        data-testid="role-label-input"
-                      />
-                      <textarea
-                        className="role-desc-input"
-                        value={descDraft}
-                        onChange={(e) => setDescDraft(e.target.value)}
-                        rows={2}
-                        placeholder="Deskripsi role (opsional)"
-                        disabled={!canManagePerms}
-                        data-testid="role-description-input"
-                      />
-                    </>
-                  )}
-                  <p className="muted small">
-                    {isAdminRole
-                      ? "Role Admin memiliki seluruh hak akses dan tidak dapat diubah."
-                      : `Slug: ${currentRole.role} · ${currentRole.is_builtin ? "built-in" : "custom"} · ${currentRole.user_count} karyawan menggunakan role ini.`}
-                  </p>
-                  {!isAdminRole && canManagePerms && (
-                    <div className="role-actions-inline">
-                      <button className="ghost sm" onClick={() => doToggleActive(currentRole)} data-testid="role-toggle-active">
-                        {currentRole.status === "active" ? <><PowerOff size={12}/> Nonaktifkan Role</> : <><Power size={12}/> Aktifkan Role</>}
-                      </button>
-                      {!currentRole.is_builtin && (
-                        <button className="ghost sm danger" onClick={() => doDelete(currentRole)} disabled={currentRole.user_count > 0} title={currentRole.user_count > 0 ? "Role masih digunakan karyawan" : "Hapus permanen"} data-testid="role-delete-button">
-                          <Trash2 size={12}/> Hapus Role
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="perm-search">
-                  <Search size={14}/>
-                  <input placeholder="Cari permission..." value={permQuery} onChange={(e) => setPermQuery(e.target.value)} data-testid="role-perm-search"/>
-                </div>
-              </div>
-
-              {isAdminRole && (
-                <InfoBanner testid="role-admin-lock">
-                  <span>Role <b>Admin</b> memiliki seluruh hak akses dan tidak dapat diubah. Buat role lain atau atur override per karyawan bila perlu.</span>
-                </InfoBanner>
-              )}
-
-              {err && <div className="error" data-testid="role-error">{typeof err === "object" ? err.message : err}</div>}
-
-              <div className="perm-modules" data-testid={`role-perms-${selected}`}>
-                {filteredModules.map(([mod, perms]) => (
-                  <div key={mod} className="perm-module-card">
-                    <div className="perm-module-title">{mod}</div>
-                    <div className="perm-module-checks">
-                      {perms.map((p) => (
-                        <label key={p.key} className="perm-check" data-testid={`role-perm-${selected}-${p.key}`}>
-                          <input
-                            type="checkbox"
-                            checked={permsDraft.has(p.key)}
-                            onChange={() => togglePerm(p.key)}
-                            disabled={isAdminRole || !canManagePerms}
-                          />
-                          <span className="perm-check-label">
-                            <span>{p.label}</span>
-                            <span className="mono muted">{p.key}</span>
-                            {p.description ? <span className="muted small" data-testid={`perm-desc-${p.key}`}>{p.description}</span> : null}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                {!filteredModules.length && <p className="muted small">Tidak ada permission cocok.</p>}
-              </div>
-
-              {!isAdminRole && canManagePerms && (
-                <div className={"role-save-bar" + (dirty ? " show" : "")} data-testid="role-save-bar">
-                  <span className="role-save-status" data-testid="role-unsaved-indicator">
-                    {dirty ? <><AlertCircle size={14}/> Ada perubahan belum disimpan</> : <><Check size={14}/> Tersimpan</>}
-                  </span>
-                  <div className="role-save-actions">
-                    {dirty && <button className="ghost" onClick={() => { setPermsDraft(new Set(initial)); setLabelDraft(metaInitial.label); setDescDraft(metaInitial.description); }} data-testid="role-discard"><X size={13}/> Batalkan</button>}
-                    <button className="primary" onClick={save} disabled={busy || !dirty} data-testid="role-save-permissions"><Save size={14}/> Simpan perubahan</button>
-                  </div>
-                </div>
-              )}
-            </>
-          ) : <p className="muted">Pilih role di sebelah kiri untuk melihat hak akses default-nya.</p>}
-        </div>
+        <RolePermissionWorkspace
+          currentRole={currentRole}
+          selected={selected}
+          isAdminRole={isAdminRole}
+          canManagePerms={canManagePerms}
+          permissionCatalog={permissionCatalog}
+          permsDraft={permsDraft}
+          initialPerms={initial}
+          labelDraft={labelDraft}
+          descDraft={descDraft}
+          onLabelChange={setLabelDraft}
+          onDescChange={setDescDraft}
+          onTogglePerm={togglePerm}
+          onToggleCategoryKeys={toggleCategoryKeys}
+          permQuery={permQuery}
+          onPermQueryChange={setPermQuery}
+          stateFilter={permStateFilter}
+          onStateFilterChange={setPermStateFilter}
+          metaDirty={labelDraft !== metaInitial.label || descDraft !== metaInitial.description}
+          busy={busy}
+          err={err}
+          onSave={save}
+          onDiscard={() => { setPermsDraft(new Set(initial)); setLabelDraft(metaInitial.label); setDescDraft(metaInitial.description); }}
+          onToggleActive={doToggleActive}
+          onDelete={doDelete}
+        />
       </div>
 
       {showCreate && (

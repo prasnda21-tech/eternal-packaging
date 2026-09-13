@@ -25,12 +25,14 @@ describe("Settings — single-source sidebar access UI", () => {
   test("Role & Hak Akses does not render the sidebar/menu matrix", () => {
     const rolesTab = sliceFn("RolesTab", "AuditTab");
     expect(rolesTab).toMatch(/data-testid="roles-tab"/);
-    expect(rolesTab).toMatch(/businessPermissionModules/);
+    expect(rolesTab).toMatch(/RolePermissionWorkspace/);
     expect(rolesTab).toMatch(/roleBusinessSavePayload/);
     expect(rolesTab).not.toMatch(/NavAccessMatrix/);
     expect(rolesTab).not.toMatch(/nav-access-matrix/);
     expect(rolesTab).not.toMatch(/nav-access-save/);
-    expect(rolesTab).toMatch(/role-perms-\$\{selected\}/);
+    const workspaceSrc = fs.readFileSync(path.join(__dirname, "../components/RolePermissionWorkspace.jsx"), "utf8");
+    expect(workspaceSrc).toMatch(/role-perms-\$\{selected\}/);
+    expect(workspaceSrc).toMatch(/businessPermissionModules/);
   });
 
   test("Akses Menu Sidebar remains the only matrix host", () => {
