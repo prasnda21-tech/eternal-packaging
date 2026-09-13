@@ -122,7 +122,10 @@ function SjItemLineCell({ row }) {
                 className="mds-item-line"
                 data-testid={`mds-item-line-${suffix}-${gi}-${li}`}
               >
-                <span className="mds-item-line-name">{ln.name || "—"}</span>
+                <span className="mds-item-line-name">
+                  <span className="mds-item-line-prefix" aria-hidden="true">- </span>
+                  {ln.name || "—"}
+                </span>
                 {qtyPresent ? (
                   <span className="mds-item-line-qty">{formatIdQty(ln.qty)}</span>
                 ) : null}
