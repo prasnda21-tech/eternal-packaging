@@ -93,7 +93,7 @@ export default function HoPDashboard() {
     // eslint-disable-next-line
   }, [authLoading, user]);
 
-  const { lastUpdated: dashLastUpdated, isPolling: dashIsPolling, refreshNow: refreshDash } = useAutoRefresh(
+  const { lastUpdated: dashLastUpdated, isPolling: dashIsPolling } = useAutoRefresh(
     () => api.dashboardSummary(),
     { intervalMs: 30_000, enabled: !!data, onData: (d) => setData(d) }
   );
@@ -121,7 +121,7 @@ export default function HoPDashboard() {
             )}
           </p>
         </div>
-        <button className="icon-button" onClick={() => { load(); refreshDash(); }} data-testid="hop-refresh-button" aria-label="Muat ulang">
+        <button className="icon-button" onClick={() => { load(); }} data-testid="hop-refresh-button" aria-label="Muat ulang">
           <RefreshCw size={19} className={busy || dashIsPolling ? "spin" : ""} />
         </button>
       </div>

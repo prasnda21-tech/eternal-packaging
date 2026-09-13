@@ -66,6 +66,32 @@ export default function Dashboard() {
   const canCancel = hasPerm("po.cancel");
   const canDelete = hasPerm("po.delete");
 
+  const applyOrdersPayload = (d) => {
+    setOrders(d.orders || []);
+    setCounts(d.counts || {});
+    setStageCounts(d.stage_counts || {});
+    setSelected(new Set());
+  };
+
+  const loadOrders = async (status = statusTab) => {
+    setBusy(true);
+    try {
+      const d = await api.listOrders(status, { view: "dashboard" });
+      applyOrdersPayload(d);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadSupplemental = async () => {
+    const [r, today] = await Promise.all([
+      api.reminders().catch(() => null),
+      api.dashboardToday().catch(() => null),
+    ]);
+    setReminders(r);
+    setTodayActivity(today);
+  };
+
   const load = async (status = statusTab) => {
     setBusy(true);
     try {
@@ -74,12 +100,9 @@ export default function Dashboard() {
         api.reminders().catch(() => null),
         api.dashboardToday().catch(() => null),
       ]);
-      setOrders(d.orders || []);
-      setCounts(d.counts || {});
-      setStageCounts(d.stage_counts || {});
+      applyOrdersPayload(d);
       setReminders(r);
       setTodayActivity(today);
-      setSelected(new Set());
     } finally {
       setBusy(false);
     }
@@ -88,12 +111,17 @@ export default function Dashboard() {
     if (stageIsValid) {
       setView("orders");
       // stage_view returns non-cancelled orders + pending_queues[] per PO.
-      load("stage_view");
+      loadOrders("stage_view");
     } else {
-      load(statusTab);
+      loadOrders(statusTab);
     }
     // eslint-disable-next-line
   }, [stageIsValid, stageSlug, statusTab]);
+
+  useEffect(() => {
+    loadSupplemental();
+    // eslint-disable-next-line
+  }, []);
 
   const clearStageFilter = () => {
     const p = new URLSearchParams(searchParams);
