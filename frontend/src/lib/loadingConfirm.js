@@ -6,12 +6,63 @@ export function emptyLoadingLine() {
   return { line_idx: "", qty: "" };
 }
 
+function explicitLineIdx(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Exact SJ/PO line identity. Never matches by item name. line_id wins over stale line_idx. */
+export function resolveLoadingPoLineIdx(order, shipLine) {
+  const lis = Array.isArray(order?.line_items) ? order.line_items : [];
+  const lid = String(shipLine?.line_id || "").trim();
+  const aid = String(shipLine?.accurate_item_id || "").trim();
+  const explicit = explicitLineIdx(shipLine?.line_idx);
+
+  if (lid) {
+    const matches = [];
+    lis.forEach((li, i) => {
+      if (String(li?.line_id || li?.id || "").trim() === lid) matches.push(i);
+    });
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1 && explicit != null && matches.includes(explicit)) return explicit;
+    if (matches.length > 1) return null;
+  }
+  if (aid) {
+    const matches = [];
+    lis.forEach((li, i) => {
+      if (String(li?.accurate_item_id || "").trim() === aid) matches.push(i);
+    });
+    if (explicit != null && matches.includes(explicit)) return explicit;
+    if (matches.length === 1) return matches[0];
+    return null;
+  }
+  if (explicit != null) {
+    if (!lis.length && explicit === 0) return 0;
+    if (explicit >= 0 && explicit < lis.length) return explicit;
+  }
+  return null;
+}
+
 function packedQtyForLine(order, snap, idx) {
-  if (snap?.packed != null && snap.packed !== "") return Number(snap.packed) || 0;
+  const fromSnap = snap?.packed;
+  if (fromSnap != null && fromSnap !== "") {
+    const n = Number(fromSnap);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
   const lines = Array.isArray(order?.packing_info?.lines) ? order.packing_info.lines : [];
-  const row = lines.find((r) => Number(r.line_idx) === idx);
+  const row = lines.find((r) => {
+    const ridx = explicitLineIdx(r?.line_idx);
+    return ridx != null && ridx === idx;
+  });
   if (row) return Number(row.packed_qty || 0) || 0;
-  if (Number(idx) === 0) return Number(order?.packing_info?.qty_packed || 0) || 0;
+  const li = (order?.line_items || [])[idx] || {};
+  const lid = String(li.line_id || li.id || "").trim();
+  if (lid) {
+    const byId = lines.filter((r) => String(r?.line_id || "").trim() === lid);
+    if (byId.length === 1) return Number(byId[0].packed_qty || 0) || 0;
+  }
+  if (!lines.length && Number(idx) === 0) return Number(order?.packing_info?.qty_packed || 0) || 0;
   return 0;
 }
 
@@ -54,6 +105,15 @@ export function loadingPoLines(order, selectedSjId = null) {
 
   const confirmations = loadingConfirmations(order);
 
+  const sjQtyByIdx = {};
+  if (matchingSj && Array.isArray(matchingSj.lines) && matchingSj.lines.length) {
+    for (const ln of matchingSj.lines) {
+      const resolved = resolveLoadingPoLineIdx(order, ln);
+      if (resolved == null) continue;
+      sjQtyByIdx[resolved] = (sjQtyByIdx[resolved] || 0) + (Number(ln?.qty ?? ln?.quantity ?? 0) || 0);
+    }
+  }
+
   return lis.map((li, idx) => {
     const snap = snapshot.find((r) => Number(r.line_idx) === idx) || {};
     const qtyPo = Number(li.quantity ?? snap.qty_po ?? 0) || 0;
@@ -62,8 +122,7 @@ export function loadingPoLines(order, selectedSjId = null) {
 
     let sjLineQty = 0;
     if (matchingSj && Array.isArray(matchingSj.lines) && matchingSj.lines.length) {
-      const ln = matchingSj.lines.find((l) => Number(l.line_idx) === idx);
-      sjLineQty = Number(ln?.qty ?? ln?.quantity ?? 0) || 0;
+      sjLineQty = Number(sjQtyByIdx[idx] || 0) || 0;
     } else if (matchingSj && idx === 0) {
       sjLineQty = Number(matchingSj.total_qty ?? matchingSj.qty ?? 0) || 0;
     } else if (!matchingSj && !files.length) {

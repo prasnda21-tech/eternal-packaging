@@ -209,14 +209,38 @@ def packing_lines_stored(order: dict) -> Optional[list]:
     return raw
 
 
+def _po_line_identity_keys(li: Optional[dict]) -> list:
+    if not isinstance(li, dict):
+        return []
+    out = []
+    for k in ("line_id", "id"):
+        v = str(li.get(k) or "").strip()
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 def qty_packed_for_line(order: dict, line_idx: int) -> int:
     """Packed qty satu line. Legacy tanpa packing_info.lines → 0 (jangan asumsi)."""
     lines = packing_lines_stored(order)
     if lines is None:
         return 0
+    idx = int(line_idx)
     for it in lines:
-        if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
+        if _safe_int(it.get("line_idx"), default=-1) == idx:
             return max(0, _safe_int(it.get("packed_qty")))
+    lis = order.get("line_items") or []
+    if 0 <= idx < len(lis):
+        want = _po_line_identity_keys(lis[idx])
+        hits = []
+        for it in lines:
+            if not isinstance(it, dict):
+                continue
+            got = str(it.get("line_id") or "").strip()
+            if got and got in want:
+                hits.append(it)
+        if len(hits) == 1:
+            return max(0, _safe_int(hits[0].get("packed_qty")))
     return 0
 
 
@@ -1088,10 +1112,27 @@ def sj_lines_stored(order: dict, surat_jalan_id: str) -> list:
 def sj_qty_for_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
     """Exact target qty for this line in this specific Surat Jalan."""
     lines = sj_lines_stored(order, surat_jalan_id)
+    total = 0
+    found = False
+    want = int(line_idx)
     for ln in lines:
-        if _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
-            return max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-    if not lines and int(line_idx) == 0:
+        if not isinstance(ln, dict):
+            continue
+        qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        if qty <= 0:
+            continue
+        idx, _err = match_po_line_idx(order, ln)
+        if idx is None:
+            if _safe_int(ln.get("line_idx"), default=-1) == want:
+                total += qty
+                found = True
+            continue
+        if int(idx) == want:
+            total += qty
+            found = True
+    if found:
+        return total
+    if not lines and want == 0:
         entry = find_sj_file(order, surat_jalan_id)
         if entry:
             return max(0, _safe_int(entry.get("total_qty") or entry.get("qty") or 0))
@@ -1378,16 +1419,35 @@ def line_shipment_mismatch(order: dict, line_idx: int) -> bool:
 
 
 def match_po_line_idx(order: dict, ship_line: dict) -> tuple:
-    """Map a shipment line to PO line_idx. Never matches by item name.
+    """Map a shipment/SJ/Loading line to PO line_idx. Never matches by item name.
 
     Returns (line_idx, error_message). error_message is None on success.
-    Prefer accurate_item_id, then explicit line_idx.
+
+    Identity priority (exact, never name):
+    1. unique ``line_id`` — wins over a stale/disagreed ``line_idx``
+    2. ``accurate_item_id`` (unique, or disambiguated by ``line_idx``)
+    3. explicit ``line_idx``
     """
+    if not isinstance(ship_line, dict):
+        return None, "Line Surat Jalan tidak valid."
     lis = list(order.get("line_items") or [])
+    lid = str(ship_line.get("line_id") or "").strip()
     aid = str(ship_line.get("accurate_item_id") or "").strip()
     explicit = ship_line.get("line_idx")
     has_explicit = explicit is not None and str(explicit).strip() != ""
     idx_explicit = _safe_int(explicit, default=-1) if has_explicit else None
+
+    if lid:
+        matches = [
+            i for i, li in enumerate(lis)
+            if lid in _po_line_identity_keys(li)
+        ]
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            if idx_explicit is not None and idx_explicit in matches:
+                return idx_explicit, None
+            return None, f"line_id {lid} ambigu pada beberapa line PO — sertakan line_idx."
 
     if aid:
         matches = [
@@ -1411,7 +1471,7 @@ def match_po_line_idx(order: dict, ship_line: dict) -> tuple:
             return idx_explicit, None
         return None, f"line_idx {idx_explicit} tidak valid."
 
-    return None, "Line Surat Jalan wajib punya accurate_item_id atau line_idx."
+    return None, "Line Surat Jalan wajib punya line_id, accurate_item_id, atau line_idx."
 
 
 def remaining_delivery_note_updates(order: dict) -> list:
@@ -1882,23 +1942,29 @@ def build_sj_loading_lines(order: dict, surat_jalan_id: str) -> list:
     out = []
     lines = sj_lines_stored(order, sid)
     if lines:
+        merged = {}
         for ln in lines:
             if not isinstance(ln, dict):
                 continue
-            idx = _safe_int(ln.get("line_idx"), default=-1)
             need = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-            if idx < 0 or need <= 0:
+            if need <= 0:
                 continue
+            idx, _err = match_po_line_idx(order, ln)
+            if idx is None:
+                continue
+            merged[int(idx)] = merged.get(int(idx), 0) + need
+        for idx in sorted(merged):
             already = loaded_qty_for_sj_line(order, sid, idx)
-            rem = max(0, need - already)
+            rem = max(0, merged[idx] - already)
             if rem <= 0:
                 continue
+            lis = order.get("line_items") or []
             out.append({
                 "line_idx": idx,
                 "qty": rem,
                 "name": _line_name(order, idx),
                 "accurate_item_id": _line_accurate_item_id(order, idx),
-                "is_print": bool(0 <= idx < len(order.get("line_items") or []) and is_print_line((order.get("line_items") or [])[idx])),
+                "is_print": bool(0 <= idx < len(lis) and is_print_line(lis[idx])),
             })
         return out
     # Legacy total-only SJ
