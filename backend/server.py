@@ -6432,9 +6432,340 @@ async def reset_delivery_deadline_manual(order_id: str, user=Depends(current_use
 
 
 # ---------- Dashboard aggregation (Head of Production) ----------
+_DASHBOARD_SUMMARY_LIMIT = 1000
+
+
+def _mongo_keep_if_present(expr):
+    """Omit missing keys so Python `.get(key, default)` stays equivalent to find()."""
+    return {
+        "$cond": [
+            {"$eq": [{"$type": expr}, "missing"]},
+            "$$REMOVE",
+            expr,
+        ]
+    }
+
+
+def _orders_dashboard_summary_line_items_expr() -> dict:
+    """Keep array order / index identity. Never merge by name."""
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$line_items", []]},
+            "as": "li",
+            "in": {
+                "name": _mongo_keep_if_present("$$li.name"),
+                "production_process": _mongo_keep_if_present("$$li.production_process"),
+                "quantity": _mongo_keep_if_present("$$li.quantity"),
+            },
+        }
+    }
+
+
+def _orders_dashboard_summary_operator_splits_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$operator_splits", []]},
+            "as": "s",
+            "in": {
+                "operator_email": _mongo_keep_if_present("$$s.operator_email"),
+                "operator_name": _mongo_keep_if_present("$$s.operator_name"),
+                "quantity": _mongo_keep_if_present("$$s.quantity"),
+                "qty_completed": _mongo_keep_if_present("$$s.qty_completed"),
+                "stage": _mongo_keep_if_present("$$s.stage"),
+                "work_date": _mongo_keep_if_present("$$s.work_date"),
+            },
+        }
+    }
+
+
+def _orders_dashboard_summary_shipments_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$shipments", []]},
+            "as": "sh",
+            "in": {
+                "created_at": _mongo_keep_if_present("$$sh.created_at"),
+                "number": _mongo_keep_if_present("$$sh.number"),
+                "lines": {
+                    "$map": {
+                        "input": {"$ifNull": ["$$sh.lines", []]},
+                        "as": "ln",
+                        "in": {
+                            "line_idx": _mongo_keep_if_present("$$ln.line_idx"),
+                            "qty": _mongo_keep_if_present("$$ln.qty"),
+                            "quantity": _mongo_keep_if_present("$$ln.quantity"),
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+
+def _orders_dashboard_summary_delivery_proofs_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$delivery_proofs", []]},
+            "as": "p",
+            "in": {
+                "uploaded_at": _mongo_keep_if_present("$$p.uploaded_at"),
+            },
+        }
+    }
+
+
+def _orders_dashboard_summary_loading_info_expr() -> dict:
+    """Quantity lines plus event timestamps for shipments_today."""
+    shaped = {
+        "lines": {
+            "$map": {
+                "input": {"$ifNull": ["$loading_info.lines", []]},
+                "as": "ln",
+                "in": {
+                    "line_idx": _mongo_keep_if_present("$$ln.line_idx"),
+                    "loaded_qty": _mongo_keep_if_present("$$ln.loaded_qty"),
+                },
+            }
+        },
+        "events": {
+            "$map": {
+                "input": {"$ifNull": ["$loading_info.events", []]},
+                "as": "ev",
+                "in": {
+                    "line_idx": _mongo_keep_if_present("$$ev.line_idx"),
+                    "qty": _mongo_keep_if_present("$$ev.qty"),
+                    "at": _mongo_keep_if_present("$$ev.at"),
+                    "created_at": _mongo_keep_if_present("$$ev.created_at"),
+                },
+            }
+        },
+    }
+    return {
+        "$cond": [
+            {"$eq": [{"$type": "$loading_info"}, "object"]},
+            shaped,
+            "$$REMOVE",
+        ]
+    }
+
+
+def _orders_dashboard_summary_packing_info_expr() -> dict:
+    shaped = _orders_dashboard_packing_info_expr()
+    return {
+        "$cond": [
+            {"$eq": [{"$type": "$packing_info"}, "object"]},
+            shaped,
+            "$$REMOVE",
+        ]
+    }
+
+
+def _orders_dashboard_summary_projection() -> dict:
+    """Fields read by HoP GET /dashboard/summary. Dedicated; not Phase 2B or Action Center."""
+    return {
+        "_id": 0,
+        "id": 1,
+        "po_number": 1,
+        "outlet": 1,
+        "customer": 1,
+        "current_stage": 1,
+        "priority": 1,
+        "deadline": 1,
+        "status_label": 1,
+        "work_date": 1,
+        "total_quantity": 1,
+        "quantity": 1,
+        "cancelled": 1,
+        "design_status": 1,
+        "design_bypassed": 1,
+        "design_approved_at": 1,
+        "design_bypassed_at": 1,
+        "payment_status": 1,
+        "payment_bypassed": 1,
+        "payment_approved_at": 1,
+        "payment_bypassed_at": 1,
+        "delivery_status": 1,
+        "qty_delivered": 1,
+        "delivered_at": 1,
+        "delivery_note_number": 1,
+        "delivery_note_created_at": 1,
+        "loading_completed_at": 1,
+        "delivery_deadline_manual": 1,
+        "scheduled_delivery_date": 1,
+        "qty_packed": 1,
+        "customer_approval.status": 1,
+        "loading_checklist.items_loaded": 1,
+        "loading_checklist.seal_ok": 1,
+        "design_files": _orders_dashboard_file_presence_expr("design_files"),
+        "payment_files": _orders_dashboard_file_presence_expr("payment_files"),
+        "line_items": _orders_dashboard_summary_line_items_expr(),
+        "operator_splits": _orders_dashboard_summary_operator_splits_expr(),
+        "shipments": _orders_dashboard_summary_shipments_expr(),
+        "packing_info": _orders_dashboard_summary_packing_info_expr(),
+        "loading_info": _orders_dashboard_summary_loading_info_expr(),
+        "loading_confirmations": _orders_dashboard_loading_confirmations_expr(),
+        "delivery_proofs": _orders_dashboard_summary_delivery_proofs_expr(),
+        "delivery_reschedules": _orders_dashboard_reschedules_expr(),
+    }
+
+
+def _dashboard_summary_file_presence(files) -> list:
+    return [{}] if isinstance(files, list) and files else []
+
+
+def _shape_order_for_dashboard_summary_compute(order: dict) -> dict:
+    """In-memory mirror of `_orders_dashboard_summary_projection` (tests/parity)."""
+    src = order or {}
+    shaped = {
+        "id": src.get("id"),
+        "po_number": src.get("po_number"),
+        "outlet": src.get("outlet"),
+        "customer": src.get("customer"),
+        "current_stage": src.get("current_stage"),
+        "priority": src.get("priority"),
+        "deadline": src.get("deadline"),
+        "status_label": src.get("status_label"),
+        "work_date": src.get("work_date"),
+        "total_quantity": src.get("total_quantity"),
+        "quantity": src.get("quantity"),
+        "cancelled": src.get("cancelled"),
+        "design_status": src.get("design_status"),
+        "design_bypassed": src.get("design_bypassed"),
+        "design_approved_at": src.get("design_approved_at"),
+        "design_bypassed_at": src.get("design_bypassed_at"),
+        "payment_status": src.get("payment_status"),
+        "payment_bypassed": src.get("payment_bypassed"),
+        "payment_approved_at": src.get("payment_approved_at"),
+        "payment_bypassed_at": src.get("payment_bypassed_at"),
+        "delivery_status": src.get("delivery_status"),
+        "qty_delivered": src.get("qty_delivered"),
+        "delivered_at": src.get("delivered_at"),
+        "delivery_note_number": src.get("delivery_note_number"),
+        "delivery_note_created_at": src.get("delivery_note_created_at"),
+        "loading_completed_at": src.get("loading_completed_at"),
+        "delivery_deadline_manual": src.get("delivery_deadline_manual"),
+        "scheduled_delivery_date": src.get("scheduled_delivery_date"),
+        "qty_packed": src.get("qty_packed"),
+        "design_files": _dashboard_summary_file_presence(src.get("design_files")),
+        "payment_files": _dashboard_summary_file_presence(src.get("payment_files")),
+        "line_items": [
+            {
+                **({"name": li.get("name")} if "name" in li else {}),
+                **({"production_process": li.get("production_process")} if "production_process" in li else {}),
+                **({"quantity": li.get("quantity")} if "quantity" in li else {}),
+            }
+            for li in (src.get("line_items") or [])
+            if isinstance(li, dict)
+        ],
+        "operator_splits": [
+            {
+                **({"operator_email": s.get("operator_email")} if "operator_email" in s else {}),
+                **({"operator_name": s.get("operator_name")} if "operator_name" in s else {}),
+                **({"quantity": s.get("quantity")} if "quantity" in s else {}),
+                **({"qty_completed": s.get("qty_completed")} if "qty_completed" in s else {}),
+                **({"stage": s.get("stage")} if "stage" in s else {}),
+                **({"work_date": s.get("work_date")} if "work_date" in s else {}),
+            }
+            for s in (src.get("operator_splits") or [])
+            if isinstance(s, dict)
+        ],
+        "shipments": [
+            {
+                **({"created_at": sh.get("created_at")} if "created_at" in sh else {}),
+                **({"number": sh.get("number")} if "number" in sh else {}),
+                "lines": [
+                    {
+                        **({"line_idx": ln.get("line_idx")} if "line_idx" in ln else {}),
+                        **({"qty": ln.get("qty")} if "qty" in ln else {}),
+                        **({"quantity": ln.get("quantity")} if "quantity" in ln else {}),
+                    }
+                    for ln in (sh.get("lines") or [])
+                    if isinstance(ln, dict)
+                ],
+            }
+            for sh in (src.get("shipments") or [])
+            if isinstance(sh, dict)
+        ],
+        "loading_confirmations": [
+            {
+                "cancelled": c.get("cancelled"),
+                "deleted": c.get("deleted"),
+                "surat_jalan_id": c.get("surat_jalan_id"),
+                "lines": [
+                    {
+                        "line_idx": ln.get("line_idx"),
+                        "qty": ln.get("qty"),
+                        "quantity": ln.get("quantity"),
+                    }
+                    for ln in (c.get("lines") or [])
+                    if isinstance(ln, dict)
+                ],
+            }
+            for c in (src.get("loading_confirmations") or [])
+            if isinstance(c, dict)
+        ],
+        "delivery_proofs": [
+            {**({"uploaded_at": p.get("uploaded_at")} if "uploaded_at" in p else {})}
+            for p in (src.get("delivery_proofs") or [])
+            if isinstance(p, dict)
+        ],
+        "delivery_reschedules": [
+            {"status": r.get("status"), "new_date": r.get("new_date")}
+            for r in (src.get("delivery_reschedules") or [])
+            if isinstance(r, dict)
+        ],
+    }
+    pi = src.get("packing_info")
+    if isinstance(pi, dict):
+        shaped["packing_info"] = {
+            "qty_packed": pi.get("qty_packed"),
+            "lines": [
+                {
+                    "line_id": ln.get("line_id"),
+                    "line_idx": ln.get("line_idx"),
+                    "packed_qty": ln.get("packed_qty"),
+                }
+                for ln in (pi.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        }
+    li = src.get("loading_info")
+    if isinstance(li, dict):
+        shaped["loading_info"] = {
+            "lines": [
+                {"line_idx": ln.get("line_idx"), "loaded_qty": ln.get("loaded_qty")}
+                for ln in (li.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+            "events": [
+                {
+                    "line_idx": ev.get("line_idx"),
+                    "qty": ev.get("qty"),
+                    "at": ev.get("at"),
+                    "created_at": ev.get("created_at"),
+                }
+                for ev in (li.get("events") or [])
+                if isinstance(ev, dict)
+            ],
+        }
+    snap = src.get("customer_approval")
+    if isinstance(snap, dict):
+        shaped["customer_approval"] = {"status": snap.get("status")}
+    lc = src.get("loading_checklist")
+    if isinstance(lc, dict):
+        shaped["loading_checklist"] = {
+            "items_loaded": lc.get("items_loaded"),
+            "seal_ok": lc.get("seal_ok"),
+        }
+    return shaped
+
+
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(user=Depends(require_perm("dashboard.production.view"))):
-    raw_orders = await db.orders.find({}, {"_id": 0}).to_list(1000)
+    raw_orders = await db.orders.aggregate([
+        {"$limit": _DASHBOARD_SUMMARY_LIMIT},
+        {"$project": _orders_dashboard_summary_projection()},
+    ]).to_list(_DASHBOARD_SUMMARY_LIMIT)
     # Cancelled PO tidak boleh ikut card apa pun di Dashboard Produksi.
     orders = [o for o in raw_orders if not o.get("cancelled")]
     # Attach HOLD snapshot (canonical predicate) — dipakai untuk card HOLD.
