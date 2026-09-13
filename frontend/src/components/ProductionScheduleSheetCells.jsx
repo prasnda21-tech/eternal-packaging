@@ -104,6 +104,7 @@ function ItemCell({ row, variant }) {
     <div
       key={item.key}
       className="prod-schedule-item-line"
+      title={item.name}
       data-testid={variant === "desktop"
         ? `prod-item-line-${row.po_number}-${item.key}`
         : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
@@ -167,13 +168,23 @@ function OperatorCell({ row, qtyProg, variant }) {
   ));
 }
 
+function statusFinalChipClass(row) {
+  if (row.cancelled || row.status_final === "Cancelled") return "pill-cancel";
+  if (row.status_final === "HOLD") return "pill-hold";
+  if (row.status_final === "Terkirim") return "pill-ok";
+  const label = String(row.status_final || "");
+  if (/^(Packing|Cetak|Operator|Loading|Pengiriman|Screener|Persiapan Helper)$/i.test(label)) return "pill-progress";
+  if (/^(Order Masuk|Design|Approval Design|Payment|Approval Payment|Penjadwalan|Surat Jalan)$/i.test(label)) return "pill-warn";
+  return "pill-muted";
+}
+
 function StatusCell({ row }) {
   if (row.cancelled) {
-    return <span className="pill sm pill-cancel"><XCircle size={10} /> Cancelled</span>;
+    return <span className="pill sm pill-cancel prod-status-akhir"><XCircle size={10} /> Cancelled</span>;
   }
-  if (row.status_final === "HOLD") return <span className="pill sm pill-hold">HOLD</span>;
-  if (row.status_final === "Terkirim") return <span className="pill sm pill-ok">Terkirim</span>;
-  return <span className="pill sm">{row.status_final}</span>;
+  if (row.status_final === "HOLD") return <span className="pill sm pill-hold prod-status-akhir">HOLD</span>;
+  if (row.status_final === "Terkirim") return <span className="pill sm pill-ok prod-status-akhir">Terkirim</span>;
+  return <span className={`pill sm prod-status-akhir ${statusFinalChipClass(row)}`}>{row.status_final}</span>;
 }
 
 function cellContent(col, ctx) {
@@ -266,8 +277,8 @@ function cellContent(col, ctx) {
     }
     case "packing":
       return row.packing_status === "Sudah" ? <span className="pill sm pill-ok">Sudah</span> :
-        row.packing_status === "Berjalan" ? <span className="pill sm">Berjalan</span> :
-        <span className="pill sm">Belum</span>;
+        row.packing_status === "Berjalan" ? <span className="pill sm pill-progress">Berjalan</span> :
+        <span className="pill sm pill-muted">Belum</span>;
     case "sj":
       return row.delivery_note_number || "-";
     case "driver":
@@ -319,6 +330,10 @@ function cellExtras(col, { row, variant, cetakProg, isToday }) {
   if (col.key === "packing" && variant === "desktop") {
     testids["data-testid"] = `prod-packing-${row.po_number}`;
   }
+  if (col.key === "status" && variant === "desktop") {
+    extras.push("prod-status-akhir-cell");
+    testids["data-testid"] = `prod-status-${row.po_number}`;
+  }
   if (col.key === "deadline" || col.key === "deadline_ship" || col.key === "work_date" || col.key === "po" || col.key === "sj") {
     extras.push("mono");
   }
@@ -339,14 +354,16 @@ export default function ProductionScheduleSheetCells({
   opsBadge,
   columns,
 }) {
-  const cols = Array.isArray(columns) && columns.length ? columns : PRODUCTION_SCHEDULE_TABLE_COLS;
   const ctx = { row, variant, qtyProg, cetakProg, isToday, poHref, opsBadge };
-  return cols.map((col) => {
+  return (Array.isArray(columns) && columns.length ? columns : PRODUCTION_SCHEDULE_TABLE_COLS).map((col) => {
     const { classExtra, testids } = cellExtras(col, ctx);
     const todayStyle = col.key === "customer" && isToday
       ? { backgroundColor: "#fef08a", color: "#713f12" }
       : undefined;
-    const title = col.key === "qty" ? qtyProg.title : col.key === "qty_cetak" ? cetakProg.title : undefined;
+    const itemTitle = col.key === "item"
+      ? operatorPrintableItems(row.displayOperator?.splits || []).map((item) => item.name).filter(Boolean).join(" · ")
+      : undefined;
+    const title = col.key === "qty" ? qtyProg.title : col.key === "qty_cetak" ? cetakProg.title : itemTitle || undefined;
     return (
       <td
         key={col.key}

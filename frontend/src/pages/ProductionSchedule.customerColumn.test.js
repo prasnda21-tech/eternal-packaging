@@ -13,7 +13,7 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
   test("desktop and PWA consume the same ordered column definition", () => {
     expect(scheduleSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS/);
     expect(mobileSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS/);
-    expect(cellsSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS\.map/);
+    expect(cellsSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS\)\.map/);
     expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(22);
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key));
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS[0]).toBe("po");

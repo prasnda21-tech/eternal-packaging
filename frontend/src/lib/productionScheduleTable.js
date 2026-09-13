@@ -59,6 +59,61 @@ export const PRODUCTION_SCHEDULE_TABLE_COLS = [
 
 export const PRODUCTION_SCHEDULE_COLUMN_IDS = PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => col.key);
 
+/** Desktop /produksi display only — Driver + Surat Jalan stay in the canonical inventory. */
+export const DESKTOP_PRODUCTION_SCHEDULE_HIDDEN_KEYS = ["sj", "driver"];
+
+export const DESKTOP_PRODUCTION_SCHEDULE_GROUPS = [
+  { id: "identity", label: "Identitas PO", keys: ["po", "customer"] },
+  { id: "planning", label: "Penjadwalan", keys: ["work_date", "operator"] },
+  { id: "production", label: "Produksi", keys: ["item", "qty_cetak", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
+  { id: "progress", label: "Progress Produksi", keys: ["screen", "design", "payment", "hold", "helper", "packing"] },
+  { id: "status", label: "Status", keys: ["status"] },
+];
+
+export const DESKTOP_PRODUCTION_SCHEDULE_COL_KEYS = DESKTOP_PRODUCTION_SCHEDULE_GROUPS.flatMap((g) => g.keys);
+
+export function buildDesktopProductionScheduleCols(source = PRODUCTION_SCHEDULE_TABLE_COLS) {
+  const byKey = new Map(source.map((col) => [col.key, col]));
+  return DESKTOP_PRODUCTION_SCHEDULE_GROUPS.flatMap((group, groupIdx) => (
+    group.keys.map((key, keyIdx) => {
+      const col = byKey.get(key);
+      if (!col) return null;
+      const next = { ...col, desktopGroup: group.id, desktopGroupLabel: group.label };
+      if (key === "po") next.sticky = "po";
+      if (key === "customer") next.sticky = "customer";
+      if (key === "item") {
+        next.wrap = false;
+        next.baseWidth = 148;
+        next.maxWidth = 168;
+      }
+      if (keyIdx === 0 && groupIdx > 0) next.groupStart = true;
+      return next;
+    })
+  )).filter(Boolean);
+}
+
+export const DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS = buildDesktopProductionScheduleCols();
+
+export function desktopProductionScheduleGroupSpans(cols = DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS) {
+  const spans = [];
+  cols.forEach((col) => {
+    const last = spans[spans.length - 1];
+    if (last && last.id === col.desktopGroup) {
+      last.span += 1;
+      last.keys.push(col.key);
+      return;
+    }
+    spans.push({
+      id: col.desktopGroup,
+      label: col.desktopGroupLabel,
+      span: 1,
+      keys: [col.key],
+      sticky: col.sticky === "po" ? "identity" : null,
+    });
+  });
+  return spans;
+}
+
 export function productionDashboardRequestParams(filters = {}) {
   const f = { ...FILTER_DEFAULTS, ...filters };
   return {
@@ -85,6 +140,10 @@ export function productionSheetCellClassName(col, extra = "") {
   }
   if (col?.wrap) parts.push("production-sheet-cell-wrap");
   if (col?.type === "status") parts.push("production-sheet-cell-status");
+  if (col?.sticky === "po") parts.push("prod-sticky-col", "prod-sticky-po");
+  if (col?.sticky === "customer") parts.push("prod-sticky-col", "prod-sticky-customer");
+  if (col?.groupStart) parts.push("prod-group-start");
+  if (col?.desktopGroup) parts.push(`prod-col-group-${col.desktopGroup}`);
   if (extra) parts.push(extra);
   return parts.filter(Boolean).join(" ");
 }
