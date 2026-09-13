@@ -44,7 +44,7 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
   });
 
   test("App.js wires up route for /penjualan/penerimaan-penjualan with PermGate", () => {
-    expect(appSrc).toMatch(/import PenerimaanPenjualan from "\.\/pages\/PenerimaanPenjualan"/);
+    expect(appSrc).toMatch(/const PenerimaanPenjualan = lazy\(\(\) => import\("\.\/pages\/PenerimaanPenjualan"\)\)/);
     expect(appSrc).toMatch(/path="\/penjualan\/penerimaan-penjualan"/);
     expect(appSrc).toMatch(/NAV_KEYS\.salesReceipt/);
   });
