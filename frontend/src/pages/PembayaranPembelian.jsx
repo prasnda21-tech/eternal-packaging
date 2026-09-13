@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, newIdempotencyKey, todayYmd } from "../lib/purchaseUi";
+import { errDetail, formatRupiah, newIdempotencyKey, todayYmd, validatePurchasePaymentAmount } from "../lib/purchaseUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 export default function PembayaranPembelian() {
@@ -15,9 +15,9 @@ export default function PembayaranPembelian() {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [open, setOpen] = useState(Boolean(queryInvoiceId) || searchParams.get("action") === "create");
+  const [open, setOpen] = useState(Boolean(canCreate && (queryInvoiceId || searchParams.get("action") === "create")));
   const [eligible, setEligible] = useState([]);
-  const [invoiceId, setInvoiceId] = useState(queryInvoiceId);
+  const [invoiceId, setInvoiceId] = useState(canCreate ? queryInvoiceId : "");
   const [invoice, setInvoice] = useState(null);
   const [amount, setAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(todayYmd());
@@ -34,19 +34,34 @@ export default function PembayaranPembelian() {
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !canCreate) return;
     api.listPurchaseInvoices({ with_outstanding: true }).then((r) => setEligible(r.invoices || [])).catch(() => setEligible([]));
-  }, [open]);
+  }, [open, canCreate, ok]);
 
   useEffect(() => {
     if (!invoiceId) { setInvoice(null); return; }
     api.getPurchaseInvoice(invoiceId).then((r) => {
-      setInvoice(r.invoice);
-      setAmount(String(r.invoice?.outstanding_amount ?? ""));
+      const inv = r.invoice;
+      setInvoice(inv);
+      setAmount(String(inv?.outstanding_amount ?? ""));
+      if (Number(inv?.outstanding_amount || 0) <= 0) {
+        setErr("Faktur ini tidak memiliki sisa tagihan.");
+      }
     }).catch((ex) => setErr(errDetail(ex)));
   }, [invoiceId]);
 
   const save = async () => {
+    if (busy || !invoice || !canCreate) return;
+    const outstanding = Number(invoice.outstanding_amount || 0);
+    if (outstanding <= 0) {
+      setErr("Faktur ini tidak memiliki sisa tagihan.");
+      return;
+    }
+    const feErr = validatePurchasePaymentAmount(amount, outstanding);
+    if (feErr) {
+      setErr(feErr);
+      return;
+    }
     setBusy(true); setErr(""); setOk("");
     try {
       const res = await api.createPurchasePayment({
@@ -59,7 +74,10 @@ export default function PembayaranPembelian() {
       setOk(`Pembayaran ${res.payment.payment_number} tersimpan · ${res.payment.payment_state}`);
       setOpen(false);
       setInvoiceId("");
-      load();
+      setInvoice(null);
+      setAmount("");
+      setNotes("");
+      await load();
     } catch (ex) { setErr(errDetail(ex)); }
     finally { setBusy(false); }
   };
@@ -72,7 +90,7 @@ export default function PembayaranPembelian() {
           <h1>Pembayaran Pembelian</h1>
           <p className="subhead">DP, pembayaran sebagian, dan pelunasan. Lebih dari sisa tagihan ditolak.</p>
         </div>
-        {canCreate && <button className="primary" data-testid="btn-create-payment" onClick={() => setOpen(true)}><Plus size={14} /> Buat Pembayaran</button>}
+        {canCreate && <button className="primary" data-testid="btn-create-payment" onClick={() => { setOpen(true); setErr(""); }}><Plus size={14} /> Buat Pembayaran</button>}
       </div>
       {err && <div className="signal-strip" role="alert"><AlertCircle size={16} /><span>{err}</span></div>}
       {ok && <p className="muted" data-testid="payment-success">{ok}</p>}
@@ -99,17 +117,17 @@ export default function PembayaranPembelian() {
         </tbody>
       </table>
 
-      {open && (
+      {open && canCreate && (
         <div className="modal" role="dialog" data-testid="payment-modal">
           <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
             <h3>Pembayaran Pembelian</h3>
             <FormField id="payment-invoice" label="Faktur" isRequired value={invoiceId}>
-              <select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} data-testid="invoice-selector">
+              <select value={invoiceId} onChange={(e) => { setInvoiceId(e.target.value); setErr(""); }} data-testid="invoice-selector">
                 <option value="">Pilih faktur outstanding</option>
                 {eligible.map((inv) => <option key={inv.id} value={inv.id}>{inv.invoice_number} · sisa {formatRupiah(inv.outstanding_amount)}</option>)}
               </select>
             </FormField>
-            {invoice && (
+            {invoice && Number(invoice.outstanding_amount) > 0 && (
               <div data-testid="payment-readonly">
                 <FormProgress
                   percentage={Math.round(([paymentDate, amount].filter(Boolean).length / 2) * 100)}
@@ -129,7 +147,7 @@ export default function PembayaranPembelian() {
                     <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} data-testid="payment-date" />
                   </FormField>
                   <FormField id="payment-amount-field" label="Jumlah Pembayaran" isRequired value={amount}>
-                    <input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="payment-amount" />
+                    <input type="number" min="0" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="payment-amount" />
                   </FormField>
                   <FormField id="payment-notes-field" label="Catatan" value={notes}>
                     <input value={notes} onChange={(e) => setNotes(e.target.value)} />
@@ -138,8 +156,15 @@ export default function PembayaranPembelian() {
               </div>
             )}
             <div className="delete-modal-actions">
-              <button className="ghost" type="button" onClick={() => setOpen(false)}>Batal</button>
-              <button className="primary" disabled={busy || !invoice} onClick={save} data-testid="save-payment">{busy ? "Menyimpan…" : "Simpan"}</button>
+              <button className="ghost" type="button" onClick={() => setOpen(false)} disabled={busy}>Batal</button>
+              <button
+                className="primary"
+                disabled={busy || !invoice || Number(invoice?.outstanding_amount || 0) <= 0}
+                onClick={save}
+                data-testid="save-payment"
+              >
+                {busy ? "Menyimpan…" : "Simpan"}
+              </button>
             </div>
           </div>
         </div>

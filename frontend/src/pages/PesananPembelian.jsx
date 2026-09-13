@@ -12,15 +12,17 @@ export default function PesananPembelian() {
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_orders.create");
   const queryRequestId = searchParams.get("request_id") || "";
-  const [view, setView] = useState(searchParams.get("action") === "create" || queryRequestId ? "create" : "list");
+  const wantCreate = searchParams.get("action") === "create" || Boolean(queryRequestId);
+  const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
   const [detail, setDetail] = useState(null);
 
   const [eligible, setEligible] = useState([]);
-  const [requestId, setRequestId] = useState(queryRequestId);
+  const [requestId, setRequestId] = useState(canCreate ? queryRequestId : "");
   const [preview, setPreview] = useState(null);
   const [supplier, setSupplier] = useState("");
   const [orderDate, setOrderDate] = useState(todayYmd());
@@ -64,14 +66,19 @@ export default function PesananPembelian() {
 
   useEffect(() => {
     if (view === "create") {
+      if (!canCreate) {
+        setView("list");
+        setErr("Anda tidak memiliki izin membuat Pesanan Pembelian.");
+        return;
+      }
       loadEligible();
       if (requestId) loadPreview(requestId);
     }
-  }, [view, requestId, loadEligible, loadPreview]);
+  }, [view, requestId, loadEligible, loadPreview, canCreate]);
 
   const save = async () => {
-    if (!preview) return;
-    setBusy(true); setErr("");
+    if (!preview || busy || !canCreate) return;
+    setBusy(true); setErr(""); setOk("");
     try {
       const lines = (preview.lines || []).map((l) => ({
         request_line_id: l.request_line_id,
@@ -87,6 +94,7 @@ export default function PesananPembelian() {
       });
       setDetail(res.order);
       setView("detail");
+      setOk(`Pesanan Pembelian ${res.order?.po_number || ""} berhasil disimpan.`);
     } catch (ex) { setErr(errDetail(ex)); }
     finally { setBusy(false); }
   };
@@ -113,6 +121,7 @@ export default function PesananPembelian() {
         {view !== "list" && <button className="ghost" onClick={() => { setView("list"); load(); }}>Kembali ke daftar</button>}
       </div>
       {err && <div className="signal-strip" role="alert"><AlertCircle size={16} /><span>{err}</span></div>}
+      {ok && <p className="muted small" data-testid="po-success">{ok}</p>}
 
       {view === "list" && (
         <>

@@ -275,9 +275,11 @@ export default function PenerimaanBarang() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Pembelian</p>
           <h1 data-testid="penerimaan-title">Penerimaan Barang</h1>
-          <p className="subhead">Data penerimaan barang yang disinkronkan dari Accurate dan catatan manual lokal.</p>
+          <p className="subhead">
+            Halaman ini membedakan: (A) bukti penerimaan Accurate/manual di daftar utama, dan (B) pencatatan progress penerimaan terhadap Pesanan Pembelian.
+          </p>
           <p className="muted small stock-last-sync" data-testid="penerimaan-last-sync">
-            Terakhir sinkronisasi: {data?.last_synced_at ? formatDate(data.last_synced_at) : "belum"}
+            Terakhir sinkronisasi Accurate: {data?.last_synced_at ? formatDate(data.last_synced_at) : "belum"}
           </p>
         </div>
         <div className="stock-heading-actions">
@@ -476,6 +478,14 @@ export default function PenerimaanBarang() {
 
       {view === "list" && (
         <>
+      <div className="card" data-testid="accurate-receipts-section" style={{ marginTop: 8 }}>
+        <h2 data-testid="accurate-receipts-heading">A. Daftar Penerimaan Accurate / Manual</h2>
+        <p className="muted small">
+          Bukti penerimaan dari sinkronisasi Accurate atau dokumen manual lokal. Ini bukan otomatis sama dengan progress Pesanan Pembelian di bagian B.
+          Stock Saat Ini memakai agregat penerimaan Accurate (bukan GR lokal) bila sync berhasil.
+        </p>
+      </div>
+
       <div className="prod-filters">
         <div className="prod-filter-row">
           <form className="search-inline" onSubmit={doSearch}>
@@ -484,9 +494,9 @@ export default function PenerimaanBarang() {
               type="text"
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
-              placeholder="Cari no penerimaan / item (live)"
+              placeholder="Cari no penerimaan Accurate / item (live)"
               data-testid="penerimaan-search"
-              aria-label="Cari penerimaan barang live"
+              aria-label="Cari penerimaan barang Accurate live"
             />
             {q && (
               <button type="button" className="ghost sm" onClick={clearSearch} aria-label="Bersihkan">
@@ -511,7 +521,7 @@ export default function PenerimaanBarang() {
           <thead>
             <tr>
               <th className="col-fit">Tanggal</th>
-              <th className="col-text">No Penerimaan</th>
+              <th className="col-text">No Penerimaan Accurate</th>
               <th className="col-fit num">Jumlah Item</th>
               <th className="col-fit num">Total Qty</th>
               <th className="col-fit">Status</th>
@@ -522,7 +532,7 @@ export default function PenerimaanBarang() {
             {loading && <tr><td colSpan={6} className="muted small">Memuat…</td></tr>}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={6} className="muted small" data-testid="penerimaan-empty">Belum ada penerimaan.</td>
+                <td colSpan={6} className="muted small" data-testid="penerimaan-empty">Belum ada penerimaan Accurate.</td>
               </tr>
             )}
             {!loading && items.map((it) => {
@@ -548,8 +558,12 @@ export default function PenerimaanBarang() {
       )}
 
       <div className="card" data-testid="po-linked-receipts" style={{ marginTop: 24 }}>
-        <h2>Penerimaan terhadap Pesanan Pembelian</h2>
-        <p className="muted small">Mencatat qty diterima per exact line PO. Tidak mengubah stok fisik Accurate/Stock Saat Ini. Over-receipt ditolak.</p>
+        <h2 data-testid="po-receipts-heading">B. Penerimaan terhadap Pesanan Pembelian</h2>
+        <p className="muted small">
+          Pencatatan qty diterima per baris Pesanan Pembelian (progress PO / GR lokal).
+          Physical Stock (jika diaktifkan + trigger Penerimaan) memakai jalur ini — berbeda dari agregat Stock Saat Ini berbasis Accurate.
+          Over-receipt terhadap sisa PO ditolak. Local GR + alokasi Accurate dijumlahkan ke progress PO yang sama.
+        </p>
         {recvErr && <div className="signal-strip" role="alert"><AlertCircle size={16} /><span>{recvErr}</span></div>}
         {recvMsg && <p className="muted small">{recvMsg}</p>}
         {canReceivePo && (
@@ -595,6 +609,7 @@ export default function PenerimaanBarang() {
                   disabled={recvBusy}
                   data-testid="save-po-receipt"
                   onClick={async () => {
+                    if (recvBusy) return;
                     setRecvBusy(true); setRecvErr(""); setRecvMsg("");
                     try {
                       const poLines = (recvPreview.lines || []).map((l) => ({
@@ -607,8 +622,12 @@ export default function PenerimaanBarang() {
                         lines: poLines,
                         idempotency_key: newIdempotencyKey(),
                       });
-                      setRecvMsg(`Tercatat ${res.receipt.receipt_number}`);
+                      setRecvMsg(`Penerimaan terhadap PO tercatat: ${res.receipt.receipt_number}`);
                       setRecvPoId(recvPreview.purchase_order_id);
+                      const refreshed = await api.listPurchaseGoodsReceipts({});
+                      setPoReceipts(refreshed.receipts || []);
+                      const eligible = await api.listPurchaseOrders({ eligible_for_receipt: true });
+                      setEligiblePos(eligible.orders || []);
                     } catch (ex) { setRecvErr(errDetail(ex)); }
                     finally { setRecvBusy(false); }
                   }}
