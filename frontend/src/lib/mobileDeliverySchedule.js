@@ -47,7 +47,7 @@ export function mobileDeliveryWorkHref(orderId) {
 /** Dense spreadsheet columns — Web semantics + packing progress + queue badge. */
 export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "prio", label: "Prioritas", width: 92 },
-  { key: "effective_delivery_date", label: "Tanggal Kirim", width: 88, sort: "effective_delivery_date" },
+  { key: "effective_delivery_date", label: "Tanggal Pengiriman", width: 98, sort: "effective_delivery_date" },
   { key: "po_number", label: "No PO", width: 92, sort: "po_number" },
   { key: "customer", label: "Customer", width: 120, sort: "customer" },
   { key: "sj", label: "No SJ", width: 96 },
@@ -57,8 +57,6 @@ export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "driver", label: "Driver", width: 88, sort: "driver" },
   { key: "opt_route", label: "Optimasi Rute", width: 110 },
   { key: "status", label: "Status", width: 88, sort: "status" },
-  { key: "deadline", label: "Deadline", width: 78, sort: "deadline" },
-  { key: "jadwal_manual", label: "Jadwal Manual", width: 78, sort: "jadwal_manual" },
   { key: "actions", label: "Aksi", width: 140 },
 ];
 

@@ -361,13 +361,13 @@ describe("productionNavVisible", () => {
     expect(v.schedule).toBe(false);
   });
 
-  test("pengiriman hari ini follows status po perm and does not open produksi alone", () => {
+  test("pengiriman hari ini menu is retired; status po alone does not open produksi", () => {
     const onlyStatus = productionNavVisible(has(NAV_KEYS.statusPo));
     expect(onlyStatus.parent).toBe(false);
-    expect(onlyStatus.deliveryToday).toBe(true);
+    expect(onlyStatus.deliveryToday).toBe(false);
     const both = productionNavVisible(has(NAV_KEYS.schedule, NAV_KEYS.statusPo));
     expect(both.parent).toBe(true);
-    expect(both.deliveryToday).toBe(true);
+    expect(both.deliveryToday).toBe(false);
     const prodOnly = productionNavVisible(has(NAV_KEYS.schedule));
     expect(prodOnly.deliveryToday).toBe(false);
   });
@@ -429,14 +429,14 @@ describe("reportsMenuItems", () => {
 });
 
 describe("productionMenuItems", () => {
-  test("keeps existing Produksi children including Pengiriman Hari Ini", () => {
+  test("keeps Produksi children without Pengiriman Hari Ini menu", () => {
     const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.deliverySchedule, NAV_KEYS.deliveryReschedule, NAV_KEYS.statusPo));
     expect(items.map((item) => [item.label, item.to])).toEqual([
       ["Jadwal Produksi", "/produksi"],
-      ["Pengiriman Hari Ini", "/produksi/pengiriman-hari-ini"],
       ["Jadwal Pengiriman", "/produksi/jadwal-pengiriman"],
       ["Jadwal Pengiriman Ulang", "/produksi/jadwal-pengiriman-ulang"],
     ]);
+    expect(items.some((item) => item.label === "Pengiriman Hari Ini")).toBe(false);
   });
 
   test("omits Pengiriman Hari Ini without status po and does not invent Tugas Produksi tile", () => {

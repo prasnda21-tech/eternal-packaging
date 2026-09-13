@@ -171,14 +171,15 @@ describe("PO Detail delivery cards", () => {
     expect(detail.indexOf("payment-approval-pair")).toBeLessThan(detail.indexOf("approval-payment-panel"));
   });
 
-  test("pairs Penjadwalan with Pembagian Jadwal and keeps Deadline separate", () => {
+  test("pairs Penjadwalan with Pembagian Jadwal without separate Deadline panel", () => {
     const slot5 = detail.slice(detail.indexOf("workflow-slot-5"), detail.indexOf("workflow-group-4"));
     expect(slot5.split("<section").length - 1).toBe(1);
     expect(slot5).toMatch(/penjadwalan-panel/);
     expect(slot5).toMatch(/po-pair-grid-schedule/);
     expect(slot5).toMatch(/mode="schedule"/);
-    expect(slot5).toMatch(/DeliveryDeadlinePanel/);
+    expect(slot5).not.toMatch(/DeliveryDeadlinePanel/);
     expect(detail).toMatch(/Tambah Operator|operator-split-panel|mode="schedule"/);
+    expect(detail).toMatch(/detail-tanggal-pengiriman/);
   });
 
   test("pairs Cetak Sample with Approval Cetak Sample and keeps Qty Selesai separate", () => {

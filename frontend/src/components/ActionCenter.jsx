@@ -143,7 +143,7 @@ export default function ActionCenter() {
                       </span>
                     )}
                   </span>
-                  <span className="muted small">{fmtDeadline(o.delivery_deadline_effective)}</span>
+                  <span className="muted small">{fmtDeadline(o.tanggal_pengiriman || o.delivery_deadline_effective || o.effective_delivery_date)}</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                     <DeadlineChip status={o.delivery_deadline_status} />
                     <ArrowUpRight size={12} />

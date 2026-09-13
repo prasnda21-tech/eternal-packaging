@@ -40,7 +40,23 @@ export default function MobilePOCard({ order }) {
         <span>{card.qty != null ? Number(card.qty).toLocaleString("id-ID") : ""}</span>
       </div>
       <div className="mop-card-meta">
-        <span>{formatDeadline(order.deadline) !== "-" ? formatDeadline(order.deadline) : (order.work_date || "")}</span>
+        <span>
+          {formatDeadline(
+            order.tanggal_pengiriman
+            || order.effective_delivery_date
+            || order.delivery_deadline_effective
+            || order.scheduled_delivery_date
+            || order.delivery_deadline_manual
+          ) !== "-"
+            ? formatDeadline(
+              order.tanggal_pengiriman
+              || order.effective_delivery_date
+              || order.delivery_deadline_effective
+              || order.scheduled_delivery_date
+              || order.delivery_deadline_manual
+            )
+            : (order.work_date || "")}
+        </span>
         <span className="mop-badge is-process">{status}</span>
       </div>
     </Link>

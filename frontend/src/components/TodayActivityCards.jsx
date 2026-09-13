@@ -132,7 +132,7 @@ export default function TodayActivityCards({ data }) {
         testid="today-work"
       />
       <TodayTable
-        title="Pengiriman Hari Ini"
+        title="Pengiriman Terjadwal Hari Ini"
         empty="Tidak ada pengiriman hari ini"
         rows={ship.preview || []}
         columns={shipCols}

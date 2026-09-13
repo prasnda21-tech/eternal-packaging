@@ -76,7 +76,21 @@ function StageContent({ order, stageIdx }) {
           <KV label="Customer" value={order.customer}/>
           <KV label="Outlet" value={order.outlet}/>
           <KV label="Tanggal Order" value={order.order_date ? formatDate(order.order_date) : null}/>
-          <KV label="Deadline" value={order.deadline ? formatDate(order.deadline) : null}/>
+          <KV label="Tanggal Pengiriman" value={
+            (order.tanggal_pengiriman
+              || order.effective_delivery_date
+              || order.delivery_deadline_effective
+              || order.scheduled_delivery_date
+              || order.delivery_deadline_manual)
+              ? formatDate(
+                order.tanggal_pengiriman
+                || order.effective_delivery_date
+                || order.delivery_deadline_effective
+                || order.scheduled_delivery_date
+                || order.delivery_deadline_manual
+              )
+              : null
+          }/>
           <KV label="Total Qty" value={order.total_quantity != null ? Number(order.total_quantity).toLocaleString("id-ID") : null}/>
           <KV label="Sales" value={order.sales || order.sales_user}/>
           <KV label="Pembuat PO" value={order.created_by_name || order.created_by_user || order.imported_by}/>
@@ -131,7 +145,21 @@ function StageContent({ order, stageIdx }) {
       <div className="drawer-block" data-testid="stage-detail-schedule">
         <h4>Penjadwalan</h4>
         <dl className="kv-grid">
-          <KV label="Deadline" value={order.deadline ? formatDate(order.deadline) : null}/>
+          <KV label="Tanggal Pengiriman" value={
+            (order.tanggal_pengiriman
+              || order.effective_delivery_date
+              || order.delivery_deadline_effective
+              || order.scheduled_delivery_date
+              || order.delivery_deadline_manual)
+              ? formatDate(
+                order.tanggal_pengiriman
+                || order.effective_delivery_date
+                || order.delivery_deadline_effective
+                || order.scheduled_delivery_date
+                || order.delivery_deadline_manual
+              )
+              : null
+          }/>
           <KV label="Prioritas" value={order.priority === "urgent" ? "URGENT" : "Normal"}/>
           <KV label="HOLD" value={order.hold ? "Ya" : "Tidak"}/>
           <KV label="Alasan HOLD" value={(order.hold_reasons || []).join("; ") || null}/>

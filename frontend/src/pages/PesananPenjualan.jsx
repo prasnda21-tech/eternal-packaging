@@ -1030,16 +1030,16 @@ export default function PesananPenjualan() {
                 />
               </div>
 
-              {/* Deadline */}
+              {/* Tanggal Pengiriman */}
               <div>
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Deadline Produksi
+                  Tanggal Pengiriman
                 </label>
                 <input
                   type="date"
                   value={formData.deadline}
                   onChange={(e) => setFormData((p) => ({ ...p, deadline: e.target.value }))}
-                  data-testid="input-deadline"
+                  data-testid="input-tanggal-pengiriman"
                   style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
                 />
               </div>

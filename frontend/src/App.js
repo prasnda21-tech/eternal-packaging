@@ -231,7 +231,7 @@ export default function App() {
             <Route path="/produksi/jadwal-pengiriman/buat" element={<Navigate to="/produksi/jadwal-pengiriman" replace />} />
             <Route path="/produksi/jadwal-pengiriman/batch/:batchId" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "delivery.update"]}><DeliveryBatchPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />
-            <Route path="/produksi/pengiriman-hari-ini" element={<PermGate anyOf={[NAV_KEYS.statusPo]} alsoAnyOf={["schedule.view"]}><StatusPO /></PermGate>} />
+            <Route path="/produksi/pengiriman-hari-ini" element={<Navigate to="/produksi/jadwal-pengiriman?status=hari_ini" replace />} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
             <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />

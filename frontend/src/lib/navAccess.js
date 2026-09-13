@@ -379,14 +379,8 @@ export const PRODUCTION_TILE_TESTIDS = {
   [NAV_KEYS.deliveryReschedule]: "top-nav-jadwal-pengiriman-ulang",
 };
 
-/** Existing Produksi child that reuses status PO perm — not a new nav key. */
-export const PRODUCTION_TODAY_ITEM = {
-  key: "deliveryToday",
-  label: "Pengiriman Hari Ini",
-  to: "/produksi/pengiriman-hari-ini",
-  tone: "purple",
-  testid: "top-nav-pengiriman-hari-ini",
-};
+/** Existing Produksi child tiles — Pengiriman Hari Ini menu removed; use Jadwal Pengiriman filter Hari Ini. */
+export const PRODUCTION_TODAY_ITEM = null;
 
 export function productionMenuItems(hasPerm) {
   const visible = productionNavVisible(hasPerm);
@@ -403,10 +397,6 @@ export function productionMenuItems(hasPerm) {
       [NAV_KEYS.deliverySchedule]: { end: true },
     },
   );
-  if (visible.deliveryToday && visible.parent) {
-    const afterSchedule = items.findIndex((item) => item.key === NAV_KEYS.schedule);
-    items.splice(afterSchedule >= 0 ? afterSchedule + 1 : 0, 0, { ...PRODUCTION_TODAY_ITEM });
-  }
   return items;
 }
 
@@ -560,7 +550,7 @@ export function productionNavVisible(hasPerm) {
   const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
   const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
   const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
-  const deliveryToday = canSeeNav(hasPerm, NAV_KEYS.statusPo);
+  const deliveryToday = false; // Pengiriman Hari Ini menu removed — use Jadwal Pengiriman filter.
   const tasks = tasksNavVisible(hasPerm);
   return {
     parent: !!(schedule || deliverySchedule || deliveryReschedule || tasks.parent),

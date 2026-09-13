@@ -731,7 +731,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
         open={rescheduleOpen}
         order={order}
         canSetDate={canSetDate}
-        currentDate={order.effective_delivery_date || order.scheduled_delivery_date || order.deadline}
+        currentDate={order.tanggal_pengiriman || order.effective_delivery_date || order.scheduled_delivery_date || order.delivery_deadline_manual}
         onCancel={() => setRescheduleOpen(false)}
         onDone={(next) => { setRescheduleOpen(false); if (next) onUpdated(next); }}
       />

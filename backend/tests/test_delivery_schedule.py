@@ -1,4 +1,8 @@
-"""Delivery schedule + reschedule rules (no live API)."""
+"""Delivery schedule + reschedule rules (no live API).
+
+Authoritative date is Tanggal Pengiriman (manual override or latest approval + 3).
+Legacy order.deadline never drives scheduling.
+"""
 import sys
 from pathlib import Path
 
@@ -18,6 +22,7 @@ from services.delivery_schedule import (
     schedule_status_code,
     today_key,
 )
+from services.tanggal_pengiriman import apply_manual_tanggal_pengiriman
 
 
 def _po(**extra):
@@ -26,6 +31,8 @@ def _po(**extra):
         "po_number": "PO/2026/A",
         "customer": "PT Contoh",
         "deadline": "2026-08-30",
+        "design_approved_at": "2026-08-27T10:00:00+07:00",
+        "payment_approved_at": "2026-08-27T12:00:00+07:00",
         "delivery_status": "Belum Terkirim",
         "current_stage": 13,
         "line_items": [{"name": "Karton"}],
@@ -42,16 +49,29 @@ def _user(uid="u-driver", name="Budi", email="driver@example.com"):
     return {"id": uid, "name": name, "email": email}
 
 
-def test_effective_uses_deadline_when_no_manual():
+def test_effective_uses_automatic_when_no_manual():
     o = _po()
     assert original_deadline(o) == "2026-08-30"
+    # latest approval 27 + 3 = 30
     assert effective_delivery_date(o) == "2026-08-30"
 
 
-def test_manual_schedule_wins_over_deadline():
+def test_manual_schedule_wins_over_automatic():
     o = _po(delivery_deadline_manual="2026-08-29T00:00:00+07:00")
     assert original_deadline(o) == "2026-08-30"
     assert effective_delivery_date(o) == "2026-08-29"
+
+
+def test_legacy_deadline_alone_does_not_schedule():
+    o = {
+        "id": "ord-legacy",
+        "po_number": "PO/LEG",
+        "deadline": "2026-08-30",
+        "delivery_status": "Belum Terkirim",
+        "current_stage": 5,
+    }
+    assert effective_delivery_date(o) is None
+    assert schedule_status_code(o, today="2026-08-30") == "belum_dijadwalkan"
 
 
 def test_reschedule_wins_and_preserves_deadline():
@@ -173,20 +193,25 @@ def test_failed_validation_does_not_write():
 
 
 def test_schedule_status_today_and_late():
-    o = _po(deadline="2026-08-27")
+    o = _po(
+        design_approved_at="2026-08-24T10:00:00+07:00",
+        payment_approved_at="2026-08-24T10:00:00+07:00",
+    )
+    # auto = 27
     assert schedule_status_code(o, today="2026-08-27") == "hari_ini"
     assert schedule_status_code(o, today="2026-08-28") == "terlambat"
-    o2 = _po(deadline="2026-08-30", scheduled_delivery_date="2026-08-31")
+    o2 = _po(scheduled_delivery_date="2026-08-31")
     assert schedule_status_code(o2, today="2026-08-27") == "terjadwal"
     o3 = _po(delivery_status="Terkirim")
     assert schedule_status_code(o3, today="2026-08-27") == "terkirim"
 
 
 def test_filter_and_reset_semantics():
-    # Pin "today" so status is not calendar-flaky (deadline alone → belum when future).
-    row = schedule_row(_po(deadline="2026-08-30", customer="PT Contoh"), today="2026-08-20")
-    assert row["status"] == "belum_dijadwalkan"
-    assert matches_schedule_filters(row, {"po": "PO/2026", "customer": "contoh", "status": "belum_dijadwalkan"})
+    # Automatic future date → terjadwal (not belum).
+    row = schedule_row(_po(customer="PT Contoh"), today="2026-08-20")
+    assert row["status"] == "terjadwal"
+    assert row["effective_delivery_date"] == "2026-08-30"
+    assert matches_schedule_filters(row, {"po": "PO/2026", "customer": "contoh", "status": "terjadwal"})
     assert not matches_schedule_filters(row, {"po": "ZZZ"})
     assert not matches_schedule_filters(row, {"status": "terkirim"})
     assert matches_schedule_filters(row, {"date_from": "2026-08-30", "date_to": "2026-08-30"})
@@ -198,8 +223,22 @@ def test_public_snippet_hides_reason_and_actors():
     apply_reschedule(o, reason="INTERNAL SECRET", new_date="2026-08-31", can_set_date=True, user=_user())
     snippet = public_reschedule_snippet(o)
     assert snippet == {"scheduled_date": "2026-08-31"}
-    assert "reason" not in snippet
-    assert "requested_by_id" not in snippet
+    assert "INTERNAL" not in str(snippet)
+    assert "Budi" not in str(snippet)
+
+
+def test_schedule_row_omits_deadline_and_jadwal_manual_columns():
+    o = _po()
+    apply_manual_tanggal_pengiriman(o, "2026-08-28")
+    row = schedule_row(o, today="2026-08-20")
+    assert row["tanggal_pengiriman"] == "2026-08-28"
+    assert row["effective_delivery_date"] == "2026-08-28"
+    assert row["deadline"] is None
+    assert row["jadwal_manual"] is None
+
+
+def test_today_key_is_wib():
+    assert len(today_key()) == 10
 
 
 def test_today_key_uses_wib_not_utc_at_0001():
@@ -228,7 +267,7 @@ def test_today_key_wib_0700_stays_wib_date():
 
 def test_schedule_hari_ini_follows_wib_today_key():
     from datetime import datetime, timezone
-    o = _po(deadline="2026-08-20", scheduled_delivery_date="2026-08-28")
+    o = _po(scheduled_delivery_date="2026-08-28")
     now = datetime(2026, 8, 27, 17, 1, tzinfo=timezone.utc)  # 00:01 WIB 28 Aug
     assert schedule_status_code(o, today=today_key(now)) == "hari_ini"
     # UTC calendar date would have treated 28 Aug as still "terjadwal"

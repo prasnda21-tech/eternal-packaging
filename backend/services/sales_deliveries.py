@@ -1356,7 +1356,12 @@ async def generate_signed_sj_pdf_for_order(
             "sales": order.get("sales") or order.get("sales_name"),
             "delivery_zone": order.get("delivery_zone") or order.get("zone"),
             "expedition": order.get("expedition"),
-            "delivery_date": order.get("delivery_note_created_at") or order.get("deadline"),
+            "delivery_date": order.get("delivery_note_created_at")
+            or order.get("effective_delivery_date")
+            or order.get("tanggal_pengiriman")
+            or order.get("scheduled_delivery_date")
+            or order.get("delivery_deadline_manual")
+            or order.get("deadline"),
             "shipment_index": 1,
             "line_items": [
                 {

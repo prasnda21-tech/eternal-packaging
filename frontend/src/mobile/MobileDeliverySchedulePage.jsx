@@ -588,12 +588,6 @@ export default function MobileDeliverySchedulePage() {
                           <td className="production-sheet-cell" data-testid={`mds-status-${r.order_number}`}>
                             {r.status_label}
                           </td>
-                          <td className="mono production-sheet-cell" data-testid={`mds-deadline-${r.order_number}`}>
-                            {formatDate(r.deadline, { dateOnly: true })}
-                          </td>
-                          <td className="mono production-sheet-cell" data-testid={`mds-manual-${r.order_number}`}>
-                            {r.jadwal_manual ? formatDate(r.jadwal_manual, { dateOnly: true }) : "—"}
-                          </td>
                           <td className="production-sheet-cell mop-ds-actions" onClick={(e) => e.stopPropagation()}>
                             {r.id && (
                               <Link

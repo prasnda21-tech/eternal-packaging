@@ -150,6 +150,16 @@ export default function DeliverySchedulePage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Safe bookmark: /produksi/pengiriman-hari-ini → ?status=hari_ini on Jadwal Pengiriman.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const status = (params.get("status") || "").trim().toLowerCase();
+    if (!status || status === "semua") return;
+    const allowed = DELIVERY_SCHEDULE_STATUS_OPTIONS.some((o) => o.key === status);
+    if (!allowed) return;
+    setFilters((prev) => (prev.status === status ? prev : { ...prev, status }));
+  }, [location.search]);
+
   useEffect(() => {
     writeListUiState(userKey, "delivery-schedule", { filters, sort });
   }, [userKey, filters, sort]);
@@ -325,20 +335,6 @@ export default function DeliverySchedulePage() {
                 testid="ds-sort-customer"
               />
               <SortableTh
-                label="Deadline"
-                sortKey={DELIVERY_SORT_KEYS.deadline}
-                sort={sort}
-                onCycle={onHeaderSort}
-                testid="ds-sort-deadline"
-              />
-              <SortableTh
-                label="Jadwal Manual"
-                sortKey={DELIVERY_SORT_KEYS.jadwal_manual}
-                sort={sort}
-                onCycle={onHeaderSort}
-                testid="ds-sort-manual"
-              />
-              <SortableTh
                 label="Status"
                 sortKey={DELIVERY_SORT_KEYS.status}
                 sort={sort}
@@ -412,8 +408,6 @@ export default function DeliverySchedulePage() {
                     ) : (r.order_number || "-")}
                   </td>
                   <td className="ship-cust" title={r.customer_name || undefined}>{r.customer_name || "-"}</td>
-                  <td className="mono" data-testid={`ds-deadline-${r.order_number}`}>{formatDate(r.deadline, { dateOnly: true })}</td>
-                  <td className="mono" data-testid={`ds-manual-${r.order_number}`}>{r.jadwal_manual ? formatDate(r.jadwal_manual, { dateOnly: true }) : "—"}</td>
                   <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>
                   <td data-testid={`ds-status-lokasi-${r.order_number}`}>
                     <span className={"pill sm " + (locationOk ? "pill-ok" : "pill-warn")}>
