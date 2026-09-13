@@ -4,6 +4,9 @@ import {
   activeMobileNav,
   deliveryScheduleShowsTable,
   loadingAvailability,
+  matchLoadingSjFile,
+  mobileLoadingScheduleHref,
+  mobileScheduleWorkHref,
   mobileTaskHref,
   mobileWorkStatus,
   packingMetrics,
@@ -82,11 +85,39 @@ describe("Jadwal Pengiriman task-context selector", () => {
     expect(selectDeliveryScheduleTaskContext(permSet("loading.update"), null).selected.id).toBe("loading");
   });
 
-  test("Pengiriman/packing keep schedule table; Loading uses task list", () => {
+  test("Pengiriman, packing, and Loading all use the Jadwal Pengiriman table", () => {
     expect(deliveryScheduleShowsTable("delivery")).toBe(true);
     expect(deliveryScheduleShowsTable("packing")).toBe(true);
     expect(deliveryScheduleShowsTable(null)).toBe(true);
-    expect(deliveryScheduleShowsTable("loading")).toBe(false);
+    expect(deliveryScheduleShowsTable("loading")).toBe(true);
+  });
+
+  test("Loading selection lands on the canonical schedule route", () => {
+    expect(mobileLoadingScheduleHref()).toBe("/m/delivery-schedule?ws=loading");
+  });
+
+  test("Loading schedule row keeps shipment identity; packing/delivery hrefs stay unchanged", () => {
+    const loading = (p) => p === "loading.update";
+    expect(mobileScheduleWorkHref("po001", loading, "delivery", "loading")).toBe("/m/orders/po001?ws=loading");
+    expect(mobileScheduleWorkHref("po001", loading, "delivery", "loading", { shipment_id: "sh-1" }))
+      .toBe("/m/orders/po001?ws=loading&shipment=sh-1");
+    expect(mobileScheduleWorkHref("po001", loading, "delivery", "loading", { shipment_id: "sh-2" }))
+      .toBe("/m/orders/po001?ws=loading&shipment=sh-2");
+    expect(mobileScheduleWorkHref("o1", (p) => p === "packing.update", "delivery", "packing", { shipment_id: "sh-1" }))
+      .toBe("/m/orders/o1?ws=packing");
+    expect(mobileScheduleWorkHref("o1", (p) => p === "delivery.update", "delivery", "delivery", { shipment_id: "sh-1" }))
+      .toBe("/m/orders/o1?ws=delivery");
+  });
+
+  test("matchLoadingSjFile uses shipment identity, not item name", () => {
+    const files = [
+      { id: "sj-a", shipment_id: "sh-1", sj_number: "SJ001" },
+      { id: "sj-b", shipment_id: "sh-2", sj_number: "SJ001-2" },
+    ];
+    expect(matchLoadingSjFile(files, "sh-2").id).toBe("sj-b");
+    expect(matchLoadingSjFile(files, "sj-a").id).toBe("sj-a");
+    expect(matchLoadingSjFile(files, null).id).toBe("sj-a");
+    expect(matchLoadingSjFile(files, "missing").id).toBe("sj-a");
   });
 
   test("screener/print permissions are not Jadwal Pengiriman task contexts", () => {

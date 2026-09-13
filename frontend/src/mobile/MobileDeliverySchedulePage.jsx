@@ -324,7 +324,7 @@ export default function MobileDeliverySchedulePage() {
   const openRow = (r) => {
     if (!r?.id) return;
     const state = openPoReturnState(r.id);
-    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId), { state });
+    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId, r), { state });
   };
 
   const onRefresh = () => setReloadKey((n) => n + 1);
@@ -519,7 +519,7 @@ export default function MobileDeliverySchedulePage() {
                   <tbody>
                     {visible.map((r) => {
                       const badge = deliveryOpsBadge(r);
-                      const workHref = mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId);
+                      const workHref = mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId, r);
                       return (
                         <tr
                           key={r.shipment_id ? `${r.id}:${r.shipment_id}` : (r.id || r.order_number)}

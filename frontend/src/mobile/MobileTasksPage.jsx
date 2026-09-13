@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import { sortOperationalTasks } from "../lib/mobileTaskCard";
-import { permittedMobileWorkspaces, taskSummaryFromList } from "../lib/mobileWorkspaces";
+import { mobileLoadingScheduleHref, permittedMobileWorkspaces, taskSummaryFromList } from "../lib/mobileWorkspaces";
 import MobileTopBar from "./MobileTopBar";
 import MobileTaskCard from "./components/MobileTaskCard";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 
 export default function MobileTasksPage() {
   const { user, hasPerm } = useAuth();
+  const navigate = useNavigate();
   const workspaces = permittedMobileWorkspaces(hasPerm);
   const [params, setParams] = useSearchParams();
   const requestedWs = params.get("ws") || "";
@@ -35,10 +36,19 @@ export default function MobileTasksPage() {
 
   const setWsId = (id) => {
     if (!id) return;
+    if (id === "loading") {
+      navigate(mobileLoadingScheduleHref());
+      return;
+    }
     const next = new URLSearchParams(params);
     next.set("ws", id);
     setParams(next, { replace: true });
   };
+
+  useEffect(() => {
+    if (selected?.id !== "loading") return;
+    navigate(mobileLoadingScheduleHref(), { replace: true });
+  }, [selected?.id, navigate]);
 
   const load = async (division) => {
     if (!division) return;
@@ -56,6 +66,7 @@ export default function MobileTasksPage() {
   };
 
   useEffect(() => {
+    if (selected?.id === "loading") return;
     if (selected?.division) load(selected.division);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selected?.division]);

@@ -4,6 +4,7 @@ import api from "../lib/api";
 import MobileTasksPage from "./MobileTasksPage";
 
 const mockHasPerm = jest.fn(() => false);
+const mockNavigate = jest.fn();
 const mockTasksRouter = {
   search: "",
   setParams: jest.fn((next) => {
@@ -14,6 +15,7 @@ const mockTasksRouter = {
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useNavigate: () => mockNavigate,
   useSearchParams: () => [new URLSearchParams(mockTasksRouter.search), mockTasksRouter.setParams],
   useLocation: () => ({
     pathname: "/m/tasks",
@@ -53,6 +55,7 @@ describe("MobileTasksPage sorting", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     mockHasPerm.mockReset();
+    mockNavigate.mockReset();
     mockHasPerm.mockImplementation((p) => p === "operator.update");
     mockTasksRouter.search = "";
     mockTasksRouter.setParams.mockClear();
@@ -128,6 +131,32 @@ describe("MobileTasksPage sorting", () => {
     await flush();
     expect(api.divisionTasks).toHaveBeenCalledWith("packing", "mine");
     expect(container.textContent).toContain("Operator");
+  });
+
+  test("selecting Loading routes to Jadwal Pengiriman instead of Loading cards", async () => {
+    mockHasPerm.mockImplementation((p) => ["helper.prepare", "packing.update", "loading.update"].includes(p));
+    api.divisionTasks.mockResolvedValue({ tasks: [] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    const select = container.querySelector('[data-testid="mobile-workspace-select-input"]');
+    await act(async () => {
+      select.value = "loading";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(mockNavigate).toHaveBeenCalledWith("/m/delivery-schedule?ws=loading");
+    expect(api.divisionTasks).not.toHaveBeenCalledWith("loading", "mine");
+  });
+
+  test("direct /m/tasks?ws=loading replaces to the schedule table route", async () => {
+    mockHasPerm.mockImplementation((p) => p === "loading.update");
+    api.divisionTasks.mockResolvedValue({ tasks: [] });
+    mockTasksRouter.search = "ws=loading";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(mockNavigate).toHaveBeenCalledWith("/m/delivery-schedule?ws=loading", { replace: true });
+    expect(api.divisionTasks).not.toHaveBeenCalled();
   });
 
   test("CASE B — Pengiriman workspace stays in URL for back restoration", async () => {

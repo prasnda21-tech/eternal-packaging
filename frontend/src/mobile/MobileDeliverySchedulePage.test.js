@@ -365,9 +365,11 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=loading";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(mockDivisionTasks).toHaveBeenCalledWith("loading", "mine");
-    expect(container.querySelector('[data-testid="mds-task-list"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-task-list"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=loading");
+    expect(mockDeliverySchedule).toHaveBeenCalled();
+    expect(mockDivisionTasks).not.toHaveBeenCalled();
 
     const select = container.querySelector('[data-testid="mds-task-select-input"]');
     await act(async () => {
@@ -383,31 +385,20 @@ describe("MobileDeliverySchedulePage", () => {
     expect(mockDeliverySchedule).toHaveBeenCalled();
   });
 
-  test("CASE D — select Loading shows Loading task list without mutating deliverySchedule write APIs", async () => {
+  test("CASE D — select Loading shows Jadwal Pengiriman table, not Loading workspace or task cards", async () => {
     mockHasPerm.mockImplementation((p) => (
       p === "schedule.view" || p === "loading.update" || p === "delivery.update"
     ));
-    mockDivisionTasks.mockResolvedValue({
-      tasks: [{
-        task_id: "t1",
-        order_id: "o1",
-        order_number: "PO-100",
-        work_date: "2026-09-10",
-        item: "Cup",
-        target_qty: 10,
-        completed_qty: 0,
-        status: "belum",
-        status_label: "Belum Mulai",
-      }],
-    });
     mockDsRouter.search = "ws=loading";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(mockDivisionTasks).toHaveBeenCalledWith("loading", "mine");
-    expect(container.querySelector('[data-testid="mds-task-list"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-task-t1"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-task-t1"]').getAttribute("href")).toBe("/m/orders/o1?ws=loading");
-    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-top-bar"]').textContent).toBe("Jadwal Pengiriman");
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-task-list"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=loading");
+    expect(mockDeliverySchedule).toHaveBeenCalledWith();
+    expect(mockDivisionTasks).not.toHaveBeenCalled();
   });
 
   test("CASE E/F/G — Pengiriman ?ws= survives open-PO return context and refresh", async () => {
@@ -483,6 +474,53 @@ describe("MobileDeliverySchedulePage", () => {
     });
     expect(mockDeliverySchedule.mock.calls.every((c) => c.length === 0 || c[0] === undefined)).toBe(true);
     expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=loading");
+  });
+
+  test("Loading row click opens Loading workspace for the selected shipment", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "loading.update");
+    mockDsRouter.search = "ws=loading";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          shipment_id: "sh-1",
+          latest_sj_number: "SJ001",
+          sj_label: "SJ001",
+          sj_item_lines: [
+            { shipment_id: "sh-1", sj_number: "SJ001", line_id: "lid-cup", line_idx: 0, name: "Cup", qty: 1000 },
+          ],
+        },
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          effective_delivery_date: "2026-09-12",
+          shipment_id: "sh-2",
+          latest_sj_number: "SJ001-2",
+          sj_label: "SJ001-2",
+          sj_item_lines: [
+            { shipment_id: "sh-2", sj_number: "SJ001-2", line_id: "lid-lid", line_idx: 1, name: "Lid", qty: 1000 },
+          ],
+        },
+      ],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const sep10 = container.querySelector('[data-testid="mds-row-PO001-sh-1"]');
+    const sep12 = container.querySelector('[data-testid="mds-row-PO001-sh-2"]');
+    expect(sep10.getAttribute("data-to")).toBe("/m/orders/po001?ws=loading&shipment=sh-1");
+    expect(sep12.getAttribute("data-to")).toBe("/m/orders/po001?ws=loading&shipment=sh-2");
+    await act(async () => {
+      sep12.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/m/orders/po001?ws=loading&shipment=sh-2",
+      expect.objectContaining({
+        state: expect.objectContaining({ from: "/m/delivery-schedule?ws=loading" }),
+      }),
+    );
   });
 
   test("PWA table shows Item Line after Customer and drops Driver/Status/Aksi", async () => {
