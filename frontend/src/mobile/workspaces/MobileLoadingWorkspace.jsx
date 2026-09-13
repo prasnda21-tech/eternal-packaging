@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "../../lib/api";
 import { formatApiError } from "../../lib/errors";
 import { newActionId } from "../../lib/workflowEntries";
@@ -14,7 +15,7 @@ import {
   LOADING_REPORT_DISCREPANCY_PERM,
 } from "../../lib/loadingConfirm";
 import { SJ_VIEW_FILE_PERM, suratJalanFileUrl } from "../../lib/suratJalan";
-import { loadingAvailability, mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { loadingAvailability, matchLoadingSjFile, mobileWorkStatus } from "../../lib/mobileWorkspaces";
 import { useAuth } from "../../lib/auth";
 import MobileMetricStrip from "../components/MobileMetricStrip";
 import MobileStatusBadge from "../components/MobileStatusBadge";
@@ -25,8 +26,9 @@ function fmt(n) {
 
 export default function MobileLoadingWorkspace({ order, canEdit, onUpdated }) {
   const { hasPerm } = useAuth();
+  const [params] = useSearchParams();
   const sjFiles = sjFilesForLoading(order);
-  const activeSj = sjFiles[0] || null;
+  const activeSj = matchLoadingSjFile(sjFiles, params.get("shipment"));
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const avail = loadingAvailability(order, poLines, sjFiles);

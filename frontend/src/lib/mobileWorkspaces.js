@@ -110,9 +110,16 @@ export function selectDeliveryScheduleTaskContext(hasPerm, requestedId) {
   return { permitted, selected: fallback, unauthorized: Boolean(requestedId) };
 }
 
-/** Pengiriman (+ packing) keep the schedule spreadsheet; Loading uses division task cards. */
+/** Packing, Loading, and Pengiriman all land on the canonical Jadwal Pengiriman table. */
 export function deliveryScheduleShowsTable(workspaceId) {
-  return workspaceId == null || workspaceId === "delivery" || workspaceId === "packing";
+  return workspaceId == null
+    || workspaceId === "delivery"
+    || workspaceId === "packing"
+    || workspaceId === "loading";
+}
+
+export function mobileLoadingScheduleHref() {
+  return `${MOBILE_DELIVERY_SCHEDULE_PATH}?ws=loading`;
 }
 
 export function preferredMobileWorkspaceForTable(hasPerm, table) {
@@ -128,10 +135,27 @@ export function preferredMobileWorkspaceForTable(hasPerm, table) {
   return permitted[0];
 }
 
-export function mobileScheduleWorkHref(orderId, hasPerm, table, workspaceId) {
-  if (workspaceId) return mobileTaskHref(orderId, workspaceId);
-  const ws = preferredMobileWorkspaceForTable(hasPerm, table);
-  return mobileTaskHref(orderId, ws?.id);
+export function mobileScheduleWorkHref(orderId, hasPerm, table, workspaceId, row = null) {
+  const href = workspaceId
+    ? mobileTaskHref(orderId, workspaceId)
+    : mobileTaskHref(orderId, preferredMobileWorkspaceForTable(hasPerm, table)?.id);
+  if (workspaceId === "loading" && row?.shipment_id) {
+    const join = href.includes("?") ? "&" : "?";
+    return `${href}${join}shipment=${encodeURIComponent(row.shipment_id)}`;
+  }
+  return href;
+}
+
+/** Pick the SJ already identified on the schedule row; never invent or match by item name. */
+export function matchLoadingSjFile(sjFiles, shipmentId) {
+  const list = Array.isArray(sjFiles) ? sjFiles : [];
+  if (!shipmentId) return list[0] || null;
+  const wanted = String(shipmentId);
+  return list.find((f) => (
+    String(f?.id || "") === wanted
+    || String(f?.file_id || "") === wanted
+    || String(f?.shipment_id || "") === wanted
+  )) || list[0] || null;
 }
 
 export function activeMobileNav(pathname) {
