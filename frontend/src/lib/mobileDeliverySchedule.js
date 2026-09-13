@@ -49,16 +49,49 @@ export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "prio", label: "Prioritas", width: 92 },
   { key: "effective_delivery_date", label: "Tanggal Pengiriman", width: 98, sort: "effective_delivery_date" },
   { key: "po_number", label: "No PO", width: 92, sort: "po_number" },
-  { key: "customer", label: "Customer", width: 120, sort: "customer" },
-  { key: "sj", label: "No SJ", width: 96 },
+  { key: "customer", label: "Customer", width: 148, sort: "customer" },
+  { key: "item_line", label: "Item Line", width: 156 },
+  { key: "sj", label: "No SJ", width: 110 },
   { key: "packing", label: "Packing", width: 88, num: true },
   { key: "shipped", label: "Terkirim", width: 72, sort: "shipped", num: true },
   { key: "shippable", label: "Dapat Dikirim", width: 80, sort: "shippable", num: true },
-  { key: "driver", label: "Driver", width: 88, sort: "driver" },
   { key: "opt_route", label: "Optimasi Rute", width: 110 },
-  { key: "status", label: "Status", width: 88, sort: "status" },
-  { key: "actions", label: "Aksi", width: 140 },
 ];
+
+/** Exact SJ lines from GET /delivery/schedule — never item_label / PO line_items. */
+export function sjItemLinesFromRow(row) {
+  const lines = row?.sj_item_lines;
+  return Array.isArray(lines) ? lines.filter((ln) => ln && typeof ln === "object") : [];
+}
+
+export function groupSjItemLines(lines) {
+  const groups = [];
+  const index = new Map();
+  for (const ln of sjItemLinesFromRow({ sj_item_lines: lines })) {
+    const key = `${ln.shipment_id || ""}::${ln.sj_number || ""}`;
+    let group = index.get(key);
+    if (!group) {
+      group = {
+        shipment_id: ln.shipment_id || "",
+        sj_number: ln.sj_number || "",
+        lines: [],
+      };
+      index.set(key, group);
+      groups.push(group);
+    }
+    group.lines.push(ln);
+  }
+  return groups;
+}
+
+export function sjItemLineKey(line, fallbackIdx = 0) {
+  const ship = line?.shipment_id || "";
+  if (line?.line_id) return `${ship}:${line.line_id}:${fallbackIdx}`;
+  if (line?.line_idx !== undefined && line?.line_idx !== null && line?.line_idx !== "") {
+    return `${ship}:idx:${line.line_idx}:${fallbackIdx}`;
+  }
+  return `${ship}:pos:${fallbackIdx}`;
+}
 
 export const ROUTE_OPT_ACTION_PERMS = [
   "route_optimizer.create",

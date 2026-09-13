@@ -19,7 +19,9 @@ from services.delivery_schedule import (
     public_reschedule_snippet,
     reschedule_rows,
     schedule_row,
+    schedule_rows,
     schedule_status_code,
+    sj_item_lines,
     today_key,
 )
 from services.tanggal_pengiriman import apply_manual_tanggal_pengiriman
@@ -290,6 +292,7 @@ def test_schedule_row_embeds_canonical_shipment_percents():
     assert row["qty_delivered"] == 5000
     assert row["qty_packed"] == 100
     assert row["item_label"] == "Cetak"  # still in API; UI may omit column
+    assert row["sj_item_lines"] == []
 
 
 def test_schedule_row_exposes_delivery_coords_for_status_lokasi():
@@ -305,3 +308,147 @@ def test_schedule_row_exposes_delivery_coords_for_status_lokasi():
     zero = schedule_row(_po(delivery_location={"lat": 0, "lng": 0}))
     assert zero["lat"] == 0.0
     assert zero["lng"] == 0.0
+
+
+def test_schedule_row_one_shipment_one_line():
+    sh = {
+        "id": "sh-1",
+        "number": "SJ001",
+        "shipment_index": 1,
+        "delivery_date": "2026-09-10",
+        "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cup", "qty": 1000}],
+    }
+    o = _po(shipments=[sh])
+    rows = schedule_rows(o)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["effective_delivery_date"] == "2026-09-10"
+    assert row["sj_label"] == "SJ001"
+    assert row["shipment_id"] == "sh-1"
+    assert row["sj_item_lines"] == [{
+        "shipment_id": "sh-1",
+        "sj_number": "SJ001",
+        "line_id": "lid-a",
+        "line_idx": 0,
+        "name": "Cup",
+        "qty": 1000,
+    }]
+    assert row["id"] == "ord-1"
+    assert row["order_number"] == "PO/2026/A"
+
+
+def test_schedule_rows_two_dates_keep_historical_batch_after_newer_sj():
+    """PO001: Cup 10 Sep / Lid 12 Sep — later SJ must not rewrite Sep 10."""
+    o = _po(
+        po_number="PO001",
+        line_items=[{"name": "Cup", "quantity": 1000}, {"name": "Lid", "quantity": 1000}],
+        shipments=[
+            {
+                "id": "sh-1",
+                "number": "SJ001",
+                "shipment_index": 1,
+                "delivery_date": "2026-09-10",
+                "lines": [{"line_id": "lid-cup", "line_idx": 0, "name": "Cup", "qty": 1000}],
+            },
+            {
+                "id": "sh-2",
+                "number": "SJ001-2",
+                "shipment_index": 2,
+                "delivery_date": "2026-09-12",
+                "lines": [{"line_id": "lid-lid", "line_idx": 1, "name": "Lid", "qty": 1000}],
+            },
+        ],
+    )
+    rows = schedule_rows(o, today="2026-09-11")
+    assert len(rows) == 2
+    sep10 = next(r for r in rows if r["effective_delivery_date"] == "2026-09-10")
+    sep12 = next(r for r in rows if r["effective_delivery_date"] == "2026-09-12")
+    assert sep10["sj_label"] == "SJ001"
+    assert [ln["name"] for ln in sep10["sj_item_lines"]] == ["Cup"]
+    assert [ln["qty"] for ln in sep10["sj_item_lines"]] == [1000]
+    assert "Lid" not in [ln["name"] for ln in sep10["sj_item_lines"]]
+    assert sep10["shipment_id"] == sep10["sj_item_lines"][0]["shipment_id"]
+    assert sep12["sj_label"] == "SJ001-2"
+    assert [ln["name"] for ln in sep12["sj_item_lines"]] == ["Lid"]
+    assert [ln["qty"] for ln in sep12["sj_item_lines"]] == [1000]
+    assert "Cup" not in [ln["name"] for ln in sep12["sj_item_lines"]]
+    assert sep12["shipment_id"] == sep12["sj_item_lines"][0]["shipment_id"]
+    assert matches_schedule_filters(sep10, {"date_from": "2026-09-10", "date_to": "2026-09-10"})
+    assert not matches_schedule_filters(sep12, {"date_from": "2026-09-10", "date_to": "2026-09-10"})
+    assert matches_schedule_filters(sep12, {"date_from": "2026-09-12", "date_to": "2026-09-12"})
+    assert sep10["item_label"] == "2 item"
+    assert sep10["sj_item_lines"][0]["name"] != sep12["sj_item_lines"][0]["name"]
+
+
+def test_schedule_rows_three_dates_and_same_name_lines_stay_separate():
+    o = _po(shipments=[
+        {
+            "id": "sh-1",
+            "number": "SJ001",
+            "shipment_index": 1,
+            "delivery_date": "2026-09-08",
+            "lines": [{"line_id": "a", "line_idx": 0, "name": "Cup", "qty": 100}],
+        },
+        {
+            "id": "sh-2",
+            "number": "SJ001-2",
+            "shipment_index": 2,
+            "delivery_date": "2026-09-10",
+            "lines": [
+                {"line_id": "b1", "line_idx": 0, "name": "12 oz PET Datar 11 gr SJP", "qty": 1000},
+                {"line_id": "b2", "line_idx": 1, "name": "12 oz PET Datar 11 gr SJP", "qty": 2000},
+            ],
+        },
+        {
+            "id": "sh-3",
+            "number": "SJ001-3",
+            "shipment_index": 3,
+            "delivery_date": "2026-09-12",
+            "lines": [{"line_id": "c", "line_idx": 2, "name": "Lid", "qty": 50}],
+        },
+    ])
+    rows = schedule_rows(o)
+    assert [r["sj_label"] for r in rows] == ["SJ001", "SJ001-2", "SJ001-3"]
+    assert [r["effective_delivery_date"] for r in rows] == ["2026-09-08", "2026-09-10", "2026-09-12"]
+    mid = rows[1]
+    assert [ln["line_id"] for ln in mid["sj_item_lines"]] == ["b1", "b2"]
+    assert [ln["qty"] for ln in mid["sj_item_lines"]] == [1000, 2000]
+    assert mid["sj_item_lines"][0]["name"] == mid["sj_item_lines"][1]["name"]
+    assert "Lid" not in [ln["name"] for ln in mid["sj_item_lines"]]
+
+
+def test_schedule_rows_same_date_keep_separate_shipments_by_index():
+    o = _po(shipments=[
+        {
+            "id": "sh-a",
+            "number": "SJ001",
+            "shipment_index": 1,
+            "delivery_date": "2026-09-10",
+            "lines": [{"line_id": "a", "line_idx": 0, "name": "Cup", "qty": 100}],
+        },
+        {
+            "id": "sh-b",
+            "number": "SJ001-2",
+            "shipment_index": 2,
+            "delivery_date": "2026-09-10",
+            "lines": [{"line_id": "b", "line_idx": 1, "name": "Lid", "qty": 200}],
+        },
+    ])
+    rows = schedule_rows(o)
+    assert len(rows) == 2
+    assert [r["shipment_index"] for r in rows] == [1, 2]
+    assert [r["sj_label"] for r in rows] == ["SJ001", "SJ001-2"]
+    assert [ln["name"] for ln in rows[0]["sj_item_lines"]] == ["Cup"]
+    assert [ln["name"] for ln in rows[1]["sj_item_lines"]] == ["Lid"]
+
+
+def test_schedule_row_missing_shipments_or_lines_is_empty_safe():
+    assert schedule_row(_po())["sj_item_lines"] == []
+    assert schedule_row(_po(shipments=None))["sj_item_lines"] == []
+    assert schedule_row(_po(shipments="bad"))["sj_item_lines"] == []
+    assert schedule_rows(_po(shipments=[{"id": "sh-x", "number": "SJ/X"}]))[0]["sj_item_lines"] == []
+    assert schedule_row(_po(), shipment={"id": "sh-x", "number": "SJ/X", "lines": None})["sj_item_lines"] == []
+    assert sj_item_lines({}, {"id": "sh-x", "lines": ["skip", {"name": "Ok", "qty": 5}]}) == [
+        {"shipment_id": "sh-x", "sj_number": None, "line_id": None, "line_idx": None, "name": "Ok", "qty": 5},
+    ]
+    assert sj_item_lines(_po(shipments=[{"id": "sh-x", "number": "SJ/X", "lines": [{"name": "Nope", "qty": 1}]}])) == []

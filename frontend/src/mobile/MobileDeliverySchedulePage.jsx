@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Filter, RefreshCw, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -18,12 +18,14 @@ import {
 } from "../lib/deliverySchedule";
 import {
   MOBILE_DELIVERY_SCHEDULE_COLS,
-  canEditMobileDeliveryScheduleLocation,
   canOptimizeFromDeliverySchedule,
   canViewMobileDeliverySchedule,
+  groupSjItemLines,
   mobileDeliverySheetColumnStyle,
   mobileScheduleReviewHref,
   optimizationStatusMeta,
+  sjItemLineKey,
+  sjItemLinesFromRow,
 } from "../lib/mobileDeliverySchedule";
 import { canAccessRoutePage } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
@@ -59,8 +61,6 @@ import { formatIdQty } from "../lib/productionScheduleQty";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
-import SuratJalanViewButton from "../components/SuratJalanViewButton";
-import OutletLocationModal from "../components/OutletLocationModal";
 import MobileTopBar from "./MobileTopBar";
 import MobileTaskCard from "./components/MobileTaskCard";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
@@ -94,29 +94,45 @@ function PackingCell({ row }) {
   );
 }
 
-async function outletRowForOrder({ orderId, customer, outlet }) {
-  const row = {
-    order_id: orderId,
-    customer: customer || "",
-    outlet: outlet || "",
-    outlet_name: outlet || "",
-  };
-  if (!customer) return row;
-  try {
-    const d = await api.listDeliveryOutlets(customer);
-    const o = (d.outlets || [])[0];
-    if (o) {
-      row.outlet_id = o.id;
-      row.outlet_name = o.name || outlet || "";
-      row.lat = o.lat;
-      row.lng = o.lng;
-      row.place_id = o.place_id || o.google_place_id;
-      row.formatted_address = o.formatted_address;
-    }
-  } catch {
-    /* list is optional */
+function scheduleRowSuffix(row) {
+  if (row?.shipment_id) return `${row.order_number}-${row.shipment_id}`;
+  return row?.order_number || "row";
+}
+
+function SjItemLineCell({ row }) {
+  const suffix = scheduleRowSuffix(row);
+  const lines = sjItemLinesFromRow(row);
+  if (!lines.length) {
+    return <span className="mds-item-line-empty" data-testid={`mds-item-lines-${suffix}`}>—</span>;
   }
-  return row;
+  const groups = groupSjItemLines(lines);
+  return (
+    <div className="mds-item-lines" data-testid={`mds-item-lines-${suffix}`}>
+      {groups.map((group, gi) => (
+        <div
+          key={`${group.shipment_id || "sj"}-${group.sj_number || gi}`}
+          className="mds-item-line-group"
+          data-testid={`mds-item-line-group-${suffix}-${gi}`}
+        >
+          {group.lines.map((ln, li) => {
+            const qtyPresent = ln.qty !== undefined && ln.qty !== null && ln.qty !== "";
+            return (
+              <div
+                key={sjItemLineKey(ln, li)}
+                className="mds-item-line"
+                data-testid={`mds-item-line-${suffix}-${gi}-${li}`}
+              >
+                <span className="mds-item-line-name">{ln.name || "—"}</span>
+                {qtyPresent ? (
+                  <span className="mds-item-line-qty">{formatIdQty(ln.qty)}</span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function deliveryScheduleLoadErrorMessage(err) {
@@ -136,7 +152,6 @@ export default function MobileDeliverySchedulePage() {
   const [params, setParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
   const allowed = canViewMobileDeliverySchedule(hasPerm);
-  const canSetLocation = canEditMobileDeliveryScheduleLocation(hasPerm);
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
   const requestedWs = params.get("ws") || "";
   const taskChoice = useMemo(
@@ -167,7 +182,6 @@ export default function MobileDeliverySchedulePage() {
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
-  const [locRow, setLocRow] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
   const sheetZoom = useProductionSheetZoom();
   const scrollRestored = useRef(false);
@@ -505,9 +519,9 @@ export default function MobileDeliverySchedulePage() {
                       const workHref = mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId);
                       return (
                         <tr
-                          key={r.id || r.order_number}
+                          key={r.shipment_id ? `${r.id}:${r.shipment_id}` : (r.id || r.order_number)}
                           className="production-sheet-row mop-schedule-row"
-                          data-testid={`mds-row-${r.order_number}`}
+                          data-testid={r.shipment_id ? `mds-row-${r.order_number}-${r.shipment_id}` : `mds-row-${r.order_number}`}
                           data-to={workHref}
                           tabIndex={0}
                           onClick={() => {
@@ -532,8 +546,11 @@ export default function MobileDeliverySchedulePage() {
                           </td>
                           <td className="mono production-sheet-cell">{r.order_number || "-"}</td>
                           <td className="production-sheet-cell">{r.customer_name || "-"}</td>
-                          <td className="production-sheet-cell mono" data-testid={`mds-sj-${r.order_number}`}>
-                            {r.sj_label || "—"}
+                          <td className="production-sheet-cell">
+                            <SjItemLineCell row={r} />
+                          </td>
+                          <td className="production-sheet-cell mono" data-testid={`mds-sj-${scheduleRowSuffix(r)}`}>
+                            {r.latest_sj_number || r.sj_label || "—"}
                           </td>
                           <td className="production-sheet-cell num">
                             <PackingCell row={r} />
@@ -558,7 +575,6 @@ export default function MobileDeliverySchedulePage() {
                               contextLabel={`dari ${formatIdQty(r.print_qty_total ?? 0)} qty cetak`}
                             />
                           </td>
-                          <td className="production-sheet-cell">{r.driver_name || "—"}</td>
                           <td className="production-sheet-cell" data-testid={`mds-opt-${r.order_number}`}>
                             {(() => {
                               const meta = optimizationStatusMeta(r);
@@ -585,50 +601,6 @@ export default function MobileDeliverySchedulePage() {
                               );
                             })()}
                           </td>
-                          <td className="production-sheet-cell" data-testid={`mds-status-${r.order_number}`}>
-                            {r.status_label}
-                          </td>
-                          <td className="production-sheet-cell mop-ds-actions" onClick={(e) => e.stopPropagation()}>
-                            {r.id && (
-                              <Link
-                                className="ghost sm"
-                                to={workHref}
-                                state={poNavStateFromList({
-                                  pathname: listPathname,
-                                  search: listSearch,
-                                })}
-                                data-testid={`mds-kerja-${r.order_number}`}
-                                onClick={(e) => {
-                                  if (sheetZoom.consumeClickSuppression()) e.preventDefault();
-                                  else openPoReturnState(r.id);
-                                }}
-                              >
-                                Kerjakan
-                              </Link>
-                            )}
-                            <SuratJalanViewButton
-                              order={{ id: r.id, po_number: r.order_number, customer_name: r.customer_name, sj_files: r.sj_files }}
-                              entries={r.sj_files}
-                              label={r.sj_file_count > 1 ? `SJ (${r.sj_file_count})` : "SJ"}
-                              testid={`mds-sj-lihat-${r.order_number}`}
-                            />
-                            {canSetLocation && r.id && (
-                              <button
-                                type="button"
-                                className="ghost sm"
-                                data-testid={`mds-atur-lokasi-${r.order_number}`}
-                                onClick={async () => {
-                                  if (sheetZoom.consumeClickSuppression()) return;
-                                  setLocRow(await outletRowForOrder({
-                                    orderId: r.id,
-                                    customer: r.customer_name,
-                                  }));
-                                }}
-                              >
-                                Atur Lokasi
-                              </button>
-                            )}
-                          </td>
                         </tr>
                       );
                     })}
@@ -650,14 +622,6 @@ export default function MobileDeliverySchedulePage() {
           </>
         )}
       </main>
-
-      <OutletLocationModal
-        open={!!locRow}
-        row={locRow}
-        canEdit={canSetLocation}
-        onClose={() => setLocRow(null)}
-        onSaved={() => load()}
-      />
 
       {filterOpen && (
         <div

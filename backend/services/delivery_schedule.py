@@ -61,6 +61,11 @@ SCHEDULE_PROJECTION = {
     "operator_splits.line_idx": 1,
     "shipments.id": 1,
     "shipments.number": 1,
+    "shipments.sj_number": 1,
+    "shipments.sales_delivery_id": 1,
+    "shipments.shipment_index": 1,
+    "shipments.delivery_date": 1,
+    "shipments.created_at": 1,
     "shipments.lines": 1,
     "loading_checklist.driver_name": 1,
     "loading_checklist.driver_user_id": 1,
@@ -134,10 +139,11 @@ def schedule_status_code(
     order: dict,
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    schedule_date: Optional[str] = None,
 ) -> str:
     if is_delivered(order):
         return "terkirim"
-    eff = effective_delivery_date(order, lead_time_days)
+    eff = parse_date_key(schedule_date) or effective_delivery_date(order, lead_time_days)
     if not eff:
         return "belum_dijadwalkan"
     day = today or today_key()
@@ -189,24 +195,103 @@ def _driver_user_id(order: dict) -> Optional[str]:
     return uid or None
 
 
+def _optional_int(value: Any) -> Any:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _shipment_sj_number(sh: Optional[dict]) -> Optional[str]:
+    if not isinstance(sh, dict):
+        return None
+    num = str(sh.get("number") or sh.get("sj_number") or "").strip()
+    return num or None
+
+
+def shipment_delivery_date(sh: Optional[dict]) -> Optional[str]:
+    """Persisted Pengiriman delivery_date on the shipment — not invented from SJ suffix."""
+    if not isinstance(sh, dict):
+        return None
+    return parse_date_key(sh.get("delivery_date"))
+
+
+def dated_schedule_shipments(order: dict) -> List[dict]:
+    raw = order.get("shipments")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for sh in raw:
+        if isinstance(sh, dict) and shipment_delivery_date(sh):
+            out.append(sh)
+    return out
+
+
+def _shipment_index(sh: dict) -> int:
+    try:
+        return int(sh.get("shipment_index"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def sj_item_lines_for_shipment(sh: Optional[dict]) -> List[dict]:
+    """Exact lines of ONE shipment. Never PO line_items / item_label / other SJ batches."""
+    out: List[dict] = []
+    if not isinstance(sh, dict):
+        return out
+    shipment_id = str(sh.get("id") or sh.get("sales_delivery_id") or "").strip() or None
+    sj_number = _shipment_sj_number(sh)
+    lines = sh.get("lines")
+    if not isinstance(lines, list):
+        return out
+    for ln in lines:
+        if not isinstance(ln, dict):
+            continue
+        line_id = ln.get("line_id")
+        line_id_out = str(line_id).strip() if line_id is not None and str(line_id).strip() else None
+        qty_raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
+        name = ln.get("name")
+        out.append({
+            "shipment_id": shipment_id,
+            "sj_number": sj_number,
+            "line_id": line_id_out,
+            "line_idx": _optional_int(ln.get("line_idx")),
+            "name": str(name) if name is not None else "",
+            "qty": _optional_int(qty_raw),
+        })
+    return out
+
+
+def sj_item_lines(order: dict, shipment: Optional[dict] = None) -> List[dict]:
+    """Jadwal Pengiriman Item Line source: the matched shipment only.
+
+    Does not default to active_delivery_batch() (Pengiriman current-batch helper).
+    """
+    if isinstance(shipment, dict):
+        return sj_item_lines_for_shipment(shipment)
+    return []
+
+
 def schedule_row(
     order: dict,
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    shipment: Optional[dict] = None,
 ) -> dict:
-    code = schedule_status_code(order, today, lead_time_days)
+    sh = shipment if isinstance(shipment, dict) else None
+    batch_date = shipment_delivery_date(sh)
+    tanggal = batch_date or effective_delivery_date(order, lead_time_days)
+    code = schedule_status_code(order, today, lead_time_days, schedule_date=tanggal)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
     # Presentation-only coords for Status Lokasi (frontend locationSetupStatusLabel).
     # Lazy import avoids circular import with delivery_stops.
     from services.delivery_stops import parse_location
     loc = parse_location(order.get("delivery_location"))
-    sj_numbers = []
-    for sh in order.get("shipments") or []:
-        num = str(sh.get("number") or sh.get("sj_number") or "").strip()
-        if num and num not in sj_numbers:
-            sj_numbers.append(num)
-    tanggal = effective_delivery_date(order, lead_time_days)
+    matched_sj = _shipment_sj_number(sh)
+    shipment_id = str(sh.get("id") or sh.get("sales_delivery_id") or "").strip() or None if sh else None
     return {
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
@@ -236,10 +321,37 @@ def schedule_row(
         "percent_delivered_display": ship.get("percent_delivered_display"),
         "percent_ready_to_ship": ship.get("percent_ready_to_ship"),
         "percent_ready_to_ship_display": ship.get("percent_ready_to_ship_display"),
-        "sj_numbers": sj_numbers,
-        "sj_label": ", ".join(sj_numbers) if sj_numbers else "",
+        "shipment_id": shipment_id,
+        "shipment_index": _shipment_index(sh) if sh else None,
+        "sj_numbers": [matched_sj] if matched_sj else [],
+        "sj_label": matched_sj or "",
+        "latest_sj_number": matched_sj,
+        "sj_item_lines": sj_item_lines(order, sh),
         "urgent": str(order.get("priority") or "").lower() == "urgent",
     }
+
+
+def schedule_rows(
+    order: dict,
+    today: Optional[str] = None,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+) -> List[dict]:
+    """One Jadwal Pengiriman row per dated shipment; otherwise one PO-level row.
+
+    Same-date shipments stay separate; shipment_index is the existing sequence
+    tie-break (Pengiriman Kirim #), never SJ-suffix parsing.
+    """
+    dated = dated_schedule_shipments(order)
+    if not dated:
+        return [schedule_row(order, today=today, lead_time_days=lead_time_days)]
+    dated = sorted(
+        dated,
+        key=lambda sh: (shipment_delivery_date(sh) or "", _shipment_index(sh), str(sh.get("created_at") or "")),
+    )
+    return [
+        schedule_row(order, today=today, lead_time_days=lead_time_days, shipment=sh)
+        for sh in dated
+    ]
 
 
 def matches_schedule_filters(row: dict, filters: Optional[dict]) -> bool:

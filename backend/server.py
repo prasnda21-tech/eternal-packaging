@@ -50,7 +50,7 @@ from services.delivery_schedule import (
     apply_set_date as _apply_delivery_set_date,
     attach_schedule_snapshot,
     reschedule_rows as _delivery_reschedule_rows,
-    schedule_row as _delivery_schedule_row,
+    schedule_rows as _delivery_schedule_rows,
 )
 from services.delivery_history import (
     append_confirmation as _append_delivery_confirmation,
@@ -6120,7 +6120,9 @@ async def list_delivery_schedule(user=Depends(current_user)):
         {"cancelled": {"$ne": True}},
         SCHEDULE_PROJECTION,
     ).sort("deadline", 1).to_list(1000)
-    rows = [_delivery_schedule_row(o) for o in docs]
+    rows = []
+    for o in docs:
+        rows.extend(_delivery_schedule_rows(o))
     # Enrich optimization status (pure read; no writes).
     try:
         from services.independent_route.delivery_bridge import optimization_status_map

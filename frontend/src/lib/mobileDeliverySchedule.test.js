@@ -5,8 +5,11 @@ import {
   MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS,
   canEditMobileDeliveryScheduleLocation,
   canViewMobileDeliverySchedule,
+  groupSjItemLines,
   mobileDeliveryOrderHref,
   mobileDeliveryWorkHref,
+  sjItemLineKey,
+  sjItemLinesFromRow,
 } from "./mobileDeliverySchedule";
 import {
   DELIVERY_SCHEDULE_STATUS_OPTIONS,
@@ -67,15 +70,30 @@ describe("mobileDeliverySchedule access", () => {
       "effective_delivery_date",
       "po_number",
       "customer",
+      "item_line",
       "sj",
       "packing",
       "shipped",
       "shippable",
-      "driver",
       "opt_route",
-      "status",
-      "actions",
     ]);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.map((c) => c.label)).toEqual([
+      "Prioritas",
+      "Tanggal Pengiriman",
+      "No PO",
+      "Customer",
+      "Item Line",
+      "No SJ",
+      "Packing",
+      "Terkirim",
+      "Dapat Dikirim",
+      "Optimasi Rute",
+    ]);
+    expect(keys).not.toContain("driver");
+    expect(keys).not.toContain("status");
+    expect(keys).not.toContain("actions");
+    const customerIdx = keys.indexOf("customer");
+    expect(keys[customerIdx + 1]).toBe("item_line");
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Deadline")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Jadwal Manual")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tanggal Pengiriman")).toBe(true);
@@ -162,5 +180,40 @@ describe("delivery schedule pinch/zoom reuses production sheet helpers", () => {
     expect(g.zoom).toBeGreaterThanOrEqual(PRODUCTION_SHEET_ZOOM_MIN);
     g = endSheetPinch(g);
     expect(g.pinching).toBe(false);
+  });
+});
+
+describe("sj_item_lines helpers", () => {
+  test("never falls back to item_label or PO items", () => {
+    expect(sjItemLinesFromRow({
+      item_label: "Cup 12oz",
+      line_items: [{ name: "PO item" }],
+    })).toEqual([]);
+    expect(sjItemLinesFromRow({ sj_item_lines: null })).toEqual([]);
+  });
+
+  test("same-name lines stay separate and keys use identity not name", () => {
+    const lines = [
+      { shipment_id: "sh-1", sj_number: "SJ/001", line_id: "a", line_idx: 0, name: "Cup", qty: 1000 },
+      { shipment_id: "sh-1", sj_number: "SJ/001", line_id: "b", line_idx: 1, name: "Cup", qty: 2000 },
+    ];
+    expect(sjItemLineKey(lines[0], 0)).not.toBe(sjItemLineKey(lines[1], 1));
+    expect(sjItemLineKey(lines[0], 0)).not.toBe("Cup");
+    const groups = groupSjItemLines(lines);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].lines).toHaveLength(2);
+  });
+
+  test("schedule helpers treat payload as latest-SJ lines only", () => {
+    const latest = [
+      { shipment_id: "sh-3", sj_number: "SJ26/09/001-3", line_id: "c", line_idx: 2, name: "Current C", qty: 200 },
+    ];
+    expect(sjItemLinesFromRow({
+      sj_label: "SJ26/09/001-3",
+      latest_sj_number: "SJ26/09/001-3",
+      sj_item_lines: latest,
+    })).toEqual(latest);
+    expect(groupSjItemLines(latest)).toHaveLength(1);
+    expect(groupSjItemLines(latest)[0].sj_number).toBe("SJ26/09/001-3");
   });
 });

@@ -4468,6 +4468,13 @@ button.ghost.sm.icon{padding:4px 6px}
 .iro-source.is-manual{background:#e2e8f0;color:#334155}
 .iro-danger,.iro-danger-btn{color:#b91c1c!important}
 .iro-row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.mds-item-lines{display:flex;flex-direction:column;gap:5px;font-size:11px;line-height:1.25;max-width:100%}
+.mds-item-line-group{display:flex;flex-direction:column;gap:2px}
+.mds-item-line-sj{font-weight:700;color:#334155;letter-spacing:.01em}
+.mds-item-line{display:flex;flex-direction:column;gap:0;min-width:0}
+.mds-item-line-name{font-weight:600;color:#0f172a;overflow-wrap:anywhere}
+.mds-item-line-qty{color:#475569;font-variant-numeric:tabular-nums}
+.mds-item-line-empty{color:#94a3b8}
 .mds-opt-badge{display:inline-flex;flex-direction:column;gap:2px;font-size:11px;font-weight:600;line-height:1.2}
 .mds-opt-badge.is-belum_dioptimasi{color:#64748b}
 .mds-opt-badge.is-sudah_dioptimasi{color:#0f766e}
