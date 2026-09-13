@@ -404,7 +404,11 @@ export default function ProductionSchedule() {
           <table className="production-sheet-table" data-testid="production-sheet-table">
             <colgroup>
               {DESKTOP_COLS.map((c) => (
-                <col key={c.key} style={productionSheetColumnStyle(c)} />
+                <col
+                  key={c.key}
+                  className={c.sticky === "po" ? "prod-col-po" : c.sticky === "customer" ? "prod-col-customer" : undefined}
+                  style={c.sticky ? undefined : productionSheetColumnStyle(c)}
+                />
               ))}
             </colgroup>
             <thead className="production-sheet-header">
@@ -425,14 +429,14 @@ export default function ProductionSchedule() {
                 {DESKTOP_COLS.map((c) => {
                   const active = columnFilterActive(c.filter, filterState);
                   const thClass = [
+                    "prod-col-label",
                     c.num || c.align === "right" || c.type === "qty" ? "num" : "",
                     c.sticky === "po" ? "prod-sticky-col prod-sticky-po" : "",
                     c.sticky === "customer" ? "prod-sticky-col prod-sticky-customer" : "",
                     c.groupStart ? "prod-group-start" : "",
-                    c.desktopGroup ? `prod-col-group-${c.desktopGroup}` : "",
                   ].filter(Boolean).join(" ");
                   return (
-                    <th key={c.key} className={thClass} data-testid={c.testid} scope="col" style={productionSheetColumnStyle(c)}>
+                    <th key={c.key} className={thClass} data-testid={c.testid} scope="col" style={c.sticky ? undefined : productionSheetColumnStyle(c)}>
                       {c.filter ? (
                         <HeaderFilter
                           label={c.label}

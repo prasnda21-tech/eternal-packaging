@@ -1356,7 +1356,7 @@ export default function PODetail() {
       </div>
 
       <div className="workflow-group" data-testid="workflow-group-fulfillment">
-        <p className="workflow-group-label">D · FULFILLMENT</p>
+        <p className="workflow-group-label">D · QC DAN PENGIRIMAN</p>
       {/* 12 Packing */}
       <div id="po-stage-packing" data-testid="workflow-slot-11" data-workflow-stage="11">
       <PoStageSection stageIndex={11} order={order} title="Packing">
@@ -1381,6 +1381,7 @@ export default function PODetail() {
         canManage={canManageSuratJalan}
         canViewFile={canViewSjFile}
         canDeleteFile={hasPerm("delivery_note.delete_file")}
+        allowUpload={false}
         busy={busy}
         onUpdated={(next, action) => {
           if (next) {
