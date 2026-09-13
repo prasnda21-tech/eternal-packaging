@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx } from "./loadingConfirm";
 import { parseSjQty } from "./suratJalan";
 
 describe("Loading confirm helpers", () => {
@@ -180,5 +180,143 @@ describe("Loading confirm helpers", () => {
     expect(lines[0].available).toBe(6000);
     expect(validateLoadingDraftLines([{ line_idx: 0, qty: "6000" }], lines).ok).toBe(true);
     expect(validateLoadingDraftLines([{ line_idx: 0, qty: "8000" }], lines).ok).toBe(false);
+  });
+
+  test("selected SJ total 2000 still exposes 1000 available on the packed line", () => {
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "Other Cup", quantity: 1000, production_process: "non_print", line_id: "LB" },
+      ],
+      packing_info: { qty_packed: 1000, lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        sj_number: "SJ/2026/09/08/000006",
+        total_qty: 2000,
+        lines: [
+          { line_idx: 0, line_id: "LA", qty: 1000 },
+          { line_idx: 1, line_id: "LB", qty: 1000 },
+        ],
+      }],
+    }, "sj1");
+    expect(lines[0].qty_sj + lines[1].qty_sj).toBe(2000);
+    expect(lines[0].available).toBe(1000);
+    expect(lines[0].loaded).toBe(0);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines).ok).toBe(true);
+  });
+
+  test("packed 0 on the exact SJ line still blocks Loading", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 0 }] },
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+    }, "sj1");
+    expect(lines[0].available).toBe(0);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines).ok).toBe(false);
+  });
+
+  test("same-name lines do not share packing", () => {
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }, { line_idx: 1, line_id: "LB", packed_qty: 0 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 0, line_id: "LA", qty: 1000 },
+          { line_idx: 1, line_id: "LB", qty: 1000 },
+        ],
+      }],
+    }, "sj1");
+    expect(lines[0].available).toBe(1000);
+    expect(lines[1].available).toBe(0);
+    expect(validateLoadingDraftLines([{ line_idx: 1, qty: "1000" }], lines).ok).toBe(false);
+  });
+
+  test("already loaded subtracts once from packed remaining", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, qty: 1000 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 400 }] }],
+    }, "sj1");
+    expect(lines[0].available).toBe(600);
+    expect(lines[0].loaded).toBe(400);
+  });
+
+  test("line_id without line_idx resolves the packed PO line", () => {
+    expect(resolveLoadingPoLineIdx({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", line_id: "LA" },
+        { name: "Other", line_id: "LB" },
+      ],
+    }, { line_id: "LA", qty: 1000 })).toBe(0);
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "Other", quantity: 1000, production_process: "non_print", line_id: "LB" },
+      ],
+      packing_info: { lines: [{ line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        total_qty: 2000,
+        lines: [
+          { line_id: "LA", qty: 1000 },
+          { line_id: "LB", qty: 1000 },
+        ],
+      }],
+    }, "sj1");
+    expect(lines[0].qty_sj).toBe(1000);
+    expect(lines[1].qty_sj).toBe(1000);
+    expect(lines[0].available).toBe(1000);
+  });
+
+  test("stale line_idx loses to unique line_id", () => {
+    expect(resolveLoadingPoLineIdx({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", line_id: "LA" },
+        { name: "Other", line_id: "LB" },
+      ],
+    }, { line_idx: 1, line_id: "LA" })).toBe(0);
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "Other", quantity: 1000, production_process: "non_print", line_id: "LB" },
+      ],
+      packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 1, line_id: "LA", qty: 1000 },
+          { line_idx: 0, line_id: "LB", qty: 1000 },
+        ],
+      }],
+    }, "sj1");
+    expect(lines[0].qty_sj).toBe(1000);
+    expect(lines[0].available).toBe(1000);
+    expect(lines[1].qty_sj).toBe(1000);
+  });
+
+  test("missing line_idx is not treated as PO line 0", () => {
+    expect(resolveLoadingPoLineIdx({
+      line_items: [{ name: "A", line_id: "LA" }, { name: "B", line_id: "LB" }],
+    }, { qty: 1000 })).toBeNull();
+  });
+
+  test("unique accurate_item_id resolves without using item name", () => {
+    expect(resolveLoadingPoLineIdx({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", line_id: "LA", accurate_item_id: "frosted" },
+        { name: "14 oz Inject Datar Frosted Klir", line_id: "LB", accurate_item_id: "other" },
+      ],
+    }, { accurate_item_id: "frosted", qty: 1000 })).toBe(0);
+    expect(resolveLoadingPoLineIdx({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", accurate_item_id: "same" },
+        { name: "14 oz Inject Datar Frosted Klir", accurate_item_id: "same" },
+      ],
+    }, { accurate_item_id: "same", qty: 1000 })).toBeNull();
   });
 });
