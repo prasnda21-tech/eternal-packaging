@@ -13,12 +13,83 @@ export function shouldDispatchRouteUpdate(currentProcess, targetValue) {
   return current !== targetValue;
 }
 
+/** Compact Cetak / Tidak Cetak controls for one line_idx (shared by table + panel). */
+export function LineRouteControls({ productionProcess, idx, canEdit, busy, onSelect }) {
+  return (
+    <div className="li-route-controls" data-testid={`line-route-controls-${idx}`}>
+      <button
+        type="button"
+        className={getRouteButtonClass(productionProcess, "print")}
+        onClick={() => onSelect(idx, "print")}
+        disabled={!canEdit || busy}
+        data-testid={`route-print-${idx}`}
+      >
+        Cetak
+      </button>
+      <button
+        type="button"
+        className={getRouteButtonClass(productionProcess, "non_print")}
+        onClick={() => onSelect(idx, "non_print")}
+        disabled={!canEdit || busy}
+        data-testid={`route-nonprint-${idx}`}
+      >
+        Tidak Cetak
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Connected per-line route editor for the dense Line Item table.
+ * Same API + no-op rules as ProductionRoutePanel — presentation location only.
+ */
+export function LineRouteEditor({ order, lineIdx, canEdit, onUpdated }) {
+  const li = (order?.line_items || [])[lineIdx];
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  if (!li) return null;
+
+  const handleSelectRoute = async (idx, targetValue) => {
+    if (!shouldDispatchRouteUpdate(li.production_process, targetValue)) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api.setLineItemRoute(order.id, [{ line_idx: idx, production_process: targetValue }]);
+      onUpdated?.(r.order);
+    } catch (e) {
+      setErr(formatApiError(e, "Gagal mengubah routing"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="li-route-editor">
+      <LineRouteControls
+        productionProcess={li.production_process}
+        idx={lineIdx}
+        canEdit={canEdit}
+        busy={busy}
+        onSelect={handleSelectRoute}
+      />
+      {err ? (
+        <span className="li-route-err" data-testid={`route-error-${lineIdx}`}>
+          <X size={11} /> {err}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * ProductionRoutePanel — Batch 3 · classification per line item Cetak/Non-Cetak.
  * Legacy line tanpa `production_process` → dianggap "print" default (backward
  * compatible). TIDAK mengubah quantity/name/color/Accurate data.
+ *
+ * `compact`: summary strip only — route buttons live in the Line Item table.
  */
-export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
+export default function ProductionRoutePanel({ order, canEdit, onUpdated, compact = false }) {
   const lis = order?.line_items || [];
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -43,6 +114,32 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
     }
     setRoute(idx, targetValue);
   };
+
+  if (compact) {
+    return (
+      <section className="panel production-route-panel is-compact" data-testid="production-route-panel">
+        <header className="panel-head">
+          <h3><Printer size={14}/> Proses Produksi Per Line Item</h3>
+          <span
+            className="pill sm"
+            data-testid="requires-printing-badge"
+            style={{
+              background: order.requires_printing ? "#e6ecf3" : "#efe6d3",
+              color: order.requires_printing ? "#3a4b60" : "#7a6f52",
+            }}
+          >
+            {order.requires_printing ? "Perlu Cetak" : "Semua Non-Cetak"}
+          </span>
+        </header>
+        <p className="muted small production-route-compact-hint" data-testid="production-route-compact-hint">
+          Atur <b>Cetak / Tidak Cetak</b> per baris di tabel Line Item.
+          Line Cetak wajib Upload Sampel · Approval Sampel · Qty Cetak; Non-Cetak dapat lewati tahap tersebut.
+        </p>
+        {err && <p style={{ color: "#8f1f1f", marginTop: 4 }} data-testid="route-error"><X size={12}/> {err}</p>}
+        {!canEdit && <p className="muted small" style={{ marginTop: 4 }}>Butuh permission <code>production.route.edit</code>.</p>}
+      </section>
+    );
+  }
 
   return (
     <section className="panel" data-testid="production-route-panel">
@@ -73,7 +170,6 @@ export default function ProductionRoutePanel({ order, canEdit, onUpdated }) {
         </thead>
         <tbody>
           {lis.map((li, idx) => {
-            const p = (li.production_process || "").toLowerCase();
             return (
               <tr key={idx} data-testid={`route-row-${idx}`} style={{ borderBottom: "1px solid var(--line)" }}>
                 <td style={{ padding: "8px" }}>

@@ -1,5 +1,6 @@
+import { useId, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { STAGES, formatDisplayDateTime } from "../lib/constants";
-import { ROLES } from "../lib/constants";
 import { resolveTimelineChip } from "../lib/timelineChip.js";
 import { approvalDesignAssignEvent } from "../lib/approvalDesignHistory";
 
@@ -38,18 +39,31 @@ function stageAssignAt(idx, last, order) {
   return "";
 }
 
-export default function Timeline({ timeline = [], currentStage = 0, order = null }) {
+export default function Timeline({ timeline = [], currentStage = 0, order = null, defaultOpen = false }) {
   const source = { ...(order || {}), timeline };
   const byStage = STAGES.map((label, idx) => {
     const events = timeline.filter((t) => t.stage === idx);
     const last = events[events.length - 1] || null;
     return { idx, label, last };
   });
+  const [open, setOpen] = useState(defaultOpen);
+  const panelId = useId();
 
   return (
-    <section className="panel" data-testid="order-timeline-panel">
-      <header className="panel-head"><h3>Alur Pekerjaan</h3></header>
-      <div className="workflow-table-wrap">
+    <section className={`panel po-history-panel${open ? " is-open" : " is-collapsed"}`} data-testid="order-timeline-panel">
+      <button
+        type="button"
+        className="panel-head po-history-toggle"
+        aria-expanded={open}
+        aria-controls={panelId}
+        data-testid="order-timeline-toggle"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <h3>Alur Pekerjaan</h3>
+        <span className="muted small">Histori {STAGES.length} tahap</span>
+        <ChevronDown size={14} className={`po-stage-chevron${open ? " is-open" : ""}`} aria-hidden="true" />
+      </button>
+      <div id={panelId} className="workflow-table-wrap" hidden={!open}>
         <table className="workflow-table" data-testid="order-timeline">
           <thead>
             <tr>

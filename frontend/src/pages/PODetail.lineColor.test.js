@@ -11,9 +11,10 @@ describe("PO Detail line color display", () => {
     expect(detail).toMatch(/\(order\.line_items \|\| \[\]\)\.map\(\(li, i\) => \{/);
     expect(detail).toMatch(/import \{ salesOrderLineColor \} from "\.\.\/lib\/salesOrderLineColor"/);
     expect(detail).toMatch(/data-testid=\{`line-item-color-\$\{i\}`\}/);
-    expect(detail).toMatch(/Warna: \{salesOrderLineColor\(li\)/);
+    expect(detail).toMatch(/\{salesOrderLineColor\(li\) \|\| "-"\}/);
     expect(detail).not.toMatch(/Warna: \{order\.color\}/);
     expect(detail).not.toMatch(/line_items\[0\]\.color/);
+    expect(detail).toMatch(/line-items-table/);
   });
 
   test("production route panel shows each line color independently", () => {

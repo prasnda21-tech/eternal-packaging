@@ -238,9 +238,14 @@
 /* -------- PO Detail -------- */
 .po-detail{
   max-width:1280px;width:100%;min-width:0;margin:0 auto;
-  --mod:#0f5f63;--mod-strong:#0b4c4f;--mod-soft:#e8f4f5;--mod-border:#1a7a7e;--mod-ink:#134E4A;--mod-tint:#f4fafb;--mod-head-fg:#fff;
-  --po-stageflow-height:72px;
+  --mod:#0f3d3f;--mod-strong:#0a2e30;--mod-soft:#eef3f4;--mod-border:#c5d0d4;--mod-ink:#0f172a;--mod-tint:#f7f8f9;--mod-head-fg:#0f172a;
+  --po-stageflow-height:52px;
   --po-stageflow-sticky-top:var(--ep-topbar-height,48px);
+  --po-navy:#0b1f33;
+  --po-teal:#0f5f63;
+  --po-border:#c9d2d8;
+  --po-surface:#ffffff;
+  --po-page:#f4f6f7;
 }
 .content-workspace .po-detail{
   --po-stageflow-sticky-top:calc(var(--ep-topbar-height,48px) + var(--ep-workspace-tabs-height,34px));
@@ -4572,3 +4577,607 @@ button.ghost.sm.icon{padding:4px 6px}
   .mds-review-row > .mop-btn-ghost.sm{grid-column:2}
   .mds-driver-select{flex-basis:100%}
 }
+
+/* -------- PO Detail industrial IA — compact density -------- */
+.po-detail-industrial{
+  --po-gap:8px;
+  --po-pad-y:8px;
+  --po-pad-x:12px;
+  --po-row:36px;
+  --po-head:40px;
+  --po-rail:36px;
+  --po-border:#c9d2d8;
+  --po-navy:#0b1f33;
+  --po-teal:#0f5f63;
+  background:linear-gradient(180deg,#f3f5f6 0%,#f7f8f9 96px,#f4f6f7 100%);
+  color:var(--po-navy);
+  display:flex;flex-direction:column;gap:var(--po-gap);
+}
+.po-detail-industrial > *{margin-top:0!important;margin-bottom:0!important}
+
+/* Header */
+.po-detail-industrial .detail-header{
+  gap:4px;margin:0!important;padding:0 0 4px;border-bottom:1px solid var(--po-border);
+}
+.po-detail-industrial .po-hero-title-row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.po-detail-industrial .po-hero-identity{min-width:0;flex:1}
+.po-detail-industrial .po-hero-identity-meta,
+.po-detail-industrial .po-hero-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;margin-top:1px}
+.po-detail-industrial .po-hero-customer{margin:0;font-size:clamp(17px,1.7vw,21px);font-weight:700;letter-spacing:-.02em;line-height:1.15;color:var(--po-navy)}
+.po-detail-industrial .po-hero-number{margin:0;font:12px/1.25 'IBM Plex Mono',monospace;font-weight:600;color:#334155}
+.po-detail-industrial .po-hero-branch,
+.po-detail-industrial .po-hero-outlet{margin:0;font-size:12px;font-weight:600;color:#475569}
+.po-detail-industrial .po-hero-dot{color:#94a3b8}
+.po-detail-industrial .po-hero-title-actions{display:flex;gap:6px;flex:0 0 auto}
+.po-detail-industrial .po-hero-ship-date{font-size:12px;color:#334155}
+.po-detail-industrial .po-hero-ship-date strong{font-family:'IBM Plex Mono',monospace;font-size:12px}
+.po-detail-industrial .po-hero-updated,
+.po-detail-industrial .po-hero-sedang{font-size:11.5px;color:#64748b}
+.po-detail-industrial .po-hero-back,
+.po-detail-industrial .po-hero-refresh{min-height:30px!important;padding:3px 8px!important}
+
+/* KPI */
+.po-detail-industrial .po-kpi-strip{
+  margin:0!important;border:1px solid var(--po-border);border-radius:4px;box-shadow:none;background:#fff;
+  height:auto!important;min-height:0!important;
+}
+.po-detail-industrial .po-kpi-status-row{
+  display:flex;flex-wrap:wrap;gap:6px 14px;padding:2px 10px 5px;font-size:12px;
+  border-top:1px solid #e8eef1;color:#475569;
+}
+
+/* Focus */
+.po-detail-industrial .po-focus-panel{
+  display:grid;gap:2px;margin:0!important;padding:6px 10px;border:1px solid var(--po-border);
+  border-left:3px solid var(--po-teal);border-radius:4px;background:#fff;height:auto!important;min-height:0!important;
+}
+.po-detail-industrial .po-focus-panel.tone-blocked{border-left-color:#d97706;background:#fffdf8}
+.po-detail-industrial .po-focus-panel.tone-completed{border-left-color:#94a3b8}
+.po-detail-industrial .po-focus-head{display:flex;flex-direction:column;gap:1px}
+.po-detail-industrial .po-focus-kicker{font:10px 'IBM Plex Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#64748b}
+.po-detail-industrial .po-focus-title{font-size:13.5px;color:var(--po-navy);line-height:1.25}
+.po-detail-industrial .po-focus-detail{margin:0;font-size:12.5px;color:#475569;line-height:1.35}
+.po-detail-industrial .po-focus-holds{margin:2px 0 0;padding-left:16px;font-size:12px;color:#92400e}
+.po-detail-industrial .po-focus-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:2px}
+
+/* Stage rail — equal columns, no clipping, readable compact */
+.po-detail-industrial{
+  --po-stage-h:52px;
+  --po-stage-chevron:6px;
+  --po-stage-rail-gutter:14px;
+  /* Floor ≈ Penjadwalan@10px + chevron pads; 15×76+28=1168 fits 1280 content */
+  --po-stage-min-col:76px;
+  --po-stageflow-height:60px;
+}
+.po-detail-industrial .po-stage-bar-sticky{
+  margin:0 0 8px!important;
+  padding:6px 0!important;
+  height:auto!important;
+  min-height:0!important;
+  background:var(--surface,#fff);
+  overflow:visible;
+}
+.po-detail-industrial .po-stage-bar-block{
+  margin:0!important;
+  /* gutters live on the track so they scroll with stages and never steal equal-col width unevenly */
+  padding:4px 0!important;
+  height:auto!important;
+  min-height:0!important;
+  max-height:none!important;
+  width:100%;
+  max-width:100%;
+  min-width:0;
+  overflow-x:auto;
+  overflow-y:hidden;
+  -webkit-overflow-scrolling:touch;
+  scrollbar-width:thin;
+  box-sizing:border-box;
+  /* subtle edge fade as scroll affordance */
+  background:
+    linear-gradient(90deg,#fff 40%,rgba(255,255,255,0)) 0 0/16px 100% local,
+    linear-gradient(270deg,#fff 40%,rgba(255,255,255,0)) 100% 0/16px 100% local,
+    #fff;
+  background-repeat:no-repeat;
+  background-attachment:local,local,scroll;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels,
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels.equal-stages{
+  display:grid!important;
+  grid-template-columns:repeat(15,minmax(0,1fr))!important;
+  gap:0!important;
+  align-items:stretch!important;
+  margin:0!important;
+  width:100%!important;
+  /* Fit viewport when possible; only force scroll when cols would drop below readable floor */
+  min-width:calc(15 * var(--po-stage-min-col) + 2 * var(--po-stage-rail-gutter))!important;
+  height:var(--po-stage-h)!important;
+  padding:0 var(--po-stage-rail-gutter)!important;
+  box-sizing:border-box!important;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-col,
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels.equal-stages .stage-bar-col{
+  flex:unset!important;
+  width:auto!important;
+  min-width:0!important;
+  max-width:none!important;
+  height:var(--po-stage-h)!important;
+  display:flex!important;
+  align-items:stretch!important;
+  justify-content:stretch!important;
+  gap:0!important;
+  box-sizing:border-box!important;
+  overflow:visible!important;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg,
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels.equal-stages .stage-bar-seg{
+  box-sizing:border-box!important;
+  width:100%!important;
+  max-width:100%!important;
+  flex:1 1 auto!important;
+  height:var(--po-stage-h)!important;
+  min-height:var(--po-stage-h)!important;
+  max-height:var(--po-stage-h)!important;
+  margin:0!important;
+  /* horizontal padding clears chevron notches so labels are not clip-path cropped */
+  padding:5px calc(var(--po-stage-chevron) + 2px) 4px calc(var(--po-stage-chevron) + 2px)!important;
+  gap:2px!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  display:flex!important;
+  flex-direction:column!important;
+  justify-content:flex-start!important;
+  align-items:center!important;
+  text-align:center!important;
+  overflow:hidden!important;
+  background:#e8eef1;
+  color:#475569;
+  /* chevron tip stays INSIDE this stage box — no negative margins / overlap */
+  clip-path:polygon(
+    0 0,
+    calc(100% - var(--po-stage-chevron)) 0,
+    100% 50%,
+    calc(100% - var(--po-stage-chevron)) 100%,
+    0 100%,
+    var(--po-stage-chevron) 50%
+  );
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-col:first-child .stage-bar-seg{
+  clip-path:polygon(
+    0 0,
+    calc(100% - var(--po-stage-chevron)) 0,
+    100% 50%,
+    calc(100% - var(--po-stage-chevron)) 100%,
+    0 100%
+  )!important;
+  border-radius:6px 0 0 6px!important;
+  padding-left:8px!important;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-col:last-child .stage-bar-seg{
+  clip-path:polygon(
+    0 0,
+    100% 0,
+    100% 100%,
+    0 100%,
+    var(--po-stage-chevron) 50%
+  )!important;
+  border-radius:0 6px 6px 0!important;
+  padding-right:8px!important;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.done{
+  background:#d7ebe9;color:#0f5f63;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.current{
+  background:#0f5f63;color:#fff;z-index:2;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.waiting{
+  background:#fef3c7;color:#92400e;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.not-required,
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.upcoming{
+  background:#f1f5f9;color:#94a3b8;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-step-num{
+  font:10px/1 'IBM Plex Mono',monospace!important;
+  font-weight:700!important;
+  letter-spacing:.04em;
+  opacity:.9;
+  flex:0 0 11px;
+  height:11px;
+  text-align:center;
+  width:100%;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-label{
+  font-size:10px!important;
+  font-weight:600!important;
+  line-height:1.15!important;
+  letter-spacing:-.02em;
+  text-align:center!important;
+  width:100%;
+  max-width:100%;
+  margin:0!important;
+  padding:0!important;
+  /* wrap at spaces only — never mid-word; no ellipsis; 2–3 compact lines */
+  display:block!important;
+  white-space:normal!important;
+  overflow:hidden!important;
+  text-overflow:clip!important;
+  -webkit-line-clamp:unset!important;
+  line-clamp:unset!important;
+  min-height:calc(1.15em * 2)!important;
+  max-height:calc(1.15em * 3)!important;
+  word-break:keep-all!important;
+  overflow-wrap:normal!important;
+  hyphens:none!important;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.clickable:hover{
+  transform:none!important;
+  filter:brightness(1.05);
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.clickable:focus-visible{
+  outline:2px solid #0f5f63;
+  outline-offset:-3px;
+  z-index:3;
+}
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.current.clickable:focus-visible{
+  outline-color:#fff;
+}
+
+/* Panels */
+.po-detail-industrial .panel,
+.po-detail-industrial .qty-ops-panel,
+.po-detail-industrial .packing-panel{
+  border:1px solid var(--po-border)!important;
+  border-radius:4px!important;
+  box-shadow:none!important;
+  background:#fff;
+  padding:0 0 6px!important;
+  margin:0!important;
+  height:auto!important;
+  min-height:0!important;
+}
+.po-detail-industrial .panel-head,
+.po-detail-industrial .qty-ops-head,
+.po-detail-industrial .packing-panel .panel-head{
+  background:#f1f5f7!important;
+  color:var(--po-navy)!important;
+  border-bottom:1px solid var(--po-border);
+  padding:5px 10px!important;
+  margin:0!important;
+  min-height:var(--po-head);
+  height:auto!important;
+  box-sizing:border-box;
+  display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;
+}
+.po-detail-industrial .panel-head h3,
+.po-detail-industrial .qty-ops-title h3,
+.po-detail-industrial .packing-panel .panel-head h3{
+  color:var(--po-navy)!important;
+  font-size:13px!important;
+  font-weight:700;
+  margin:0;
+  line-height:1.2;
+}
+.po-detail-industrial .panel-head > .muted,
+.po-detail-industrial .qty-ops-head .muted{color:#64748b!important}
+.po-detail-industrial .po-phase-design,
+.po-detail-industrial .po-phase-payment,
+.po-detail-industrial .po-phase-scheduling,
+.po-detail-industrial .po-phase-helper,
+.po-detail-industrial .po-phase-sample,
+.po-detail-industrial .po-phase-print,
+.po-detail-industrial .po-phase-shipping,
+.po-detail-industrial [data-testid="design-files-panel"],
+.po-detail-industrial [data-testid="approval-design-panel"],
+.po-detail-industrial [data-testid="payment-panel"],
+.po-detail-industrial [data-testid="payment-approval-pair"],
+.po-detail-industrial [data-testid="penjadwalan-panel"],
+.po-detail-industrial [data-testid="screener-panel"],
+.po-detail-industrial [data-testid="helper-prep-panel"],
+.po-detail-industrial [data-testid="cetak-sample-pair"],
+.po-detail-industrial [data-testid="qty-selesai-cetak-panel"],
+.po-detail-industrial [data-testid="operator-progress-panel"]{
+  --mod:#0f5f63;--mod-strong:#0b4c4f;--mod-border:#c9d2d8;--mod-head-fg:#0b1f33;--mod-ink:#0b1f33;--mod-soft:#f1f5f7;
+}
+
+/* Workflow groups — full-width dark headers (visual separators only) */
+.po-detail-industrial .workflow-group{
+  border:0;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+  margin:10px 0 0!important;
+  padding:0;
+  height:auto!important;
+  min-height:0!important;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.po-detail-industrial .workflow-group + .workflow-group{margin-top:12px!important}
+.po-detail-industrial .workflow-group-label{
+  display:block;
+  box-sizing:border-box;
+  width:100%;
+  margin:0;
+  padding:8px 12px;
+  min-height:34px;
+  border-radius:4px;
+  background:#0b3d40; /* dark teal/navy */
+  color:#fff;
+  font:700 11px/1.25 'IBM Plex Mono',monospace;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  border:0;
+}
+.po-detail-industrial .workflow-group-inner{display:flex;flex-direction:column;gap:3px;padding:0}
+.po-detail-industrial .workflow-group .panel,
+.po-detail-industrial .workflow-group .po-stage-section{margin:0!important}
+.po-detail-industrial .workflow-group > .po-stage-section,
+.po-detail-industrial .workflow-group > [data-workflow-stage],
+.po-detail-industrial .workflow-group > [id^="po-stage-"]{
+  /* stage cards contrast against dark group header */
+}
+
+/* Stage accordion rows */
+.po-stage-section{
+  border:1px solid var(--po-border);border-radius:4px;background:#fff;overflow:hidden;
+  height:auto!important;min-height:0!important;
+}
+.po-stage-section.tone-not-required{background:#f8fafc;border-style:dashed}
+.po-stage-section.tone-completed{background:#fbfcfd}
+.po-stage-section.tone-active{border-color:#0f5f63;box-shadow:inset 3px 0 0 #0f5f63}
+.po-stage-section.tone-blocked{border-color:#f59e0b;box-shadow:inset 3px 0 0 #d97706}
+.po-stage-summary-row{
+  width:100%;display:grid;grid-template-columns:30px minmax(0,1fr) minmax(0,1.1fr) 16px;
+  gap:6px;align-items:center;padding:4px 8px;border:0;background:transparent;text-align:left;
+  min-height:38px;height:auto!important;color:inherit;cursor:pointer;
+}
+.po-stage-summary-row:focus-visible{outline:2px solid #0f5f63;outline-offset:-2px}
+.po-stage-summary-num{font:10.5px 'IBM Plex Mono',monospace;color:#64748b}
+.po-stage-summary-main{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;min-width:0}
+.po-stage-summary-title{font-size:12.5px;font-weight:700;color:#0b1f33;line-height:1.2}
+.po-stage-summary-status{
+  font:10px 'IBM Plex Mono',monospace;padding:1px 5px;border-radius:2px;border:1px solid #d5dee3;
+  color:#475569;background:#f8fafc;line-height:1.3;
+}
+.po-stage-summary-status.tone-completed{color:#0f766e;border-color:#99d5cf;background:#e7f5f3}
+.po-stage-summary-status.tone-active{color:#fff;border-color:#0f5f63;background:#0f5f63}
+.po-stage-summary-status.tone-blocked{color:#92400e;border-color:#f59e0b;background:#fff7ed}
+.po-stage-summary-status.tone-not-required{color:#94a3b8;background:#f1f5f9}
+.po-stage-summary-meta{font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.po-stage-chevron{transition:transform .15s ease;color:#64748b;justify-self:end;width:14px;height:14px}
+.po-stage-chevron.is-open{transform:rotate(180deg)}
+.po-stage-section-body{padding:0;border-top:1px solid #e8eef1;height:auto!important;min-height:0!important}
+.po-stage-section.is-collapsed .po-stage-section-body{border-top:0}
+.po-stage-section.tone-not-required .po-stage-summary-row,
+.po-stage-section.tone-completed .po-stage-summary-row{min-height:34px;padding:3px 8px}
+.po-stage-section .panel{border:0!important;border-radius:0!important;margin:0!important;padding:0 0 4px!important;box-shadow:none!important;min-height:0!important;height:auto!important}
+.po-stage-section .panel-head{border-radius:0;min-height:30px;padding:3px 8px!important}
+.po-stage-section .panel-head h3{font-size:12px!important;font-weight:600}
+
+/* Actions */
+.po-detail-industrial .po-actions-panel{padding:0 10px 4px!important}
+.po-detail-industrial .po-actions-group-label,
+.po-detail-industrial .po-actions-admin-docs .po-actions-group-label{
+  display:block;font:10px 'IBM Plex Mono',monospace;letter-spacing:.05em;text-transform:uppercase;color:#64748b;margin:4px 0 2px;
+}
+.po-detail-industrial .po-actions-admin{margin-top:4px;padding-top:0;border-top:0}
+.po-detail-industrial .po-actions-danger-toggle{
+  width:100%;display:flex;justify-content:space-between;align-items:center;
+  padding:4px 8px;border:1px dashed #f1c0b8;border-radius:3px;background:#fffaf9;color:#7f1d1d;
+  font-size:12px;font-weight:600;cursor:pointer;min-height:34px;
+}
+.po-detail-industrial .po-actions-danger-body{padding:4px 2px 2px;border-top:1px solid #f1c0b8;margin-top:4px}
+.po-detail-industrial .po-actions-ops,
+.po-detail-industrial .po-actions-row{padding:2px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.po-detail-industrial .po-actions-hint{margin:2px 0 0;font-size:11.5px}
+.po-detail-industrial .task-button,
+.po-detail-industrial .primary,
+.po-detail-industrial .ghost{min-height:34px;padding:0 10px;border-radius:6px;font-size:12.5px}
+.po-detail-industrial .ghost.sm,
+.po-detail-industrial .primary.sm{min-height:30px;padding:2px 8px;font-size:11.5px;border-radius:4px}
+.po-detail-industrial input:not([type=checkbox]):not([type=radio]):not([type=file]),
+.po-detail-industrial select,
+.po-detail-industrial textarea{min-height:36px;font-size:13px}
+
+/* Line items — dense table; neutralize global .line-item flex if ever present */
+.po-detail-industrial .po-line-items-panel{padding:0 0 2px!important;height:auto!important;min-height:0!important}
+.po-detail-industrial .line-items-table-wrap{
+  overflow-x:auto;padding:0 6px 2px;height:auto!important;min-height:0!important;
+}
+.po-detail-industrial .line-items-table{
+  width:100%;border-collapse:collapse;border-spacing:0;font-size:12.5px;table-layout:auto;
+  height:auto!important;
+}
+.po-detail-industrial .line-items-table th{
+  text-align:left;font:10px 'IBM Plex Mono',monospace;letter-spacing:.03em;text-transform:uppercase;
+  color:#64748b;background:#f8fafc;border-bottom:1px solid #d5dee3;padding:4px 6px;white-space:nowrap;
+  height:auto!important;line-height:1.2;
+}
+.po-detail-industrial .line-items-table td{
+  padding:3px 6px!important;border-bottom:1px solid #eef2f4;vertical-align:middle!important;
+  height:auto!important;min-height:0!important;line-height:1.25;
+}
+.po-detail-industrial .line-items-table tr.line-item-row,
+.po-detail-industrial .line-items-table tr.line-item{
+  display:table-row!important;flex-direction:unset!important;flex-wrap:unset!important;
+  padding:0!important;gap:0!important;border-bottom:0!important;height:auto!important;min-height:0!important;
+}
+.po-detail-industrial .line-items-table .num{text-align:right;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',monospace;white-space:nowrap}
+.po-detail-industrial .line-items-table .li-name{min-width:140px;max-width:280px}
+.po-detail-industrial .line-items-table .li-name strong{
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;
+  font-size:12.5px;font-weight:600;overflow-wrap:anywhere;line-height:1.25;max-height:2.5em;
+}
+.po-detail-industrial .line-items-table .li-notes{
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden;
+  margin-top:1px;font-size:11px;color:#64748b;line-height:1.2;
+}
+.po-detail-industrial .li-process{
+  font:10px 'IBM Plex Mono',monospace;padding:1px 5px;border:1px solid #cbd5e1;border-radius:2px;
+  color:#334155;background:#f8fafc;white-space:nowrap;
+}
+.po-detail-industrial .li-process.is-print{border-color:#99d5cf;color:#0f5f63;background:#eef8f7}
+.po-detail-industrial .li-process.is-nonprint{border-color:#d6d3d1;color:#57534e;background:#f5f5f4}
+.po-detail-industrial .li-process.is-unset{border-color:#e2e8f0;color:#94a3b8;background:#f8fafc}
+.po-detail-industrial .li-actions{white-space:nowrap;vertical-align:middle}
+.po-detail-industrial .li-route-cell{min-width:148px;vertical-align:middle}
+.po-detail-industrial .li-route-controls{display:inline-flex;flex-wrap:nowrap;gap:4px;align-items:center}
+.po-detail-industrial .li-route-editor{display:flex;flex-direction:column;gap:1px;align-items:flex-start}
+.po-detail-industrial .li-route-err{font-size:11px;color:#8f1f1f;display:inline-flex;align-items:center;gap:3px;line-height:1.2}
+.po-detail-industrial .line-product-replace{display:inline-flex;align-items:center}
+.po-detail-industrial .production-route-panel.is-compact{padding:0 0 2px!important;min-height:0!important;height:auto!important}
+.po-detail-industrial .production-route-compact-hint{margin:4px 10px 2px;font-size:12px;line-height:1.35}
+
+/* File Design attachments — compact, no reserved empty height */
+.po-detail-industrial .attachments-block,
+.po-detail-industrial .attachments-grid{margin-bottom:4px;min-height:0!important;height:auto!important}
+.po-detail-industrial .attachments-grid{
+  display:flex!important;flex-wrap:wrap;gap:6px;align-items:stretch;
+  grid-template-columns:unset!important;
+}
+.po-detail-industrial .attachments-grid > .empty{
+  flex:1 1 100%;margin:0;padding:2px 0;font-size:12px;border:0;background:transparent;font-style:normal;
+  min-height:0!important;
+}
+.po-detail-industrial .attachment-card{
+  width:92px;flex:0 0 auto;padding:3px;gap:2px;border-radius:3px;transform:none;
+  height:auto!important;min-height:0!important;
+}
+.po-detail-industrial .attachment-card:hover{transform:none}
+.po-detail-industrial .attachment-card img,
+.po-detail-industrial .file-thumb{height:52px!important;width:100%;object-fit:cover;min-height:0!important}
+.po-detail-industrial .attachment-meta{gap:0}
+.po-detail-industrial .attachment-meta strong{font-size:10.5px}
+.po-detail-industrial .attachment-meta span{font-size:10px}
+.po-detail-industrial .attachment-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px!important}
+.po-detail-industrial .design-actions{margin-top:4px!important;gap:6px!important}
+.po-detail-industrial .empty-state{padding:6px 8px;font-size:12.5px;min-height:0!important}
+.po-detail-industrial .empty{margin:2px 0;font-size:12px}
+
+/* Info / notes / history */
+.po-detail-industrial .po-info-grid{gap:3px 10px;padding:4px 10px}
+.po-detail-industrial .po-info-grid .lbl{letter-spacing:0;font-size:10px;color:#64748b}
+.po-detail-industrial .po-info-grid strong{font-size:12.5px;font-weight:600;overflow-wrap:anywhere;line-height:1.25}
+.po-detail-industrial .po-info-panel{padding:0 0 4px!important}
+.po-detail-industrial .po-info-address{margin:0}
+.po-detail-industrial .po-info-empty{color:#94a3b8;font-weight:500}
+.po-detail-industrial .po-info-edit{min-height:30px!important}
+.po-detail-industrial .po-notes-panel.is-empty .note-add{margin-top:2px}
+.po-detail-industrial .po-notes-empty{margin:4px 10px;font-size:12px}
+.po-detail-industrial .po-history-toggle{
+  width:100%;display:flex;align-items:center;gap:8px;cursor:pointer;border:0;min-height:36px;padding:3px 8px;
+}
+.po-detail-industrial .po-history-toggle .po-stage-chevron{margin-left:auto}
+.po-detail-industrial .pill{padding:1px 6px;font-size:11px;border-radius:3px;min-height:0}
+.po-detail-industrial .pill.sm{padding:1px 5px;font-size:10.5px}
+
+@media (max-width:1280px){
+  .po-stage-summary-row{grid-template-columns:28px minmax(0,1fr) 16px}
+  .po-stage-summary-meta{display:none}
+}
+
+
+/* Density aliases for live class names */
+.po-detail-industrial .line-items-table-wrap{overflow-x:auto;padding:0 6px 2px;height:auto!important;min-height:0!important}
+.po-detail-industrial .po-line-items-panel{padding:0 0 2px!important;height:auto!important;min-height:0!important}
+.po-detail-industrial .li-name{min-width:140px;max-width:280px}
+.po-detail-industrial .li-name strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-size:12.5px;font-weight:600;line-height:1.25;max-height:2.5em}
+.po-detail-industrial .li-notes{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden;margin-top:1px;font-size:11px;color:#64748b}
+.po-detail-industrial .li-process.is-print{border-color:#99d5cf;color:#0f5f63;background:#eef8f7}
+.po-detail-industrial .li-process.is-nonprint{border-color:#d6d3d1;color:#57534e;background:#f5f5f4}
+.po-detail-industrial .li-process.is-unset{border-color:#e2e8f0;color:#94a3b8;background:#f8fafc}
+.po-detail-industrial .production-route-compact-hint{margin:4px 10px 2px;font-size:12px;line-height:1.35}
+.po-detail-industrial .attachments-grid{display:flex!important;flex-wrap:wrap;gap:6px;min-height:0!important;height:auto!important;grid-template-columns:unset!important}
+.po-detail-industrial .attachment-card img,
+.po-detail-industrial .file-thumb{height:52px!important}
+.po-detail-industrial .panel{margin:0!important}
+.po-detail-industrial .workflow-group{/* spacing owned by group header block */}
+
+/* ---- Density pass: fit Line Item table above fold @1366x768 ---- */
+.po-detail-industrial .po-kpi-strip .ind-metrics{padding:4px 8px!important;gap:4px!important}
+.po-detail-industrial .po-kpi-strip .ind-metric{padding:2px 4px!important;min-height:0!important}
+.po-detail-industrial .po-kpi-strip .ind-metric .lbl{font-size:10px!important;margin:0!important}
+.po-detail-industrial .po-kpi-strip .ind-metric strong{font-size:16px!important;line-height:1.1!important}
+.po-detail-industrial .po-kpi-status-row{padding:1px 10px 3px!important;font-size:11.5px!important}
+
+.po-detail-industrial .po-focus-panel{padding:4px 8px!important;gap:1px!important}
+.po-detail-industrial .po-focus-title{font-size:13px!important}
+.po-detail-industrial .po-focus-detail{font-size:12px!important}
+.po-detail-industrial .po-focus-actions{margin-top:1px!important;gap:4px!important}
+.po-detail-industrial .po-focus-actions .po-action-primary,
+.po-detail-industrial .po-focus-actions .ghost.sm{min-height:28px!important;padding:2px 8px!important}
+
+.po-detail-industrial .po-meta-aksi-row{
+  display:grid;grid-template-columns:1.2fr 1fr;gap:8px;align-items:start;
+  margin:0!important;
+}
+.po-detail-industrial .po-info-panel,
+.po-detail-industrial .po-actions-panel{
+  margin:0!important;padding:0 0 4px!important;min-height:0!important;height:auto!important;
+}
+.po-detail-industrial .po-info-panel .panel-head,
+.po-detail-industrial .po-actions-panel .panel-head{
+  padding:4px 8px!important;min-height:32px!important;margin:0!important;
+}
+.po-detail-industrial .po-info-grid{
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:1px 8px!important;padding:3px 8px!important;
+}
+.po-detail-industrial .po-info-grid > div{min-height:0;padding:1px 0}
+.po-detail-industrial .po-info-grid .ghost.sm,
+.po-detail-industrial .po-info-edit{min-height:24px!important;padding:1px 6px!important;font-size:11px!important;margin-top:2px!important}
+.po-detail-industrial .po-info-grid .lbl{font-size:9.5px!important;margin:0!important;line-height:1.2}
+.po-detail-industrial .po-info-grid strong{font-size:12px!important;line-height:1.2!important}
+.po-detail-industrial .po-info-address{grid-column:1 / -1}
+.po-detail-industrial .po-actions-ops,
+.po-detail-industrial .po-actions-admin-docs{padding:2px 8px!important;gap:4px!important}
+.po-detail-industrial .po-actions-ops .ghost,
+.po-detail-industrial .po-actions-ops .primary,
+.po-detail-industrial .po-actions-admin-docs .ghost{min-height:28px!important;padding:2px 8px!important;font-size:12px!important}
+.po-detail-industrial .po-actions-danger-toggle{min-height:28px!important;padding:3px 8px!important;margin:2px 8px!important}
+.po-detail-industrial .po-line-items-panel{margin-top:4px!important}
+.po-detail-industrial .production-route-panel.is-compact{margin-top:4px!important}
+
+@media (max-width:1280px){
+  .po-detail-industrial .po-meta-aksi-row{grid-template-columns:1fr}
+}
+
+/* Info grid 3-col for above-fold */
+.po-detail-industrial .po-info-grid{
+  display:grid!important;
+  grid-template-columns:repeat(3,minmax(0,1fr))!important;
+  gap:1px 8px!important;
+  padding:3px 8px!important;
+}
+.po-detail-industrial .po-info-grid > *{padding:0!important;margin:0!important}
+.po-detail-industrial .po-info-grid .lbl{font-size:9px!important;line-height:1.15!important;margin:0!important}
+.po-detail-industrial .po-info-grid strong{font-size:11.5px!important;line-height:1.2!important}
+.po-detail-industrial .po-info-address{grid-column:1 / -1}
+.po-detail-industrial .po-info-edit,
+.po-detail-industrial .po-info-grid .ghost.sm{min-height:22px!important;padding:0 6px!important;font-size:11px!important}
+@media (max-width:1100px){
+  .po-detail-industrial .po-info-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+
+/* Final above-fold nudge: keep full Line Item table inside 768px */
+.po-detail-industrial .detail-header{padding-bottom:2px!important}
+.po-detail-industrial .po-hero-customer{font-size:clamp(16px,1.5vw,19px)!important}
+.po-detail-industrial .po-hero-toolbar{margin-top:0!important}
+.po-detail-industrial .po-kpi-strip .ind-metrics{padding:2px 6px!important}
+.po-detail-industrial .po-kpi-strip .ind-metric strong{font-size:15px!important}
+.po-detail-industrial .po-kpi-status-row{padding:0 8px 2px!important;font-size:11px!important}
+.po-detail-industrial .po-focus-panel{padding:3px 8px!important}
+.po-detail-industrial .po-focus-kicker{font-size:9px!important}
+.po-detail-industrial .po-focus-title{font-size:12.5px!important}
+.po-detail-industrial .po-focus-detail{font-size:11.5px!important;line-height:1.25!important}
+.po-detail-industrial .po-focus-actions .po-action-primary,
+.po-detail-industrial .po-focus-actions .ghost.sm{min-height:26px!important;font-size:11.5px!important}
+.po-detail-industrial .po-meta-aksi-row{gap:6px!important}
+.po-detail-industrial .po-info-panel .panel-head,
+.po-detail-industrial .po-actions-panel .panel-head{min-height:28px!important;padding:3px 8px!important}
+.po-detail-industrial .po-line-items-panel .panel-head{min-height:28px!important;padding:3px 8px!important}
+.po-detail-industrial .line-items-table th{padding:3px 5px!important}
+.po-detail-industrial .line-items-table td{padding:2px 5px!important}
