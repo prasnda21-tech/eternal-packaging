@@ -27,7 +27,7 @@ const MAX_PHOTOS = 5;
 // staged list (with per-photo note + remove/replace), then confirm upload.
 // Files are compressed client-side, then streamed one-by-one to the backend
 // which stores each via the storage service (local filesystem in preview, S3/Emergent in production).
-export default function DeliveryProofPanel({ order, onUpdated }) {
+export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) {
   const { hasPerm, user } = useAuth();
   const fileInput = useRef(null);
   const cameraInput = useRef(null);
@@ -85,8 +85,12 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
     )
     : null;
 
-  // Load proof images as blob URLs (cookie auth on same origin)
+  // Load proof images as blob URLs (cookie auth on same origin).
+  // Preview-only: skip while the Pengiriman accordion is collapsed so Detail PO
+  // does not fetch blobs until the panel is actually visible. Cached blob URLs
+  // stay in local state across collapse/expand.
   useEffect(() => {
+    if (!isOpen) return;
     let cancelled = false;
     (async () => {
       const next = { ...proofBlobs };
@@ -104,7 +108,7 @@ export default function DeliveryProofPanel({ order, onUpdated }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proofs.length]);
+  }, [isOpen, proofs.length]);
 
   // Cleanup blob URLs
   useEffect(() => () => {

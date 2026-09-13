@@ -40,7 +40,12 @@ import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
 import LineProductReplaceControl from "../components/LineProductReplaceControl";
 import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
 import PoStageSection from "../components/poDetail/PoStageSection";
-import { PoStageAccordionProvider } from "../components/poDetail/PoStageAccordionContext";
+import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poDetail/PoStageAccordionContext";
+
+function PengirimanDeliveryProofPanel({ order, onUpdated }) {
+  const { open } = usePoStageAccordion(14);
+  return <DeliveryProofPanel order={order} onUpdated={onUpdated} isOpen={open} />;
+}
 
 export default function PODetail() {
   const { id } = useParams();
@@ -1406,7 +1411,7 @@ export default function PODetail() {
       {/* 15 Bukti Kirim then Terkirim */}
       <div id="po-stage-pengiriman" data-testid="workflow-slot-14" data-workflow-stage="14">
       <PoStageSection stageIndex={14} order={order} title="Bukti Kirim &amp; Terkirim">
-      <DeliveryProofPanel order={order} onUpdated={setOrder} />
+      <PengirimanDeliveryProofPanel order={order} onUpdated={setOrder} />
       <section className="panel" data-testid="terkirim-panel">
         <header className="panel-head">
           <h3>Terkirim</h3>
