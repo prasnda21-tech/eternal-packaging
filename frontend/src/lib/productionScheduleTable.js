@@ -64,6 +64,8 @@ export function productionDashboardRequestParams(filters = {}) {
   return {
     include_cancelled: Boolean(f.includeCancelled),
     include_completed: Boolean(f.includeCompleted),
+    // Additive backend path: same `_production_row` columns, no file-byte documents.
+    view: "summary",
   };
 }
 

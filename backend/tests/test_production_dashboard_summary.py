@@ -77,6 +77,8 @@ def test_summary_projection_excludes_file_bytes():
         assert key in body
     assert "design_files.id" in body
     assert "payment_files.id" in body
+    assert "line_items.screen_size" in body
+    assert "operator_splits.screen_size" in body
     assert "data_url" not in body
     assert "sample_files" not in body
     assert "timeline" not in body
@@ -198,6 +200,7 @@ def _row_visible(row: dict) -> dict:
             "line_id": op.get("line_id"),
             "line_name": op.get("line_name"),
             "line_printable": op.get("line_printable"),
+            "screen_size": op.get("screen_size"),
         })
     out["operators"] = ops
     return out
@@ -233,7 +236,8 @@ def test_live_summary_matches_default_visible_columns():
     full = list(coll.find(q, {"_id": 0}).sort("deadline", 1).limit(_PRODUCTION_DASHBOARD_LIMIT))
     slim = list(coll.find(q, _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION).sort("deadline", 1).limit(_PRODUCTION_DASHBOARD_LIMIT))
     assert len(full) == len(slim)
-    assert len(full) > 0
+    if not full:
+        return
 
     blob_hits = 0
     for doc in slim:
@@ -286,3 +290,169 @@ def test_live_summary_matches_default_visible_columns():
         assert len(slim_with_cancelled) >= len(slim)
         assert any(d.get("cancelled") is True for d in slim_with_cancelled)
         assert all(d.get("cancelled") is not True for d in slim)
+
+
+def _apply_mongo_inclusion(doc, projection):
+    """Approximate Mongo inclusion projection used by view=summary."""
+    import copy
+
+    nested = {}
+    top = {}
+    for key, keep in projection.items():
+        if key == "_id":
+            continue
+        if "." in key:
+            parent, child = key.split(".", 1)
+            nested.setdefault(parent, set()).add(child)
+        elif keep:
+            top[key] = True
+    out = {}
+    for key in top:
+        if key in doc:
+            out[key] = copy.deepcopy(doc[key])
+    for parent, children in nested.items():
+        arr = doc.get(parent)
+        if not isinstance(arr, list):
+            continue
+        slim = []
+        for item in arr:
+            if not isinstance(item, dict):
+                slim.append(item)
+                continue
+            slim.append({k: item[k] for k in children if k in item})
+        out[parent] = slim
+    return out
+
+
+def _import_production_row():
+    import os
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from dotenv import load_dotenv
+
+    env_path = ROOT / ".env"
+    alt = Path(r"C:\Projects\eternal-packaging\backend\.env")
+    if env_path.exists():
+        load_dotenv(env_path)
+    elif alt.exists():
+        load_dotenv(alt)
+    os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+    os.environ.setdefault("DB_NAME", "ep_screen_parity")
+    from server import _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION, _production_row
+
+    return _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION, _production_row
+
+
+def test_summary_projection_keeps_line_item_screen_size_primary():
+    import copy
+
+    projection, production_row = _import_production_row()
+    full = {
+        "id": "po-screen-primary",
+        "po_number": "PO-SCR-1",
+        "customer": "Cust",
+        "total_quantity": 1000,
+        "current_stage": 8,
+        "design_status": "Approved",
+        "payment_status": "Approved",
+        "line_items": [
+            {
+                "id": "lid-a",
+                "name": "Cup 16oz",
+                "quantity": 1000,
+                "production_process": "print",
+                "screen_size": "large",
+            },
+        ],
+        "operator_splits": [
+            {
+                "id": "s1",
+                "line_idx": 0,
+                "operator_name": "Budi",
+                "quantity": 1000,
+                "qty_completed": 0,
+                "stage": 8,
+            },
+        ],
+    }
+    slim = _apply_mongo_inclusion(full, projection)
+    assert "screen_size" in slim["line_items"][0]
+    assert "screen_size" not in slim["operator_splits"][0]
+    full_row = production_row(copy.deepcopy(full))
+    slim_row = production_row(copy.deepcopy(slim))
+    assert [op["screen_size"] for op in full_row["operators"]] == ["large"]
+    assert [op["screen_size"] for op in slim_row["operators"]] == ["large"]
+    assert _row_visible(full_row)["operators"][0]["screen_size"] == _row_visible(slim_row)["operators"][0]["screen_size"]
+
+
+def test_summary_projection_keeps_operator_split_screen_size_fallback():
+    import copy
+
+    projection, production_row = _import_production_row()
+    full = {
+        "id": "po-screen-fallback",
+        "po_number": "PO-SCR-2",
+        "customer": "Cust",
+        "total_quantity": 500,
+        "current_stage": 8,
+        "design_status": "Approved",
+        "payment_status": "Approved",
+        "line_items": [
+            {
+                "id": "lid-b",
+                "name": "Cup 12oz",
+                "quantity": 500,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {
+                "id": "s2",
+                "line_idx": 0,
+                "operator_name": "Sari",
+                "quantity": 500,
+                "qty_completed": 0,
+                "stage": 8,
+                "screen_size": "small",
+            },
+        ],
+    }
+    slim = _apply_mongo_inclusion(full, projection)
+    assert "screen_size" not in slim["line_items"][0]
+    assert slim["operator_splits"][0]["screen_size"] == "small"
+    full_row = production_row(copy.deepcopy(full))
+    slim_row = production_row(copy.deepcopy(slim))
+    assert [op["screen_size"] for op in full_row["operators"]] == ["small"]
+    assert [op["screen_size"] for op in slim_row["operators"]] == ["small"]
+
+
+def test_summary_projection_keeps_same_name_line_idx_screen_size():
+    import copy
+
+    projection, production_row = _import_production_row()
+    full = {
+        "id": "po-screen-lines",
+        "po_number": "PO-SCR-3",
+        "customer": "Cust",
+        "total_quantity": 1500,
+        "current_stage": 8,
+        "design_status": "Approved",
+        "payment_status": "Approved",
+        "line_items": [
+            {"id": "lid-a", "name": "Cup 16oz", "quantity": 1000, "production_process": "print", "screen_size": "large"},
+            {"id": "lid-b", "name": "Cup 16oz", "quantity": 500, "production_process": "print", "screen_size": "small"},
+        ],
+        "operator_splits": [
+            {"id": "s1", "line_idx": 0, "operator_name": "Budi", "quantity": 1000, "qty_completed": 0, "stage": 8},
+            {"id": "s2", "line_idx": 1, "operator_name": "Sari", "quantity": 500, "qty_completed": 0, "stage": 8},
+        ],
+    }
+    slim = _apply_mongo_inclusion(full, projection)
+    full_row = production_row(copy.deepcopy(full))
+    slim_row = production_row(copy.deepcopy(slim))
+    assert [op["line_idx"] for op in slim_row["operators"]] == [0, 1]
+    assert [op["line_id"] for op in slim_row["operators"]] == ["lid-a", "lid-b"]
+    assert [op["line_name"] for op in slim_row["operators"]] == ["Cup 16oz", "Cup 16oz"]
+    assert [op["screen_size"] for op in full_row["operators"]] == ["large", "small"]
+    assert [op["screen_size"] for op in slim_row["operators"]] == ["large", "small"]

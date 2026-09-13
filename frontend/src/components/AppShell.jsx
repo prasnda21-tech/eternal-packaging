@@ -183,6 +183,7 @@ export default function AppShell() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
     const loadUnread = async () => {
       try {
         const r = await api.chatUnreadSummary();
@@ -191,10 +192,39 @@ export default function AppShell() {
         if (!cancelled) setChatUnread(0);
       }
     };
+    const startPoll = () => {
+      if (timer != null) return;
+      timer = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+        loadUnread();
+      }, 30000);
+    };
+    const stopPoll = () => {
+      if (timer == null) return;
+      clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        loadUnread();
+        startPoll();
+        return;
+      }
+      stopPoll();
+    };
     loadUnread();
-    const t = setInterval(loadUnread, 30000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [location.pathname]);
+    if (typeof document === "undefined" || document.visibilityState === "visible") startPoll();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+    return () => {
+      cancelled = true;
+      stopPoll();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setActiveSidebarMenu(null);

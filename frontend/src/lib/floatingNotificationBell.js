@@ -1,6 +1,6 @@
 /** Pure helpers for the web floating notification bell (presentation only). */
 
-export const POLL_INTERVAL_MS = 15000;
+export const POLL_INTERVAL_MS = 30000;
 export const CLICK_DRAG_THRESHOLD_PX = 6;
 export const BELL_SIZE_PX = 52;
 export const VIEWPORT_PAD_PX = 12;

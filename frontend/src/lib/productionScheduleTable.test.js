@@ -1,7 +1,9 @@
+import { FILTER_DEFAULTS } from "./productionScheduleFilters";
 import {
   PRODUCTION_SCHEDULE_COLUMN_IDS,
   PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS,
   PRODUCTION_SCHEDULE_TABLE_COLS,
+  productionDashboardRequestParams,
 } from "./productionScheduleTable";
 
 const UNIFIED_ORDER = [
@@ -53,6 +55,24 @@ const UNIFIED_LABELS = [
   "Driver",
   "Status Akhir",
 ];
+
+describe("productionDashboardRequestParams", () => {
+  test("desktop and shared callers request existing summary view", () => {
+    expect(productionDashboardRequestParams(FILTER_DEFAULTS)).toEqual({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+    });
+    expect(productionDashboardRequestParams({
+      includeCancelled: true,
+      includeCompleted: false,
+    })).toEqual({
+      include_cancelled: true,
+      include_completed: false,
+      view: "summary",
+    });
+  });
+});
 
 describe("productionScheduleTable canonical columns", () => {
   test("keeps every previously legitimate column id plus Item", () => {

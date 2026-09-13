@@ -33,6 +33,7 @@ import {
   capturePoOpenFromList,
   poNavStateFromList,
 } from "../lib/poListReturn";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 
 function getTodayString() {
   const d = new Date();
@@ -85,7 +86,13 @@ export default function PesananPenjualan() {
   const [orders, setOrders] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
-  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
+  const {
+    input: searchInput,
+    setInput: setSearchInput,
+    q: searchQuery,
+    flush: flushSearch,
+    clear: clearSearch,
+  } = useDebouncedLiveSearch(searchParams.get("q") || "");
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -1382,15 +1389,19 @@ export default function PesananPenjualan() {
               <input
                 type="text"
                 placeholder="Cari No PO / Customer / Outlet / Sales..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") flushSearch(e);
+                }}
                 data-testid="search-sales-orders-input"
                 style={{ width: "100%", padding: "8px 12px 8px 34px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.9rem", boxSizing: "border-box" }}
               />
-              {searchQuery && (
+              {searchInput && (
                 <button
                   type="button"
-                  onClick={() => setSearchQuery("")}
+                  onClick={() => clearSearch()}
+                  data-testid="search-sales-orders-clear"
                   style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8" }}
                 >
                   <X size={14} />
