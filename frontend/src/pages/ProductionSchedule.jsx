@@ -19,13 +19,20 @@ import {
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
 import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
 import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
+import { isProductionScheduleUrgent } from "../lib/productionSchedulePriority";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS,
+  DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS as DESKTOP_COLS,
+  desktopProductionScheduleGroupSpans,
   productionDashboardRequestParams,
   productionSheetColumnStyle,
 } from "../lib/productionScheduleTable";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import { productionSchedulePoHref } from "../lib/workPanel";
+
+if (DESKTOP_COLS.length > TABLE_COLS.length) {
+  throw new Error("desktop schedule columns cannot exceed canonical inventory");
+}
 
 const STATUS_OPTS = [
   { key: "all", label: "Semua status" },
@@ -396,16 +403,36 @@ export default function ProductionSchedule() {
         >
           <table className="production-sheet-table" data-testid="production-sheet-table">
             <colgroup>
-              {TABLE_COLS.map((c) => (
+              {DESKTOP_COLS.map((c) => (
                 <col key={c.key} style={productionSheetColumnStyle(c)} />
               ))}
             </colgroup>
             <thead className="production-sheet-header">
-              <tr>
-                {TABLE_COLS.map((c) => {
+              <tr className="prod-col-group-row" data-testid="prod-col-groups">
+                {desktopProductionScheduleGroupSpans(DESKTOP_COLS).map((group) => (
+                  <th
+                    key={group.id}
+                    colSpan={group.span}
+                    scope="colgroup"
+                    className={`prod-col-group-band prod-col-group-${group.id}${group.sticky ? " prod-sticky-identity-span" : ""}`}
+                    data-testid={`prod-col-group-${group.id}`}
+                  >
+                    {group.label}
+                  </th>
+                ))}
+              </tr>
+              <tr className="prod-col-label-row">
+                {DESKTOP_COLS.map((c) => {
                   const active = columnFilterActive(c.filter, filterState);
+                  const thClass = [
+                    c.num || c.align === "right" || c.type === "qty" ? "num" : "",
+                    c.sticky === "po" ? "prod-sticky-col prod-sticky-po" : "",
+                    c.sticky === "customer" ? "prod-sticky-col prod-sticky-customer" : "",
+                    c.groupStart ? "prod-group-start" : "",
+                    c.desktopGroup ? `prod-col-group-${c.desktopGroup}` : "",
+                  ].filter(Boolean).join(" ");
                   return (
-                    <th key={c.key} className={c.num || c.align === "right" || c.type === "qty" ? "num" : ""} data-testid={c.testid} scope="col" style={productionSheetColumnStyle(c)}>
+                    <th key={c.key} className={thClass} data-testid={c.testid} scope="col" style={productionSheetColumnStyle(c)}>
                       {c.filter ? (
                         <HeaderFilter
                           label={c.label}
@@ -431,11 +458,18 @@ export default function ProductionSchedule() {
                 const qtyProg = poTotalQtyDisplay(r);
                 const cetakProg = operatorQtyCetakProgress(r, r.displayOperator?.splits);
                 const isToday = isScheduledToday(r);
+                const rowClass = [
+                  r.hold ? "hold" : "",
+                  r.cancelled ? "cancelled" : "",
+                  isProductionScheduleUrgent(r) ? "prod-row-urgent" : "",
+                  r.delivery_deadline_status === "overdue" ? "prod-row-overdue" : "",
+                ].filter(Boolean).join(" ");
                 return (
-                <tr key={r.displayRowKey} data-testid={`prod-row-${r.po_number}`} data-row-key={r.displayRowKey} className={r.hold ? "hold" : (r.cancelled ? "cancelled" : "")}>
+                <tr key={r.displayRowKey} data-testid={`prod-row-${r.po_number}`} data-row-key={r.displayRowKey} className={rowClass}>
                   <ProductionScheduleSheetCells
                     row={r}
                     variant="desktop"
+                    columns={DESKTOP_COLS}
                     qtyProg={qtyProg}
                     cetakProg={cetakProg}
                     isToday={isToday}
@@ -445,7 +479,7 @@ export default function ProductionSchedule() {
                 );
               })}
               {!sorted.length && !busy && (
-                <tr><td colSpan={TABLE_COLS.length} className="production-sheet-empty">Tidak ada PO cocok dengan filter.</td></tr>
+                <tr><td colSpan={DESKTOP_COLS.length} className="production-sheet-empty">Tidak ada PO cocok dengan filter.</td></tr>
               )}
             </tbody>
           </table>

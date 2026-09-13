@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
-import { PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/productionScheduleTable";
+import { DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS, PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/productionScheduleTable";
 import {
   PRODUCTION_SHEET_ZOOM_CSS_VAR,
   PRODUCTION_SHEET_ZOOM_DEFAULT,
@@ -130,7 +130,17 @@ describe("ProductionSchedule spreadsheet", () => {
       view: "summary",
     });
     const headers = [...container.querySelectorAll('[data-testid="production-sheet-table"] thead .prod-th-label')].map((el) => el.textContent.trim());
-    expect(headers).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
+    expect(headers).toEqual(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
+    expect(headers).not.toContain("Driver");
+    expect(headers).not.toContain("Surat Jalan");
+    expect(headers).toContain("No PO");
+    expect(headers).toContain("Customer");
+    expect(headers).toContain("Status Akhir");
+    expect(container.querySelector('[data-testid="prod-col-groups"]')).toBeTruthy();
+    expect(container.querySelector(".prod-sticky-po")).toBeTruthy();
+    expect(container.querySelector(".prod-sticky-customer")).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-th-filter-po"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-th-filter-status"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-in"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-out"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-fit"]')).toBeFalsy();

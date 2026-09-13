@@ -455,3 +455,243 @@
   right: 0;
   left: auto;
 }
+
+/* Desktop Jadwal Produksi hierarchy — scoped so /m/schedule is unchanged. */
+.prod-schedule-page {
+  --prod-group-h: 18px;
+  --prod-sticky-po-w: calc(112px * var(--production-sheet-zoom, 1));
+  --prod-sticky-customer-w: calc(168px * var(--production-sheet-zoom, 1));
+}
+
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  height: var(--prod-group-h);
+  padding: 2px 6px;
+  font-size: max(8.5px, calc(10px * var(--production-sheet-zoom, 1)));
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #3c4043;
+  text-align: center;
+  white-space: nowrap;
+  border-bottom: 1px solid #9aa0a6;
+  line-height: 1.2;
+}
+
+.prod-schedule-page .production-sheet-table thead .prod-col-label-row th {
+  position: sticky;
+  top: var(--prod-group-h);
+  z-index: 5;
+}
+
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-identity,
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-planning,
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-production,
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-progress,
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-status,
+.prod-schedule-page .production-sheet-table tbody td.prod-col-group-identity,
+.prod-schedule-page .production-sheet-table tbody td.prod-col-group-planning {
+  background-clip: padding-box;
+}
+
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-identity {
+  background: #dbeafe;
+  color: #1e3a5f;
+}
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-planning {
+  background: #fde68a;
+  color: #78350f;
+}
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-production {
+  background: #bbf7d0;
+  color: #14532d;
+}
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-progress {
+  background: #c7d2fe;
+  color: #312e81;
+}
+.prod-schedule-page .production-sheet-table thead th.prod-col-group-status {
+  background: #a5f3fc;
+  color: #164e63;
+}
+
+.prod-schedule-page .production-sheet-table th.prod-group-start,
+.prod-schedule-page .production-sheet-table td.prod-group-start {
+  border-left: 2px solid #80868b;
+}
+
+.prod-schedule-page .production-sheet-table .prod-sticky-po,
+.prod-schedule-page .production-sheet-table .prod-sticky-identity-span {
+  position: sticky;
+  left: 0;
+}
+
+.prod-schedule-page .production-sheet-table .prod-sticky-customer {
+  position: sticky;
+  left: var(--prod-sticky-po-w);
+}
+
+.prod-schedule-page .production-sheet-table thead th.prod-sticky-identity-span {
+  z-index: 9;
+  min-width: calc(var(--prod-sticky-po-w) + var(--prod-sticky-customer-w));
+  box-shadow: 6px 0 8px -6px rgba(32, 33, 36, 0.35);
+}
+
+.prod-schedule-page .production-sheet-table thead th.prod-sticky-po {
+  z-index: 8;
+}
+
+.prod-schedule-page .production-sheet-table thead th.prod-sticky-customer {
+  z-index: 8;
+  box-shadow: 6px 0 8px -4px rgba(32, 33, 36, 0.38);
+  border-right: 2px solid #5f6368;
+}
+
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-po,
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer {
+  z-index: 3;
+  background: var(--production-sheet-cell-bg);
+}
+
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer {
+  box-shadow: 6px 0 8px -4px rgba(32, 33, 36, 0.28);
+  border-right: 2px solid #5f6368;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr:hover td.prod-sticky-po,
+.prod-schedule-page .production-sheet-table tbody tr:hover td.prod-sticky-customer {
+  background: #eef7f1;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.hold td.prod-sticky-po,
+.prod-schedule-page .production-sheet-table tbody tr.hold td.prod-sticky-customer {
+  background: #fff8e1;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.cancelled td.prod-sticky-po,
+.prod-schedule-page .production-sheet-table tbody tr.cancelled td.prod-sticky-customer {
+  background: #faece9;
+}
+
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer.prod-cell-today,
+.prod-schedule-page .production-sheet-table tbody tr:hover td.prod-sticky-customer.prod-cell-today,
+.prod-schedule-page .production-sheet-table tbody tr.hold td.prod-sticky-customer.prod-cell-today {
+  background-color: #fef08a !important;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.prod-row-urgent td.prod-sticky-po {
+  box-shadow: inset 3px 0 0 #dc2626;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.hold td.prod-sticky-po {
+  box-shadow: inset 3px 0 0 #b45309;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.hold.prod-row-urgent td.prod-sticky-po {
+  box-shadow: inset 3px 0 0 #dc2626;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.prod-row-overdue td.prod-col-group-production.prod-cell-stack {
+  background: #fff7ed;
+}
+
+.prod-schedule-page .production-sheet-table .prod-th-inner {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 4px;
+}
+
+.prod-schedule-page .production-sheet-table button.prod-th-filter,
+.prod-schedule-page .production-sheet-table button.prod-th-filter[data-state="closed"],
+.prod-schedule-page .production-sheet-table button.prod-th-filter[data-state="open"] {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  flex: 0 0 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid #5f6368;
+  background-color: #ffffff;
+  background-image: none;
+  color: #202124;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px #ffffff;
+  opacity: 1;
+  isolation: isolate;
+}
+
+.prod-schedule-page .production-sheet-table button.prod-th-filter:hover {
+  color: #202124;
+  background-color: #ffffff;
+  background-image: none;
+  border-color: #202124;
+}
+
+.prod-schedule-page .production-sheet-table button.prod-th-filter.is-active,
+.prod-schedule-page .production-sheet-table button.prod-th-filter[data-state="open"] {
+  color: #137333;
+  background-color: #ffffff;
+  background-image: none;
+  border-color: #137333;
+  box-shadow: inset 0 0 0 1px #ffffff, 0 0 0 1px #137333;
+}
+
+.prod-schedule-page .production-sheet-table button.prod-th-filter:focus-visible {
+  outline: 2px solid #1a73e8;
+  outline-offset: 1px;
+}
+
+.prod-schedule-page .production-sheet-table button.prod-th-filter svg {
+  width: 12px;
+  height: 12px;
+  color: inherit;
+  opacity: 1;
+}
+
+.prod-schedule-page .production-sheet-table .prod-th-dot {
+  box-shadow: 0 0 0 1px #fff;
+}
+
+/* Portaled filter menu — not a descendant of .prod-schedule-page. */
+.prod-th-popover {
+  background-color: #ffffff;
+  background-image: none;
+  opacity: 1;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-item-cell,
+.prod-schedule-page .production-sheet-table .prod-schedule-item-line {
+  max-width: 168px;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-item-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.prod-schedule-page .production-sheet-table .prod-status-akhir {
+  font-weight: 700;
+  border: 1px solid currentColor;
+  min-width: 4.5em;
+  text-align: center;
+}
+
+.prod-schedule-page .production-sheet-table .prod-status-akhir.pill-hold {
+  background: #FEF2F2;
+  color: #B91C1C;
+}
+
+.prod-schedule-page .production-sheet-table .pill-progress {
+  background: #E0F2FE;
+  color: #0369A1;
+}
+
+.prod-schedule-page .production-sheet-table .prod-status-akhir-cell {
+  font-weight: 700;
+}

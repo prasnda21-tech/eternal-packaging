@@ -1,8 +1,12 @@
 import { FILTER_DEFAULTS } from "./productionScheduleFilters";
 import {
+  DESKTOP_PRODUCTION_SCHEDULE_COL_KEYS,
+  DESKTOP_PRODUCTION_SCHEDULE_HIDDEN_KEYS,
+  DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS,
   PRODUCTION_SCHEDULE_COLUMN_IDS,
   PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS,
   PRODUCTION_SCHEDULE_TABLE_COLS,
+  desktopProductionScheduleGroupSpans,
   productionDashboardRequestParams,
 } from "./productionScheduleTable";
 
@@ -98,6 +102,54 @@ describe("productionScheduleTable canonical columns", () => {
       "Tanggal Pengiriman",
     ]);
     expect(new Set(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).size).toBe(22);
+  });
+
+  test("desktop jadwal hides Driver and Surat Jalan without deleting them", () => {
+    expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toEqual(expect.arrayContaining(["sj", "driver"]));
+    expect(DESKTOP_PRODUCTION_SCHEDULE_HIDDEN_KEYS).toEqual(["sj", "driver"]);
+    expect(DESKTOP_PRODUCTION_SCHEDULE_COL_KEYS).not.toContain("sj");
+    expect(DESKTOP_PRODUCTION_SCHEDULE_COL_KEYS).not.toContain("driver");
+    expect(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key)).toEqual(DESKTOP_PRODUCTION_SCHEDULE_COL_KEYS);
+    expect(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toEqual(expect.arrayContaining([
+      "No PO",
+      "Customer",
+      "Status Akhir",
+    ]));
+    expect(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).not.toContain("Driver");
+    expect(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).not.toContain("Surat Jalan");
+    const po = DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.find((c) => c.key === "po");
+    const customer = DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.find((c) => c.key === "customer");
+    expect(po.sticky).toBe("po");
+    expect(customer.sticky).toBe("customer");
+    expect(desktopProductionScheduleGroupSpans().map((g) => ({ label: g.label, span: g.span, keys: g.keys }))).toEqual([
+      { label: "Identitas PO", span: 2, keys: ["po", "customer"] },
+      { label: "Penjadwalan", span: 2, keys: ["work_date", "operator"] },
+      { label: "Produksi", span: 9, keys: ["item", "qty_cetak", "qty", "prio", "buffer", "deadline", "deadline_ship", "outlet", "screen_size"] },
+      { label: "Progress Produksi", span: 6, keys: ["screen", "design", "payment", "hold", "helper", "packing"] },
+      { label: "Status", span: 1, keys: ["status"] },
+    ]);
+    expect(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label)).toEqual([
+      "No PO",
+      "Customer",
+      "Tgl Pengerjaan",
+      "Operator",
+      "Item",
+      "Qty Cetak",
+      "Total Qty",
+      "Prio",
+      "Buffer",
+      "Tanggal Pengiriman",
+      "Sumber Jadwal",
+      "Outlet",
+      "Screen",
+      "Persiapan Screen",
+      "Design",
+      "Payment",
+      "HOLD",
+      "Persiapan Cup",
+      "Packing",
+      "Status Akhir",
+    ]);
   });
 
   test("qty columns are numeric/right-aligned", () => {
