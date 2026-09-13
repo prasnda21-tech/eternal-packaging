@@ -5,6 +5,10 @@ import {
   isSidebarNavPermissionKey,
   expandLoadingDraftForEdit,
   roleBusinessSavePayload,
+  isSensitivePermissionKey,
+  filterRolePermissionModules,
+  countRolePermissionTotals,
+  countRolePermissionDirty,
 } from "./settingsPermissionUi";
 
 const catalog = {
@@ -106,6 +110,37 @@ describe("settingsPermissionUi — hide sidebar nav from generic editors", () =>
     expect(draft.has("loading.confirm_match")).toBe(true);
     expect(draft.has("loading.report_discrepancy")).toBe(true);
     expect(draft.has(LOADING_GRANULAR_CONFIGURED)).toBe(false);
+  });
+
+  test("sensitive marker is an explicit presentational allowlist", () => {
+    expect(isSensitivePermissionKey("po.delete")).toBe(true);
+    expect(isSensitivePermissionKey("po.cancel")).toBe(true);
+    expect(isSensitivePermissionKey("po.view")).toBe(false);
+    expect(isSensitivePermissionKey("sales.customer.manage")).toBe(false);
+    expect(isSensitivePermissionKey("users.manage")).toBe(false);
+  });
+
+  test("filterRolePermissionModules search + Aktif/Tidak Aktif work together", () => {
+    const mods = businessPermissionModules(catalog);
+    const draft = new Set(["schedule.view", "route_optimizer.view"]);
+    const byKey = filterRolePermissionModules(mods, { query: "schedule.edit", stateFilter: "all", draftSet: draft });
+    expect(byKey).toEqual([["Produksi", [{ key: "schedule.edit", label: "Ubah jadwal" }]]]);
+    const active = filterRolePermissionModules(mods, { query: "", stateFilter: "active", draftSet: draft });
+    expect(active.flatMap(([, ps]) => ps.map((p) => p.key))).toEqual(["schedule.view", "route_optimizer.view"]);
+    const inactiveRute = filterRolePermissionModules(mods, { query: "rute", stateFilter: "inactive", draftSet: draft });
+    expect(inactiveRute).toEqual([]);
+    const byCat = filterRolePermissionModules(mods, { query: "loading", stateFilter: "all", draftSet: draft });
+    expect(byCat.map(([m]) => m)).toEqual(["Loading"]);
+  });
+
+  test("count helpers stay frontend-only and ignore nav keys in dirty count", () => {
+    const mods = businessPermissionModules(catalog);
+    expect(countRolePermissionTotals(mods, new Set(["schedule.view"]))).toEqual({ active: 1, total: 6 });
+    expect(countRolePermissionDirty(
+      new Set(["schedule.view", "nav.dashboard"]),
+      new Set(["schedule.view", "nav.route_optimizer"])
+    )).toBe(0);
+    expect(countRolePermissionDirty(new Set(["schedule.view", "schedule.edit"]), new Set(["schedule.view"]))).toBe(1);
   });
 
   test("expandLoadingDraftForEdit does not invent children after configure stamp", () => {

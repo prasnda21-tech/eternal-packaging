@@ -52,6 +52,80 @@ export function businessPermissionModules(catalog, query = "") {
     .filter(([, perms]) => perms.length);
 }
 
+/** Explicit high-impact keys only — presentational marker, no RBAC effect. */
+export const SENSITIVE_PERMISSION_KEYS = new Set([
+  "po.delete",
+  "po.cancel",
+  "sales.delivery.delete",
+  "sales.invoice.delete",
+  "sales.receipt.delete",
+  "delivery_note.delete_file",
+  "loading.delete",
+  "workflow.rollback",
+  "payroll.reopen",
+  "general_journal.reverse",
+  "opening_balance.reverse",
+  "cash_bank.reverse",
+  "design.bypass_approval",
+  "payment.bypass_approval",
+  "super_admin.manage",
+  "route_optimizer.manage",
+]);
+
+export function isSensitivePermissionKey(key) {
+  return SENSITIVE_PERMISSION_KEYS.has(String(key || ""));
+}
+
+export function isBusinessPermissionKey(key) {
+  return !isSidebarNavPermissionKey(key) && !isLoadingGranularConfiguredKey(key);
+}
+
+/** Frontend search + Aktif/Tidak Aktif filter over already-loaded catalog modules. */
+export function filterRolePermissionModules(modules, { query = "", stateFilter = "all", draftSet } = {}) {
+  const q = String(query || "").trim().toLowerCase();
+  const draft = draftSet instanceof Set ? draftSet : new Set(draftSet || []);
+  return (modules || [])
+    .map(([moduleName, perms]) => {
+      let next = perms || [];
+      if (q) {
+        const catHit = String(moduleName).toLowerCase().includes(q);
+        next = catHit
+          ? next
+          : next.filter(
+              (p) =>
+                String(p.label || "").toLowerCase().includes(q) ||
+                String(p.key || "").toLowerCase().includes(q)
+            );
+      }
+      if (stateFilter === "active") next = next.filter((p) => draft.has(p.key));
+      if (stateFilter === "inactive") next = next.filter((p) => !draft.has(p.key));
+      return [moduleName, next];
+    })
+    .filter(([, perms]) => perms.length);
+}
+
+export function countRolePermissionTotals(modules, draftSet) {
+  const draft = draftSet instanceof Set ? draftSet : new Set(draftSet || []);
+  let total = 0;
+  let active = 0;
+  for (const [, perms] of modules || []) {
+    for (const p of perms || []) {
+      total += 1;
+      if (draft.has(p.key)) active += 1;
+    }
+  }
+  return { active, total };
+}
+
+export function countRolePermissionDirty(draftSet, initialSet) {
+  const a = new Set([...(draftSet || [])].filter(isBusinessPermissionKey));
+  const b = new Set([...(initialSet || [])].filter(isBusinessPermissionKey));
+  let n = 0;
+  for (const key of a) if (!b.has(key)) n += 1;
+  for (const key of b) if (!a.has(key)) n += 1;
+  return n;
+}
+
 /** Keep stored nav.* when saving business permissions from Role & Hak Akses. */
 export function roleBusinessSavePayload(draftKeys, storedPermissions) {
   const business = [...(draftKeys || [])].filter(
