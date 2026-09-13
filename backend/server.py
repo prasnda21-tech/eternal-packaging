@@ -3200,6 +3200,353 @@ async def set_line_items_route(order_id: str, payload: LineItemRoutePayload, use
 
 
 # ---- Batch 3: Dashboard Action Center ----
+_ACTION_CENTER_LIMIT = 2000
+
+
+def _orders_action_center_line_items_expr() -> dict:
+    """Keep array order / index identity. Never merge by name."""
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$line_items", []]},
+            "as": "li",
+            "in": {
+                "name": "$$li.name",
+                "production_process": "$$li.production_process",
+                "quantity": "$$li.quantity",
+            },
+        }
+    }
+
+
+def _orders_action_center_operator_splits_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$operator_splits", []]},
+            "as": "s",
+            "in": {
+                "operator_email": "$$s.operator_email",
+                "operator_name": "$$s.operator_name",
+                "quantity": "$$s.quantity",
+                "qty_completed": "$$s.qty_completed",
+                "stage": "$$s.stage",
+                "work_date": "$$s.work_date",
+            },
+        }
+    }
+
+
+def _orders_action_center_sj_files_expr() -> dict:
+    """SJ identity + qty metadata. data_url bytes become a storage_path sentinel."""
+    return {
+        "$map": {
+            "input": {
+                "$cond": [{"$isArray": "$surat_jalan_files"}, "$surat_jalan_files", []],
+            },
+            "as": "f",
+            "in": {
+                "id": "$$f.id",
+                "file_id": "$$f.file_id",
+                "name": {"$ifNull": ["$$f.name", ""]},
+                "uploaded_at": "$$f.uploaded_at",
+                "is_deleted": "$$f.is_deleted",
+                "shipment_id": "$$f.shipment_id",
+                "sj_number": "$$f.sj_number",
+                "number": "$$f.number",
+                "sales_delivery_id": "$$f.sales_delivery_id",
+                "total_qty": "$$f.total_qty",
+                "qty": "$$f.qty",
+                "storage_path": {
+                    "$cond": [
+                        {
+                            "$or": [
+                                _mongo_nonempty_str_expr("$$f.storage_path"),
+                                {
+                                    "$eq": [
+                                        {"$substrCP": [_mongo_str_expr("$$f.data_url"), 0, 5]},
+                                        "data:",
+                                    ]
+                                },
+                            ]
+                        },
+                        "1",
+                        "",
+                    ]
+                },
+                "lines": {
+                    "$map": {
+                        "input": {"$ifNull": ["$$f.lines", []]},
+                        "as": "ln",
+                        "in": {
+                            "line_idx": "$$ln.line_idx",
+                            "qty": "$$ln.qty",
+                            "quantity": "$$ln.quantity",
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+
+def _orders_action_center_shipments_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$shipments", []]},
+            "as": "sh",
+            "in": {
+                "id": "$$sh.id",
+                "number": "$$sh.number",
+                "file_id": "$$sh.file_id",
+                "sales_delivery_id": "$$sh.sales_delivery_id",
+                "lines": {
+                    "$map": {
+                        "input": {"$ifNull": ["$$sh.lines", []]},
+                        "as": "ln",
+                        "in": {
+                            "line_idx": "$$ln.line_idx",
+                            "qty": "$$ln.qty",
+                            "quantity": "$$ln.quantity",
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+
+def _orders_action_center_projection() -> dict:
+    """Fields read by Action Center predicates + hold/deadline snapshots.
+
+    Dedicated to GET /dashboard/action-items. Not the Phase 2B dashboard projection.
+    """
+    return {
+        "_id": 0,
+        "id": 1,
+        "po_number": 1,
+        "outlet": 1,
+        "customer": 1,
+        "work_date": 1,
+        "cancelled": 1,
+        "current_stage": 1,
+        "total_quantity": 1,
+        "quantity": 1,
+        "design_status": 1,
+        "design_bypassed": 1,
+        "design_approved_at": 1,
+        "design_bypassed_at": 1,
+        "payment_status": 1,
+        "payment_bypassed": 1,
+        "payment_approved_at": 1,
+        "payment_bypassed_at": 1,
+        "sample_approved": 1,
+        "customer_approval.status": 1,
+        "screener_info.screen_qty": 1,
+        "helper_prep.qty_prepared": 1,
+        "delivery_status": 1,
+        "qty_delivered": 1,
+        "delivery_note": 1,
+        "delivery_note_number": 1,
+        "delivery_note_created_at": 1,
+        "delivery_note_created_by": 1,
+        "surat_jalan_created": 1,
+        "qty_packed": 1,
+        "loading_checklist.items_loaded": 1,
+        "loading_checklist.seal_ok": 1,
+        "delivery_deadline_manual": 1,
+        "scheduled_delivery_date": 1,
+        "design_files": _orders_dashboard_file_presence_expr("design_files"),
+        "payment_files": _orders_dashboard_file_presence_expr("payment_files"),
+        "sample_files": _orders_dashboard_file_presence_expr("sample_files"),
+        "surat_jalan_files": _orders_action_center_sj_files_expr(),
+        "line_items": _orders_action_center_line_items_expr(),
+        "operator_splits": _orders_action_center_operator_splits_expr(),
+        "shipments": _orders_action_center_shipments_expr(),
+        "loading_confirmations": _orders_dashboard_loading_confirmations_expr(),
+        "packing_info": _orders_dashboard_packing_info_expr(),
+        "loading_info": _orders_dashboard_loading_info_expr(),
+        "delivery_reschedules": _orders_dashboard_reschedules_expr(),
+    }
+
+
+def _action_center_file_presence(files) -> list:
+    return [{}] if isinstance(files, list) and files else []
+
+
+def _action_center_sj_file_evidence(files) -> list:
+    out = []
+    for f in files or []:
+        if not isinstance(f, dict):
+            continue
+        data_url = str(f.get("data_url") or "")
+        storage = str(f.get("storage_path") or "").strip()
+        out.append({
+            "id": f.get("id"),
+            "file_id": f.get("file_id"),
+            "name": f.get("name") or "",
+            "uploaded_at": f.get("uploaded_at"),
+            "is_deleted": f.get("is_deleted"),
+            "shipment_id": f.get("shipment_id"),
+            "sj_number": f.get("sj_number"),
+            "number": f.get("number"),
+            "sales_delivery_id": f.get("sales_delivery_id"),
+            "total_qty": f.get("total_qty"),
+            "qty": f.get("qty"),
+            "storage_path": "1" if (storage or data_url.startswith("data:")) else "",
+            "lines": [
+                {
+                    "line_idx": ln.get("line_idx"),
+                    "qty": ln.get("qty"),
+                    "quantity": ln.get("quantity"),
+                }
+                for ln in (f.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        })
+    return out
+
+
+def _shape_order_for_action_center_compute(order: dict) -> dict:
+    """In-memory mirror of `_orders_action_center_projection` (tests/parity)."""
+    src = order or {}
+    shaped = {
+        "id": src.get("id"),
+        "po_number": src.get("po_number"),
+        "outlet": src.get("outlet"),
+        "customer": src.get("customer"),
+        "work_date": src.get("work_date"),
+        "cancelled": src.get("cancelled"),
+        "current_stage": src.get("current_stage"),
+        "total_quantity": src.get("total_quantity"),
+        "quantity": src.get("quantity"),
+        "design_status": src.get("design_status"),
+        "design_bypassed": src.get("design_bypassed"),
+        "design_approved_at": src.get("design_approved_at"),
+        "design_bypassed_at": src.get("design_bypassed_at"),
+        "payment_status": src.get("payment_status"),
+        "payment_bypassed": src.get("payment_bypassed"),
+        "payment_approved_at": src.get("payment_approved_at"),
+        "payment_bypassed_at": src.get("payment_bypassed_at"),
+        "sample_approved": src.get("sample_approved"),
+        "delivery_status": src.get("delivery_status"),
+        "qty_delivered": src.get("qty_delivered"),
+        "delivery_note": src.get("delivery_note"),
+        "delivery_note_number": src.get("delivery_note_number"),
+        "delivery_note_created_at": src.get("delivery_note_created_at"),
+        "delivery_note_created_by": src.get("delivery_note_created_by"),
+        "surat_jalan_created": src.get("surat_jalan_created"),
+        "qty_packed": src.get("qty_packed"),
+        "delivery_deadline_manual": src.get("delivery_deadline_manual"),
+        "scheduled_delivery_date": src.get("scheduled_delivery_date"),
+        "design_files": _action_center_file_presence(src.get("design_files")),
+        "payment_files": _action_center_file_presence(src.get("payment_files")),
+        "sample_files": _action_center_file_presence(src.get("sample_files")),
+        "surat_jalan_files": _action_center_sj_file_evidence(src.get("surat_jalan_files")),
+        "line_items": [
+            {
+                "name": li.get("name"),
+                "production_process": li.get("production_process"),
+                "quantity": li.get("quantity"),
+            }
+            for li in (src.get("line_items") or [])
+            if isinstance(li, dict)
+        ],
+        "operator_splits": [
+            {
+                "operator_email": s.get("operator_email"),
+                "operator_name": s.get("operator_name"),
+                "quantity": s.get("quantity"),
+                "qty_completed": s.get("qty_completed"),
+                "stage": s.get("stage"),
+                "work_date": s.get("work_date"),
+            }
+            for s in (src.get("operator_splits") or [])
+            if isinstance(s, dict)
+        ],
+        "shipments": [
+            {
+                "id": sh.get("id"),
+                "number": sh.get("number"),
+                "file_id": sh.get("file_id"),
+                "sales_delivery_id": sh.get("sales_delivery_id"),
+                "lines": [
+                    {
+                        "line_idx": ln.get("line_idx"),
+                        "qty": ln.get("qty"),
+                        "quantity": ln.get("quantity"),
+                    }
+                    for ln in (sh.get("lines") or [])
+                    if isinstance(ln, dict)
+                ],
+            }
+            for sh in (src.get("shipments") or [])
+            if isinstance(sh, dict)
+        ],
+        "loading_confirmations": [
+            {
+                "cancelled": c.get("cancelled"),
+                "deleted": c.get("deleted"),
+                "surat_jalan_id": c.get("surat_jalan_id"),
+                "lines": [
+                    {
+                        "line_idx": ln.get("line_idx"),
+                        "qty": ln.get("qty"),
+                        "quantity": ln.get("quantity"),
+                    }
+                    for ln in (c.get("lines") or [])
+                    if isinstance(ln, dict)
+                ],
+            }
+            for c in (src.get("loading_confirmations") or [])
+            if isinstance(c, dict)
+        ],
+        "packing_info": {
+            "qty_packed": (src.get("packing_info") or {}).get("qty_packed"),
+            "lines": [
+                {
+                    "line_id": ln.get("line_id"),
+                    "line_idx": ln.get("line_idx"),
+                    "packed_qty": ln.get("packed_qty"),
+                }
+                for ln in ((src.get("packing_info") or {}).get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        },
+        "loading_info": {
+            "lines": [
+                {"line_idx": ln.get("line_idx"), "loaded_qty": ln.get("loaded_qty")}
+                for ln in ((src.get("loading_info") or {}).get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+            "events": [
+                {"line_idx": ev.get("line_idx"), "qty": ev.get("qty")}
+                for ev in ((src.get("loading_info") or {}).get("events") or [])
+                if isinstance(ev, dict)
+            ],
+        },
+        "delivery_reschedules": [
+            {"status": r.get("status"), "new_date": r.get("new_date")}
+            for r in (src.get("delivery_reschedules") or [])
+            if isinstance(r, dict)
+        ],
+    }
+    snap = src.get("customer_approval")
+    if isinstance(snap, dict):
+        shaped["customer_approval"] = {"status": snap.get("status")}
+    si = src.get("screener_info")
+    if isinstance(si, dict):
+        shaped["screener_info"] = {"screen_qty": si.get("screen_qty")}
+    hp = src.get("helper_prep")
+    if isinstance(hp, dict):
+        shaped["helper_prep"] = {"qty_prepared": hp.get("qty_prepared")}
+    lc = src.get("loading_checklist")
+    if isinstance(lc, dict):
+        shaped["loading_checklist"] = {
+            "items_loaded": lc.get("items_loaded"),
+            "seal_ok": lc.get("seal_ok"),
+        }
+    return shaped
+
+
 def _po_needs_screener(o: dict) -> bool:
     # Revisi routing: Screener adalah persiapan cetak. Full non-print PO tidak
     # membutuhkan Screener. Tersedia setelah Penjadwalan disimpan.
@@ -3366,7 +3713,11 @@ async def dashboard_action_items(user=Depends(current_user)):
     query: dict = {"cancelled": {"$ne": True}}
     if operator_only:
         query["operator_splits.operator_email"] = user_email
-    raw = await db.orders.find(query, {"_id": 0}).to_list(2000)
+    raw = await db.orders.aggregate([
+        {"$match": query},
+        {"$limit": _ACTION_CENTER_LIMIT},
+        {"$project": _orders_action_center_projection()},
+    ]).to_list(_ACTION_CENTER_LIMIT)
     dd_settings = await _get_delivery_deadline_settings()
     for o in raw:
         _apply_hold_snapshot(o)
