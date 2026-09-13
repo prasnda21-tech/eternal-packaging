@@ -12343,11 +12343,66 @@ STAGE_OWNER_ROLE = {
 }
 
 
+_REMINDERS_LIMIT = 1000
+
+
+def _orders_reminders_operator_splits_expr() -> dict:
+    """Email only — reminders operator scope. Preserve array order."""
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$operator_splits", []]},
+            "as": "s",
+            "in": {
+                "operator_email": "$$s.operator_email",
+            },
+        }
+    }
+
+
+def _orders_reminders_projection() -> dict:
+    """Fields read by GET /reminders. Dedicated; not HoP summary or Action Center."""
+    return {
+        "_id": 0,
+        "id": 1,
+        "po_number": 1,
+        "outlet": 1,
+        "customer": 1,
+        "deadline": 1,
+        "priority": 1,
+        "current_stage": 1,
+        "status_label": 1,
+        "operator_splits": _orders_reminders_operator_splits_expr(),
+    }
+
+
+def _shape_order_for_reminders_compute(order: dict) -> dict:
+    """In-memory mirror of `_orders_reminders_projection` (tests/parity)."""
+    src = order or {}
+    return {
+        "id": src.get("id"),
+        "po_number": src.get("po_number"),
+        "outlet": src.get("outlet"),
+        "customer": src.get("customer"),
+        "deadline": src.get("deadline"),
+        "priority": src.get("priority"),
+        "current_stage": src.get("current_stage"),
+        "status_label": src.get("status_label"),
+        "operator_splits": [
+            {"operator_email": s.get("operator_email")}
+            for s in (src.get("operator_splits") or [])
+            if isinstance(s, dict)
+        ],
+    }
+
+
 @api_router.get("/reminders")
 async def reminders(user=Depends(current_user)):
     """Return active POs with reminder status. Filters by role — HoP/admin see all,
     other roles see only reminders where they are the current owner."""
-    orders = await db.orders.find({}, {"_id": 0, "design_files": 0, "sample_files": 0}).to_list(1000)
+    orders = await db.orders.aggregate([
+        {"$limit": _REMINDERS_LIMIT},
+        {"$project": _orders_reminders_projection()},
+    ]).to_list(_REMINDERS_LIMIT)
     role = user.get("role")
     role_email = user.get("email")
     items = []
