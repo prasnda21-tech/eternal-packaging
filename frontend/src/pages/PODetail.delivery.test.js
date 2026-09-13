@@ -172,7 +172,8 @@ describe("PO Detail delivery cards", () => {
   });
 
   test("pairs Penjadwalan with Pembagian Jadwal without separate Deadline panel", () => {
-    const slot5 = detail.slice(detail.indexOf("workflow-slot-5"), detail.indexOf("workflow-group-4"));
+    // Group B is a single header; next stage slot (6) bounds Penjadwalan content.
+    const slot5 = detail.slice(detail.indexOf("workflow-slot-5"), detail.indexOf("workflow-slot-6"));
     expect(slot5.split("<section").length - 1).toBe(1);
     expect(slot5).toMatch(/penjadwalan-panel/);
     expect(slot5).toMatch(/po-pair-grid-schedule/);
@@ -204,19 +205,21 @@ describe("PO Detail delivery cards", () => {
     expect(css).toMatch(/po-pair-grid/);
   });
 
-  test("Detail PO card headers are dark solid without gradients", () => {
+  test("Detail PO card headers are solid without gradients", () => {
     const start = css.indexOf(".po-detail .panel-head,");
     const end = css.indexOf(".po-detail .qty-ops-title{");
     const headBlock = css.slice(start, end);
     expect(headBlock).toMatch(/background:var\(--mod/);
     expect(headBlock).toMatch(/background-image:none/);
     expect(headBlock).not.toMatch(/linear-gradient|radial-gradient|conic-gradient/);
-    expect(headBlock).toMatch(/color:var\(--mod-head-fg,#fff\)/);
+    expect(headBlock).toMatch(/color:var\(--mod-head-fg/);
   });
 
   test("Detail PO keeps --mod-ink dark so ghost button labels stay readable", () => {
-    expect(css).toMatch(/--mod-head-fg:#fff/);
+    expect(css).toMatch(/\.po-detail\{[^}]*--mod-head-fg:#0f172a/);
     expect(css).not.toMatch(/\.po-detail\{[^}]*--mod-ink:#fff/);
     expect(css).not.toMatch(/--mod-ink:#fff;--mod-tint/);
+    // Industrial chrome uses light header bands + dark ink (not white-on-teal saturation)
+    expect(css).toMatch(/po-detail-industrial[\s\S]*panel-head[\s\S]*background:#f1f5f7/);
   });
 });
