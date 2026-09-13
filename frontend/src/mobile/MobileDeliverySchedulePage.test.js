@@ -536,6 +536,8 @@ describe("MobileDeliverySchedulePage", () => {
     const cell = container.querySelector('[data-testid="mds-item-lines-PO-100"]');
     expect(cell.textContent).toContain("Cup 12oz");
     expect(cell.textContent).toContain("1.000");
+    expect(cell.querySelector(".mds-item-line-prefix")?.textContent).toBe("- ");
+    expect(cell.textContent).toMatch(/^\s*-\s*Cup 12oz/);
     expect(cell.textContent).not.toContain("PO-WIDE SHOULD NOT SHOW");
     expect(container.querySelectorAll('[data-testid^="mds-item-line-PO-100-"]').length).toBe(1);
   });
@@ -580,9 +582,11 @@ describe("MobileDeliverySchedulePage", () => {
     expect(sep12).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-sj-PO001-sh-1"]').textContent).toBe("SJ001");
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-1"]').textContent).toContain("Cup");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-1"]').textContent).toMatch(/-\s*Cup/);
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-1"]').textContent).not.toContain("Lid");
     expect(container.querySelector('[data-testid="mds-sj-PO001-sh-2"]').textContent).toBe("SJ001-2");
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).toContain("Lid");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).toMatch(/-\s*Lid/);
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).not.toContain("Cup");
     const labels = headerLabels(container);
     expect(labels.indexOf("Item Line")).toBe(labels.indexOf("Customer") + 1);
@@ -614,6 +618,14 @@ describe("MobileDeliverySchedulePage", () => {
     expect(cell.textContent).toContain("1.000");
     expect(cell.textContent).toContain("2.000");
     expect(cell.textContent).not.toContain("3.000");
-    expect(container.querySelectorAll('[data-testid^="mds-item-line-PO-100-sh-2-"]').length).toBe(2);
+    const lines = container.querySelectorAll('[data-testid^="mds-item-line-PO-100-sh-2-"]');
+    expect(lines.length).toBe(2);
+    expect(lines[0].querySelector(".mds-item-line-prefix")?.textContent).toBe("- ");
+    expect(lines[1].querySelector(".mds-item-line-prefix")?.textContent).toBe("- ");
+    expect(lines[0].textContent).toMatch(/^\s*-\s*12 oz PET Datar 11 gr SJP/);
+    expect(lines[0].textContent).toContain("1.000");
+    expect(lines[1].textContent).toContain("2.000");
+    expect(lines[0].textContent).not.toContain("2.000");
+    expect(lines[1].textContent).not.toContain("1.000");
   });
 });
