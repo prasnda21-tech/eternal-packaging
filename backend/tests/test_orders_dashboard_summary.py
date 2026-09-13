@@ -458,7 +458,9 @@ def test_orders_and_action_center_paths_unchanged():
     assert "_ACTION_CENTER_LIMIT" in ac
     rem = SERVER[SERVER.index("async def reminders("): SERVER.index("async def reminders(") + 2500]
     assert "_orders_dashboard_summary_projection" not in rem
-    assert 'db.orders.find({}, {"_id": 0, "design_files": 0, "sample_files": 0})' in rem
+    assert "_orders_reminders_projection" in rem
+    assert "db.orders.aggregate(" in rem
+    assert 'db.orders.find({}, {"_id": 0, "design_files": 0, "sample_files": 0})' not in rem
 
 
 def test_rbac_dependency_unchanged():
