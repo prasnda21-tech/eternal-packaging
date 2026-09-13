@@ -23,6 +23,7 @@ describe("Status PO header filters", () => {
   test("G. dashboard view query still loads Status PO subset", () => {
     expect(src).toMatch(/params\.get\("view"\)/);
     expect(src).toMatch(/api\.statusPo\(view \? \{ view \} : \{\}\)/);
+    expect(src).toMatch(/loadInFlight\.current/);
   });
 
   test("reset clears header filters not dashboard view", () => {

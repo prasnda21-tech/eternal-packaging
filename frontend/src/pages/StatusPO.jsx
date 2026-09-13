@@ -48,6 +48,7 @@ export default function StatusPO() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState("");
   const inFlight = useRef(false);
+  const loadInFlight = useRef(false);
   const headerRef = useRef(null);
 
   const canCancel = hasPerm("po.cancel");
@@ -55,6 +56,8 @@ export default function StatusPO() {
   const canSelect = canCancel || canDelete;
 
   const load = useCallback(async () => {
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     setBusy(true);
     setErr("");
     try {
@@ -65,6 +68,7 @@ export default function StatusPO() {
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Status PO"));
     } finally {
       setBusy(false);
+      loadInFlight.current = false;
     }
   }, [view]);
 
