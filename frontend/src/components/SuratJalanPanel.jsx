@@ -26,6 +26,7 @@ export default function SuratJalanPanel({
   busy: busyProp,
   onUpdated,
   footerActions = null,
+  allowUpload = true,
 }) {
   const { user, hasPerm } = useAuth();
   const canViewFile = canViewFileProp ?? hasPerm(SJ_VIEW_FILE_PERM);
@@ -151,14 +152,16 @@ export default function SuratJalanPanel({
       </QtyOpsHead>
 
       <div className="qty-ops-body" style={{ display: "grid", gap: 10 }}>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
-          hidden
-          onChange={onFileChosen}
-          data-testid="surat-jalan-file-input"
-        />
+        {allowUpload && (
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
+            hidden
+            onChange={onFileChosen}
+            data-testid="surat-jalan-file-input"
+          />
+        )}
 
         {!canManage ? (
           <p className="muted small" data-testid="surat-jalan-readonly-note">
@@ -166,7 +169,7 @@ export default function SuratJalanPanel({
           </p>
         ) : (
           <>
-            <p className="muted small" data-testid="sj-file-only-note">File Surat Jalan</p>
+            {allowUpload && <p className="muted small" data-testid="sj-file-only-note">File Surat Jalan</p>}
             <label className="ship-filter-field" data-testid="surat-jalan-date-field">
               <span>Tanggal pengiriman</span>
               <input
@@ -178,27 +181,31 @@ export default function SuratJalanPanel({
               />
               <span className="muted small">Kosong = pengiriman hari ini.</span>
             </label>
-            <div className="sj-upload-file-row">
-              <button
-                type="button"
-                className="primary"
-                onClick={pickFile}
-                disabled={uploading}
-                data-testid="surat-jalan-upload-button"
-              >
-                <Upload size={16} /> {file ? "Ganti File" : "Pilih File"}
-              </button>
-              {file && <span className="muted small" data-testid="surat-jalan-chosen-name">{file.name}</span>}
-            </div>
-            <button
-              type="button"
-              className="primary"
-              onClick={openConfirm}
-              disabled={uploading || !file}
-              data-testid="surat-jalan-submit-button"
-            >
-              Upload Surat Jalan
-            </button>
+            {allowUpload && (
+              <>
+                <div className="sj-upload-file-row">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={pickFile}
+                    disabled={uploading}
+                    data-testid="surat-jalan-upload-button"
+                  >
+                    <Upload size={16} /> {file ? "Ganti File" : "Pilih File"}
+                  </button>
+                  {file && <span className="muted small" data-testid="surat-jalan-chosen-name">{file.name}</span>}
+                </div>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={openConfirm}
+                  disabled={uploading || !file}
+                  data-testid="surat-jalan-submit-button"
+                >
+                  Upload Surat Jalan
+                </button>
+              </>
+            )}
           </>
         )}
 

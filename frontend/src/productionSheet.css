@@ -459,6 +459,10 @@
 /* Desktop Jadwal Produksi hierarchy — scoped so /m/schedule is unchanged. */
 .prod-schedule-page {
   --prod-group-h: 18px;
+}
+
+/* Sticky geometry tokens live on the zoomed sheet so header/body share one source. */
+.prod-schedule-page .production-sheet {
   --prod-sticky-po-w: calc(112px * var(--production-sheet-zoom, 1));
   --prod-sticky-customer-w: calc(168px * var(--production-sheet-zoom, 1));
 }
@@ -484,35 +488,39 @@
   position: sticky;
   top: var(--prod-group-h);
   z-index: 5;
+  box-sizing: border-box;
+  background: var(--production-sheet-header-bg);
+  background-image: none;
+  color: var(--production-sheet-header-fg);
 }
 
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-identity,
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-planning,
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-production,
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-progress,
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-status,
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-identity,
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-planning,
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-production,
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-progress,
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-status,
 .prod-schedule-page .production-sheet-table tbody td.prod-col-group-identity,
 .prod-schedule-page .production-sheet-table tbody td.prod-col-group-planning {
   background-clip: padding-box;
 }
 
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-identity {
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-identity {
   background: #dbeafe;
   color: #1e3a5f;
 }
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-planning {
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-planning {
   background: #fde68a;
   color: #78350f;
 }
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-production {
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-production {
   background: #bbf7d0;
   color: #14532d;
 }
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-progress {
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-progress {
   background: #c7d2fe;
   color: #312e81;
 }
-.prod-schedule-page .production-sheet-table thead th.prod-col-group-status {
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-status {
   background: #a5f3fc;
   color: #164e63;
 }
@@ -520,6 +528,24 @@
 .prod-schedule-page .production-sheet-table th.prod-group-start,
 .prod-schedule-page .production-sheet-table td.prod-group-start {
   border-left: 2px solid #80868b;
+}
+
+.prod-schedule-page .production-sheet-table col.prod-col-po,
+.prod-schedule-page .production-sheet-table th.prod-sticky-po,
+.prod-schedule-page .production-sheet-table td.prod-sticky-po {
+  box-sizing: border-box;
+  width: var(--prod-sticky-po-w);
+  min-width: var(--prod-sticky-po-w);
+  max-width: var(--prod-sticky-po-w);
+}
+
+.prod-schedule-page .production-sheet-table col.prod-col-customer,
+.prod-schedule-page .production-sheet-table th.prod-sticky-customer,
+.prod-schedule-page .production-sheet-table td.prod-sticky-customer {
+  box-sizing: border-box;
+  width: var(--prod-sticky-customer-w);
+  min-width: var(--prod-sticky-customer-w);
+  max-width: var(--prod-sticky-customer-w);
 }
 
 .prod-schedule-page .production-sheet-table .prod-sticky-po,
@@ -535,7 +561,10 @@
 
 .prod-schedule-page .production-sheet-table thead th.prod-sticky-identity-span {
   z-index: 9;
+  box-sizing: border-box;
+  width: calc(var(--prod-sticky-po-w) + var(--prod-sticky-customer-w));
   min-width: calc(var(--prod-sticky-po-w) + var(--prod-sticky-customer-w));
+  max-width: calc(var(--prod-sticky-po-w) + var(--prod-sticky-customer-w));
   box-shadow: 6px 0 8px -6px rgba(32, 33, 36, 0.35);
 }
 

@@ -12,6 +12,17 @@ describe("Surat Jalan card upload + preview", () => {
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8");
 
+  test("Detail PO hides upload controls while RoleWorkPanel keeps them", () => {
+    expect(detail).toMatch(/allowUpload=\{false\}/);
+    expect(role).not.toMatch(/allowUpload=\{false\}/);
+    expect(src).toMatch(/allowUpload = true/);
+    expect(src).toMatch(/Pilih File/);
+    expect(src).toMatch(/Upload Surat Jalan/);
+    expect(src).toMatch(/Lihat Surat Jalan/);
+    expect(src).toMatch(/Download/);
+    expect(src).toMatch(/Hapus File Surat Jalan/);
+  });
+
   test("generated SJ documents are labeled without removing manual upload", () => {
     expect(src).toMatch(/Dibuat Sistem/);
     expect(src).toMatch(/SYSTEM_GENERATED/);

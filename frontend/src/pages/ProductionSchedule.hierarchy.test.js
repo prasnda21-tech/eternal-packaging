@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
@@ -112,6 +114,17 @@ describe("ProductionSchedule visual hierarchy", () => {
     expect(container.querySelector("th.prod-sticky-customer")).toBeTruthy();
     expect(container.querySelector("td.prod-sticky-po")).toBeTruthy();
     expect(container.querySelector("td.prod-sticky-customer")).toBeTruthy();
+    expect(container.querySelector("col.prod-col-po")).toBeTruthy();
+    expect(container.querySelector("col.prod-col-customer")).toBeTruthy();
+    const labelHeaders = [...container.querySelectorAll("thead .prod-col-label-row th")];
+    expect(labelHeaders.length).toBe(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.length);
+    expect(labelHeaders.every((th) => th.classList.contains("prod-col-label"))).toBe(true);
+    expect(labelHeaders.some((th) => /prod-col-group-(identity|planning|production|progress|status)/.test(th.className))).toBe(false);
+    expect(container.querySelector("thead .prod-col-group-row th.prod-col-group-identity")).toBeTruthy();
+    expect(container.querySelector("thead .prod-col-group-row th.prod-col-group-planning")).toBeTruthy();
+    expect(container.querySelector("thead .prod-col-group-row th.prod-col-group-production")).toBeTruthy();
+    expect(container.querySelector("thead .prod-col-group-row th.prod-col-group-progress")).toBeTruthy();
+    expect(container.querySelector("thead .prod-col-group-row th.prod-col-group-status")).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-row-PO-1001"]').className).toContain("prod-row-urgent");
     expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').className).toMatch(/\bnum\b/);
     expect(container.querySelector('[data-testid="prod-qty-cetak-PO-1001"]').className).toMatch(/\bnum\b/);
@@ -120,5 +133,17 @@ describe("ProductionSchedule visual hierarchy", () => {
       include_completed: true,
       view: "summary",
     });
+  });
+
+  test("sticky widths and individual header colors are defined once on the sheet", () => {
+    const sheetCss = fs.readFileSync(path.join(__dirname, "../productionSheet.css"), "utf8");
+    const scheduleSrc = fs.readFileSync(path.join(__dirname, "ProductionSchedule.jsx"), "utf8");
+    expect(sheetCss).toMatch(/\.prod-schedule-page \.production-sheet\s*\{[\s\S]*--prod-sticky-po-w:\s*calc\(112px \* var\(--production-sheet-zoom/);
+    expect(sheetCss).toMatch(/--prod-sticky-customer-w:\s*calc\(168px \* var\(--production-sheet-zoom/);
+    expect(sheetCss).toMatch(/\.prod-sticky-customer\s*\{[\s\S]*left:\s*var\(--prod-sticky-po-w\)/);
+    expect(sheetCss).toMatch(/thead \.prod-col-label-row th\s*\{[\s\S]*background:\s*var\(--production-sheet-header-bg\)/);
+    expect(sheetCss).toMatch(/thead \.prod-col-group-row th\.prod-col-group-identity\s*\{[\s\S]*background:\s*#dbeafe/);
+    expect(scheduleSrc).toMatch(/className=\{c\.sticky === "po" \? "prod-col-po"/);
+    expect(scheduleSrc).not.toMatch(/c\.desktopGroup \? `prod-col-group-\$\{c\.desktopGroup\}`/);
   });
 });

@@ -115,7 +115,8 @@ describe("Detail PO industrial information architecture", () => {
     expect(detail).toMatch(/A · DESIGN &amp; PAYMENT/);
     expect(detail).toMatch(/B · PERSIAPAN PRODUKSI/);
     expect(detail).toMatch(/C · PRODUKSI/);
-    expect(detail).toMatch(/D · FULFILLMENT/);
+    expect(detail).toMatch(/D · QC DAN PENGIRIMAN/);
+    expect(detail).not.toMatch(/D · FULFILLMENT/);
     expect(detail).not.toMatch(/B · Screener/);
     expect(detail).not.toMatch(/B · SCREENER/);
     expect((detail.match(/B · PERSIAPAN PRODUKSI/g) || []).length).toBe(1);
@@ -189,6 +190,8 @@ describe("Detail PO industrial information architecture", () => {
     expect(detail).toMatch(/OperatorSplitPanel/);
     expect(detail).toMatch(/PackingPanel/);
     expect(detail).toMatch(/SuratJalanPanel/);
+    expect(detail).toMatch(/allowUpload=\{false\}/);
+    expect(detail).toMatch(/D · QC DAN PENGIRIMAN/);
     expect(detail).toMatch(/LoadingPanel/);
     expect(detail).toMatch(/DeliveryProofPanel/);
     expect(detail).toMatch(/HelperPrepPanel/);
