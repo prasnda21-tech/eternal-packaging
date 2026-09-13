@@ -115,6 +115,6 @@ describe("floatingNotificationBell helpers", () => {
   test("decision labels and poll interval constant", () => {
     expect(decisionLabel("approved")).toBe("Disetujui");
     expect(decisionLabel("rejected")).toBe("Ditolak");
-    expect(POLL_INTERVAL_MS).toBe(15000);
+    expect(POLL_INTERVAL_MS).toBe(30000);
   });
 });

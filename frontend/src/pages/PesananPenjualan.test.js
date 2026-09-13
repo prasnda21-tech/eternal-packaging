@@ -80,6 +80,12 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/loadOrdersAbortRef\.current\?\.abort\(\)/);
   });
 
+  test("list search uses shared debounce hook instead of raw searchQuery state", () => {
+    expect(src).toMatch(/useDebouncedLiveSearch/);
+    expect(src).toMatch(/q: searchQuery/);
+    expect(src).toMatch(/data-testid="search-sales-orders-input"/);
+  });
+
   test("includes both list and create views with Lihat PO link", () => {
     expect(src).toMatch(/viewMode === "create"/);
     expect(src).toMatch(/viewMode === "list"/);

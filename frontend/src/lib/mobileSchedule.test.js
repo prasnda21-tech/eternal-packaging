@@ -35,17 +35,18 @@ describe("mobile production schedule canonical helpers", () => {
     expect(defaultProductionDashboardParams()).toEqual({
       include_cancelled: false,
       include_completed: true,
+      view: "summary",
     });
     expect(productionDashboardRequestParams(FILTER_DEFAULTS)).toEqual({
       include_cancelled: false,
       include_completed: true,
+      view: "summary",
     });
     expect(mobileProductionDashboardParams(FILTER_DEFAULTS)).toEqual({
       include_cancelled: false,
       include_completed: true,
       view: "summary",
     });
-    expect(defaultProductionDashboardParams()).not.toHaveProperty("view");
   });
 
   test("canonical columns are PO-level and match desktop order", () => {
@@ -59,8 +60,8 @@ describe("mobile production schedule canonical helpers", () => {
       "Total Qty",
       "Prio",
       "Buffer",
-      "Deadline",
-      "Deadline Pengiriman",
+      "Tanggal Pengiriman",
+      "Sumber Jadwal",
       "Outlet",
       "Screen",
       "Persiapan Screen",

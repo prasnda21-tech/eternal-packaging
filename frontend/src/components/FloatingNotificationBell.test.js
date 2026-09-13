@@ -228,6 +228,33 @@ describe("FloatingNotificationBell", () => {
     expect(api.listNotifications.mock.calls.length).toBeGreaterThan(calls);
   });
 
+  test("CASE 10b — hidden document does not periodic-poll; visible return refreshes", async () => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+    api.listNotifications.mockResolvedValue({ notifications: [] });
+    await renderBell();
+    const afterMount = api.listNotifications.mock.calls.length;
+    visibility = "hidden";
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(POLL_INTERVAL_MS);
+      await Promise.resolve();
+    });
+    expect(api.listNotifications.mock.calls.length).toBe(afterMount);
+    visibility = "visible";
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    expect(api.listNotifications.mock.calls.length).toBeGreaterThan(afterMount);
+  });
+
   test("CASE 11 — unmount clears interval loop", async () => {
     api.listNotifications.mockResolvedValue({ notifications: [] });
     await renderBell();

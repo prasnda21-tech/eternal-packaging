@@ -126,16 +126,34 @@ export default function FloatingNotificationBell() {
   }, []);
 
   useEffect(() => {
-    refresh({ silent: false });
-    const timer = window.setInterval(() => refresh({ silent: true }), POLL_INTERVAL_MS);
+    let timer = null;
+    const startPoll = () => {
+      if (timer != null) return;
+      timer = window.setInterval(() => {
+        if (document.visibilityState !== "visible") return;
+        refresh({ silent: true });
+      }, POLL_INTERVAL_MS);
+    };
+    const stopPoll = () => {
+      if (timer == null) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
     const onVisible = () => {
-      if (document.visibilityState === "visible") refresh({ silent: true });
+      if (document.visibilityState === "visible") {
+        refresh({ silent: true });
+        startPoll();
+        return;
+      }
+      stopPoll();
     };
     const onFocus = () => refresh({ silent: true });
+    refresh({ silent: false });
+    if (document.visibilityState === "visible") startPoll();
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onFocus);
     return () => {
-      window.clearInterval(timer);
+      stopPoll();
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
       fetchGen.current += 1;

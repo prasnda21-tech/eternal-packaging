@@ -124,6 +124,11 @@ describe("ProductionSchedule spreadsheet", () => {
   test("desktop headers match the shared canonical order and omit +/- Fit", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 1 });
     await renderPage();
+    expect(api.productionDashboard).toHaveBeenCalledWith({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+    });
     const headers = [...container.querySelectorAll('[data-testid="production-sheet-table"] thead .prod-th-label')].map((el) => el.textContent.trim());
     expect(headers).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-in"]')).toBeFalsy();
