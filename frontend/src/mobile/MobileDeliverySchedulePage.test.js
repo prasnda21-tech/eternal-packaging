@@ -96,8 +96,13 @@ const sampleRows = [
     sj_label: "SJ-1",
     sj_files: [],
     sj_file_count: 0,
+    sj_item_lines: [],
   },
 ];
+
+function headerLabels(root) {
+  return [...root.querySelectorAll('[data-testid="mds-thead"] th')].map((th) => th.textContent.trim());
+}
 
 const flush = async () => {
   await act(async () => {
@@ -150,7 +155,8 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-quick-filters"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]').getAttribute("href")).toBe("/m/orders/o1?ws=packing");
+    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=packing");
     expect(container.querySelector('[data-testid="mds-packing-PO-100"]').textContent).toContain("3.000 / 5.000");
     expect(container.querySelector('[data-testid="mds-terkirim-PO-100"]').textContent).toContain("2.000");
     expect(container.querySelector('[data-testid="mds-terkirim-PO-100"] .mop-qty-context').textContent).toBe("dari 5.000 qty PO");
@@ -247,14 +253,15 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-lihat-rute-PO-100"]')).toBeFalsy();
   });
 
-  test("view+edit shows Atur Lokasi; view-only hides it", async () => {
+  test("view+edit does not restore Aksi; row still opens delivery work href", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.location.manage" || p === "delivery.update");
     await act(async () => {
       root.render(<MobileDeliverySchedulePage />);
     });
     await flush();
-    expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]').getAttribute("href")).toBe("/m/orders/o1?ws=delivery");
+    expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery");
   });
 
   test("does not authorize edit by role name driver", async () => {
@@ -315,7 +322,8 @@ describe("MobileDeliverySchedulePage", () => {
     expect(src).toMatch(/productionSheetZoomStyle/);
     expect(src).toMatch(/api\.deliverySchedule\(\)/);
     expect(src).toMatch(/matchesDeliveryScheduleFilters/);
-    expect(src).toMatch(/delivery\.location\.manage|canEditMobileDeliveryScheduleLocation/);
+    expect(src).toMatch(/sjItemLinesFromRow/);
+    expect(src).not.toMatch(/item_label/);
     expect(src).not.toMatch(/role\s*===\s*['"]driver['"]/);
     expect(src).not.toMatch(/roleName\s*===\s*['"]driver['"]/);
     expect(src).not.toMatch(/Buat Jadwal Pengiriman/);
@@ -371,7 +379,7 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]').getAttribute("href")).toBe("/m/orders/o1?ws=delivery");
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery");
     expect(mockDeliverySchedule).toHaveBeenCalled();
   });
 
@@ -407,10 +415,14 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=delivery";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    const kerja = container.querySelector('[data-testid="mds-kerja-PO-100"]');
-    expect(kerja.getAttribute("href")).toBe("/m/orders/o1?ws=delivery");
-    const state = JSON.parse(kerja.getAttribute("data-state"));
-    expect(state.from).toBe("/m/delivery-schedule?ws=delivery");
+    const row = container.querySelector('[data-testid="mds-row-PO-100"]');
+    expect(row.getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery");
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/o1?ws=delivery", expect.objectContaining({
+      state: expect.objectContaining({ from: "/m/delivery-schedule?ws=delivery" }),
+    }));
 
     capturePoOpenFromList({
       user: { id: "u-mds" },
@@ -471,5 +483,137 @@ describe("MobileDeliverySchedulePage", () => {
     });
     expect(mockDeliverySchedule.mock.calls.every((c) => c.length === 0 || c[0] === undefined)).toBe(true);
     expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=loading");
+  });
+
+  test("PWA table shows Item Line after Customer and drops Driver/Status/Aksi", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "route_optimizer.create");
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const labels = headerLabels(container);
+    expect(labels).toEqual([
+      "Prioritas",
+      "Tanggal Pengiriman",
+      "No PO",
+      "Customer",
+      "Item Line",
+      "No SJ",
+      "Packing",
+      "Terkirim",
+      "Dapat Dikirim",
+      "Optimasi Rute",
+    ]);
+    expect(labels).not.toContain("Driver");
+    expect(labels).not.toContain("Status");
+    expect(labels).not.toContain("Aksi");
+    expect(container.querySelector('[data-testid="mds-status-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-quick-filters"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-task-select"]') || container.textContent).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-item-lines-PO-100"]').textContent).toBe("—");
+    expect(container.textContent).not.toMatch(/item_label/);
+  });
+
+  test("one SJ item line renders name and qty without using item_label", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        item_label: "PO-WIDE SHOULD NOT SHOW",
+        sj_item_lines: [{
+          shipment_id: "sh-1",
+          sj_number: "SJ-1",
+          line_id: "lid-a",
+          line_idx: 0,
+          name: "Cup 12oz",
+          qty: 1000,
+        }],
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const cell = container.querySelector('[data-testid="mds-item-lines-PO-100"]');
+    expect(cell.textContent).toContain("Cup 12oz");
+    expect(cell.textContent).toContain("1.000");
+    expect(cell.textContent).not.toContain("PO-WIDE SHOULD NOT SHOW");
+    expect(container.querySelectorAll('[data-testid^="mds-item-line-PO-100-"]').length).toBe(1);
+  });
+
+  test("date-specific rows keep No SJ aligned with Item Line; later SJ does not rewrite earlier date", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          effective_delivery_date: "2026-09-10",
+          shipment_id: "sh-1",
+          shipment_index: 1,
+          sj_label: "SJ001",
+          latest_sj_number: "SJ001",
+          sj_item_lines: [
+            { shipment_id: "sh-1", sj_number: "SJ001", line_id: "lid-cup", line_idx: 0, name: "Cup", qty: 1000 },
+          ],
+        },
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          effective_delivery_date: "2026-09-12",
+          shipment_id: "sh-2",
+          shipment_index: 2,
+          sj_label: "SJ001-2",
+          latest_sj_number: "SJ001-2",
+          sj_item_lines: [
+            { shipment_id: "sh-2", sj_number: "SJ001-2", line_id: "lid-lid", line_idx: 1, name: "Lid", qty: 1000 },
+          ],
+        },
+      ],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const sep10 = container.querySelector('[data-testid="mds-row-PO001-sh-1"]');
+    const sep12 = container.querySelector('[data-testid="mds-row-PO001-sh-2"]');
+    expect(sep10).toBeTruthy();
+    expect(sep12).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-sj-PO001-sh-1"]').textContent).toBe("SJ001");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-1"]').textContent).toContain("Cup");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-1"]').textContent).not.toContain("Lid");
+    expect(container.querySelector('[data-testid="mds-sj-PO001-sh-2"]').textContent).toBe("SJ001-2");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).toContain("Lid");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).not.toContain("Cup");
+    const labels = headerLabels(container);
+    expect(labels.indexOf("Item Line")).toBe(labels.indexOf("Customer") + 1);
+    expect(labels).not.toContain("Driver");
+    expect(labels).not.toContain("Status");
+    expect(labels).not.toContain("Aksi");
+    expect(labels).toContain("Optimasi Rute");
+  });
+
+  test("same-name lines on one dated SJ stay separate", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        shipment_id: "sh-2",
+        sj_label: "SJ001-2",
+        latest_sj_number: "SJ001-2",
+        sj_item_lines: [
+          { shipment_id: "sh-2", sj_number: "SJ001-2", line_id: "a", line_idx: 0, name: "12 oz PET Datar 11 gr SJP", qty: 1000 },
+          { shipment_id: "sh-2", sj_number: "SJ001-2", line_id: "b", line_idx: 1, name: "12 oz PET Datar 11 gr SJP", qty: 2000 },
+        ],
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const cell = container.querySelector('[data-testid="mds-item-lines-PO-100-sh-2"]');
+    const noSj = container.querySelector('[data-testid="mds-sj-PO-100-sh-2"]');
+    expect(noSj.textContent).toBe("SJ001-2");
+    expect(cell.textContent).toContain("1.000");
+    expect(cell.textContent).toContain("2.000");
+    expect(cell.textContent).not.toContain("3.000");
+    expect(container.querySelectorAll('[data-testid^="mds-item-line-PO-100-sh-2-"]').length).toBe(2);
   });
 });

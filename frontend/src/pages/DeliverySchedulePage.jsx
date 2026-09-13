@@ -382,8 +382,8 @@ export default function DeliverySchedulePage() {
               const locationOk = locationStatus === "Sudah Diatur";
               return (
                 <tr
-                  key={r.id}
-                  data-testid={`ds-row-${r.order_number}`}
+                  key={r.shipment_id ? `${r.id}:${r.shipment_id}` : r.id}
+                  data-testid={r.shipment_id ? `ds-row-${r.order_number}-${r.shipment_id}` : `ds-row-${r.order_number}`}
                   className={canOptimize && r.id && selected.has(r.id) ? "is-selected" : undefined}
                 >
                   {canOptimize && (
