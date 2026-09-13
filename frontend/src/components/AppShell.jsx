@@ -1,6 +1,6 @@
 import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
@@ -13,6 +13,7 @@ import BrandMark from "./BrandMark";
 import FloatingNotificationBell from "./FloatingNotificationBell";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
 import WorkspaceTabs from "./WorkspaceTabs";
+import WorkspaceChunkFallback from "./WorkspaceChunkFallback";
 import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
 
 const railLinkClass = ({ isActive }) => "rail-btn" + (isActive ? " is-active" : "");
@@ -720,7 +721,9 @@ export default function AppShell() {
               testidPrefix="workspace-tab"
             />
           )}
-          <Outlet />
+          <Suspense fallback={<WorkspaceChunkFallback />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
       <FloatingNotificationBell />

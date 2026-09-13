@@ -63,7 +63,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
   });
 
   test("App.js wires up route for /penjualan/faktur-penjualan with PermGate", () => {
-    expect(appSrc).toMatch(/import FakturPenjualan from "\.\/pages\/FakturPenjualan"/);
+    expect(appSrc).toMatch(/const FakturPenjualan = lazy\(\(\) => import\("\.\/pages\/FakturPenjualan"\)\)/);
     expect(appSrc).toMatch(/path="\/penjualan\/faktur-penjualan"/);
     expect(appSrc).toMatch(/NAV_KEYS\.salesInvoice/);
   });
