@@ -70,7 +70,7 @@ export default function Dashboard() {
     setBusy(true);
     try {
       const [d, r, today] = await Promise.all([
-        api.listOrders(status),
+        api.listOrders(status, { view: "dashboard" }),
         api.reminders().catch(() => null),
         api.dashboardToday().catch(() => null),
       ]);

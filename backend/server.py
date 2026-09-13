@@ -1019,12 +1019,17 @@ async def list_orders(
          mobile workflow-shortcut list so `stage_counts` == filtered list.
 
        Optional `view=summary` is additive: lean list rows for /m/orders.
-       Default (no view) keeps full documents + stage_counts for desktop.
+       Optional `view=dashboard` is additive: lean desktop `/` Dashboard rows
+       with the same status filters, pending_queues, and stage_counts.
+       Default (no view) keeps full documents + stage_counts for compatibility.
     """
     q: dict = {}
     st = (status or "aktif").lower()
-    if (view or "").strip().lower() == "summary":
+    view_norm = (view or "").strip().lower()
+    if view_norm == "summary":
         return await _list_orders_summary(st)
+    if view_norm == "dashboard":
+        return await _list_orders_dashboard(st)
     if st == "cancelled":
         q["cancelled"] = True
     else:
@@ -1070,6 +1075,572 @@ async def list_orders(
         for slug in _compute_pending_queues(a):
             stage_counts[slug] = stage_counts.get(slug, 0) + 1
     return {"orders": orders, "last_sync": now_iso(), "counts": counts, "stage_counts": stage_counts, "status": st}
+
+
+_ORDERS_DASHBOARD_LIMIT = 500
+_ORDERS_DASHBOARD_STAGE_LIMIT = 1000
+_ORDERS_DASHBOARD_RESPONSE_STRIP = (
+    "shipments",
+    "line_items",
+    "delivery_reschedules",
+    "design_approved_at",
+    "design_bypassed_at",
+    "payment_approved_at",
+    "payment_bypassed_at",
+    "delivery_note_created_by",
+    "quantity",
+    "qty_packed",
+    "tracking_token",
+    "hold_reasons",
+    "loading_checklist",
+)
+
+
+def _mongo_str_expr(expr) -> dict:
+    return {"$convert": {"input": expr, "to": "string", "onError": "", "onNull": ""}}
+
+
+def _mongo_nonempty_str_expr(expr) -> dict:
+    return {"$gt": [{"$strLenCP": _mongo_str_expr(expr)}, 0]}
+
+
+def _orders_dashboard_design_files_expr() -> dict:
+    """Metadata + embedded-upload sentinel. Never returns data_url bytes."""
+    return {
+        "$map": {
+            "input": {
+                "$cond": [{"$isArray": "$design_files"}, "$design_files", []],
+            },
+            "as": "f",
+            "in": {
+                "name": {"$ifNull": ["$$f.name", ""]},
+                "url": {
+                    "$cond": [
+                        _mongo_nonempty_str_expr("$$f.url"),
+                        "$$f.url",
+                        {
+                            "$cond": [
+                                _mongo_nonempty_str_expr("$$f.data_url"),
+                                "embedded",
+                                "",
+                            ]
+                        },
+                    ]
+                },
+                "uploaded_at": {"$ifNull": ["$$f.uploaded_at", ""]},
+            },
+        }
+    }
+
+
+def _orders_dashboard_file_presence_expr(field: str) -> dict:
+    return {
+        "$cond": [
+            _mongo_array_nonempty_expr(field),
+            [{}],
+            [],
+        ]
+    }
+
+
+def _orders_dashboard_sj_files_expr() -> dict:
+    """Live SJ identity/evidence without PDF/base64 bytes."""
+    return {
+        "$map": {
+            "input": {
+                "$cond": [{"$isArray": "$surat_jalan_files"}, "$surat_jalan_files", []],
+            },
+            "as": "f",
+            "in": {
+                "id": "$$f.id",
+                "file_id": "$$f.file_id",
+                "name": {"$ifNull": ["$$f.name", ""]},
+                "uploaded_at": "$$f.uploaded_at",
+                "is_deleted": "$$f.is_deleted",
+                "has_file": "$$f.has_file",
+                "storage_path": {
+                    "$cond": [
+                        {
+                            "$or": [
+                                _mongo_nonempty_str_expr("$$f.storage_path"),
+                                {
+                                    "$eq": [
+                                        {"$substrCP": [_mongo_str_expr("$$f.data_url"), 0, 5]},
+                                        "data:",
+                                    ]
+                                },
+                            ]
+                        },
+                        "1",
+                        "",
+                    ]
+                },
+            },
+        }
+    }
+
+
+def _orders_dashboard_sj_hist_expr() -> dict:
+    return {
+        "$map": {
+            "input": {
+                "$cond": [{"$isArray": "$sj_files"}, "$sj_files", []],
+            },
+            "as": "f",
+            "in": {
+                "id": "$$f.id",
+                "name": {"$ifNull": ["$$f.name", ""]},
+                "has_file": "$$f.has_file",
+                "is_deleted": "$$f.is_deleted",
+            },
+        }
+    }
+
+
+def _orders_dashboard_line_items_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$line_items", []]},
+            "as": "li",
+            "in": {
+                "line_id": "$$li.line_id",
+                "line_idx": "$$li.line_idx",
+                "production_process": "$$li.production_process",
+                "quantity": "$$li.quantity",
+            },
+        }
+    }
+
+
+def _orders_dashboard_operator_splits_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$operator_splits", []]},
+            "as": "s",
+            "in": {
+                "operator_name": "$$s.operator_name",
+                "qty_completed": "$$s.qty_completed",
+                "quantity": "$$s.quantity",
+                "work_date": "$$s.work_date",
+            },
+        }
+    }
+
+
+def _orders_dashboard_shipments_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$shipments", []]},
+            "as": "sh",
+            "in": {
+                "id": "$$sh.id",
+                "number": "$$sh.number",
+                "sales_delivery_id": "$$sh.sales_delivery_id",
+                "lines": {
+                    "$map": {
+                        "input": {"$ifNull": ["$$sh.lines", []]},
+                        "as": "ln",
+                        "in": {
+                            "line_idx": "$$ln.line_idx",
+                            "qty": "$$ln.qty",
+                            "quantity": "$$ln.quantity",
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+
+def _orders_dashboard_loading_confirmations_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$loading_confirmations", []]},
+            "as": "c",
+            "in": {
+                "cancelled": "$$c.cancelled",
+                "deleted": "$$c.deleted",
+                "surat_jalan_id": "$$c.surat_jalan_id",
+                "lines": {
+                    "$map": {
+                        "input": {"$ifNull": ["$$c.lines", []]},
+                        "as": "ln",
+                        "in": {
+                            "line_idx": "$$ln.line_idx",
+                            "qty": "$$ln.qty",
+                            "quantity": "$$ln.quantity",
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+
+def _orders_dashboard_packing_info_expr() -> dict:
+    return {
+        "qty_packed": "$packing_info.qty_packed",
+        "lines": {
+            "$map": {
+                "input": {"$ifNull": ["$packing_info.lines", []]},
+                "as": "ln",
+                "in": {
+                    "line_id": "$$ln.line_id",
+                    "line_idx": "$$ln.line_idx",
+                    "packed_qty": "$$ln.packed_qty",
+                },
+            }
+        },
+    }
+
+
+def _orders_dashboard_loading_info_expr() -> dict:
+    return {
+        "lines": {
+            "$map": {
+                "input": {"$ifNull": ["$loading_info.lines", []]},
+                "as": "ln",
+                "in": {
+                    "line_idx": "$$ln.line_idx",
+                    "loaded_qty": "$$ln.loaded_qty",
+                },
+            }
+        },
+        "events": {
+            "$map": {
+                "input": {"$ifNull": ["$loading_info.events", []]},
+                "as": "ev",
+                "in": {
+                    "line_idx": "$$ev.line_idx",
+                    "qty": "$$ev.qty",
+                },
+            }
+        },
+    }
+
+
+def _orders_dashboard_reschedules_expr() -> dict:
+    return {
+        "$map": {
+            "input": {"$ifNull": ["$delivery_reschedules", []]},
+            "as": "r",
+            "in": {
+                "status": "$$r.status",
+                "new_date": "$$r.new_date",
+            },
+        }
+    }
+
+
+def _orders_dashboard_stage_projection() -> dict:
+    """Fields read by hold snapshot + `_compute_pending_queues` (transitive)."""
+    return {
+        "_id": 0,
+        "cancelled": 1,
+        "current_stage": 1,
+        "design_bypassed": 1,
+        "design_status": 1,
+        "payment_bypassed": 1,
+        "payment_status": 1,
+        "sample_approved": 1,
+        "total_quantity": 1,
+        "quantity": 1,
+        "delivery_note_number": 1,
+        "delivery_note_created_at": 1,
+        "delivery_note_created_by": 1,
+        "qty_packed": 1,
+        "qty_delivered": 1,
+        "delivery_status": 1,
+        "loading_completed": 1,
+        "customer_approval.status": 1,
+        "screener_info.screen_qty": 1,
+        "helper_prep.qty_prepared": 1,
+        "loading_checklist.items_loaded": 1,
+        "loading_checklist.seal_ok": 1,
+        "design_files": _orders_dashboard_design_files_expr(),
+        "payment_files": _orders_dashboard_file_presence_expr("payment_files"),
+        "sample_files": _orders_dashboard_file_presence_expr("sample_files"),
+        "surat_jalan_files": _orders_dashboard_sj_files_expr(),
+        "line_items": _orders_dashboard_line_items_expr(),
+        "operator_splits": _orders_dashboard_operator_splits_expr(),
+        "shipments": _orders_dashboard_shipments_expr(),
+        "loading_confirmations": _orders_dashboard_loading_confirmations_expr(),
+        "packing_info": _orders_dashboard_packing_info_expr(),
+        "loading_info": _orders_dashboard_loading_info_expr(),
+    }
+
+
+def _orders_dashboard_list_projection() -> dict:
+    """Stage-count fields plus Dashboard card / StageBar evidence."""
+    proj = _orders_dashboard_stage_projection()
+    proj.update({
+        "id": 1,
+        "po_number": 1,
+        "outlet": 1,
+        "item_count": 1,
+        "priority": 1,
+        "deadline": 1,
+        "work_date": 1,
+        "cancelled_by": 1,
+        "cancelled_by_name": 1,
+        "cancelled_at": 1,
+        "cancel_reason": 1,
+        "tanggal_pengiriman": 1,
+        "effective_delivery_date": 1,
+        "delivery_deadline_effective": 1,
+        "scheduled_delivery_date": 1,
+        "delivery_deadline_manual": 1,
+        "design_approved_at": 1,
+        "design_bypassed_at": 1,
+        "payment_approved_at": 1,
+        "payment_bypassed_at": 1,
+        "print_completed_qty": 1,
+        "print_qty_target": 1,
+        "operator_assigned_qty": 1,
+        "print_qty_total": 1,
+        "print_status": 1,
+        "requires_printing": 1,
+        "surat_jalan_created": 1,
+        "surat_jalan_status_semantic": 1,
+        "loading_qty_status": 1,
+        "loading_verification_status": 1,
+        "eligible_delivery_qty": 1,
+        "terkirim_confirmed": 1,
+        "sj_files": _orders_dashboard_sj_hist_expr(),
+        "delivery_reschedules": _orders_dashboard_reschedules_expr(),
+    })
+    return proj
+
+
+def _dashboard_design_file_evidence(files) -> list:
+    """Python equivalent of `_orders_dashboard_design_files_expr` for tests."""
+    out = []
+    for f in files or []:
+        if not isinstance(f, dict):
+            continue
+        url = str(f.get("url") or "").strip()
+        if not url and str(f.get("data_url") or "").strip():
+            url = "embedded"
+        out.append({
+            "name": f.get("name") or "",
+            "url": url,
+            "uploaded_at": f.get("uploaded_at") or "",
+        })
+    return out
+
+
+def _dashboard_sj_file_evidence(files) -> list:
+    out = []
+    for f in files or []:
+        if not isinstance(f, dict):
+            continue
+        data_url = str(f.get("data_url") or "")
+        storage = str(f.get("storage_path") or "").strip()
+        out.append({
+            "id": f.get("id"),
+            "file_id": f.get("file_id"),
+            "name": f.get("name") or "",
+            "uploaded_at": f.get("uploaded_at"),
+            "is_deleted": f.get("is_deleted"),
+            "has_file": f.get("has_file"),
+            "storage_path": "1" if (storage or data_url.startswith("data:")) else "",
+        })
+    return out
+
+
+def _shape_order_for_dashboard_compute(order: dict) -> dict:
+    """In-memory mirror of the dashboard Mongo inclusion projection (tests/parity)."""
+    src = order or {}
+    shaped = {
+        "cancelled": src.get("cancelled"),
+        "current_stage": src.get("current_stage"),
+        "design_bypassed": src.get("design_bypassed"),
+        "design_status": src.get("design_status"),
+        "payment_bypassed": src.get("payment_bypassed"),
+        "payment_status": src.get("payment_status"),
+        "sample_approved": src.get("sample_approved"),
+        "total_quantity": src.get("total_quantity"),
+        "quantity": src.get("quantity"),
+        "delivery_note_number": src.get("delivery_note_number"),
+        "delivery_note_created_at": src.get("delivery_note_created_at"),
+        "delivery_note_created_by": src.get("delivery_note_created_by"),
+        "qty_packed": src.get("qty_packed"),
+        "qty_delivered": src.get("qty_delivered"),
+        "delivery_status": src.get("delivery_status"),
+        "loading_completed": src.get("loading_completed"),
+        "design_files": _dashboard_design_file_evidence(src.get("design_files")),
+        "payment_files": [{}] if src.get("payment_files") else [],
+        "sample_files": [{}] if src.get("sample_files") else [],
+        "surat_jalan_files": _dashboard_sj_file_evidence(src.get("surat_jalan_files")),
+        "line_items": [
+            {
+                "line_id": li.get("line_id"),
+                "line_idx": li.get("line_idx"),
+                "production_process": li.get("production_process"),
+                "quantity": li.get("quantity"),
+            }
+            for li in (src.get("line_items") or [])
+            if isinstance(li, dict)
+        ],
+        "operator_splits": [
+            {
+                "operator_name": s.get("operator_name"),
+                "qty_completed": s.get("qty_completed"),
+                "quantity": s.get("quantity"),
+                "work_date": s.get("work_date"),
+            }
+            for s in (src.get("operator_splits") or [])
+            if isinstance(s, dict)
+        ],
+        "shipments": [
+            {
+                "id": sh.get("id"),
+                "number": sh.get("number"),
+                "sales_delivery_id": sh.get("sales_delivery_id"),
+                "lines": [
+                    {
+                        "line_idx": ln.get("line_idx"),
+                        "qty": ln.get("qty"),
+                        "quantity": ln.get("quantity"),
+                    }
+                    for ln in (sh.get("lines") or [])
+                    if isinstance(ln, dict)
+                ],
+            }
+            for sh in (src.get("shipments") or [])
+            if isinstance(sh, dict)
+        ],
+        "loading_confirmations": [
+            {
+                "cancelled": c.get("cancelled"),
+                "deleted": c.get("deleted"),
+                "surat_jalan_id": c.get("surat_jalan_id"),
+                "lines": [
+                    {
+                        "line_idx": ln.get("line_idx"),
+                        "qty": ln.get("qty"),
+                        "quantity": ln.get("quantity"),
+                    }
+                    for ln in (c.get("lines") or [])
+                    if isinstance(ln, dict)
+                ],
+            }
+            for c in (src.get("loading_confirmations") or [])
+            if isinstance(c, dict)
+        ],
+        "packing_info": {
+            "qty_packed": (src.get("packing_info") or {}).get("qty_packed"),
+            "lines": [
+                {
+                    "line_id": ln.get("line_id"),
+                    "line_idx": ln.get("line_idx"),
+                    "packed_qty": ln.get("packed_qty"),
+                }
+                for ln in ((src.get("packing_info") or {}).get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        },
+        "loading_info": {
+            "lines": [
+                {"line_idx": ln.get("line_idx"), "loaded_qty": ln.get("loaded_qty")}
+                for ln in ((src.get("loading_info") or {}).get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+            "events": [
+                {"line_idx": ev.get("line_idx"), "qty": ev.get("qty")}
+                for ev in ((src.get("loading_info") or {}).get("events") or [])
+                if isinstance(ev, dict)
+            ],
+        },
+    }
+    snap = src.get("customer_approval")
+    if isinstance(snap, dict):
+        shaped["customer_approval"] = {"status": snap.get("status")}
+    si = src.get("screener_info")
+    if isinstance(si, dict):
+        shaped["screener_info"] = {"screen_qty": si.get("screen_qty")}
+    hp = src.get("helper_prep")
+    if isinstance(hp, dict):
+        shaped["helper_prep"] = {"qty_prepared": hp.get("qty_prepared")}
+    lc = src.get("loading_checklist")
+    if isinstance(lc, dict):
+        shaped["loading_checklist"] = {
+            "items_loaded": lc.get("items_loaded"),
+            "seal_ok": lc.get("seal_ok"),
+        }
+    return shaped
+
+
+def _finalize_orders_dashboard_row(order: dict) -> dict:
+    """Drop server-only helper fields after authoritative compute."""
+    snap = order.get("customer_approval")
+    if isinstance(snap, dict):
+        order["customer_approval"] = {"status": snap.get("status")}
+    ver = order.get("loading_verification_status")
+    if isinstance(ver, dict):
+        order["loading_verification_status"] = {
+            "code": ver.get("code"),
+            "label": ver.get("label"),
+        }
+    confs = order.get("loading_confirmations")
+    if isinstance(confs, list):
+        order["loading_confirmations"] = [{} for c in confs if isinstance(c, dict)]
+    for key in _ORDERS_DASHBOARD_RESPONSE_STRIP:
+        order.pop(key, None)
+    return _strip_sj_bytes(order)
+
+
+async def _orders_dashboard_tab_counts() -> dict:
+    return {
+        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}),
+        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}),
+        "cancelled": await db.orders.count_documents({"cancelled": True}),
+    }
+
+
+async def _list_orders_dashboard(st: str) -> dict:
+    """Desktop `/` Dashboard: same status + queue semantics, lean documents."""
+    q = _orders_list_match(st)
+    raw = await db.orders.aggregate([
+        {"$match": q},
+        {"$sort": {"created_at": -1}},
+        {"$limit": _ORDERS_DASHBOARD_LIMIT},
+        {"$project": _orders_dashboard_list_projection()},
+    ]).to_list(_ORDERS_DASHBOARD_LIMIT)
+    _dd_settings = await _get_delivery_deadline_settings()
+    for o in raw:
+        _apply_hold_snapshot(o)
+        o["pending_queues"] = _compute_pending_queues(o)
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        o["terkirim_confirmed"] = _terkirim_confirmed(o)
+        _strip_tracking_secret(o)
+    orders = [_finalize_orders_dashboard_row(o) for o in raw]
+    if st == "hold":
+        orders = [o for o in orders if o.get("hold")]
+    elif st == "aktif":
+        orders = [o for o in orders if not o.get("hold") and o.get("current_stage", 0) < 14]
+    elif st == "selesai":
+        orders = [o for o in orders if o.get("current_stage", 0) >= 14]
+    counts = await _orders_dashboard_tab_counts()
+    stage_raw = await db.orders.aggregate([
+        {"$match": {"cancelled": {"$ne": True}}},
+        {"$limit": _ORDERS_DASHBOARD_STAGE_LIMIT},
+        {"$project": _orders_dashboard_stage_projection()},
+    ]).to_list(_ORDERS_DASHBOARD_STAGE_LIMIT)
+    for a in stage_raw:
+        _apply_hold_snapshot(a)
+    stage_counts: Dict[str, int] = {slug: 0 for slug in WORK_QUEUE_SLUGS}
+    for a in stage_raw:
+        for slug in _compute_pending_queues(a):
+            stage_counts[slug] = stage_counts.get(slug, 0) + 1
+    return {
+        "orders": orders,
+        "last_sync": now_iso(),
+        "counts": counts,
+        "stage_counts": stage_counts,
+        "status": st,
+        "view": "dashboard",
+    }
 
 
 @api_router.get("/orders/{order_id}")
