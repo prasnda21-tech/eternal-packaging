@@ -234,6 +234,78 @@ describe("outlet location modal behavior", () => {
     expect(mockSave).not.toHaveBeenCalled();
   });
 
+  test("typing search text renders an unclipped suggestion list outside the scroll body", async () => {
+    const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
+    const src = fs.readFileSync(path.join(__dirname, "OutletLocationModal.jsx"), "utf8");
+    expect(css).toMatch(/\.outlet-place-suggest\{[^}]*position:fixed/);
+    expect(css).toMatch(/\.outlet-place-suggest\{[^}]*z-index:2/);
+    expect(src).toMatch(/className="outlet-place-suggest"/);
+    expect(src).toMatch(/outlet-loc-search-field/);
+    expect(src.indexOf("outlet-place-suggest")).toBeGreaterThan(src.indexOf("modal-inner"));
+    mockSearch.mockResolvedValue({
+      provider: "google",
+      suggestions: [
+        { place_id: "ChIJ-a", label: "JUS.IN Kelapa Gading", formatted_address: "Jl. Boulevard Raya, Jakarta" },
+        { place_id: "ChIJ-b", label: "JUS.IN Menteng", formatted_address: "Menteng, Jakarta" },
+      ],
+    });
+    await act(async () => {
+      root.render(<OutletLocationModal open row={row} onClose={() => {}} onSaved={() => {}} />);
+    });
+    await act(async () => {
+      setInputValue(container.querySelector('[data-testid="outlet-loc-search"]'), "JUS.IN");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    });
+    const list = container.querySelector('[data-testid="outlet-loc-suggest"]');
+    expect(list).toBeTruthy();
+    expect(container.querySelector(".outlet-loc-form").contains(list)).toBe(false);
+    expect(container.querySelector('[data-testid="outlet-location-modal"]').contains(list)).toBe(true);
+    expect(container.querySelector('[data-testid="outlet-loc-maps-link"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="outlet-loc-or"]')).toBeTruthy();
+    expect(container.querySelector(".outlet-place-primary").textContent).toBe("JUS.IN Kelapa Gading");
+  });
+
+  test("clicking a Places result updates canonical picked state then Simpan", async () => {
+    mockSearch.mockResolvedValue({
+      provider: "google",
+      suggestions: [{ place_id: "ChIJ-pick", label: "Monas", formatted_address: "Gambir, Jakarta" }],
+    });
+    mockDetails.mockResolvedValue({
+      place: {
+        place_id: "ChIJ-pick",
+        formatted_address: "Gambir, Jakarta",
+        lat: -6.175,
+        lng: 106.827,
+        name: "Monas",
+      },
+    });
+    await act(async () => {
+      root.render(<OutletLocationModal open row={row} batchId="batch-1" onClose={() => {}} onSaved={() => {}} />);
+    });
+    await act(async () => {
+      setInputValue(container.querySelector('[data-testid="outlet-loc-search"]'), "Monas");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="outlet-loc-pick-ChIJ-pick"]').click();
+    });
+    expect(mockDetails).toHaveBeenCalledWith("ChIJ-pick");
+    expect(container.querySelector('[data-testid="outlet-loc-selected"]').textContent).toBe("Gambir, Jakarta");
+    expect(container.querySelector('[data-testid="outlet-loc-suggest"]')).toBeFalsy();
+    await act(async () => {
+      container.querySelector('[data-testid="outlet-loc-save"]').click();
+    });
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      lat: -6.175,
+      lng: 106.827,
+      place_id: "ChIJ-pick",
+    }));
+  });
+
   test("Enter on the maps link field resolves and does not save", async () => {
     await act(async () => {
       root.render(<OutletLocationModal open row={row} onClose={() => {}} onSaved={() => {}} />);
