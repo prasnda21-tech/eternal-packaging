@@ -4891,11 +4891,11 @@ button.ghost.sm.icon{padding:4px 6px}
   background:#0f5f63;color:#fff;z-index:2;
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);
 }
-.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.waiting{
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.waiting,
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.upcoming{
   background:#fef3c7;color:#92400e;
 }
-.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.not-required,
-.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.upcoming{
+.po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-seg.not-required{
   background:#f1f5f9;color:#94a3b8;
 }
 .po-detail-industrial .po-stage-bar-block .stage-bar.has-labels .stage-bar-step-num{
