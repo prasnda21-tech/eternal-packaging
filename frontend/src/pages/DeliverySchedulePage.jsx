@@ -37,6 +37,21 @@ import {
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import OutletLocationModal from "../components/OutletLocationModal";
 
+/** Shipment-scoped SJ number from GET /delivery/schedule — never PO-level latest SJ. */
+export function scheduleRowSjNumber(row) {
+  const label = String(row?.sj_label || "").trim();
+  if (label) return label;
+  const latest = String(row?.latest_sj_number || "").trim();
+  if (latest) return latest;
+  const first = Array.isArray(row?.sj_numbers) ? String(row.sj_numbers[0] || "").trim() : "";
+  return first;
+}
+
+function sjCellTestId(row) {
+  const po = row?.order_number || "row";
+  return row?.shipment_id ? `ds-sj-${po}-${row.shipment_id}` : `ds-sj-${po}`;
+}
+
 function ProgressCell({ pct, tone, testid, title }) {
   const p = clampPercent(pct);
   return (
@@ -432,10 +447,14 @@ export default function DeliverySchedulePage() {
                     />
                   </td>
                   <td>
+                    <span className="mono" data-testid={sjCellTestId(r)}>
+                      {scheduleRowSjNumber(r) || "—"}
+                    </span>
+                    {" "}
                     <SuratJalanViewButton
                       order={{ id: r.id, po_number: r.order_number, customer_name: r.customer_name, sj_files: r.sj_files }}
                       entries={r.sj_files}
-                      label={r.sj_file_count > 1 ? `Lihat Surat Jalan (${r.sj_file_count})` : "Lihat Surat Jalan"}
+                      label={r.sj_file_count > 1 ? `Lihat (${r.sj_file_count})` : "Lihat"}
                       testid={`ds-sj-lihat-${r.order_number}`}
                     />
                   </td>
