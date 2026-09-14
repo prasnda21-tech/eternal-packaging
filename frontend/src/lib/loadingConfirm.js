@@ -87,33 +87,72 @@ function physicalQtyForLoadingLine(order, snap, idx, li, qtyPo) {
   return packedQtyForLine(order, snap, idx);
 }
 
+function sjIdentityKeys(row) {
+  if (!row || typeof row !== "object") return [];
+  return [
+    row.id,
+    row.file_id,
+    row.shipment_id,
+    row.sales_delivery_id,
+    row.number,
+    row.sj_number,
+  ].map((v) => String(v || "").trim()).filter(Boolean);
+}
+
+/** Aliases for the selected dropdown SJ (file id, shipment id, SJ number). */
+export function selectedSjIdentitySet(order, selectedSjId = null) {
+  const files = sjFilesForLoading(order);
+  const targetSjId = String(selectedSjId || files[0]?.id || "").trim();
+  const ids = new Set(targetSjId ? [targetSjId] : []);
+  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
+  const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  const matchingFile = sjFiles.find((f) => sjIdentityKeys(f).includes(targetSjId)) || null;
+  const matchingShipment = shipments.find((s) => {
+    const keys = sjIdentityKeys(s);
+    if (keys.includes(targetSjId)) return true;
+    return matchingFile ? sjIdentityKeys(matchingFile).some((k) => keys.includes(k)) : false;
+  }) || null;
+  for (const row of [matchingFile, matchingShipment]) {
+    sjIdentityKeys(row).forEach((k) => ids.add(k));
+  }
+  return ids;
+}
+
+function selectedSjLineSource(order, selectedSjId = null) {
+  const files = sjFilesForLoading(order);
+  const targetSjId = String(selectedSjId || files[0]?.id || "").trim();
+  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
+  const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  const matchingFile = sjFiles.find((f) => sjIdentityKeys(f).includes(targetSjId)) || null;
+  const matchingShipment = shipments.find((s) => {
+    const keys = sjIdentityKeys(s);
+    if (keys.includes(targetSjId)) return true;
+    return matchingFile ? sjIdentityKeys(matchingFile).some((k) => keys.includes(k)) : false;
+  }) || null;
+  const shipLines = Array.isArray(matchingShipment?.lines) ? matchingShipment.lines : [];
+  const fileLines = Array.isArray(matchingFile?.lines) ? matchingFile.lines : [];
+  const matchingSj = (shipLines.length ? matchingShipment : matchingFile)
+    || matchingShipment
+    || matchingFile
+    || null;
+  return { matchingSj, matchingFile, matchingShipment, lineSource: shipLines.length ? matchingShipment : matchingFile };
+}
+
 export function loadingPoLines(order, selectedSjId = null) {
   const lis = Array.isArray(order?.line_items) ? order.line_items : [];
   const snapshot = Array.isArray(order?.shipment_lines) ? order.shipment_lines : [];
   const files = sjFilesForLoading(order);
   const targetSjId = selectedSjId || files[0]?.id || "";
+  const { matchingSj, lineSource } = selectedSjLineSource(order, targetSjId);
 
-  // Find matching SJ record from order.shipments or order.surat_jalan_files or order.sj_files
-  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
-  const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
-  const matchingSj = shipments.find((s) => String(s?.id) === String(targetSjId) || String(s?.number) === String(targetSjId) || String(s?.sales_delivery_id) === String(targetSjId))
-    || sjFiles.find((f) => String(f?.id) === String(targetSjId) || String(f?.shipment_id) === String(targetSjId) || String(f?.sj_number) === String(targetSjId))
-    || null;
-
-  const targetIds = new Set([String(targetSjId)]);
-  if (matchingSj) {
-    if (matchingSj.id) targetIds.add(String(matchingSj.id));
-    if (matchingSj.number) targetIds.add(String(matchingSj.number));
-    if (matchingSj.shipment_id) targetIds.add(String(matchingSj.shipment_id));
-    if (matchingSj.sales_delivery_id) targetIds.add(String(matchingSj.sales_delivery_id));
-    if (matchingSj.sj_number) targetIds.add(String(matchingSj.sj_number));
-  }
+  const targetIds = selectedSjIdentitySet(order, targetSjId);
 
   const confirmations = loadingConfirmations(order);
 
+  const sourceLines = Array.isArray(lineSource?.lines) ? lineSource.lines : [];
   const sjQtyByIdx = {};
-  if (matchingSj && Array.isArray(matchingSj.lines) && matchingSj.lines.length) {
-    for (const ln of matchingSj.lines) {
+  if (sourceLines.length) {
+    for (const ln of sourceLines) {
       const resolved = resolveLoadingPoLineIdx(order, ln);
       if (resolved == null) continue;
       sjQtyByIdx[resolved] = (sjQtyByIdx[resolved] || 0) + (Number(ln?.qty ?? ln?.quantity ?? 0) || 0);
@@ -127,7 +166,7 @@ export function loadingPoLines(order, selectedSjId = null) {
     const physical = physicalQtyForLoadingLine(order, snap, idx, li, qtyPo);
 
     let sjLineQty = 0;
-    if (matchingSj && Array.isArray(matchingSj.lines) && matchingSj.lines.length) {
+    if (sourceLines.length) {
       sjLineQty = Number(sjQtyByIdx[idx] || 0) || 0;
     } else if (matchingSj && idx === 0) {
       sjLineQty = Number(matchingSj.total_qty ?? matchingSj.qty ?? 0) || 0;
@@ -325,32 +364,73 @@ export function loadingDiscrepancyHistory(order) {
   return (Array.isArray(order?.loading_discrepancies) ? order.loading_discrepancies : []).filter(Boolean);
 }
 
-/** Client-side mirror of backend loading_verification_status when enrich absent. */
+function fmtQtyId(n) {
+  return Number(n || 0).toLocaleString("id-ID");
+}
+
+function packingShortfallFromSelectedLines(poLines) {
+  const printShort = (poLines || []).find((ln) => (
+    ln.production_process !== "non_print"
+    && Number(ln.qty_sj || 0) > 0
+    && Number(ln.physical_available || 0) < Number(ln.sj_available || ln.qty_sj || 0)
+    && Number(ln.available || 0) <= 0
+    && Number(ln.loaded || 0) < Number(ln.qty_sj || 0)
+  ));
+  if (!printShort) return null;
+  const need = Number(printShort.sj_available || printShort.qty_sj || 0);
+  const have = Number(printShort.physical_available || 0);
+  return {
+    line: printShort,
+    reason: `Packing belum mencukupi untuk ${printShort.name}: diperlukan ${fmtQtyId(need)}, tersedia ${fmtQtyId(have)}.`,
+  };
+}
+
+/** Selected-SJ verification. Never reuse order-level enrich from another / latest SJ. */
 export function loadingVerificationStatus(order, suratJalanId = null) {
+  const files = sjFilesForLoading(order);
+  const sid = String(suratJalanId || files[0]?.id || "").trim();
+  const identities = selectedSjIdentitySet(order, sid);
   const enriched = order?.loading_verification_status;
-  if (enriched && typeof enriched === "object" && (!suratJalanId || String(enriched.surat_jalan_id || "") === String(suratJalanId))) {
-    return enriched;
-  }
-  const sid = String(suratJalanId || "").trim();
-  const open = loadingDiscrepancies(order).filter((d) => !sid || String(d.surat_jalan_id || "") === sid);
+  const enrichMatchesSelected = !!(
+    enriched
+    && typeof enriched === "object"
+    && sid
+    && identities.has(String(enriched.surat_jalan_id || "").trim())
+  );
+
+  const open = loadingDiscrepancies(order).filter((d) => !sid || identities.has(String(d.surat_jalan_id || "").trim()));
   if (open.length) {
     return { code: "held_qty_mismatch", label: "Tertahan — Qty Tidak Sesuai SJ", surat_jalan_id: sid, discrepancies: open };
   }
-  const files = sjFilesForLoading(order);
+  if (enrichMatchesSelected && String(enriched.code || "").includes("held")) {
+    return { ...enriched, surat_jalan_id: sid };
+  }
   if (!files.length) return { code: "waiting_verification", label: "Menunggu Verifikasi", surat_jalan_id: sid };
-  const poLines = loadingPoLines(order, sid || files[0]?.id);
-  const printShort = poLines.find((ln) => ln.production_process !== "non_print" && Number(ln.qty_sj || 0) > 0 && Number(ln.physical_available || 0) < Number(ln.sj_available || ln.qty_sj || 0) && Number(ln.available || 0) <= 0 && Number(ln.loaded || 0) < Number(ln.qty_sj || 0));
-  // Prefer backend; soft client hint only
+  if (enrichMatchesSelected && enriched.sj_changed) {
+    return { ...enriched, surat_jalan_id: sid };
+  }
+
+  const poLines = loadingPoLines(order, sid);
   const remaining = poLines.reduce((s, r) => s + Number(r.available || 0), 0);
   const loaded = poLines.reduce((s, r) => s + Number(r.loaded || 0), 0);
   const need = poLines.reduce((s, r) => s + Number(r.qty_sj || 0), 0);
   if (need > 0 && loaded >= need && remaining <= 0) {
-    return { code: "loading_complete", label: "Loading Selesai", surat_jalan_id: sid || files[0]?.id };
+    return { code: "loading_complete", label: "Loading Selesai", surat_jalan_id: sid };
   }
-  if (printShort) {
-    return { code: "packing_insufficient", label: "Packing Belum Mencukupi", surat_jalan_id: sid || files[0]?.id };
+  if (enrichMatchesSelected && String(enriched.code || "").includes("complete")) {
+    return { ...enriched, surat_jalan_id: sid };
   }
-  return { code: "ready_to_verify", label: "Siap Diverifikasi", surat_jalan_id: sid || files[0]?.id };
+
+  const short = packingShortfallFromSelectedLines(poLines);
+  if (short) {
+    return {
+      code: "packing_insufficient",
+      label: "Packing Belum Mencukupi",
+      surat_jalan_id: sid,
+      reason: short.reason,
+    };
+  }
+  return { code: "ready_to_verify", label: "Siap Diverifikasi", surat_jalan_id: sid };
 }
 
 export function sjLinesForDiscrepancy(order, selectedSjId = null) {

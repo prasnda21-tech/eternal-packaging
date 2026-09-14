@@ -386,6 +386,120 @@ def test_summary_and_shortfall_agree_on_selected_sj():
     assert later_status.get("surat_jalan_id") == "sj-later"
 
 
+def _two_sj_selected_a_latest_b():
+    """Selected SJ A packed 1000; later/default-latest SJ B packed 0."""
+    return {
+        "id": "po-2026-09-08-000006",
+        "po_number": "PO/2026/09/08/000006",
+        "line_items": [
+            {
+                "name": FROSTED,
+                "quantity": 1000,
+                "production_process": "print",
+                "line_id": "LA",
+                "accurate_item_id": "frosted",
+            },
+            {
+                "name": FROSTED,
+                "quantity": 1000,
+                "production_process": "print",
+                "line_id": "LB",
+                "accurate_item_id": "other",
+            },
+        ],
+        "packing_info": {
+            "qty_packed": 1000,
+            "lines": [
+                {"line_idx": 0, "line_id": "LA", "packed_qty": 1000},
+                {"line_idx": 1, "line_id": "LB", "packed_qty": 0},
+            ],
+        },
+        "surat_jalan_files": [
+            {
+                "id": "file-a",
+                "shipment_id": "ship-a",
+                "sj_number": "SJ/2026/09/08/000006",
+                "total_qty": 1000,
+                "lines": [{"line_idx": 1, "qty": 1000, "name": FROSTED}],
+            },
+            {
+                "id": "file-b",
+                "shipment_id": "ship-b",
+                "sj_number": "SJ/2026/09/08/000007",
+                "total_qty": 1000,
+                "lines": [{"line_idx": 1, "qty": 1000, "name": FROSTED}],
+            },
+        ],
+        "shipments": [
+            {
+                "id": "ship-a",
+                "number": "SJ/2026/09/08/000006",
+                "sales_delivery_id": "ship-a",
+                "file_id": "file-a",
+                "total_qty": 1000,
+                "lines": [{"line_idx": 0, "line_id": "LA", "qty": 1000, "name": FROSTED}],
+            },
+            {
+                "id": "ship-b",
+                "number": "SJ/2026/09/08/000007",
+                "sales_delivery_id": "ship-b",
+                "file_id": "file-b",
+                "total_qty": 1000,
+                "lines": [{"line_idx": 1, "line_id": "LB", "qty": 1000, "name": FROSTED}],
+            },
+        ],
+        "loading_confirmations": [],
+        "loading_snapshots": [],
+        "loading_discrepancies": [],
+    }
+
+
+def test_generic_enrich_without_id_keeps_latest_shipment_semantics():
+    """GET/dashboard generic enrich stays latest-batch; selected A is explicit."""
+    o = _two_sj_selected_a_latest_b()
+    enrich = loading_verification_status(o)
+    assert enrich.get("surat_jalan_id") == "ship-b"
+    assert enrich.get("code") == "packing_insufficient"
+    selected = loading_verification_status(o, "file-a")
+    assert selected.get("surat_jalan_id") == "file-a"
+    assert selected.get("code") != "packing_insufficient"
+    assert packing_shortfall_for_sj_match(o, "file-a") is None
+    assert validate_loading_match_confirmation(o, "file-a") is None
+    latest = loading_verification_status(o, "file-b")
+    assert latest.get("code") == "packing_insufficient"
+    assert "tersedia 0" in str(latest.get("reason") or "")
+    assert packing_shortfall_for_sj_match(o, "file-b")
+    assert validate_loading_match_confirmation(o, "file-b")
+
+
+def test_selected_a_packed_latest_b_zero_allows_a():
+    o = _two_sj_selected_a_latest_b()
+    assert available_for_sj_loading_line(o, "file-a", 0) == 1000
+    assert packing_shortfall_for_sj_match(o, "file-a") is None
+    assert validate_loading_match_confirmation(o, "file-a") is None
+
+
+def test_selected_a_zero_latest_b_packed_still_blocks_a():
+    o = _two_sj_selected_a_latest_b()
+    o["packing_info"]["lines"] = [
+        {"line_idx": 0, "line_id": "LA", "packed_qty": 0},
+        {"line_idx": 1, "line_id": "LB", "packed_qty": 1000},
+    ]
+    o["shipments"][1]["lines"] = [{"line_idx": 1, "line_id": "LB", "qty": 1000, "name": FROSTED}]
+    assert packing_shortfall_for_sj_match(o, "file-a")
+    assert validate_loading_match_confirmation(o, "file-a")
+    assert packing_shortfall_for_sj_match(o, "file-b") is None
+
+
+def test_loaded_400_of_packed_1000_leaves_remaining_600():
+    o = _po(sj_a=1000, sj_b=0, loaded_a=400)
+    o["line_items"] = [o["line_items"][0]]
+    o["surat_jalan_files"][0]["lines"] = [{"line_idx": 0, "line_id": "LA", "qty": 1000}]
+    o["shipments"][0]["lines"] = [{"line_idx": 0, "line_id": "LA", "qty": 1000}]
+    assert available_for_sj_loading_line(o, SJ_ID, 0) == 600
+    assert packing_shortfall_for_sj_match(o, SJ_ID) is None
+
+
 def test_legacy_loading_info_still_blocks_physical_remaining():
     o = _po(sj_a=1000, sj_b=0)
     o["line_items"] = [o["line_items"][0]]

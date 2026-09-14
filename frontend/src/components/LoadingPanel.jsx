@@ -108,7 +108,9 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
       return;
     }
     if (String(verification?.code || "").includes("packing")) {
-      setErr(verification?.reason || "Packing belum mencukupi untuk konfirmasi Loading.");
+      if (!verification?.reason) {
+        setErr("Packing belum mencukupi untuk konfirmasi Loading.");
+      }
       return;
     }
     setErr("");

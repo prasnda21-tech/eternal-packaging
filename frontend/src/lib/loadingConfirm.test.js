@@ -381,6 +381,16 @@ describe("Loading confirm helpers", () => {
     expect(loadingVerificationStatus(order, "sj1").code).not.toBe("packing_insufficient");
   });
 
+  test("already-loaded 400 of packed 1000 leaves remaining 600", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 400 }] }],
+    }, "sj1");
+    expect(lines[0].available).toBe(600);
+  });
+
   test("legacy loading_info reduces frontend remaining like backend shortfall", () => {
     const lines = loadingPoLines({
       line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
@@ -390,6 +400,159 @@ describe("Loading confirm helpers", () => {
     }, "sj1");
     expect(lines[0].packed).toBe(1000);
     expect(lines[0].available).toBe(0);
+  });
+
+  test("generic enrich without SJ identity is not assumed to be selected SJ", () => {
+    const frosted = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: {
+        lines: [
+          { line_idx: 0, line_id: "LA", packed_qty: 1000 },
+          { line_idx: 1, line_id: "LB", packed_qty: 0 },
+        ],
+      },
+      shipments: [
+        { id: "ship-a", file_id: "file-a", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "ship-b", file_id: "file-b", lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "file-a", shipment_id: "ship-a", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "file-b", shipment_id: "ship-b", lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }] },
+      ],
+      loading_verification_status: {
+        code: "packing_insufficient",
+        label: "Packing Belum Mencukupi",
+        reason: "Packing belum mencukupi untuk 14 oz Inject Datar Frosted Klir: diperlukan 1.000, tersedia 0.",
+      },
+    };
+    const verA = loadingVerificationStatus(order, "file-a");
+    expect(verA.code).toBe("ready_to_verify");
+    expect(verA.reason).toBeFalsy();
+  });
+
+  test("stale GET enrich for latest SJ B is not reused for selected SJ A", () => {
+    const frosted = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: {
+        lines: [
+          { line_idx: 0, line_id: "LA", packed_qty: 1000 },
+          { line_idx: 1, line_id: "LB", packed_qty: 0 },
+        ],
+      },
+      shipments: [
+        {
+          id: "ship-a",
+          number: "SJ/2026/09/08/000006",
+          file_id: "file-a",
+          lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }],
+        },
+        {
+          id: "ship-b",
+          number: "SJ/2026/09/08/000007",
+          file_id: "file-b",
+          lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }],
+        },
+      ],
+      surat_jalan_files: [
+        {
+          id: "file-a",
+          shipment_id: "ship-a",
+          sj_number: "SJ/2026/09/08/000006",
+          lines: [{ line_idx: 1, qty: 1000, name: frosted }],
+        },
+        {
+          id: "file-b",
+          shipment_id: "ship-b",
+          sj_number: "SJ/2026/09/08/000007",
+          lines: [{ line_idx: 1, qty: 1000, name: frosted }],
+        },
+      ],
+      loading_verification_status: {
+        code: "packing_insufficient",
+        label: "Packing Belum Mencukupi",
+        surat_jalan_id: "ship-b",
+        reason: "Packing belum mencukupi untuk 14 oz Inject Datar Frosted Klir: diperlukan 1.000, tersedia 0.",
+      },
+    };
+    const linesA = loadingPoLines(order, "file-a");
+    expect(linesA.reduce((s, r) => s + r.qty_sj, 0)).toBe(1000);
+    expect(linesA.reduce((s, r) => s + r.available, 0)).toBe(1000);
+    const verA = loadingVerificationStatus(order, "file-a");
+    expect(verA.code).toBe("ready_to_verify");
+    expect(verA.reason).toBeFalsy();
+    const verB = loadingVerificationStatus(order, "file-b");
+    expect(verB.code).toBe("packing_insufficient");
+    expect(String(verB.reason || "")).toMatch(/tersedia 0/);
+    expect(loadingPoLines(order, "file-b").reduce((s, r) => s + r.available, 0)).toBe(0);
+  });
+
+  test("selected A packed 0 stays blocked even if latest B is packed", () => {
+    const frosted = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: {
+        lines: [
+          { line_idx: 0, line_id: "LA", packed_qty: 0 },
+          { line_idx: 1, line_id: "LB", packed_qty: 1000 },
+        ],
+      },
+      shipments: [
+        { id: "ship-a", file_id: "file-a", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "ship-b", file_id: "file-b", lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "file-a", shipment_id: "ship-a", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "file-b", shipment_id: "ship-b", lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }] },
+      ],
+    };
+    expect(loadingVerificationStatus(order, "file-a").code).toBe("packing_insufficient");
+    expect(loadingVerificationStatus(order, "file-b").code).toBe("ready_to_verify");
+  });
+
+  test("file-id selection prefers linked shipment lines over stale file lines", () => {
+    const frosted = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: {
+        lines: [
+          { line_idx: 0, line_id: "LA", packed_qty: 1000 },
+          { line_idx: 1, line_id: "LB", packed_qty: 0 },
+        ],
+      },
+      shipments: [{
+        id: "ship-a",
+        number: "SJ/2026/09/08/000006",
+        file_id: "file-uuid-a",
+        lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }],
+      }],
+      surat_jalan_files: [{
+        id: "file-uuid-a",
+        shipment_id: "ship-a",
+        sj_number: "SJ/2026/09/08/000006",
+        lines: [
+          { line_idx: 0, qty: 1000, name: frosted },
+          { line_idx: 1, qty: 1000, name: frosted },
+        ],
+      }],
+    };
+    const lines = loadingPoLines(order, "file-uuid-a");
+    expect(lines.reduce((s, r) => s + r.qty_sj, 0)).toBe(1000);
+    expect(lines[0].available).toBe(1000);
+    expect(loadingVerificationStatus(order, "file-uuid-a").code).toBe("ready_to_verify");
   });
 
   test("frontend and backend agreement fixture: current format ready", () => {

@@ -50,4 +50,37 @@ describe("Loading SJ verification helpers", () => {
     const st = loadingVerificationStatus(order, "sj1");
     expect(String(st.label || "")).toMatch(/Tertahan|Sesuai SJ|Tidak Sesuai/i);
   });
+
+  test("dropdown A to B does not keep stale A verification", () => {
+    const frosted = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: frosted, quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: {
+        lines: [
+          { line_idx: 0, line_id: "LA", packed_qty: 1000 },
+          { line_idx: 1, line_id: "LB", packed_qty: 0 },
+        ],
+      },
+      shipments: [
+        { id: "ship-a", file_id: "file-a", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "ship-b", file_id: "file-b", lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "file-a", shipment_id: "ship-a", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "file-b", shipment_id: "ship-b", lines: [{ line_idx: 1, line_id: "LB", qty: 1000 }] },
+      ],
+      loading_verification_status: {
+        code: "ready_to_verify",
+        label: "Siap Diverifikasi",
+        surat_jalan_id: "file-a",
+      },
+    };
+    expect(loadingVerificationStatus(order, "file-a").code).toBe("ready_to_verify");
+    const after = loadingVerificationStatus(order, "file-b");
+    expect(after.code).toBe("packing_insufficient");
+    expect(after.surat_jalan_id).toBe("file-b");
+  });
 });
