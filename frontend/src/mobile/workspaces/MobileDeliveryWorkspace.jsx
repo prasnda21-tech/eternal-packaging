@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Camera, ImagePlus } from "lucide-react";
 import api from "../../lib/api";
 import { formatApiError } from "../../lib/errors";
@@ -16,6 +16,12 @@ import {
   emptyDeliveryPhotoSlotCount,
   canUploadDeliveryBatchPhoto,
   deliveryBatchPhotoBlockReason,
+  deliveryBatchPhotoReadiness,
+  findDeliveryShipment,
+  isShipmentDelivered,
+  pengirimanSjOptions,
+  proofsForShipment,
+  selectedPengirimanShipmentId,
 } from "../../lib/deliveryProof";
 import { compressImage } from "../../lib/imageCompress";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
@@ -31,9 +37,28 @@ function newClientId() {
   return `${Date.now()}-${Math.random()}`;
 }
 
+function urlShipmentId() {
+  if (typeof window === "undefined") return "";
+  try {
+    return new URLSearchParams(window.location.search).get("shipment") || "";
+  } catch {
+    return "";
+  }
+}
+
 export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
-  const delivered = order?.delivery_status === "Terkirim" || !!order?.terkirim_confirmed;
-  const proofs = order?.delivery_proofs || [];
+  const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
+  const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, urlShipmentId()));
+  const sjIdsKey = sjOptions.map((o) => o.id).join("|");
+  useEffect(() => {
+    const next = selectedPengirimanShipmentId(order, sjId || urlShipmentId());
+    if (next && next !== sjId) setSjId(next);
+  }, [sjIdsKey, order, sjId]);
+  const activeShipment = findDeliveryShipment(order, sjId) || sjOptions[0]?.shipment || null;
+  const activeSjOption = sjOptions.find((o) => o.id === (activeShipment?.id || sjId)) || sjOptions[0] || null;
+  const selectedDelivered = isShipmentDelivered(order, activeShipment);
+  const delivered = selectedDelivered || order?.delivery_status === "Terkirim" || !!order?.terkirim_confirmed;
+  const proofs = proofsForShipment(order, activeShipment);
   const address = deliveryAddressFromOrder(order);
   const maps = mapsSearchUrl(address);
   const cameraRef = useRef(null);
@@ -52,8 +77,9 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
   const orderSig = order?.delivery_recipient_signature;
   const driverSig = order?.delivery_driver_signature;
   const canMutate = canEdit && !delivered;
-  const batchPhotoReady = canUploadDeliveryBatchPhoto(order);
-  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order);
+  const batchPhotoReady = canUploadDeliveryBatchPhoto(order, activeShipment);
+  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order, activeShipment);
+  const batchReadiness = deliveryBatchPhotoReadiness(order, activeShipment);
   const canWritePhoto = canMutate && batchPhotoReady;
   const photoBusy = isDeliveryProofUploadBusy(localSlots);
   const canConfirm = canSubmitConfirmDelivered(
@@ -63,7 +89,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     orderSig,
     localSig.driver,
     driverSig,
-  ) && Number(order?.eligible_delivery_qty || 0) > 0 && canMutate && !photoBusy;
+  ) && batchPhotoReady && canMutate && !photoBusy;
   const emptySlots = canWritePhoto ? emptyDeliveryPhotoSlotCount(proofs.length, localSlots.length) : 0;
 
   const closePicker = () => setPicker(null);
@@ -138,7 +164,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
         onUpdated(latestOrder);
         patchSlot(clientId, { replaceId: null });
       }
-      const res = await api.uploadDeliveryProof(order.id, uploadFile);
+      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, activeShipment?.id || sjId);
       latestOrder = res.order;
       onUpdated(latestOrder);
       if (replaceId && currentProofs.length < MAX_PHOTOS) {
@@ -201,6 +227,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName,
           signatureDataUrl: localSig.recipient,
+          shipmentId: activeShipment?.id || sjId,
         });
         latest = res.order;
         onUpdated(latest);
@@ -208,11 +235,15 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
       if (localSig.driver) {
         const res = await api.uploadDeliveryDriverSignature(latest.id, {
           signatureDataUrl: localSig.driver,
+          shipmentId: activeShipment?.id || sjId,
         });
         latest = res.order;
         onUpdated(latest);
       }
-      const res = await api.confirmDelivered(order.id, { action_id: newActionId() });
+      const res = await api.confirmDelivered(order.id, {
+        action_id: newActionId(),
+        shipment_id: activeShipment?.id || sjId,
+      });
       onUpdated(res.order);
       setLocalSig({ recipient: null, driver: null });
     } catch (e) {
@@ -227,6 +258,35 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
   return (
     <section data-testid="mobile-ws-delivery">
       <div className="mop-ws-header"><h2>PENGIRIMAN</h2></div>
+      {sjOptions.length > 0 && (
+        <label className="mop-field" data-testid="mobile-pengiriman-sj-select-wrap">
+          <span>Surat Jalan</span>
+          <select
+            value={activeSjOption?.id || sjId || ""}
+            onChange={(e) => setSjId(e.target.value)}
+            data-testid="mobile-pengiriman-sj-select"
+          >
+            {sjOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.number} · {opt.id}{opt.delivered ? " · Terkirim" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {activeSjOption && (
+        <div className="mop-file" data-testid="mobile-pengiriman-selected-sj-card">
+          <span>Surat Jalan</span>
+          <strong data-testid="mobile-pengiriman-selected-sj-number">{activeSjOption.number}</strong>
+          <p data-testid="mobile-pengiriman-selected-sj-qty">Qty {Number(activeSjOption.qty || 0).toLocaleString("id-ID")} pcs</p>
+          <p data-testid="mobile-pengiriman-selected-loading">
+            Loading {Number(batchReadiness.loadedTotal || 0).toLocaleString("id-ID")} / {Number(batchReadiness.requiredTotal || activeSjOption.qty || 0).toLocaleString("id-ID")}
+          </p>
+          <p data-testid="mobile-pengiriman-selected-status">
+            {selectedDelivered ? "Terkirim" : (batchReadiness.allowed ? "Siap dikirim" : "Belum siap")}
+          </p>
+        </div>
+      )}
       <div className="mop-file">
         <span>Customer</span>
         <strong className="mop-card-title" style={{ display: "block" }} data-testid="mobile-delivery-customer">{getCanonicalCustomerName(order)}</strong>

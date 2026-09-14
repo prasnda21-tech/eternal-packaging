@@ -132,7 +132,41 @@ def _latest_shipment_id(order: dict) -> Optional[str]:
     return None
 
 
-def append_confirmation(order: dict, user: dict, *, qty_increment: int, now: str, action_id: Optional[str] = None) -> Optional[dict]:
+def _items_for_shipment(order: dict, shipment: Optional[dict], qty_increment: int) -> List[dict]:
+    if isinstance(shipment, dict):
+        rows = []
+        for ln in shipment.get("lines") or []:
+            if not isinstance(ln, dict):
+                continue
+            try:
+                idx = int(ln.get("line_idx"))
+            except (TypeError, ValueError):
+                continue
+            if idx < 0:
+                continue
+            qty = max(0, int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity") or 0))
+            if qty <= 0:
+                continue
+            name = _text(ln.get("name")) or _text(_line_name(order, idx))
+            rows.append({"line_idx": idx, "name": name, "qty": qty})
+        if rows:
+            return rows
+    items = _item_deltas(order)
+    if items:
+        return items
+    return [{"line_idx": 0, "name": _text(_line_name(order, 0)), "qty": qty_increment}]
+
+
+def append_confirmation(
+    order: dict,
+    user: dict,
+    *,
+    qty_increment: int,
+    now: str,
+    action_id: Optional[str] = None,
+    shipment_id: Optional[str] = None,
+    shipment: Optional[dict] = None,
+) -> Optional[dict]:
     """Persist one confirmation snapshot. No-op when qty did not increase."""
     if qty_increment <= 0:
         return None
@@ -145,9 +179,7 @@ def append_confirmation(order: dict, user: dict, *, qty_increment: int, now: str
     role = _text((user or {}).get("role"))
     display_driver = _text(lc.get("driver_name")) or _text((user or {}).get("name"))
     driver_id = actor_id if role == "driver" else None
-    items = _item_deltas(order)
-    if not items:
-        items = [{"line_idx": 0, "name": _text(_line_name(order, 0)), "qty": qty_increment}]
+    items = _items_for_shipment(order, shipment, qty_increment)
     rec = {
         "id": str(uuid.uuid4()),
         "action_id": _text(action_id),
@@ -157,7 +189,7 @@ def append_confirmation(order: dict, user: dict, *, qty_increment: int, now: str
         "driver_id": driver_id,
         "driver_name": display_driver,
         "vehicle_plate": _text(lc.get("vehicle_plate")),
-        "shipment_id": _latest_shipment_id(order),
+        "shipment_id": _text(shipment_id) or _text((shipment or {}).get("id")) or _latest_shipment_id(order),
         "qty": int(qty_increment),
         "items": items,
         "proof_ids": _new_proof_ids(order),

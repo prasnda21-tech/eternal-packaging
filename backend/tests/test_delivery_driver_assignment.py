@@ -17,7 +17,7 @@ os.environ.setdefault("STORAGE_PROVIDER", "local")
 import server
 from server import app, current_user
 from services.delivery_driver_assignment import ASSIGN_DRIVER_PERM, ELIGIBLE_DRIVER_ROLES
-from services.independent_route.constants import COL_PLANS, COL_STOPS, OPT_STATUS_STALE
+from services.independent_route.constants import COL_PLANS, COL_STOPS, OPT_STATUS_OPTIMIZED
 from services.independent_route.store import ensure_indexes
 from quantity_rules import qty_loaded, loading_status_semantic
 
@@ -80,6 +80,22 @@ def _order(oid, *, driver_id=None, driver_name=None, lat=None, lng=None, date="2
     loc = {}
     if lat is not None and lng is not None:
         loc = {"lat": lat, "lng": lng, "formatted_address": address}
+    shipment_id = f"sj-{oid}"
+    shipments = extra.pop("shipments", [{
+        "id": shipment_id,
+        "file_id": shipment_id,
+        "number": f"SJ-{oid}",
+        "lines": [{"line_idx": 0, "qty": 100}],
+    }])
+    surat_jalan_files = extra.pop("surat_jalan_files", [{
+        "id": shipment_id,
+        "shipment_id": shipment_id,
+        "name": f"SJ-{oid}.pdf",
+        "content_type": "application/pdf",
+        "source": "SYSTEM_GENERATED",
+        "storage_path": f"surat-jalan/{shipment_id}.pdf",
+        "lines": [{"line_idx": 0, "qty": 100}],
+    }])
     lc = {}
     if driver_id:
         lc["driver_user_id"] = driver_id
@@ -101,7 +117,8 @@ def _order(oid, *, driver_id=None, driver_name=None, lat=None, lng=None, date="2
         "qty_delivered": extra.pop("qty_delivered", 0),
         "packing_info": extra.pop("packing_info", {"qty_packed": 100}),
         "line_items": [{"name": "Box", "quantity": 100}],
-        "shipments": extra.pop("shipments", [{"id": f"sj-{oid}", "number": f"SJ-{oid}", "lines": [{"qty": 100}]}]),
+        "shipments": shipments,
+        "surat_jalan_files": surat_jalan_files,
         "loading_checklist": lc,
         "loading_confirmations": extra.pop("loading_confirmations", []),
         "delivery_location": loc,
@@ -348,7 +365,7 @@ async def test_bulk_assignment_exact_selected_only_and_partial():
 
 
 @pytest.mark.anyio
-async def test_no_driver_becomes_eligible_and_grouping_updates():
+async def test_review_eligibility_ignores_driver_and_grouping_updates_after_assignment():
     await _clean()
     a, _, _ = await _seed_drivers()
     admin = await _upsert_user(_user())
@@ -362,8 +379,9 @@ async def test_no_driver_becomes_eligible_and_grouping_updates():
     rev = await client.post("/api/route-optimizer/from-schedule/review", json={"order_ids": [x, y]})
     assert rev.status_code == 200
     rows = {r["sales_order_id"]: r for r in rev.json()["rows"]}
-    assert rows[x]["eligible"] is False
-    assert "Belum ada driver" in (rows[x].get("reason") or "")
+    assert rows[x]["eligible"] is True
+    assert not rows[x].get("driver_user_id")
+    assert "Belum ada driver" not in (rows[x].get("reasons") or [])
 
     assign = await client.post(
         "/api/delivery/orders/assign-driver",
@@ -383,7 +401,7 @@ async def test_no_driver_becomes_eligible_and_grouping_updates():
 
 
 @pytest.mark.anyio
-async def test_optimized_delivery_driver_change_becomes_stale():
+async def test_optimized_route_remains_valid_when_order_driver_changes():
     await _clean()
     a, b, _ = await _seed_drivers()
     admin = await _upsert_user(_user())
@@ -410,8 +428,9 @@ async def test_optimized_delivery_driver_change_becomes_stale():
     assert ch.json()["result"]["status"] == "updated"
 
     st2 = await client.get("/api/route-optimizer/from-schedule/status", params={"ids": oid})
-    assert st2.json()["statuses"][oid]["optimization_status"] == OPT_STATUS_STALE
-    # Route id preserved — do not delete/rewrite old route
+    # Route driver is frozen when the route is saved. Editing the order's
+    # operational driver does not invalidate or rewrite that optimized route.
+    assert st2.json()["statuses"][oid]["optimization_status"] == OPT_STATUS_OPTIMIZED
     assert st2.json()["statuses"][oid]["route_id"] == route_id
     assert await server.db[COL_PLANS].count_documents({}) == before_other_plans
     assert await server.db[COL_STOPS].count_documents({"sales_order_id": other}) == before_other_stops

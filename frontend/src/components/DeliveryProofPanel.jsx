@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Camera, Trash2, Loader2, CheckCircle2, XCircle, ImagePlus } from "lucide-react";
 import api, { fileUrl } from "../lib/api";
 import { compressImage } from "../lib/imageCompress";
@@ -14,6 +14,12 @@ import {
   proofUploadUserError,
   canUploadDeliveryBatchPhoto,
   deliveryBatchPhotoBlockReason,
+  deliveryBatchPhotoReadiness,
+  findDeliveryShipment,
+  isShipmentDelivered,
+  pengirimanSjOptions,
+  proofsForShipment,
+  selectedPengirimanShipmentId,
 } from "../lib/deliveryProof";
 import { deliveryHistoryEntries, displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 import { newActionId } from "../lib/workflowEntries";
@@ -27,10 +33,28 @@ const MAX_PHOTOS = 5;
 // staged list (with per-photo note + remove/replace), then confirm upload.
 // Files are compressed client-side, then streamed one-by-one to the backend
 // which stores each via the storage service (local filesystem in preview, S3/Emergent in production).
+function urlShipmentId() {
+  if (typeof window === "undefined") return "";
+  try {
+    return new URLSearchParams(window.location.search).get("shipment") || "";
+  } catch {
+    return "";
+  }
+}
+
 export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) {
   const { hasPerm, user } = useAuth();
   const fileInput = useRef(null);
   const cameraInput = useRef(null);
+  const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
+  const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, urlShipmentId()));
+  const sjIdsKey = sjOptions.map((o) => o.id).join("|");
+  useEffect(() => {
+    const next = selectedPengirimanShipmentId(order, sjId || urlShipmentId());
+    if (next && next !== sjId) setSjId(next);
+  }, [sjIdsKey, order, sjId]);
+  const activeShipment = findDeliveryShipment(order, sjId) || sjOptions[0]?.shipment || null;
+  const activeSjOption = sjOptions.find((o) => o.id === (activeShipment ? (activeShipment.id || sjId) : sjId)) || sjOptions[0] || null;
 
   const [staged, setStaged] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -58,13 +82,16 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   }, [order.delivery_recipient_signature?.id]);
 
   const canUpload = hasPerm("delivery.update");
-  const batchPhotoReady = canUploadDeliveryBatchPhoto(order);
-  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order);
-  const canWritePhoto = canUpload && batchPhotoReady;
+  const batchPhotoReady = canUploadDeliveryBatchPhoto(order, activeShipment);
+  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order, activeShipment);
+  const batchReadiness = deliveryBatchPhotoReadiness(order, activeShipment);
+  const selectedDelivered = isShipmentDelivered(order, activeShipment);
+  const poDelivered = order.delivery_status === "Terkirim";
+  const canWritePhoto = canUpload && batchPhotoReady && !selectedDelivered && !poDelivered;
   const canDelete = hasPerm("delivery.update");
   const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
   const canSetDate = hasPerm("delivery.reschedule.set_date");
-  const proofs = order.delivery_proofs || [];
+  const proofs = proofsForShipment(order, activeShipment);
   const orderSig = order.delivery_recipient_signature;
   const driverSig = order.delivery_driver_signature;
   const driverDisplayName = authoritativeDriverDisplayName(order, user);
@@ -75,7 +102,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const readyCount = confirmableProofCount(staged);
   const doneCount = staged.filter((s) => s.status === "done").length;
   // Button APPEARS after existing 2-photo rule; submit still needs name + both signatures.
-  const deliverButtonVisible = canUpload && canConfirmDelivered(proofs) && order.delivery_status !== "Terkirim";
+  const deliverButtonVisible = canUpload && canConfirmDelivered(proofs) && !selectedDelivered && !poDelivered;
   const deliverEnabled = deliverButtonVisible && canSubmitConfirmDelivered(
     proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
   );
@@ -206,7 +233,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       try {
         const res = await api.uploadDeliveryProof(latestOrder.id, s.file, s.note || "", (pct) => {
           setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, progress: pct } : x));
-        });
+        }, activeShipment?.id || sjId);
         latestOrder = res.order;
         onUpdated(res.order);
         setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "done", progress: 100 } : x));
@@ -292,6 +319,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName: name,
           signatureDataUrl,
+          shipmentId: activeShipment?.id || sjId,
         });
         latest = res.order;
         onUpdated(res.order);
@@ -314,6 +342,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
         try {
           const res = await api.uploadDeliveryDriverSignature(latest.id, {
             signatureDataUrl: driverSignatureDataUrl,
+            shipmentId: activeShipment?.id || sjId,
           });
           latest = res.order;
           onUpdated(res.order);
@@ -331,7 +360,10 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     setErr("");
     try {
       await ensureSignaturesSaved();
-      const res = await api.confirmDelivered(order.id, { action_id: confirmDeliver.actionId });
+      const res = await api.confirmDelivered(order.id, {
+        action_id: confirmDeliver.actionId,
+        shipment_id: activeShipment?.id || sjId,
+      });
       onUpdated(res.order);
       setConfirmDeliver(null);
       setSignatureDataUrl(null);
@@ -375,11 +407,87 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
         <h3>Bukti Kirim</h3>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span className="muted small">{proofs.length}/{MAX_PHOTOS} foto tersimpan</span>
-          <span className={order.delivery_status === "Terkirim" ? "status-ok" : "status-wait"}>
-            {order.delivery_status || "Belum Terkirim"}
+          <span
+            className={selectedDelivered ? "status-ok" : "status-wait"}
+            data-testid="pengiriman-selected-status"
+          >
+            {selectedDelivered ? "SJ Terkirim" : (order.delivery_status || "Belum Terkirim")}
           </span>
         </div>
       </header>
+
+      {sjOptions.length > 0 && (
+        <div data-testid="pengiriman-sj-select-wrap" style={{ padding: "0 16px 10px" }}>
+          <label style={{ display: "grid", gap: 4 }}>
+            <span className="muted small">Surat Jalan</span>
+            <select
+              value={activeSjOption?.id || sjId || ""}
+              onChange={(e) => setSjId(e.target.value)}
+              data-testid="pengiriman-sj-select"
+            >
+              {sjOptions.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.number} · {opt.id}{opt.date ? ` · ${opt.date}` : ""}{opt.delivered ? " · Terkirim" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {activeSjOption && (
+            <div
+              data-testid="pengiriman-selected-sj-card"
+              style={{
+                display: "grid",
+                gap: 6,
+                marginTop: 8,
+                background: "#f8fafc",
+                padding: "10px 12px",
+                borderRadius: 6,
+                fontSize: "0.85rem",
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              <div data-testid="pengiriman-selected-sj-number">
+                <strong>Surat Jalan:</strong> {activeSjOption.number}
+              </div>
+              <div data-testid="pengiriman-selected-sj-id" className="muted small">
+                Batch: {activeSjOption.id}
+                {activeSjOption.date ? ` · ${activeSjOption.date}` : ""}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>QTY SJ</span>
+                  <strong data-testid="pengiriman-selected-sj-qty">{Number(activeSjOption.qty || 0).toLocaleString("id-ID")} pcs</strong>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>LOADING</span>
+                  <strong data-testid="pengiriman-selected-loading-qty">
+                    {Number(batchReadiness.loadedTotal || 0).toLocaleString("id-ID")} / {Number(batchReadiness.requiredTotal || activeSjOption.qty || 0).toLocaleString("id-ID")}
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "0.75rem", display: "block" }}>STATUS</span>
+                  <strong data-testid="pengiriman-selected-ready-status">
+                    {selectedDelivered ? "Terkirim" : (batchReadiness.allowed ? "Siap dikirim" : "Belum siap")}
+                  </strong>
+                </div>
+              </div>
+              {Array.isArray(batchReadiness.lines) && batchReadiness.lines.length > 0 && (
+                <ul data-testid="pengiriman-selected-sj-lines" style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                  {batchReadiness.lines.map((ln) => (
+                    <li key={`${ln.lineIdx}-${ln.name}`}>
+                      {ln.name}: {Number(ln.required || 0).toLocaleString("id-ID")} pcs
+                      {ln.loaded != null ? ` · loaded ${Number(ln.loaded || 0).toLocaleString("id-ID")}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {!selectedDelivered && !batchReadiness.allowed && batchReadiness.reason && (
+                <p className="muted small" data-testid="pengiriman-selected-gate-reason">{batchReadiness.reason}</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {history.length > 0 && (
         <div className="delivery-history" data-testid="delivery-history">
@@ -720,6 +828,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
         time={confirmDeliver?.time}
         extra={confirmDeliver ? (
           <div>
+            <p className="muted small" data-testid="confirm-selected-sj">Surat Jalan: {activeSjOption?.number || sjId}</p>
             <p className="muted small" data-testid="confirm-proof-count">Bukti Kirim: {confirmDeliver.count} foto</p>
             <p className="muted small" data-testid="confirm-recipient-name">Penerima: {confirmDeliver.recipientName}</p>
             <p className="muted small" data-testid="confirm-driver-name">Driver: {confirmDeliver.driverName || "—"}</p>

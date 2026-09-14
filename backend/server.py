@@ -249,7 +249,11 @@ from quantity_rules import (
     is_print_line as _qr_is_print_line,
     apply_delivery_from_proof_evidence as _qr_apply_delivery_from_proof_evidence,
     confirm_delivery_block_reason as _qr_confirm_delivery_block_reason,
+    delivery_batch_identity as _qr_delivery_batch_identity,
     delivery_batch_photo_block_reason as _qr_delivery_batch_photo_block_reason,
+    mark_shipment_delivered as _qr_mark_shipment_delivered,
+    resolve_delivery_shipment as _qr_resolve_delivery_shipment,
+    shipment_is_delivered as _qr_shipment_is_delivered,
     reconcile_sj_quantities_to_loaded_delivery as _qr_reconcile_sj_quantities_to_loaded_delivery,
     valid_delivery_proof_count as _qr_valid_delivery_proof_count,
     apply_loading_increments as _qr_apply_loading_increments,
@@ -5558,6 +5562,7 @@ async def mark_delivered(
 
 class ConfirmDeliveredPayload(BaseModel):
     action_id: Optional[str] = None
+    shipment_id: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
@@ -5570,6 +5575,9 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     action_id = (payload.action_id if payload else None) or None
     if action_id:
         action_id = str(action_id).strip() or None
+    selected_shipment_id = (payload.shipment_id if payload else None) or None
+    if selected_shipment_id:
+        selected_shipment_id = str(selected_shipment_id).strip() or None
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if existing_order:
@@ -5596,25 +5604,40 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         ids = list(order.get("delivery_confirm_action_ids") or [])
         if action_id and action_id in ids:
             return
-        blocked = _qr_confirm_delivery_block_reason(order)
+        selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, selected_shipment_id)
+        if resolve_err:
+            raise HTTPException(400, resolve_err)
+        if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
+            return
+        blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
         if blocked:
             raise HTTPException(400, blocked)
-        evidence = _qr_apply_delivery_from_proof_evidence(order)
+        evidence = _qr_apply_delivery_from_proof_evidence(order, selected_sh)
         if not evidence:
             raise HTTPException(400, "Belum ada qty packing/Surat Jalan yang eligible untuk dikonfirmasi terkirim.")
         now = now_iso()
         current_delivered = _qr_qty_delivered(order)
-        increment = int(evidence["qty_delivered"]) - int(current_delivered or 0)
+        increment = int(evidence.get("increment") if evidence.get("increment") is not None else (
+            int(evidence["qty_delivered"]) - int(current_delivered or 0)
+        ))
+        if increment <= 0:
+            return
         order["qty_delivered"] = evidence["qty_delivered"]
         order["delivery_status"] = evidence["delivery_status"]
         order["delivered_at"] = now
         order["delivered_by"] = user.get("email")
         order["delivered_by_name"] = user.get("name")
+        if selected_sh:
+            _qr_mark_shipment_delivered(
+                selected_sh, now=now, qty=increment,
+            )
         # Reconcile operational SJ qty down to loaded/actual for this confirmation.
         # Packing and Loading quantities are not mutated. Idempotent on retry.
         reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
         conf = _append_delivery_confirmation(
             order, user, qty_increment=increment, now=now, action_id=action_id,
+            shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
+            shipment=selected_sh,
         )
         conf_holder["conf"] = conf
         try:
@@ -11289,6 +11312,7 @@ async def upload_delivery_proof(
     order_id: str,
     file: UploadFile = File(...),
     note: Optional[str] = Form(None),
+    shipment_id: Optional[str] = Form(None),
     user=Depends(require_perm("delivery.update")),
 ):
     """Upload a delivery-proof photo (from driver's phone). Stores to object
@@ -11298,7 +11322,10 @@ async def upload_delivery_proof(
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
-    photo_blocked = _qr_delivery_batch_photo_block_reason(order)
+    selected_sh, resolve_err = _qr_resolve_delivery_shipment(order, shipment_id)
+    if resolve_err:
+        raise HTTPException(400, resolve_err)
+    photo_blocked = _qr_delivery_batch_photo_block_reason(order, selected_sh)
     if photo_blocked:
         raise HTTPException(400, photo_blocked)
     # Content-type and size first, so error messages remain actionable
@@ -11358,15 +11385,14 @@ async def upload_delivery_proof(
         "note": note or "",
     }
     order.setdefault("delivery_proofs", []).append(proof_ref)
-    shipments = _qr_shipments_stored(order)
-    if shipments:
-        latest = shipments[-1]
-        if latest.get("id"):
-            proof_ref["shipment_id"] = latest.get("id")
-        if latest.get("number"):
-            proof_ref["shipment_number"] = latest.get("number")
-        if latest.get("accurate_shipment_id"):
-            proof_ref["accurate_shipment_id"] = latest.get("accurate_shipment_id")
+    stamp_sh = selected_sh
+    if stamp_sh:
+        if stamp_sh.get("id"):
+            proof_ref["shipment_id"] = stamp_sh.get("id")
+        if stamp_sh.get("number"):
+            proof_ref["shipment_number"] = stamp_sh.get("number")
+        if stamp_sh.get("accurate_shipment_id"):
+            proof_ref["accurate_shipment_id"] = stamp_sh.get("accurate_shipment_id")
     add_timeline(order, order["current_stage"], user, note=f"Upload bukti kirim: {file_doc['original_filename']}")
     await _persist_order(order)
     return {"order": order, "proof": proof_ref}

@@ -55,6 +55,15 @@ export const canAdvance = (role, stageIdx) => {
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ISO_DATE_PREFIX_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+const WIB_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Jakarta",
+  day: "2-digit",
+  month: "2-digit",
+  year: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 
 function _pad2(n) {
   return String(n).padStart(2, "0");
@@ -82,7 +91,7 @@ export function formatDisplayDate(iso) {
   }
 }
 
-/** Display-only timestamp: dd/mm/yy HH:mm. Date-only values stay dd/mm/yy. */
+/** Display-only operational timestamp in WIB: dd/mm/yy HH:mm. */
 export function formatDisplayDateTime(iso) {
   if (!iso) return "-";
   const text = String(iso).trim();
@@ -91,7 +100,10 @@ export function formatDisplayDateTime(iso) {
   try {
     const d = new Date(text);
     if (Number.isNaN(d.getTime())) return "-";
-    return `${_pad2(d.getDate())}/${_pad2(d.getMonth() + 1)}/${_yy(d.getFullYear())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
+    const parts = Object.fromEntries(
+      WIB_DATE_TIME_FORMATTER.formatToParts(d).map(({ type, value }) => [type, value]),
+    );
+    return `${parts.day}/${parts.month}/${parts.year} ${parts.hour}:${parts.minute}`;
   } catch {
     return "-";
   }
