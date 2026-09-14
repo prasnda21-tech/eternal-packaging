@@ -12,7 +12,7 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
 
   test("desktop and PWA consume the same ordered column definition", () => {
     expect(scheduleSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS as TABLE_COLS/);
-    expect(mobileSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS/);
+    expect(mobileSrc).toMatch(/MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS/);
     expect(cellsSrc).toMatch(/PRODUCTION_SCHEDULE_TABLE_COLS\)\.map/);
     expect(PRODUCTION_SCHEDULE_TABLE_COLS).toHaveLength(22);
     expect(PRODUCTION_SCHEDULE_COLUMN_IDS).toEqual(PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key));
@@ -30,7 +30,7 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
   });
 
   test("customer cell stays canonical and outlet stays a separate column", () => {
-    expect(cellsSrc).toMatch(/case "customer":\s*return <strong>\{row\.customer \|\| "-"\}<\/strong>/);
+    expect(cellsSrc).toMatch(/row\.customer \|\| "-"/);
     expect(cellsSrc).toMatch(/case "outlet":\s*return row\.outlet \|\| "-"/);
     expect(cellsSrc).not.toMatch(/row\.customer \|\| row\.outlet/);
     expect(cellsSrc).not.toMatch(/row\.customer_name \|\| row\.outlet/);
@@ -41,6 +41,8 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
     expect(cellsSrc).toMatch(/prod-cell-today/);
     expect(cellsSrc).toMatch(/backgroundColor:\s*"#fef08a"/);
     expect(cellsSrc).toMatch(/color:\s*"#713f12"/);
+    expect(cellsSrc).toMatch(/variant !== "mobile" && isToday \? "prod-cell-today"/);
+    expect(cellsSrc).toMatch(/col\.key === "customer" && variant !== "mobile" && isToday/);
   });
 
   test("new sheet cells do not force ellipsis truncation", () => {
@@ -64,7 +66,6 @@ describe("ProductionSchedule: customer column, today highlight, and sheet order"
     expect(scheduleSrc).toMatch(/useProductionSheetZoom/);
     expect(mobileSrc).toMatch(/useProductionSheetZoom/);
     expect(scheduleSrc).toMatch(/payload\.ids = filtered\.map/);
-    expect(mobileSrc).toMatch(/payload\.ids = filtered\.map/);
   });
 
   test("isScheduledToday deterministic logic handles today, future, past, completed, and cancelled", () => {

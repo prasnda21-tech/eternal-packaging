@@ -5,9 +5,11 @@ import WorkspaceChunkFallback from "../components/WorkspaceChunkFallback";
 import { MobileNavProvider } from "./MobileNavContext";
 import MobileSidebar from "./MobileSidebar";
 import "./mobile.css";
+import "./opsQueue.css";
 
 export default function MobileOperationalLayout() {
   const { pathname } = useLocation();
+  const opsWide = pathname.startsWith("/m/schedule") || pathname.startsWith("/m/delivery-schedule");
 
   useEffect(() => {
     markMobileOpsShell();
@@ -15,8 +17,11 @@ export default function MobileOperationalLayout() {
 
   return (
     <MobileNavProvider>
-      <div className="mop-root mop-root--sidebar" data-testid="mobile-operational-root">
-        <div className="mop-shell mop-shell--sidebar">
+      <div
+        className={`mop-root mop-root--sidebar${opsWide ? " mop-root--ops-wide" : ""}`}
+        data-testid="mobile-operational-root"
+      >
+        <div className={`mop-shell mop-shell--sidebar${opsWide ? " mop-shell--ops-wide" : ""}`}>
           <Suspense fallback={<WorkspaceChunkFallback />}>
             <Outlet />
           </Suspense>

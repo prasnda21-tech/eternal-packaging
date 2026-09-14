@@ -157,11 +157,9 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=packing");
-    expect(container.querySelector('[data-testid="mds-packing-PO-100"]').textContent).toContain("3.000 / 5.000");
-    expect(container.querySelector('[data-testid="mds-terkirim-PO-100"]').textContent).toContain("2.000");
-    expect(container.querySelector('[data-testid="mds-terkirim-PO-100"] .mop-qty-context').textContent).toBe("dari 5.000 qty PO");
-    expect(container.querySelector('[data-testid="mds-dapat-PO-100"]').textContent).toContain("3.000");
-    expect(container.querySelector('[data-testid="mds-dapat-PO-100"] .mop-qty-context').textContent).toBe("dari 5.000 qty cetak");
+    expect(container.querySelector('[data-testid="mds-dapat-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-load-PO-100"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-qty-PO-100"]').textContent).toContain("5.000");
   });
 
   test("partial delivery keeps independent terkirim/dapat context; Optimasi action is permission-gated", async () => {
@@ -180,8 +178,8 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => {
       root.render(<MobileDeliverySchedulePage />);
     });
-    expect(container.querySelector('[data-testid="mds-terkirim-PO-100"] .mop-qty-context').textContent).toContain("5.000");
-    expect(container.querySelector('[data-testid="mds-dapat-PO-100"] .mop-qty-context').textContent).toContain("qty cetak");
+    expect(container.querySelector('[data-testid="mds-terkirim-PO-100"]').getAttribute("title")).toContain("5.000");
+    expect(container.querySelector('[data-testid="mds-dapat-PO-100"]')).toBeFalsy();
     expect(container.textContent).not.toContain("Optimize Rute");
     // Status column label may appear; action button requires route_optimizer.*
     expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeFalsy();
@@ -334,17 +332,16 @@ describe("MobileDeliverySchedulePage", () => {
     expect(src).not.toMatch(/delivery\.route\.optimize/);
   });
 
-  test("CASE A — Loading + Pengiriman dropdown options from eligibility", async () => {
+  test("CASE A — Loading + Pengiriman options from role strip eligibility", async () => {
     mockHasPerm.mockImplementation((p) => (
       p === "schedule.view" || p === "loading.update" || p === "delivery.update"
     ));
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    const select = container.querySelector('[data-testid="mds-task-select-input"]');
-    expect(select).toBeTruthy();
-    expect([...select.options].map((o) => o.textContent)).toEqual(["Loading", "Pengiriman"]);
-    expect([...select.options].map((o) => o.value)).not.toContain("all");
-    expect(container.textContent).toContain("Tugas");
+    expect(container.querySelector('[data-testid="mds-task-select"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-ops-role-loading"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]')).toBeTruthy();
+    expect(container.textContent).not.toMatch(/TUGAS/);
   });
 
   test("CASE B — delivery-only hides Loading; unauthorized ?ws=loading does not grant it", async () => {
@@ -352,8 +349,8 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=loading";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(container.querySelector('[data-testid="mds-task-select-current"]')?.textContent).toBe("Pengiriman");
-    expect(container.querySelector("select")).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-task-select"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]').className).toMatch(/is-active/);
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
     expect(mockDivisionTasks).not.toHaveBeenCalled();
   });
@@ -371,10 +368,9 @@ describe("MobileDeliverySchedulePage", () => {
     expect(mockDeliverySchedule).toHaveBeenCalled();
     expect(mockDivisionTasks).not.toHaveBeenCalled();
 
-    const select = container.querySelector('[data-testid="mds-task-select-input"]');
+    const loadingRole = container.querySelector('[data-testid="mop-ops-role-pengiriman"]');
     await act(async () => {
-      select.value = "delivery";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+      loadingRole.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=delivery");
     mockDsRouter.search = "ws=delivery";
@@ -392,7 +388,7 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=loading";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(container.querySelector('[data-testid="mobile-top-bar"]').textContent).toBe("Jadwal Pengiriman");
+    expect(container.querySelector('[data-testid="mobile-topbar-title"]').textContent).toBe("Jadwal Pengiriman");
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-task-list"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
@@ -431,8 +427,7 @@ describe("MobileDeliverySchedulePage", () => {
     // Refresh keeps query-backed selection (CASE G)
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(container.querySelector('[data-testid="mds-task-select-current"]')?.textContent
-      || container.querySelector('[data-testid="mds-task-select-input"]')?.value).toMatch(/delivery|Pengiriman/i);
+    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]').className).toMatch(/is-active/);
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
   });
 
@@ -467,10 +462,9 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=delivery";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    const select = container.querySelector('[data-testid="mds-task-select-input"]');
+    const role = container.querySelector('[data-testid="mop-ops-role-loading"]');
     await act(async () => {
-      select.value = "loading";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+      role.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(mockDeliverySchedule.mock.calls.every((c) => c.length === 0 || c[0] === undefined)).toBe(true);
     expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=loading");
@@ -530,24 +524,32 @@ describe("MobileDeliverySchedulePage", () => {
     const labels = headerLabels(container);
     expect(labels).toEqual([
       "Prioritas",
-      "Tanggal Pengiriman",
-      "No PO",
-      "Customer",
+      "Tgl Kirim",
+      "Customer / No PO",
       "Item Line",
-      "No SJ",
-      "Packing",
-      "Terkirim",
-      "Dapat Dikirim",
-      "Optimasi Rute",
+      "Qty Total",
+      "Status per Role",
+      "Cup",
+      "Screen",
+      "Prod",
+      "Pack",
+      "Load",
+      "Kirim",
     ]);
     expect(labels).not.toContain("Driver");
     expect(labels).not.toContain("Status");
     expect(labels).not.toContain("Aksi");
+    expect(labels).not.toContain("Zona");
+    expect(labels).not.toContain("Tahap Aktif");
     expect(container.querySelector('[data-testid="mds-status-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-quick-filters"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeTruthy();
+    const identity = container.querySelector('[data-testid="mds-identity-PO-100"]');
+    expect(identity.querySelector(".mop-ops-customer").textContent).toBe("PT Alpha");
+    expect(identity.querySelector(".mop-ops-po").textContent).toBe("PO-100");
     expect(container.querySelector('[data-testid="mds-task-select"]') || container.textContent).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-item-lines-PO-100"]').textContent).toBe("—");
     expect(container.textContent).not.toMatch(/item_label/);
@@ -627,11 +629,11 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).toMatch(/-\s*Lid/);
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).not.toContain("Cup");
     const labels = headerLabels(container);
-    expect(labels.indexOf("Item Line")).toBe(labels.indexOf("Customer") + 1);
+    expect(labels.indexOf("Item Line")).toBe(labels.indexOf("Customer / No PO") + 1);
     expect(labels).not.toContain("Driver");
     expect(labels).not.toContain("Status");
     expect(labels).not.toContain("Aksi");
-    expect(labels).toContain("Optimasi Rute");
+    expect(labels).not.toContain("Rute");
   });
 
   test("same-name lines on one dated SJ stay separate", async () => {
@@ -665,5 +667,72 @@ describe("MobileDeliverySchedulePage", () => {
     expect(lines[1].textContent).toContain("2.000");
     expect(lines[0].textContent).not.toContain("2.000");
     expect(lines[1].textContent).not.toContain("1.000");
+  });
+
+  test("compact search matches customer, PO, and item line", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        sampleRows[0],
+        {
+          ...sampleRows[0],
+          id: "o2",
+          order_number: "PO-200",
+          customer_name: "CV Beta",
+          sj_item_lines: [{ name: "Lid PET", qty: 500, line_id: "z", line_idx: 0 }],
+        },
+      ],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const input = container.querySelector('[data-testid="mds-search"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(input, "Alpha");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-200"]')).toBeFalsy();
+    await act(async () => {
+      setter.call(input, "Lid PET");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mds-row-PO-200"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeFalsy();
+    await act(async () => {
+      setter.call(input, "PO-100");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
+  });
+
+  test("pengiriman role count matches active delivery rows; packing/loading unsupported", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        { ...sampleRows[0], status: "hari_ini", urgent: true },
+        { ...sampleRows[0], id: "done", order_number: "PO-DONE", status: "terkirim" },
+      ],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-ops-role-count-pengiriman"]').textContent).toMatch(/1 tugas/);
+    expect(container.querySelector('[data-testid="mop-ops-role-count-packing"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mop-ops-role-count-loading"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mop-ops-role-count-prep"]').textContent.trim()).toBe("—");
+  });
+
+  test("ops table keeps horizontal scroll wrapper, compact Optimasi Rute, and 1180px min-width", () => {
+    const css = fs.readFileSync(path.join(__dirname, "mobile.css"), "utf8");
+    const opsCss = fs.readFileSync(path.join(__dirname, "opsQueue.css"), "utf8");
+    expect(css).toMatch(/\.mop-schedule-scroll \{[\s\S]*overflow:\s*auto/);
+    expect(opsCss).toMatch(/\.mop-root--ops-wide \.production-sheet-table \{[\s\S]*min-width:\s*1180px/);
+    expect(opsCss).toMatch(/overflow-x:\s*auto/);
+    const pageSrc = fs.readFileSync(path.join(__dirname, "MobileDeliverySchedulePage.jsx"), "utf8");
+    expect(pageSrc).toMatch(/mop-schedule-scroll/);
+    expect(pageSrc).toMatch(/data-testid="mds-optimasi-rute"/);
+    expect(pageSrc).toMatch(/className="mop-btn-primary"/);
+    expect(pageSrc).not.toMatch(/mds-optimize-bar|mop-ds-optimize-bar/);
   });
 });

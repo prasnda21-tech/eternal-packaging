@@ -8,6 +8,17 @@ import {
   productionSheetCellClassName,
 } from "../lib/productionScheduleTable";
 import { isProductionScheduleH1, isProductionScheduleUrgent } from "../lib/productionSchedulePriority";
+import { cupMarkTone, prodMarkTone, screenMarkTone, packMarkTone, loadMarkTone, kirimMarkTone } from "../lib/mobileOpsStatusMark";
+
+function MobileRoleMark({ tone, title, testid }) {
+  const kind = tone === "done" || tone === "pending" ? tone : "idle";
+  const label = kind === "done" ? "selesai" : kind === "pending" ? "berjalan" : "tidak tersedia";
+  return (
+    <span className={`mop-ops-mark is-${kind}`} title={title || label} data-testid={testid} aria-label={label}>
+      {kind === "done" ? "✓" : kind === "idle" ? "—" : ""}
+    </span>
+  );
+}
 
 function DeadlineShipCell({ row, variant }) {
   const tanggal =
@@ -100,18 +111,24 @@ function TotalQtyCell({ qtyProg }) {
 function ItemCell({ row, variant }) {
   const items = operatorPrintableItems(row.displayOperator?.splits || []);
   if (!items.length) return <span className="muted small">—</span>;
-  return items.map((item) => (
-    <div
-      key={item.key}
-      className="prod-schedule-item-line"
-      title={item.name}
-      data-testid={variant === "desktop"
-        ? `prod-item-line-${row.po_number}-${item.key}`
-        : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
-    >
-      {item.name}
-    </div>
-  ));
+  return items.map((item) => {
+    const qtyPresent = item.quantity !== undefined && item.quantity !== null && item.quantity !== "";
+    return (
+      <div
+        key={item.key}
+        className={`prod-schedule-item-line${variant === "mobile" ? " mop-ops-item-line" : ""}`}
+        title={item.name}
+        data-testid={variant === "desktop"
+          ? `prod-item-line-${row.po_number}-${item.key}`
+          : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
+      >
+        <span className="mop-ops-item-name">{item.name}</span>
+        {variant === "mobile" && qtyPresent ? (
+          <span className="mop-ops-item-qty">{formatIdQty(item.quantity)}</span>
+        ) : null}
+      </div>
+    );
+  });
 }
 
 function ScreenSizeCell({ row, variant }) {
@@ -195,6 +212,14 @@ function cellContent(col, ctx) {
         <Link to={poHref} data-testid={`prod-po-link-${row.po_number}`}>{row.po_number}</Link>
       ) : row.po_number;
     case "customer":
+      if (variant === "mobile") {
+        return (
+          <div className="mop-ops-identity" data-testid={`mobile-schedule-identity-${row.po_number}`}>
+            <strong className="mop-ops-customer">{row.customer || "-"}</strong>
+            <span className="mop-ops-po">{row.po_number || ""}</span>
+          </div>
+        );
+      }
       return <strong>{row.customer || "-"}</strong>;
     case "outlet":
       return row.outlet || "-";
@@ -211,6 +236,18 @@ function cellContent(col, ctx) {
     case "work_date":
       return <WorkDateCell row={row} variant={variant} />;
     case "prio":
+      if (variant === "mobile" && ctx.opsBadge) {
+        return (
+          <div className="mop-ops-prio">
+            <span className={`mop-ops-badge mop-ops-badge-${ctx.opsBadge.tone}`}>{ctx.opsBadge.label}</span>
+            {ctx.opsBadge.caption ? (
+              <span className={`mop-ops-prio-caption is-${ctx.opsBadge.captionTone || ctx.opsBadge.tone}`}>
+                {ctx.opsBadge.caption}
+              </span>
+            ) : null}
+          </div>
+        );
+      }
       if (ctx.opsBadge) {
         return <span className={`mop-ops-badge mop-ops-badge-${ctx.opsBadge.tone}`}>{ctx.opsBadge.label}</span>;
       }
@@ -222,10 +259,22 @@ function cellContent(col, ctx) {
     case "item":
       return <ItemCell row={row} variant={variant} />;
     case "qty":
+      if (variant === "mobile") {
+        return <strong className="mop-ops-qty-total">{qtyProg?.text ?? "0"}</strong>;
+      }
       return <TotalQtyCell qtyProg={qtyProg} />;
     case "screen_size":
       return <ScreenSizeCell row={row} variant={variant} />;
     case "screen": {
+      if (variant === "mobile") {
+        return (
+          <MobileRoleMark
+            tone={screenMarkTone(row)}
+            title={row.screen_qty == null || String(row.screen_qty).trim() === "" ? "Screen belum" : `Screen ${formatIdQty(Number(row.screen_qty) || 0)}`}
+            testid={`prod-screen-qty-${row.po_number}`}
+          />
+        );
+      }
       if (row.screen_qty == null || String(row.screen_qty).trim() === "") return "-";
       const done = Number(row.screen_qty) || 0;
       return (
@@ -235,6 +284,15 @@ function cellContent(col, ctx) {
       );
     }
     case "qty_cetak":
+      if (variant === "mobile") {
+        return (
+          <MobileRoleMark
+            tone={prodMarkTone(row)}
+            title={cetakProg?.text || "Produksi"}
+            testid={`prod-qty-cetak-${row.po_number}`}
+          />
+        );
+      }
       return cetakProg.text;
     case "operator":
       return <OperatorCell row={row} qtyProg={qtyProg} variant={variant} />;
@@ -257,6 +315,15 @@ function cellContent(col, ctx) {
         ? <span className="pill sm pill-hold" title={(row.hold_reasons || []).join("; ")}>HOLD</span>
         : <span className="muted small">-</span>;
     case "helper": {
+      if (variant === "mobile") {
+        return (
+          <MobileRoleMark
+            tone={cupMarkTone(row)}
+            title={row.helper_required == null ? "Cup tidak tersedia" : `${formatIdQty(row.helper_prepared ?? 0)} / ${formatIdQty(row.helper_required)}`}
+            testid={`prod-helper-${row.po_number}`}
+          />
+        );
+      }
       if (row.helper_required == null) return <span className="muted">-</span>;
       const done = Number(row.helper_prepared ?? 0);
       const target = Number(row.helper_required) || 0;
@@ -276,9 +343,40 @@ function cellContent(col, ctx) {
       );
     }
     case "packing":
+      if (variant === "mobile") {
+        return (
+          <MobileRoleMark
+            tone={packMarkTone(row)}
+            title={row.packing_status || "Packing"}
+            testid={`prod-packing-${row.po_number}`}
+          />
+        );
+      }
       return row.packing_status === "Sudah" ? <span className="pill sm pill-ok">Sudah</span> :
         row.packing_status === "Berjalan" ? <span className="pill sm pill-progress">Berjalan</span> :
         <span className="pill sm pill-muted">Belum</span>;
+    case "loading":
+      if (variant === "mobile") {
+        return (
+          <MobileRoleMark
+            tone={loadMarkTone()}
+            title="Loading tidak tersedia dari payload jadwal produksi"
+            testid={`prod-loading-${row.po_number}`}
+          />
+        );
+      }
+      return null;
+    case "shipped":
+      if (variant === "mobile") {
+        return (
+          <MobileRoleMark
+            tone={kirimMarkTone(row)}
+            title="Pengiriman"
+            testid={`prod-shipped-${row.po_number}`}
+          />
+        );
+      }
+      return null;
     case "sj":
       return row.delivery_note_number || "-";
     case "driver":
@@ -294,7 +392,7 @@ function cellExtras(col, { row, variant, cetakProg, isToday }) {
   const extras = [];
   const testids = {};
   if (col.key === "customer") {
-    extras.push(isToday ? "prod-cell-today" : "");
+    extras.push(variant !== "mobile" && isToday ? "prod-cell-today" : "");
     if (variant === "desktop") testids["data-testid"] = `prod-customer-${row.po_number}`;
   }
   if (col.key === "deadline_ship") {
@@ -357,7 +455,7 @@ export default function ProductionScheduleSheetCells({
   const ctx = { row, variant, qtyProg, cetakProg, isToday, poHref, opsBadge };
   return (Array.isArray(columns) && columns.length ? columns : PRODUCTION_SCHEDULE_TABLE_COLS).map((col) => {
     const { classExtra, testids } = cellExtras(col, ctx);
-    const todayStyle = col.key === "customer" && isToday
+    const todayStyle = col.key === "customer" && variant !== "mobile" && isToday
       ? { backgroundColor: "#fef08a", color: "#713f12" }
       : undefined;
     const itemTitle = col.key === "item"

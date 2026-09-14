@@ -186,7 +186,7 @@ describe("MobileProductionSchedulePage", () => {
     await flush();
   });
 
-  test("renders one PO row with desktop columns and multiline same-name lines", async () => {
+  test("renders compact ops columns with customer above PO and visible item lines", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 2 });
     await renderPage();
     expect(api.productionDashboard).toHaveBeenCalledWith({
@@ -198,37 +198,50 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-schedule-today"]')).toBeFalsy();
     expect(container.textContent).not.toContain("pada tanggal ini");
     const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
-    expect(headers).toEqual(MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
+    expect(headers).toEqual([
+      "Prioritas",
+      "Tgl Kerja",
+      "Customer / No PO",
+      "Item Line",
+      "Qty Total",
+      "Status per Role",
+      "Cup",
+      "Screen",
+      "Prod",
+      "Pack",
+      "Load",
+      "Kirim",
+    ]);
+    expect(headers).not.toContain("Zona");
+    expect(headers).not.toContain("Driver");
+    expect(headers).not.toContain("Tahap Aktif");
     expect(headers).not.toContain("Payment");
     expect(headers).not.toContain("Packing");
     expect(headers).not.toContain("Surat Jalan");
-    expect(headers).not.toContain("Driver");
-    expect(headers).not.toContain("Persiapan Screen");
+    expect(headers).not.toContain("No PO");
     expect(headers.filter((h) => h === "Screen")).toHaveLength(1);
-    const qtyIdx = headers.indexOf("Total Qty");
-    expect(headers[qtyIdx + 1]).toBe("Persiapan Cup");
-    expect(headers[qtyIdx + 2]).toBe("Screen");
     expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(2);
-    const opNames = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-name')].map((el) => el.textContent);
-    expect(opNames).toEqual(["Budi", "Sari"]);
+    const identity = container.querySelector('[data-testid="mobile-schedule-identity-PO-1001"]');
+    expect(identity.querySelector(".mop-ops-customer").textContent).toBe("PT Example");
+    expect(identity.querySelector(".mop-ops-po").textContent).toBe("PO-1001");
     expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-0"]')).toBeFalsy();
     expect(container.querySelectorAll('[data-testid="mobile-schedule-item-PO-1001"]').length).toBeGreaterThan(0);
-    expect(container.textContent).toContain("Budi");
-    expect(container.textContent).toContain("Sari");
     expect(container.textContent).toContain("Cup 16oz");
     expect(container.textContent).toContain("25/08/26");
     expect(container.textContent).not.toContain("2026-08-25");
     expect(container.textContent).toContain("Belum Dijadwalkan");
-    expect(container.textContent).toContain("0 / 25.000");
     expect(container.textContent).toContain("25.000");
-    expect(container.querySelector('[data-testid="prod-screen-qty-PO-1001"]').textContent).toContain("3.000");
-    expect(container.querySelector('[data-testid="prod-screen-qty-PO-1001"]').textContent).not.toMatch(/\//);
+    expect(container.querySelector('[data-testid="prod-screen-qty-PO-1001"]').getAttribute("aria-label")).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-search-btn"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-schedule-ringkasan"]')).toBeTruthy();
-    expect(container.textContent).toContain("OVERDUE");
-    expect(container.querySelector(".production-sheet-table .urgent-badge")).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-ringkasan"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid^="mop-ops-role-"]').length).toBeGreaterThanOrEqual(6);
+    expect(container.querySelector(".production-sheet-table .mop-ops-badge")).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-scroll"]').className).toMatch(/mop-schedule-scroll/);
     expect(container.querySelector('[data-testid="mobile-schedule-count"]').textContent).toBe("2 / 2 entri");
+    const filterBtn = container.querySelector('[data-testid="mobile-schedule-filter-btn"]');
+    await act(async () => { filterBtn.click(); });
     expect(container.querySelector('[data-testid="mobile-schedule-include-completed"]').checked).toBe(true);
     expect(container.querySelector('[data-testid="mobile-schedule-include-cancelled"]').checked).toBe(false);
     expect(api.getOrder).not.toHaveBeenCalled();
@@ -302,7 +315,8 @@ describe("MobileProductionSchedulePage", () => {
     await renderPage();
     expect(container.textContent).toContain("Belum ada jadwal produksi.");
     expect(container.textContent).not.toContain("pada tanggal ini");
-    expect(container.querySelector("table.production-sheet-table")).toBeFalsy();
+    expect(container.querySelector("table.production-sheet-table")).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-empty"]')).toBeTruthy();
   });
 
   test("API error shows Gagal memuat and Coba Lagi", async () => {
@@ -346,6 +360,8 @@ describe("MobileProductionSchedulePage", () => {
   test("Selesai toggle refetches with desktop include_completed flag", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
+    const filterBtn = container.querySelector('[data-testid="mobile-schedule-filter-btn"]');
+    await act(async () => { filterBtn.click(); });
     const box = container.querySelector('[data-testid="mobile-schedule-include-completed"]');
     await act(async () => { box.click(); });
     await flush();
@@ -359,6 +375,8 @@ describe("MobileProductionSchedulePage", () => {
   test("Cancelled toggle refetches with desktop include_cancelled flag", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
+    const filterBtn = container.querySelector('[data-testid="mobile-schedule-filter-btn"]');
+    await act(async () => { filterBtn.click(); });
     const box = container.querySelector('[data-testid="mobile-schedule-include-cancelled"]');
     await act(async () => { box.click(); });
     await flush();
@@ -381,6 +399,8 @@ describe("MobileProductionSchedulePage", () => {
     const reset = container.querySelector('[data-testid="mobile-schedule-reset"]');
     await act(async () => { reset.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(container.querySelector('[data-testid="mobile-schedule-search"]').value).toBe("");
+    const filterBtn = container.querySelector('[data-testid="mobile-schedule-filter-btn"]');
+    await act(async () => { filterBtn.click(); });
     expect(container.querySelector('[data-testid="mobile-schedule-include-completed"]').checked).toBe(true);
     expect(container.querySelector('[data-testid="mobile-schedule-include-cancelled"]').checked).toBe(false);
     expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]')).toBeTruthy();
@@ -516,14 +536,14 @@ describe("MobileProductionSchedulePage", () => {
     expect(zoomVar()).toBe("1.2");
   });
 
-  test("deadline badges stay inside the zoomed schedule table", async () => {
+  test("ops priority badges stay inside the zoomed schedule table", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
     const table = container.querySelector('[data-testid="mobile-schedule-table"]');
     const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
-    const overdue = [...table.querySelectorAll(".urgent-badge")].find((el) => el.textContent === "OVERDUE");
-    expect(overdue).toBeTruthy();
-    expect(table.contains(overdue)).toBe(true);
+    const badge = table.querySelector(".mop-ops-badge");
+    expect(badge).toBeTruthy();
+    expect(table.contains(badge)).toBe(true);
     await act(async () => {
       viewport.dispatchEvent(new WheelEvent("wheel", { ctrlKey: true, deltaY: 4000, bubbles: true, cancelable: true }));
     });
@@ -531,7 +551,7 @@ describe("MobileProductionSchedulePage", () => {
     await flushRaf();
     expect(Number(zoomVar())).toBeLessThan(PRODUCTION_SHEET_ZOOM_DEFAULT);
     expect(viewport.getAttribute("style")).toContain(PRODUCTION_SHEET_ZOOM_CSS_VAR);
-    expect([...table.querySelectorAll(".urgent-badge")].some((el) => el.textContent === "OVERDUE")).toBe(true);
+    expect(container.querySelector(".production-sheet-table .mop-ops-badge")).toBeTruthy();
   });
 
   test("row navigation remains available outside a zoom gesture", async () => {
@@ -559,7 +579,93 @@ describe("MobileProductionSchedulePage", () => {
     expect(MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key)).not.toContain("screen_size");
     expect(container.querySelectorAll('[data-testid^="mobile-schedule-screen-size-"]').length).toBe(0);
     const screenCell = container.querySelector('[data-testid="prod-screen-qty-PO-1001"]');
-    expect(screenCell.textContent.trim()).toBe("3.000");
+    expect(screenCell.getAttribute("aria-label")).toBe("selesai");
     expect(screenCell.textContent).not.toContain("/");
+  });
+
+  test("role summary counts match loaded production dataset and packing/loading stay unsupported", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    for (const id of ["prep", "screener", "produksi", "packing", "loading", "pengiriman"]) {
+      expect(container.querySelector(`[data-testid="mop-ops-role-${id}"]`)).toBeTruthy();
+    }
+    expect(container.querySelector('[data-testid="mop-ops-role-count-prep"]').textContent).toMatch(/1 tugas/);
+    expect(container.querySelector('[data-testid="mop-ops-role-urgent-prep"]').textContent).toMatch(/1 urgent/);
+    expect(container.querySelector('[data-testid="mop-ops-role-count-screener"]').textContent).toMatch(/1 tugas/);
+    expect(container.querySelector('[data-testid="mop-ops-role-count-produksi"]').textContent).toMatch(/1 antrian/);
+    expect(container.querySelector('[data-testid="mop-ops-role-count-packing"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mop-ops-role-count-loading"]').textContent.trim()).toBe("—");
+  });
+
+  test("Hari Ini filter count matches visible population after click", async () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        { ...sampleRows[0], work_date: todayKey, operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: todayKey }], operators: [{ ...sampleRows[0].operators[0], work_date: todayKey }] },
+        sampleRows[1],
+      ],
+    });
+    await renderPage();
+    const chip = container.querySelector('[data-testid="mobile-schedule-quick-hari_ini"]');
+    const labeled = Number(container.querySelector('[data-testid="mobile-schedule-quick-count-hari_ini"]').textContent);
+    await act(async () => { chip.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const visible = container.querySelectorAll("tbody tr.mop-schedule-row").length;
+    expect(labeled).toBeGreaterThan(0);
+    expect(visible).toBe(labeled);
+  });
+
+  test("search matches item line names without extra fetches", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    const input = container.querySelector('[data-testid="mobile-schedule-search"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(input, "Cup 16oz");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1002"]')).toBeFalsy();
+    expect(api.productionDashboard).toHaveBeenCalledTimes(1);
+  });
+
+  test("multiple item lines on one operator stay fully visible", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        operators: [
+          { split_id: "s1", line_idx: 0, line_id: "a", line_name: "Cup A", operator_name: "Budi", quantity: 1000, line_printable: true, work_date: "2026-08-25" },
+          { split_id: "s1b", line_idx: 1, line_id: "b", line_name: "Lid B", operator_name: "Budi", quantity: 2000, line_printable: true, work_date: "2026-08-25" },
+          { split_id: "s1c", line_idx: 2, line_id: "c", line_name: "Cup C", operator_name: "Budi", quantity: 3000, line_printable: true, work_date: "2026-08-25" },
+        ],
+        operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: "2026-08-25" }],
+      }],
+    });
+    await renderPage();
+    expect(container.textContent).toContain("Cup A");
+    expect(container.textContent).toContain("Lid B");
+    expect(container.textContent).toContain("Cup C");
+    expect(container.textContent).not.toMatch(/\+1 item/);
+    expect(container.textContent).not.toMatch(/item lainnya/);
+  });
+
+  test("today customer cells stay unpainted and the table wrapper can scroll horizontally", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        po_number: "PO-TODAY",
+        work_date: "2026-09-14",
+        operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: "2026-09-14" }],
+        operators: [{ ...sampleRows[0].operators[0], work_date: "2026-09-14" }],
+      }],
+    });
+    await renderPage();
+    const identity = container.querySelector('[data-testid="mobile-schedule-identity-PO-TODAY"]');
+    expect(identity).toBeTruthy();
+    const td = identity.closest("td");
+    expect(td.className).not.toMatch(/prod-cell-today/);
+    expect(String(td.getAttribute("style") || "")).not.toMatch(/fef08a/i);
+    const scroll = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    expect(scroll).toBeTruthy();
+    expect(scroll.className).toMatch(/mop-schedule-scroll/);
   });
 });
