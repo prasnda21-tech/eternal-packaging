@@ -20,6 +20,14 @@ def test_db():
 
 
 HOLDING = {"id": "ht-1", "email": "holding@test.com", "name": "Holding", "role": "holding_team"}
+HOLDING_A = {"id": "ht-a", "email": "alice.holding@test.com", "name": "Alice Holding", "role": "holding_team"}
+HOLDING_B = {"id": "ht-b", "email": "bob.holding@test.com", "name": "Bob Holding", "role": "HOLDING_TEAM"}
+FAUZAN_NOT_HOLDING = {
+    "id": "fg-1",
+    "email": "fauzan.ghani@test.com",
+    "name": "Fauzan Ghani",
+    "role": "admin",
+}
 ADMIN = {"id": "ad-1", "email": "admin@test.com", "name": "Admin", "role": "admin"}
 HEAD = {"id": "hp-1", "email": "kepala@test.com", "name": "Kepala", "role": "head_production"}
 
@@ -83,6 +91,61 @@ async def test_holding_team_corrects_current_physical(test_db):
     assert any(d["id"] == opening_id and d["movement_type"] == "SALDO_AWAL" for d in test_db.stock_movements._docs)
     settings = await get_physical_stock_settings(test_db)
     assert settings["enabled"] is False
+
+
+@pytest.mark.anyio
+async def test_any_holding_team_user_is_allowed(test_db):
+    prod_id = await _seed_opening(test_db)
+    first = await correct_opening_balance(
+        test_db,
+        prod_id,
+        {
+            "unprinted_qty": 9000,
+            "printed_qty": 1000,
+            "note": "user A holding_team",
+            "client_request_id": "user-a",
+        },
+        user=HOLDING_A,
+    )
+    assert first["unchanged"] is False
+    assert first["stock_state"]["last_opening_correction"]["corrected_by"]["role"] == "holding_team"
+    assert first["stock_state"]["last_opening_correction"]["corrected_by"]["email"] == "alice.holding@test.com"
+
+    second = await correct_opening_balance(
+        test_db,
+        prod_id,
+        {
+            "unprinted_qty": 8500,
+            "printed_qty": 500,
+            "note": "user B HOLDING_TEAM normalized",
+            "client_request_id": "user-b",
+        },
+        user=HOLDING_B,
+    )
+    assert second["unchanged"] is False
+    assert second["corrected_by"]["role"] == "HOLDING_TEAM"
+    state = await get_product_stock_state(test_db, prod_id)
+    assert state["total_qty"] == 9000
+
+
+@pytest.mark.anyio
+async def test_named_user_without_holding_team_role_is_denied(test_db):
+    prod_id = await _seed_opening(test_db)
+    with pytest.raises(HTTPException) as ei:
+        await correct_opening_balance(
+            test_db,
+            prod_id,
+            {
+                "unprinted_qty": 1,
+                "printed_qty": 0,
+                "note": "Fauzan bukan holding_team",
+                "client_request_id": "fauzan-deny",
+            },
+            user=FAUZAN_NOT_HOLDING,
+        )
+    assert ei.value.status_code == 403
+    assert ei.value.detail == HOLDING_TEAM_ONLY_MSG
+    assert [d["movement_type"] for d in test_db.stock_movements._docs] == ["SALDO_AWAL"]
 
 
 @pytest.mark.anyio
