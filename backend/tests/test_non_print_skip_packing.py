@@ -167,6 +167,20 @@ def test_over_sj_and_over_loading_rejected():
     assert "101" in err
 
 
+def test_cancelled_loading_does_not_consume_non_print_availability():
+    o = _non_print_only(qty=1000, sj=True)
+    o["surat_jalan_files"][0]["lines"] = [{"line_idx": 0, "qty": 1000}]
+    o["loading_confirmations"] = [{
+        "id": "c1",
+        "surat_jalan_id": "f1",
+        "cancelled": True,
+        "lines": [{"line_idx": 0, "qty": 700}],
+    }]
+    assert qty_packed_for_line(o, 0) == 0
+    assert available_for_loading_confirm_line(o, 0) == 1000
+    assert validate_loading_confirmation(o, "f1", [{"line_idx": 0, "qty": 1000}]) is None
+
+
 def test_no_fake_packed_qty_after_sj_loading_helpers():
     o = _non_print_only(qty=50, sj=True)
     _ = available_for_delivery_note_line(o, 0)

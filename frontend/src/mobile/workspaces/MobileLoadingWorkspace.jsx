@@ -15,7 +15,7 @@ import {
   LOADING_REPORT_DISCREPANCY_PERM,
 } from "../../lib/loadingConfirm";
 import { SJ_VIEW_FILE_PERM, suratJalanFileUrl } from "../../lib/suratJalan";
-import { loadingAvailability, matchLoadingSjFile, mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { loadingAvailability, loadingSkipsPacking, matchLoadingSjFile, mobileWorkStatus } from "../../lib/mobileWorkspaces";
 import { useAuth } from "../../lib/auth";
 import MobileMetricStrip from "../components/MobileMetricStrip";
 import MobileStatusBadge from "../components/MobileStatusBadge";
@@ -32,7 +32,9 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated }) {
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const avail = loadingAvailability(order, poLines, sjFiles);
-  const status = mobileWorkStatus(avail.loaded, avail.packed);
+  const skipPacking = loadingSkipsPacking(poLines);
+  const statusTarget = avail.packed > 0 ? avail.packed : (avail.loaded + avail.remaining);
+  const status = mobileWorkStatus(avail.loaded, statusTarget);
   const verification = loadingVerificationStatus(order, activeSj?.id);
   const openDisc = loadingDiscrepancies(order);
 
@@ -126,6 +128,11 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated }) {
         { label: "Remaining Qty", value: avail.remaining.toLocaleString("id-ID") },
       ]} />
       {avail.blocked && <div className="mop-error">{avail.reason}</div>}
+      {!avail.blocked && skipPacking && Number(avail.packed || 0) === 0 && (
+        <div className="mop-card-meta" data-testid="mobile-loading-nonprint-note">
+          Item non-cetak — Packing dilewati
+        </div>
+      )}
       {verification?.reason && <div className="mop-error" data-testid="mobile-loading-reason">{verification.reason}</div>}
       {err && <div className="mop-error">{err}</div>}
 
@@ -162,7 +169,7 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated }) {
             <button
               type="button"
               className="mop-btn-primary"
-              disabled={!canEdit || busy || !activeSj?.id || avail.blocked}
+              disabled={!canEdit || busy || !activeSj?.id || avail.blocked || String(verification?.code || "").includes("packing")}
               onClick={confirmMatch}
               data-testid="mobile-loading-confirm-match"
               style={{ minHeight: 48 }}

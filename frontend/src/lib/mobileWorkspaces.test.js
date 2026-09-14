@@ -4,6 +4,7 @@ import {
   activeMobileNav,
   deliveryScheduleShowsTable,
   loadingAvailability,
+  loadingSkipsPacking,
   matchLoadingSjFile,
   mobileLoadingScheduleHref,
   mobileScheduleWorkHref,
@@ -160,6 +161,100 @@ describe("operator / packing / loading presentation", () => {
     expect(ok.packed).toBe(10);
     expect(ok.loaded).toBe(2);
     expect(ok.remaining).toBe(8);
+  });
+
+  test("CASE A printable packed 0 remains packing-blocked", () => {
+    const avail = loadingAvailability({}, [{
+      line_idx: 0,
+      production_process: "print",
+      packed: 0,
+      loaded: 0,
+      available: 0,
+      physical_available: 0,
+      qty_sj: 1000,
+      qty_po: 1000,
+    }], [{ id: "sj1" }]);
+    expect(avail.blocked).toBe(true);
+    expect(avail.reason).toBe("Loading tidak dapat dilakukan karena belum ada qty Packing.");
+    expect(loadingSkipsPacking([{ production_process: "print", qty_sj: 1000, available: 0 }])).toBe(false);
+  });
+
+  test("CASE B printable packed > 0 stays unblocked", () => {
+    const avail = loadingAvailability({}, [{
+      line_idx: 0,
+      production_process: "print",
+      packed: 600,
+      loaded: 200,
+      available: 400,
+      physical_available: 400,
+      qty_sj: 1000,
+    }], [{ id: "sj1" }]);
+    expect(avail.blocked).toBe(false);
+    expect(avail.reason).toBe("");
+    expect(avail.remaining).toBe(400);
+  });
+
+  test("CASE C non-print packed 0 with remaining is not packing-blocked", () => {
+    const lines = [{
+      line_idx: 0,
+      production_process: "non_print",
+      packed: 0,
+      loaded: 0,
+      available: 1000,
+      physical_available: 1000,
+      qty_sj: 1000,
+      qty_po: 1000,
+    }];
+    const avail = loadingAvailability({}, lines, [{ id: "sj1" }]);
+    expect(avail.blocked).toBe(false);
+    expect(avail.reason).not.toMatch(/Packing/i);
+    expect(avail.packed).toBe(0);
+    expect(avail.remaining).toBe(1000);
+    expect(loadingSkipsPacking(lines)).toBe(true);
+  });
+
+  test("mixed print packed 0 does not treat non-print remaining as a packing-zero bypass of print identity", () => {
+    const mixed = loadingAvailability({}, [
+      {
+        line_idx: 0,
+        production_process: "print",
+        packed: 0,
+        loaded: 0,
+        available: 0,
+        physical_available: 0,
+        qty_sj: 500,
+        qty_po: 500,
+      },
+      {
+        line_idx: 1,
+        production_process: "non_print",
+        packed: 0,
+        loaded: 0,
+        available: 300,
+        physical_available: 300,
+        qty_sj: 300,
+        qty_po: 300,
+      },
+    ], [{ id: "sj1" }]);
+    expect(mixed.blocked).toBe(false);
+    expect(mixed.reason).not.toMatch(/qty Packing/i);
+    expect(mixed.remaining).toBe(300);
+    expect(loadingSkipsPacking([
+      { production_process: "print", qty_sj: 500, available: 0 },
+      { production_process: "non_print", qty_sj: 300, available: 300 },
+    ])).toBe(false);
+  });
+
+  test("packed 0 without canonical non-print classification still fails safe", () => {
+    const avail = loadingAvailability({}, [{
+      line_idx: 0,
+      packed: 0,
+      loaded: 0,
+      available: 1000,
+      qty_po: 1000,
+    }], [{ id: "sj1" }]);
+    expect(avail.blocked).toBe(true);
+    expect(avail.reason).toMatch(/qty Packing/i);
   });
 });
 

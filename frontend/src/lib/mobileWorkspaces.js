@@ -232,12 +232,28 @@ export function packingMetrics(order, packingLines) {
   };
 }
 
+function isNonPrintLoadingLine(line) {
+  return String(line?.production_process || "").toLowerCase() === "non_print";
+}
+
+function lineRemaining(line) {
+  return Number(line?.available ?? line?.physical_available ?? 0);
+}
+
+/** True when selected-SJ demand is exclusively canonical non-print (Packing does not apply). */
+export function loadingSkipsPacking(poLines) {
+  const lines = Array.isArray(poLines) ? poLines : [];
+  const relevant = lines.filter((l) => Number(l.qty_sj || 0) > 0 || lineRemaining(l) > 0);
+  const src = relevant.length ? relevant : lines;
+  return src.length > 0 && src.every(isNonPrintLoadingLine);
+}
+
 export function loadingAvailability(order, poLines, sjFiles) {
   const files = Array.isArray(sjFiles) ? sjFiles : [];
   const lines = Array.isArray(poLines) ? poLines : [];
   const packed = lines.reduce((s, l) => s + Number(l.packed || 0), 0);
   const loaded = lines.reduce((s, l) => s + Number(l.loaded || 0), 0);
-  const remaining = lines.reduce((s, l) => s + Number(l.available ?? l.physical_available ?? 0), 0);
+  const remaining = lines.reduce((s, l) => s + lineRemaining(l), 0);
   const sjReady = files.length > 0 || !!order?.surat_jalan_created;
   if (!sjReady) {
     return {
@@ -248,7 +264,16 @@ export function loadingAvailability(order, poLines, sjFiles) {
       reason: "Surat Jalan belum tersedia.",
     };
   }
+  // Remaining already encodes printable packing vs non-print PO/SJ/history.
+  // packed==0 is legitimate for canonical non-print and must not block Loading.
+  const nonPrintLoadable = lines.some((l) => isNonPrintLoadingLine(l) && lineRemaining(l) > 0);
+  if (remaining > 0 && (packed > 0 || nonPrintLoadable)) {
+    return { packed, loaded, remaining, blocked: false, reason: "" };
+  }
   if (packed <= 0) {
+    if (loadingSkipsPacking(lines)) {
+      return { packed, loaded, remaining, blocked: false, reason: "" };
+    }
     return {
       packed,
       loaded,
