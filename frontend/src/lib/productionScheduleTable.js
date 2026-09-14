@@ -118,7 +118,7 @@ export function productionDashboardRequestParams(filters = {}) {
   const f = { ...FILTER_DEFAULTS, ...filters };
   return {
     include_cancelled: Boolean(f.includeCancelled),
-    include_completed: Boolean(f.includeCompleted),
+    include_completed: Boolean(f.includeCompleted) || f.workDateFilter === "hari_ini",
     // Additive backend path: same `_production_row` columns, no file-byte documents.
     view: "summary",
   };

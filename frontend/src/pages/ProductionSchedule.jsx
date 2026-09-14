@@ -12,6 +12,9 @@ import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "..
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
+  applyWorkDateFilterControl,
+  applyWorkDateRangeControl,
+  buildHariIniDisplayRows,
   isScheduledToday,
   productionFiltersAreActive,
   sortProductionRows,
@@ -132,7 +135,7 @@ export default function ProductionSchedule() {
     setBusy(true);
     setErr("");
     try {
-      const d = await api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted }));
+      const d = await api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter }));
       setRows(d.rows || []);
       setTotal(d.total || 0);
     } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
@@ -140,10 +143,10 @@ export default function ProductionSchedule() {
   };
 
   const { lastUpdated: schedLastUpdated, isPolling: schedIsPolling, refreshNow: refreshSched } = useAutoRefresh(
-    () => api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted })),
+    () => api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter })),
     { intervalMs: 30_000, enabled: true, onData: (d) => { setRows(d.rows || []); setTotal(d.total || 0); } }
   );
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted, workDateFilter]);
 
   useEffect(() => {
     if (statusFilter === "selesai" && !includeCompleted) setIncludeCompleted(true);
@@ -201,7 +204,12 @@ export default function ProductionSchedule() {
   );
 
   const sorted = useMemo(() => sortProductionRows(filtered, sortBy), [filtered, sortBy]);
-  const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
+  const displayRows = useMemo(() => {
+    if (workDateFilter === "hari_ini") {
+      return buildHariIniDisplayRows(sorted, undefined, includeCompleted);
+    }
+    return buildProductionScheduleDisplayRows(sorted);
+  }, [sorted, workDateFilter, includeCompleted]);
   const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
   const filtersActive = productionFiltersAreActive(filterState);
 
@@ -270,13 +278,33 @@ export default function ProductionSchedule() {
       case "work_date":
         return (
           <>
-            <select value={workDateFilter} onChange={(e) => setWorkDateFilter(e.target.value)} data-testid="prod-workdate-filter">
+            <select
+              value={workDateFilter}
+              onChange={(e) => {
+                const next = applyWorkDateFilterControl(e.target.value);
+                setWorkDateFilter(next.workDateFilter);
+                if (Object.prototype.hasOwnProperty.call(next, "workDateFrom")) setWorkDateFrom(next.workDateFrom);
+                if (Object.prototype.hasOwnProperty.call(next, "workDateTo")) setWorkDateTo(next.workDateTo);
+              }}
+              data-testid="prod-workdate-filter"
+            >
               <option value="all">Semua Pengerjaan</option>
+              <option value="hari_ini">Hari Ini</option>
               <option value="scheduled">Sudah Dijadwalkan</option>
               <option value="unscheduled">Belum Dijadwalkan</option>
             </select>
-            <label>Dari <input type="date" value={workDateFrom} onChange={(e) => setWorkDateFrom(e.target.value)} data-testid="prod-workdate-from"/></label>
-            <label>Sampai <input type="date" value={workDateTo} onChange={(e) => setWorkDateTo(e.target.value)} data-testid="prod-workdate-to"/></label>
+            <label>Dari <input type="date" value={workDateFrom} onChange={(e) => {
+              const next = applyWorkDateRangeControl(e.target.value, workDateTo, workDateFilter);
+              setWorkDateFilter(next.workDateFilter);
+              setWorkDateFrom(next.workDateFrom);
+              setWorkDateTo(next.workDateTo);
+            }} data-testid="prod-workdate-from"/></label>
+            <label>Sampai <input type="date" value={workDateTo} onChange={(e) => {
+              const next = applyWorkDateRangeControl(workDateFrom, e.target.value, workDateFilter);
+              setWorkDateFilter(next.workDateFilter);
+              setWorkDateFrom(next.workDateFrom);
+              setWorkDateTo(next.workDateTo);
+            }} data-testid="prod-workdate-to"/></label>
           </>
         );
       case "prio":
