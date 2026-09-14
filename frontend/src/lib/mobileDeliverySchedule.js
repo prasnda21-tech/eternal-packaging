@@ -44,18 +44,23 @@ export function mobileDeliveryWorkHref(orderId) {
   return `/m/orders/${encodeURIComponent(orderId)}?ws=delivery`;
 }
 
-/** Dense spreadsheet columns — Web semantics + packing progress + queue badge. */
+/** Compact PWA operational columns — Customer stacks PO/SJ; item lines keep qty. */
 export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "prio", label: "Prioritas", width: 92 },
-  { key: "effective_delivery_date", label: "Tanggal Pengiriman", width: 98, sort: "effective_delivery_date" },
-  { key: "po_number", label: "No PO", width: 92, sort: "po_number" },
-  { key: "customer", label: "Customer", width: 148, sort: "customer" },
-  { key: "item_line", label: "Item Line", width: 156 },
-  { key: "sj", label: "No SJ", width: 110 },
-  { key: "packing", label: "Packing", width: 88, num: true },
-  { key: "shipped", label: "Terkirim", width: 72, sort: "shipped", num: true },
-  { key: "shippable", label: "Dapat Dikirim", width: 80, sort: "shippable", num: true },
-  { key: "opt_route", label: "Optimasi Rute", width: 110 },
+  { key: "effective_delivery_date", label: "Tgl Kirim", width: 88, sort: "effective_delivery_date" },
+  { key: "customer", label: "Customer / No PO", width: 248, sort: "customer" },
+  { key: "item_line", label: "Item Line", width: 248 },
+  { key: "qty", label: "Qty Total", width: 84, num: true },
+  { key: "cup", label: "Cup", width: 48, num: true },
+  { key: "screen", label: "Screen", width: 52, num: true },
+  { key: "prod", label: "Prod", width: 48, num: true },
+  { key: "packing", label: "Pack", width: 48, num: true },
+  { key: "loading", label: "Load", width: 48, num: true },
+  { key: "shipped", label: "Kirim", width: 48, sort: "shipped", num: true },
+];
+
+export const MOBILE_DELIVERY_STATUS_COL_KEYS = [
+  "cup", "screen", "prod", "packing", "loading", "shipped",
 ];
 
 /** Exact SJ lines from GET /delivery/schedule — never item_label / PO line_items. */

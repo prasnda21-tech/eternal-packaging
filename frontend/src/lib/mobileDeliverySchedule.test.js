@@ -63,40 +63,43 @@ describe("mobileDeliverySchedule access", () => {
     expect(mobileDeliveryWorkHref("abc")).toBe("/m/orders/abc?ws=delivery");
   });
 
-  test("table columns match Web schedule semantics plus packing/prioritas", () => {
+  test("table columns match compact ops hierarchy", () => {
     const keys = MOBILE_DELIVERY_SCHEDULE_COLS.map((c) => c.key);
     expect(keys).toEqual([
       "prio",
       "effective_delivery_date",
-      "po_number",
       "customer",
       "item_line",
-      "sj",
+      "qty",
+      "cup",
+      "screen",
+      "prod",
       "packing",
+      "loading",
       "shipped",
-      "shippable",
-      "opt_route",
     ]);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.map((c) => c.label)).toEqual([
       "Prioritas",
-      "Tanggal Pengiriman",
-      "No PO",
-      "Customer",
+      "Tgl Kirim",
+      "Customer / No PO",
       "Item Line",
-      "No SJ",
-      "Packing",
-      "Terkirim",
-      "Dapat Dikirim",
-      "Optimasi Rute",
+      "Qty Total",
+      "Cup",
+      "Screen",
+      "Prod",
+      "Pack",
+      "Load",
+      "Kirim",
     ]);
     expect(keys).not.toContain("driver");
     expect(keys).not.toContain("status");
     expect(keys).not.toContain("actions");
+    expect(keys).not.toContain("zona");
     const customerIdx = keys.indexOf("customer");
     expect(keys[customerIdx + 1]).toBe("item_line");
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Deadline")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Jadwal Manual")).toBe(false);
-    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tanggal Pengiriman")).toBe(true);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tgl Kirim")).toBe(true);
   });
 });
 

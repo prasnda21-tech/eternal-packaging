@@ -85,7 +85,7 @@ describe("mobile route wiring", () => {
     expect(dsPage).toMatch(/useProductionSheetZoom/);
     expect(dsPage).toMatch(/production-sheet-viewport/);
     expect(dsPage).toMatch(/canViewMobileDeliverySchedule/);
-    expect(dsPage).toMatch(/canEditMobileDeliveryScheduleLocation/);
+    expect(dsLib).toMatch(/canEditMobileDeliveryScheduleLocation/);
     expect(dsPage).toMatch(/mobileScheduleWorkHref/);
     expect(dsPage).toMatch(/OPS_QUICK_FILTERS|mds-quick/);
     expect(dsPage).toMatch(/qty_packed|PackingCell|packingProgressText/);

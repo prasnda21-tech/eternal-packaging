@@ -126,6 +126,13 @@
   color: #713f12 !important;
 }
 
+.mop-schedule-root .production-sheet-table tbody td.prod-cell-today,
+.mop-schedule-root .production-sheet-table tbody tr:hover td.prod-cell-today,
+.mop-schedule-root .production-sheet-table tbody tr.hold td.prod-cell-today {
+  background-color: #fff !important;
+  color: inherit !important;
+}
+
 .production-sheet-table .prod-qty-cell,
 .production-sheet-table .prod-ops {
   vertical-align: top;
