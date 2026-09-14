@@ -6,7 +6,7 @@ import { useAuth } from "../lib/auth";
 import { formatApiError } from "../lib/errors";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
-import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
+import { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
@@ -15,9 +15,8 @@ import {
 } from "../lib/productionScheduleFilters";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
 import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
-import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
 import { productionSheetColumnStyle } from "../lib/productionScheduleTable";
-import { MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS } from "../lib/mobileProductionScheduleCols";
+import { MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS, MOBILE_PRODUCTION_STATUS_COL_KEYS } from "../lib/mobileProductionScheduleCols";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import {
   canViewMobileSchedule,
@@ -26,12 +25,21 @@ import {
 } from "../lib/mobileSchedule";
 import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
 import {
-  OPS_QUICK_FILTERS,
+  OPS_TOOLBAR_FILTERS,
+  OPS_MORE_FILTERS,
+  matchesProductionOpsSearch,
+  opsQuickFilterCounts,
   productionOpsBadge,
   productionQuickMatch,
   sortByOpsQueue,
   productionQueueRank,
 } from "../lib/mobileOpsQueue";
+import { buildOpsRoleSummaryModel } from "../lib/mobileOpsRoleSummary";
+import { canViewMobileDeliverySchedule } from "../lib/mobileDeliverySchedule";
+import MobileOpsRoleSummary from "./components/MobileOpsRoleSummary";
+import OpsScheduleThead from "./components/OpsScheduleThead";
+import OpsQueueHeader from "./components/OpsQueueHeader";
+import OpsQueueLegend from "./components/OpsQueueLegend";
 import {
   MOBILE_PROD_FILTER_KEY,
   MOBILE_PROD_SCROLL_KEY,
@@ -47,7 +55,6 @@ import {
   storageUserKey,
 } from "../lib/poListReturn";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
-import MobileTopBar from "./MobileTopBar";
 
 export function scheduleLoadErrorMessage(err) {
   const status = err?.response?.status;
@@ -133,13 +140,31 @@ export default function MobileProductionSchedulePage() {
     return () => { cancelled = true; };
   }, [allowed, includeCancelled, includeCompleted, reloadKey]);
 
+  const scoped = useMemo(
+    () => applyProductionFilters(rows, {
+      ...FILTER_DEFAULTS,
+      q: "",
+      includeCancelled,
+      includeCompleted,
+    }),
+    [rows, includeCancelled, includeCompleted],
+  );
+  const searched = useMemo(
+    () => scoped.filter((r) => matchesProductionOpsSearch(r, q)),
+    [scoped, q],
+  );
   const filtered = useMemo(
-    () => applyProductionFilters(rows, filterState).filter((r) => productionQuickMatch(r, quick)),
-    [rows, q, includeCancelled, includeCompleted, quick],
+    () => searched.filter((r) => productionQuickMatch(r, quick)),
+    [searched, quick],
   );
   const sorted = useMemo(() => sortByOpsQueue(filtered, productionQueueRank), [filtered]);
   const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
-  const summaryMetrics = useMemo(() => buildProductionScheduleSummary(filtered), [filtered]);
+  const quickCounts = useMemo(() => opsQuickFilterCounts(searched, productionQuickMatch), [searched]);
+  const roleSummary = useMemo(
+    () => buildOpsRoleSummaryModel({ productionRows: rows, deliveryRows: null }),
+    [rows],
+  );
+  const canOpenDelivery = canViewMobileDeliverySchedule(hasPerm);
   const filtersActive = productionFiltersAreActive(filterState) || quick !== "semua_aktif";
 
   useLayoutEffect(() => {
@@ -185,7 +210,7 @@ export default function MobileProductionSchedulePage() {
 
   return (
     <div className="mop-schedule-root">
-      <MobileTopBar kicker="ETERNAL PACKAGING" title="Jadwal Produksi" />
+      <OpsQueueHeader title="Jadwal Produksi" />
       <main className="mop-content mop-schedule-page" data-testid="mobile-schedule-page">
         {!allowed && (
           <div className="mop-error" data-testid="mobile-schedule-forbidden">
@@ -194,17 +219,31 @@ export default function MobileProductionSchedulePage() {
         )}
         {allowed && (
           <>
+            <MobileOpsRoleSummary
+              roles={roleSummary.map((role) => ({
+                ...role,
+                interactive: role.source === "delivery" && canOpenDelivery,
+              }))}
+              onSelectRole={(role) => {
+                if (role.source === "delivery" && canOpenDelivery && role.href) {
+                  navigate(role.href);
+                }
+              }}
+            />
             <div className="mop-schedule-toolbar" data-testid="mobile-schedule-toolbar">
               <div className="mop-ops-quick" data-testid="mobile-schedule-quick-filters">
-                {OPS_QUICK_FILTERS.map((f) => (
+                {OPS_TOOLBAR_FILTERS.map((f) => (
                   <button
                     key={f.key}
                     type="button"
-                    className={`mop-ops-chip${quick === f.key ? " is-active" : ""}`}
+                    className={`mop-ops-chip mop-ops-chip--${f.key}${quick === f.key ? " is-active" : ""}`}
                     data-testid={`mobile-schedule-quick-${f.key}`}
                     onClick={() => setQuick(f.key)}
                   >
                     {f.label}
+                    <span className="mop-ops-chip-count" data-testid={`mobile-schedule-quick-count-${f.key}`}>
+                      {quickCounts[f.key] ?? 0}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -213,29 +252,8 @@ export default function MobileProductionSchedulePage() {
                 onChange={(e) => setQ(e.target.value)}
                 inputTestId="mobile-schedule-search"
                 searchButtonTestId="mobile-schedule-search-btn"
+                placeholder="Cari customer / PO / item"
               />
-              <ProductionScheduleRingkasan metrics={summaryMetrics} testidPrefix="mobile-schedule" />
-              <span className="mop-schedule-count" data-testid="mobile-schedule-count">
-                {filtered.length} / {rows.length} entri
-              </span>
-              <label className="mop-schedule-check">
-                <input
-                  type="checkbox"
-                  checked={includeCompleted}
-                  onChange={(e) => setIncludeCompleted(e.target.checked)}
-                  data-testid="mobile-schedule-include-completed"
-                />
-                Selesai
-              </label>
-              <label className="mop-schedule-check">
-                <input
-                  type="checkbox"
-                  checked={includeCancelled}
-                  onChange={(e) => setIncludeCancelled(e.target.checked)}
-                  data-testid="mobile-schedule-include-cancelled"
-                />
-                Cancelled
-              </label>
               <div className="mop-schedule-filter-actions" data-testid="mobile-schedule-filter-actions">
                 <button
                   type="button"
@@ -254,13 +272,47 @@ export default function MobileProductionSchedulePage() {
                 >
                   Reset
                 </button>
+                <span className="mop-schedule-count" data-testid="mobile-schedule-count">
+                  {filtered.length} / {rows.length} entri
+                </span>
               </div>
             </div>
             {filterOpen && (
-              <div className="mop-ds-filter-panel" data-testid="mobile-schedule-filter-panel" style={{ marginBottom: 6 }}>
-                <p className="mop-topbar-sub" style={{ color: "var(--mop-muted)", margin: 0 }}>
-                  Filter lanjutan memakai pencarian + chip operasional di atas. Checkbox Selesai/Cancelled tetap di toolbar.
-                </p>
+              <div className="mop-ds-filter-panel" data-testid="mobile-schedule-filter-panel">
+                <label className="mop-schedule-check">
+                  <input
+                    type="checkbox"
+                    checked={includeCompleted}
+                    onChange={(e) => setIncludeCompleted(e.target.checked)}
+                    data-testid="mobile-schedule-include-completed"
+                  />
+                  Selesai
+                </label>
+                <label className="mop-schedule-check">
+                  <input
+                    type="checkbox"
+                    checked={includeCancelled}
+                    onChange={(e) => setIncludeCancelled(e.target.checked)}
+                    data-testid="mobile-schedule-include-cancelled"
+                  />
+                  Cancelled
+                </label>
+                <div className="mop-ops-quick mop-ops-quick-more" data-testid="mobile-schedule-more-filters">
+                  {OPS_MORE_FILTERS.map((f) => (
+                    <button
+                      key={f.key}
+                      type="button"
+                      className={`mop-ops-chip mop-ops-chip--${f.key}${quick === f.key ? " is-active" : ""}`}
+                      data-testid={`mobile-schedule-quick-${f.key}`}
+                      onClick={() => setQuick(f.key)}
+                    >
+                      {f.label}
+                      <span className="mop-ops-chip-count" data-testid={`mobile-schedule-quick-count-${f.key}`}>
+                        {quickCounts[f.key] ?? 0}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {loading && (
@@ -280,10 +332,7 @@ export default function MobileProductionSchedulePage() {
                 </button>
               </div>
             )}
-            {!loading && !err && rows.length === 0 && (
-              <p className="mop-empty" data-testid="mobile-schedule-empty">Belum ada jadwal produksi.</p>
-            )}
-            {!loading && !err && rows.length > 0 && (
+            {!loading && !err && (
               <div
                 className="mop-schedule-scroll production-sheet production-sheet-viewport"
                 data-testid="mobile-schedule-scroll"
@@ -300,20 +349,12 @@ export default function MobileProductionSchedulePage() {
                       <col key={col.key} style={productionSheetColumnStyle(col)} />
                     ))}
                   </colgroup>
-                  <thead className="production-sheet-header" data-testid="mobile-schedule-thead">
-                    <tr>
-                      {MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((col) => (
-                        <th
-                          key={col.key}
-                          scope="col"
-                          className={col.num || col.align === "right" || col.type === "qty" ? "num" : ""}
-                          style={productionSheetColumnStyle(col)}
-                        >
-                          {col.label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
+                  <OpsScheduleThead
+                    cols={MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS}
+                    statusKeys={MOBILE_PRODUCTION_STATUS_COL_KEYS}
+                    testid="mobile-schedule-thead"
+                    mode="production"
+                  />
                   <tbody>
                     {displayRows.map((row) => {
                       const qtyProg = poTotalQtyDisplay(row);
@@ -355,8 +396,12 @@ export default function MobileProductionSchedulePage() {
                     })}
                     {!sorted.length && (
                       <tr>
-                        <td colSpan={MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.length} className="production-sheet-empty mop-schedule-filter-empty">
-                          Tidak ada PO cocok dengan filter.
+                        <td
+                          colSpan={MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.length}
+                          className="production-sheet-empty mop-schedule-filter-empty"
+                          data-testid={rows.length === 0 ? "mobile-schedule-empty" : "mobile-schedule-filter-empty"}
+                        >
+                          {rows.length === 0 ? "Belum ada jadwal produksi." : "Tidak ada PO cocok dengan filter."}
                         </td>
                       </tr>
                     )}
@@ -364,6 +409,7 @@ export default function MobileProductionSchedulePage() {
                 </table>
               </div>
             )}
+            <OpsQueueLegend />
           </>
         )}
       </main>

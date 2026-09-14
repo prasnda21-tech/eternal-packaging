@@ -9,15 +9,19 @@ import {
   packingProgressText,
   helperProgressText,
   screenProgressText,
+  matchesProductionOpsSearch,
+  matchesDeliveryOpsSearch,
+  opsQuickFilterCounts,
 } from "./mobileOpsQueue";
 import { preferredMobileWorkspaceForTable, mobileScheduleWorkHref } from "./mobileWorkspaces";
 
 describe("mobileOpsQueue", () => {
   test("quick filter keys cover required ops chips", () => {
     expect(OPS_QUICK_FILTERS.map((f) => f.key)).toEqual([
+      "semua",
       "hari_ini",
-      "besok",
       "terlambat",
+      "besok",
       "belum_dijadwalkan",
       "minggu_ini",
       "semua_aktif",
@@ -35,6 +39,7 @@ describe("mobileOpsQueue", () => {
     expect(productionQuickMatch(lateRow, "terlambat", today)).toBe(true);
     expect(productionQuickMatch(noneRow, "belum_dijadwalkan", today)).toBe(true);
     expect(productionQuickMatch({ ...todayRow, current_stage: 14 }, "semua_aktif", today)).toBe(false);
+    expect(productionQuickMatch({ ...todayRow, current_stage: 14 }, "semua", today)).toBe(true);
   });
 
   test("delivery quick filters align with schedule status/date", () => {
@@ -44,6 +49,7 @@ describe("mobileOpsQueue", () => {
     expect(deliveryQuickMatch({ status: "terlambat", effective_delivery_date: "2026-09-01" }, "terlambat", today)).toBe(true);
     expect(deliveryQuickMatch({ status: "belum_dijadwalkan" }, "belum_dijadwalkan", today)).toBe(true);
     expect(deliveryQuickMatch({ status: "terkirim", effective_delivery_date: "2026-09-10" }, "semua_aktif", today)).toBe(false);
+    expect(deliveryQuickMatch({ status: "terkirim", effective_delivery_date: "2026-09-10" }, "semua", today)).toBe(true);
   });
 
   test("queue order is late → today → tomorrow → next → unscheduled", () => {
@@ -57,6 +63,47 @@ describe("mobileOpsQueue", () => {
     ];
     expect(sortByOpsQueue(rows, deliveryQueueRank, today).map((r) => r.id)).toEqual(["l", "t", "b", "n", "u"]);
     expect(productionQueueRank({ work_date: "2026-09-01" }, today).bucket).toBe(10);
+  });
+
+  test("search matches customer, PO, and item line without backend roundtrip", () => {
+    const row = {
+      po_number: "PO/2026/09/08/000008",
+      customer: "CV CELESTIALS",
+      outlet: "Tebet",
+      operators: [{ line_name: "LID PET Strawless" }],
+    };
+    expect(matchesProductionOpsSearch(row, "celestials")).toBe(true);
+    expect(matchesProductionOpsSearch(row, "000008")).toBe(true);
+    expect(matchesProductionOpsSearch(row, "strawless")).toBe(true);
+    expect(matchesProductionOpsSearch(row, "tidak-ada")).toBe(false);
+  });
+
+  test("delivery search matches customer, PO, SJ, and sj item line", () => {
+    const row = {
+      order_number: "PO/9",
+      customer_name: "UD Mitra",
+      latest_sj_number: "SJ/2026/001",
+      sj_item_lines: [{ name: "22 oz Datar", qty: 3000 }],
+    };
+    expect(matchesDeliveryOpsSearch(row, "mitra")).toBe(true);
+    expect(matchesDeliveryOpsSearch(row, "PO/9")).toBe(true);
+    expect(matchesDeliveryOpsSearch(row, "SJ/2026")).toBe(true);
+    expect(matchesDeliveryOpsSearch(row, "22 oz")).toBe(true);
+    expect(matchesDeliveryOpsSearch(row, "zzz")).toBe(false);
+  });
+
+  test("quick filter counts match the same matcher the chips apply", () => {
+    const today = new Date("2026-09-10T12:00:00");
+    const rows = [
+      { work_date: "2026-09-10", current_stage: 8 },
+      { work_date: "2026-09-11", current_stage: 8 },
+      { work_date: "2026-09-01", current_stage: 8 },
+    ];
+    const counts = opsQuickFilterCounts(rows, productionQuickMatch, today);
+    expect(counts.hari_ini).toBe(1);
+    expect(counts.besok).toBe(1);
+    expect(counts.terlambat).toBe(1);
+    expect(counts.hari_ini).toBe(rows.filter((r) => productionQuickMatch(r, "hari_ini", today)).length);
   });
 
   test("progress text uses id-ID thousands", () => {

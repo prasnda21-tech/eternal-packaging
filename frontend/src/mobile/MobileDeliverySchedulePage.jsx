@@ -18,6 +18,7 @@ import {
 } from "../lib/deliverySchedule";
 import {
   MOBILE_DELIVERY_SCHEDULE_COLS,
+  MOBILE_DELIVERY_STATUS_COL_KEYS,
   canOptimizeFromDeliverySchedule,
   canViewMobileDeliverySchedule,
   groupSjItemLines,
@@ -36,13 +37,21 @@ import {
   selectDeliveryScheduleTaskContext,
 } from "../lib/mobileWorkspaces";
 import {
-  OPS_QUICK_FILTERS,
+  OPS_TOOLBAR_FILTERS,
+  OPS_MORE_FILTERS,
   deliveryOpsBadge,
   deliveryQuickMatch,
   deliveryQueueRank,
+  matchesDeliveryOpsSearch,
+  opsQuickFilterCounts,
   packingProgressText,
   sortByOpsQueue,
 } from "../lib/mobileOpsQueue";
+import { buildOpsRoleSummaryModel } from "../lib/mobileOpsRoleSummary";
+import { canViewMobileSchedule } from "../lib/mobileSchedule";
+import MobileOpsRoleSummary from "./components/MobileOpsRoleSummary";
+import OpsScheduleThead from "./components/OpsScheduleThead";
+import OpsRoleMark from "./components/OpsRoleMark";
 import {
   MOBILE_DELIVERY_FILTER_KEY,
   MOBILE_DELIVERY_SCROLL_KEY,
@@ -57,11 +66,14 @@ import {
   poNavStateFromList,
   storageUserKey,
 } from "../lib/poListReturn";
+import { packMarkTone, loadMarkTone, kirimMarkTone, cupMarkTone, screenMarkTone, prodMarkTone } from "../lib/mobileOpsStatusMark";
 import { formatIdQty } from "../lib/productionScheduleQty";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
-import MobileTopBar from "./MobileTopBar";
+import { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
+import OpsQueueHeader from "./components/OpsQueueHeader";
+import OpsQueueLegend from "./components/OpsQueueLegend";
 import MobileTaskCard from "./components/MobileTaskCard";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 
@@ -97,6 +109,35 @@ function PackingCell({ row }) {
 function scheduleRowSuffix(row) {
   if (row?.shipment_id) return `${row.order_number}-${row.shipment_id}`;
   return row?.order_number || "row";
+}
+
+function DeliveryIdentityCell({ row, onOpenRoute, canOpenRoute }) {
+  const suffix = scheduleRowSuffix(row);
+  const meta = optimizationStatusMeta(row);
+  return (
+    <div className="mop-ops-identity" data-testid={`mds-identity-${suffix}`}>
+      <strong className="mop-ops-customer">{row.customer_name || "-"}</strong>
+      <span className="mop-ops-po">{row.order_number || ""}</span>
+      {row.latest_sj_number || row.sj_label ? (
+        <span className="mop-ops-po" data-testid={`mds-sj-${suffix}`}>{row.latest_sj_number || row.sj_label}</span>
+      ) : (
+        <span className="mop-ops-po" data-testid={`mds-sj-${suffix}`}>—</span>
+      )}
+      {meta.code === "sudah_dioptimasi" && meta.routeId && canOpenRoute ? (
+        <button
+          type="button"
+          className="mop-ops-route-link"
+          data-testid={`mds-lihat-rute-${row.order_number}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenRoute?.(meta.routeId);
+          }}
+        >
+          Lihat Rute
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function SjItemLineCell({ row }) {
@@ -173,6 +214,7 @@ export default function MobileDeliverySchedulePage() {
     filters: EMPTY_DELIVERY_FILTERS,
     quick: "semua_aktif",
     sort: EMPTY_DELIVERY_SORT,
+    q: "",
   });
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -183,6 +225,7 @@ export default function MobileDeliverySchedulePage() {
   const [filters, setFilters] = useState({ ...EMPTY_DELIVERY_FILTERS, ...(saved.filters || {}) });
   const [sort, setSort] = useState({ ...EMPTY_DELIVERY_SORT, ...(saved.sort || {}) });
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
+  const [q, setQ] = useState(saved.q || "");
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
   const [reloadKey, setReloadKey] = useState(0);
@@ -256,17 +299,27 @@ export default function MobileDeliverySchedulePage() {
   }, [loadTasks, reloadKey, showTable, selectedTask?.id, selectedTask?.division]);
 
   useEffect(() => {
-    writeJsonSession(filterKey, { filters, quick, sort });
-  }, [filterKey, filters, quick, sort]);
+    writeJsonSession(filterKey, { filters, quick, sort, q });
+  }, [filterKey, filters, quick, sort, q]);
 
   const filteredRows = useMemo(
     () => (rows || [])
       .filter((r) => matchesDeliveryScheduleFilters(r, filters))
-      .filter((r) => deliveryQuickMatch(r, quick)),
-    [rows, filters, quick],
+      .filter((r) => matchesDeliveryOpsSearch(r, q)),
+    [rows, filters, q],
   );
-  const sorted = useMemo(() => sortDeliveryRows(filteredRows, sort), [filteredRows, sort]);
+  const quickFiltered = useMemo(
+    () => filteredRows.filter((r) => deliveryQuickMatch(r, quick)),
+    [filteredRows, quick],
+  );
+  const sorted = useMemo(() => sortDeliveryRows(quickFiltered, sort), [quickFiltered, sort]);
   const visible = useMemo(() => sortByOpsQueue(sorted, deliveryQueueRank), [sorted]);
+  const quickCounts = useMemo(() => opsQuickFilterCounts(filteredRows, deliveryQuickMatch), [filteredRows]);
+  const roleSummary = useMemo(
+    () => buildOpsRoleSummaryModel({ productionRows: null, deliveryRows: rows }),
+    [rows],
+  );
+  const canOpenProduction = canViewMobileSchedule(hasPerm);
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
   const sortedTasks = useMemo(() => sortOperationalTasks(taskRows), [taskRows]);
   const workWsId = selectedTask?.id;
@@ -319,6 +372,7 @@ export default function MobileDeliverySchedulePage() {
     setDraftFilters(empty);
     setFilters(empty);
     setQuick("semua_aktif");
+    setQ("");
   };
 
   const openRow = (r) => {
@@ -331,7 +385,7 @@ export default function MobileDeliverySchedulePage() {
 
   return (
     <div className="mop-schedule-root mop-delivery-schedule-root">
-      <MobileTopBar kicker="ETERNAL PACKAGING" title="Jadwal Pengiriman" />
+      <OpsQueueHeader title="Jadwal Pengiriman" />
       <main className="mop-content mop-schedule-page" data-testid="mobile-delivery-schedule-page">
         {!allowed && (
           <div className="mop-error" data-testid="mobile-delivery-schedule-forbidden">
@@ -340,7 +394,7 @@ export default function MobileDeliverySchedulePage() {
         )}
         {allowed && (
           <>
-            {taskContexts.length > 0 && (
+            {taskContexts.length > 0 && !showTable && (
               <MobileWorkspaceSelect
                 workspaces={taskContexts}
                 value={selectedTask?.id}
@@ -390,20 +444,48 @@ export default function MobileDeliverySchedulePage() {
             )}
 
             {showTable && (
+            <>
+            <MobileOpsRoleSummary
+              roles={roleSummary.map((role) => ({
+                ...role,
+                interactive: (role.source === "delivery" && Boolean(role.workspaceId))
+                  || (role.source === "production" && canOpenProduction),
+              }))}
+              activeRoleId={selectedTask?.id || ""}
+              onSelectRole={(role) => {
+                if (role.source === "delivery" && role.workspaceId) {
+                  setTaskContextId(role.workspaceId);
+                  return;
+                }
+                if (role.source === "production" && canOpenProduction && role.href) {
+                  navigate(role.href);
+                }
+              }}
+            />
             <div className="mop-schedule-toolbar mop-ds-toolbar" data-testid="mobile-delivery-schedule-toolbar">
               <div className="mop-ops-quick" data-testid="mds-quick-filters">
-                {OPS_QUICK_FILTERS.map((f) => (
+                {OPS_TOOLBAR_FILTERS.map((f) => (
                   <button
                     key={f.key}
                     type="button"
-                    className={`mop-ops-chip${quick === f.key ? " is-active" : ""}`}
+                    className={`mop-ops-chip mop-ops-chip--${f.key}${quick === f.key ? " is-active" : ""}`}
                     data-testid={`mds-quick-${f.key}`}
                     onClick={() => setQuick(f.key)}
                   >
                     {f.label}
+                    <span className="mop-ops-chip-count" data-testid={`mds-quick-count-${f.key}`}>
+                      {quickCounts[f.key] ?? 0}
+                    </span>
                   </button>
                 ))}
               </div>
+              <ProductionScheduleSearchCluster
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                inputTestId="mds-search"
+                searchButtonTestId="mds-search-btn"
+                placeholder="Cari customer / PO / SJ / item"
+              />
               <div className="mop-schedule-filter-actions" data-testid="mds-filter-actions">
                 <button
                   type="button"
@@ -420,7 +502,7 @@ export default function MobileDeliverySchedulePage() {
                   type="button"
                   className="mop-btn-ghost mop-schedule-reset"
                   onClick={resetFilters}
-                  disabled={activeFilterCount === 0 && quick === "semua_aktif"}
+                  disabled={activeFilterCount === 0 && quick === "semua_aktif" && !String(q || "").trim()}
                   data-testid="mds-filter-reset"
                 >
                   Reset
@@ -431,7 +513,7 @@ export default function MobileDeliverySchedulePage() {
               </span>
               <button
                 type="button"
-                className="mop-btn-ghost"
+                className="mop-btn-ghost mop-ops-toolbar-refresh"
                 onClick={onRefresh}
                 title="Muat ulang"
                 data-testid="mds-refresh"
@@ -456,6 +538,7 @@ export default function MobileDeliverySchedulePage() {
                 </button>
               )}
             </div>
+            </>
             )}
 
             {showTable && busy && (
@@ -475,10 +558,7 @@ export default function MobileDeliverySchedulePage() {
                 </button>
               </div>
             )}
-            {showTable && !busy && !err && rows.length === 0 && (
-              <p className="mop-empty" data-testid="mds-empty">Tidak ada jadwal pengiriman.</p>
-            )}
-            {showTable && !busy && !err && rows.length > 0 && (
+            {showTable && !busy && !err && (
               <div
                 className="mop-schedule-scroll production-sheet production-sheet-viewport"
                 data-testid="mds-scroll"
@@ -492,30 +572,25 @@ export default function MobileDeliverySchedulePage() {
                       <col key={col.key} style={mobileDeliverySheetColumnStyle(col)} />
                     ))}
                   </colgroup>
-                  <thead className="production-sheet-header" data-testid="mds-thead">
-                    <tr>
-                      {MOBILE_DELIVERY_SCHEDULE_COLS.map((col) => (
-                        <th
-                          key={col.key}
-                          scope="col"
-                          className={col.num ? "num" : ""}
-                          style={mobileDeliverySheetColumnStyle(col)}
+                  <OpsScheduleThead
+                    cols={MOBILE_DELIVERY_SCHEDULE_COLS}
+                    statusKeys={MOBILE_DELIVERY_STATUS_COL_KEYS}
+                    testid="mds-thead"
+                    mode="delivery"
+                    renderSort={(col) => (
+                      col.sort ? (
+                        <button
+                          type="button"
+                          className="production-sheet-th-sort mop-schedule-th-sort"
+                          onClick={() => onHeaderSort(DELIVERY_SORT_KEYS[col.sort] || col.sort)}
+                          data-testid={`mds-sort-${col.key}`}
+                          aria-label={`Urutkan ${col.label}`}
                         >
-                          {col.sort ? (
-                            <button
-                              type="button"
-                              className="production-sheet-th-sort mop-schedule-th-sort"
-                              onClick={() => onHeaderSort(DELIVERY_SORT_KEYS[col.sort] || col.sort)}
-                              data-testid={`mds-sort-${col.key}`}
-                              aria-label={`Urutkan ${col.label}`}
-                            >
-                              {col.label}
-                            </button>
-                          ) : col.label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
+                          {col.label}
+                        </button>
+                      ) : col.label
+                    )}
+                  />
                   <tbody>
                     {visible.map((r) => {
                       const badge = deliveryOpsBadge(r);
@@ -541,68 +616,76 @@ export default function MobileDeliverySchedulePage() {
                         >
                           <td className="production-sheet-cell">
                             {badge ? (
-                              <span className={`mop-ops-badge mop-ops-badge-${badge.tone}`}>{badge.label}</span>
+                              <div className="mop-ops-prio">
+                                <span className={`mop-ops-badge mop-ops-badge-${badge.tone}`}>{badge.label}</span>
+                                {badge.caption ? (
+                                  <span className={`mop-ops-prio-caption is-${badge.captionTone || badge.tone}`}>{badge.caption}</span>
+                                ) : null}
+                              </div>
                             ) : "—"}
                           </td>
                           <td className="mono production-sheet-cell">
                             {formatDate(r.effective_delivery_date, { dateOnly: true })}
                           </td>
-                          <td className="mono production-sheet-cell">{r.order_number || "-"}</td>
-                          <td className="production-sheet-cell">{r.customer_name || "-"}</td>
+                          <td className="production-sheet-cell">
+                            <DeliveryIdentityCell
+                              row={r}
+                              canOpenRoute={canAccessRoutePage(hasPerm)}
+                              onOpenRoute={(routeId) => {
+                                persistScroll();
+                                navigateToOptimasiRute(navigate, routeId, {
+                                  from: `${listPathname}${listSearch}`,
+                                });
+                              }}
+                            />
+                          </td>
                           <td className="production-sheet-cell">
                             <SjItemLineCell row={r} />
                           </td>
-                          <td className="production-sheet-cell mono" data-testid={`mds-sj-${scheduleRowSuffix(r)}`}>
-                            {r.latest_sj_number || r.sj_label || "—"}
+                          <td className="production-sheet-cell num" data-testid={`mds-qty-${r.order_number}`}>
+                            <strong className="mop-ops-qty-total">{formatIdQty(r.qty_total ?? 0)}</strong>
                           </td>
                           <td className="production-sheet-cell num">
-                            <PackingCell row={r} />
+                            <OpsRoleMark
+                              tone={r.helper_required != null ? cupMarkTone(r) : "idle"}
+                              title="Persiapan Cup"
+                              testid={`mds-cup-${r.order_number}`}
+                            />
                           </td>
-                          <td className="production-sheet-cell">
-                            <ProgressCell
-                              pct={r.percent_delivered_display ?? r.percent_delivered}
-                              tone={terkirimTone(r.percent_delivered_display ?? r.percent_delivered)}
-                              testid={`mds-terkirim-${r.order_number}`}
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={r.screen_qty != null && String(r.screen_qty).trim() !== "" ? screenMarkTone(r) : "idle"}
+                              title="Screener"
+                              testid={`mds-screen-${r.order_number}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={Number(r.print_qty_total) > 0 ? prodMarkTone(r) : "idle"}
+                              title="Produksi"
+                              testid={`mds-prod-${r.order_number}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={packMarkTone(r)}
+                              title={packingProgressText(r)}
+                              testid={`mds-packing-${r.order_number}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={loadMarkTone()}
+                              title="Loading tidak tersedia dari payload jadwal pengiriman"
+                              testid={`mds-load-${r.order_number}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={kirimMarkTone(r)}
                               title={`Terkirim ${formatIdQty(r.qty_delivered ?? 0)} / ${formatIdQty(r.qty_total ?? 0)}`}
-                              primaryLabel={formatIdQty(r.qty_delivered ?? 0)}
-                              contextLabel={`dari ${formatIdQty(r.qty_total ?? 0)} qty PO`}
+                              testid={`mds-terkirim-${r.order_number}`}
                             />
-                          </td>
-                          <td className="production-sheet-cell">
-                            <ProgressCell
-                              pct={r.percent_ready_to_ship_display ?? r.percent_ready_to_ship}
-                              tone="ready"
-                              testid={`mds-dapat-${r.order_number}`}
-                              title={`Dicetak operator ${formatIdQty(r.qty_printed_operator ?? 0)} / ${formatIdQty(r.print_qty_total ?? 0)}`}
-                              primaryLabel={formatIdQty(r.qty_printed_operator ?? 0)}
-                              contextLabel={`dari ${formatIdQty(r.print_qty_total ?? 0)} qty cetak`}
-                            />
-                          </td>
-                          <td className="production-sheet-cell" data-testid={`mds-opt-${r.order_number}`}>
-                            {(() => {
-                              const meta = optimizationStatusMeta(r);
-                              return (
-                                <span className={`mds-opt-badge is-${meta.code}`} title={meta.label}>
-                                  {meta.label}
-                                  {meta.code === "sudah_dioptimasi" && meta.routeId && canAccessRoutePage(hasPerm) ? (
-                                    <button
-                                      type="button"
-                                      className="mds-opt-link"
-                                      data-testid={`mds-lihat-rute-${r.order_number}`}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        persistScroll();
-                                        navigateToOptimasiRute(navigate, meta.routeId, {
-                                          from: `${listPathname}${listSearch}`,
-                                        });
-                                      }}
-                                    >
-                                      Lihat Rute
-                                    </button>
-                                  ) : null}
-                                </span>
-                              );
-                            })()}
                           </td>
                         </tr>
                       );
@@ -612,7 +695,7 @@ export default function MobileDeliverySchedulePage() {
                         <td
                           colSpan={MOBILE_DELIVERY_SCHEDULE_COLS.length}
                           className="production-sheet-empty mop-schedule-filter-empty"
-                          data-testid="mds-filter-empty"
+                          data-testid={rows.length === 0 ? "mds-empty" : "mds-filter-empty"}
                         >
                           Tidak ada jadwal pengiriman.
                         </td>
@@ -622,6 +705,7 @@ export default function MobileDeliverySchedulePage() {
                 </table>
               </div>
             )}
+            {showTable && !busy && !err ? <OpsQueueLegend /> : null}
           </>
         )}
       </main>
@@ -649,6 +733,22 @@ export default function MobileDeliverySchedulePage() {
               </button>
             </header>
             <div className="mop-ds-filter-fields">
+              <div className="mop-ops-quick mop-ops-quick-more" data-testid="mds-more-filters">
+                {OPS_MORE_FILTERS.map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    className={`mop-ops-chip mop-ops-chip--${f.key}${quick === f.key ? " is-active" : ""}`}
+                    data-testid={`mds-quick-${f.key}`}
+                    onClick={() => setQuick(f.key)}
+                  >
+                    {f.label}
+                    <span className="mop-ops-chip-count" data-testid={`mds-quick-count-${f.key}`}>
+                      {quickCounts[f.key] ?? 0}
+                    </span>
+                  </button>
+                ))}
+              </div>
               <label className="mop-ds-filter-field">
                 <span>Nama Customer</span>
                 <input type="text" value={draftFilters.customer} onChange={(e) => setDraft("customer", e.target.value)} placeholder="Cari customer" data-testid="mds-adv-customer" />

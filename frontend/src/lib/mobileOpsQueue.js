@@ -3,15 +3,24 @@
 import { formatIdQty } from "./productionScheduleQty";
 import { toDateKey, workDateKeys, isScheduledToday, statusOfRow } from "./productionScheduleFilters";
 import { dateKey } from "./deliverySchedule";
+import { sjItemLinesFromRow } from "./mobileDeliverySchedule";
 
 export const OPS_QUICK_FILTERS = [
+  { key: "semua", label: "Semua" },
   { key: "hari_ini", label: "Hari Ini" },
-  { key: "besok", label: "Besok" },
   { key: "terlambat", label: "Terlambat" },
+  { key: "besok", label: "Besok" },
   { key: "belum_dijadwalkan", label: "Belum Dijadwalkan" },
   { key: "minggu_ini", label: "Minggu Ini" },
   { key: "semua_aktif", label: "Semua Aktif" },
 ];
+
+export const OPS_TOOLBAR_FILTERS = OPS_QUICK_FILTERS.filter((f) => (
+  f.key === "semua" || f.key === "hari_ini" || f.key === "terlambat" || f.key === "besok"
+));
+export const OPS_MORE_FILTERS = OPS_QUICK_FILTERS.filter((f) => (
+  f.key === "belum_dijadwalkan" || f.key === "minggu_ini" || f.key === "semua_aktif"
+));
 
 function addDays(isoDay, days) {
   const d = new Date(`${isoDay}T12:00:00`);
@@ -44,8 +53,9 @@ export function productionQuickMatch(row, quickKey, today = new Date()) {
   const st = statusOfRow(row);
   const finished = st === "selesai" || st === "cancelled" || row?.cancelled || (row?.current_stage || 0) >= 14;
 
+  if (quickKey === "semua") return true;
   if (quickKey === "semua_aktif") return !finished;
-  if (finished && quickKey !== "semua_aktif") return false;
+  if (finished) return false;
 
   if (quickKey === "hari_ini") return isScheduledToday(row, today);
   if (quickKey === "besok") return keys.includes(tomorrow);
@@ -70,6 +80,7 @@ export function deliveryQuickMatch(row, quickKey, today = new Date()) {
   const status = String(row?.status || "");
   const finished = status === "terkirim" || String(row?.delivery_status || "").toLowerCase() === "terkirim";
 
+  if (quickKey === "semua") return true;
   if (quickKey === "semua_aktif") return !finished;
   if (finished) return false;
 
@@ -134,13 +145,22 @@ export function productionOpsBadge(row, today = new Date()) {
   const todayKey = opsTodayKey(today);
   const tomorrow = addDays(todayKey, 1);
   const keys = productionOpsDateKeys(row).slice().sort();
-  if (row?.urgent) return { key: "urgent", label: "URGENT", tone: "urgent" };
-  if (!keys.length) return { key: "unscheduled", label: "BELUM DIJADWALKAN", tone: "gray" };
-  const earliest = keys[0];
-  if (earliest < todayKey) return { key: "late", label: "TERLAMBAT", tone: "red" };
-  if (keys.includes(todayKey)) return { key: "today", label: "HARI INI", tone: "orange" };
-  if (keys.includes(tomorrow)) return { key: "tomorrow", label: "BESOK", tone: "yellow" };
-  return null;
+  const finished = statusOfRow(row) === "selesai" || row?.cancelled;
+  const dateBadge = (() => {
+    if (!keys.length) return { key: "unscheduled", label: "Belum Dijadwalkan", tone: "gray" };
+    const earliest = keys[0];
+    if (earliest < todayKey) return { key: "late", label: "Terlambat", tone: "red" };
+    if (keys.includes(todayKey)) return { key: "today", label: "Hari ini", tone: "blue" };
+    if (keys.includes(tomorrow)) return { key: "tomorrow", label: "Besok", tone: "blue" };
+    return null;
+  })();
+  if (finished) {
+    return { key: "done", label: "SELESAI", tone: "green", caption: "Selesai", captionTone: "green" };
+  }
+  if (row?.urgent) {
+    return { key: "urgent", label: "URGENT", tone: "urgent", caption: dateBadge?.label, captionTone: dateBadge?.tone };
+  }
+  return { key: "normal", label: "NORMAL", tone: "blue", caption: dateBadge?.label, captionTone: dateBadge?.tone };
 }
 
 export function deliveryOpsBadge(row, today = new Date()) {
@@ -148,14 +168,22 @@ export function deliveryOpsBadge(row, today = new Date()) {
   const tomorrow = addDays(todayKey, 1);
   const eff = dateKey(row?.effective_delivery_date);
   const status = String(row?.status || "");
-  if (status === "terlambat" || (eff && eff < todayKey && status !== "terkirim")) {
-    return { key: "late", label: "TERLAMBAT", tone: "red" };
+  const dateBadge = (() => {
+    if (status === "terlambat" || (eff && eff < todayKey && status !== "terkirim")) {
+      return { key: "late", label: "Terlambat", tone: "red" };
+    }
+    if (status === "hari_ini" || eff === todayKey) return { key: "today", label: "Hari ini", tone: "blue" };
+    if (eff === tomorrow) return { key: "tomorrow", label: "Besok", tone: "blue" };
+    if (status === "belum_dijadwalkan" || !eff) return { key: "unscheduled", label: "Belum Dijadwalkan", tone: "gray" };
+    return null;
+  })();
+  if (status === "terkirim") {
+    return { key: "done", label: "SELESAI", tone: "green", caption: "Selesai", captionTone: "green" };
   }
-  if (status === "hari_ini" || eff === todayKey) return { key: "today", label: "HARI INI", tone: "orange" };
-  if (eff === tomorrow) return { key: "tomorrow", label: "BESOK", tone: "yellow" };
-  if (status === "belum_dijadwalkan" || !eff) return { key: "unscheduled", label: "BELUM DIJADWALKAN", tone: "gray" };
-  if (status === "terkirim") return { key: "done", label: "TERKIRIM", tone: "green" };
-  return null;
+  if (row?.urgent === true) {
+    return { key: "urgent", label: "URGENT", tone: "urgent", caption: dateBadge?.label, captionTone: dateBadge?.tone };
+  }
+  return { key: "normal", label: "NORMAL", tone: "blue", caption: dateBadge?.label, captionTone: dateBadge?.tone };
 }
 
 export function qtyProgressText(done, target) {
@@ -184,4 +212,34 @@ export function packingProgressText(row) {
   const target = row?.qty_total ?? row?.total_quantity;
   if (done == null && target == null) return "—";
   return qtyProgressText(done ?? 0, target ?? 0);
+}
+
+export function matchesProductionOpsSearch(row, q) {
+  const s = String(q || "").trim().toLowerCase();
+  if (!s) return true;
+  const items = (row?.operators || []).map((op) => op?.line_name || "").join(" ");
+  const hay = `${row?.po_number || ""} ${row?.customer || ""} ${row?.outlet || ""} ${items}`.toLowerCase();
+  return hay.includes(s);
+}
+
+export function matchesDeliveryOpsSearch(row, q) {
+  const s = String(q || "").trim().toLowerCase();
+  if (!s) return true;
+  const items = sjItemLinesFromRow(row).map((ln) => ln?.name || "").join(" ");
+  const hay = [
+    row?.order_number,
+    row?.customer_name,
+    row?.latest_sj_number,
+    row?.sj_label,
+    items,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return hay.includes(s);
+}
+
+export function opsQuickFilterCounts(rows, matchFn, today = new Date()) {
+  const out = {};
+  for (const f of OPS_QUICK_FILTERS) {
+    out[f.key] = (rows || []).filter((r) => matchFn(r, f.key, today)).length;
+  }
+  return out;
 }

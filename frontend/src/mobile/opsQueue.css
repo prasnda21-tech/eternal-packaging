@@ -1,0 +1,814 @@
+/* Pixel-match visual tokens for /m/schedule and /m/delivery-schedule only.
+   Values sampled from the approved operational-queue mockup. */
+
+.mop-root--ops-wide {
+  --ops-bg: #f4f7fa;
+  --ops-surface: #ffffff;
+  --ops-navy: #0b2b42;
+  --ops-navy-deep: #062338;
+  --ops-navy-text: #12233d;
+  --ops-muted: #7b8da0;
+  --ops-po: #7a8796;
+  --ops-border: #d5dee6;
+  --ops-header-bg: #ffffff;
+  --ops-thead: #edf2f6;
+  --ops-chip-active: #1e4a63;
+  --ops-danger: #e23b42;
+  --ops-danger-bg: #ffe4e4;
+  --ops-danger-text: #c43b3b;
+  --ops-warning: #ff8318;
+  --ops-normal: #2b8dff;
+  --ops-normal-bg: #e7f2fe;
+  --ops-success: #2fac5d;
+  --ops-success-bg: #e3f6e8;
+  --ops-footer: #0b2b42;
+  --ops-radius: 14px;
+  --ops-radius-sm: 10px;
+  --mop-bg: var(--ops-bg);
+  background: var(--ops-bg);
+  color: var(--ops-navy-text);
+  font-family: Inter, "Segoe UI", sans-serif;
+}
+
+.mop-root--ops-wide .mop-shell,
+.mop-root--ops-wide .mop-shell--sidebar,
+.mop-root--ops-wide .mop-shell--ops-wide {
+  max-width: none !important;
+  width: 100%;
+  margin: 0;
+  background: var(--ops-bg);
+}
+
+.mop-root--ops-wide .mop-schedule-root {
+  width: 96%;
+  max-width: none;
+  margin: 0 auto;
+  background: var(--ops-bg);
+}
+
+.mop-root--ops-wide .mop-content.mop-schedule-page {
+  padding: 8px 0 12px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+/* ---- Header ---- */
+.mop-root--ops-wide .ops-queue-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 72px;
+  padding: 10px 4px 8px;
+  background: var(--ops-header-bg);
+  border-bottom: 1px solid var(--ops-border);
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .ops-queue-header .mop-topbar-menu {
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  background: #f1f5f8;
+  color: var(--ops-navy);
+  border-radius: 10px;
+}
+
+.mop-root--ops-wide .ops-qh-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 196px;
+}
+
+.mop-root--ops-wide .ops-qh-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--ops-navy);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.mop-root--ops-wide .ops-qh-brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.mop-root--ops-wide .ops-qh-brand-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--ops-navy);
+  line-height: 1.15;
+}
+
+.mop-root--ops-wide .ops-qh-brand-kicker {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ops-muted);
+}
+
+.mop-root--ops-wide .ops-qh-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--ops-border);
+  margin: 4px 0;
+}
+
+.mop-root--ops-wide .ops-qh-title-block {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mop-root--ops-wide .ops-qh-title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 800;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .ops-qh-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ops-muted);
+}
+
+.mop-root--ops-wide .ops-qh-clock {
+  text-align: right;
+  min-width: 168px;
+}
+
+.mop-root--ops-wide .ops-qh-date {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ops-muted);
+}
+
+.mop-root--ops-wide .ops-qh-time {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ops-navy-text);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.mop-root--ops-wide .ops-qh-online {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ops-muted);
+  vertical-align: 4px;
+}
+
+.mop-root--ops-wide .ops-qh-online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ops-success);
+}
+
+.mop-root--ops-wide .ops-qh-admin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 148px;
+}
+
+.mop-root--ops-wide .ops-qh-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--ops-navy);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.mop-root--ops-wide .ops-qh-admin-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ops-navy-text);
+  line-height: 1.15;
+}
+
+.mop-root--ops-wide .ops-qh-admin-role {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ops-muted);
+}
+
+/* ---- Role strip ---- */
+.mop-root--ops-wide .mop-ops-roles {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 10px 8px 10px 12px;
+  min-height: 86px;
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  overflow-x: auto;
+}
+
+.mop-root--ops-wide .mop-ops-role {
+  flex: 1 1 0;
+  min-width: 132px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 4px 4px;
+  background: transparent;
+  color: var(--ops-navy-text);
+  border: 0;
+  box-shadow: none;
+}
+
+.mop-root--ops-wide .mop-ops-role:not(:last-child)::after {
+  display: none;
+}
+
+.mop-root--ops-wide .mop-ops-role-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ops-navy);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mop-root--ops-wide .mop-ops-role-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.mop-root--ops-wide .mop-ops-role-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ops-navy-text);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.mop-root--ops-wide .mop-ops-role-count {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ops-navy-text);
+  line-height: 1.25;
+}
+
+.mop-root--ops-wide .mop-ops-role-count.is-pending {
+  color: var(--ops-muted);
+  font-weight: 700;
+}
+
+.mop-root--ops-wide .mop-ops-role-urgent {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ops-danger);
+  line-height: 1.2;
+}
+
+.mop-root--ops-wide .mop-ops-role-chevron {
+  margin-left: auto;
+  color: #c5d0da;
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.mop-root--ops-wide .mop-ops-role-aside {
+  flex: 0 0 148px;
+  margin-left: 8px;
+  padding: 8px 12px;
+  border-left: 1px solid var(--ops-border);
+  color: var(--ops-navy-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  display: flex;
+  align-items: center;
+}
+
+/* ---- Toolbar ---- */
+.mop-root--ops-wide .mop-schedule-toolbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 4px;
+  min-height: 40px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.mop-root--ops-wide .mop-ops-quick {
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 0;
+}
+
+.mop-root--ops-wide .mop-ops-chip {
+  flex: 0 0 auto;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 10px 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ops-navy-text);
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  border-radius: 999px;
+  box-shadow: none;
+}
+
+.mop-root--ops-wide .mop-ops-chip.is-active {
+  background: var(--ops-chip-active);
+  border-color: var(--ops-chip-active);
+  color: #fff;
+}
+
+.mop-root--ops-wide .mop-ops-chip--terlambat:not(.is-active) {
+  background: var(--ops-danger-bg);
+  border-color: #ffd0d0;
+  color: var(--ops-danger-text);
+}
+
+.mop-root--ops-wide .mop-ops-chip-count {
+  min-width: 1.5em;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 800;
+  background: #eef3f7;
+  color: var(--ops-muted);
+}
+
+.mop-root--ops-wide .mop-ops-chip.is-active .mop-ops-chip-count {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.mop-root--ops-wide .mop-ops-chip--terlambat:not(.is-active) .mop-ops-chip-count {
+  background: #fff;
+  color: var(--ops-danger-text);
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-cluster,
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-field,
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-btn {
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-cluster {
+  flex: 0 0 320px !important;
+  width: 320px !important;
+  min-width: 280px !important;
+  max-width: 380px !important;
+  height: 34px !important;
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-field {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--ops-border);
+  border-radius: 999px;
+  background: var(--ops-surface);
+  overflow: hidden;
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-btn {
+  order: -1;
+  width: 34px;
+  border: 0;
+  background: transparent;
+  color: var(--ops-muted);
+  box-shadow: none;
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-field input {
+  height: 34px !important;
+  min-height: 34px !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 13px;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .mop-btn-ghost,
+.mop-root--ops-wide .mop-schedule-toolbar .mop-btn-primary {
+  min-height: 34px;
+  height: 34px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  box-shadow: none;
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .mop-btn-ghost {
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .mop-schedule-toolbar .mop-btn-primary {
+  background: var(--ops-chip-active);
+  border: 1px solid var(--ops-chip-active);
+  color: #fff;
+}
+
+.mop-root--ops-wide .mop-schedule-count,
+.mop-root--ops-wide .mop-ops-toolbar-refresh {
+  display: none;
+}
+
+/* ---- Table ---- */
+.mop-root--ops-wide .mop-schedule-scroll,
+.mop-root--ops-wide .production-sheet-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overflow-x: auto;
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  box-shadow: none;
+}
+
+.mop-root--ops-wide .production-sheet-table {
+  --production-sheet-zoom: 1;
+  min-width: 1180px;
+  width: max(100%, 1180px);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.mop-root--ops-wide .production-sheet-header th,
+.mop-root--ops-wide .mop-ops-thead th {
+  background: var(--ops-thead) !important;
+  color: var(--ops-navy-text) !important;
+  border-bottom: 1px solid var(--ops-border) !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  padding: 8px 10px !important;
+  height: auto;
+}
+
+.mop-root--ops-wide .mop-ops-thead .mop-ops-status-group {
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 800;
+}
+
+.mop-root--ops-wide .mop-ops-thead .mop-ops-status-sub {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ops-muted);
+  padding: 4px 6px !important;
+}
+
+.mop-root--ops-wide .production-sheet-table tbody td {
+  padding: 7px 10px;
+  vertical-align: top;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid #eef2f6;
+  background: #fff;
+  color: var(--ops-navy-text);
+}
+
+.mop-schedule-root .production-sheet-table tbody td.prod-cell-today,
+.mop-schedule-root .production-sheet-table tbody tr:hover td.prod-cell-today,
+.mop-schedule-root .production-sheet-table tbody tr.hold td.prod-cell-today,
+.mop-root--ops-wide .production-sheet-table tbody td[style*="fef08a"] {
+  background-color: #fff !important;
+  color: inherit !important;
+}
+
+.mop-root--ops-wide .mop-ops-customer {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ops-navy-text);
+  line-height: 1.2;
+}
+
+.mop-root--ops-wide .mop-ops-po {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ops-po);
+  font-family: Inter, "Segoe UI", sans-serif;
+}
+
+.mop-root--ops-wide .mop-ops-qty-total {
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .mop-ops-item-line,
+.mop-root--ops-wide .mds-item-line {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .mds-item-line-prefix {
+  display: none;
+}
+
+.mop-root--ops-wide .mds-item-line-name,
+.mop-root--ops-wide .mop-ops-item-name {
+  overflow-wrap: anywhere;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.mop-root--ops-wide .mop-ops-item-qty,
+.mop-root--ops-wide .mds-item-line-qty {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .mop-ops-badge {
+  min-height: 20px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.mop-root--ops-wide .mop-ops-badge-urgent,
+.mop-root--ops-wide .mop-ops-badge-red {
+  background: #f7c9cc;
+  color: #d12b33;
+}
+
+.mop-root--ops-wide .mop-ops-badge-orange {
+  background: #f8c99a;
+  color: #d36a14;
+}
+
+.mop-root--ops-wide .mop-ops-badge-blue,
+.mop-root--ops-wide .mop-ops-badge-gray {
+  background: #cfe4fb;
+  color: #1f73d6;
+}
+
+.mop-root--ops-wide .mop-ops-badge-yellow {
+  background: #cfe4fb;
+  color: #1f73d6;
+}
+
+.mop-root--ops-wide .mop-ops-badge-green {
+  background: #c8e8ce;
+  color: #2a9a4a;
+}
+
+.mop-root--ops-wide .mop-ops-prio-caption {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mop-root--ops-wide .mop-ops-prio-caption.is-red { color: var(--ops-danger); }
+.mop-root--ops-wide .mop-ops-prio-caption.is-orange,
+.mop-root--ops-wide .mop-ops-prio-caption.is-yellow,
+.mop-root--ops-wide .mop-ops-prio-caption.is-blue { color: var(--ops-normal); }
+.mop-root--ops-wide .mop-ops-prio-caption.is-green { color: var(--ops-success); }
+.mop-root--ops-wide .mop-ops-prio-caption.is-gray { color: var(--ops-muted); }
+
+.mop-root--ops-wide .mop-ops-mark {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+}
+
+.mop-root--ops-wide .mop-ops-mark.is-done {
+  background: var(--ops-success);
+  color: #fff;
+}
+
+.mop-root--ops-wide .mop-ops-mark.is-pending {
+  background: var(--ops-warning);
+  color: #fff;
+}
+
+.mop-root--ops-wide .mop-ops-mark.is-idle {
+  background: transparent;
+  color: #b7c2cc;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.mop-root--ops-wide .mop-ds-filter-panel {
+  display: flex;
+  gap: 16px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid var(--ops-border);
+  border-radius: 10px;
+}
+
+/* ---- Legend + footer ---- */
+.mop-root--ops-wide .ops-queue-legend {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 16px;
+  background: #eef2f6;
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius);
+  flex: 0 0 auto;
+}
+
+.mop-root--ops-wide .ops-ql-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.mop-root--ops-wide .ops-ql-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ops-navy);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ops-border);
+  flex: 0 0 auto;
+}
+
+.mop-root--ops-wide .ops-ql-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .ops-ql-copy {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ops-muted);
+}
+
+.mop-root--ops-wide .ops-ql-keys {
+  display: flex;
+  gap: 16px;
+  flex: 1 1 280px;
+  justify-content: flex-end;
+}
+
+.mop-root--ops-wide .ops-ql-key {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.mop-root--ops-wide .ops-ql-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-top: 4px;
+  flex: 0 0 auto;
+}
+
+.mop-root--ops-wide .ops-ql-dot.is-urgent { background: var(--ops-danger); }
+.mop-root--ops-wide .ops-ql-dot.is-priority { background: var(--ops-warning); }
+.mop-root--ops-wide .ops-ql-dot.is-normal { background: var(--ops-normal); }
+.mop-root--ops-wide .ops-ql-dot.is-done { background: var(--ops-success); }
+
+.mop-root--ops-wide .ops-ql-key strong {
+  display: block;
+  font-size: 12px;
+  color: var(--ops-navy-text);
+}
+
+.mop-root--ops-wide .ops-ql-key span {
+  display: block;
+  font-size: 11px;
+  color: var(--ops-muted);
+  line-height: 1.3;
+}
+
+.mop-root--ops-wide .ops-queue-footer {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 56px;
+  margin: 8px -2% 0;
+  padding: 10px 4%;
+  background: var(--ops-footer);
+  color: #d5dee6;
+  font-size: 12px;
+}
+
+.mop-root--ops-wide .ops-qf-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #fff;
+}
+
+.mop-root--ops-wide .ops-qf-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.mop-root--ops-wide .ops-qf-tag {
+  flex: 1 1 auto;
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
+  padding-left: 16px;
+}
+
+.mop-root--ops-wide .ops-qf-meta {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #9fb0bd;
+}
+
+@media (max-width: 900px) {
+  .mop-root--ops-wide .ops-queue-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 0;
+    padding: 8px 4px;
+  }
+  .mop-root--ops-wide .ops-qh-clock,
+  .mop-root--ops-wide .ops-qh-admin,
+  .mop-root--ops-wide .ops-qh-divider,
+  .mop-root--ops-wide .mop-ops-role-aside,
+  .mop-root--ops-wide .ops-queue-legend,
+  .mop-root--ops-wide .ops-queue-footer {
+    display: none;
+  }
+  .mop-root--ops-wide .ops-qh-title {
+    font-size: 18px;
+  }
+  .mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-cluster {
+    flex: 1 1 160px !important;
+    width: auto !important;
+    min-width: 140px !important;
+  }
+  .mop-root--ops-wide .mop-schedule-scroll {
+    max-width: 100%;
+  }
+}
