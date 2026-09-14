@@ -449,7 +449,17 @@ async def validate_sales_order_availability(
 
     For revise, exclude_order_id removes that order's current outstanding from the
     denominator so the revision is compared against free stock + its own prior reservation.
+
+    V2 availability is authoritative only while physical_stock.enabled is true.
+    While OFF, this gate is a no-op so missing product_stock_state cannot reject
+    legitimate Accurate / new sales orders.
     """
+    from services.physical_stock_settings import get_physical_stock_settings
+
+    settings = await get_physical_stock_settings(db)
+    if not bool(settings.get("enabled")):
+        return
+
     # Build baseline outstanding excluding this order
     masters = await db.master_items.find({}, {"_id": 0, "id": 1, "accurate_item_id": 1}).to_list(10000)
     orders = await db.orders.find(
