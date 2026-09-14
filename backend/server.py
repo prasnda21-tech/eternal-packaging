@@ -10555,6 +10555,31 @@ async def master_item_opening_balance_post(
     return res
 
 
+@api_router.post("/master-items/{item_id}/opening-balance/correction")
+async def master_item_opening_balance_correction_post(
+    item_id: str,
+    payload: dict = Body(...),
+    user=Depends(current_user),
+):
+    """HOLDING_TEAM-only: append KOREKSI to set current physical buckets. Does not rewrite SALDO_AWAL."""
+    from services.product_stock_state import correct_opening_balance, require_holding_team
+    require_holding_team(user)
+    res = await correct_opening_balance(db, item_id, payload or {}, user=user)
+    await _write_audit(
+        "opening_balance.correction",
+        user,
+        target_email=f"item:{item_id}",
+        before=res.get("old_qty"),
+        after={
+            "new_qty": res.get("new_qty"),
+            "movement_id": (res.get("movement") or {}).get("id"),
+            "idempotent": res.get("idempotent"),
+        },
+        note=str((payload or {}).get("note") or (payload or {}).get("reason") or ""),
+    )
+    return res
+
+
 @api_router.get("/master-items/{item_id}/mutations")
 async def master_item_mutations_get(
     item_id: str,

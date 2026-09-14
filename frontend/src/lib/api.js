@@ -203,6 +203,7 @@ export const api = {
   masterItemDetail: (id) => client.get(`/master-items/${encodeURIComponent(id)}/detail`).then((r) => r.data),
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
+  correctOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance/correction`, payload).then((r) => r.data),
   listProductMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/mutations`, { params }).then((r) => r.data),
   getMutationDetail: (id, mutationId) => client.get(`/master-items/${encodeURIComponent(id)}/mutations/${encodeURIComponent(mutationId)}`).then((r) => r.data),
   ledgerAccounts: (params = {}) => client.get(`/ledger/accounts`, { params }).then((r) => r.data),
