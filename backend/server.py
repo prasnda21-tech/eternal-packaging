@@ -137,6 +137,20 @@ from services.current_stock_import import (
     build_stock_import_preview,
     validate_apply_rows as validate_stock_import_apply,
 )
+from services.stock_engine_v2 import (
+    STOCK_INSUFFICIENT_MSG,
+    apply_stock_opname,
+    build_current_stock_rows,
+    ensure_v2_physical_settings,
+    filter_sort_page_v2,
+    validate_sales_order_availability,
+)
+from services.stock_opname_import import (
+    apply_opname_import_batch,
+    build_opname_import_preview,
+    build_opname_template_xlsx,
+    filter_active_stock_rows,
+)
 from services.order_prediction_import import (
     COLLECTION as ORDER_PREDICTION_HISTORY_COLLECTION,
     PERM_IMPORT as ORDER_PREDICTION_IMPORT_PERM,
@@ -8338,6 +8352,7 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "updated_at": now,
     }
     from services.physical_stock_engine import attach_order_stock_snapshot
+    await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
     await db.orders.insert_one(new)
     # If we have a source PDF uploaded during preview, record it in db.files
@@ -9383,6 +9398,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     }
 
     from services.physical_stock_engine import attach_order_stock_snapshot
+    await validate_sales_order_availability(db, new_order.get("line_items") or [])
     await attach_order_stock_snapshot(db, new_order)
 
     try:
@@ -10599,25 +10615,19 @@ async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(cu
 class CurrentStockPatch(BaseModel):
     manual_current_qty: Optional[Any] = None
     manual_purchase_qty: Optional[Any] = None
+    # aliases kept for older clients
+    manual_current_qty_alias: Optional[Any] = None
 
 
 async def _load_stock_context():
-    masters = await db.master_items.find({}, {"_id": 0}).to_list(5000)
-    orders = await db.orders.find(
-        {"cancelled": {"$ne": True}}, STOCK_ORDER_PROJECTION,
-    ).to_list(5000)
-    manuals = await db[STOCK_MANUAL_COLLECTION].find({}, {"_id": 0}).to_list(5000)
-    receipts = await load_receipts(db)
-    meta = await load_sync_meta(db)
-    source = purchase_source_from_meta(meta)
-    rows = build_stock_rows(
-        masters, orders, manuals, receipts, purchase_source=source,
-    )
-    return rows, source, receipt_last_success_at(meta)
+    """Stock Engine V2 read model: physical ledger + outstanding SO (no manual purchase)."""
+    rows = await build_current_stock_rows(db)
+    return rows, "GOODS_RECEIPT", None
+
 
 
 def _purchase_source_label(source: str) -> str:
-    return "Accurate" if source == STOCK_PURCHASE_ACCURATE else "Manual"
+    return "Penerimaan Barang" if source in ("GOODS_RECEIPT", STOCK_PURCHASE_ACCURATE) else "Manual"
 
 
 def _stock_xlsx(rows: list) -> FastAPIResponse:
@@ -10629,9 +10639,8 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
     ws = wb.active
     ws.title = "Stock Saat Ini"
     headers = [
-        "Kode", "Nama Item", "Satuan", "Qty Saat Ini", "Pembelian Barang",
-        "Qty PO", "Qty Cetak Operator", "Stock Saat Ini", "Sumber Pembelian",
-        "Terakhir Update",
+        "Kode", "Nama Item", "Satuan", "Stock Fisik", "Belum Dicetak", "Sudah Dicetak",
+        "Outstanding SO", "Stock Saat Ini", "Terakhir Update",
     ]
     ws.append(headers)
     header_font = Font(bold=True, color="FFFFFF")
@@ -10651,12 +10660,11 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
             r.get("item_code") or "",
             r.get("item_name") or "",
             r.get("unit") or "",
-            r.get("manual_current_qty") if r.get("manual_current_qty") is not None else 0,
-            r.get("purchase_qty") if r.get("purchase_qty") is not None else 0,
-            r.get("qty_po") if r.get("qty_po") is not None else 0,
-            r.get("operator_print_qty") if r.get("operator_print_qty") is not None else 0,
+            r.get("physical_qty") if r.get("physical_qty") is not None else 0,
+            r.get("unprinted_qty") if r.get("unprinted_qty") is not None else 0,
+            r.get("printed_qty") if r.get("printed_qty") is not None else 0,
+            r.get("outstanding_so_qty") if r.get("outstanding_so_qty") is not None else 0,
             r.get("stock_current") if r.get("stock_current") is not None else 0,
-            src,
             updated,
         ])
     for col in range(4, 9):
@@ -10686,10 +10694,9 @@ async def current_stock_list(
     user=Depends(require_perm("current_stock.view")),
 ):
     rows, source, last_sync = await _load_stock_context()
-    payload = filter_stock_page(
+    payload = filter_sort_page_v2(
         rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
-        page=page, page_size=page_size, purchase_source=source,
-        last_receipt_sync_at=last_sync,
+        page=page, page_size=page_size,
     )
     payload["purchase_source"] = source
     payload["last_receipt_sync_at"] = last_sync
@@ -10705,21 +10712,11 @@ async def current_stock_export(
     user=Depends(require_perm("current_stock.export")),
 ):
     rows, _source, _last_sync = await _load_stock_context()
-    from services.current_stock import matches_search, stock_sign_filter, qty_num, SORT_KEYS
-    filtered = [
-        r for r in rows
-        if matches_search(r, q) and stock_sign_filter(qty_num(r.get("stock_current")), stock_filter)
-    ]
-    key = SORT_KEYS.get((sort_by or "name").strip().lower(), "item_name")
-    reverse = (sort_dir or "asc").strip().lower() == "desc"
-
-    def sort_val(r):
-        v = r.get(key)
-        if key == "item_name":
-            return str(v or "").lower()
-        return qty_num(v)
-
-    filtered.sort(key=sort_val, reverse=reverse)
+    payload = filter_sort_page_v2(
+        rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+        page=1, page_size=max(1, len(rows) or 1),
+    )
+    filtered = payload.get("items") or payload.get("rows") or []
     await _write_audit(
         "current_stock.export", user, target_email=None,
         before=None, after={"count": len(filtered), "stock_filter": stock_filter, "q": q},
@@ -10734,78 +10731,139 @@ async def current_stock_update(
     payload: CurrentStockPatch,
     user=Depends(require_perm("current_stock.update")),
 ):
-    """Save manual Qty Saat Ini and/or Pembelian Barang (fallback). Recompute stock."""
-    master = await db.master_items.find_one(
-        {"$or": [{"id": item_id}, {"accurate_item_id": str(item_id)}]},
-        {"_id": 0},
-    )
-    if not master:
-        raise HTTPException(404, "Master item tidak ditemukan")
-    source = purchase_source_from_meta(await load_sync_meta(db))
-    fields = {}
-    if payload.manual_current_qty is not None:
-        try:
-            fields["manual_current_qty"] = parse_manual_qty(payload.manual_current_qty, allow_negative=True)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-    if payload.manual_purchase_qty is not None:
-        if source == STOCK_PURCHASE_ACCURATE:
-            raise HTTPException(
-                409,
-                "Pembelian Barang memakai Penerimaan Barang Accurate. Sinkronkan di Pembelian → Penerimaan Barang.",
-            )
-        try:
-            fields["manual_purchase_qty"] = parse_manual_qty(payload.manual_purchase_qty)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-    if not fields:
-        raise HTTPException(400, "Tidak ada nilai yang diubah")
-    now = now_iso()
-    fields["updated_at"] = now
-    fields["updated_by"] = user.get("email")
-    fields["updated_by_name"] = user.get("name") or user.get("email")
-    existing = await db[STOCK_MANUAL_COLLECTION].find_one(
-        {"$or": [
-            {"master_item_id": master.get("id")},
-            {"accurate_item_id": master.get("accurate_item_id")},
-        ]},
-        {"_id": 0},
-    )
-    before = public_stock_manual(existing)
-    if existing:
-        await db[STOCK_MANUAL_COLLECTION].update_one(
-            {"id": existing["id"]},
-            {"$set": fields},
+    """Stock Engine V2: manual purchase removed. Opening balance / opname only via dedicated flows."""
+    if getattr(payload, "manual_purchase_qty", None) is not None or getattr(payload, "manual_purchase_qty", None) is not None:
+        raise HTTPException(
+            400,
+            "Pembelian Barang Manual dihapus. Stock bertambah hanya dari Penerimaan Barang resmi.",
         )
-        doc_id = existing["id"]
-    else:
-        doc_id = str(uuid.uuid4())
-        doc = {
-            "id": doc_id,
-            "master_item_id": master.get("id"),
-            "accurate_item_id": master.get("accurate_item_id"),
-            "manual_current_qty": 0,
-            "manual_purchase_qty": 0,
-            **fields,
-        }
-        await db[STOCK_MANUAL_COLLECTION].insert_one(doc)
-    fresh = await db[STOCK_MANUAL_COLLECTION].find_one({"id": doc_id}, {"_id": 0})
+    if getattr(payload, "manual_current_qty", None) is not None or getattr(payload, "manual_current_qty", None) is not None:
+        raise HTTPException(
+            400,
+            "Qty manual dihapus dari Stock Saat Ini V2. Gunakan Stock Opname.",
+        )
+    raise HTTPException(
+        400,
+        "Stock Saat Ini V2 tidak diedit manual di sini. "
+        "Gunakan Saldo Awal Stok Fisik atau Stock Opname.",
+    )
+
+
+class StockOpnamePayload(BaseModel):
+    master_item_id: str
+    counted_unprinted_qty: Any
+    counted_printed_qty: Any
+    note: Optional[str] = ""
+
+
+@api_router.post("/stock-opname")
+async def stock_opname_apply(
+    payload: StockOpnamePayload,
+    user=Depends(require_perm("current_stock.update")),
+):
+    result = await apply_stock_opname(
+        db,
+        master_item_id=payload.master_item_id,
+        counted_unprinted_qty=payload.counted_unprinted_qty,
+        counted_printed_qty=payload.counted_printed_qty,
+        note=payload.note or "",
+        user=user,
+    )
     await _write_audit(
-        "current_stock.update", user,
-        target_email=f"item:{master.get('accurate_item_id') or master.get('id')}",
-        before=before, after=public_stock_manual(fresh),
-        note="Update qty stock manual",
+        "stock_opname.apply",
+        user,
+        target_email=f"item:{payload.master_item_id}",
+        before=None,
+        after={
+            "master_item_id": payload.master_item_id,
+            "counted_unprinted_qty": payload.counted_unprinted_qty,
+            "counted_printed_qty": payload.counted_printed_qty,
+            "delta_total": result.get("delta_total"),
+        },
+        note=payload.note or "Stock Opname",
     )
-    rows, source, _last_sync = await _load_stock_context()
-    row = next(
-        (
-            r for r in rows
-            if r.get("master_item_id") == master.get("id")
-            or str(r.get("accurate_item_id") or "") == str(master.get("accurate_item_id") or "")
-        ),
-        None,
+    return result
+
+
+@api_router.get("/stock-opname/items")
+async def stock_opname_items(
+    q: str = "",
+    user=Depends(require_perm("current_stock.view")),
+):
+    rows, _source, _last = await _load_stock_context()
+    payload = filter_sort_page_v2(rows, q=q, page=1, page_size=200)
+    return payload
+
+
+@api_router.get("/stock-opname/export-template")
+async def stock_opname_export_template(
+    user=Depends(require_perm("current_stock.view")),
+):
+    rows, _source, _last = await _load_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
+    catalog = filter_active_stock_rows(rows, masters)
+    content = build_opname_template_xlsx(catalog)
+    filename = f"stock-opname-template-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return FastAPIResponse(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-    return {"item": row, "purchase_source": source}
+
+
+@api_router.post("/stock-opname/import/preview")
+async def stock_opname_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(require_perm("current_stock.update")),
+):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File kosong")
+    rows, _source, _last = await _load_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
+    catalog = filter_active_stock_rows(rows, masters)
+    preview = build_opname_import_preview(
+        data,
+        file.filename or "upload.xlsx",
+        stock_rows=catalog,
+    )
+    return preview
+
+
+class StockOpnameImportApply(BaseModel):
+    rows: List[dict]
+    filename: Optional[str] = "upload.xlsx"
+    note: Optional[str] = ""
+
+
+@api_router.post("/stock-opname/import/apply")
+async def stock_opname_import_apply(
+    payload: StockOpnameImportApply,
+    user=Depends(require_perm("current_stock.update")),
+):
+    result = await apply_opname_import_batch(
+        db,
+        preview_rows=payload.rows or [],
+        filename=payload.filename or "upload.xlsx",
+        user=user,
+        note=payload.note or "",
+    )
+    await _write_audit(
+        "stock_opname.import_apply",
+        user,
+        target_email=f"batch:{(result.get('batch') or {}).get('id')}",
+        before=None,
+        after={
+            "filename": payload.filename,
+            "success_count": result.get("success_count"),
+            "failure_count": result.get("failure_count"),
+            "skipped_count": result.get("skipped_count"),
+            "batch_id": (result.get("batch") or {}).get("id"),
+        },
+        note=payload.note or "Import Stock Opname Excel",
+    )
+    return result
+
 
 
 class CurrentStockImportApply(BaseModel):
@@ -12719,14 +12777,16 @@ async def seed():
     from services.sales_activity.evaluator import start_evaluator_loop
     start_evaluator_loop(db)
     for coll in (db.purchase_requests, db.purchase_orders, db.purchase_goods_receipts, db.purchase_invoices, db.purchase_payments):
-        try:
-            await coll.drop_index("idempotency_key_1")
-        except Exception:
-            pass
+        for idx_name in ("idempotency_key_1", "idempotency_key_partial_unique"):
+            try:
+                await coll.drop_index(idx_name)
+            except Exception:
+                pass
         await coll.create_index(
             "idempotency_key",
             unique=True,
             partialFilterExpression={"idempotency_key": {"$type": "string"}},
+            name="idempotency_key_partial_unique",
         )
     await db.hpp_cost_versions.create_index("id", unique=True)
     await db.hpp_cost_versions.create_index("version")
@@ -12748,6 +12808,16 @@ async def seed():
     await _general_journal_ensure_indexes(db)
     await _opening_balance_ensure_indexes(db)
     await ensure_chat_indexes(db)
+    try:
+        # Read-only probe — must not enable Stock V2 or rewrite app_settings on deploy.
+        v2_settings = await ensure_v2_physical_settings(db)
+        logger.info(
+            "Stock Engine V2 settings probe: enabled=%s out_trigger=%s",
+            bool(v2_settings.get("enabled")),
+            v2_settings.get("stock_out_trigger"),
+        )
+    except Exception as e:
+        logger.warning("Stock Engine V2 settings probe failed: %s", e)
     from services.notification_indexes import ensure_indexes as ensure_notification_indexes
     await ensure_notification_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable

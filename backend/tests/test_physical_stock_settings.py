@@ -23,6 +23,7 @@ from fastapi import HTTPException
 
 from services.physical_stock_settings import (
     SETTINGS_KEY,
+    default_settings,
     get_physical_stock_settings,
     update_physical_stock_settings,
     ALLOWED_STOCK_IN_TRIGGERS,
@@ -222,18 +223,25 @@ async def test_saving_creates_zero_stock_movements():
 
 
 @pytest.mark.anyio
-async def test_sales_delivery_trigger_rejected_as_unsupported():
-    """10b. sales_delivery trigger is rejected because create endpoint lacks stable client idempotency."""
+async def test_sales_delivery_trigger_allowed_for_explicit_v2_activation():
+    """10b. sales_delivery is allowed for explicit Stock V2 activation via settings PUT.
+
+    Default remains loading_confirmation + enabled=False; deploy/startup must not
+    write this profile. Ops may set sales_delivery intentionally for phase-2.
+    """
     db = MockDb()
     payload = {
-        "enabled": False,
+        "enabled": True,
         "stock_in_trigger": "goods_receipt",
         "stock_out_trigger": "sales_delivery",
     }
-    with pytest.raises(HTTPException) as exc_info:
-        await update_physical_stock_settings(db, payload)
-    assert exc_info.value.status_code == 400
-    assert "Trigger stock-out tidak valid" in exc_info.value.detail
+    result = await update_physical_stock_settings(db, payload)
+    assert result["enabled"] is True
+    assert result["stock_out_trigger"] == "sales_delivery"
+    # Defaults for empty/missing docs stay safe (OFF + loading_confirmation)
+    defaults = default_settings()
+    assert defaults["enabled"] is False
+    assert defaults["stock_out_trigger"] == "loading_confirmation"
 
 
 @pytest.mark.anyio

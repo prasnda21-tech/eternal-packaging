@@ -393,9 +393,9 @@ describe("purchasingMenuItems", () => {
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
       "Pesanan Pembelian",
+      "Penerimaan Barang",
       "Faktur Pembelian",
       "Pembayaran Pembelian",
-      "Penerimaan Barang",
     ]);
     expect(items.filter((item) => item.label === "Penerimaan Barang")).toHaveLength(1);
   });

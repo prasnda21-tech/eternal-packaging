@@ -27,6 +27,7 @@ ALLOWED_STOCK_OUT_TRIGGERS = frozenset({
     "loading_confirmation",
     "delivery_confirmed",
     "packing_completed",
+    "sales_delivery",
 })
 
 STOCK_IN_LABELS = {
@@ -38,6 +39,7 @@ STOCK_OUT_LABELS = {
     "loading_confirmation": "Loading Dikonfirmasi",
     "delivery_confirmed": "Pengiriman Dikonfirmasi",
     "packing_completed": "Packing Selesai",
+    "sales_delivery": "Surat Jalan / Pengiriman Pesanan",
 }
 
 
@@ -46,6 +48,9 @@ def now_iso() -> str:
 
 
 def default_settings() -> Dict[str, Any]:
+    # Default remains OFF. Stock Engine V2 is activated only by an explicit
+    # ops action (activate_v2_physical_settings / PUT physical-stock settings),
+    # never by deploy/startup alone.
     return {
         "key": SETTINGS_KEY,
         "enabled": False,

@@ -1,77 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, Download, Search, Upload, X } from "lucide-react";
+import { AlertCircle, Download, Search, X } from "lucide-react";
+import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
-import { isAccuratePurchaseSource, purchaseSourceLabel } from "../lib/currentStock";
-import ImportPreviewModal from "../components/ImportPreviewModal";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
-
-function parseInputQty(raw, { allowNegative = false } = {}) {
-  const t = String(raw ?? "").trim();
-  if (t === "") return { ok: false, error: "Qty wajib diisi" };
-  const n = Number(t.replace(",", "."));
-  if (!Number.isFinite(n) || Number.isNaN(n)) return { ok: false, error: "Qty harus angka" };
-  if (!allowNegative && n < 0) return { ok: false, error: "Qty tidak boleh negatif" };
-  return { ok: true, value: n };
-}
-
-function QtyCell({ value, disabled, testid, onSave, allowNegative = false }) {
-  const [draft, setDraft] = useState(value ?? 0);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  useEffect(() => { setDraft(value ?? 0); }, [value]);
-
-  const commit = async () => {
-    const parsed = parseInputQty(draft, { allowNegative });
-    if (!parsed.ok) {
-      setErr(parsed.error);
-      setDraft(value ?? 0);
-      return;
-    }
-    if (Number(parsed.value) === Number(value ?? 0)) {
-      setErr("");
-      return;
-    }
-    setBusy(true);
-    setErr("");
-    try {
-      await onSave(parsed.value);
-    } catch (ex) {
-      const det = ex.response?.data?.detail;
-      setErr(typeof det === "object" ? det.message : (det || "Gagal simpan"));
-      setDraft(value ?? 0);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (disabled) return <span className="mono">{fmtQty(value)}</span>;
-  return (
-    <span className="stock-qty-edit">
-      <input
-        type="number"
-        min={allowNegative ? undefined : "0"}
-        step="1"
-        value={draft}
-        disabled={busy}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-        data-testid={testid}
-        className="manual-input"
-      />
-      {err && <span className="stock-qty-err">{err}</span>}
-    </span>
-  );
-}
 
 export default function StockSaatIni() {
   const { hasPerm } = useAuth();
   const canUpdate = hasPerm("current_stock.update");
+  const canOpname = canUpdate;
   const canExport = hasPerm("current_stock.export");
-  const canImport = hasPerm("current_stock.import");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -82,7 +22,6 @@ export default function StockSaatIni() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const loadSeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q]);
@@ -129,25 +68,6 @@ export default function StockSaatIni() {
     setPage(1);
   };
 
-  const patchRow = async (item, fields) => {
-    if (searchPending || loading) return;
-    const id = item.master_item_id || item.accurate_item_id;
-    const r = await api.currentStockUpdate(id, fields);
-    const next = r.item;
-    setData((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        items: (prev.items || []).map((row) => (
-          row.master_item_id === next.master_item_id
-          || row.accurate_item_id === next.accurate_item_id
-            ? next
-            : row
-        )),
-      };
-    });
-  };
-
   const download = async () => {
     setExporting(true);
     try {
@@ -173,8 +93,6 @@ export default function StockSaatIni() {
 
   const items = data?.items || [];
   const pageCount = data?.page_count || 1;
-  const purchaseAccurate = isAccuratePurchaseSource(data?.purchase_source);
-  const sourceLabel = purchaseSourceLabel(data?.purchase_source);
   const tableBusy = searchPending || loading;
   const tableView = liveSearchTableView({
     pending: searchPending,
@@ -188,13 +106,13 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
-          <p className="subhead">(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator</p>
+          <p className="subhead">Stock Saat Ini = MAX(Fisik − Outstanding SO, 0). Belum Dicetak = MAX(Outstanding − Sudah Dicetak, 0). Cetak hanya pindah bucket — tidak memotong Available dua kali.</p>
         </div>
         <div className="stock-heading-actions">
-          {canImport && (
-            <button type="button" className="ghost" onClick={() => setImportOpen(true)} data-testid="stock-import-button">
-              <Upload size={14} /> Impor Stock
-            </button>
+          {canOpname && (
+            <Link className="ghost" to="/persediaan/stock-opname" data-testid="stock-opname-link">
+              Stock Opname
+            </Link>
           )}
           {canExport && (
             <button className="primary" onClick={download} disabled={exporting} data-testid="stock-export-button">
@@ -259,17 +177,14 @@ export default function StockSaatIni() {
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama Item</button>
               </th>
               <th className="col-fit">Satuan</th>
-              <th className="col-fit num">Qty Saat Ini</th>
               <th className="col-fit num">
-                Pembelian Barang
-                <span className="stock-src muted" data-testid="stock-purchase-source-header">{sourceLabel}</span>
+                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("physical_qty")}>Stock Fisik</button>
               </th>
               <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("qty_po")}>Qty PO</button>
+                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan / Outstanding</button>
               </th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("operator_print_qty")}>Qty Cetak Operator</button>
-              </th>
+              <th className="col-fit num">Belum Dicetak</th>
+              <th className="col-fit num">Sudah Dicetak</th>
               <th className="col-fit num">
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("stock_current")}>Stock Saat Ini</button>
               </th>
@@ -294,36 +209,11 @@ export default function StockSaatIni() {
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.unit || "—"}</td>
-                <td className="col-fit num">
-                  <QtyCell
-                    value={it.manual_current_qty}
-                    disabled={!canUpdate || tableBusy}
-                    allowNegative
-                    testid={`stock-manual-${it.accurate_item_id}`}
-                    onSave={(v) => patchRow(it, { manual_current_qty: v })}
-                  />
-                </td>
-                <td className="col-fit num">
-                  {purchaseAccurate ? (
-                    <span className="stock-purchase-cell">
-                      <span className="mono" data-testid={`stock-purchase-${it.accurate_item_id}`}>{fmtQty(it.purchase_qty)}</span>
-                      <span className="stock-src muted" title="Berdasarkan Penerimaan Barang">Accurate</span>
-                    </span>
-                  ) : (
-                    <span className="stock-purchase-cell">
-                      <QtyCell
-                        value={it.purchase_qty}
-                        disabled={!canUpdate || tableBusy}
-                        testid={`stock-purchase-${it.accurate_item_id}`}
-                        onSave={(v) => patchRow(it, { manual_purchase_qty: v })}
-                      />
-                      <span className="stock-src muted">Manual</span>
-                    </span>
-                  )}
-                </td>
-                <td className="col-fit num mono">{fmtQty(it.qty_po)}</td>
-                <td className="col-fit num mono">{fmtQty(it.operator_print_qty)}</td>
-                <td className={"col-fit num mono" + (Number(it.stock_current) < 0 ? " stock-neg-val" : "")} data-testid={`stock-current-${it.accurate_item_id}`}>
+                <td className="col-fit num mono" data-testid={`stock-physical-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.physical_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-outstanding-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.outstanding_so_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-unprinted-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.unprinted_qty)}</td>
+                <td className="col-fit num mono" data-testid={`stock-printed-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
+                <td className={"col-fit num mono" + (Number(it.stock_current) < 0 ? " stock-neg-val" : "")} data-testid={`stock-current-${it.accurate_item_id || it.master_item_id}`}>
                   {fmtQty(it.stock_current)}
                 </td>
                 <td className="col-fit small nowrap" data-testid={`stock-updated-${it.accurate_item_id}`}>
@@ -349,29 +239,6 @@ export default function StockSaatIni() {
           <button className="ghost sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
-
-      <ImportPreviewModal
-        open={importOpen}
-        title="Impor Stock Saat Ini"
-        testid="stock-import-modal"
-        applyLabel="Sesuaikan Stock Terpilih"
-        confirmText="Sesuaikan stock untuk baris terpilih? Nilai file menjadi Stock Saat Ini (bukan +/-)."
-        columns={[
-          { key: "item_name", label: "Item" },
-          { key: "item_code", label: "Kode" },
-          { key: "stock_system", label: "Stock System", num: true, render: (r) => (r.stock_system == null ? "—" : fmtQty(r.stock_system)) },
-          { key: "stock_file", label: "Stock File", num: true, render: (r) => (r.stock_file == null ? "—" : fmtQty(r.stock_file)) },
-          { key: "delta", label: "Selisih", num: true, render: (r) => (r.delta == null ? "—" : fmtQty(r.delta)) },
-          { key: "status", label: "Status", render: (r) => r.status + (r.reason ? ` — ${r.reason}` : "") },
-        ]}
-        onClose={() => setImportOpen(false)}
-        onPreviewFile={(file) => api.currentStockImportPreview(file)}
-        onApply={async (selected) => {
-          const result = await api.currentStockImportApply(selected);
-          await load();
-          return result;
-        }}
-      />
     </div>
   );
 }

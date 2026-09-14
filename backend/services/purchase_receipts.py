@@ -20,6 +20,7 @@ from services.current_stock import qty_num
 from services.purchase_common import (
     PREFIX_GOODS_RECEIPT,
     actor_snapshot,
+    stamp_create,
     get_named_lock,
     next_dated_seq,
     now_iso as purchase_now_iso,
@@ -47,6 +48,7 @@ def is_accurate_receipt_source(doc: Optional[dict]) -> bool:
 
 def receipt_doc_from_normalized(norm: Dict[str, Any], *, now: Optional[str] = None) -> Dict[str, Any]:
     ts = now or now_iso()
+    accurate_actor = {"id": "accurate", "name": "Accurate", "role": "system", "email": ""}
     return {
         "accurate_receipt_id": str(norm["accurate_receipt_id"]),
         "receipt_number": norm.get("receipt_number") or "",
@@ -56,7 +58,10 @@ def receipt_doc_from_normalized(norm: Dict[str, Any], *, now: Optional[str] = No
         "lines": list(norm.get("lines") or []),
         "source": RECEIPT_SOURCE_ACCURATE,
         "last_synced_at": ts,
+        "created_at": ts,
         "updated_at": ts,
+        "created_by": accurate_actor,
+        "updated_by": accurate_actor,
     }
 
 
@@ -121,6 +126,8 @@ def upsert_receipts(existing: List[dict], incoming: List[dict], *, complete: boo
         merged = dict(prev)
         merged.update(doc)
         merged["created_at"] = prev.get("created_at") or ts
+        merged["created_by"] = prev.get("created_by") or doc.get("created_by")
+        merged["updated_by"] = doc.get("updated_by") or prev.get("updated_by")
         by_id[rid] = merged
         if same:
             unchanged += 1
@@ -136,6 +143,7 @@ def upsert_receipts(existing: List[dict], incoming: List[dict], *, complete: boo
                 prev["valid"] = False
                 prev["updated_at"] = ts
                 prev["last_synced_at"] = ts
+                prev["updated_by"] = {"id": "accurate", "name": "Accurate", "role": "system", "email": ""}
                 by_id[rid] = prev
                 deactivated += 1
     return {
@@ -309,6 +317,12 @@ def public_receipt(rec: dict, masters_by_aid: Optional[Dict[str, dict]] = None) 
         "last_synced_at": last_synced,
         "created_at": rec.get("created_at"),
         "updated_at": rec.get("updated_at"),
+        "created_by": rec.get("created_by"),
+        "updated_by": rec.get("updated_by"),
+        "cancelled": bool(rec.get("cancelled")),
+        "cancelled_at": rec.get("cancelled_at"),
+        "cancelled_by": rec.get("cancelled_by"),
+        "cancel_reason": rec.get("cancel_reason") or "",
         "lines": lines,
     }
 
@@ -362,13 +376,16 @@ def _normalize_manual_lines(raw_lines: Any) -> List[dict]:
     for idx, raw in enumerate(raw_lines):
         if not isinstance(raw, dict):
             raise HTTPException(400, f"Baris penerimaan ke-{idx + 1} tidak valid.")
-        item_name = str(raw.get("item_name") or raw.get("name") or "").strip()
         master_item_id = str(raw.get("master_item_id") or "").strip()
+        if not master_item_id:
+            raise HTTPException(
+                400,
+                f"Baris ke-{idx + 1}: pilih item dari Master Item. Nama bebas tidak didukung.",
+            )
+        item_name = str(raw.get("item_name") or raw.get("name") or "").strip()
         accurate_item_id = str(raw.get("accurate_item_id") or "").strip()
-        if not item_name and not master_item_id and not accurate_item_id:
-            raise HTTPException(400, f"Item baris ke-{idx + 1} wajib diisi.")
         if not item_name:
-            item_name = master_item_id or accurate_item_id
+            raise HTTPException(400, f"Nama item baris ke-{idx + 1} wajib diisi.")
         qty = parse_qty(raw.get("received_qty", raw.get("quantity")), f"Qty diterima '{item_name}'")
         line_id = str(raw.get("line_id") or raw.get("accurate_line_id") or "").strip() or str(uuid.uuid4())
         lines.append({
@@ -477,9 +494,7 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
             "purchase_order_id": po_id or (goods_receipt or {}).get("purchase_order_id") or "",
             "po_number": po_number,
             "goods_receipt_id": (goods_receipt or {}).get("id") or "",
-            "created_at": ts,
-            "updated_at": ts,
-            "created_by": actor_snapshot(user),
+            **stamp_create(user),
         }
         if idem:
             doc["idempotency_key"] = idem

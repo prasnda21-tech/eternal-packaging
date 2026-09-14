@@ -70,7 +70,7 @@ async def attach_po_stock_snapshot(db, po_doc: Dict[str, Any]) -> Dict[str, Any]
     snapshot = {
         "enabled": bool(settings.get("enabled")),
         "stock_in_trigger": str(settings.get("stock_in_trigger") or "goods_receipt"),
-        "stock_out_trigger": str(settings.get("stock_out_trigger") or "loading_confirmation"),
+        "stock_out_trigger": str(settings.get("stock_out_trigger") or "sales_delivery"),
         "snapshotted_at": now_iso(),
     }
     po_doc["physical_stock_snapshot"] = snapshot
@@ -83,7 +83,7 @@ async def attach_order_stock_snapshot(db, order_doc: Dict[str, Any]) -> Dict[str
     snapshot = {
         "enabled": bool(settings.get("enabled")),
         "stock_in_trigger": str(settings.get("stock_in_trigger") or "goods_receipt"),
-        "stock_out_trigger": str(settings.get("stock_out_trigger") or "loading_confirmation"),
+        "stock_out_trigger": str(settings.get("stock_out_trigger") or "sales_delivery"),
         "snapshotted_at": now_iso(),
     }
     order_doc["physical_stock_snapshot"] = snapshot
