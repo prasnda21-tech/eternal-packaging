@@ -402,7 +402,7 @@ async def test_case_13_14_no_driver_or_proof_side_effect():
 
 
 @pytest.mark.anyio
-async def test_case_15_16_packing_prerequisite_enforced():
+async def test_case_15_16_sales_delivery_before_packing_loading_prerequisite_enforced():
     po_num = f"PO-{uuid.uuid4().hex[:6].upper()}"
     po = await create_helper_po(
         po_num,
@@ -419,16 +419,25 @@ async def test_case_15_16_packing_prerequisite_enforced():
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            res_err = await client.post("/api/sales-deliveries", json={
+            # Preparing Sales Delivery is allowed before all requested items are packed.
+            res_delivery = await client.post("/api/sales-deliveries", json={
                 "po_id": po["id"],
                 "line_items": [{"line_idx": 0, "qty": 200}],
             })
-            assert res_err.status_code == 400
-            assert "packing" in res_err.text
+            assert res_delivery.status_code == 200, res_delivery.text
+            delivery_id = res_delivery.json()["delivery"]["id"]
 
-            res_ok = await client.post("/api/sales-deliveries", json={
-                "po_id": po["id"],
-                "line_items": [{"line_idx": 0, "qty": 100}],
+            # Physical readiness is enforced when Loading is confirmed.
+            res_err = await client.post(f"/api/orders/{po['id']}/loading-confirm", json={
+                "surat_jalan_id": delivery_id,
+                "lines": [{"line_idx": 0, "qty": 200}],
+            })
+            assert res_err.status_code == 400
+            assert "packing" in res_err.text.lower()
+
+            res_ok = await client.post(f"/api/orders/{po['id']}/loading-confirm", json={
+                "surat_jalan_id": delivery_id,
+                "lines": [{"line_idx": 0, "qty": 100}],
             })
             assert res_ok.status_code == 200
     finally:
