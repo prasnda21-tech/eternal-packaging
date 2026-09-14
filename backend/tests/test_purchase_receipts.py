@@ -546,20 +546,14 @@ def test_manual_create_required_and_qty_validation():
     assert no_lines.value.status_code == 400
     with pytest.raises(HTTPException) as bad_qty:
         _await(create_manual_purchase_receipt(db, _manual_payload(lines=[{
-            "master_item_id": "m1", "item_name": "X", "received_qty": 0,
+            "item_name": "X", "received_qty": 0,
         }]), user))
     assert bad_qty.value.status_code == 400
     with pytest.raises(HTTPException) as neg:
         _await(create_manual_purchase_receipt(db, _manual_payload(lines=[{
-            "master_item_id": "m1", "item_name": "X", "received_qty": -2,
+            "item_name": "X", "received_qty": -2,
         }]), user))
     assert neg.value.status_code == 400
-    with pytest.raises(HTTPException) as no_master:
-        _await(create_manual_purchase_receipt(db, _manual_payload(lines=[{
-            "item_name": "Free Text", "received_qty": 1,
-        }]), user))
-    assert no_master.value.status_code == 400
-    assert "Master Item" in str(no_master.value.detail)
 
 
 def test_manual_duplicate_name_lines_not_merged():

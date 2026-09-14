@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import HTTPException, Request
-from fastapi.responses import Response as FastAPIResponse
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
 
 
@@ -14,13 +13,11 @@ class LoosePayload(BaseModel):
 
 def register_purchase_routes(api_router, *, get_db, current_user, require_perm, require_any_perm, Depends):
     from services.purchase_requests import (
-        cancel_purchase_request,
         create_purchase_request,
         get_purchase_request,
         list_purchase_requests,
     )
     from services.purchase_orders import (
-        cancel_purchase_order,
         create_purchase_order,
         get_purchase_order,
         get_request_po_preview,
@@ -28,31 +25,21 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
     )
     from services.purchase_goods_receipts import (
         allocate_accurate_receipt_line,
-        cancel_purchase_goods_receipt,
         create_purchase_goods_receipt,
         get_po_receipt_preview,
-        get_purchase_goods_receipt,
         list_purchase_goods_receipts,
     )
     from services.purchase_invoices import (
-        cancel_purchase_invoice,
         create_purchase_invoice,
         get_po_invoice_preview,
         get_purchase_invoice,
-        get_receipt_invoice_preview,
         list_purchase_invoices,
     )
     from services.purchase_payments import (
-        cancel_purchase_payment,
-        confirm_purchase_payment,
-        create_and_submit_purchase_payment,
         create_purchase_payment,
         get_purchase_payment,
-        list_payment_submit_targets,
         list_purchase_payments,
-        submit_purchase_payment,
     )
-    from services.purchase_common import actor_user_id
     from services.hpp_valuation import (
         get_hpp_settings,
         query_cost_boundary,
@@ -61,9 +48,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
     )
     from services.master_items import list_master_items
 
-    def _dump(payload: Optional[LoosePayload]) -> dict:
-        if payload is None:
-            return {}
+    def _dump(payload: LoosePayload) -> dict:
         if hasattr(payload, "model_dump"):
             return payload.model_dump()
         return payload.dict()
@@ -94,17 +79,6 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_requests.create")
         doc = await create_purchase_request(get_db(), _dump(payload), user)
         return {"request": doc, "message": "Permintaan berhasil dibuat"}
-
-    @api_router.post("/purchase-requests/{request_id}/cancel")
-    async def cancel_purchase_request_endpoint(
-        request_id: str,
-        payload: Optional[LoosePayload] = None,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(user, "purchase_requests.create")
-        data = _dump(payload) if payload is not None else {}
-        doc = await cancel_purchase_request(get_db(), request_id, user, reason=str(data.get("reason") or ""))
-        return {"request": doc, "message": "Permintaan dibatalkan"}
 
     @api_router.get("/purchase-orders")
     async def list_purchase_orders_endpoint(
@@ -138,17 +112,6 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         doc = await create_purchase_order(get_db(), _dump(payload), user)
         return {"order": doc, "message": "Pesanan Pembelian berhasil dibuat"}
 
-    @api_router.post("/purchase-orders/{po_id}/cancel")
-    async def cancel_purchase_order_endpoint(
-        po_id: str,
-        payload: Optional[LoosePayload] = None,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(user, "purchase_orders.create")
-        data = _dump(payload) if payload is not None else {}
-        doc = await cancel_purchase_order(get_db(), po_id, user, reason=str(data.get("reason") or ""))
-        return {"order": doc, "message": "Pesanan Pembelian dibatalkan"}
-
     @api_router.get("/purchase-goods-receipts")
     async def list_po_goods_receipts_endpoint(
         q: Optional[str] = None,
@@ -164,29 +127,11 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_receipts.view", "purchase_receipts.receive", "purchase_orders.view")
         return await get_po_receipt_preview(get_db(), po_id)
 
-    @api_router.get("/purchase-goods-receipts/{receipt_id}")
-    async def get_po_goods_receipt_endpoint(receipt_id: str, user=Depends(current_user)):
-        await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view", "purchase_invoices.create")
-        return {"receipt": await get_purchase_goods_receipt(get_db(), receipt_id)}
-
     @api_router.post("/purchase-goods-receipts")
     async def create_po_goods_receipt_endpoint(payload: LoosePayload, user=Depends(current_user)):
         await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
         doc = await create_purchase_goods_receipt(get_db(), _dump(payload), user)
         return {"receipt": doc, "message": "Penerimaan terhadap Pesanan Pembelian tercatat"}
-
-    @api_router.post("/purchase-goods-receipts/{receipt_id}/cancel")
-    async def cancel_po_goods_receipt_endpoint(
-        receipt_id: str,
-        payload: Optional[LoosePayload] = None,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(user, "purchase_receipts.receive", "purchase_receipts.sync")
-        data = _dump(payload) if payload is not None else {}
-        doc = await cancel_purchase_goods_receipt(
-            get_db(), receipt_id, user, reason=str(data.get("reason") or "")
-        )
-        return {"receipt": doc, "message": "Penerimaan Barang dibatalkan"}
 
     @api_router.post("/purchase-receipts/allocate")
     async def allocate_accurate_receipt_endpoint(payload: LoosePayload, user=Depends(current_user)):
@@ -210,11 +155,6 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_invoices.view", "purchase_invoices.create", "purchase_orders.view")
         return await get_po_invoice_preview(get_db(), po_id)
 
-    @api_router.get("/purchase-invoices/from-receipt/{receipt_id}/preview")
-    async def purchase_invoice_from_receipt_preview_endpoint(receipt_id: str, user=Depends(current_user)):
-        await require_any_perm(user, "purchase_invoices.view", "purchase_invoices.create", "purchase_receipts.view")
-        return await get_receipt_invoice_preview(get_db(), receipt_id)
-
     @api_router.get("/purchase-invoices/{invoice_id}")
     async def get_purchase_invoice_endpoint(invoice_id: str, user=Depends(current_user)):
         await require_any_perm(user, "purchase_invoices.view", "purchase_payments.create", "purchase_payments.view")
@@ -226,41 +166,16 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         doc = await create_purchase_invoice(get_db(), _dump(payload), user)
         return {"invoice": doc, "message": "Faktur Pembelian berhasil dibuat"}
 
-    @api_router.post("/purchase-invoices/{invoice_id}/cancel")
-    async def cancel_purchase_invoice_endpoint(
-        invoice_id: str,
-        payload: Optional[LoosePayload] = None,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(user, "purchase_invoices.create")
-        data = _dump(payload) if payload is not None else {}
-        doc = await cancel_purchase_invoice(get_db(), invoice_id, user, reason=str(data.get("reason") or ""))
-        return {"invoice": doc, "message": "Faktur Pembelian dibatalkan"}
-
     @api_router.get("/purchase-payments")
     async def list_purchase_payments_endpoint(
         q: Optional[str] = None,
         purchase_invoice_id: Optional[str] = None,
         purchase_order_id: Optional[str] = None,
-        status: Optional[str] = None,
-        status_filter: Optional[str] = None,
         user=Depends(current_user),
     ):
         await require_any_perm(user, "purchase_payments.view", "purchase_invoices.view")
-        rows = await list_purchase_payments(
-            get_db(),
-            q=q,
-            purchase_invoice_id=purchase_invoice_id,
-            purchase_order_id=purchase_order_id,
-            status_filter=status_filter or status,
-        )
+        rows = await list_purchase_payments(get_db(), q=q, purchase_invoice_id=purchase_invoice_id, purchase_order_id=purchase_order_id)
         return {"payments": rows, "count": len(rows)}
-
-    @api_router.get("/purchase-payments/submit-targets")
-    async def purchase_payment_submit_targets(q: Optional[str] = None, user=Depends(current_user)):
-        await require_any_perm(user, "purchase_payments.view", "purchase_payments.create", "purchase_invoices.view")
-        rows = await list_payment_submit_targets(get_db(), q=q or "", exclude_user_id=actor_user_id(user))
-        return {"users": rows, "count": len(rows)}
 
     @api_router.get("/purchase-payments/{payment_id}")
     async def get_purchase_payment_endpoint(payment_id: str, user=Depends(current_user)):
@@ -272,143 +187,6 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_payments.create")
         doc = await create_purchase_payment(get_db(), _dump(payload), user)
         return {"payment": doc, "message": "Pembayaran Pembelian berhasil dicatat"}
-
-    @api_router.post("/purchase-payments/ajukan")
-    async def ajukan_purchase_payment_endpoint(payload: LoosePayload, user=Depends(current_user)):
-        """Create + submit in one step (DIAJUKAN). Does not settle invoice finances."""
-        await require_any_perm(user, "purchase_payments.create")
-        result = await create_and_submit_purchase_payment(get_db(), _dump(payload), user)
-        return {
-            "payment": result.get("payment"),
-            "chat_room_id": result.get("chat_room_id"),
-            "message_id": result.get("message_id"),
-            "reused": result.get("reused", False),
-            "message": "Pengajuan pembayaran sudah ada" if result.get("reused") else "Pengajuan pembayaran terkirim",
-        }
-
-    @api_router.post("/purchase-payments/{payment_id}/cancel")
-    async def cancel_purchase_payment_endpoint(
-        payment_id: str,
-        payload: Optional[LoosePayload] = None,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(user, "purchase_payments.create")
-        data = _dump(payload) if payload is not None else {}
-        doc = await cancel_purchase_payment(get_db(), payment_id, user=user, reason=str(data.get("reason") or ""))
-        return {"payment": doc, "message": "Pembayaran Pembelian dibatalkan"}
-
-    @api_router.post("/purchase-payments/{payment_id}/submit")
-    async def purchase_payment_submit_endpoint(
-        payment_id: str,
-        payload: LoosePayload,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(user, "purchase_payments.create", "purchase_payments.view")
-        result = await submit_purchase_payment(get_db(), payment_id, _dump(payload), user)
-        return {
-            "payment": result.get("payment"),
-            "chat_room_id": result.get("chat_room_id"),
-            "message_id": result.get("message_id"),
-            "reused": result.get("reused", False),
-            "message": "Pembayaran sudah diajukan" if result.get("reused") else "Pengajuan pembayaran terkirim",
-        }
-
-    @api_router.post("/purchase-payments/{payment_id}/confirm-paid")
-    async def purchase_payment_confirm_paid_endpoint(payment_id: str, user=Depends(current_user)):
-        await require_any_perm(user, "purchase_payments.create", "purchase_payments.view")
-        result = await confirm_purchase_payment(get_db(), payment_id, user)
-        return {
-            "payment": result.get("payment"),
-            "invoice": result.get("invoice"),
-            "reused": result.get("reused", False),
-            "message": "Pembayaran sudah dikonfirmasi" if result.get("reused") else "Pembayaran dikonfirmasi dibayar",
-        }
-
-
-    # --- Purchase documents (multi-file lampiran per transaksi) ---
-    from services import purchase_documents as purchase_docs
-
-    @api_router.get("/purchase-documents")
-    async def list_purchase_documents_endpoint(
-        entity_type: str,
-        entity_id: str,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(
-            user,
-            "purchase_orders.view",
-            "purchase_receipts.view",
-            "purchase_invoices.view",
-            "purchase_payments.view",
-        )
-        rows = await purchase_docs.list_documents(get_db(), entity_type=entity_type, entity_id=entity_id)
-        return {"documents": rows, "count": len(rows)}
-
-    @api_router.post("/purchase-documents", status_code=201)
-    async def upload_purchase_document_endpoint(request: Request, user=Depends(current_user)):
-        await require_any_perm(
-            user,
-            "purchase_orders.create",
-            "purchase_receipts.receive",
-            "purchase_invoices.create",
-            "purchase_payments.create",
-        )
-        form = await request.form()
-        entity_type = str(form.get("entity_type") or "")
-        entity_id = str(form.get("entity_id") or "")
-        document_name = str(form.get("document_name") or "")
-        file = form.get("file")
-        if file is None or not hasattr(file, "read"):
-            from fastapi import HTTPException
-            raise HTTPException(400, "File wajib diunggah")
-        data = await file.read()
-        meta = await purchase_docs.store_document_bytes(
-            get_db(),
-            entity_type=entity_type,
-            entity_id=entity_id,
-            user=user,
-            filename=getattr(file, "filename", None) or "dokumen",
-            data=data,
-            content_type=getattr(file, "content_type", "") or "",
-            document_name=document_name,
-        )
-        return {"document": meta, "message": "Dokumen diunggah"}
-
-    @api_router.get("/purchase-documents/{document_id}/content")
-    async def get_purchase_document_content_endpoint(
-        document_id: str,
-        download: bool = False,
-        user=Depends(current_user),
-    ):
-        await require_any_perm(
-            user,
-            "purchase_orders.view",
-            "purchase_receipts.view",
-            "purchase_invoices.view",
-            "purchase_payments.view",
-        )
-        data, ct, filename, _rec = await purchase_docs.load_document_bytes(get_db(), document_id)
-        return FastAPIResponse(
-            content=data,
-            media_type=ct,
-            headers={
-                "Content-Disposition": purchase_docs.content_disposition(filename, download=download),
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
-    @api_router.delete("/purchase-documents/{document_id}")
-    async def delete_purchase_document_endpoint(document_id: str, user=Depends(current_user)):
-        await require_any_perm(
-            user,
-            "purchase_orders.create",
-            "purchase_receipts.receive",
-            "purchase_invoices.create",
-            "purchase_payments.create",
-        )
-        meta = await purchase_docs.soft_delete_document(get_db(), document_id, user)
-        return {"document": meta, "message": "Dokumen dihapus"}
 
     @api_router.get("/settings/hpp")
     async def get_hpp_settings_endpoint(user=Depends(current_user)):

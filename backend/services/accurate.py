@@ -3479,10 +3479,6 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
                 "deadline": deadline,
                 **sales_payload,
             }
-            from services.physical_stock_engine import attach_order_stock_snapshot
-            from services.stock_engine_v2 import validate_sales_order_availability
-            await validate_sales_order_availability(db, new.get("line_items") or [])
-            await attach_order_stock_snapshot(db, new)
             await db.orders.insert_one(new)
             imported += 1
             imported_pos.append(po_number)

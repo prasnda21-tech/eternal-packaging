@@ -26,15 +26,13 @@ describe("stage label Pengiriman", () => {
 });
 
 describe("stock import UI", () => {
-  test("Stock page links to Stock Opname import workflow", () => {
+  test("Stock page has import button and modal", () => {
     const src = fs.readFileSync(path.join(__dirname, "../pages/StockSaatIni.jsx"), "utf8");
-    const opname = fs.readFileSync(path.join(__dirname, "../pages/StockOpname.jsx"), "utf8");
-    expect(src).toMatch(/stock-opname-link/);
-    expect(src).toMatch(/\/persediaan\/stock-opname/);
-    expect(opname).toMatch(/stock-opname-import-button/);
-    expect(opname).toMatch(/stock-opname-import-preview/);
-    expect(opname).toMatch(/stockOpnameImportPreview/);
-    expect(opname).toMatch(/stockOpnameImportApply/);
+    expect(src).toMatch(/stock-import-button/);
+    expect(src).toMatch(/Impor Stock/);
+    expect(src).toMatch(/stock-import-modal/);
+    expect(src).toMatch(/Sesuaikan Stock Terpilih/);
+    expect(src).toMatch(/current_stock\.import/);
   });
 
   test("checkbox helpers select only selectable", () => {

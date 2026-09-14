@@ -9,7 +9,7 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/const canCreate = hasPerm\("purchase_receipts\.receive"\)/);
     expect(pageSrc).toMatch(/view === "list" && canCreate &&/);
     expect(pageSrc).toMatch(/data-testid="btn-buat-penerimaan"/);
-    expect(pageSrc).toMatch(/Penerimaan Langsung/);
+    expect(pageSrc).toMatch(/Buat Penerimaan/);
     expect(pageSrc).not.toMatch(/const canCreate = hasPerm\("purchase_receipts\.receive"\) \|\| hasPerm\("purchase_receipts\.sync"\)/);
   });
 
@@ -38,7 +38,7 @@ describe("Penerimaan Barang manual create", () => {
 
   test("supplier selection uses existing purchase supplier field", () => {
     expect(pageSrc).toMatch(/data-testid="penerimaan-supplier"/);
-    expect(pageSrc).toMatch(/data-testid="penerimaan-direct-stock-gap"/);
+    expect(pageSrc).toMatch(/readOnly=\{Boolean\(recvPoId\)\}/);
   });
 
   test("item add and qty inputs with stable line identity", () => {
@@ -53,8 +53,7 @@ describe("Penerimaan Barang manual create", () => {
   test("multiple lines preserved and duplicate names not merged", () => {
     expect(pageSrc).toMatch(/setLines\(\(p\) => \[\.\.\.p, emptyLine\(\)\]\)/);
     expect(pageSrc).toMatch(/lines\.map\(\(l, idx\) =>/);
-    // Manual create payload preserves line order; must not collapse by item_name.
-    expect(pageSrc).not.toMatch(/reduce\(\([\s\S]{0,80}item_name/);
+    expect(pageSrc).not.toMatch(/reduce\(\([\s\S]*item_name/);
   });
 
   test("successful submit uses backend POST with loading guard", () => {
@@ -64,7 +63,7 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/Menyimpan…/);
     expect(pageSrc).toMatch(/data-testid="save-penerimaan"/);
     expect(pageSrc).toMatch(/setOk\(`Penerimaan \$\{num\} tersimpan`\)/);
-    expect(pageSrc).toMatch(/await loadHistory\(\)/);
+    expect(pageSrc).toMatch(/await load\(\)/);
   });
 
   test("error state and cancel", () => {
@@ -73,7 +72,6 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/data-testid="penerimaan-form-cancel"/);
     expect(pageSrc).toMatch(/data-testid="btn-cancel-penerimaan"/);
     expect(pageSrc).toMatch(/Batal/);
-    expect(pageSrc).toMatch(/Coba Lagi/);
   });
 
   test("existing sync, export, search, pagination, row detail unchanged", () => {
@@ -84,15 +82,13 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/useDebouncedLiveSearch/);
     expect(pageSrc).toMatch(/data-testid="penerimaan-page-size"/);
     expect(pageSrc).toMatch(/data-testid="penerimaan-pager"/);
-    expect(pageSrc).toMatch(/purchaseRowInteractionProps/);
+    expect(pageSrc).toMatch(/data-testid=\{`penerimaan-toggle-\$\{it\.accurate_receipt_id\}`\}/);
     expect(pageSrc).toMatch(/data-testid=\{`penerimaan-detail-\$\{it\.accurate_receipt_id\}`\}/);
     expect(pageSrc).toMatch(/po-linked-receipts/);
-    expect(pageSrc).toMatch(/penerimaan-po-detail/);
     expect(pageSrc).toMatch(/save-po-receipt/);
-    expect(pageSrc).not.toMatch(/PurchaseRowMenu/);
   });
 
-  test("toolbar order places Penerimaan Manual before Accurate sync and export", () => {
+  test("toolbar order places Buat Penerimaan before Accurate sync and export", () => {
     const buat = pageSrc.indexOf("btn-buat-penerimaan");
     const sync = pageSrc.indexOf("penerimaan-sync-button");
     const exp = pageSrc.indexOf("penerimaan-export-button");
@@ -101,15 +97,8 @@ describe("Penerimaan Barang manual create", () => {
     expect(exp).toBeGreaterThan(sync);
   });
 
-  test("Accurate sync is secondary (Lainnya menu), receive PO is primary tab", () => {
-    expect(pageSrc).toMatch(/penerimaan-more-button/);
-    expect(pageSrc).toMatch(/tab-penerimaan-po/);
-    expect(pageSrc).toMatch(/tab-riwayat-penerimaan/);
-    expect(pageSrc).toMatch(/Simpan Penerimaan/);
-  });
-
   test("manual rows do not fake Accurate last sync", () => {
-    expect(pageSrc).toMatch(/isManual \? "Sumber: Manual" : "Sumber: Accurate"/);
+    expect(pageSrc).toMatch(/isManual \? "—" :/);
     expect(pageSrc).toMatch(/Sumber: Manual/);
   });
 
@@ -119,26 +108,12 @@ describe("Penerimaan Barang manual create", () => {
     expect(apiSrc).toMatch(/purchaseReceiptsExport:/);
   });
 
-  test("history table headers match 8 body columns and full-width layout", () => {
-    expect(pageSrc).toMatch(/purchase-table-history/);
-    expect(pageSrc).toMatch(/>No Penerimaan</);
-    expect(pageSrc).toMatch(/>Supplier \/ PO</);
-    expect(pageSrc).toMatch(/>Total Qty</);
-    expect(pageSrc).not.toMatch(/>Jumlah Item</);
-    expect(pageSrc).toMatch(/colSpan=\{6\}/);
-    expect(pageSrc).toMatch(/is-toolbar/);
-    expect(pageSrc).not.toMatch(/po-receipts-table/);
-  });
-
-  test("PO relation and direct receipt stock gap messaging", () => {
-    expect(pageSrc).toMatch(/data-testid="tab-penerimaan-po"/);
+  test("PO relation reuses existing preview line identity when selected", () => {
+    expect(pageSrc).toMatch(/penerimaan-po-selector/);
     expect(pageSrc).toMatch(/purchase_order_line_id/);
     expect(pageSrc).toMatch(/data-testid="penerimaan-manual-stock-hint"/);
-    expect(pageSrc).toMatch(/data-testid="penerimaan-direct-stock-gap"/);
-    expect(pageSrc).toMatch(/Catat penerimaan barang tanpa mengacu pada PO/);
+    expect(pageSrc).toMatch(/tidak mengubah stok/);
     expect(pageSrc).toMatch(/remaining_receivable_qty/);
     expect(pageSrc).toMatch(/cumulative_received_qty/);
-    expect(pageSrc).toMatch(/Terima Sekarang/);
-    expect(pageSrc).not.toMatch(/Qty Diterima Sekarang/);
   });
 });
