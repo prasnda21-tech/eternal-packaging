@@ -1,7 +1,7 @@
 import { lazy } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Protected as AuthProtected, PublicOnly as AuthPublicOnly } from "./components/AppBootScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
-import { loginPathForLocation, postLoginPath } from "./lib/mobileAuthRedirect";
 import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import MobileOrdersPage from "./mobile/MobileOrdersPage";
@@ -84,20 +84,12 @@ const PHYSICAL_STOCK_SETTINGS_PERMS = ["current_stock.view", "current_stock.upda
 const SETTINGS_HUB_PERMS = [...SETTINGS_PERMS, "current_stock.view", "current_stock.update"];
 const PhysicalStockSettingsRoute = Settings;
 
-function Protected({ children }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-  if (loading) return <div className="loading">Memuat...</div>;
-  if (!user) return <Navigate to={loginPathForLocation(location.pathname, location.search)} replace />;
-  return children;
+function Protected(props) {
+  return <AuthProtected {...props} />;
 }
 
-function PublicOnly({ children }) {
-  const { user, loading } = useAuth();
-  const [params] = useSearchParams();
-  if (loading) return <div className="loading">Memuat...</div>;
-  if (user) return <Navigate to={postLoginPath(params.get("next"))} replace />;
-  return children;
+function PublicOnly(props) {
+  return <AuthPublicOnly {...props} />;
 }
 
 function PermGate({ anyOf, alsoAnyOf, children }) {

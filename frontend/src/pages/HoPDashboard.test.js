@@ -35,6 +35,7 @@ describe("Dashboard presentation", () => {
 describe("Dashboard auth-state contracts", () => {
   const src = fs.readFileSync(path.join(__dirname, "../pages/HoPDashboard.jsx"), "utf8");
   const appSrc = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+  const bootSrc = fs.readFileSync(path.join(__dirname, "../components/AppBootScreen.jsx"), "utf8");
   const authSrc = fs.readFileSync(path.join(__dirname, "../lib/auth.jsx"), "utf8");
   const shellSrc = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
 
@@ -56,8 +57,8 @@ describe("Dashboard auth-state contracts", () => {
   });
 
   test("TEST 3 — unauthenticated keeps existing login redirect", () => {
-    expect(appSrc).toMatch(/if \(loading\) return <div className="loading">Memuat\.\.\.<\/div>/);
-    expect(appSrc).toMatch(/if \(!user\) return <Navigate to=\{loginPathForLocation\(location\.pathname, location\.search\)\} replace \/>/);
+    expect(bootSrc).toMatch(/if \(loading\) return <AppBootScreen \/>/);
+    expect(bootSrc).toMatch(/if \(!user\) return <Navigate to=\{loginPathForLocation\(location\.pathname, location\.search\)\} replace \/>/);
     expect(src).toMatch(/if \(pageView === "unauthenticated"\) return null/);
     expect(src).not.toMatch(/Silakan masuk terlebih dahulu/);
   });
