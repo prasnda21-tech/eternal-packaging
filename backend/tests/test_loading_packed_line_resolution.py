@@ -22,6 +22,7 @@ from quantity_rules import (
     packing_line_breakdown,
     packing_shortfall_for_sj_match,
     qty_packed,
+    sj_qty_for_line,
     validate_loading_match_confirmation,
 )
 
@@ -273,3 +274,126 @@ def test_name_is_never_used_as_identity():
     assert available_for_sj_loading_line(o, SJ_ID, 0) == 0
     built = build_sj_loading_lines(o, SJ_ID)
     assert built == []
+
+
+def _assert_ready(o, sid=SJ_ID, line=0, avail=1000):
+    assert packed_qty_for_line(o, line) == avail
+    assert available_for_sj_loading_line(o, sid, line) == avail
+    assert packing_shortfall_for_sj_match(o, sid) is None
+    assert validate_loading_match_confirmation(o, sid) is None
+    st = loading_verification_status(o, sid)
+    assert st.get("code") != "packing_insufficient"
+    assert "tersedia 0" not in str(st.get("reason") or "")
+
+
+def test_current_format_line_id_and_line_idx_ready():
+    _assert_ready(_po())
+
+
+def test_legacy_packing_line_id_only_ready():
+    _assert_ready(_po(packing_lines=[{"line_id": "LA", "packed_qty": 1000}]))
+
+
+def test_legacy_packing_line_idx_only_ready():
+    _assert_ready(_po(packing_lines=[{"line_idx": 0, "packed_qty": 1000}]))
+
+
+def test_legacy_packing_stale_line_idx_line_id_wins():
+    """Packing row line_id is canonical; stale/1-based line_idx must not steal qty."""
+    o = _po(packing_lines=[{"line_idx": 1, "line_id": "LA", "packed_qty": 1000}])
+    assert match_po_line_idx(o, {"line_idx": 1, "line_id": "LA"}) == (0, None)
+    assert packed_qty_for_line(o, 0) == 1000
+    assert packed_qty_for_line(o, 1) == 0
+    _assert_ready(o)
+
+
+def test_sj_missing_line_idx_does_not_collapse_to_line_0():
+    o = _po(sj_lines=[
+        {"line_id": "LB", "qty": 1000, "name": "Other Cup"},
+        {"line_id": "LA", "qty": 1000, "name": FROSTED},
+    ])
+    assert match_po_line_idx(o, {"line_id": "LB", "qty": 1000}) == (1, None)
+    assert sj_qty_for_line(o, SJ_ID, 0) == 1000
+    assert sj_qty_for_line(o, SJ_ID, 1) == 1000
+    built = {ln["line_idx"]: ln["qty"] for ln in build_sj_loading_lines(o, SJ_ID)}
+    assert built[0] == 1000
+    assert built[1] == 1000
+
+
+def test_ambiguous_legacy_identity_blocks_safely():
+    o = _po(sj_lines=[{"accurate_item_id": "same", "qty": 1000}])
+    o["line_items"][0]["accurate_item_id"] = "same"
+    o["line_items"][1]["accurate_item_id"] = "same"
+    o["line_items"][1]["production_process"] = "print"
+    assert match_po_line_idx(o, {"accurate_item_id": "same", "qty": 1000})[0] is None
+    assert build_sj_loading_lines(o, SJ_ID) == []
+    assert available_for_sj_loading_line(o, SJ_ID, 0) == 0
+    assert validate_loading_match_confirmation(o, SJ_ID)
+
+
+def test_production_symptom_file_stale_idx_uses_selected_shipment_identity():
+    """Legacy file.lines keep raw/stale line_idx; shipment keeps unique line_id.
+
+    Before this fix: Loading summary (shipment + line_id) saw 1000 while
+    shortfall (file + raw line_idx) saw 0 on the same-name unpacked line.
+    After: both paths use the selected shipment identity.
+    """
+    o = _po(
+        line_b_name=FROSTED,
+        line_b_process="print",
+        packed_a=1000,
+        packed_b=0,
+        sj_lines=[
+            {"line_idx": 0, "line_id": "LA", "qty": 1000, "name": FROSTED},
+        ],
+    )
+    o["surat_jalan_files"][0]["lines"] = [{"line_idx": 1, "qty": 1000, "name": FROSTED}]
+    o["surat_jalan_files"][0]["total_qty"] = 1000
+    o["shipments"][0]["total_qty"] = 1000
+    assert available_for_sj_loading_line(o, SJ_ID, 0) == 1000
+    assert available_for_sj_loading_line(o, SJ_ID, 1) == 0
+    assert packing_shortfall_for_sj_match(o, SJ_ID) is None
+    assert validate_loading_match_confirmation(o, SJ_ID) is None
+    st = loading_verification_status(o, SJ_ID)
+    assert st.get("code") != "packing_insufficient"
+
+
+def test_summary_and_shortfall_agree_on_selected_sj():
+    o = _po()
+    avail = available_for_sj_loading_line(o, SJ_ID, 0)
+    short = packing_shortfall_for_sj_match(o, SJ_ID)
+    assert avail == 1000
+    assert short is None
+    later = {
+        "id": "sj-later",
+        "number": "SJ/2026/09/08/000007",
+        "sales_delivery_id": "sj-later",
+        "total_qty": 500,
+        "lines": [{"line_idx": 0, "line_id": "LA", "qty": 500}],
+    }
+    o["shipments"].append(later)
+    o["surat_jalan_files"].append({
+        "id": "sj-later",
+        "shipment_id": "sj-later",
+        "sj_number": "SJ/2026/09/08/000007",
+        "total_qty": 500,
+        "lines": [{"line_idx": 0, "line_id": "LA", "qty": 500}],
+    })
+    assert available_for_sj_loading_line(o, SJ_ID, 0) == 1000
+    assert available_for_sj_loading_line(o, "sj-later", 0) == 500
+    assert packing_shortfall_for_sj_match(o, SJ_ID) is None
+    later_status = loading_verification_status(o, "sj-later")
+    assert later_status.get("surat_jalan_id") == "sj-later"
+
+
+def test_legacy_loading_info_still_blocks_physical_remaining():
+    o = _po(sj_a=1000, sj_b=0)
+    o["line_items"] = [o["line_items"][0]]
+    o["packing_info"] = {"qty_packed": 1000, "lines": [{"line_idx": 0, "line_id": "LA", "packed_qty": 1000}]}
+    o["surat_jalan_files"][0]["lines"] = [{"line_idx": 0, "line_id": "LA", "qty": 1000}]
+    o["shipments"][0]["lines"] = [{"line_idx": 0, "line_id": "LA", "qty": 1000}]
+    o["loading_info"] = {"lines": [{"line_idx": 0, "loaded_qty": 1000}]}
+    assert packed_qty_for_line(o, 0) == 1000
+    assert available_for_sj_loading_line(o, SJ_ID, 0) == 0
+    msg = packing_shortfall_for_sj_match(o, SJ_ID)
+    assert msg and "tersedia 0" in msg

@@ -221,26 +221,28 @@ def _po_line_identity_keys(li: Optional[dict]) -> list:
 
 
 def qty_packed_for_line(order: dict, line_idx: int) -> int:
-    """Packed qty satu line. Legacy tanpa packing_info.lines → 0 (jangan asumsi)."""
+    """Packed qty satu line. Legacy tanpa packing_info.lines → 0 (jangan asumsi).
+
+    Packing rows use the same identity hierarchy as SJ/Loading
+    (``match_po_line_idx``): unique line_id, then accurate_item_id, then
+    explicit line_idx. A stale packing ``line_idx`` must not win over a
+    unique ``line_id``. Ambiguous matches stay 0.
+    """
     lines = packing_lines_stored(order)
     if lines is None:
         return 0
     idx = int(line_idx)
+    hits = []
     for it in lines:
-        if _safe_int(it.get("line_idx"), default=-1) == idx:
-            return max(0, _safe_int(it.get("packed_qty")))
-    lis = order.get("line_items") or []
-    if 0 <= idx < len(lis):
-        want = _po_line_identity_keys(lis[idx])
-        hits = []
-        for it in lines:
-            if not isinstance(it, dict):
-                continue
-            got = str(it.get("line_id") or "").strip()
-            if got and got in want:
-                hits.append(it)
-        if len(hits) == 1:
-            return max(0, _safe_int(hits[0].get("packed_qty")))
+        if not isinstance(it, dict):
+            continue
+        resolved, _err = match_po_line_idx(order, it)
+        if resolved is None:
+            continue
+        if int(resolved) == idx:
+            hits.append(it)
+    if len(hits) == 1:
+        return max(0, _safe_int(hits[0].get("packed_qty")))
     return 0
 
 
@@ -1091,21 +1093,40 @@ def has_surat_jalan_file(order: dict) -> bool:
 
 
 def sj_lines_stored(order: dict, surat_jalan_id: str) -> list:
-    """Get exact item lines from a specific Surat Jalan."""
-    entry = find_sj_file(order, surat_jalan_id)
-    if not entry or not isinstance(entry, dict):
-        return []
-    lines = entry.get("lines")
-    if isinstance(lines, list) and lines:
-        return [l for l in lines if isinstance(l, dict)]
+    """Exact item lines for a specific selected Surat Jalan.
+
+    Loading summary and readiness/shortfall must read the same collection.
+    Prefer shipment / sales-delivery lines (current allocation + identity),
+    then live file metadata. File-only lines are used when the shipment has
+    no line breakdown.
+    """
     want = str(surat_jalan_id or "").strip()
+    if not want:
+        return []
+    entry = find_sj_file(order, want)
+    target_ids = {want}
+    if isinstance(entry, dict):
+        for k in ("id", "shipment_id", "sales_delivery_id", "sj_number", "number"):
+            v = str(entry.get(k) or "").strip()
+            if v:
+                target_ids.add(v)
     for sh in shipments_stored(order):
         if not isinstance(sh, dict):
             continue
-        if str(sh.get("id") or "").strip() == want or str(sh.get("number") or "").strip() == want or str(sh.get("sales_delivery_id") or "").strip() == want:
+        aliases = {
+            str(sh.get("id") or "").strip(),
+            str(sh.get("number") or "").strip(),
+            str(sh.get("sales_delivery_id") or "").strip(),
+            str(sh.get("file_id") or "").strip(),
+        }
+        if target_ids & {a for a in aliases if a}:
             sh_lines = sh.get("lines")
             if isinstance(sh_lines, list) and sh_lines:
                 return [l for l in sh_lines if isinstance(l, dict)]
+    if isinstance(entry, dict):
+        lines = entry.get("lines")
+        if isinstance(lines, list) and lines:
+            return [l for l in lines if isinstance(l, dict)]
     return []
 
 
@@ -2392,8 +2413,8 @@ def packed_available_for_delivery_batch(order: dict, shipment: Optional[dict] = 
         for ln in lines:
             if not isinstance(ln, dict):
                 continue
-            idx = _safe_int(ln.get("line_idx"), default=-1)
-            if idx < 0:
+            idx, _err = match_po_line_idx(order, ln)
+            if idx is None:
                 continue
             need = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
             line_avail = max(
@@ -2431,8 +2452,8 @@ def loaded_qty_for_delivery_batch(order: dict, shipment: Optional[dict] = None) 
         for ln in lines:
             if not isinstance(ln, dict):
                 continue
-            idx = _safe_int(ln.get("line_idx"), default=-1)
-            if idx < 0:
+            idx, _err = match_po_line_idx(order, ln)
+            if idx is None:
                 continue
             total += loaded_qty_for_sj_line(order, sid, idx)
         return total
@@ -2486,8 +2507,8 @@ def delivery_batch_line_readiness(order: dict, shipment: Optional[dict] = None) 
         for ln in lines:
             if not isinstance(ln, dict):
                 continue
-            idx = _safe_int(ln.get("line_idx"), default=-1)
-            if idx < 0:
+            idx, _err = match_po_line_idx(order, ln)
+            if idx is None:
                 continue
             required = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
             if required <= 0:

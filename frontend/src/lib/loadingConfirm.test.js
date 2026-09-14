@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus } from "./loadingConfirm";
 import { parseSjQty } from "./suratJalan";
 
 describe("Loading confirm helpers", () => {
@@ -318,5 +318,97 @@ describe("Loading confirm helpers", () => {
         { name: "14 oz Inject Datar Frosted Klir", accurate_item_id: "same" },
       ],
     }, { accurate_item_id: "same", qty: 1000 })).toBeNull();
+  });
+
+  test("legacy packing stale line_idx loses to unique line_id", () => {
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "Other", quantity: 1000, production_process: "non_print", line_id: "LB" },
+      ],
+      packing_info: { lines: [{ line_idx: 1, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 0, line_id: "LA", qty: 1000 },
+          { line_idx: 1, line_id: "LB", qty: 1000 },
+        ],
+      }],
+    }, "sj1");
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].available).toBe(1000);
+    expect(lines[1].packed).toBe(0);
+    expect(loadingVerificationStatus({
+      line_items: lines.map((ln, i) => ({
+        name: ln.name,
+        quantity: ln.qty_po,
+        production_process: ln.production_process,
+        line_id: i === 0 ? "LA" : "LB",
+      })),
+      packing_info: { lines: [{ line_idx: 1, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 0, line_id: "LA", qty: 1000 },
+          { line_idx: 1, line_id: "LB", qty: 1000 },
+        ],
+      }],
+    }, "sj1").code).not.toBe("packing_insufficient");
+  });
+
+  test("production symptom: selected shipment line_id not file stale line_idx", () => {
+    const order = {
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }, { line_idx: 1, line_id: "LB", packed_qty: 0 }] },
+      shipments: [{
+        id: "sj1",
+        number: "SJ/2026/09/08/000006",
+        lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }],
+      }],
+      surat_jalan_files: [{
+        id: "sj1",
+        sj_number: "SJ/2026/09/08/000006",
+        lines: [{ line_idx: 1, qty: 1000, name: "14 oz Inject Datar Frosted Klir" }],
+      }],
+    };
+    const lines = loadingPoLines(order, "sj1");
+    expect(lines[0].available).toBe(1000);
+    expect(lines[1].available).toBe(0);
+    expect(lines.reduce((s, r) => s + r.available, 0)).toBe(1000);
+    expect(loadingVerificationStatus(order, "sj1").code).not.toBe("packing_insufficient");
+  });
+
+  test("legacy loading_info reduces frontend remaining like backend shortfall", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+      loading_info: { lines: [{ line_idx: 0, loaded_qty: 1000 }] },
+    }, "sj1");
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].available).toBe(0);
+  });
+
+  test("frontend and backend agreement fixture: current format ready", () => {
+    const order = {
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "Other Cup", quantity: 1000, production_process: "non_print", line_id: "LB" },
+      ],
+      packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }] },
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 0, line_id: "LA", qty: 1000 },
+          { line_idx: 1, line_id: "LB", qty: 1000 },
+        ],
+      }],
+    };
+    const lines = loadingPoLines(order, "sj1");
+    expect(lines[0].available).toBe(1000);
+    expect(loadingVerificationStatus(order, "sj1").code).toBe("ready_to_verify");
   });
 });
