@@ -7,10 +7,16 @@ import {
   scopedOpsKey,
   writeJsonSession,
 } from "./mobileOpsSession";
+import {
+  clearAllMobileTaskListRetention,
+  readMobileTaskListRetention,
+  writeMobileTaskListRetention,
+} from "./mobileTaskListRetention";
 
 describe("mobileOpsSession user scoping", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    clearAllMobileTaskListRetention();
   });
 
   test("scopedOpsKey appends user id", () => {
@@ -41,5 +47,24 @@ describe("mobileOpsSession user scoping", () => {
     expect(sessionStorage.getItem(scopedOpsKey(MOBILE_DELIVERY_FILTER_KEY, "u-1"))).toBeNull();
     expect(sessionStorage.getItem(scopedOpsKey(MOBILE_PROD_FILTER_KEY, "u-1"))).toBeNull();
     clearSessionKey("noop");
+  });
+
+  test("logout also drops in-memory task list snapshots", () => {
+    const user = { id: "u-1", name: "Ada" };
+    writeMobileTaskListRetention({
+      user,
+      division: "terkirim",
+      permission: "delivery.update",
+      hasPerm: (p) => p === "delivery.update",
+      payload: { tasks: [{ task_id: "D1", order_number: "PO-DEL" }] },
+    });
+    expect(readMobileTaskListRetention({
+      user,
+      division: "terkirim",
+      permission: "delivery.update",
+      hasPerm: (p) => p === "delivery.update",
+    }).tasks).toHaveLength(1);
+    clearMobileOpsSessionForUser("u-1");
+    expect(readMobileTaskListRetention({ user, division: "terkirim" })).toBeNull();
   });
 });

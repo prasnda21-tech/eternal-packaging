@@ -1,5 +1,7 @@
 /** Session persistence for PWA ops tables (filters + scroll). Zoom uses productionSheetZoom. */
 
+import { clearAllMobileTaskListRetention } from "./mobileTaskListRetention";
+
 function store() {
   try {
     return typeof sessionStorage !== "undefined" ? sessionStorage : null;
@@ -88,6 +90,7 @@ const OPS_KEY_PREFIXES = [
 
 /** Remove scoped + legacy unscoped ops session keys for a user. */
 export function clearMobileOpsSessionForUser(userId) {
+  clearAllMobileTaskListRetention();
   const s = store();
   if (!s) return;
   const uid = userId != null ? String(userId) : "";
