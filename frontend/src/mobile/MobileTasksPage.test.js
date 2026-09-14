@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
+import { wibDateKey } from "../lib/suratJalan";
 import MobileTasksPage from "./MobileTasksPage";
 
 const mockHasPerm = jest.fn(() => false);
@@ -46,6 +47,17 @@ const flush = async () => {
   });
 };
 
+const clickFilter = async (container, id) => {
+  const btn = container.querySelector(`[data-testid="mobile-task-filter-${id}"]`);
+  await act(async () => {
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+};
+
+const visibleTaskIds = (container) => (
+  [...container.querySelectorAll("a.mop-card")].map((el) => el.getAttribute("data-testid"))
+);
+
 describe("MobileTasksPage sorting", () => {
   let container;
   let root;
@@ -82,9 +94,11 @@ describe("MobileTasksPage sorting", () => {
     expect(api.divisionTasks).toHaveBeenCalledTimes(1);
     expect(api.divisionTasks).toHaveBeenCalledWith("operator", "mine");
     expect(api.getOrder).not.toHaveBeenCalled();
-    const ids = [...container.querySelectorAll("a.mop-card")].map((el) => el.getAttribute("data-testid"));
-    expect(ids).toEqual(["mobile-task-C", "mobile-task-D", "mobile-task-A", "mobile-task-B"]);
-    expect(ids).toHaveLength(4);
+    await clickFilter(container, "menunggu");
+    const ids = visibleTaskIds(container);
+    expect(ids).toEqual(["mobile-task-C", "mobile-task-D", "mobile-task-A"]);
+    expect(ids).not.toContain("mobile-task-B");
+    expect(ids).toHaveLength(3);
     expect(container.querySelector('[data-testid="mobile-workspace-select"]')).toBeTruthy();
     expect(container.textContent).toContain("Pilih Tugas");
     expect(container.querySelector(".mop-ws-tabs")).toBeFalsy();
@@ -180,7 +194,8 @@ describe("MobileTasksPage sorting", () => {
     });
     await act(async () => { root.render(<MobileTasksPage />); });
     await flush();
-    const ids = [...container.querySelectorAll("a.mop-card")].map((el) => el.getAttribute("data-testid"));
+    await clickFilter(container, "aktif");
+    const ids = visibleTaskIds(container);
     expect(ids).toEqual(["mobile-task-U", "mobile-task-H", "mobile-task-N"]);
   });
 
@@ -194,10 +209,138 @@ describe("MobileTasksPage sorting", () => {
     });
     await act(async () => { root.render(<MobileTasksPage />); });
     await flush();
+    await clickFilter(container, "aktif");
     const cards = [...container.querySelectorAll("a.mop-card")];
     expect(cards.map((el) => el.getAttribute("data-testid"))).toEqual(["mobile-task-U", "mobile-task-H", "mobile-task-N"]);
     expect(cards[0].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
     expect(cards[1].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Kecil");
     expect(cards[2].querySelector('[data-testid="mobile-task-screen"]').textContent).toContain("Screen Besar");
+  });
+});
+
+describe("MobileTasksPage summary filters", () => {
+  let container;
+  let root;
+  const today = wibDateKey(new Date());
+
+  const fixtureTasks = () => ([
+    { task_id: "TODAY-WAIT", order_id: "tw", order_number: "PO-TW", work_date: today, item: "Cup", target_qty: 10, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+    { task_id: "TODAY-PART", order_id: "tp", order_number: "PO-TP", work_date: today, item: "Cup", target_qty: 10, completed_qty: 3, status: "sebagian", status_label: "Sebagian" },
+    { task_id: "TODAY-DONE", order_id: "td", order_number: "PO-TD", work_date: today, item: "Cup", target_qty: 10, completed_qty: 10, status: "selesai", status_label: "Selesai" },
+    { task_id: "OLD-WAIT", order_id: "ow", order_number: "PO-OW", work_date: "2020-01-10", item: "Cup", target_qty: 10, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+    { task_id: "OLD-PART", order_id: "op", order_number: "PO-OP", work_date: "2020-01-08", item: "Cup", target_qty: 10, completed_qty: 4, status: "sebagian", status_label: "Sebagian" },
+    { task_id: "OLD-DONE", order_id: "od", order_number: "PO-OD", work_date: "2020-01-08", item: "Cup", target_qty: 10, completed_qty: 10, status: "selesai", status_label: "Selesai" },
+    { task_id: "FUTURE", order_id: "fu", order_number: "PO-FU", work_date: "2099-01-01", item: "Cup", target_qty: 10, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+    { task_id: "FUTURE-PART", order_id: "fp", order_number: "PO-FP", work_date: "2099-01-02", item: "Cup", target_qty: 10, completed_qty: 2, status: "sebagian", status_label: "Sebagian" },
+    { task_id: "UNSCHED", order_id: "us", order_number: "PO-US", work_date: null, item: "Cup", target_qty: 10, completed_qty: 0, status: "belum", status_label: "Belum Mulai" },
+  ]);
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockHasPerm.mockReset();
+    mockNavigate.mockReset();
+    mockHasPerm.mockImplementation((p) => p === "delivery.update");
+    mockTasksRouter.search = "ws=delivery";
+    mockTasksRouter.setParams.mockClear();
+    api.divisionTasks.mockReset();
+    api.getOrder.mockReset();
+    api.divisionTasks.mockResolvedValue({ tasks: fixtureTasks() });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const countText = (id) => container.querySelector(`[data-testid="mobile-task-filter-${id}"] strong`).textContent;
+  const selectedId = () => container.querySelector(".mop-summary-cell.is-selected")?.getAttribute("data-testid");
+
+  test("default selected filter is Tugas Hari Ini and list matches that count", async () => {
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(selectedId()).toBe("mobile-task-filter-hariIni");
+    expect(container.querySelector('[data-testid="mobile-task-filter-hariIni"]').getAttribute("aria-pressed")).toBe("true");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-TODAY-DONE", "mobile-task-TODAY-PART", "mobile-task-TODAY-WAIT"]);
+    expect(visibleTaskIds(container)).toHaveLength(Number(countText("hariIni")));
+    expect(countText("hariIni")).toBe("3");
+    expect(countText("aktif")).toBe("4");
+    expect(countText("proses")).toBe("2");
+    expect(countText("menunggu")).toBe("2");
+  });
+
+  test("clicking each card changes the visible list and selected visual state", async () => {
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    await clickFilter(container, "aktif");
+    expect(selectedId()).toBe("mobile-task-filter-aktif");
+    expect(visibleTaskIds(container)).toEqual([
+      "mobile-task-OLD-PART",
+      "mobile-task-OLD-WAIT",
+      "mobile-task-TODAY-PART",
+      "mobile-task-TODAY-WAIT",
+    ]);
+    expect(visibleTaskIds(container)).toHaveLength(Number(countText("aktif")));
+
+    await clickFilter(container, "proses");
+    expect(selectedId()).toBe("mobile-task-filter-proses");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-OLD-PART", "mobile-task-TODAY-PART"]);
+    expect(visibleTaskIds(container)).toHaveLength(Number(countText("proses")));
+
+    await clickFilter(container, "menunggu");
+    expect(selectedId()).toBe("mobile-task-filter-menunggu");
+    expect(visibleTaskIds(container)).toEqual([
+      "mobile-task-OLD-WAIT",
+      "mobile-task-TODAY-WAIT",
+    ]);
+    expect(visibleTaskIds(container)).toHaveLength(Number(countText("menunggu")));
+    expect(visibleTaskIds(container)).not.toContain("mobile-task-FUTURE");
+    expect(visibleTaskIds(container)).not.toContain("mobile-task-FUTURE-PART");
+    expect(visibleTaskIds(container)).not.toContain("mobile-task-UNSCHED");
+
+    await clickFilter(container, "hariIni");
+    expect(selectedId()).toBe("mobile-task-filter-hariIni");
+    expect(visibleTaskIds(container)).not.toContain("mobile-task-OLD-WAIT");
+    expect(visibleTaskIds(container)).not.toContain("mobile-task-OLD-PART");
+    expect(visibleTaskIds(container)).not.toContain("mobile-task-FUTURE");
+  });
+
+  test("card counts stay global and do not recalculate after selecting Aktif", async () => {
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    await clickFilter(container, "aktif");
+    expect(countText("hariIni")).toBe("3");
+    expect(countText("aktif")).toBe("4");
+    expect(countText("proses")).toBe("2");
+    expect(countText("menunggu")).toBe("2");
+  });
+
+  test("future and unscheduled tasks appear in none of the four filters", async () => {
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    for (const id of ["hariIni", "aktif", "proses", "menunggu"]) {
+      await clickFilter(container, id);
+      const ids = visibleTaskIds(container);
+      expect(ids).not.toContain("mobile-task-FUTURE");
+      expect(ids).not.toContain("mobile-task-FUTURE-PART");
+      expect(ids).not.toContain("mobile-task-UNSCHED");
+    }
+  });
+
+  test("Driver delivery permission filtering stays intact when cards are clicked", async () => {
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledTimes(1);
+    expect(api.divisionTasks).toHaveBeenCalledWith("terkirim", "mine");
+    await clickFilter(container, "aktif");
+    await clickFilter(container, "proses");
+    expect(api.divisionTasks).toHaveBeenCalledTimes(1);
+    expect(api.divisionTasks).not.toHaveBeenCalledWith("operator", "mine");
+    expect(api.divisionTasks).not.toHaveBeenCalledWith("packing", "mine");
+    expect(api.divisionTasks).not.toHaveBeenCalledWith("loading", "mine");
+    expect(mockHasPerm).toHaveBeenCalledWith("delivery.update");
+    expect(container.querySelector('[data-testid="mobile-workspace-select-current"]')?.textContent
+      || container.querySelector('[data-testid="mobile-workspace-select-input"]')?.value).toMatch(/Pengiriman|delivery/i);
   });
 });

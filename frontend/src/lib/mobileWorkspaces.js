@@ -181,18 +181,7 @@ export function mobileWorkStatus(done, target) {
   return { key: "process", label: "Proses" };
 }
 
-export function taskSummaryFromList(tasks, todayKey = "") {
-  const list = Array.isArray(tasks) ? tasks : [];
-  const scoped = todayKey
-    ? list.filter((t) => String(t.work_date || t.work_date_key || "").startsWith(todayKey))
-    : list;
-  return {
-    hariIni: scoped.length,
-    aktif: scoped.filter((t) => t.status && t.status !== "selesai").length,
-    proses: scoped.filter((t) => t.status === "sebagian").length,
-    menunggu: scoped.filter((t) => t.status === "belum" || t.status === "siap").length,
-  };
-}
+export { taskSummaryFromList } from "./mobileTaskSummary";
 
 export function poLineSummaries(order) {
   return (order?.line_items || []).map((li, idx) => ({
