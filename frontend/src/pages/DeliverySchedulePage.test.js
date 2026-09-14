@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import DeliverySchedulePage from "./DeliverySchedulePage";
+import DeliverySchedulePage, { scheduleRowSjNumber } from "./DeliverySchedulePage";
 import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
 import { STATUS_LOKASI_SORT_DUMMY_ROWS } from "../lib/deliveryScheduleStatusLokasiFixtures";
 import { desktopScheduleReviewHref } from "../lib/mobileDeliverySchedule";
@@ -31,9 +31,9 @@ jest.mock("../lib/api", () => ({
   },
 }));
 
-jest.mock("../components/SuratJalanViewButton", () => ({
+jest.mock("../components/SuratJalanPreviewModal", () => ({
   __esModule: true,
-  default: ({ label, testid }) => <button type="button" data-testid={testid}>{label}</button>,
+  default: ({ open }) => (open ? <div data-testid="sj-preview-modal" /> : null),
 }));
 
 jest.mock("../components/OutletLocationModal", () => ({
@@ -388,3 +388,252 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     expect(poInOrder()[0]).toBe("DUMMY-PO-003"); // "Dummy Customer Alamat Saja"
   });
 });
+
+function fireChange(el, value) {
+  const proto = el.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  if (setter) setter.call(el, value);
+  else el.value = value;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+describe("scheduleRowSjNumber precedence", () => {
+  test("prefers sj_label over latest_sj_number and sj_numbers", () => {
+    expect(scheduleRowSjNumber({
+      sj_label: "SJ/001",
+      latest_sj_number: "SJ/999",
+      sj_numbers: ["SJ/888"],
+    })).toBe("SJ/001");
+  });
+
+  test("falls back to shipment-scoped latest_sj_number then same-row sj_numbers[0]", () => {
+    expect(scheduleRowSjNumber({
+      sj_label: "",
+      latest_sj_number: "SJ/002",
+      sj_numbers: ["SJ/003"],
+    })).toBe("SJ/002");
+    expect(scheduleRowSjNumber({
+      sj_label: "  ",
+      latest_sj_number: "",
+      sj_numbers: ["SJ/003"],
+    })).toBe("SJ/003");
+  });
+
+  test("empty canonical fields do not invent a number", () => {
+    expect(scheduleRowSjNumber({
+      sj_label: "",
+      latest_sj_number: "",
+      sj_numbers: [],
+      sj_files: [{ id: "file-1", sj_number: "SJ/FAKE" }],
+    })).toBe("");
+    expect(scheduleRowSjNumber(null)).toBe("");
+  });
+});
+
+describe("DeliverySchedulePage Surat Jalan column", () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockHasPerm.mockReset();
+    mockDeliverySchedule.mockReset();
+    mockNavigate.mockReset();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    sessionStorage.clear();
+  });
+
+  test("renders shipment-specific SJ number without sj_files", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        shipment_id: "sh-1",
+        sj_label: "SJ/001",
+        latest_sj_number: "SJ/001",
+        sj_numbers: ["SJ/001"],
+        sj_files: [],
+        sj_file_count: 0,
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    const cell = container.querySelector('[data-testid="ds-sj-PO-100-sh-1"]');
+    expect(cell).toBeTruthy();
+    expect(cell.textContent).toBe("SJ/001");
+    expect(container.querySelector('[data-testid="ds-sj-lihat-PO-100"]')).toBeFalsy();
+  });
+
+  test("falls back to latest_sj_number when sj_label is empty", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        shipment_id: "sh-2",
+        sj_label: "",
+        latest_sj_number: "SJ/002",
+        sj_numbers: [],
+        sj_files: undefined,
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-100-sh-2"]').textContent).toBe("SJ/002");
+  });
+
+  test("shows em dash when no canonical SJ number exists", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        sj_label: "",
+        latest_sj_number: "",
+        sj_numbers: [],
+        sj_files: [],
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-100"]').textContent).toBe("—");
+  });
+
+  test("same PO two shipments keep isolated SJ numbers; later SJ does not overwrite earlier row", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po-x",
+          order_number: "PO-X",
+          shipment_id: "sh-a",
+          effective_delivery_date: "2026-09-12",
+          status: "hari_ini",
+          status_label: "Hari Ini",
+          sj_label: "SJ/001",
+          latest_sj_number: "SJ/001",
+          sj_numbers: ["SJ/001"],
+          sj_files: [],
+        },
+        {
+          ...sampleRows[0],
+          id: "po-x",
+          order_number: "PO-X",
+          shipment_id: "sh-b",
+          customer_name: "PT Alpha",
+          effective_delivery_date: "2026-09-14",
+          status: "terjadwal",
+          status_label: "Terjadwal",
+          sj_label: "SJ/002",
+          latest_sj_number: "SJ/002",
+          sj_numbers: ["SJ/002"],
+          sj_files: [],
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-X-sh-a"]').textContent).toBe("SJ/001");
+    expect(container.querySelector('[data-testid="ds-sj-PO-X-sh-b"]').textContent).toBe("SJ/002");
+    expect(container.querySelector('[data-testid="ds-row-PO-X-sh-a"]').textContent).not.toContain("SJ/002");
+  });
+
+  test("status=hari_ini keeps shipment-specific SJ on qualifying rows", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po-x",
+          order_number: "PO-X",
+          shipment_id: "sh-a",
+          status: "hari_ini",
+          status_label: "Hari Ini",
+          sj_label: "SJ/001",
+          latest_sj_number: "SJ/001",
+        },
+        {
+          ...sampleRows[0],
+          id: "po-x",
+          order_number: "PO-X",
+          shipment_id: "sh-b",
+          status: "terjadwal",
+          status_label: "Terjadwal",
+          sj_label: "SJ/002",
+          latest_sj_number: "SJ/002",
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    const status = container.querySelector('[data-testid="ds-filter-status"]');
+    await act(async () => { fireChange(status, "hari_ini"); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-X-sh-a"]').textContent).toBe("SJ/001");
+    expect(container.querySelector('[data-testid="ds-row-PO-X-sh-b"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-sj-PO-X-sh-a"]').textContent).not.toBe("SJ/002");
+  });
+
+  test("PO search filter preserves SJ identity on remaining row", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          shipment_id: "sh-1",
+          sj_label: "SJ/001",
+          latest_sj_number: "SJ/001",
+        },
+        {
+          ...sampleRows[1],
+          shipment_id: "sh-9",
+          sj_label: "SJ/BETA",
+          latest_sj_number: "SJ/BETA",
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    const po = container.querySelector('[data-testid="ds-filter-po"]');
+    await act(async () => { fireChange(po, "PO-100"); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-100-sh-1"]').textContent).toBe("SJ/001");
+    expect(container.querySelector('[data-testid="ds-row-PO-200-sh-9"]')).toBeFalsy();
+  });
+
+  test("file button still requires delivery_note.view_file; number stays visible without it", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        shipment_id: "sh-1",
+        sj_label: "SJ/001",
+        latest_sj_number: "SJ/001",
+        sj_files: [{ id: "file-1", file_id: "file-1", name: "SJ.pdf" }],
+        sj_file_count: 1,
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-100-sh-1"]').textContent).toBe("SJ/001");
+    expect(container.querySelector('[data-testid="ds-sj-lihat-PO-100"]')).toBeFalsy();
+  });
+
+  test("file button renders when files exist and delivery_note.view_file is granted", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery_note.view_file");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        shipment_id: "sh-1",
+        sj_label: "SJ/001",
+        latest_sj_number: "SJ/001",
+        sj_files: [{ id: "file-1", file_id: "file-1", name: "SJ.pdf" }],
+        sj_file_count: 1,
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-sj-PO-100-sh-1"]').textContent).toBe("SJ/001");
+    const btn = container.querySelector('[data-testid="ds-sj-lihat-PO-100"]');
+    expect(btn).toBeTruthy();
+    expect(btn.textContent).toBe("Lihat");
+  });
+});
+
