@@ -32,6 +32,21 @@ def bind_motor():
 
 
 @pytest.fixture(autouse=True)
+async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
+    """Purchase workflow fixtures are not seeded with opening balances.
+    Keep physical stock OFF so GR/invoice assertions stay about purchasing
+    rules, not Stock V2 opening-balance gates. Stock V2 coverage lives in
+    test_stock_engine_v2 / purchase→stock dedicated tests.
+    """
+    from services.physical_stock_settings import SETTINGS_KEY
+    await server.db.app_settings.update_one(
+        {"key": SETTINGS_KEY},
+        {"$set": {"key": SETTINGS_KEY, "enabled": False, "stock_in_trigger": "goods_receipt", "stock_out_trigger": "sales_delivery"}},
+        upsert=True,
+    )
+
+
+@pytest.fixture(autouse=True)
 async def indexes(bind_motor):
     db = server.db
     for name in ("purchase_requests", "purchase_orders", "purchase_goods_receipts", "purchase_invoices", "purchase_payments"):
@@ -63,7 +78,15 @@ async def client_ctx():
 
 
 async def make_request(c, lines, notes=""):
-    res = await c.post("/api/purchase-requests", json={"notes": notes, "lines": lines})
+    normalized = []
+    for i, ln in enumerate(lines):
+        row = dict(ln)
+        if not str(row.get("master_item_id") or "").strip():
+            row["master_item_id"] = str(row.get("accurate_item_id") or f"mi-{uuid.uuid4().hex[:8]}")
+        if not str(row.get("item_code") or "").strip():
+            row["item_code"] = f"CODE-{i + 1}"
+        normalized.append(row)
+    res = await c.post("/api/purchase-requests", json={"notes": notes, "lines": normalized})
     assert res.status_code == 200, res.text
     return res.json()["request"]
 
@@ -204,6 +227,11 @@ async def test_invoice_partial_over_invoice_totals_and_payment_flow():
                 "lines": [{"request_line_id": req["lines"][0]["line_id"], "ordered_qty": 10, "unit_price": 1000000}],
             })).json()["order"]
             lid = po["lines"][0]["line_id"]
+            # Normal flow: receive before invoice (or use early-invoice ack)
+            await c.post("/api/purchase-goods-receipts", json={
+                "purchase_order_id": po["id"],
+                "lines": [{"purchase_order_line_id": lid, "received_qty": 10}],
+            })
             inv = (await c.post("/api/purchase-invoices", json={
                 "purchase_order_id": po["id"],
                 "lines": [{"purchase_order_line_id": lid, "invoice_qty": 4}],
@@ -220,16 +248,49 @@ async def test_invoice_partial_over_invoice_totals_and_payment_flow():
                 "purchase_invoice_id": inv["id"], "amount": 2000000,
                 "idempotency_key": f"pay-{uuid.uuid4()}",
             })).json()["payment"]
-            assert p1["payment_state"] == "DP"
+            assert p1["workflow_status"] == "BELUM DIAJUKAN"
+            inv_after_draft = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
+            assert inv_after_draft["payment_status"] == "BELUM DIBAYAR"
+            assert inv_after_draft["paid_total"] == 0
+
+            # Seed peer for submit
+            await server.db.users.update_one(
+                {"id": "peer-pay-flow"},
+                {"$set": {"id": "peer-pay-flow", "email": "peer-pay@example.com", "name": "Peer Pay", "role": "admin", "status": "active"}},
+                upsert=True,
+            )
+            # Override current user with user_id for submit/confirm
+            app.dependency_overrides[current_user] = lambda: {
+                "id": "admin_test", "user_id": "admin_test", "email": "admin@example.com", "name": "Admin", "role": "admin",
+            }
+            await server.db.users.update_one(
+                {"id": "admin_test"},
+                {"$set": {"id": "admin_test", "email": "admin@example.com", "name": "Admin", "role": "admin", "status": "active"}},
+                upsert=True,
+            )
+            await c.post(f"/api/purchase-payments/{p1['id']}/submit", json={"target_user_id": "peer-pay-flow"})
+            conf1 = await c.post(f"/api/purchase-payments/{p1['id']}/confirm-paid")
+            assert conf1.status_code == 200, conf1.text
+            assert conf1.json()["payment"]["workflow_status"] == "DIBAYAR"
+            assert conf1.json()["invoice"]["payment_status"] == "DP"
+
             key = f"retry-{uuid.uuid4()}"
             a = await c.post("/api/purchase-payments", json={"purchase_invoice_id": inv["id"], "amount": 1000000, "idempotency_key": key})
             b = await c.post("/api/purchase-payments", json={"purchase_invoice_id": inv["id"], "amount": 1000000, "idempotency_key": key})
             assert a.status_code == 200 and b.status_code == 200
             assert a.json()["payment"]["id"] == b.json()["payment"]["id"]
+            p2 = a.json()["payment"]
+            await c.post(f"/api/purchase-payments/{p2['id']}/submit", json={"target_user_id": "peer-pay-flow"})
+            await c.post(f"/api/purchase-payments/{p2['id']}/confirm-paid")
+
             p3 = (await c.post("/api/purchase-payments", json={
                 "purchase_invoice_id": inv["id"], "amount": 1000000,
             })).json()["payment"]
-            assert p3["payment_state"] == "LUNAS"
+            assert p3["workflow_status"] == "BELUM DIAJUKAN"
+            await c.post(f"/api/purchase-payments/{p3['id']}/submit", json={"target_user_id": "peer-pay-flow"})
+            conf3 = await c.post(f"/api/purchase-payments/{p3['id']}/confirm-paid")
+            assert conf3.status_code == 200, conf3.text
+            assert conf3.json()["payment"]["workflow_status"] == "DIBAYAR"
             detail = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
             assert detail["payment_status"] == "LUNAS"
             assert detail["outstanding_amount"] == 0

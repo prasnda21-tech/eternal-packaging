@@ -267,6 +267,19 @@ export const api = {
   currentStockUpdate: (itemId, payload) => client.patch(`/current-stock/${itemId}`, payload).then((r) => r.data),
   currentStockExport: (params = {}) =>
     client.get(`/current-stock/export`, { params, responseType: "blob" }).then((r) => r.data),
+  stockOpnameItems: (params = {}) => client.get(`/stock-opname/items`, { params }).then((r) => r.data),
+  applyStockOpname: (payload) => client.post(`/stock-opname`, payload).then((r) => r.data),
+  stockOpnameExportTemplate: () =>
+    client.get(`/stock-opname/export-template`, { responseType: "blob" }).then((r) => r.data),
+  stockOpnameImportPreview: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/stock-opname/import/preview`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
+  stockOpnameImportApply: (payload) =>
+    client.post(`/stock-opname/import/apply`, payload).then((r) => r.data),
   currentStockImportPreview: (file) => {
     const form = new FormData();
     form.append("file", file);
@@ -300,6 +313,48 @@ export const api = {
   listPurchasePayments: (params = {}) => client.get(`/purchase-payments`, { params }).then((r) => r.data),
   getPurchasePayment: (id) => client.get(`/purchase-payments/${encodeURIComponent(id)}`).then((r) => r.data),
   createPurchasePayment: (payload) => client.post(`/purchase-payments`, payload).then((r) => r.data),
+
+  cancelPurchaseRequest: (id, reason = "") =>
+    client.post(`/purchase-requests/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  cancelPurchaseOrder: (id, reason = "") =>
+    client.post(`/purchase-orders/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  getPurchaseGoodsReceipt: (id) => client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
+  cancelPurchaseGoodsReceipt: (id, reason = "") =>
+    client.post(`/purchase-goods-receipts/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  purchaseInvoiceFromReceiptPreview: (receiptId) => client.get(`/purchase-invoices/from-receipt/${encodeURIComponent(receiptId)}/preview`).then((r) => r.data),
+  cancelPurchaseInvoice: (id, reason = "") =>
+    client.post(`/purchase-invoices/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  cancelPurchasePayment: (id, reason = "") =>
+    client.post(`/purchase-payments/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  listPurchasePaymentSubmitTargets: (params = {}) =>
+    client.get(`/purchase-payments/submit-targets`, { params }).then((r) => r.data),
+  submitPurchasePayment: (id, payload) =>
+    client.post(`/purchase-payments/${encodeURIComponent(id)}/submit`, payload).then((r) => r.data),
+  ajukanPurchasePayment: (payload) =>
+    client.post(`/purchase-payments/ajukan`, payload).then((r) => r.data),
+  confirmPurchasePaymentPaid: (id) =>
+    client.post(`/purchase-payments/${encodeURIComponent(id)}/confirm-paid`, {}).then((r) => r.data),
+  listPurchaseDocuments: (params = {}) =>
+    client.get(`/purchase-documents`, { params }).then((r) => r.data),
+  uploadPurchaseDocument: ({ entity_type, entity_id, document_name, file }) => {
+    const form = new FormData();
+    form.append("entity_type", entity_type);
+    form.append("entity_id", entity_id);
+    if (document_name) form.append("document_name", document_name);
+    form.append("file", file);
+    return client
+      .post(`/purchase-documents`, form, { headers: { "Content-Type": "multipart/form-data" } })
+      .then((r) => r.data);
+  },
+  fetchPurchaseDocumentBlob: (id, { download = false } = {}) =>
+    client
+      .get(`/purchase-documents/${encodeURIComponent(id)}/content`, {
+        params: { download: download ? true : false },
+        responseType: "blob",
+      })
+      .then((r) => r.data),
+  deletePurchaseDocument: (id) =>
+    client.delete(`/purchase-documents/${encodeURIComponent(id)}`).then((r) => r.data),
   hppSettings: () => client.get(`/settings/hpp`).then((r) => r.data),
   updateHppSettings: (payload) => client.put(`/settings/hpp`, payload).then((r) => r.data),
   physicalStockSettings: () => client.get(`/settings/physical-stock`).then((r) => r.data),
