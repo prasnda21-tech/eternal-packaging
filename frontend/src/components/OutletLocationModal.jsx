@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
+import {
+  mapsLinkMessage,
+  parseGoogleMapsUrlRecord,
+} from "../lib/googleMapsLink";
+import {
+  applyMapsLinkSelection,
+  applyPlacesSelection,
+  buildSaveDeliveryOutletPayload,
+} from "../lib/outletLocationSelection";
 import OutletLocationMap from "./OutletLocationMap";
 
 export default function OutletLocationModal({
@@ -12,6 +21,9 @@ export default function OutletLocationModal({
 }) {
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
+  const [mapsLink, setMapsLink] = useState("");
+  const [mapsStatus, setMapsStatus] = useState("");
+  const [mapsMessage, setMapsMessage] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [provider, setProvider] = useState("");
   const [picked, setPicked] = useState(null);
@@ -22,12 +34,16 @@ export default function OutletLocationModal({
     if (!open || !row) return;
     setName(row.outlet_name || row.outlet || "");
     setQuery("");
+    setMapsLink("");
+    setMapsStatus("");
+    setMapsMessage("");
     setSuggestions([]);
     setProvider("");
     setErr("");
     if (row.lat != null && row.lng != null) {
       setPicked({
         place_id: row.place_id || row.google_place_id || "",
+        selection_key: row.place_id || row.google_place_id || `maps-link:${row.lat},${row.lng}`,
         formatted_address: row.formatted_address || row.address || "",
         lat: row.lat,
         lng: row.lng,
@@ -65,18 +81,77 @@ export default function OutletLocationModal({
     try {
       const d = await api.deliveryPlaceDetails(sug.place_id);
       const p = d.place || {};
-      setPicked({
+      const next = applyPlacesSelection({
         place_id: p.place_id || p.google_place_id || sug.place_id,
         formatted_address: p.formatted_address || sug.formatted_address || sug.label,
         lat: p.lat,
         lng: p.lng,
         name: p.name || "",
-      });
-      if (!name && p.name) setName(p.name);
+      }, name);
+      setPicked(next.picked);
+      setName(next.name);
       setQuery("");
       setSuggestions([]);
+      setMapsStatus("");
+      setMapsMessage("");
     } catch (e) {
       setErr(e.response?.data?.detail || "Gagal memuat detail lokasi");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyPastedMapsLink = async () => {
+    if (!canEdit || busy) return;
+    const inspected = parseGoogleMapsUrlRecord(mapsLink);
+    if (inspected.status === "EMPTY") {
+      setMapsStatus("");
+      setMapsMessage("");
+      return;
+    }
+    if (inspected.status === "OK") {
+      const next = applyMapsLinkSelection(inspected, name, picked);
+      setPicked(next.picked);
+      setMapsStatus("SUCCESS");
+      setMapsMessage(mapsLinkMessage("SUCCESS"));
+      setErr("");
+      return;
+    }
+    if (inspected.status !== "NEEDS_RESOLVE") {
+      setMapsStatus(inspected.status);
+      setMapsMessage(mapsLinkMessage(inspected.status));
+      return;
+    }
+
+    const previous = picked;
+    setBusy(true);
+    setMapsStatus("RESOLVING");
+    setMapsMessage(mapsLinkMessage("RESOLVING"));
+    setErr("");
+    try {
+      const resolved = await api.resolveDeliveryMapsLink(inspected.url);
+      const lat = Number(resolved.lat);
+      const lng = Number(resolved.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        setMapsStatus("NO_COORDINATES");
+        setMapsMessage(mapsLinkMessage("NO_COORDINATES"));
+        setPicked(previous);
+        return;
+      }
+      const next = applyMapsLinkSelection({
+        lat,
+        lng,
+        formatted_address: resolved.formatted_address,
+      }, name, previous);
+      setPicked(next.picked);
+      setMapsStatus("SUCCESS");
+      setMapsMessage(mapsLinkMessage("SUCCESS"));
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      const code = typeof detail === "object" && detail?.code ? detail.code : "RESOLVE_FAILURE";
+      setMapsStatus(code);
+      setMapsMessage((typeof detail === "object" && detail?.message) || mapsLinkMessage(code));
+      setPicked(previous);
     } finally {
       setBusy(false);
     }
@@ -87,17 +162,12 @@ export default function OutletLocationModal({
     setBusy(true);
     setErr("");
     try {
-      const saved = await api.saveDeliveryOutlet({
-        order_id: row.order_id,
-        batch_id: batchId || undefined,
-        stop_id: row.stop_id,
-        name: name || picked.name || row.customer,
-        place_id: picked.place_id,
-        google_place_id: picked.place_id,
-        formatted_address: picked.formatted_address,
-        lat: Number(picked.lat),
-        lng: Number(picked.lng),
-      });
+      const saved = await api.saveDeliveryOutlet(buildSaveDeliveryOutletPayload({
+        row,
+        batchId,
+        name,
+        picked,
+      }));
       onSaved?.(saved.outlet, row);
       onClose?.();
     } catch (e) {
@@ -150,6 +220,49 @@ export default function OutletLocationModal({
           )}
           {provider === "google" && <p className="muted small">Powered by Google</p>}
           {provider === "mock" && <p className="muted small">Pencarian lokasi preview (mock lokal)</p>}
+          <p className="outlet-loc-or" data-testid="outlet-loc-or">ATAU</p>
+          <label>
+            <span>Link Google Maps</span>
+            <div className="outlet-maps-link-row">
+              <input
+                value={mapsLink}
+                onChange={(e) => {
+                  setMapsLink(e.target.value);
+                  if (mapsStatus) {
+                    setMapsStatus("");
+                    setMapsMessage("");
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    applyPastedMapsLink();
+                  }
+                }}
+                data-testid="outlet-loc-maps-link"
+                placeholder="Tempel link Google Maps di sini"
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                className="ghost"
+                onClick={applyPastedMapsLink}
+                disabled={!canEdit || busy}
+                data-testid="outlet-loc-use-maps-link"
+              >
+                Gunakan Lokasi
+              </button>
+            </div>
+          </label>
+          {mapsMessage && (
+            <p
+              className={mapsStatus === "SUCCESS" ? "muted small" : "error"}
+              data-testid="outlet-loc-maps-status"
+            >
+              {mapsMessage}
+            </p>
+          )}
           <div>
             <span className="muted small">Alamat Terpilih</span>
             <p data-testid="outlet-loc-selected">{picked?.formatted_address || "Belum dipilih"}</p>
@@ -157,7 +270,7 @@ export default function OutletLocationModal({
           <OutletLocationMap
             lat={picked?.lat}
             lng={picked?.lng}
-            placeKey={picked?.place_id || ""}
+            placeKey={picked?.selection_key || picked?.place_id || ""}
             canEdit={canEdit}
             onMove={(nextLat, nextLng) => {
               setPicked((prev) => (prev ? { ...prev, lat: nextLat, lng: nextLng } : prev));

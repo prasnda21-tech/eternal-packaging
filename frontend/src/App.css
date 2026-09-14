@@ -4221,6 +4221,13 @@ html:has(.ship-status-page) #root{
 .outlet-loc-form{display:flex;flex-direction:column;gap:10px}
 .outlet-loc-form label{display:flex;flex-direction:column;gap:4px;font-size:12px}
 .outlet-loc-form input{min-height:32px;padding:4px 8px}
+.outlet-loc-or{margin:0;text-align:center;font-size:11px;letter-spacing:.08em;color:#6a7680}
+.outlet-maps-link-row{display:flex;gap:6px;align-items:center}
+.outlet-maps-link-row input{flex:1;min-width:0}
+.outlet-maps-link-row button{flex-shrink:0;min-height:32px;padding:4px 10px;font-size:12px;white-space:nowrap}
+@media (max-width:520px){
+  .outlet-maps-link-row{flex-direction:column;align-items:stretch}
+}
 .outlet-place-suggest{list-style:none;margin:0;padding:0;border:1px solid #c5ced6;max-height:180px;overflow:auto}
 .outlet-place-suggest button{display:block;width:100%;text-align:left;background:#fff;border:0;border-bottom:1px solid #eef1f4;padding:8px 10px;cursor:pointer}
 .outlet-place-suggest button:hover{background:#eaf1f6}
