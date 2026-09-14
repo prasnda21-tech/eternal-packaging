@@ -21,8 +21,9 @@ describe("delivery history helpers", () => {
     expect(displayOrDash("Budi")).toBe("Budi");
   });
 
-  test("time format is dd/mm/yy HH:mm from evidence timestamp", () => {
+  test("time format is deterministic WIB regardless of timestamp offset", () => {
     expect(historyTimeLabel("2026-08-27T14:30:00+07:00")).toBe("27/08/26 14:30");
+    expect(historyTimeLabel("2026-08-27T07:30:00Z")).toBe("27/08/26 14:30");
   });
 
   test("terkirim summary remaining is max(total-delivered, 0)", () => {
