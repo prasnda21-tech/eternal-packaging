@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import {
   mapsLinkMessage,
@@ -29,6 +29,8 @@ export default function OutletLocationModal({
   const [picked, setPicked] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [suggestBox, setSuggestBox] = useState(null);
+  const searchInputRef = useRef(null);
 
   useEffect(() => {
     if (!open || !row) return;
@@ -72,6 +74,33 @@ export default function OutletLocationModal({
     }, 280);
     return () => clearTimeout(t);
   }, [open, query]);
+
+  useLayoutEffect(() => {
+    if (!open || !suggestions.length) {
+      setSuggestBox(null);
+      return undefined;
+    }
+    const syncSuggestBox = () => {
+      const input = searchInputRef.current;
+      if (!input) {
+        setSuggestBox(null);
+        return;
+      }
+      const r = input.getBoundingClientRect();
+      setSuggestBox({
+        top: Math.round(r.bottom + 4),
+        left: Math.round(r.left),
+        width: Math.max(Math.round(r.width), 220),
+      });
+    };
+    syncSuggestBox();
+    window.addEventListener("resize", syncSuggestBox);
+    document.addEventListener("scroll", syncSuggestBox, true);
+    return () => {
+      window.removeEventListener("resize", syncSuggestBox);
+      document.removeEventListener("scroll", syncSuggestBox, true);
+    };
+  }, [open, suggestions, query]);
 
   if (!open || !row) return null;
 
@@ -197,9 +226,10 @@ export default function OutletLocationModal({
               placeholder="Opsional — contoh: Outlet Jakarta"
             />
           </label>
-          <label>
+          <label className="outlet-loc-search-field">
             <span>Cari Outlet / Alamat</span>
             <input
+              ref={searchInputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               data-testid="outlet-loc-search"
@@ -207,17 +237,6 @@ export default function OutletLocationModal({
               autoComplete="off"
             />
           </label>
-          {!!suggestions.length && (
-            <ul className="outlet-place-suggest" data-testid="outlet-loc-suggest">
-              {suggestions.map((s) => (
-                <li key={s.place_id}>
-                  <button type="button" onClick={() => selectPlace(s)} data-testid={`outlet-loc-pick-${s.place_id}`}>
-                    {s.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
           {provider === "google" && <p className="muted small">Powered by Google</p>}
           {provider === "mock" && <p className="muted small">Pencarian lokasi preview (mock lokal)</p>}
           <p className="outlet-loc-or" data-testid="outlet-loc-or">ATAU</p>
@@ -294,6 +313,25 @@ export default function OutletLocationModal({
           </button>
         </div>
       </div>
+      {!!suggestions.length && (
+        <ul
+          className="outlet-place-suggest"
+          data-testid="outlet-loc-suggest"
+          style={suggestBox || undefined}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {suggestions.map((s) => (
+            <li key={s.place_id}>
+              <button type="button" onClick={() => selectPlace(s)} data-testid={`outlet-loc-pick-${s.place_id}`}>
+                <span className="outlet-place-primary">{s.label}</span>
+                {s.formatted_address && s.formatted_address !== s.label ? (
+                  <span className="outlet-place-secondary">{s.formatted_address}</span>
+                ) : null}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
