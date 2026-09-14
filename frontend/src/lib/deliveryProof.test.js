@@ -20,6 +20,12 @@ import {
   REASON_LOADING_INCOMPLETE,
   REASON_LOADING_ITEM_MISMATCH,
   MSG_PHOTO_SJ_NOT_READY,
+  activeDeliveryBatch,
+  findDeliveryShipment,
+  isShipmentDelivered,
+  pengirimanSjOptions,
+  proofsForShipment,
+  selectedPengirimanShipmentId,
 } from "./deliveryProof";
 
 describe("deliveryProof helpers", () => {
@@ -264,6 +270,57 @@ describe("deliveryProof helpers", () => {
     };
     expect(canUploadDeliveryBatchPhoto(o)).toBe(false);
     expect(deliveryBatchPhotoBlockCode(o)).toBe(REASON_LOADING_ITEM_MISMATCH);
+  });
+
+  test("Pengiriman selected SJ isolates qty, loading, and delivered state", () => {
+    const sj1 = { id: "sj-1", number: "SJ/001", delivery_date: "2026-09-10", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }], total_qty: 1000 };
+    const sj2 = { id: "sj-2", number: "SJ/001_2", delivery_date: "2026-09-12", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }], total_qty: 1000 };
+    const order = {
+      line_items: [{ name: "Line A", quantity: 2000, line_id: "LA", production_process: "print" }],
+      packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 2000 }] },
+      shipments: [sj1, sj2],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+      delivery_proofs: [{ id: "p1", shipment_id: "sj-1" }, { id: "p2", shipment_id: "sj-1" }],
+      delivery_confirmations: [],
+    };
+    expect(pengirimanSjOptions(order).map((o) => o.id)).toEqual(["sj-1", "sj-2"]);
+    expect(activeDeliveryBatch(order).id).toBe("sj-2");
+    expect(canUploadDeliveryBatchPhoto(order)).toBe(false);
+    expect(canUploadDeliveryBatchPhoto(order, sj1)).toBe(true);
+    expect(canUploadDeliveryBatchPhoto(order, sj2)).toBe(false);
+    expect(deliveryBatchPhotoReadiness(order, sj1).requiredTotal).toBe(1000);
+    expect(deliveryBatchPhotoReadiness(order, sj2).requiredTotal).toBe(1000);
+    expect(proofsForShipment(order, sj1)).toHaveLength(2);
+    expect(proofsForShipment(order, sj2)).toHaveLength(0);
+    const shippedSj1 = {
+      ...order,
+      shipments: [{ ...sj1, delivered_at: "t1", delivery_status: "Terkirim" }, sj2],
+      delivery_confirmations: [{ id: "d1", shipment_id: "sj-1", qty: 1000 }],
+    };
+    expect(isShipmentDelivered(shippedSj1, shippedSj1.shipments[0])).toBe(true);
+    expect(isShipmentDelivered(shippedSj1, sj2)).toBe(false);
+    expect(findDeliveryShipment(order, "sj-1").id).toBe("sj-1");
+    expect(selectedPengirimanShipmentId(order, "sj-1")).toBe("sj-1");
+  });
+
+  test("same-name lines stay isolated by line_idx in selected SJ readiness", () => {
+    const sj1 = { id: "sj-1", number: "SJ1", lines: [{ line_idx: 0, line_id: "L0", qty: 1000 }], total_qty: 1000 };
+    const sj2 = { id: "sj-2", number: "SJ2", lines: [{ line_idx: 1, line_id: "L1", qty: 1000 }], total_qty: 1000 };
+    const order = {
+      line_items: [
+        { name: "Item X", quantity: 1000, line_id: "L0", accurate_item_id: "AX", production_process: "print" },
+        { name: "Item X", quantity: 1000, line_id: "L1", accurate_item_id: "AX", production_process: "print" },
+      ],
+      packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 1000 }] },
+      shipments: [sj1, sj2],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    const r1 = deliveryBatchPhotoReadiness(order, sj1);
+    const r2 = deliveryBatchPhotoReadiness(order, sj2);
+    expect(r1.allowed).toBe(true);
+    expect(r1.lines.map((l) => l.lineIdx)).toEqual([0]);
+    expect(r2.allowed).toBe(false);
+    expect(r2.lines.map((l) => l.lineIdx)).toEqual([1]);
   });
 
   test("legacy single-item shipment without SJ lines remains supported", () => {

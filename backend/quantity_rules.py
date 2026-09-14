@@ -719,7 +719,7 @@ def validate_delivery_qty(new_delivered: int, order: dict) -> Optional[str]:
     return None
 
 
-def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
+def apply_delivery_from_proof_evidence(order: dict, shipment: Optional[dict] = None) -> Optional[dict]:
     """Delivery fields from confirmed Loading after explicit Konfirmasi Terkirim.
 
     Historical SJ line quantities remain eligible when no loading_confirmations exist.
@@ -734,6 +734,51 @@ def apply_delivery_from_proof_evidence(order: dict) -> Optional[dict]:
     keep the legacy eligible-qty path from loading_confirmations — the composition
     gate applies only when a concrete SJ batch is present to compare against.
     """
+    selected = shipment if isinstance(shipment, dict) else None
+    if selected is not None:
+        if shipment_is_delivered(order, selected):
+            current = qty_delivered(order)
+            required = packing_required_total(order)
+            full = bool(required) and current >= required
+            return {
+                "qty_delivered": current,
+                "delivery_status": "Terkirim" if full else (
+                    "Sebagian Terkirim" if current > 0 else "Belum Terkirim"
+                ),
+                "full": full,
+                "required": required,
+                "loaded": loaded_qty_for_delivery_batch(order, selected),
+                "eligible": current,
+                "increment": 0,
+                "shipment_id": delivery_batch_identity(selected),
+            }
+        if loading_confirmations_stored(order) or _shipments_require_loading_confirm(order):
+            ready = delivery_batch_photo_readiness(order, selected)
+            if not ready.get("allowed"):
+                return None
+        already = qty_delivered_for_shipment(order, selected)
+        increment = max(0, delivery_batch_qty(selected) - already)
+        current = qty_delivered(order)
+        new_delivered = current + increment
+        required = packing_required_total(order)
+        if required:
+            new_delivered = min(new_delivered, required)
+        err = validate_delivery_qty(new_delivered, order)
+        if err:
+            return None
+        full = bool(required) and new_delivered >= required
+        return {
+            "qty_delivered": new_delivered,
+            "delivery_status": "Terkirim" if full else (
+                "Sebagian Terkirim" if new_delivered > 0 else "Belum Terkirim"
+            ),
+            "full": full,
+            "required": required,
+            "loaded": loaded_qty_for_delivery_batch(order, selected),
+            "eligible": new_delivered,
+            "increment": increment,
+            "shipment_id": delivery_batch_identity(selected),
+        }
     if loading_confirmations_stored(order) or _shipments_require_loading_confirm(order):
         ready = delivery_batch_photo_readiness(order)
         if not ready.get("allowed") and ready.get("reason_code") != REASON_SJ_NOT_READY:
@@ -793,8 +838,9 @@ def can_confirm_delivery(order: dict) -> bool:
     return valid_delivery_proof_count(order) >= MIN_DELIVERY_PROOFS
 
 
-def confirm_delivery_block_reason(order: dict) -> Optional[str]:
-    n = valid_delivery_proof_count(order)
+def confirm_delivery_block_reason(order: dict, shipment: Optional[dict] = None) -> Optional[str]:
+    proofs = valid_delivery_proofs_for_shipment(order, shipment)
+    n = len(proofs)
     if n < MIN_DELIVERY_PROOFS:
         return (
             f"Wajib upload minimal {MIN_DELIVERY_PROOFS} foto bukti kirim "
@@ -814,7 +860,7 @@ def confirm_delivery_block_reason(order: dict) -> Optional[str]:
     # SJ_NOT_READY (no active batch) also keeps the eligible path — composition
     # checks require a concrete SJ shipment to evaluate.
     if loading_confirmations_stored(order) or _shipments_require_loading_confirm(order):
-        ready = delivery_batch_photo_readiness(order)
+        ready = delivery_batch_photo_readiness(order, shipment)
         if not ready.get("allowed") and ready.get("reason_code") != REASON_SJ_NOT_READY:
             return ready.get("reason") or MSG_PHOTO_LOADING_INSUFFICIENT
     return None
@@ -2365,12 +2411,108 @@ REASON_LOADING_ITEM_MISMATCH = "LOADING_ITEM_MISMATCH"
 
 
 def active_delivery_batch(order: dict) -> Optional[dict]:
-    """Canonical delivery batch = latest shipment (sales delivery / SJ allocation)."""
+    """Latest shipment only — do not use as the Pengiriman selection default when multiple SJ exist."""
     ships = shipments_stored(order)
     if not ships:
         return None
     last = ships[-1]
     return last if isinstance(last, dict) else None
+
+
+def shipment_identity_keys(order: dict, shipment: Optional[dict]) -> set:
+    """All live aliases for one shipment/SJ (id, sales_delivery_id, number, linked file)."""
+    keys = set()
+    if not isinstance(shipment, dict):
+        return keys
+    for key in ("id", "sales_delivery_id", "number", "accurate_shipment_id", "sj_number"):
+        val = str(shipment.get(key) or "").strip()
+        if val:
+            keys.add(val)
+    files = order.get("surat_jalan_files") if isinstance(order.get("surat_jalan_files"), list) else []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        fkeys = set()
+        for key in ("id", "file_id", "shipment_id", "sj_number", "number", "sales_delivery_id"):
+            val = str(entry.get(key) or "").strip()
+            if val:
+                fkeys.add(val)
+        if keys & fkeys:
+            keys |= fkeys
+    return keys
+
+
+def find_shipment(order: dict, shipment_id: Optional[str]) -> Optional[dict]:
+    want = str(shipment_id or "").strip()
+    if not want:
+        return None
+    for sh in shipments_stored(order):
+        if want in shipment_identity_keys(order, sh):
+            return sh
+    return None
+
+
+def resolve_delivery_shipment(order: dict, shipment_id: Optional[str] = None):
+    """Resolve the SJ/batch being shipped. Error when multi-SJ and no explicit id."""
+    ships = [sh for sh in shipments_stored(order) if isinstance(sh, dict)]
+    want = str(shipment_id or "").strip()
+    if want:
+        found = find_shipment(order, want)
+        if not found:
+            return None, "Surat Jalan / shipment yang dipilih tidak ditemukan pada PO ini."
+        return found, None
+    if not ships:
+        return None, None
+    if len(ships) == 1:
+        return ships[0], None
+    return None, "Pilih Surat Jalan yang dikirim."
+
+
+def valid_delivery_proofs_for_shipment(order: dict, shipment: Optional[dict] = None) -> list:
+    all_proofs = valid_delivery_proofs(order)
+    if shipment is None:
+        return all_proofs
+    keys = shipment_identity_keys(order, shipment)
+    tagged = [
+        p for p in all_proofs
+        if str(p.get("shipment_id") or "").strip() in keys
+    ]
+    if tagged:
+        return tagged
+    untagged = [p for p in all_proofs if not str(p.get("shipment_id") or "").strip()]
+    return untagged
+
+
+def qty_delivered_for_shipment(order: dict, shipment: Optional[dict]) -> int:
+    if not isinstance(shipment, dict):
+        return 0
+    if str(shipment.get("delivery_status") or "").strip() == "Terkirim" or shipment.get("delivered_at"):
+        return delivery_batch_qty(shipment)
+    keys = shipment_identity_keys(order, shipment)
+    total = 0
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("shipment_id") or "").strip() in keys:
+            total += max(0, _safe_int(rec.get("qty")))
+    return total
+
+
+def shipment_is_delivered(order: dict, shipment: Optional[dict]) -> bool:
+    batch = delivery_batch_qty(shipment)
+    if batch <= 0 or not isinstance(shipment, dict):
+        return False
+    if str(shipment.get("delivery_status") or "").strip() == "Terkirim" or shipment.get("delivered_at"):
+        return True
+    return qty_delivered_for_shipment(order, shipment) >= batch
+
+
+def mark_shipment_delivered(shipment: Optional[dict], *, now: str, qty: int) -> None:
+    if not isinstance(shipment, dict):
+        return
+    shipment["delivered_at"] = now
+    shipment["delivery_status"] = "Terkirim"
+    shipment["qty_delivered"] = max(0, int(qty))
 
 
 def delivery_batch_identity(shipment: Optional[dict]) -> str:

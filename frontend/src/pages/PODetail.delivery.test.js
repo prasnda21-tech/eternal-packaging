@@ -33,6 +33,14 @@ describe("PO Detail delivery cards", () => {
     expect(detail).toMatch(/terkirimQtySummary/);
   });
 
+  test("Pengiriman panel selects an explicit SJ batch", () => {
+    expect(proof).toMatch(/data-testid="pengiriman-sj-select"/);
+    expect(proof).toMatch(/shipment_id: activeShipment/);
+    expect(proof).toMatch(/pengirimanSjOptions/);
+    expect(proof).toMatch(/proofsForShipment/);
+    expect(proof).not.toMatch(/activeDeliveryBatch\(order\)/);
+  });
+
   test("Bukti Kirim delete waits on the request and does not duplicate", () => {
     expect(proof).toMatch(/deleteDeliveryProof/);
     expect(proof).toMatch(/deletingId/);
