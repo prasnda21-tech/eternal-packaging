@@ -45,25 +45,31 @@ export function resolveLoadingPoLineIdx(order, shipLine) {
 }
 
 function packedQtyForLine(order, snap, idx) {
+  const lines = Array.isArray(order?.packing_info?.lines) ? order.packing_info.lines : [];
+  const matches = [];
+  for (const row of lines) {
+    if (resolveLoadingPoLineIdx(order, row) === idx) matches.push(row);
+  }
+  if (matches.length === 1) return Number(matches[0].packed_qty || 0) || 0;
   const fromSnap = snap?.packed;
   if (fromSnap != null && fromSnap !== "") {
     const n = Number(fromSnap);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  const lines = Array.isArray(order?.packing_info?.lines) ? order.packing_info.lines : [];
-  const row = lines.find((r) => {
-    const ridx = explicitLineIdx(r?.line_idx);
-    return ridx != null && ridx === idx;
-  });
-  if (row) return Number(row.packed_qty || 0) || 0;
-  const li = (order?.line_items || [])[idx] || {};
-  const lid = String(li.line_id || li.id || "").trim();
-  if (lid) {
-    const byId = lines.filter((r) => String(r?.line_id || "").trim() === lid);
-    if (byId.length === 1) return Number(byId[0].packed_qty || 0) || 0;
-  }
   if (!lines.length && Number(idx) === 0) return Number(order?.packing_info?.qty_packed || 0) || 0;
   return 0;
+}
+
+function legacyLoadedForLine(order, idx) {
+  const rows = Array.isArray(order?.loading_info?.lines) ? order.loading_info.lines : [];
+  if (rows.length) {
+    const row = rows.find((r) => explicitLineIdx(r?.line_idx) === idx);
+    return row ? Number(row.loaded_qty ?? row.loaded ?? 0) || 0 : 0;
+  }
+  const events = Array.isArray(order?.loading_info?.events) ? order.loading_info.events : [];
+  return events.reduce((sum, ev) => (
+    explicitLineIdx(ev?.line_idx) === idx ? sum + (Number(ev.qty || 0) || 0) : sum
+  ), 0);
 }
 
 function isPrintLine(li) {
@@ -148,7 +154,7 @@ export function loadingPoLines(order, selectedSjId = null) {
     }
 
     let loadedForSj = 0;
-    let totalLoadedLine = 0;
+    let totalLoadedLine = legacyLoadedForLine(order, idx);
     for (const conf of confirmations) {
       for (const ln of conf.lines || []) {
         if (Number(ln.line_idx) === idx) {
