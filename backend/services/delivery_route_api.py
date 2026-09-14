@@ -48,6 +48,7 @@ from services.delivery_outlets import (
     public_outlet,
 )
 from services.delivery_vehicles import normalize_vehicle, public_vehicle
+from services.google_maps_link import GoogleMapsLinkError, resolve_google_maps_short_link
 from services.places_provider.base import PlacesNotConfigured, PlacesProviderError
 from services.places_provider.factory import get_places_provider
 from services.delivery_driver_assignment import (
@@ -130,6 +131,10 @@ class PatchOutletPayload(BaseModel):
     formatted_address: Optional[str] = None
     lat: Optional[float] = None
     lng: Optional[float] = None
+
+
+class ResolveMapsLinkPayload(BaseModel):
+    url: str
 
 
 class AssignDriverPayload(BaseModel):
@@ -391,6 +396,19 @@ def register(api_router: APIRouter, deps: dict) -> None:
                 "lat": det.lat,
                 "lng": det.lng,
             }
+        }
+
+    @api_router.post("/delivery/places/resolve-maps-link")
+    async def resolve_maps_link(payload: ResolveMapsLinkPayload, user=Depends(current_user)):
+        await _require_location_edit(user)
+        try:
+            resolved = resolve_google_maps_short_link(payload.url)
+        except GoogleMapsLinkError as e:
+            raise HTTPException(status_code=400, detail={"code": e.code, "message": e.message}) from e
+        return {
+            "lat": resolved.lat,
+            "lng": resolved.lng,
+            "resolved_url": resolved.url,
         }
 
     @api_router.get("/delivery/outlets")
