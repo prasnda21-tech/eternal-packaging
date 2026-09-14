@@ -96,7 +96,7 @@ describe("Jadwal Pengiriman task-context selector", () => {
     expect(mobileLoadingScheduleHref()).toBe("/m/delivery-schedule?ws=loading");
   });
 
-  test("Loading schedule row keeps shipment identity; packing/delivery hrefs stay unchanged", () => {
+  test("Loading and Pengiriman schedule rows keep shipment identity; packing href stays unchanged", () => {
     const loading = (p) => p === "loading.update";
     expect(mobileScheduleWorkHref("po001", loading, "delivery", "loading")).toBe("/m/orders/po001?ws=loading");
     expect(mobileScheduleWorkHref("po001", loading, "delivery", "loading", { shipment_id: "sh-1" }))
@@ -106,7 +106,7 @@ describe("Jadwal Pengiriman task-context selector", () => {
     expect(mobileScheduleWorkHref("o1", (p) => p === "packing.update", "delivery", "packing", { shipment_id: "sh-1" }))
       .toBe("/m/orders/o1?ws=packing");
     expect(mobileScheduleWorkHref("o1", (p) => p === "delivery.update", "delivery", "delivery", { shipment_id: "sh-1" }))
-      .toBe("/m/orders/o1?ws=delivery");
+      .toBe("/m/orders/o1?ws=delivery&shipment=sh-1");
   });
 
   test("matchLoadingSjFile uses shipment identity, not item name", () => {

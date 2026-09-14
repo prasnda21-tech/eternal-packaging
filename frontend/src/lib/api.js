@@ -97,10 +97,11 @@ export const api = {
   accurateList: (limit = 20, refresh = false, page = 1, keyword = "") =>
     client.get(`/accurate/list`, { params: { limit, refresh, page, keyword } }).then((r) => r.data),
   reminders: () => client.get(`/reminders`).then((r) => r.data),
-  uploadDeliveryProof: (id, file, note, onProgress) => {
+  uploadDeliveryProof: (id, file, note, onProgress, shipmentId) => {
     const form = new FormData();
     form.append("file", file);
     if (note) form.append("note", note);
+    if (shipmentId) form.append("shipment_id", shipmentId);
     return client.post(`/orders/${id}/delivery-proof`, form, {
       headers: { "Content-Type": "multipart/form-data" },
       onUploadProgress: (e) => {

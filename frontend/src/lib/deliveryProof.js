@@ -212,6 +212,92 @@ export function activeDeliveryBatch(order) {
   return ships.length ? ships[ships.length - 1] : null;
 }
 
+export function shipmentIdentityKeys(order, shipment) {
+  const keys = new Set();
+  if (!shipment || typeof shipment !== "object") return keys;
+  ["id", "sales_delivery_id", "number", "accurate_shipment_id", "sj_number"].forEach((k) => {
+    const v = String(shipment[k] || "").trim();
+    if (v) keys.add(v);
+  });
+  const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  for (const f of files) {
+    const fKeys = [f?.id, f?.file_id, f?.shipment_id, f?.sj_number, f?.number, f?.sales_delivery_id]
+      .map((v) => String(v || "").trim())
+      .filter(Boolean);
+    if (fKeys.some((k) => keys.has(k))) fKeys.forEach((k) => keys.add(k));
+  }
+  return keys;
+}
+
+export function findDeliveryShipment(order, shipmentId) {
+  const ships = _shipments(order);
+  const want = String(shipmentId || "").trim();
+  if (!want) return ships.length === 1 ? ships[0] : null;
+  return ships.find((sh) => shipmentIdentityKeys(order, sh).has(want)) || null;
+}
+
+export function qtyDeliveredForShipment(order, shipment) {
+  if (!shipment || typeof shipment !== "object") return 0;
+  if (String(shipment.delivery_status || "").trim() === "Terkirim" || shipment.delivered_at) {
+    return deliveryBatchQty(shipment);
+  }
+  const keys = shipmentIdentityKeys(order, shipment);
+  let total = 0;
+  for (const rec of order?.delivery_confirmations || []) {
+    if (keys.has(String(rec?.shipment_id || "").trim())) {
+      total += Math.max(0, _safeInt(rec?.qty));
+    }
+  }
+  return total;
+}
+
+export function isShipmentDelivered(order, shipment) {
+  const batch = deliveryBatchQty(shipment);
+  if (!shipment || batch <= 0) return false;
+  if (String(shipment.delivery_status || "").trim() === "Terkirim" || shipment.delivered_at) return true;
+  return qtyDeliveredForShipment(order, shipment) >= batch;
+}
+
+export function pengirimanSjOptions(order) {
+  return _shipments(order).map((sh, i) => {
+    const id = deliveryBatchIdentity(sh) || `sj-${i}`;
+    const number = String(sh.number || sh.sj_number || `SJ #${sh.shipment_index || i + 1}`);
+    const date = String(sh.delivery_date || "").slice(0, 10);
+    const qty = deliveryBatchQty(sh);
+    const delivered = isShipmentDelivered(order, sh);
+    return {
+      id,
+      shipment: sh,
+      number,
+      date,
+      qty,
+      delivered,
+      shipmentIndex: sh.shipment_index || i + 1,
+      label: date ? `${number} · ${id}` : `${number} · ${id}`,
+    };
+  });
+}
+
+export function proofsForShipment(order, shipment) {
+  const all = Array.isArray(order?.delivery_proofs) ? order.delivery_proofs.filter((p) => p && p.id) : [];
+  if (!shipment) return all;
+  const keys = shipmentIdentityKeys(order, shipment);
+  const tagged = all.filter((p) => keys.has(String(p.shipment_id || "").trim()));
+  if (tagged.length) return tagged;
+  return all.filter((p) => !String(p.shipment_id || "").trim());
+}
+
+export function selectedPengirimanShipmentId(order, preferredId = "") {
+  const options = pengirimanSjOptions(order);
+  const want = String(preferredId || "").trim();
+  if (want && options.some((o) => o.id === want || shipmentIdentityKeys(order, o.shipment).has(want))) {
+    const hit = options.find((o) => o.id === want || shipmentIdentityKeys(order, o.shipment).has(want));
+    return hit?.id || want;
+  }
+  const open = options.find((o) => !o.delivered);
+  return (open || options[0])?.id || "";
+}
+
 export function deliveryBatchIdentity(shipment) {
   if (!shipment || typeof shipment !== "object") return "";
   return String(shipment.id || shipment.sales_delivery_id || shipment.number || "").trim();

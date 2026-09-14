@@ -208,7 +208,8 @@ describe("PWA Pengiriman gallery picker", () => {
     const gallery = container.querySelector('[data-testid="mobile-delivery-gallery-input"]');
     await act(async () => { setInputFile(gallery, jpegFile()); });
     await flush();
-    expect(api.uploadDeliveryProof).toHaveBeenCalledWith("order-delivery-1", expect.anything());
+    expect(api.uploadDeliveryProof.mock.calls[0][0]).toBe("order-delivery-1");
+    expect(api.uploadDeliveryProof.mock.calls[0][4]).toBe("s1");
     expect(onUpdated).toHaveBeenCalled();
     expect(onUpdated.mock.calls[0][0].delivery_proofs).toHaveLength(1);
   });
@@ -310,8 +311,41 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(deliverySrc).toMatch(/hasPerm|canEdit/);
     expect(deliverySrc).not.toMatch(/role\s*===\s*["']driver["']/);
     expect(deliverySrc).toMatch(/uploadDeliveryProof\(order\.id/);
+    expect(deliverySrc).toMatch(/data-testid="mobile-pengiriman-sj-select"/);
+    expect(deliverySrc).toMatch(/shipment_id: activeShipment/);
     expect(loadingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(packingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(loadingSrc).not.toMatch(/mobile-delivery-gallery-input/);
+  });
+
+  test("Pengiriman selector isolates SJ1 from SJ2", () => {
+    const multi = {
+      ...baseOrder,
+      line_items: [{ name: "Line A", quantity: 2000, line_id: "LA", production_process: "print" }],
+      packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 2000 }] },
+      shipments: [
+        { id: "sj-1", number: "SJ/001", delivery_date: "2026-09-10", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }], total_qty: 1000 },
+        { id: "sj-2", number: "SJ/001_2", delivery_date: "2026-09-12", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }], total_qty: 1000 },
+      ],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={multi} canEdit onUpdated={() => {}} />);
+    });
+    const select = container.querySelector('[data-testid="mobile-pengiriman-sj-select"]');
+    expect(select).toBeTruthy();
+    expect(select.querySelectorAll("option")).toHaveLength(2);
+    act(() => {
+      select.value = "sj-1";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ/001");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toMatch(/Siap dikirim/);
+    act(() => {
+      select.value = "sj-2";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ/001_2");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toMatch(/Belum siap/);
   });
 });

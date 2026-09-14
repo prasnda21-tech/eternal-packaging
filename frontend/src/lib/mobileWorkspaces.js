@@ -139,7 +139,7 @@ export function mobileScheduleWorkHref(orderId, hasPerm, table, workspaceId, row
   const href = workspaceId
     ? mobileTaskHref(orderId, workspaceId)
     : mobileTaskHref(orderId, preferredMobileWorkspaceForTable(hasPerm, table)?.id);
-  if (workspaceId === "loading" && row?.shipment_id) {
+  if ((workspaceId === "loading" || workspaceId === "delivery") && row?.shipment_id) {
     const join = href.includes("?") ? "&" : "?";
     return `${href}${join}shipment=${encodeURIComponent(row.shipment_id)}`;
   }
