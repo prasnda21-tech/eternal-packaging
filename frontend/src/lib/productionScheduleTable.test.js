@@ -75,6 +75,14 @@ describe("productionDashboardRequestParams", () => {
       include_completed: false,
       view: "summary",
     });
+    expect(productionDashboardRequestParams({
+      includeCompleted: false,
+      workDateFilter: "hari_ini",
+    })).toEqual({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+    });
   });
 });
 

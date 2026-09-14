@@ -71,7 +71,7 @@ export function groupedOperatorQuantity(splits) {
   return any ? total : null;
 }
 
-function buildGroupedDisplayOperator(splits) {
+export function buildGroupedDisplayOperator(splits) {
   const list = Array.isArray(splits) ? splits : [];
   const first = list[0] || {};
   const operator_split_ids = [];

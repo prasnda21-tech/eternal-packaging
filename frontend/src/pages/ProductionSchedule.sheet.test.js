@@ -338,4 +338,89 @@ describe("ProductionSchedule spreadsheet", () => {
       .map((el) => el.textContent.trim());
     expect(texts).toEqual(["Screen Besar", "Screen Besar", "—", "Screen Kecil"]);
   });
+
+  test("Hari Ini table keeps today + unfinished carry-over and hides future/unscheduled/historical-complete", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        {
+          id: "a", po_number: "PO-TODAY-OPEN", work_date: "2026-09-14", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "a", operator_email: "a@x.com", operator_name: "A", quantity: 1000, qty_completed: 100, work_date: "2026-09-14", line_printable: true }],
+        },
+        {
+          id: "b", po_number: "PO-TODAY-DONE", work_date: "2026-09-14", current_stage: 14, status_final: "Terkirim", total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "b", operator_email: "b@x.com", operator_name: "B", quantity: 1000, qty_completed: 1000, work_date: "2026-09-14", line_printable: true }],
+        },
+        {
+          id: "b2", po_number: "PO-TODAY-DONE-ACTIVE", work_date: "2026-09-14", current_stage: 8, status_final: "Operator", total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "b2", operator_email: "b2@x.com", operator_user_id: "u-b2", operator_name: "B2", quantity: 1000, qty_completed: 1000, work_date: "2026-09-14", line_printable: true }],
+        },
+        {
+          id: "c", po_number: "PO-CARRY", work_date: "2026-09-12", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "c", operator_email: "c@x.com", operator_name: "C", quantity: 1000, qty_completed: 400, work_date: "2026-09-12", line_printable: true }],
+        },
+        {
+          id: "d", po_number: "PO-HIST-DONE", work_date: "2026-09-12", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "d", operator_email: "d@x.com", operator_name: "D", quantity: 1000, qty_completed: 1000, work_date: "2026-09-12", line_printable: true }],
+        },
+        {
+          id: "e", po_number: "PO-FUTURE", work_date: "2026-09-15", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "e", operator_email: "e@x.com", operator_name: "E", quantity: 1000, qty_completed: 0, work_date: "2026-09-15", line_printable: true }],
+        },
+        { id: "f", po_number: "PO-UNSCHED", work_date: null, current_stage: 8, operators: [] },
+      ],
+      total: 7,
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="prod-row-PO-UNSCHED"]')).toBeTruthy();
+    const select = container.querySelector('[data-testid="prod-workdate-filter"]');
+    await act(async () => {
+      select.value = "hari_ini";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-row-PO-TODAY-OPEN"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-TODAY-DONE"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-TODAY-DONE-ACTIVE"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-CARRY"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HIST-DONE"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-FUTURE"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-UNSCHED"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("4 / 7 entri");
+
+    const selesai = container.querySelector('[data-testid="prod-include-completed"]');
+    await act(async () => { selesai.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(api.productionDashboard).toHaveBeenCalledWith({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+    });
+    expect(container.querySelector('[data-testid="prod-row-PO-TODAY-DONE"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-TODAY-DONE-ACTIVE"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-TODAY-OPEN"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-CARRY"]')).toBeTruthy();
+  });
+
+  test("Tgl Pengerjaan offers Hari Ini and Dari/Sampai leaves that mode", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 1 });
+    await renderPage();
+    const select = container.querySelector('[data-testid="prod-workdate-filter"]');
+    expect([...select.options].map((opt) => opt.value)).toEqual(["all", "hari_ini", "scheduled", "unscheduled"]);
+    expect([...select.options].map((opt) => opt.textContent)).toContain("Hari Ini");
+    await act(async () => {
+      select.value = "hari_ini";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(select.value).toBe("hari_ini");
+    const from = container.querySelector('[data-testid="prod-workdate-from"]');
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setValue.call(from, "2026-09-14");
+      from.dispatchEvent(new Event("input", { bubbles: true }));
+      from.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(select.value).toBe("all");
+    expect(from.value).toBe("2026-09-14");
+  });
 });
