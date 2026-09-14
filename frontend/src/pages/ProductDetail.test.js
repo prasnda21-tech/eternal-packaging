@@ -18,6 +18,7 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
     expect(apiSrc).toMatch(/masterItemDetail:/);
     expect(apiSrc).toMatch(/saveUnitConversion:/);
     expect(apiSrc).toMatch(/initOpeningBalance:/);
+    expect(apiSrc).toMatch(/correctOpeningBalance:/);
     expect(apiSrc).toMatch(/listProductMutations:/);
     expect(apiSrc).toMatch(/getMutationDetail:/);
     expect(apiSrc).toMatch(/\/master-items\/\$\{encodeURIComponent\(id\)\}\/detail/);
@@ -123,6 +124,12 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
 
     // Permission enforcement
     expect(productDetailSrc).toMatch(/canEditOpeningBalance = hasPerm\("current_stock\.update"\) \|\| hasPerm\("permissions\.manage"\)/);
+    expect(productDetailSrc).toMatch(/canCorrectOpening = String\(user\?\.role \|\| ""\)\.toLowerCase\(\) === "holding_team"/);
+    expect(productDetailSrc).toMatch(/btn-correct-opening/);
+    expect(productDetailSrc).toMatch(/correct-opening-modal/);
+    expect(productDetailSrc).toMatch(/Koreksi Saldo Awal/);
+    expect(productDetailSrc).toMatch(/correctOpeningBalance/);
+    expect(productDetailSrc).toMatch(/client_request_id/);
 
     // One-time warning notice
     expect(productDetailSrc).toMatch(/Saldo awal stok fisik hanya dapat ditetapkan.*satu kali/);
