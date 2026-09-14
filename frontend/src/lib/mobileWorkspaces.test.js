@@ -223,16 +223,21 @@ describe("mobile cards and nav", () => {
     expect(activeMobileNav("/optimasi-rute/iro-1")).toBe("optimasiRute");
   });
 
-  test("task counts come from loaded list only", () => {
+  test("task counts use shared date/progress predicates", () => {
+    const now = new Date("2026-09-14T03:00:00.000Z");
     const summary = taskSummaryFromList([
-      { status: "belum" },
-      { status: "sebagian" },
-      { status: "selesai" },
-    ]);
+      { work_date: "2026-09-14", status: "belum", completed_qty: 0 },
+      { work_date: "2026-09-14", status: "sebagian", completed_qty: 1 },
+      { work_date: "2026-09-14", status: "selesai", completed_qty: 2 },
+      { work_date: "2026-09-10", status: "belum", completed_qty: 0 },
+      { work_date: "2026-09-15", status: "belum", completed_qty: 0 },
+      { work_date: "2026-09-15", status: "sebagian", completed_qty: 1 },
+      { work_date: null, status: "sebagian", completed_qty: 2 },
+    ], now);
     expect(summary.hariIni).toBe(3);
-    expect(summary.aktif).toBe(2);
+    expect(summary.aktif).toBe(3);
     expect(summary.proses).toBe(1);
-    expect(summary.menunggu).toBe(1);
+    expect(summary.menunggu).toBe(2);
   });
 });
 
