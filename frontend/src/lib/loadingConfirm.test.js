@@ -1,4 +1,5 @@
 import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus } from "./loadingConfirm";
+import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
 
 describe("Loading confirm helpers", () => {
@@ -573,5 +574,126 @@ describe("Loading confirm helpers", () => {
     const lines = loadingPoLines(order, "sj1");
     expect(lines[0].available).toBe(1000);
     expect(loadingVerificationStatus(order, "sj1").code).toBe("ready_to_verify");
+  });
+
+  test("CASE D non-print partial historical Loading uses min(physical remainder, SJ remainder)", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "Box", quantity: 1000, production_process: "non_print", line_id: "NP1" }],
+      packing_info: {},
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "NP1", qty: 1000 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 400 }] }],
+    }, "sj1");
+    expect(lines[0].packed).toBe(0);
+    expect(lines[0].loaded).toBe(400);
+    expect(lines[0].physical_available).toBe(600);
+    expect(lines[0].sj_available).toBe(600);
+    expect(lines[0].available).toBe(600);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "600" }], lines).ok).toBe(true);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "601" }], lines).ok).toBe(false);
+  });
+
+  test("CASE D selected-SJ remainder can be tighter than physical remainder", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "Box", quantity: 1000, production_process: "non_print", line_id: "NP1" }],
+      packing_info: {},
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "NP1", qty: 600 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 0 }] }],
+      loading_info: { lines: [{ line_idx: 0, loaded_qty: 400 }] },
+    }, "sj1");
+    expect(lines[0].physical_available).toBe(600);
+    expect(lines[0].sj_available).toBe(600);
+    expect(lines[0].available).toBe(600);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "601" }], lines).ok).toBe(false);
+  });
+
+  test("CASE E non-print multi SJ: selected B ignores A loaded but A still reduces physical", () => {
+    const order = {
+      line_items: [{ name: "Box", quantity: 1000, production_process: "non_print", line_id: "NP1" }],
+      packing_info: {},
+      shipments: [
+        { id: "sj-a", file_id: "sj-a", lines: [{ line_idx: 0, line_id: "NP1", qty: 400 }] },
+        { id: "sj-b", file_id: "sj-b", lines: [{ line_idx: 0, line_id: "NP1", qty: 600 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-a", shipment_id: "sj-a", lines: [{ line_idx: 0, line_id: "NP1", qty: 400 }] },
+        { id: "sj-b", shipment_id: "sj-b", lines: [{ line_idx: 0, line_id: "NP1", qty: 600 }] },
+      ],
+      loading_confirmations: [
+        { id: "c-a", surat_jalan_id: "sj-a", lines: [{ line_idx: 0, qty: 400 }] },
+      ],
+    };
+    const a = loadingPoLines(order, "sj-a");
+    const b = loadingPoLines(order, "sj-b");
+    expect(a[0].loaded).toBe(400);
+    expect(a[0].available).toBe(0);
+    expect(b[0].loaded).toBe(0);
+    expect(b[0].physical_available).toBe(600);
+    expect(b[0].sj_available).toBe(600);
+    expect(b[0].available).toBe(600);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "600" }], b).ok).toBe(true);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "601" }], b).ok).toBe(false);
+  });
+
+  test("CASE F same-name non-print lines do not share Loading availability", () => {
+    const lines = loadingPoLines({
+      line_items: [
+        { name: "Box Polos", quantity: 400, production_process: "non_print", line_id: "NP-A" },
+        { name: "Box Polos", quantity: 600, production_process: "non_print", line_id: "NP-B" },
+      ],
+      packing_info: {},
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 0, line_id: "NP-A", qty: 400 },
+          { line_idx: 1, line_id: "NP-B", qty: 600 },
+        ],
+      }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 400 }] }],
+    }, "sj1");
+    expect(lines[0].available).toBe(0);
+    expect(lines[1].available).toBe(600);
+    expect(validateLoadingDraftLines([{ line_idx: 1, qty: "600" }], lines).ok).toBe(true);
+    expect(validateLoadingDraftLines([{ line_idx: 0, qty: "1" }], lines).ok).toBe(false);
+  });
+
+  test("CASE G cancelled Loading does not consume non-print availability", () => {
+    const lines = loadingPoLines({
+      line_items: [{ name: "Box", quantity: 1000, production_process: "non_print", line_id: "NP1" }],
+      packing_info: {},
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "NP1", qty: 1000 }] }],
+      loading_confirmations: [
+        { id: "c1", surat_jalan_id: "sj1", cancelled: true, lines: [{ line_idx: 0, qty: 700 }] },
+        { id: "c2", surat_jalan_id: "sj1", deleted: true, lines: [{ line_idx: 0, qty: 200 }] },
+      ],
+    }, "sj1");
+    expect(lines[0].loaded).toBe(0);
+    expect(lines[0].available).toBe(1000);
+  });
+
+  test("PWA gate agrees with loadingPoLines: non-print packed 0 is loadable", () => {
+    const order = {
+      line_items: [{ name: "Box", quantity: 1000, production_process: "non_print", line_id: "NP1" }],
+      packing_info: {},
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "NP1", qty: 1000 }] }],
+    };
+    const poLines = loadingPoLines(order, "sj1");
+    const avail = loadingAvailability(order, poLines, [{ id: "sj1" }]);
+    expect(poLines[0].packed).toBe(0);
+    expect(poLines[0].available).toBe(1000);
+    expect(avail.blocked).toBe(false);
+    expect(avail.reason).not.toMatch(/qty Packing/i);
+  });
+
+  test("PWA gate agrees with loadingPoLines: printable packed 0 stays blocked", () => {
+    const order = {
+      line_items: [{ name: "Cup", quantity: 1000, production_process: "print", line_id: "P1" }],
+      packing_info: { lines: [{ line_idx: 0, line_id: "P1", packed_qty: 0 }] },
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "P1", qty: 1000 }] }],
+    };
+    const poLines = loadingPoLines(order, "sj1");
+    const avail = loadingAvailability(order, poLines, [{ id: "sj1" }]);
+    expect(poLines[0].available).toBe(0);
+    expect(avail.blocked).toBe(true);
+    expect(avail.reason).toMatch(/qty Packing/i);
   });
 });
