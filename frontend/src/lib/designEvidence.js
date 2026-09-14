@@ -19,11 +19,13 @@ export function hasRealDesignUpload(order) {
   });
 }
 
-/** Chip for Timeline/StageBar stage index 1 (Design). Parallel with Payment. */
-export function resolveDesignChip(order, _currentStage) {
+/** Chip for Timeline/StageBar stage index 1 (Design). */
+export function resolveDesignChip(order, currentStage) {
   if (order?.design_bypassed) return { state: "bypass", label: "BYPASS" };
   if (hasRealDesignUpload(order)) return { state: "done", label: "Selesai" };
-  return { state: "current", label: "Belum dikerjakan" };
+  // Empty Design is current only when workflow is actually on Design — not because the field exists.
+  if (Number(currentStage || 0) === 1) return { state: "current", label: "Belum dikerjakan" };
+  return { state: "pending", label: "Menunggu" };
 }
 
 /** True when the customer approval snapshot is an authoritative approve. */

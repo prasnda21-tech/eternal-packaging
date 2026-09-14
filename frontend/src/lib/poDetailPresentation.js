@@ -127,10 +127,12 @@ export function stageBarClassForTone(tone) {
     case "active":
       return "current";
     case "blocked":
+    case "upcoming":
+      // Reuse existing amber/orange pending (.waiting) — do not invent a second pending palette.
       return "waiting";
     case "not-required":
       return "not-required";
     default:
-      return "upcoming";
+      return "waiting";
   }
 }

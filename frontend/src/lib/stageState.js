@@ -142,7 +142,9 @@ export function resolveStageState(idx, order, currentStage) {
   if (idx === STAGE_PAYMENT) {
     if (order?.payment_bypassed) return { state: "bypass", label: "BYPASS" };
     if ((order?.payment_files || []).length > 0) return { state: "done", label: "Selesai" };
-    return { state: "current", label: "Belum dikerjakan" };
+    // Empty Payment is current only when workflow is actually on Payment — not a default empty-files active.
+    if (Number(currentStage || 0) === STAGE_PAYMENT) return { state: "current", label: "Belum dikerjakan" };
+    return { state: "pending", label: "Menunggu" };
   }
   if (idx === STAGE_APPROVAL_PAYMENT) {
     if (order?.payment_status === "Approved") return { state: "done", label: "Selesai" };
@@ -250,7 +252,8 @@ export function resolveStageState(idx, order, currentStage) {
       if (code.includes("complete")) return { state: "done", label: verification.label };
       if (code.includes("held") || code.includes("mismatch")) return { state: "current", label: verification.label };
       if (code.includes("packing")) return { state: "current", label: verification.label };
-      if (suratJalanCreated(order) || code) return { state: "current", label: verification.label };
+      // Default waiting_verification (or any unused code) is not current without a live Surat Jalan.
+      if (suratJalanCreated(order)) return { state: "current", label: verification.label };
     }
     const confirmations = Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [];
     const hasConfirm = confirmations.length > 0;

@@ -312,7 +312,7 @@ describe("Customer Approval Design StageFlow", () => {
     uploaded_at: "2026-09-11T01:00:00+00:00",
   };
 
-  test("CA approved advances Approval Design; Payment stays current and not auto-complete", () => {
+  test("CA approved advances Approval Design; Payment stays pending and not auto-complete", () => {
     const order = {
       current_stage: 2,
       design_status: "Waiting",
@@ -324,8 +324,9 @@ describe("Customer Approval Design StageFlow", () => {
     };
     expect(resolveApprovalDesignChip(order, 2).state).toBe("done");
     const payment = resolveStageState(3, order, 2);
-    expect(payment.state).toBe("current");
-    expect(payment.label).toBe("Belum dikerjakan");
+    expect(payment.state).not.toBe("done");
+    expect(payment.state).toBe("pending");
+    expect(payment.label).toBe("Menunggu");
     expect(resolveStageState(4, order, 2).state).not.toBe("done");
   });
 });

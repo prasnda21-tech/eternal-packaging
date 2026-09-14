@@ -16,7 +16,8 @@ function assert(cond, msg) {
   };
   const design = resolveStageState(1, order, 4);
   assert(design.state !== "done", `TEST A: design must not be done, got ${design.state}`);
-  assert(design.label === "Belum dikerjakan", `TEST A: expected Belum dikerjakan, got ${design.label}`);
+  assert(design.state === "pending", `TEST A: untouched Design is pending, got ${design.state}`);
+  assert(design.label === "Menunggu", `TEST A: expected Menunggu, got ${design.label}`);
   const approvalDesign = resolveStageState(2, order, 4);
   assert(approvalDesign.state !== "done", "TEST A: approval design must not be done");
   assert(approvalDesign.label === "Menunggu", `TEST A: approval design should wait for design work, got ${approvalDesign.label}`);
@@ -92,7 +93,8 @@ console.log("stageState OK — A/B/C/D passed");
     current_stage: 2,
   };
   assert(resolveStageState(2, order, 2).state === "done", "CA approved must complete Approval Design");
-  assert(resolveStageState(3, order, 2).label === "Belum dikerjakan", "Payment must not auto-complete");
+  assert(resolveStageState(3, order, 2).state !== "done", "Payment must not auto-complete");
+  assert(resolveStageState(3, order, 2).state === "pending", "Payment stays pending until actually reached");
 }
 console.log("stageState OK — customer approval design passed");
 

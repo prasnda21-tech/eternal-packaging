@@ -23,7 +23,8 @@ function chip(idx, order) {
     payment_status: "Approved",
     current_stage: 4,
   };
-  assert(resolveStageState(1, order, 4).label === "Belum dikerjakan", "stageState Design");
+  assert(resolveStageState(1, order, 4).state !== "done", "stageState Design must not be done");
+  assert(resolveStageState(1, order, 4).label === "Menunggu", "stageState Design pending until reached");
 }
 
 // FIXTURE A — production bug payload
@@ -43,7 +44,8 @@ function chip(idx, order) {
   };
   const design = chip(1, order);
   assert(design.state !== "done", `A: Design must not be SELESAI, got ${design.state}/${design.label}`);
-  assert(design.label === "Belum dikerjakan", `A: expected Belum dikerjakan, got ${design.label}`);
+  assert(design.state === "pending", `A: untouched Design is pending, got ${design.state}`);
+  assert(design.label === "Menunggu", `A: expected Menunggu, got ${design.label}`);
   const apprDesign = chip(2, order);
   assert(apprDesign.label !== "Menunggu approval", `A: Approval Design must not say Menunggu approval without design file, got ${apprDesign.label}`);
   assert(chip(3, order).state === "done", "A: Payment SELESAI");
@@ -92,7 +94,8 @@ function chip(idx, order) {
     payment_files: [],
     payment_status: "Waiting",
   };
-  assert(chip(1, order).label === "Belum dikerjakan", "current_stage alone must not complete Design");
+  assert(chip(1, order).state !== "done", "current_stage alone must not complete Design");
+  assert(chip(1, order).label === "Menunggu", "current_stage alone must not mark Design current");
 }
 
 {
@@ -112,8 +115,8 @@ function chip(idx, order) {
   };
   const apprDesign = chip(2, order);
   assert(apprDesign.state === "done" && apprDesign.label === "Selesai", `CA approved must complete Approval Design, got ${apprDesign.state}/${apprDesign.label}`);
-  assert(chip(3, order).state === "current", "Payment must become current, not skipped");
-  assert(chip(3, order).label === "Belum dikerjakan", `Payment must not auto-complete, got ${chip(3, order).label}`);
+  assert(chip(3, order).state !== "done", "Payment must not auto-complete");
+  assert(chip(3, order).state === "pending", "Payment stays pending until actually reached");
 }
 
 console.log("timeline design chip OK — fixtures A/B + regressions passed");
