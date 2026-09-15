@@ -1,4 +1,3 @@
-import { resolveStageState } from "./stageState";
 import {
   cupMarkTone,
   screenMarkTone,
@@ -6,126 +5,163 @@ import {
   packMarkTone,
   loadMarkTone,
   kirimMarkTone,
-  chipStateToRoleTone,
+  qtyMarkTone,
+  prodCompletedQty,
   deliveryRoleMarkTones,
 } from "./mobileOpsStatusMark";
 
-function printOrder(extra = {}) {
-  return {
-    design_status: "Approved",
-    payment_bypassed: true,
-    operator_splits: [{ line_idx: 0, quantity: 10000, qty_completed: 10000 }],
-    helper_prep: { qty_prepared: 10000 },
-    screener_info: { screen_qty: 10 },
-    sample_files: [{ id: "s1" }],
-    sample_approved: true,
-    line_items: [{ name: "Cetak", quantity: 10000, production_process: "print" }],
-    packing_info: { qty_packed: 4000, lines: [{ line_idx: 0, packed_qty: 4000 }] },
-    current_stage: 12,
-    ...extra,
-  };
-}
-
-function toneForStage(order, idx) {
-  return chipStateToRoleTone(resolveStageState(idx, order, Number(order.current_stage || 0)).state);
-}
-
-describe("mobileOpsStatusMark — task-form chips", () => {
-  test("1. packing complete in task form → Pack done even when packed qty is partial", () => {
-    const order = printOrder({ current_stage: 12 });
-    expect(resolveStageState(11, order, 12).state).toBe("done");
-    expect(packMarkTone(order)).toBe("done");
-    expect(packMarkTone({ qty_packed: 4000, qty_total: 10000, current_stage: 12, ...order })).toBe("done");
+describe("mobileOpsStatusMark — 3-state persisted evidence", () => {
+  test("qty tones stay idle when both sides missing", () => {
+    expect(qtyMarkTone(null, null)).toBe("idle");
+    expect(qtyMarkTone(0, 0)).toBe("idle");
   });
 
-  test("2. loading complete → Load done", () => {
-    const order = printOrder({
-      current_stage: 13,
-      surat_jalan_created: true,
-      loading_qty_status: "completed",
-      loading_confirmations: [{ id: "c1", surat_jalan_id: "sh-1", lines: [{ line_idx: 0, qty: 10000 }] }],
-      loading_completed: true,
-    });
-    expect(resolveStageState(13, order, 13).state).toBe("done");
-    expect(loadMarkTone(order)).toBe("done");
+  test("1. Cup: no progress gray, partial amber, complete green", () => {
+    expect(cupMarkTone({})).toBe("idle");
+    expect(cupMarkTone({ helper_required: 100, helper_prepared: 0 })).toBe("idle");
+    expect(cupMarkTone({ helper_required: 100, helper_prepared: 20 })).toBe("pending");
+    expect(cupMarkTone({ helper_required: 100, helper_prepared: 100 })).toBe("done");
   });
 
-  test("3. loading not complete after SJ → Load pending, not done", () => {
-    const order = printOrder({
-      current_stage: 12,
-      surat_jalan_created: true,
-      loading_qty_status: "pending",
-      loading_confirmations: [],
-    });
-    expect(resolveStageState(13, order, 12).state).toBe("current");
-    expect(loadMarkTone(order)).toBe("pending");
-    expect(loadMarkTone(order)).not.toBe("done");
+  test("2. Screen: empty gray, saved qty green; no invented amber", () => {
+    expect(screenMarkTone({})).toBe("idle");
+    expect(screenMarkTone({ current_stage: 8 })).toBe("idle");
+    expect(screenMarkTone({ screen_qty: 10 })).toBe("done");
+    expect(screenMarkTone({ screen_qty: 1, current_stage: 6 })).toBe("done");
   });
 
-  test("4. pengiriman current + qty_delivered 0 → Kirim pending", () => {
-    const order = printOrder({
-      current_stage: 13,
-      surat_jalan_created: true,
-      loading_qty_status: "completed",
-      loading_confirmations: [{ id: "c1", lines: [{ line_idx: 0, qty: 10000 }] }],
-      eligible_delivery_qty: 10000,
-      qty_delivered: 0,
-      terkirim_confirmed: false,
-      delivery_status: "Belum Terkirim",
-    });
-    expect(resolveStageState(14, order, 13).state).toBe("current");
-    expect(kirimMarkTone(order)).toBe("pending");
-    expect(kirimMarkTone(order)).not.toBe("idle");
-    expect(kirimMarkTone(order)).not.toBe("done");
-  });
-
-  test("5. pengiriman complete → Kirim done", () => {
-    const order = printOrder({
-      current_stage: 14,
-      terkirim_confirmed: true,
-      delivery_status: "Terkirim",
-      qty_delivered: 10000,
-    });
-    expect(resolveStageState(14, order, 14).state).toBe("done");
-    expect(kirimMarkTone(order)).toBe("done");
-  });
-
-  test("payload role_status wins over leftover qty fields", () => {
-    expect(packMarkTone({
-      qty_packed: 400,
-      qty_total: 1000,
-      role_status: { pack: "done" },
+  test("3. Cetak: 0 / partial / complete vs print_qty_total", () => {
+    expect(prodMarkTone({})).toBe("idle");
+    expect(prodMarkTone({
+      print_qty_total: 50,
+      operators: [{ split_id: "s1", line_printable: true, qty_completed: 0 }],
+    })).toBe("idle");
+    expect(prodMarkTone({
+      print_qty_total: 50,
+      operators: [{ split_id: "s1", line_printable: true, qty_completed: 10 }],
+    })).toBe("pending");
+    expect(prodMarkTone({
+      print_qty_total: 50,
+      operators: [{ split_id: "s1", line_printable: true, qty_completed: 50 }],
     })).toBe("done");
-    expect(loadMarkTone({ role_status: { load: "done" } })).toBe("done");
-    expect(kirimMarkTone({
-      percent_delivered: 0,
-      qty_delivered: 0,
-      qty_total: 1000,
-      role_status: { kirim: "pending" },
+  });
+
+  test("Cetak maps delivery qty_printed_operator when operators are absent", () => {
+    expect(prodCompletedQty({
+      print_qty_total: 1000,
+      qty_printed_operator: 400,
+    })).toBe(400);
+    expect(prodMarkTone({
+      print_qty_total: 1000,
+      qty_printed_operator: 400,
+    })).toBe("pending");
+    expect(prodMarkTone({
+      print_qty_total: 1000,
+      qty_printed_operator: 1000,
+    })).toBe("done");
+  });
+
+  test("4. Pack: Belum gray, Berjalan amber, Sudah green", () => {
+    expect(packMarkTone({ packing_status: "Belum" })).toBe("idle");
+    expect(packMarkTone({ packing_status: "Berjalan", packing_qty: 4000, qty_total: 10000 })).toBe("pending");
+    expect(packMarkTone({ packing_status: "Sudah" })).toBe("done");
+    expect(packMarkTone({ qty_packed: 0, qty_total: 1000 })).toBe("idle");
+    expect(packMarkTone({ qty_packed: 400, qty_total: 1000 })).toBe("pending");
+    expect(packMarkTone({ qty_packed: 1000, qty_total: 1000 })).toBe("done");
+    expect(packMarkTone({
+      packing_status: "Berjalan",
+      role_status: { pack: "done" },
+      current_stage: 12,
     })).toBe("pending");
   });
 
-  test("Cup/Screen/Prod follow the same chip tones", () => {
-    const order = printOrder();
-    expect(cupMarkTone(order)).toBe(toneForStage(order, 7));
-    expect(screenMarkTone(order)).toBe(toneForStage(order, 6));
-    expect(prodMarkTone(order)).toBe(toneForStage(order, 10));
+  test("5. Load: 0 / partial / complete per-SJ from qty_loaded vs SJ need", () => {
+    const need = { qty_load_need: 5000, sj_item_lines: [{ qty: 5000 }] };
+    expect(loadMarkTone({})).toBe("idle");
+    expect(loadMarkTone({ ...need, qty_loaded: 0 })).toBe("idle");
+    expect(loadMarkTone({ ...need, qty_loaded: 2000 })).toBe("pending");
+    expect(loadMarkTone({ ...need, qty_loaded: 5000 })).toBe("done");
+    expect(loadMarkTone({
+      qty_loaded: 5000,
+      qty_load_need: 5000,
+      role_status: { load: "idle" },
+      current_stage: 12,
+    })).toBe("done");
   });
 
-  test("6. two SJ role_status rows do not copy Load/Kirim", () => {
+  test("6. Kirim: 0 / partial / complete per-SJ from qty_delivered_sj; ignores PO percent", () => {
+    expect(kirimMarkTone({})).toBe("idle");
+    expect(kirimMarkTone({
+      percent_delivered: 100,
+      qty_delivered: 1000,
+      qty_total: 1000,
+    })).toBe("idle");
+    expect(kirimMarkTone({ qty_delivered_sj: 0, qty_sj: 5000 })).toBe("idle");
+    expect(kirimMarkTone({ qty_delivered_sj: 2000, qty_sj: 5000 })).toBe("pending");
+    expect(kirimMarkTone({ qty_delivered_sj: 5000, qty_sj: 5000 })).toBe("done");
+  });
+
+  test("7. two SJ rows isolate Load and Kirim", () => {
     const sj1 = deliveryRoleMarkTones({
       id: "po-1",
-      role_status: { cup: "done", pack: "done", load: "done", kirim: "done" },
+      shipment_id: "sh-1",
+      packing_status: "Sudah",
+      qty_loaded: 5000,
+      qty_load_need: 5000,
+      qty_delivered_sj: 5000,
+      qty_sj: 5000,
+      percent_delivered: 50,
     });
     const sj2 = deliveryRoleMarkTones({
       id: "po-1",
-      role_status: { cup: "done", pack: "done", load: "pending", kirim: "idle" },
+      shipment_id: "sh-2",
+      packing_status: "Sudah",
+      qty_loaded: 2000,
+      qty_load_need: 5000,
+      qty_delivered_sj: 0,
+      qty_sj: 5000,
+      percent_delivered: 50,
     });
     expect(sj1.load).toBe("done");
-    expect(sj1.kirim).toBe("done");
     expect(sj2.load).toBe("pending");
+    expect(sj1.kirim).toBe("done");
     expect(sj2.kirim).toBe("idle");
     expect(sj1.pack).toBe("done");
     expect(sj2.pack).toBe("done");
+  });
+
+  test("delivery payload without cup/screen fields stays gray while packing is active", () => {
+    const deliveryOnly = {
+      print_qty_total: 1000,
+      qty_printed_operator: 1000,
+      qty_packed: 400,
+      qty_total: 1000,
+      qty_delivered: 0,
+      percent_delivered: 0,
+    };
+    expect(deliveryRoleMarkTones(deliveryOnly, false)).toEqual({
+      cup: "idle",
+      screen: "idle",
+      prod: "done",
+      pack: "pending",
+      load: "idle",
+      kirim: "idle",
+    });
+  });
+
+  test("does not fabricate earlier roles from later packing or kirim", () => {
+    const packedAndShipped = {
+      qty_packed: 1000,
+      qty_total: 1000,
+      qty_delivered_sj: 400,
+      qty_sj: 1000,
+    };
+    const tones = deliveryRoleMarkTones(packedAndShipped, false);
+    expect(tones.cup).toBe("idle");
+    expect(tones.screen).toBe("idle");
+    expect(tones.prod).toBe("idle");
+    expect(tones.pack).toBe("done");
+    expect(tones.load).toBe("idle");
+    expect(tones.kirim).toBe("pending");
   });
 });

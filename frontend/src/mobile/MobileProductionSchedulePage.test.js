@@ -209,7 +209,7 @@ describe("MobileProductionSchedulePage", () => {
       "Status per Role",
       "Cup",
       "Screen",
-      "Prod",
+      "Cetak",
       "Pack",
       "Load",
       "Kirim",
@@ -585,7 +585,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key)).not.toContain("screen_size");
     expect(container.querySelectorAll('[data-testid^="mobile-schedule-screen-size-"]').length).toBe(0);
     const screenCell = container.querySelector('[data-testid="prod-screen-qty-PO-1001"]');
-    expect(screenCell.getAttribute("aria-label")).toBe("selesai");
+    expect(screenCell.getAttribute("aria-label")).toBe("selesai semua");
     expect(screenCell.textContent).not.toContain("/");
   });
 
@@ -721,7 +721,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(opsCss).toMatch(/\.mop-ops-filter-rail[\s\S]*overflow-y:\s*hidden/);
   });
 
-  test("role_status from production row drives Pack/Load/Kirim like the task form", async () => {
+  test("Pack follows packing_status; Load/Kirim stay idle without per-SJ qty", async () => {
     api.productionDashboard.mockResolvedValue({
       rows: [{
         ...sampleRows[0],
@@ -729,6 +729,8 @@ describe("MobileProductionSchedulePage", () => {
         packing_status: "Berjalan",
         packing_qty: 4000,
         qty_delivered: 0,
+        qty_total: 25000,
+        percent_delivered: 0,
         role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "pending" },
       }],
       total: 1,
@@ -739,8 +741,8 @@ describe("MobileProductionSchedulePage", () => {
     const pack = container.querySelector('[data-testid="prod-packing-PO-1001"]');
     const load = container.querySelector('[data-testid="prod-loading-PO-1001"]');
     const kirim = container.querySelector('[data-testid="prod-shipped-PO-1001"]');
-    expect(pack.className).toMatch(/is-done/);
-    expect(load.className).toMatch(/is-done/);
-    expect(kirim.className).toMatch(/is-pending/);
+    expect(pack.className).toMatch(/is-pending/);
+    expect(load.className).toMatch(/is-idle/);
+    expect(kirim.className).toMatch(/is-idle/);
   });
 });

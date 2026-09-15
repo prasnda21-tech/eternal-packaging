@@ -17,14 +17,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from services.dashboard_today import wib_today
 from services.shipment_status import shipment_status_row
-from services.workflow_stage_status import role_status_for_schedule_row
+from services.workflow_stage_status import role_status_for_schedule_row, _sj_loaded_vs_need
 from services.tanggal_pengiriman import (
     DEFAULT_LEAD_TIME_DAYS,
     effective_tanggal_pengiriman,
     manual_tanggal_pengiriman,
     parse_calendar_date,
 )
-from quantity_rules import qty_packed
+from quantity_rules import qty_packed, qty_delivered_for_shipment, delivery_batch_qty
 
 STATUS_PENDING = "pending"
 STATUS_SCHEDULED = "scheduled"
@@ -404,6 +404,13 @@ def schedule_row(
     loc = effective_delivery_location(sh, order)
     matched_sj = _shipment_sj_number(sh)
     shipment_id = _shipment_sj_id(sh)
+    qty_loaded, qty_load_need = (0, 0)
+    qty_delivered_sj = 0
+    qty_sj = 0
+    if sh:
+        qty_loaded, qty_load_need = _sj_loaded_vs_need(order, sh)
+        qty_delivered_sj = qty_delivered_for_shipment(order, sh)
+        qty_sj = delivery_batch_qty(sh)
     return {
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
@@ -439,6 +446,10 @@ def schedule_row(
         "sj_label": matched_sj or "",
         "latest_sj_number": matched_sj,
         "sj_item_lines": sj_item_lines(order, sh),
+        "qty_loaded": qty_loaded,
+        "qty_load_need": qty_load_need,
+        "qty_delivered_sj": qty_delivered_sj,
+        "qty_sj": qty_sj,
         "urgent": str(order.get("priority") or "").lower() == "urgent",
         "role_status": role_status_for_schedule_row(order, sh),
     }

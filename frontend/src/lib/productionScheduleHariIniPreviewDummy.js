@@ -22,7 +22,11 @@ export function isProductionScheduleHariIniPreviewHost(win = (typeof window !== 
   return win.location.hostname === "localhost" && String(win.location.port) === "3003";
 }
 
-function dummyRow({ id, po, customer, workDate, deadline, operatorName, urgent = false }) {
+function dummyRow({
+  id, po, customer, workDate, deadline, operatorName, urgent = false,
+  helperRequired = null, helperPrepared = 0, screenQty = null,
+  qtyCompleted = 0, packingStatus = "Belum",
+}) {
   return {
     id,
     po_number: po,
@@ -38,10 +42,15 @@ function dummyRow({ id, po, customer, workDate, deadline, operatorName, urgent =
     status_final: "Operator",
     total_quantity: 1000,
     print_qty_total: 1000,
+    print_completed_qty: qtyCompleted,
     operator_assigned_qty: 1000,
+    helper_required: helperRequired,
+    helper_prepared: helperPrepared,
+    screen_qty: screenQty,
     design_status: "Approved",
     payment_status: "Approved",
-    packing_status: "Belum",
+    packing_status: packingStatus,
+    packing_qty: packingStatus === "Sudah" ? 1000 : packingStatus === "Berjalan" ? 400 : 0,
     operators: [
       {
         split_id: `${id}-op`,
@@ -50,7 +59,7 @@ function dummyRow({ id, po, customer, workDate, deadline, operatorName, urgent =
         line_name: "Cup",
         operator_name: operatorName,
         quantity: 1000,
-        qty_completed: 0,
+        qty_completed: qtyCompleted,
         work_date: workDate,
         line_printable: true,
       },
@@ -78,6 +87,11 @@ export function buildProductionScheduleHariIniPreviewDummyRows(now = new Date())
       workDate: today,
       deadline: tomorrow,
       operatorName: "Budi",
+      helperRequired: 1000,
+      helperPrepared: 400,
+      screenQty: 8,
+      qtyCompleted: 400,
+      packingStatus: "Berjalan",
     }),
     dummyRow({
       id: "hari-ini-dummy-3",
@@ -86,6 +100,11 @@ export function buildProductionScheduleHariIniPreviewDummyRows(now = new Date())
       workDate: yesterday,
       deadline: today,
       operatorName: "Cici",
+      helperRequired: 1000,
+      helperPrepared: 1000,
+      screenQty: 12,
+      qtyCompleted: 1000,
+      packingStatus: "Sudah",
     }),
   ];
 }

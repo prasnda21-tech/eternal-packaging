@@ -53,7 +53,7 @@ export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "qty", label: "Qty Total", width: 84, num: true },
   { key: "cup", label: "Cup", width: 48, num: true },
   { key: "screen", label: "Screen", width: 52, num: true },
-  { key: "prod", label: "Prod", width: 48, num: true },
+  { key: "prod", label: "Cetak", width: 48, num: true },
   { key: "packing", label: "Pack", width: 48, num: true },
   { key: "loading", label: "Load", width: 48, num: true },
   { key: "shipped", label: "Kirim", width: 48, sort: "shipped", num: true },
@@ -107,9 +107,8 @@ const PRODUCTION_ROLE_STATUS_FIELDS = [
   "hold",
   "operators",
   "print_completed_qty",
+  "packing_status",
 ];
-
-const PO_ROLE_STATUS_KEYS = ["cup", "screen", "prod", "pack"];
 
 function canonicalOrderId(value) {
   if (value == null) return "";
@@ -129,9 +128,10 @@ export function indexProductionStatusByOrderId(rows) {
 }
 
 /**
- * Attach canonical Cup/Screen/Prod fields from a matching production row.
+ * Attach canonical Cup/Screen/Cetak fields plus packing_status
+ * from a matching production row.
  * Refuses merge unless both sides share the same order id.
- * Does not copy packing / loading / delivery qty.
+ * Does not copy packing / loading / delivery qty or Load/Kirim.
  */
 export function withProductionRoleStatus(deliveryRow, productionRow) {
   if (!deliveryRow || typeof deliveryRow !== "object") return deliveryRow;
@@ -147,21 +147,6 @@ export function withProductionRoleStatus(deliveryRow, productionRow) {
   if (!(Number.isFinite(deliveryPrint) && deliveryPrint > 0)
     && Number.isFinite(productionPrint) && productionPrint > 0) {
     next.print_qty_total = productionRow.print_qty_total;
-  }
-  const deliveryRoles = next.role_status && typeof next.role_status === "object" ? next.role_status : {};
-  const productionRoles = productionRow.role_status && typeof productionRow.role_status === "object"
-    ? productionRow.role_status
-    : {};
-  const merged = {
-    cup: productionRoles.cup ?? deliveryRoles.cup,
-    screen: productionRoles.screen ?? deliveryRoles.screen,
-    prod: productionRoles.prod ?? deliveryRoles.prod,
-    pack: productionRoles.pack ?? deliveryRoles.pack,
-    load: deliveryRoles.load,
-    kirim: deliveryRoles.kirim,
-  };
-  if (PO_ROLE_STATUS_KEYS.some((key) => merged[key] != null) || merged.load != null || merged.kirim != null) {
-    next.role_status = merged;
   }
   return next;
 }

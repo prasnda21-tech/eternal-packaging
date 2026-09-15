@@ -43,12 +43,14 @@ function sjRow({
   qtyTotal,
   qtyPacked = 0,
   qtyDelivered = 0,
+  qtyLoaded = 0,
+  qtyDeliveredSj = 0,
   printTotal = 0,
   printed = 0,
+  packingStatus = null,
   urgent = false,
-  roleStatus = null,
 }) {
-  const deliveredPct = qtyTotal > 0 ? Math.round((qtyDelivered / qtyTotal) * 100) : 0;
+  const sjNeed = Array.isArray(lines) ? lines.reduce((sum, ln) => sum + (Number(ln?.qty) || 0), 0) : qtyTotal;
   return {
     id,
     order_number: orderNumber,
@@ -68,14 +70,18 @@ function sjRow({
     qty_delivered: qtyDelivered,
     qty_printed_operator: printed,
     print_qty_total: printTotal,
-    percent_delivered: deliveredPct,
-    percent_delivered_display: deliveredPct,
+    packing_status: packingStatus,
+    qty_loaded: qtyLoaded,
+    qty_load_need: sjNeed,
+    qty_delivered_sj: qtyDeliveredSj,
+    qty_sj: sjNeed,
+    percent_delivered: 0,
+    percent_delivered_display: 0,
     percent_ready_to_ship: printTotal > 0 ? Math.round((printed / printTotal) * 100) : 0,
     urgent,
     optimization_status: "belum_dioptimasi",
     optimization_status_label: "Belum Dioptimasi",
     preview: true,
-    role_status: roleStatus,
   };
 }
 
@@ -97,6 +103,9 @@ export function getPwaDeliverySjPreviewScenarios() {
           qtyTotal: 6000,
           qtyPacked: 4000,
           qtyDelivered: 0,
+          qtyLoaded: 6000,
+          qtyDeliveredSj: 0,
+          packingStatus: "Berjalan",
           printTotal: 6000,
           printed: 6000,
           lines: [
@@ -104,7 +113,6 @@ export function getPwaDeliverySjPreviewScenarios() {
             line("sh-dummy-1", "SJ-DUMMY-001", "lid-b", 1, "Lid 16oz Datar", 2000),
             line("sh-dummy-1", "SJ-DUMMY-001", "lid-c", 2, "Cup 22oz Gelas", 2000),
           ],
-          roleStatus: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "pending" },
         }),
       ],
     },
@@ -151,13 +159,16 @@ export function getPwaDeliverySjPreviewScenarios() {
           status: "terlambat",
           qtyTotal: 3000,
           qtyPacked: 1500,
+          qtyDelivered: 3000,
+          qtyLoaded: 3000,
+          qtyDeliveredSj: 3000,
+          packingStatus: "Berjalan",
           printTotal: 3000,
           printed: 3000,
           lines: [
             line("sh-dummy-3a", "SJ-DUMMY-003A", "lid-x", 0, "Cup 12oz PET", 1000),
             line("sh-dummy-3a", "SJ-DUMMY-003A", "lid-y", 1, "Lid 12oz PET", 2000),
           ],
-          roleStatus: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "done" },
         }),
         sjRow({
           id: "preview-d3",
@@ -169,6 +180,10 @@ export function getPwaDeliverySjPreviewScenarios() {
           status: "terjadwal",
           qtyTotal: 3000,
           qtyPacked: 800,
+          qtyDelivered: 0,
+          qtyLoaded: 800,
+          qtyDeliveredSj: 0,
+          packingStatus: "Berjalan",
           printTotal: 3000,
           printed: 2500,
           lines: [
@@ -176,7 +191,6 @@ export function getPwaDeliverySjPreviewScenarios() {
             line("sh-dummy-3b", "SJ-DUMMY-003B", "lid-q", 1, "Lid 9oz Datar", 800),
             line("sh-dummy-3b", "SJ-DUMMY-003B", "lid-r", 2, "Sedotan Pack", 1400),
           ],
-          roleStatus: { cup: "done", screen: "done", prod: "done", pack: "done", load: "pending", kirim: "idle" },
         }),
       ],
     },
@@ -196,6 +210,7 @@ export function getPwaDeliverySjPreviewProductionRows() {
       screen_qty: 20,
       print_qty_total: 6000,
       print_completed_qty: 6000,
+      packing_status: "Berjalan",
       current_stage: 11,
       operators: [
         { split_id: "s1", line_id: "lid-a", line_idx: 0, line_printable: true, qty_completed: 2000 },
@@ -210,6 +225,7 @@ export function getPwaDeliverySjPreviewProductionRows() {
       screen_qty: 12,
       print_qty_total: 3000,
       print_completed_qty: 3000,
+      packing_status: "Berjalan",
       current_stage: 11,
       operators: [
         { split_id: "t1", line_id: "lid-x", line_idx: 0, line_printable: true, qty_completed: 1000 },
