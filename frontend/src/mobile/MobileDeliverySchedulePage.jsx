@@ -19,6 +19,7 @@ import {
 import {
   MOBILE_DELIVERY_SCHEDULE_COLS,
   MOBILE_DELIVERY_STATUS_COL_KEYS,
+  MOBILE_DELIVERY_NOTIF_COL_KEYS,
   canOptimizeFromDeliverySchedule,
   canViewMobileDeliverySchedule,
   deliveryRowWithProductionStatus,
@@ -29,6 +30,7 @@ import {
   optimizationStatusMeta,
   pwaDeliveryScheduleRows,
   pwaDeliverySjRowKey,
+  pwaSjNotificationTones,
   sjItemLineKey,
   sjItemLinesFromRow,
 } from "../lib/mobileDeliverySchedule";
@@ -617,6 +619,7 @@ export default function MobileDeliverySchedulePage() {
                   <OpsScheduleThead
                     cols={MOBILE_DELIVERY_SCHEDULE_COLS}
                     statusKeys={MOBILE_DELIVERY_STATUS_COL_KEYS}
+                    notifKeys={MOBILE_DELIVERY_NOTIF_COL_KEYS}
                     testid="mds-thead"
                     mode="delivery"
                     renderSort={(col) => (
@@ -642,6 +645,8 @@ export default function MobileDeliverySchedulePage() {
                         : undefined;
                       const statusRow = deliveryRowWithProductionStatus(r, productionById);
                       const tones = deliveryRoleMarkTones(statusRow, Boolean(productionRow));
+                      const notifTones = pwaSjNotificationTones(r);
+                      const notifKey = r.shipment_id ? `${r.order_number}-${r.shipment_id}` : r.order_number;
                       return (
                         <tr
                           key={pwaDeliverySjRowKey(r)}
@@ -732,6 +737,27 @@ export default function MobileDeliverySchedulePage() {
                               tone={tones.kirim}
                               title={`Terkirim ${formatIdQty(r.qty_delivered ?? 0)} / ${formatIdQty(r.qty_total ?? 0)}`}
                               testid={`mds-terkirim-${r.order_number}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={notifTones.helper}
+                              title={notifTones.helper === "done" ? "Notifikasi Helper terkirim" : "Notifikasi Helper belum terkirim"}
+                              testid={`mds-notif-helper-${notifKey}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={notifTones.driver}
+                              title={notifTones.driver === "done" ? "Notifikasi Driver terkirim" : "Notifikasi Driver belum terkirim"}
+                              testid={`mds-notif-driver-${notifKey}`}
+                            />
+                          </td>
+                          <td className="production-sheet-cell num">
+                            <OpsRoleMark
+                              tone={notifTones.head_production}
+                              title={notifTones.head_production === "done" ? "Notifikasi Kepala Produksi terkirim" : "Notifikasi Kepala Produksi belum terkirim"}
+                              testid={`mds-notif-kepala-${notifKey}`}
                             />
                           </td>
                         </tr>

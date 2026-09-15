@@ -543,20 +543,26 @@ describe("MobileDeliverySchedulePage", () => {
       "Item Line",
       "Qty Total",
       "Status per Role",
+      "Notifikasi",
       "Cup",
       "Screen",
       "Prod",
       "Pack",
       "Load",
       "Kirim",
+      "Helper",
+      "Driver",
+      "Kepala Produksi",
     ]);
-    expect(labels).not.toContain("Driver");
     expect(labels).not.toContain("Status");
     expect(labels).not.toContain("Aksi");
     expect(labels).not.toContain("Zona");
     expect(labels).not.toContain("Tahap Aktif");
     expect(labels).not.toContain("Tanggal Kerja");
-    expect(labels).not.toContain("Notifikasi");
+    expect(container.querySelector('[data-testid="mds-notif-group"]').textContent).toBe("Notifikasi");
+    expect(container.querySelector('[data-testid="mds-notif-helper-PO-100-sh-100"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-driver-PO-100-sh-100"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-kepala-PO-100-sh-100"]').textContent.trim()).toBe("—");
     expect(container.querySelector('[data-testid="mds-status-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
@@ -569,6 +575,24 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-task-select"]') || container.textContent).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-item-lines-PO-100-sh-100"]').textContent).toBe("—");
     expect(container.textContent).not.toMatch(/item_label/);
+  });
+
+  test("Notifikasi marks follow sj_notifications and ignore packing quantity", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        qty_packed: 5000,
+        current_stage: 11,
+        sj_notifications: { helper: "sent", driver: "idle", head_production: "sent" },
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-notif-helper-PO-100-sh-100"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-driver-PO-100-sh-100"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-kepala-PO-100-sh-100"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]')).toBeTruthy();
   });
 
   test("one SJ item line renders name and qty without using item_label", async () => {
@@ -646,7 +670,9 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).not.toContain("Cup");
     const labels = headerLabels(container);
     expect(labels.indexOf("Item Line")).toBe(labels.indexOf("Customer / No PO") + 1);
-    expect(labels).not.toContain("Driver");
+    expect(labels).toContain("Notifikasi");
+    expect(labels).toContain("Helper");
+    expect(labels.indexOf("Driver")).toBeGreaterThan(labels.indexOf("Notifikasi"));
     expect(labels).not.toContain("Status");
     expect(labels).not.toContain("Aksi");
     expect(labels).not.toContain("Rute");
@@ -1051,9 +1077,21 @@ describe("MobileDeliverySchedulePage", () => {
     expect(multi.textContent).not.toMatch(/\+\d/);
     const labels = headerLabels(container);
     expect(labels).not.toContain("Tanggal Kerja");
-    expect(labels).not.toContain("Notifikasi");
+    expect(labels).toContain("Notifikasi");
+    expect(labels).toContain("Helper");
+    expect(labels).toContain("Driver");
+    expect(labels).toContain("Kepala Produksi");
     expect(container.querySelector('[data-testid="mds-cup-PO-DUMMY-1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-load-PO-DUMMY-1"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-helper-PO-DUMMY-1-sh-dummy-1"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-driver-PO-DUMMY-1-sh-dummy-1"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-kepala-PO-DUMMY-1-sh-dummy-1"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-helper-PO-DUMMY-3-sh-dummy-3a"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-driver-PO-DUMMY-3-sh-dummy-3a"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-kepala-PO-DUMMY-3-sh-dummy-3a"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-helper-PO-DUMMY-3-sh-dummy-3b"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-driver-PO-DUMMY-3-sh-dummy-3b"]').textContent.trim()).toBe("✓");
+    expect(container.querySelector('[data-testid="mds-notif-kepala-PO-DUMMY-3-sh-dummy-3b"]').textContent.trim()).toBe("—");
   });
 
   test("PWA delivery keeps canonical sheet zoom, horizontal scroll, and SJ row separators", () => {
@@ -1063,8 +1101,9 @@ describe("MobileDeliverySchedulePage", () => {
     expect(pageSrc).toMatch(/productionSheetZoomStyle/);
     expect(pageSrc).toMatch(/pwaDeliveryScheduleRows/);
     expect(pageSrc).toMatch(/isPwaDeliverySjPreviewEnabled/);
+    expect(pageSrc).toMatch(/pwaSjNotificationTones/);
+    expect(pageSrc).toMatch(/Notifikasi/);
     expect(pageSrc).not.toMatch(/Tanggal Kerja/);
-    expect(pageSrc).not.toMatch(/Notifikasi/);
     expect(css).toMatch(/mop-ds-sj-row/);
     expect(css).toMatch(/border-bottom:\s*1px solid #9aa0a6/);
     expect(css).toMatch(/mop-ds-sheet-viewport[\s\S]*overflow-x:\s*auto/);

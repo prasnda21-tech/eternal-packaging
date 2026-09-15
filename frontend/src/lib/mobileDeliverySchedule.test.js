@@ -15,6 +15,7 @@ import {
   mobileDeliveryWorkHref,
   pwaDeliveryScheduleRows,
   pwaDeliverySjRowKey,
+  pwaSjNotificationTones,
   sjItemLineKey,
   sjItemLinesFromRow,
   withProductionRoleStatus,
@@ -85,6 +86,9 @@ describe("mobileDeliverySchedule access", () => {
       "packing",
       "loading",
       "shipped",
+      "notif_helper",
+      "notif_driver",
+      "notif_kepala",
     ]);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.map((c) => c.label)).toEqual([
       "Prioritas",
@@ -98,6 +102,9 @@ describe("mobileDeliverySchedule access", () => {
       "Pack",
       "Load",
       "Kirim",
+      "Helper",
+      "Driver",
+      "Kepala Produksi",
     ]);
     expect(keys).not.toContain("driver");
     expect(keys).not.toContain("status");
@@ -109,9 +116,10 @@ describe("mobileDeliverySchedule access", () => {
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Jadwal Manual")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tgl Kirim")).toBe(true);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tanggal Kerja")).toBe(false);
-    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => /notif/i.test(c.label))).toBe(false);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Notifikasi")).toBe(false);
     expect(keys).not.toContain("work_date");
     expect(keys).not.toContain("notification");
+    expect(keys).toEqual(expect.arrayContaining(["notif_helper", "notif_driver", "notif_kepala"]));
   });
 });
 
@@ -506,6 +514,31 @@ describe("PWA SJ-only visibility and row identity", () => {
     const grouped = pwaDeliveryScheduleRows([valid, { ...valid, shipment_id: "sh-2", sj_label: "SJ-002" }]);
     expect(grouped).toHaveLength(2);
     expect(pwaDeliveryScheduleRows([valid, { ...valid, shipment_id: "sh-2", sj_label: "SJ-002" }], 1.4)).toHaveLength(2);
+  });
+});
+
+describe("PWA SJ role notification marks", () => {
+  test("sent maps to done and missing payload stays idle", () => {
+    expect(pwaSjNotificationTones({
+      sj_notifications: { helper: "sent", driver: "sent", head_production: "sent" },
+    })).toEqual({ helper: "done", driver: "done", head_production: "done" });
+    expect(pwaSjNotificationTones({})).toEqual({ helper: "idle", driver: "idle", head_production: "idle" });
+  });
+
+  test("does not infer notification from packing, production, or overdue date", () => {
+    const packed = pwaSjNotificationTones({
+      qty_packed: 5000,
+      current_stage: 11,
+      status: "terlambat",
+      effective_delivery_date: "2026-09-01",
+    });
+    expect(packed).toEqual({ helper: "idle", driver: "idle", head_production: "idle" });
+  });
+
+  test("partial role sent does not fill the others", () => {
+    expect(pwaSjNotificationTones({
+      sj_notifications: { helper: "sent", driver: "idle" },
+    })).toEqual({ helper: "done", driver: "idle", head_production: "idle" });
   });
 });
 

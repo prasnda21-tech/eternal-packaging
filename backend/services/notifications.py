@@ -1,11 +1,11 @@
-"""Minimal in-app notifications — Customer Design Approval only.
+"""Minimal in-app notifications.
 
-Scope (locked):
-  - Events: customer design approved / rejected
-  - Recipients: active Designer/CRM roles UNION explicitly selected members
-  - Settings: app_settings key customer_design_approval_notification
-  - Side effect only: never rolls back customer approval mutations
+Events:
+  - customer design approved / rejected → Designer/CRM (+ explicit members)
+  - loading qty mismatch vs SJ → CRM (branch-aware)
+  - surat jalan created → Helper, Driver, Kepala Produksi (branch-aware)
 
+Side effect only: never rolls back the triggering mutation.
 Not a StageFlow notification framework.
 """
 from __future__ import annotations
@@ -25,7 +25,11 @@ EVENT_REJECTED = "customer_design_rejected"
 
 ROLE_DESIGNER = "designer"
 ROLE_CRM = "crm"
+ROLE_HELPER = "helper"
+ROLE_DRIVER = "driver"
+ROLE_HEAD_PRODUCTION = "head_production"
 RECIPIENT_ROLES = (ROLE_DESIGNER, ROLE_CRM)
+SJ_CREATED_RECIPIENT_ROLES = (ROLE_HELPER, ROLE_DRIVER, ROLE_HEAD_PRODUCTION)
 
 DEFAULT_SETTINGS = {
     "key": SETTINGS_KEY,
@@ -427,11 +431,23 @@ async def mark_notification_read(db, user_id: str, notification_id: str) -> Opti
 # ---------------------------------------------------------------------------
 
 EVENT_LOADING_QTY_MISMATCH = "loading_qty_mismatch"
+EVENT_SURAT_JALAN_CREATED = "surat_jalan_created"
 
 
-async def resolve_crm_recipient_user_ids_for_branch(db, branch_id: Optional[str] = None) -> List[str]:
-    """Active CRM-role users, optionally scoped to branch_id when users carry branch."""
-    query: Dict[str, Any] = {"role": ROLE_CRM, "status": {"$ne": "inactive"}}
+def idle_sj_notification_status() -> Dict[str, str]:
+    return {role: "idle" for role in SJ_CREATED_RECIPIENT_ROLES}
+
+
+async def resolve_role_recipient_user_ids_for_branch(
+    db,
+    role: str,
+    branch_id: Optional[str] = None,
+) -> List[str]:
+    """Active users for one canonical role, optionally scoped to branch_id."""
+    want = str(role or "").strip()
+    if not want:
+        return []
+    query: Dict[str, Any] = {"role": want, "status": {"$ne": "inactive"}}
     bid = str(branch_id or "").strip()
     if bid:
         query["$or"] = [
@@ -451,12 +467,16 @@ async def resolve_crm_recipient_user_ids_for_branch(db, branch_id: Optional[str]
             continue
         if bid:
             ub = str((u or {}).get("branch_id") or (u or {}).get("cabang_id") or "").strip()
-            # Include unscoped CRM + matching branch
             if ub and ub != bid:
                 continue
         seen.add(uid)
         out.append(uid)
     return out
+
+
+async def resolve_crm_recipient_user_ids_for_branch(db, branch_id: Optional[str] = None) -> List[str]:
+    """Active CRM-role users, optionally scoped to branch_id when users carry branch."""
+    return await resolve_role_recipient_user_ids_for_branch(db, ROLE_CRM, branch_id)
 
 
 async def emit_loading_qty_discrepancy_notifications(
@@ -534,3 +554,169 @@ async def emit_loading_qty_discrepancy_notifications(
     except Exception:
         log.exception("emit_loading_qty_discrepancy_notifications failed")
         return []
+
+
+def canonical_sj_id_from_shipment(shipment: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(shipment, dict):
+        return ""
+    return str(shipment.get("id") or shipment.get("sales_delivery_id") or "").strip()
+
+
+def canonical_sj_number_from_shipment(shipment: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(shipment, dict):
+        return ""
+    return str(shipment.get("number") or shipment.get("sj_number") or "").strip()
+
+
+def _order_branch_id(order: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(order, dict):
+        return ""
+    return str(order.get("branch_id") or order.get("cabang_id") or "").strip()
+
+
+def _assigned_driver_user_id(order: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(order, dict):
+        return ""
+    lc = order.get("loading_checklist") if isinstance(order.get("loading_checklist"), dict) else {}
+    return str(lc.get("driver_user_id") or order.get("driver_user_id") or "").strip()
+
+
+def build_sj_created_notification_content(
+    *,
+    order: Dict[str, Any],
+    shipment: Dict[str, Any],
+    role: str,
+) -> Dict[str, str]:
+    po = str(order.get("po_number") or order.get("number") or "").strip() or "-"
+    customer = order.get("customer_name") or order.get("customer") or order.get("outlet_name") or ""
+    sj = canonical_sj_number_from_shipment(shipment)
+    role_label = {
+        ROLE_HELPER: "Helper",
+        ROLE_DRIVER: "Driver",
+        ROLE_HEAD_PRODUCTION: "Kepala Produksi",
+    }.get(role, role)
+    title = f"Surat Jalan dibuat — {role_label}"
+    body = f"PO {po}"
+    if customer:
+        body += f" / {customer}"
+    if sj:
+        body += f". SJ {sj}."
+    else:
+        body += "."
+    return {"title": title, "body": body}
+
+
+async def resolve_sj_created_recipient_ids_for_role(
+    db,
+    *,
+    order: Dict[str, Any],
+    role: str,
+) -> List[str]:
+    """Helper / Kepala Produksi: active role users at branch. Driver: assigned user, else role users."""
+    branch_id = _order_branch_id(order)
+    if role == ROLE_DRIVER:
+        assigned = _assigned_driver_user_id(order)
+        if assigned:
+            found = await resolve_explicit_recipient_user_ids(db, [assigned])
+            if found:
+                return found
+    return await resolve_role_recipient_user_ids_for_branch(db, role, branch_id)
+
+
+async def emit_surat_jalan_created_notifications(
+    db,
+    *,
+    order: Dict[str, Any],
+    shipment: Dict[str, Any],
+    logger: Optional[logging.Logger] = None,
+) -> List[Dict[str, Any]]:
+    """Notify Helper, Driver, and Kepala Produksi after a valid Surat Jalan is persisted.
+
+    Requires canonical SJ id AND number — same rule as PWA Jadwal Pengiriman visibility.
+    Does not infer from packing, loading, production, or estimation date.
+    Idempotent via dedupe_key on shipment id + user. Never raises to caller.
+    """
+    log = logger or logging.getLogger("notifications")
+    try:
+        shipment_id = canonical_sj_id_from_shipment(shipment)
+        sj_number = canonical_sj_number_from_shipment(shipment)
+        if not shipment_id or not sj_number:
+            return []
+        order_id = str((order or {}).get("id") or "").strip()
+        po = str((order or {}).get("po_number") or "").strip() or None
+        link = deep_link_for_order(order_id) if order_id else "/m/delivery-schedule"
+
+        created: List[Dict[str, Any]] = []
+        for role in SJ_CREATED_RECIPIENT_ROLES:
+            user_ids = await resolve_sj_created_recipient_ids_for_role(db, order=order or {}, role=role)
+            if not user_ids:
+                continue
+            content = build_sj_created_notification_content(
+                order=order or {},
+                shipment=shipment,
+                role=role,
+            )
+            for uid in user_ids:
+                doc = await create_notification(
+                    db,
+                    user_id=uid,
+                    event_type=EVENT_SURAT_JALAN_CREATED,
+                    approval_id=shipment_id,
+                    order_id=order_id,
+                    po_number=po,
+                    decision=role,
+                    title=content["title"],
+                    body=content["body"],
+                    deep_link=link,
+                )
+                if doc:
+                    created.append(doc)
+        return created
+    except Exception:
+        log.exception("emit_surat_jalan_created_notifications failed")
+        return []
+
+
+async def sj_created_notification_status_map(
+    db,
+    shipment_ids: Sequence[str],
+) -> Dict[str, Dict[str, str]]:
+    """Per-SJ role sent/idle map from persisted surat_jalan_created notifications only."""
+    ids = []
+    seen: Set[str] = set()
+    for raw in shipment_ids or []:
+        sid = str(raw or "").strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        ids.append(sid)
+    out: Dict[str, Dict[str, str]] = {sid: idle_sj_notification_status() for sid in ids}
+    if not ids:
+        return out
+    cursor = db[COLLECTION].find(
+        {"event_type": EVENT_SURAT_JALAN_CREATED, "approval_id": {"$in": ids}},
+        {"_id": 0, "approval_id": 1, "decision": 1},
+    )
+    rows = await cursor.to_list(len(ids) * 40 + 50)
+    for row in rows:
+        sid = str((row or {}).get("approval_id") or "").strip()
+        role = str((row or {}).get("decision") or "").strip()
+        if sid in out and role in SJ_CREATED_RECIPIENT_ROLES:
+            out[sid][role] = "sent"
+    return out
+
+
+async def attach_sj_created_notification_status(db, rows: Sequence[Dict[str, Any]]) -> None:
+    """Enrich schedule rows in place. Missing/failed lookup → idle, never inferred."""
+    idle = idle_sj_notification_status()
+    ids = [str((r or {}).get("shipment_id") or "").strip() for r in (rows or [])]
+    try:
+        status_map = await sj_created_notification_status_map(db, ids)
+    except Exception:
+        logging.getLogger("notifications").exception("sj_created_notification_status_map failed")
+        status_map = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("shipment_id") or "").strip()
+        row["sj_notifications"] = dict(status_map.get(sid) or idle)

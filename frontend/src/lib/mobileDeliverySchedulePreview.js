@@ -46,6 +46,7 @@ function sjRow({
   printTotal = 0,
   printed = 0,
   urgent = false,
+  sjNotifications = null,
 }) {
   const deliveredPct = qtyTotal > 0 ? Math.round((qtyDelivered / qtyTotal) * 100) : 0;
   return {
@@ -73,6 +74,7 @@ function sjRow({
     urgent,
     optimization_status: "belum_dioptimasi",
     optimization_status_label: "Belum Dioptimasi",
+    sj_notifications: sjNotifications || { helper: "idle", driver: "idle", head_production: "idle" },
     preview: true,
   };
 }
@@ -97,6 +99,7 @@ export function getPwaDeliverySjPreviewScenarios() {
           qtyDelivered: 0,
           printTotal: 6000,
           printed: 6000,
+          sjNotifications: { helper: "sent", driver: "sent", head_production: "sent" },
           lines: [
             line("sh-dummy-1", "SJ-DUMMY-001", "lid-a", 0, "Cup 16oz Datar", 2000),
             line("sh-dummy-1", "SJ-DUMMY-001", "lid-b", 1, "Lid 16oz Datar", 2000),
@@ -150,6 +153,7 @@ export function getPwaDeliverySjPreviewScenarios() {
           qtyPacked: 1500,
           printTotal: 3000,
           printed: 3000,
+          sjNotifications: { helper: "sent", driver: "idle", head_production: "sent" },
           lines: [
             line("sh-dummy-3a", "SJ-DUMMY-003A", "lid-x", 0, "Cup 12oz PET", 1000),
             line("sh-dummy-3a", "SJ-DUMMY-003A", "lid-y", 1, "Lid 12oz PET", 2000),
@@ -167,6 +171,7 @@ export function getPwaDeliverySjPreviewScenarios() {
           qtyPacked: 800,
           printTotal: 3000,
           printed: 2500,
+          sjNotifications: { helper: "idle", driver: "sent", head_production: "idle" },
           lines: [
             line("sh-dummy-3b", "SJ-DUMMY-003B", "lid-p", 0, "Cup 9oz Datar", 800),
             line("sh-dummy-3b", "SJ-DUMMY-003B", "lid-q", 1, "Lid 9oz Datar", 800),
