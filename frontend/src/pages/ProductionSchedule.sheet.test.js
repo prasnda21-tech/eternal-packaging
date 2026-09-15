@@ -11,6 +11,8 @@ import {
   productionSheetZoomFromWheel,
 } from "../lib/productionSheetZoom";
 import ProductionSchedule from "./ProductionSchedule";
+import { wibDateKey } from "../lib/suratJalan";
+import { buildProductionScheduleHariIniPreviewDummyRows } from "../lib/productionScheduleHariIniPreviewDummy";
 
 const mockHasPerm = jest.fn(() => true);
 
@@ -337,5 +339,89 @@ describe("ProductionSchedule spreadsheet", () => {
     const texts = [...container.querySelectorAll('[data-testid="prod-row-PO-1001"] [data-testid^="prod-screen-size-PO-1001-"]')]
       .map((el) => el.textContent.trim());
     expect(texts).toEqual(["Screen Besar", "Screen Besar", "—", "Screen Kecil"]);
+  });
+
+  test("date-column popups have Hari Ini; non-date and toolbar do not", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 1 });
+    await renderPage();
+    expect(container.querySelector('[data-testid="prod-th-today-work_date"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-th-today-deadline"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-th-today-customer"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-th-today-operator"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-filters"] .prod-th-today')).toBeFalsy();
+    const toolbarHariIni = [...container.querySelectorAll('[data-testid="prod-filters"] button')]
+      .some((btn) => btn.textContent.trim() === "Hari Ini");
+    expect(toolbarHariIni).toBe(false);
+    const select = container.querySelector('[data-testid="prod-workdate-filter"]');
+    expect([...select.options].map((opt) => opt.value)).toEqual(["all", "scheduled", "unscheduled"]);
+    expect(api.productionDashboard).toHaveBeenCalledWith({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+    });
+  });
+
+  test("Hari Ini sets independent today ranges and composes with operator; reset clears", async () => {
+    const dummy = buildProductionScheduleHariIniPreviewDummyRows();
+    api.productionDashboard.mockResolvedValue({ rows: dummy, total: dummy.length });
+    await renderPage();
+    const today = wibDateKey();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-today-work_date"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-workdate-from"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-workdate-to"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-date-from"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-date-to"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-workdate-filter"]').value).toBe("all");
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+    expect(api.productionDashboard.mock.calls.every((call) => (
+      JSON.stringify(call[0]) === JSON.stringify({
+        include_cancelled: false,
+        include_completed: true,
+        view: "summary",
+      })
+    ))).toBe(true);
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-today-deadline"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-date-from"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-date-to"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-workdate-from"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-filter-deadline-clear"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    const operator = container.querySelector('[data-testid="prod-filter-operator"]');
+    await act(async () => {
+      operator.value = "Fauzan";
+      operator.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-filter-work_date-clear"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-workdate-from"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-workdate-to"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
   });
 });
