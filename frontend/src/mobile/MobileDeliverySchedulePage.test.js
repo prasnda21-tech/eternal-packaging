@@ -15,6 +15,7 @@ import {
 const mockHasPerm = jest.fn(() => false);
 const mockDeliverySchedule = jest.fn();
 const mockDivisionTasks = jest.fn();
+const mockProductionDashboard = jest.fn();
 const mockNavigate = jest.fn();
 const mockDsRouter = {
   search: "",
@@ -43,6 +44,7 @@ jest.mock("../lib/api", () => ({
   default: {
     deliverySchedule: (...args) => mockDeliverySchedule(...args),
     divisionTasks: (...args) => mockDivisionTasks(...args),
+    productionDashboard: (...args) => mockProductionDashboard(...args),
     listDeliveryOutlets: jest.fn(async () => ({ outlets: [] })),
   },
 }));
@@ -104,6 +106,14 @@ function headerLabels(root) {
   return [...root.querySelectorAll('[data-testid="mds-thead"] th')].map((th) => th.textContent.trim());
 }
 
+function markKind(el) {
+  if (!el) return null;
+  if (el.classList.contains("is-done")) return "done";
+  if (el.classList.contains("is-pending")) return "pending";
+  if (el.classList.contains("is-idle")) return "idle";
+  return el.className;
+}
+
 const flush = async () => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -121,11 +131,13 @@ describe("MobileDeliverySchedulePage", () => {
     mockHasPerm.mockReset();
     mockDeliverySchedule.mockReset();
     mockDivisionTasks.mockReset();
+    mockProductionDashboard.mockReset();
     mockNavigate.mockReset();
     mockDsRouter.search = "";
     mockDsRouter.setParams.mockClear();
     mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
     mockDivisionTasks.mockResolvedValue({ tasks: [] });
+    mockProductionDashboard.mockResolvedValue({ rows: [] });
     sessionStorage.clear();
   });
 
@@ -789,5 +801,130 @@ describe("MobileDeliverySchedulePage", () => {
     expect(pageSrc).toMatch(/data-testid="mds-optimasi-rute"/);
     expect(pageSrc).toMatch(/className="mop-btn-primary"/);
     expect(pageSrc).not.toMatch(/mds-optimize-bar|mop-ds-optimize-bar/);
+  });
+
+  test("delivery-only payload maps prod from qty_printed_operator and leaves cup/screen idle", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockProductionDashboard).toHaveBeenCalled();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-screen-PO-100"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-prod-PO-100"]'))).toBe("pending");
+    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-100"]'))).toBe("pending");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-100"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-100"]'))).toBe("pending");
+  });
+
+  test("overlays canonical production cup/screen/prod onto packing-active delivery row", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        id: "o-lalap",
+        order_number: "PO-LALAP",
+        customer_name: "SPECIAL LALAP",
+        status: "terjadwal",
+        effective_delivery_date: "2026-09-10",
+        qty_total: 1000,
+        qty_packed: 400,
+        qty_delivered: 0,
+        percent_delivered: 0,
+        print_qty_total: 1000,
+        qty_printed_operator: 1000,
+        sj_item_lines: [
+          { shipment_id: "sh-1", line_id: "lid-a", line_idx: 0, name: "Cup 16oz", qty: 600 },
+          { shipment_id: "sh-1", line_id: "lid-b", line_idx: 1, name: "Cup 16oz", qty: 400 },
+        ],
+      }],
+    });
+    mockProductionDashboard.mockResolvedValue({
+      rows: [{
+        id: "o-lalap",
+        po_number: "PO-LALAP",
+        customer: "SPECIAL LALAP",
+        helper_required: 1000,
+        helper_prepared: 1000,
+        screen_qty: 1000,
+        current_stage: 11,
+        print_qty_total: 1000,
+        print_completed_qty: 1000,
+        operators: [
+          { split_id: "s1", line_id: "lid-a", line_idx: 0, line_printable: true, qty_completed: 600 },
+          { split_id: "s2", line_id: "lid-b", line_idx: 1, line_printable: true, qty_completed: 400 },
+        ],
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-LALAP"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-screen-PO-LALAP"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-prod-PO-LALAP"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-LALAP"]'))).toBe("pending");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-LALAP"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-LALAP"]'))).toBe("idle");
+  });
+
+  test("same-name PO lines stay isolated and missing production id does not inherit", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          id: "po-renea-1",
+          order_number: "PO-RENEA-1",
+          customer_name: "RENEA",
+          status: "terjadwal",
+          effective_delivery_date: "2026-09-10",
+          qty_total: 100,
+          qty_packed: 100,
+          qty_delivered: 0,
+          percent_delivered: 0,
+          print_qty_total: 100,
+          qty_printed_operator: 100,
+        },
+        {
+          id: "po-renea-2",
+          order_number: "PO-RENEA-2",
+          customer_name: "RENEA",
+          status: "terjadwal",
+          effective_delivery_date: "2026-09-10",
+          qty_total: 100,
+          qty_packed: 40,
+          qty_delivered: 0,
+          percent_delivered: 0,
+          print_qty_total: 100,
+          qty_printed_operator: 0,
+        },
+      ],
+    });
+    mockProductionDashboard.mockResolvedValue({
+      rows: [{
+        id: "po-renea-1",
+        helper_required: 100,
+        helper_prepared: 100,
+        screen_qty: 10,
+        print_qty_total: 100,
+        operators: [{ split_id: "s1", line_printable: true, qty_completed: 100 }],
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-RENEA-1"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-screen-PO-RENEA-1"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-prod-PO-RENEA-1"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-RENEA-2"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-screen-PO-RENEA-2"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-prod-PO-RENEA-2"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-RENEA-2"]'))).toBe("pending");
+  });
+
+  test("without schedule.view, production dashboard is not fetched and cup/screen stay idle", async () => {
+    mockHasPerm.mockImplementation((p) => p === "delivery.schedule.view");
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(mockDeliverySchedule).toHaveBeenCalled();
+    expect(mockProductionDashboard).not.toHaveBeenCalled();
+    expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-screen-PO-100"]'))).toBe("idle");
+    expect(markKind(container.querySelector('[data-testid="mds-prod-PO-100"]'))).toBe("pending");
   });
 });

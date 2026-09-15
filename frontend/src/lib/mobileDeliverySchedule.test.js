@@ -5,11 +5,14 @@ import {
   MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS,
   canEditMobileDeliveryScheduleLocation,
   canViewMobileDeliverySchedule,
+  deliveryRowWithProductionStatus,
   groupSjItemLines,
+  indexProductionStatusByOrderId,
   mobileDeliveryOrderHref,
   mobileDeliveryWorkHref,
   sjItemLineKey,
   sjItemLinesFromRow,
+  withProductionRoleStatus,
 } from "./mobileDeliverySchedule";
 import {
   DELIVERY_SCHEDULE_STATUS_OPTIONS,
@@ -207,6 +210,16 @@ describe("sj_item_lines helpers", () => {
     expect(groups[0].lines).toHaveLength(2);
   });
 
+  test("missing/null line_idx does not collapse to index 0", () => {
+    const missing = { shipment_id: "sh-1", line_id: "lid-z", name: "Cup" };
+    const idx0 = { shipment_id: "sh-1", line_idx: 0, name: "Cup" };
+    expect(sjItemLineKey(missing, 5)).toBe("sh-1:lid-z:5");
+    expect(sjItemLineKey(idx0, 5)).toBe("sh-1:idx:0:5");
+    expect(sjItemLineKey(missing, 5)).not.toBe(sjItemLineKey(idx0, 5));
+    expect(sjItemLineKey({ shipment_id: "sh-1", name: "Cup" }, 3)).toBe("sh-1:pos:3");
+    expect(sjItemLineKey({ shipment_id: "sh-1", name: "Cup" }, 3)).not.toBe("sh-1:idx:0:3");
+  });
+
   test("schedule helpers treat payload as latest-SJ lines only", () => {
     const latest = [
       { shipment_id: "sh-3", sj_number: "SJ26/09/001-3", line_id: "c", line_idx: 2, name: "Current C", qty: 200 },
@@ -220,3 +233,114 @@ describe("sj_item_lines helpers", () => {
     expect(groupSjItemLines(latest)[0].sj_number).toBe("SJ26/09/001-3");
   });
 });
+
+describe("production role-status overlay identity", () => {
+  test("indexes and merges only by canonical order id", () => {
+    const production = [
+      { id: "po-a", customer: "RENEA", helper_required: 100, helper_prepared: 100, screen_qty: 10 },
+      { id: "po-b", customer: "RENEA", helper_required: 80, helper_prepared: 10 },
+    ];
+    const byId = indexProductionStatusByOrderId(production);
+    expect(byId.get("po-a").helper_prepared).toBe(100);
+    expect(byId.get("RENEA")).toBeUndefined();
+    expect(byId.get(0)).toBeUndefined();
+
+    const deliveryA = { id: "po-a", customer_name: "RENEA", qty_packed: 40, qty_total: 100 };
+    const deliveryB = { id: "po-b", customer_name: "RENEA", qty_packed: 0, qty_total: 80 };
+    expect(withProductionRoleStatus(deliveryA, byId.get("po-a")).helper_required).toBe(100);
+    expect(withProductionRoleStatus(deliveryB, byId.get("po-b")).helper_prepared).toBe(10);
+    expect(withProductionRoleStatus(deliveryA, byId.get("po-b")).helper_required).toBeUndefined();
+  });
+
+  test("6. same-name customers stay isolated by order id", () => {
+    const byId = indexProductionStatusByOrderId([
+      { id: "po-1", customer: "SPECIAL LALAP", helper_required: 50, helper_prepared: 50, screen_qty: 5 },
+    ]);
+    const sameNameOther = deliveryRowWithProductionStatus(
+      { id: "po-other", customer_name: "SPECIAL LALAP", qty_packed: 50, qty_total: 50 },
+      byId,
+    );
+    expect(sameNameOther.helper_required).toBeUndefined();
+    expect(sameNameOther.screen_qty).toBeUndefined();
+    const matched = deliveryRowWithProductionStatus(
+      { id: "po-1", customer_name: "SPECIAL LALAP" },
+      byId,
+    );
+    expect(matched.helper_required).toBe(50);
+    expect(matched.screen_qty).toBe(5);
+  });
+
+  test("7. multiple SJ item lines share PO production status, not first-name match", () => {
+    const delivery = {
+      id: "po-mix",
+      sj_item_lines: [
+        { shipment_id: "sh-1", line_id: "lid-a", line_idx: 0, name: "Cup 16oz", qty: 100 },
+        { shipment_id: "sh-1", line_id: "lid-b", line_idx: 1, name: "Cup 16oz", qty: 200 },
+      ],
+    };
+    const production = {
+      id: "po-mix",
+      helper_required: 300,
+      helper_prepared: 300,
+      screen_qty: 20,
+      operators: [
+        { split_id: "s1", line_id: "lid-a", line_idx: 0, line_printable: true, qty_completed: 100 },
+        { split_id: "s2", line_id: "lid-b", line_idx: 1, line_printable: true, qty_completed: 200 },
+      ],
+    };
+    const merged = withProductionRoleStatus(delivery, production);
+    expect(merged.helper_required).toBe(300);
+    expect(merged.sj_item_lines).toHaveLength(2);
+    expect(merged.operators.map((op) => op.line_id)).toEqual(["lid-a", "lid-b"]);
+  });
+
+  test("8. regenerated SJ rows keep production status via order id", () => {
+    const byId = indexProductionStatusByOrderId([
+      { id: "po-sj", helper_required: 90, helper_prepared: 90, screen_qty: 9 },
+    ]);
+    const oldSj = deliveryRowWithProductionStatus(
+      { id: "po-sj", shipment_id: "sh-old", sj_label: "SJ-1" },
+      byId,
+    );
+    const newSj = deliveryRowWithProductionStatus(
+      { id: "po-sj", shipment_id: "sh-new", sj_label: "SJ-2" },
+      byId,
+    );
+    expect(oldSj.helper_required).toBe(90);
+    expect(newSj.helper_required).toBe(90);
+    expect(oldSj.shipment_id).toBe("sh-old");
+    expect(newSj.shipment_id).toBe("sh-new");
+  });
+
+  test("11. missing line_idx never attaches production status via index 0", () => {
+    const production = {
+      id: "po-idx",
+      helper_required: 10,
+      operators: [{ split_id: "s0", line_idx: 0, line_printable: true, qty_completed: 10 }],
+    };
+    const unmatched = withProductionRoleStatus(
+      { id: "po-other", line_idx: null, customer_name: "Seven Corner Coffee And Space" },
+      production,
+    );
+    expect(unmatched.helper_required).toBeUndefined();
+    expect(unmatched.operators).toBeUndefined();
+    expect(indexProductionStatusByOrderId([production]).get("0")).toBeUndefined();
+  });
+
+  test("does not copy packing or delivery qty from production", () => {
+    const merged = withProductionRoleStatus(
+      { id: "po-1", qty_packed: 4, qty_total: 10, qty_delivered: 1 },
+      {
+        id: "po-1",
+        helper_required: 10,
+        packing_qty: 99,
+        qty_packed: 99,
+        qty_delivered: 99,
+      },
+    );
+    expect(merged.helper_required).toBe(10);
+    expect(merged.qty_packed).toBe(4);
+    expect(merged.qty_delivered).toBe(1);
+  });
+});
+
