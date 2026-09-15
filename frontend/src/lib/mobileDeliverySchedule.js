@@ -109,6 +109,8 @@ const PRODUCTION_ROLE_STATUS_FIELDS = [
   "print_completed_qty",
 ];
 
+const PO_ROLE_STATUS_KEYS = ["cup", "screen", "prod", "pack"];
+
 function canonicalOrderId(value) {
   if (value == null) return "";
   const id = String(value).trim();
@@ -145,6 +147,21 @@ export function withProductionRoleStatus(deliveryRow, productionRow) {
   if (!(Number.isFinite(deliveryPrint) && deliveryPrint > 0)
     && Number.isFinite(productionPrint) && productionPrint > 0) {
     next.print_qty_total = productionRow.print_qty_total;
+  }
+  const deliveryRoles = next.role_status && typeof next.role_status === "object" ? next.role_status : {};
+  const productionRoles = productionRow.role_status && typeof productionRow.role_status === "object"
+    ? productionRow.role_status
+    : {};
+  const merged = {
+    cup: productionRoles.cup ?? deliveryRoles.cup,
+    screen: productionRoles.screen ?? deliveryRoles.screen,
+    prod: productionRoles.prod ?? deliveryRoles.prod,
+    pack: productionRoles.pack ?? deliveryRoles.pack,
+    load: deliveryRoles.load,
+    kirim: deliveryRoles.kirim,
+  };
+  if (PO_ROLE_STATUS_KEYS.some((key) => merged[key] != null) || merged.load != null || merged.kirim != null) {
+    next.role_status = merged;
   }
   return next;
 }

@@ -342,5 +342,23 @@ describe("production role-status overlay identity", () => {
     expect(merged.qty_packed).toBe(4);
     expect(merged.qty_delivered).toBe(1);
   });
+
+  test("copies PO role_status but never production Load/Kirim onto an SJ row", () => {
+    const merged = withProductionRoleStatus(
+      {
+        id: "po-1",
+        shipment_id: "sh-2",
+        role_status: { pack: "done", load: "pending", kirim: "idle" },
+      },
+      {
+        id: "po-1",
+        role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "done" },
+      },
+    );
+    expect(merged.role_status.cup).toBe("done");
+    expect(merged.role_status.pack).toBe("done");
+    expect(merged.role_status.load).toBe("pending");
+    expect(merged.role_status.kirim).toBe("idle");
+  });
 });
 

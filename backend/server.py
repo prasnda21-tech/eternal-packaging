@@ -52,6 +52,7 @@ from services.delivery_schedule import (
     reschedule_rows as _delivery_reschedule_rows,
     schedule_rows as _delivery_schedule_rows,
 )
+from services.workflow_stage_status import role_status_from_order as _role_status_from_order
 from services.delivery_history import (
     append_confirmation as _append_delivery_confirmation,
     attach_delivery_history,
@@ -7080,6 +7081,7 @@ def _production_row(o: dict) -> dict:
         # belum benar-benar keluar dari Packing.
         "packing_status": _packing_status_semantic(o),
         "packing_qty": (o.get("packing_info") or {}).get("qty_packed"),
+        "role_status": _role_status_from_order(o),
         "delivery_note_number": o.get("delivery_note_number"),
         "loading_ok": _loading_completed(o),
         "vehicle_plate": (loading or {}).get("vehicle_plate"),

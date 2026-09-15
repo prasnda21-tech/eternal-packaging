@@ -359,8 +359,8 @@ function cellContent(col, ctx) {
       if (variant === "mobile") {
         return (
           <MobileRoleMark
-            tone={loadMarkTone()}
-            title="Loading tidak tersedia dari payload jadwal produksi"
+            tone={loadMarkTone(row)}
+            title="Loading"
             testid={`prod-loading-${row.po_number}`}
           />
         );

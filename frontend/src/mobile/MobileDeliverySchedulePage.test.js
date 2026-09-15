@@ -99,6 +99,7 @@ const sampleRows = [
     sj_files: [],
     sj_file_count: 0,
     sj_item_lines: [],
+    role_status: { cup: "idle", screen: "idle", prod: "pending", pack: "pending", load: "idle", kirim: "pending" },
   },
 ];
 
@@ -831,6 +832,7 @@ describe("MobileDeliverySchedulePage", () => {
         percent_delivered: 0,
         print_qty_total: 1000,
         qty_printed_operator: 1000,
+        role_status: { pack: "pending", load: "idle", kirim: "idle" },
         sj_item_lines: [
           { shipment_id: "sh-1", line_id: "lid-a", line_idx: 0, name: "Cup 16oz", qty: 600 },
           { shipment_id: "sh-1", line_id: "lid-b", line_idx: 1, name: "Cup 16oz", qty: 400 },
@@ -852,6 +854,7 @@ describe("MobileDeliverySchedulePage", () => {
           { split_id: "s1", line_id: "lid-a", line_idx: 0, line_printable: true, qty_completed: 600 },
           { split_id: "s2", line_id: "lid-b", line_idx: 1, line_printable: true, qty_completed: 400 },
         ],
+        role_status: { cup: "done", screen: "done", prod: "done", pack: "pending", load: "idle", kirim: "idle" },
       }],
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
@@ -880,6 +883,7 @@ describe("MobileDeliverySchedulePage", () => {
           percent_delivered: 0,
           print_qty_total: 100,
           qty_printed_operator: 100,
+          role_status: { pack: "done", load: "idle", kirim: "idle" },
         },
         {
           id: "po-renea-2",
@@ -893,6 +897,7 @@ describe("MobileDeliverySchedulePage", () => {
           percent_delivered: 0,
           print_qty_total: 100,
           qty_printed_operator: 0,
+          role_status: { pack: "pending", load: "idle", kirim: "idle" },
         },
       ],
     });
@@ -904,6 +909,7 @@ describe("MobileDeliverySchedulePage", () => {
         screen_qty: 10,
         print_qty_total: 100,
         operators: [{ split_id: "s1", line_printable: true, qty_completed: 100 }],
+        role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "idle", kirim: "idle" },
       }],
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
@@ -915,6 +921,93 @@ describe("MobileDeliverySchedulePage", () => {
     expect(markKind(container.querySelector('[data-testid="mds-screen-PO-RENEA-2"]'))).toBe("idle");
     expect(markKind(container.querySelector('[data-testid="mds-prod-PO-RENEA-2"]'))).toBe("idle");
     expect(markKind(container.querySelector('[data-testid="mds-packing-PO-RENEA-2"]'))).toBe("pending");
+  });
+
+  test("packing done + loading done + pengiriman current shows Pack/Load green and Kirim orange", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        id: "po-a",
+        order_number: "PO-A",
+        customer_name: "Renea",
+        status: "hari_ini",
+        effective_delivery_date: "2026-09-15",
+        shipment_id: "sh-a",
+        sj_label: "SJ-A",
+        latest_sj_number: "SJ-A",
+        qty_packed: 4000,
+        qty_total: 10000,
+        qty_delivered: 0,
+        percent_delivered: 0,
+        role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "pending" },
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-A"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-A"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-A"]'))).toBe("pending");
+  });
+
+  test("pengiriman complete shows Kirim done", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        id: "po-b",
+        order_number: "PO-B",
+        customer_name: "Renea",
+        status: "hari_ini",
+        effective_delivery_date: "2026-09-15",
+        shipment_id: "sh-b",
+        sj_label: "SJ-B",
+        latest_sj_number: "SJ-B",
+        role_status: { pack: "done", load: "done", kirim: "done" },
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-B"]'))).toBe("done");
+  });
+
+  test("two SJ of the same PO isolate Load/Kirim", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          id: "po-multi",
+          order_number: "PO-MULTI",
+          customer_name: "Renea",
+          status: "hari_ini",
+          effective_delivery_date: "2026-09-15",
+          shipment_id: "sh-1",
+          sj_label: "SJ-1",
+          latest_sj_number: "SJ-1",
+          role_status: { pack: "done", load: "done", kirim: "done" },
+        },
+        {
+          id: "po-multi",
+          order_number: "PO-MULTI",
+          customer_name: "Renea",
+          status: "terjadwal",
+          effective_delivery_date: "2026-09-16",
+          shipment_id: "sh-2",
+          sj_label: "SJ-2",
+          latest_sj_number: "SJ-2",
+          role_status: { pack: "done", load: "pending", kirim: "idle" },
+        },
+      ],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-MULTI"]'))).toBe("done");
+    const rows = container.querySelectorAll('[data-testid^="mds-row-PO-MULTI-"]');
+    expect(rows).toHaveLength(2);
+    const loadMarks = container.querySelectorAll('[data-testid="mds-load-PO-MULTI"]');
+    const kirimMarks = container.querySelectorAll('[data-testid="mds-terkirim-PO-MULTI"]');
+    expect(markKind(loadMarks[0])).toBe("done");
+    expect(markKind(kirimMarks[0])).toBe("done");
+    expect(markKind(loadMarks[1])).toBe("pending");
+    expect(markKind(kirimMarks[1])).toBe("idle");
   });
 
   test("without schedule.view, production dashboard is not fetched and cup/screen stay idle", async () => {

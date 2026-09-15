@@ -702,7 +702,7 @@ export default function MobileDeliverySchedulePage() {
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
                               tone={tones.load}
-                              title="Loading tidak tersedia dari payload jadwal pengiriman"
+                              title="Loading"
                               testid={`mds-load-${r.order_number}`}
                             />
                           </td>
