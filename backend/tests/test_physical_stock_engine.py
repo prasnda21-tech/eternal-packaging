@@ -715,8 +715,8 @@ async def test_18_status_cetak_non_print_skipped(mock_db):
 
 
 @pytest.mark.anyio
-async def test_19_status_cetak_insufficient_unprinted_blocked(mock_db):
-    """19. Insufficient Belum Dicetak raises HTTP 400."""
+async def test_19_status_cetak_insufficient_unprinted_skipped(mock_db):
+    """19. Insufficient Belum Dicetak does not block Cetak; stock is left unchanged."""
     await setup_initialized_product(mock_db, "prod-1", unprinted=100.0, printed=0.0)
     order = {
         "id": "ord-404",
@@ -724,15 +724,20 @@ async def test_19_status_cetak_insufficient_unprinted_blocked(mock_db):
         "line_items": [{"master_item_id": "prod-1", "production_process": "print", "line_id": "l-404"}],
     }
     split = {"line_idx": 0}
-    with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
-    assert exc.value.status_code == 400
-    assert "Stok fisik belum dicetak tidak mencukupi untuk proses cetak" in exc.value.detail
+    await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=200, action_id="act-404", live_enabled=True
+    ) is None
+    assert await claim_operator_stock(mock_db, order, split, increment=200, action_id="act-404b") is None
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["unprinted_qty"] == 100.0
+    assert state["printed_qty"] == 0.0
+    assert not state.get("pending_event")
 
 
 @pytest.mark.anyio
-async def test_20_status_cetak_uninitialized_blocked(mock_db):
-    """20. STATUS_CETAK for uninitialized product raises HTTP 400."""
+async def test_20_status_cetak_uninitialized_skipped(mock_db):
+    """20. STATUS_CETAK for uninitialized product is a safe no-op."""
     await seed_master_product(mock_db, "uninit-prod")
     order = {
         "id": "ord-405",
@@ -740,10 +745,12 @@ async def test_20_status_cetak_uninitialized_blocked(mock_db):
         "line_items": [{"master_item_id": "uninit-prod", "production_process": "print", "line_id": "l-405"}],
     }
     split = {"line_idx": 0}
-    with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(mock_db, order, split, increment=50, live_enabled=True)
-    assert exc.value.status_code == 400
-    assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
+    await precheck_operator_progress(mock_db, order, split, increment=50, live_enabled=True)
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=50, action_id="act-405", live_enabled=True
+    ) is None
+    assert await get_product_stock_state(mock_db, "uninit-prod") is None
+    assert mock_db.stock_movements._docs == []
 
 
 @pytest.mark.anyio
@@ -895,20 +902,22 @@ async def test_cetak_live_false_snapshot_false_allowed(mock_db):
 
 
 @pytest.mark.anyio
-async def test_cetak_live_true_snapshot_true_missing_opening_balance_blocked(mock_db):
-    """live=true + snapshot=true + missing OB → existing 400 remains."""
+async def test_cetak_live_true_snapshot_true_missing_opening_balance_skipped(mock_db):
+    """live=true + snapshot=true + missing OB → Cetak is a safe no-op."""
     await seed_master_product(mock_db, "prod-live-on-miss")
     order = await _cetak_order("ord-live-on-miss", "prod-live-on-miss", snapshot_enabled=True)
     split = {"line_idx": 0}
-    with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(
-            mock_db, order, split, increment=50, live_enabled=True
-        )
-    assert exc.value.status_code == 400
-    assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
+    await precheck_operator_progress(
+        mock_db, order, split, increment=50, live_enabled=True
+    )
     assert await should_claim_operator_stock(
         mock_db, order, split, live_enabled=True
     ) is True
+    assert await claim_operator_stock(mock_db, order, split, increment=50, action_id="act-miss") is None
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=50, action_id="act-miss-h", live_enabled=True
+    ) is None
+    assert await get_product_stock_state(mock_db, "prod-live-on-miss") is None
 
 
 @pytest.mark.anyio
@@ -930,20 +939,21 @@ async def test_cetak_live_true_snapshot_true_sufficient_stock_mutates(mock_db):
 
 
 @pytest.mark.anyio
-async def test_cetak_live_true_snapshot_true_insufficient_stock_blocked(mock_db):
-    """live=true + snapshot=true + insufficient stock → existing rejection remains."""
+async def test_cetak_live_true_snapshot_true_insufficient_stock_skipped(mock_db):
+    """live=true + snapshot=true + insufficient stock → Cetak no-op, balances unchanged."""
     await setup_initialized_product(mock_db, "prod-live-on-short", unprinted=100.0, printed=0.0)
     order = await _cetak_order("ord-live-on-short", "prod-live-on-short", snapshot_enabled=True)
     split = {"line_idx": 0}
-    with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(
-            mock_db, order, split, increment=200, live_enabled=True
-        )
-    assert exc.value.status_code == 400
-    assert "Stok fisik belum dicetak tidak mencukupi untuk proses cetak" in exc.value.detail
+    await precheck_operator_progress(
+        mock_db, order, split, increment=200, live_enabled=True
+    )
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=200, action_id="act-short", live_enabled=True
+    ) is None
     state = await get_product_stock_state(mock_db, "prod-live-on-short")
     assert state["unprinted_qty"] == 100.0
     assert state["printed_qty"] == 0.0
+    assert not state.get("pending_event")
 
 
 @pytest.mark.anyio
@@ -976,21 +986,13 @@ async def test_cetak_live_false_then_true_resumes_enforcement_no_retroactive(moc
     ledger_off = await list_product_mutations(mock_db, "prod-reenable")
     assert ledger_off.get("total", 0) == 0 or ledger_off.get("items") == []
 
-    # Re-enable: future Cetak resumes existing opening-balance enforcement.
-    with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(
-            mock_db, order, split, increment=100, live_enabled=True
-        )
-    assert exc.value.status_code == 400
-    assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
-
-    # Replaying the disabled action_id must raise (no silent backfill / ledger mutation).
-    with pytest.raises(HTTPException) as exc_handle:
-        await handle_operator_progress(
-            mock_db, order, split, increment=100, action_id="act-while-off", live_enabled=True
-        )
-    assert exc_handle.value.status_code == 400
-    assert "Saldo awal stok fisik produk belum ditetapkan" in exc_handle.value.detail
+    # Re-enable: future Cetak skips missing opening stock instead of blocking the flow.
+    await precheck_operator_progress(
+        mock_db, order, split, increment=100, live_enabled=True
+    )
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=100, action_id="act-while-off", live_enabled=True
+    ) is None
     ledger_on = await list_product_mutations(mock_db, "prod-reenable")
     assert ledger_on.get("total", 0) == 0
     assert ledger_on.get("items") == []
@@ -1086,18 +1088,36 @@ async def test_26_stock_out_packing_non_cetak_deducts_unprinted(mock_db):
 
 
 @pytest.mark.anyio
-async def test_27_stock_out_packing_insufficient_blocked(mock_db):
-    """27. Packing stock-out fails with HTTP 400 when stock is insufficient."""
+async def test_27_stock_out_packing_insufficient_skipped(mock_db):
+    """27. Packing stock-out skips insufficient stock; balances unchanged."""
     await setup_initialized_product(mock_db, "prod-1", unprinted=0.0, printed=100.0)
     order = {
         "id": "ord-505",
         "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "packing_completed"},
         "line_items": [{"master_item_id": "prod-1", "production_process": "print"}],
     }
-    with pytest.raises(HTTPException) as exc:
-        await precheck_packing_completed(mock_db, order, [{"line_idx": 0, "qty": 150}])
-    assert exc.value.status_code == 400
-    assert "Stok fisik sudah dicetak tidak mencukupi" in exc.value.detail
+    await precheck_packing_completed(mock_db, order, [{"line_idx": 0, "qty": 150}])
+    movs = await handle_packing_completed(mock_db, order, [{"line_idx": 0, "qty": 150, "action_id": "act-pack-short"}])
+    assert movs == []
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["printed_qty"] == 100.0
+    assert not state.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_packing_uninitialized_is_safe_noop(mock_db):
+    """Packing skip when product has no opening stock."""
+    await seed_master_product(mock_db, "pack-uninit")
+    order = {
+        "id": "ord-pack-uninit",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "packing_completed"},
+        "line_items": [{"master_item_id": "pack-uninit", "production_process": "print"}],
+    }
+    rows = [{"line_idx": 0, "qty": 50, "action_id": "act-pack-u"}]
+    await precheck_packing_completed(mock_db, order, rows)
+    assert await handle_packing_completed(mock_db, order, rows) == []
+    assert await get_product_stock_state(mock_db, "pack-uninit") is None
+    assert mock_db.stock_movements._docs == []
 
 
 # ==============================================================================
@@ -1170,18 +1190,36 @@ async def test_31_stock_out_loading_non_cetak_deducts_unprinted(mock_db):
 
 
 @pytest.mark.anyio
-async def test_32_stock_out_loading_insufficient_blocked(mock_db):
-    """32. Loading confirmation raises HTTP 400 when stock is insufficient."""
+async def test_32_stock_out_loading_insufficient_skipped(mock_db):
+    """32. Loading confirmation skips insufficient stock; balances unchanged."""
     await setup_initialized_product(mock_db, "prod-1", unprinted=50.0, printed=0.0)
     order = {
         "id": "ord-605",
         "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "loading_confirmation"},
         "line_items": [{"master_item_id": "prod-1", "production_process": "non_print"}],
     }
-    with pytest.raises(HTTPException) as exc:
-        await precheck_loading_confirmed(mock_db, order, [{"line_idx": 0, "qty": 100}])
-    assert exc.value.status_code == 400
-    assert "Stok fisik belum dicetak tidak mencukupi" in exc.value.detail
+    await precheck_loading_confirmed(mock_db, order, [{"line_idx": 0, "qty": 100}])
+    movs = await handle_loading_confirmed(mock_db, order, {"id": "rec-605", "lines": [{"line_idx": 0, "qty": 100}]})
+    assert movs == []
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["unprinted_qty"] == 50.0
+    assert not state.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_loading_uninitialized_is_safe_noop(mock_db):
+    """Loading skip when product has no opening stock."""
+    await seed_master_product(mock_db, "load-uninit")
+    order = {
+        "id": "ord-load-uninit",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "loading_confirmation"},
+        "line_items": [{"master_item_id": "load-uninit", "production_process": "print"}],
+    }
+    lines = [{"line_idx": 0, "qty": 40}]
+    await precheck_loading_confirmed(mock_db, order, lines)
+    assert await handle_loading_confirmed(mock_db, order, {"id": "rec-u", "lines": lines}) == []
+    assert await get_product_stock_state(mock_db, "load-uninit") is None
+    assert mock_db.stock_movements._docs == []
 
 
 # ==============================================================================
@@ -1249,14 +1287,29 @@ async def test_36_stock_out_sales_delivery_non_cetak_deducts_unprinted(mock_db):
 
 
 @pytest.mark.anyio
-async def test_37_stock_out_sales_delivery_insufficient_blocked(mock_db):
-    """37. Sales delivery raises HTTP 400 when stock is insufficient."""
+async def test_37_stock_out_sales_delivery_insufficient_skipped(mock_db):
+    """37. Sales delivery skips insufficient stock; balances unchanged."""
     await setup_initialized_product(mock_db, "prod-1", unprinted=0.0, printed=100.0)
     order = {"id": "ord-705", "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "sales_delivery"}}
-    with pytest.raises(HTTPException) as exc:
-        await precheck_sales_delivery(mock_db, order, [{"master_item_id": "prod-1", "production_process": "print", "qty": 200}])
-    assert exc.value.status_code == 400
-    assert "Stok fisik sudah dicetak tidak mencukupi" in exc.value.detail
+    lines = [{"master_item_id": "prod-1", "production_process": "print", "qty": 200}]
+    await precheck_sales_delivery(mock_db, order, lines)
+    movs = await handle_sales_delivery_created(mock_db, order, {"id": "del-705", "line_items": lines})
+    assert movs == []
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["printed_qty"] == 100.0
+    assert not state.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_sales_delivery_uninitialized_is_safe_noop(mock_db):
+    """Surat Jalan stock hook skip when product has no opening stock."""
+    await seed_master_product(mock_db, "sj-uninit")
+    order = {"id": "ord-sj-uninit", "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "sales_delivery"}}
+    lines = [{"master_item_id": "sj-uninit", "production_process": "print", "qty": 80, "line_id": "l-u"}]
+    await precheck_sales_delivery(mock_db, order, lines)
+    assert await handle_sales_delivery_created(mock_db, order, {"id": "del-u", "line_items": lines}) == []
+    assert await get_product_stock_state(mock_db, "sj-uninit") is None
+    assert mock_db.stock_movements._docs == []
 
 
 # ==============================================================================
@@ -1317,14 +1370,120 @@ async def test_41_stock_out_delivery_confirmed_non_cetak_deducts_unprinted(mock_
 
 
 @pytest.mark.anyio
-async def test_42_stock_out_delivery_confirmed_insufficient_blocked(mock_db):
-    """42. Delivery confirmed raises HTTP 400 when stock is insufficient."""
+async def test_42_stock_out_delivery_confirmed_insufficient_skipped(mock_db):
+    """42. Delivery confirmed skips insufficient stock; balances unchanged."""
     await setup_initialized_product(mock_db, "prod-1", unprinted=0.0, printed=50.0)
     order = {"id": "ord-805", "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"}}
-    with pytest.raises(HTTPException) as exc:
-        await precheck_delivery_confirmed(mock_db, order, [{"master_item_id": "prod-1", "production_process": "print", "qty": 100}])
-    assert exc.value.status_code == 400
-    assert "Stok fisik sudah dicetak tidak mencukupi" in exc.value.detail
+    lines = [{"master_item_id": "prod-1", "production_process": "print", "qty": 100}]
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-805")
+    assert claims == []
+    movs = await handle_delivery_confirmed(mock_db, order, {"id": "conf-805", "lines": lines})
+    assert movs == []
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["printed_qty"] == 50.0
+    assert not state.get("pending_event")
+
+
+@pytest.mark.anyio
+async def test_delivery_confirmed_initialized_sufficient_decrements(mock_db):
+    """CASE A: initialized + sufficient stock still decrements on delivery_confirmed."""
+    await setup_initialized_product(mock_db, "prod-1", unprinted=0.0, printed=1000.0)
+    order = {
+        "id": "ord-806",
+        "po_number": "PO-806",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [{"master_item_id": "prod-1", "production_process": "print", "line_id": "l-806"}],
+    }
+    lines = [{"master_item_id": "prod-1", "production_process": "print", "qty": 100, "line_id": "l-806"}]
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-806")
+    assert claims and claims[0]["status"] == "CLAIMED"
+    movs = await finalize_delivery_confirmed_stock(mock_db, claims)
+    assert len(movs) == 1
+    assert movs[0]["movement_type"] == MOVEMENT_PENGIRIMAN
+    state = await get_product_stock_state(mock_db, "prod-1")
+    assert state["printed_qty"] == 900.0
+    assert state["total_qty"] == 900.0
+    assert not state.get("pending_event")
+    assert len(mock_db.stock_movements._docs) >= 1
+
+
+@pytest.mark.anyio
+async def test_delivery_confirmed_uninitialized_is_safe_noop(mock_db):
+    """CASE B: missing opening stock does not block delivery_confirmed stock helpers."""
+    await seed_master_product(mock_db, "prod-uninit")
+    order = {
+        "id": "ord-807",
+        "po_number": "PO-807",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [{"master_item_id": "prod-uninit", "production_process": "print", "quantity": 100, "qty": 100}],
+    }
+    lines = [{"master_item_id": "prod-uninit", "production_process": "print", "qty": 100}]
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-807")
+    assert claims == []
+    movs = await handle_delivery_confirmed(mock_db, order, {"id": "conf-807", "lines": lines})
+    assert movs == []
+    assert await get_product_stock_state(mock_db, "prod-uninit") is None
+    assert mock_db.product_stock_state._docs == []
+    assert mock_db.stock_movements._docs == []
+
+
+@pytest.mark.anyio
+async def test_delivery_confirmed_mixed_initialized_and_uninitialized(mock_db):
+    """Initialized line decrements; uninitialized line is skipped; no global failure."""
+    await setup_initialized_product(mock_db, "prod-a", unprinted=0.0, printed=1000.0)
+    await seed_master_product(mock_db, "prod-b")
+    order = {
+        "id": "ord-808",
+        "po_number": "PO-808",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "delivery_confirmed"},
+        "line_items": [
+            {"master_item_id": "prod-a", "production_process": "print", "qty": 100, "line_id": "l-a"},
+            {"master_item_id": "prod-b", "production_process": "print", "qty": 100, "line_id": "l-b"},
+        ],
+    }
+    lines = order["line_items"]
+    await precheck_delivery_confirmed(mock_db, order, lines)
+    claims = await claim_delivery_confirmed_stock(mock_db, order, lines, "act-808")
+    assert len(claims) == 1
+    assert claims[0]["master_item_id"] == "prod-a"
+    await finalize_delivery_confirmed_stock(mock_db, claims)
+    state_a = await get_product_stock_state(mock_db, "prod-a")
+    assert state_a["printed_qty"] == 900.0
+    assert await get_product_stock_state(mock_db, "prod-b") is None
+    assert all(
+        str(doc.get("master_item_id") or doc.get("_id")) != "prod-b"
+        for doc in mock_db.product_stock_state._docs
+    )
+
+
+@pytest.mark.anyio
+async def test_packing_mixed_initialized_and_insufficient(mock_db):
+    """Packing mutates the initialized/sufficient line and skips the insufficient line."""
+    await setup_initialized_product(mock_db, "pack-ok", unprinted=0.0, printed=500.0)
+    await setup_initialized_product(mock_db, "pack-short", unprinted=0.0, printed=10.0)
+    order = {
+        "id": "ord-pack-mix",
+        "physical_stock_snapshot": {"enabled": True, "stock_out_trigger": "packing_completed"},
+        "line_items": [
+            {"master_item_id": "pack-ok", "production_process": "print"},
+            {"master_item_id": "pack-short", "production_process": "print"},
+        ],
+    }
+    rows = [
+        {"line_idx": 0, "qty": 100, "action_id": "act-mix-ok"},
+        {"line_idx": 1, "qty": 100, "action_id": "act-mix-short"},
+    ]
+    await precheck_packing_completed(mock_db, order, rows)
+    movs = await handle_packing_completed(mock_db, order, rows)
+    assert len(movs) == 1
+    state_ok = await get_product_stock_state(mock_db, "pack-ok")
+    state_short = await get_product_stock_state(mock_db, "pack-short")
+    assert state_ok["printed_qty"] == 400.0
+    assert state_short["printed_qty"] == 10.0
+    assert not state_short.get("pending_event")
 
 
 # ==============================================================================
@@ -1646,11 +1805,11 @@ async def test_51_partial_operator_actual_delta_vs_po_target(mock_db):
     assert st1["printed_qty"] == 1000.0
     assert st1["total_qty"] == 1000.0
 
-    # 2. Operator attempts another 200 with unprinted = 0 -> MUST BLOCK
-    with pytest.raises(HTTPException) as exc:
-        await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
-    assert exc.value.status_code == 400
-    assert "Stok fisik belum dicetak tidak mencukupi" in exc.value.detail
+    # 2. Operator attempts another 200 with unprinted = 0 -> skip, no negative stock
+    await precheck_operator_progress(mock_db, order, split, increment=200, live_enabled=True)
+    assert await handle_operator_progress(
+        mock_db, order, split, increment=200, action_id="act-op-200-skip", live_enabled=True
+    ) is None
 
     # Prior work remains intact
     st2 = await get_product_stock_state(mock_db, "prod-partial")
