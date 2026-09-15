@@ -42,80 +42,12 @@ def get_named_lock(name: str) -> asyncio.Lock:
 
 
 def actor_snapshot(user: Optional[dict]) -> dict:
-    """Identity from authenticated user. Prefer canonical users.id (user_id), then id/sub."""
     user = user or {}
-    uid = str(
-        user.get("user_id")
-        or user.get("id")
-        or user.get("_id")
-        or user.get("sub")
-        or ""
-    ).strip()
     return {
-        "id": uid,
-        "name": str(user.get("name") or user.get("email") or "").strip() or "UNKNOWN",
-        "role": str(user.get("role") or "").strip(),
-        "email": str(user.get("email") or "").strip(),
+        "id": str(user.get("id") or user.get("_id") or ""),
+        "name": str(user.get("name") or user.get("email") or ""),
+        "role": str(user.get("role") or ""),
     }
-
-
-def actor_user_id(user: Optional[dict]) -> str:
-    return str(actor_snapshot(user).get("id") or "").strip()
-
-
-def stamp_create(user: Optional[dict]) -> Dict[str, Any]:
-    """created_* + updated_* on insert (updated mirrors created until later mutation)."""
-    actor = actor_snapshot(user)
-    ts = now_iso()
-    return {
-        "created_at": ts,
-        "updated_at": ts,
-        "created_by": actor,
-        "updated_by": actor,
-    }
-
-
-def stamp_update(user: Optional[dict]) -> Dict[str, Any]:
-    return {
-        "updated_at": now_iso(),
-        "updated_by": actor_snapshot(user),
-    }
-
-
-# ---- Soft cancellation (safe delete) ----
-
-ACTIVE_DOC_FILTER = {"cancelled": {"$ne": True}}
-
-
-def is_cancelled(doc: Optional[dict]) -> bool:
-    return bool(doc and doc.get("cancelled") is True)
-
-
-def cancellation_fields(user: Optional[dict], reason: str = "") -> Dict[str, Any]:
-    """Soft-cancel stamp. Reason optional; empty → internal 'user_cancelled' (not shown in UI)."""
-    actor = actor_snapshot(user)
-    ts = now_iso()
-    why = str(reason or "").strip() or "user_cancelled"
-    return {
-        "cancelled": True,
-        "cancelled_at": ts,
-        "cancelled_by": actor,
-        "cancel_reason": why,
-        "updated_at": ts,
-        "updated_by": actor,
-    }
-
-
-def with_active_filter(filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Merge cancelled!=true into list/query filters without breaking $or."""
-    base = dict(filters or {})
-    if not base:
-        return dict(ACTIVE_DOC_FILTER)
-    if "$and" in base or "$or" in base:
-        return {"$and": [ACTIVE_DOC_FILTER, base]}
-    out = dict(ACTIVE_DOC_FILTER)
-    out.update(base)
-    return out
 
 
 def parse_qty(raw: Any, field_name: str = "Kuantitas") -> float:

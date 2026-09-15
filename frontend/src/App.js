@@ -22,7 +22,6 @@ import PesananPenjualan from "./pages/PesananPenjualan";
 import MasterBarangJasa from "./pages/MasterBarangJasa";
 import ProductDetail from "./pages/ProductDetail";
 import StockSaatIni from "./pages/StockSaatIni";
-import StockOpname from "./pages/StockOpname";
 import PenerimaanBarang from "./pages/PenerimaanBarang";
 import PermintaanPembelian from "./pages/PermintaanPembelian";
 import PesananPembelian from "./pages/PesananPembelian";
@@ -256,7 +255,6 @@ export default function App() {
             <Route path="/persediaan/master-barang-jasa" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><MasterBarangJasa /></PermGate>} />
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
-            <Route path="/persediaan/stock-opname" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.update", "current_stock.view"]}><StockOpname /></PermGate>} />
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />
             <Route path="/buku-besar/jurnal-umum" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralJournal, NAV_KEYS.ledger, "general_journal.view", "general_journal.manage", "general_journal.post", "general_journal.reverse"]}><JurnalUmum /></PermGate>} />

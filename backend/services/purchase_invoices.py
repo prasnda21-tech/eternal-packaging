@@ -1,11 +1,6 @@
-"""Purchase Invoice (Faktur Pembelian).
-
-Sources:
-- receipt (default UI): invoice against goods already received
-- purchase_order: may precede goods receipt when acknowledgement is set
+"""Purchase Invoice (Faktur Pembelian) from exact Pesanan Pembelian lines.
 
 Invoice/payment amounts do not rewrite PO HPP unit prices.
-Invoice never mutates received_qty or stock.
 """
 from __future__ import annotations
 
@@ -17,24 +12,19 @@ from fastapi import HTTPException
 from services.purchase_common import (
     PREFIX_PURCHASE_INVOICE,
     actor_snapshot,
-    stamp_create,
-    cancellation_fields,
     derive_child_number,
     get_named_lock,
     insert_with_unique_number,
-    is_cancelled,
     line_subtotal,
     money_round,
     now_iso,
     parse_qty,
     qty_le,
-    with_active_filter,
 )
 from services.purchase_orders import get_purchase_order
 
 COLLECTION = "purchase_invoices"
 PAY_COLLECTION = "purchase_payments"
-GR_COLLECTION = "purchase_goods_receipts"
 
 
 def payment_status(grand_total: float, paid_total: float) -> str:
@@ -47,28 +37,9 @@ def payment_status(grand_total: float, paid_total: float) -> str:
     return "LUNAS"
 
 
-CONFIRMED_PAYMENT_FILTER = {
-    "cancelled": {"$ne": True},
-    "settlement_status": "PAID",
-}
-
-
 async def _paid_total(db, invoice_id: str) -> float:
-    """Sum amounts from active CONFIRMED (PAID) payments only — drafts/submitted unpaid excluded."""
-    rows = await db[PAY_COLLECTION].find(
-        {
-            "purchase_invoice_id": invoice_id,
-            **CONFIRMED_PAYMENT_FILTER,
-        },
-        {"_id": 0, "amount": 1},
-    ).to_list(2000)
+    rows = await db[PAY_COLLECTION].find({"purchase_invoice_id": invoice_id}, {"_id": 0, "amount": 1}).to_list(2000)
     return money_round(sum(float(r.get("amount") or 0) for r in rows))
-
-
-async def _active_payment_count(db, invoice_id: str) -> int:
-    return int(await db[PAY_COLLECTION].count_documents(
-        with_active_filter({"purchase_invoice_id": invoice_id})
-    ))
 
 
 async def attach_payment_fields(db, inv: dict) -> dict:
@@ -77,42 +48,18 @@ async def attach_payment_fields(db, inv: dict) -> dict:
     grand = float(out.get("grand_total") or 0)
     out["paid_total"] = paid
     out["outstanding_amount"] = max(money_round(grand - paid), 0.0)
-    active_pays = await _active_payment_count(db, out["id"])
-    if is_cancelled(out):
-        out["payment_status"] = "DIBATALKAN"
-        out["can_cancel"] = False
-        out["cancel_block_reason"] = ""
-    else:
-        out["payment_status"] = payment_status(grand, paid)
-        out["can_cancel"] = active_pays <= 0
-        out["cancel_block_reason"] = (
-            ""
-            if out["can_cancel"]
-            else "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu."
-        )
+    out["payment_status"] = payment_status(grand, paid)
     return out
-
-
-def _invoice_source_of(payload: dict) -> str:
-    raw = str(payload.get("invoice_source") or "").strip().lower()
-    if raw in {"receipt", "penerimaan", "goods_receipt"}:
-        return "receipt"
-    if raw in {"purchase_order", "po", "pesanan"}:
-        return "purchase_order"
-    if str(payload.get("receipt_id") or payload.get("goods_receipt_id") or "").strip():
-        return "receipt"
-    return "purchase_order"
 
 
 async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id: Optional[str] = None) -> dict:
     po = await get_purchase_order(db, purchase_order_id)
     if exclude_invoice_id:
+        # recompute remaining excluding one invoice — used only if we later support edit
         po = await get_purchase_order(db, purchase_order_id)
     lines = []
     for li in po.get("lines") or []:
         remain = float(li.get("remaining_invoice_qty") or 0)
-        received = float(li.get("cumulative_received_qty") or 0)
-        invoiced = float(li.get("cumulative_invoiced_qty") or 0)
         unit_price = float(li.get("unit_price") or 0)
         qty = remain
         lines.append({
@@ -126,10 +73,8 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
             "item_name": li.get("item_name") or "",
             "unit": li.get("unit") or "pcs",
             "ordered_qty": li.get("ordered_qty") or 0,
-            "cumulative_received_qty": received,
-            "cumulative_invoiced_qty": invoiced,
+            "cumulative_invoiced_qty": li.get("cumulative_invoiced_qty") or 0,
             "remaining_invoice_qty": remain,
-            "receipt_invoice_eligible_qty": float(li.get("receipt_invoice_eligible_qty") or 0),
             "invoice_qty": qty,
             "unit_price": unit_price,
             "line_subtotal": line_subtotal(qty, unit_price),
@@ -143,95 +88,11 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
         "order_date": po.get("order_date"),
         "lines": lines,
         "invoice_progress": po.get("invoice_progress") or {},
-        "receiving_progress": po.get("receiving_progress") or {},
-        "receiving_status": po.get("receiving_status"),
-        "invoice_status": po.get("invoice_status"),
-    }
-
-
-async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
-    """Prefill invoice lines from an official PO-linked goods receipt."""
-    receipt = await db[GR_COLLECTION].find_one({"id": str(receipt_id)}, {"_id": 0})
-    if not receipt:
-        receipt = await db[GR_COLLECTION].find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
-    if not receipt:
-        raise HTTPException(404, f"Penerimaan '{receipt_id}' tidak ditemukan.")
-    if is_cancelled(receipt):
-        raise HTTPException(400, "Penerimaan sudah dibatalkan; faktur tidak dapat dibuat.")
-    po_id = str(receipt.get("purchase_order_id") or "").strip()
-    if not po_id:
-        raise HTTPException(
-            400,
-            "Faktur dari penerimaan hanya didukung untuk penerimaan yang terhubung ke Pesanan Pembelian.",
-        )
-    po_preview = await get_po_invoice_preview(db, po_id)
-    by_line = {str(l["purchase_order_line_id"]): l for l in po_preview["lines"]}
-    lines = []
-    for li in receipt.get("lines") or []:
-        po_line_id = str(li.get("purchase_order_line_id") or "").strip()
-        src = by_line.get(po_line_id)
-        if src is None:
-            continue
-        receipt_qty = float(li.get("received_qty") or 0)
-        eligible = min(
-            float(src.get("remaining_invoice_qty") or 0),
-            float(src.get("receipt_invoice_eligible_qty") or 0),
-            receipt_qty,
-        )
-        if eligible <= 1e-9:
-            continue
-        unit_price = float(src.get("unit_price") or 0)
-        lines.append({
-            **src,
-            "receipt_line_id": li.get("line_id"),
-            "receipt_received_qty": receipt_qty,
-            "remaining_invoice_qty": eligible,
-            "invoice_qty": eligible,
-            "line_subtotal": line_subtotal(eligible, unit_price),
-        })
-    return {
-        "invoice_source": "receipt",
-        "receipt_id": receipt["id"],
-        "receipt_number": receipt.get("receipt_number"),
-        "purchase_order_id": po_preview["purchase_order_id"],
-        "po_number": po_preview.get("po_number"),
-        "request_id": po_preview.get("request_id"),
-        "request_number": po_preview.get("request_number"),
-        "supplier": po_preview.get("supplier") or receipt.get("supplier"),
-        "order_date": po_preview.get("order_date"),
-        "receipt_date": receipt.get("receipt_date"),
-        "lines": lines,
-        "invoice_progress": po_preview.get("invoice_progress") or {},
-        "receiving_progress": po_preview.get("receiving_progress") or {},
     }
 
 
 async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> dict:
-    invoice_source = _invoice_source_of(payload)
-    precedes_goods_receipt = bool(payload.get("precedes_goods_receipt"))
-    receipt_id = str(payload.get("receipt_id") or payload.get("goods_receipt_id") or "").strip() or None
     po_id = str(payload.get("purchase_order_id") or "").strip()
-    receipt_doc = None
-    receipt_qty_by_line: Dict[str, float] = {}
-
-    if invoice_source == "receipt":
-        if not receipt_id:
-            raise HTTPException(400, "receipt_id wajib diisi untuk faktur dari penerimaan.")
-        receipt_doc = await db[GR_COLLECTION].find_one({"id": receipt_id}, {"_id": 0})
-        if not receipt_doc:
-            raise HTTPException(404, f"Penerimaan '{receipt_id}' tidak ditemukan.")
-        po_id = str(receipt_doc.get("purchase_order_id") or po_id or "").strip()
-        if not po_id:
-            raise HTTPException(
-                400,
-                "Faktur dari penerimaan hanya didukung untuk penerimaan yang terhubung ke Pesanan Pembelian.",
-            )
-        precedes_goods_receipt = False
-        for li in receipt_doc.get("lines") or []:
-            key = str(li.get("purchase_order_line_id") or "").strip()
-            if key:
-                receipt_qty_by_line[key] = receipt_qty_by_line.get(key, 0.0) + float(li.get("received_qty") or 0)
-
     if not po_id:
         raise HTTPException(400, "ID Pesanan Pembelian (purchase_order_id) wajib diisi.")
 
@@ -242,26 +103,14 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             if existing:
                 return await attach_payment_fields(db, existing)
 
-        po_check = await get_purchase_order(db, po_id)
-        if is_cancelled(po_check):
-            raise HTTPException(400, "Pesanan sudah dibatalkan; faktur tidak dapat dibuat.")
-        if receipt_doc and is_cancelled(receipt_doc):
-            raise HTTPException(400, "Penerimaan sudah dibatalkan; faktur tidak dapat dibuat.")
-
         preview = await get_po_invoice_preview(db, po_id)
         by_line = {str(l["purchase_order_line_id"]): l for l in preview["lines"]}
         input_lines = payload.get("lines") or payload.get("line_items") or []
         calculated = []
         total = 0.0
         seen = set()
-        early_needed = False
 
         sources = input_lines if input_lines else preview["lines"]
-        if invoice_source == "receipt" and not input_lines and receipt_doc:
-            # Prefer receipt-scoped eligible defaults
-            receipt_preview = await get_receipt_invoice_preview(db, receipt_id)
-            sources = receipt_preview["lines"]
-
         for inp in sources:
             po_line_id = str(inp.get("purchase_order_line_id") or inp.get("line_id") or "").strip()
             src = by_line.get(po_line_id)
@@ -272,14 +121,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             seen.add(po_line_id)
             raw_qty = inp.get("invoice_qty", inp.get("quantity"))
             if raw_qty in (None, "") and not input_lines:
-                if invoice_source == "receipt":
-                    raw_qty = min(
-                        float(src["remaining_invoice_qty"] or 0),
-                        float(src["receipt_invoice_eligible_qty"] or 0),
-                        float(receipt_qty_by_line.get(po_line_id) or 0) or float(src["receipt_invoice_eligible_qty"] or 0),
-                    )
-                else:
-                    raw_qty = src["remaining_invoice_qty"]
+                raw_qty = src["remaining_invoice_qty"]
             if raw_qty in (None, "") or float(raw_qty or 0) == 0:
                 continue
             qty = parse_qty(raw_qty, f"Qty faktur '{src['item_name']}'")
@@ -289,27 +131,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
                     400,
                     f"Qty faktur ({qty}) untuk '{src['item_name']}' melebihi sisa PO ({remain}).",
                 )
-
-            received = float(src.get("cumulative_received_qty") or 0)
-            already = float(src.get("cumulative_invoiced_qty") or 0)
-            uninvoiced_received = max(0.0, received - already)
-
-            if invoice_source == "receipt":
-                receipt_cap = float(receipt_qty_by_line.get(po_line_id) or 0)
-                if not qty_le(qty, receipt_cap):
-                    raise HTTPException(
-                        400,
-                        f"Qty faktur ({qty}) untuk '{src['item_name']}' melebihi qty penerimaan terpilih ({receipt_cap}).",
-                    )
-                if not qty_le(qty, uninvoiced_received):
-                    raise HTTPException(
-                        400,
-                        f"Qty faktur ({qty}) untuk '{src['item_name']}' melebihi sisa penerimaan yang belum difaktur ({uninvoiced_received}).",
-                    )
-            else:
-                if already + qty > received + 1e-9:
-                    early_needed = True
-
+            # Prefill from PO; ignore client rewrite of HPP source
             unit_price = float(src["unit_price"] or 0)
             sub = line_subtotal(qty, unit_price)
             total += sub
@@ -332,15 +154,6 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
         if not calculated:
             raise HTTPException(400, "Total kuantitas faktur harus lebih besar dari 0.")
 
-        if invoice_source == "purchase_order" and early_needed and not precedes_goods_receipt:
-            raise HTTPException(
-                400,
-                "Faktur mendahului penerimaan barang. Centang acknowledgement "
-                "'Faktur mendahului penerimaan barang' untuk menyimpan.",
-            )
-        if invoice_source == "purchase_order" and not early_needed:
-            precedes_goods_receipt = False
-
         ts = now_iso()
         total = money_round(total)
         existing_count = await db[COLLECTION].count_documents({"purchase_order_id": preview["purchase_order_id"]})
@@ -351,16 +164,14 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             "request_id": preview.get("request_id"),
             "request_number": preview.get("request_number"),
             "supplier": preview.get("supplier"),
-            "invoice_source": invoice_source,
-            "receipt_id": receipt_id if invoice_source == "receipt" else None,
-            "receipt_number": (receipt_doc or {}).get("receipt_number") if invoice_source == "receipt" else None,
-            "precedes_goods_receipt": bool(precedes_goods_receipt),
             "invoice_date": str(payload.get("invoice_date") or ts[:10]).strip()[:10],
             "notes": str(payload.get("notes") or "").strip(),
             "lines": calculated,
             "subtotal": total,
             "grand_total": total,
-            **stamp_create(user),
+            "created_at": ts,
+            "updated_at": ts,
+            "created_by": actor_snapshot(user),
         }
         if idem:
             doc["idempotency_key"] = idem
@@ -374,7 +185,6 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             return candidate
 
         saved = await insert_with_unique_number(db, COLLECTION, "invoice_number", doc, _alloc)
-        # Invoice must never mutate PO received_qty / stock.
         return await attach_payment_fields(db, saved)
 
 
@@ -383,7 +193,6 @@ async def list_purchase_invoices(
     q: Optional[str] = None,
     purchase_order_id: Optional[str] = None,
     with_outstanding: bool = False,
-    include_cancelled: bool = False,
 ) -> List[dict]:
     filters: Dict[str, Any] = {}
     if purchase_order_id:
@@ -395,8 +204,6 @@ async def list_purchase_invoices(
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"supplier": {"$regex": needle, "$options": "i"}},
         ]
-    if not include_cancelled:
-        filters = with_active_filter(filters)
     rows = await db[COLLECTION].find(filters, {"_id": 0}).sort("created_at", -1).to_list(1000)
     out = []
     for row in rows:
@@ -414,38 +221,8 @@ async def get_purchase_invoice(db, invoice_id: str) -> dict:
     if not doc:
         raise HTTPException(404, f"Faktur Pembelian '{invoice_id}' tidak ditemukan.")
     inv = await attach_payment_fields(db, doc)
-    from services.purchase_payments import _enrich_payment
-
     payments = await db[PAY_COLLECTION].find(
-        with_active_filter({"purchase_invoice_id": inv["id"]}),
-        {"_id": 0},
-    ).sort([("submitted_at", 1), ("created_at", 1)]).to_list(500)
-    inv["payments"] = [_enrich_payment(p) for p in payments]
+        {"purchase_invoice_id": inv["id"]}, {"_id": 0}
+    ).sort("created_at", 1).to_list(500)
+    inv["payments"] = payments
     return inv
-
-
-async def cancel_purchase_invoice(db, invoice_id: str, user: dict, reason: str = "") -> dict:
-    """Soft-cancel unpaid invoice. PO invoice qty recalculates via active invoices only."""
-    reason = str(reason or "").strip()
-
-    async with get_named_lock("purchase_invoice"):
-        doc = await db[COLLECTION].find_one({"id": str(invoice_id)}, {"_id": 0})
-        if not doc:
-            doc = await db[COLLECTION].find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
-        if not doc:
-            raise HTTPException(404, f"Faktur Pembelian '{invoice_id}' tidak ditemukan.")
-
-        if is_cancelled(doc):
-            return await get_purchase_invoice(db, doc["id"])
-
-        paid = await _paid_total(db, doc["id"])
-        active_pays = await _active_payment_count(db, doc["id"])
-        if paid > 0 or active_pays > 0:
-            raise HTTPException(
-                409,
-                "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu.",
-            )
-
-        fields = cancellation_fields(user, reason)
-        await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
-        return await get_purchase_invoice(db, doc["id"])

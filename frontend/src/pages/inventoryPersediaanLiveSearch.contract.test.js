@@ -42,15 +42,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini clears rows while query pending and remains read-only", () => {
+  test("Stock Saat Ini clears interactive rows while query pending and blocks patch", () => {
     expect(stock).toMatch(/useDebouncedLiveSearch/);
     expect(stock).toMatch(/loadSeq/);
     expect(stock).toMatch(/liveSearchTableView/);
     expect(stock).toMatch(/searchPending/);
     expect(stock).toMatch(/stock-loading/);
-    expect(stock).toMatch(/if \(!searchPending\) return/);
-    expect(stock).toMatch(/items: \[\]/);
-    expect(stock).not.toMatch(/patchRow|currentStockUpdate|QtyCell/);
+    expect(stock).toMatch(/if \(searchPending \|\| loading\) return/);
     expect(stock).toMatch(/api\.currentStock\(/);
     expect(stock).toMatch(/Cari kode \/ nama \/ Accurate ID \(live\)/);
     expect(stock).not.toMatch(/>Cari</);

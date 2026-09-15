@@ -27,7 +27,6 @@ ALLOWED_STOCK_OUT_TRIGGERS = frozenset({
     "loading_confirmation",
     "delivery_confirmed",
     "packing_completed",
-    "sales_delivery",
 })
 
 STOCK_IN_LABELS = {
@@ -39,7 +38,6 @@ STOCK_OUT_LABELS = {
     "loading_confirmation": "Loading Dikonfirmasi",
     "delivery_confirmed": "Pengiriman Dikonfirmasi",
     "packing_completed": "Packing Selesai",
-    "sales_delivery": "Surat Jalan / Pengiriman Pesanan",
 }
 
 
@@ -48,13 +46,11 @@ def now_iso() -> str:
 
 
 def default_settings() -> Dict[str, Any]:
-    # Default remains OFF (main safety). Stock Engine V2 turns this ON via
-    # ensure_v2_physical_settings() on app startup — not via silent default.
     return {
         "key": SETTINGS_KEY,
         "enabled": False,
         "stock_in_trigger": "goods_receipt",
-        "stock_out_trigger": "sales_delivery",
+        "stock_out_trigger": "loading_confirmation",
         "updated_at": None,
         "updated_by": None,
     }

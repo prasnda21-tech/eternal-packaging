@@ -15,16 +15,12 @@ from fastapi import HTTPException
 from services.purchase_common import (
     PREFIX_GOODS_RECEIPT,
     actor_snapshot,
-    cancellation_fields,
     derive_child_number,
     get_named_lock,
     insert_with_unique_number,
-    is_cancelled,
     now_iso,
     parse_qty,
     qty_le,
-    stamp_create,
-    with_active_filter,
 )
 from services.purchase_orders import get_purchase_order
 from services.physical_stock_engine import (
@@ -34,140 +30,6 @@ from services.physical_stock_engine import (
 
 COLLECTION = "purchase_goods_receipts"
 ALLOC_COLLECTION = "purchase_receipt_po_links"
-INV_COLLECTION = "purchase_invoices"
-
-
-
-
-async def _active_invoice_count_for_receipt(db, receipt_id: str) -> int:
-    return await db[INV_COLLECTION].count_documents(
-        with_active_filter({
-            "$or": [
-                {"receipt_id": str(receipt_id)},
-                {"goods_receipt_id": str(receipt_id)},
-            ],
-        })
-    )
-
-
-async def _stock_dependency_for_receipt(db, receipt_id: str) -> Dict[str, Any]:
-    """Detect stock impact that cannot be safely reversed yet.
-
-    Soft-cancel must never invent reverse stock_movements. If durable stock events
-    already exist for this receipt, cancel is blocked so PO qty / stock stay consistent.
-    """
-    rid = str(receipt_id)
-    mov_count = await db.stock_movements.count_documents({
-        "reference_type": "goods_receipt",
-        "reference_id": rid,
-    })
-    pending = await db.master_items.find_one(
-        {
-            "pending_event.reference_type": "goods_receipt",
-            "pending_event.reference_id": rid,
-        },
-        {"_id": 1, "pending_event.event_id": 1},
-    )
-    if not pending:
-        pending = await db.master_items.find_one(
-            {"pending_event.event_id": {"$regex": f"^stock_in:goods_receipt:{rid}:"}},
-            {"_id": 1, "pending_event.event_id": 1},
-        )
-    return {
-        "movement_count": int(mov_count or 0),
-        "has_pending": bool(pending),
-        "blocked": bool(mov_count) or bool(pending),
-    }
-
-
-async def enrich_goods_receipt(db, doc: dict) -> dict:
-    out = dict(doc)
-    rid = str(out.get("id") or "")
-    if is_cancelled(out):
-        out["status"] = "DIBATALKAN"
-        out["can_cancel"] = False
-        out["cancel_block_reason"] = "Penerimaan sudah dibatalkan."
-        return out
-
-    inv_count = await _active_invoice_count_for_receipt(db, rid) if rid else 0
-    stock = await _stock_dependency_for_receipt(db, rid) if rid else {"blocked": False}
-    out["status"] = "TERCATAT"
-    if inv_count > 0:
-        out["can_cancel"] = False
-        out["cancel_block_reason"] = (
-            "Penerimaan tidak dapat dihapus karena sudah memiliki faktur. "
-            "Batalkan faktur terkait terlebih dahulu."
-        )
-    elif stock.get("blocked"):
-        out["can_cancel"] = False
-        out["cancel_block_reason"] = (
-            "Penerimaan tidak dapat dihapus karena sudah memengaruhi stok fisik "
-            f"({int(stock.get('movement_count') or 0)} stock_movements"
-            f"{', ada pending event' if stock.get('has_pending') else ''}). "
-            "Reversal stok belum aman — batalkan dependency stok terlebih dahulu."
-        )
-    else:
-        out["can_cancel"] = True
-        out["cancel_block_reason"] = ""
-    out["active_invoice_count"] = inv_count
-    out["stock_dependency"] = stock
-    return out
-
-
-async def get_purchase_goods_receipt(db, receipt_id: str) -> dict:
-    doc = await db[COLLECTION].find_one({"id": str(receipt_id)}, {"_id": 0})
-    if not doc:
-        doc = await db[COLLECTION].find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, f"Penerimaan Barang '{receipt_id}' tidak ditemukan.")
-    return await enrich_goods_receipt(db, doc)
-
-
-async def cancel_purchase_goods_receipt(
-    db,
-    receipt_id: str,
-    user: dict,
-    reason: str = "",
-) -> dict:
-    """Soft-cancel PO-linked goods receipt.
-
-    - Never hard-deletes
-    - Blocks when active invoices or irreversible stock_movements exist
-    - Never posts reverse / double stock movements
-    """
-    reason = str(reason or "").strip()
-
-    async with get_named_lock("purchase_goods_receipt"):
-        doc = await db[COLLECTION].find_one({"id": str(receipt_id)}, {"_id": 0})
-        if not doc:
-            doc = await db[COLLECTION].find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
-        if not doc:
-            raise HTTPException(404, f"Penerimaan Barang '{receipt_id}' tidak ditemukan.")
-
-        if is_cancelled(doc):
-            return await get_purchase_goods_receipt(db, doc["id"])
-
-        inv_count = await _active_invoice_count_for_receipt(db, doc["id"])
-        if inv_count > 0:
-            raise HTTPException(
-                409,
-                "Penerimaan tidak dapat dihapus karena sudah memiliki faktur. "
-                "Batalkan faktur terkait terlebih dahulu.",
-            )
-
-        stock = await _stock_dependency_for_receipt(db, doc["id"])
-        if stock.get("blocked"):
-            raise HTTPException(
-                409,
-                "Penerimaan tidak dapat dihapus karena sudah memengaruhi stok fisik "
-                f"({int(stock.get('movement_count') or 0)} stock_movements"
-                f"{', ada pending event' if stock.get('has_pending') else ''}). "
-                "Reversal stok belum aman — batalkan dependency stok terlebih dahulu.",
-            )
-
-        fields = cancellation_fields(user, reason)
-        await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
-        return await get_purchase_goods_receipt(db, doc["id"])
 
 
 async def get_po_receipt_preview(db, purchase_order_id: str) -> dict:
@@ -217,9 +79,6 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                 return existing
 
         preview = await get_po_receipt_preview(db, po_id)
-        po_live = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0, "cancelled": 1, "receiving_status": 1})
-        if is_cancelled(po_live) or str((po_live or {}).get("receiving_status") or "").upper() == "DIBATALKAN":
-            raise HTTPException(400, "Pesanan sudah dibatalkan; penerimaan tidak dapat dibuat.")
         by_line = {str(l["purchase_order_line_id"]): l for l in preview["lines"]}
         input_lines = payload.get("lines") or payload.get("line_items") or []
         if not input_lines:
@@ -276,7 +135,9 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
             "notes": str(payload.get("notes") or "").strip(),
             "source": "po_linked",
             "lines": calculated,
-            **stamp_create(user),
+            "created_at": ts,
+            "updated_at": ts,
+            "created_by": actor_snapshot(user),
         }
         if idem:
             doc["idempotency_key"] = idem
@@ -296,7 +157,7 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
 
         saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
         await handle_goods_receipt_created(db, saved, user)
-        return await enrich_goods_receipt(db, saved)
+        return saved
 
 
 async def list_purchase_goods_receipts(
@@ -314,8 +175,7 @@ async def list_purchase_goods_receipts(
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"supplier": {"$regex": needle, "$options": "i"}},
         ]
-    rows = await db[COLLECTION].find(with_active_filter(filters), {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return [await enrich_goods_receipt(db, r) for r in rows]
+    return await db[COLLECTION].find(filters, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 
 async def allocate_accurate_receipt_line(db, payload: Dict[str, Any], user: dict) -> dict:
