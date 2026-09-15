@@ -5,7 +5,6 @@ import { PRODUCTION_SCHEDULE_TABLE_COLS } from "./productionScheduleTable";
 const MOBILE_HIDDEN_KEYS = new Set([
   "payment",
   "packing",
-  "sj",
   "driver",
   "screen_size",
   "po",
@@ -20,7 +19,7 @@ const MOBILE_HIDDEN_KEYS = new Set([
 ]);
 
 const OPS_COL_ORDER = [
-  "prio", "work_date", "customer", "item", "qty",
+  "prio", "work_date", "customer", "sj", "item", "qty",
   "helper", "screen", "qty_cetak", "packing", "loading", "shipped",
 ];
 
@@ -33,6 +32,7 @@ const OPS_COL_PATCH = {
   prio: { label: "Prioritas", baseWidth: 92, minWidth: 76 },
   work_date: { label: "Tgl Kerja", baseWidth: 88, minWidth: 72 },
   customer: { label: "Customer / No PO", baseWidth: 248, minWidth: 196, wrap: true },
+  sj: { label: "Surat Jalan", baseWidth: 108, minWidth: 84, wrap: true },
   item: { label: "Item Line", baseWidth: 248, minWidth: 180, wrap: true },
   qty: { label: "Qty Total", baseWidth: 84, minWidth: 64 },
   helper: { label: "Cup", baseWidth: 48, minWidth: 44 },
@@ -67,7 +67,6 @@ export const MOBILE_PRODUCTION_STATUS_COL_KEYS = [
 
 export const MOBILE_PRODUCTION_ABSENT_KEYS = [
   "payment",
-  "sj",
   "driver",
   "screen_size",
   "po",

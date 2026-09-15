@@ -32,6 +32,7 @@ function adminLabel(user) {
 export default function OpsQueueHeader({
   title,
   subtitle = "Dari Produksi ke Pengiriman, Semua Lebih Terarah.",
+  showBrand = true,
 }) {
   const { menuOpen, toggleMenu } = useMobileNav();
   const { user } = useAuth();
@@ -40,7 +41,7 @@ export default function OpsQueueHeader({
   const online = typeof navigator === "undefined" || navigator.onLine !== false;
 
   return (
-    <header className="ops-queue-header" data-testid="mobile-topbar">
+    <header className={`ops-queue-header${!showBrand ? " is-compact" : ""}`} data-testid="mobile-topbar">
       <button
         type="button"
         className={`mop-topbar-menu${menuOpen ? " is-open" : ""}`}
@@ -52,17 +53,21 @@ export default function OpsQueueHeader({
       >
         <Menu size={18} aria-hidden />
       </button>
-      <div className="ops-qh-brand">
-        <span className="ops-qh-mark" aria-hidden="true">E</span>
-        <div className="ops-qh-brand-copy">
-          <p className="ops-qh-brand-name">ETERNAL PACKAGING</p>
-          <p className="ops-qh-brand-kicker">Operation on hand</p>
-        </div>
-      </div>
-      <span className="ops-qh-divider" aria-hidden="true" />
+      {showBrand ? (
+        <>
+          <div className="ops-qh-brand">
+            <span className="ops-qh-mark" aria-hidden="true">E</span>
+            <div className="ops-qh-brand-copy">
+              <p className="ops-qh-brand-name">ETERNAL PACKAGING</p>
+              <p className="ops-qh-brand-kicker">Operation on hand</p>
+            </div>
+          </div>
+          <span className="ops-qh-divider" aria-hidden="true" />
+        </>
+      ) : null}
       <div className="ops-qh-title-block">
         <h1 className="ops-qh-title" data-testid="mobile-topbar-title">{title}</h1>
-        <p className="ops-qh-sub">{subtitle}</p>
+        {subtitle ? <p className="ops-qh-sub">{subtitle}</p> : null}
       </div>
       <div className="ops-qh-clock">
         <p className="ops-qh-date">{clock.date}</p>

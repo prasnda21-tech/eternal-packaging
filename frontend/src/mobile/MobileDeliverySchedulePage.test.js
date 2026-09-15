@@ -717,7 +717,7 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
     expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mop-ops-role-count-pengiriman"]').textContent).toMatch(/1 tugas/);
+    expect(container.querySelector('[data-testid="mop-ops-role-count-pengiriman"]').textContent.trim()).toBe("1");
     expect(container.querySelector('[data-testid="mop-ops-role-count-packing"]').textContent.trim()).toBe("—");
     expect(container.querySelector('[data-testid="mop-ops-role-count-loading"]').textContent.trim()).toBe("—");
     expect(container.querySelector('[data-testid="mop-ops-role-count-prep"]').textContent.trim()).toBe("—");
