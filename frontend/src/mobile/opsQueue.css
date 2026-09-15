@@ -511,6 +511,18 @@
   padding: 0 12px;
 }
 
+.mop-root--ops-wide .mop-ops-filter-rail .mop-ops-toolbar-refresh,
+.mop-root--ops-wide .mop-ops-filter-rail > .mop-btn-primary {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.mop-root--ops-wide .mop-ds-toolbar {
+  overflow: hidden;
+  flex-wrap: nowrap;
+  gap: 0;
+}
+
 .mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-field {
   display: flex;
   align-items: center;
