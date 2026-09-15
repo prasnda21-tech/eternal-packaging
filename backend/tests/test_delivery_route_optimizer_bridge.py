@@ -31,6 +31,7 @@ from services.independent_route.constants import (
 )
 from services.independent_route.store import ensure_indexes
 from services.independent_route.delivery_bridge import order_is_urgent
+from services.independent_route.settings import load_settings, save_settings
 
 pytestmark = pytest.mark.anyio
 
@@ -52,6 +53,14 @@ def bind_motor():
 @pytest.fixture(autouse=True)
 async def indexes(bind_motor):
     await ensure_indexes(server.db)
+
+
+@pytest.fixture(autouse=True)
+async def seed_large_armada_capacity(indexes):
+    cfg = await load_settings(server.db)
+    cfg["armada_1_capacity_qty_sj"] = 10_000_000
+    cfg["armada_2_capacity_qty_sj"] = 10_000_000
+    await save_settings(server.db, cfg, {"id": "bridge-test", "name": "bridge-test"})
 
 
 def _user(**kw):

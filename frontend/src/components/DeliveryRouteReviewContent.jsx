@@ -19,9 +19,18 @@ import {
 } from "../lib/deliveryRouteBridge";
 import {
   buildRouteOptEligibilityCreateFleets,
+  expandPreviewRowsToSjAtoms,
+  getFixtureArmadaCapacity,
   getRouteOptEligibilityPreviewReview,
   isRouteOptEligibilityPreviewEnabled,
+  saveFixtureArmadaCapacity,
 } from "../lib/deliveryRouteOptEligibilityFixtures";
+import {
+  capacitySaveErrorText,
+  formatArmadaCapacityQty,
+  parseArmadaCapacityQtyInput,
+} from "../lib/armadaCapacity";
+import { fmtQty } from "./qtyUi";
 import { formatKm, statusLabel } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
 import MobileTopBar from "../mobile/MobileTopBar";
@@ -78,6 +87,8 @@ function CreatedRouteSummary({ route, index }) {
   const status = statusLabel(route?.status) || route?.status || "Dioptimasi";
   const distance =
     route?.estimated_distance_m != null ? formatKm(route.estimated_distance_m) : "—";
+  const load = route?.sj_load_qty;
+  const sjNumbers = Array.isArray(route?.sj_numbers) ? route.sj_numbers.filter(Boolean) : [];
   return (
     <div
       data-testid={`mds-review-created-route-${index + 1}`}
@@ -92,8 +103,14 @@ function CreatedRouteSummary({ route, index }) {
     >
       <strong>{label}</strong>
       <div className="muted" style={{ fontSize: 12 }}>
-        {stopCount} PO · {urgentCount} urgent · {distance} · {status}
+        {stopCount} SJ · {urgentCount} urgent · {distance} · {status}
+        {load != null ? ` · Qty SJ ${fmtQty(load)}` : ""}
       </div>
+      {sjNumbers.length ? (
+        <div className="muted" style={{ fontSize: 12 }} data-testid={`mds-review-created-route-${index + 1}-sj`}>
+          {sjNumbers.join(" · ")}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -121,6 +138,15 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
   const [busy, setBusy] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [err, setErr] = useState("");
+  const [cap1Draft, setCap1Draft] = useState("");
+  const [cap2Draft, setCap2Draft] = useState("");
+  const [savedCapacities, setSavedCapacities] = useState({
+    armada_1_capacity_qty_sj: null,
+    armada_2_capacity_qty_sj: null,
+  });
+  const [savingCapacity, setSavingCapacity] = useState(false);
+  const [capacitySavedOk, setCapacitySavedOk] = useState(false);
+  const [capacityErr, setCapacityErr] = useState("");
 
   const clearOutcome = useCallback(() => {
     setCreateResult(null);
@@ -163,9 +189,33 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
     }
   }, [allowed, idsQuery, orderIds]);
 
+  const loadCapacity = useCallback(async () => {
+    setCapacityErr("");
+    setCapacitySavedOk(false);
+    try {
+      const data = fixtureMode
+        ? getFixtureArmadaCapacity()
+        : await api.getArmadaCapacity();
+      const c1 = data?.armada_1_capacity_qty_sj;
+      const c2 = data?.armada_2_capacity_qty_sj;
+      setSavedCapacities({
+        armada_1_capacity_qty_sj: c1 ?? null,
+        armada_2_capacity_qty_sj: c2 ?? null,
+      });
+      setCap1Draft(formatArmadaCapacityQty(c1));
+      setCap2Draft(formatArmadaCapacityQty(c2));
+    } catch (e) {
+      setCapacityErr(formatApiError(e, "Gagal memuat kapasitas armada."));
+    }
+  }, [fixtureMode]);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadCapacity();
+  }, [loadCapacity]);
 
   const selectionSummary = useMemo(() => summarizeSelection(rows, selected), [rows, selected]);
 
@@ -176,24 +226,70 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
       .map((r) => String(r.sales_order_id));
   }, [rows, selected]);
 
+  const eligibleSelectedSjCount = useMemo(() => {
+    const set = new Set(selected.map(String));
+    const eligible = rows.filter((r) => set.has(String(r.sales_order_id)) && r.eligible);
+    return expandPreviewRowsToSjAtoms(eligible).length;
+  }, [rows, selected]);
+
   const urgentSelectedCount = useMemo(() => {
     const set = new Set(selected.map(String));
     return rows.filter((r) => set.has(String(r.sales_order_id)) && r.eligible && r.urgent).length;
   }, [rows, selected]);
 
   const disabledReason = useMemo(() => {
-    if (busy || optimizing) return "";
-    if (fleetCount !== 1 && fleetCount !== 2) return "Pilih 1 atau 2 armada.";
-    if (fleetCount === 1 && eligibleSelectedIds.length < 1) {
-      return "Optimasi 1 Armada membutuhkan minimal 1 PO eligible.";
+    if (busy || optimizing || savingCapacity) return "";
+    if (savedCapacities.armada_1_capacity_qty_sj == null || savedCapacities.armada_2_capacity_qty_sj == null) {
+      return "Simpan kapasitas Armada 1 dan Armada 2 sebelum Optimasi Rute.";
     }
-    if (fleetCount === 2 && eligibleSelectedIds.length < 2) {
-      return "Optimasi 2 Armada membutuhkan minimal 2 PO eligible.";
+    if (fleetCount !== 1 && fleetCount !== 2) return "Pilih 1 atau 2 armada.";
+    if (fleetCount === 1 && eligibleSelectedSjCount < 1) {
+      return "Optimasi 1 Armada membutuhkan minimal 1 Surat Jalan eligible.";
+    }
+    if (fleetCount === 2 && eligibleSelectedSjCount < 2) {
+      return "Optimasi 2 Armada membutuhkan minimal 2 Surat Jalan eligible.";
     }
     return "";
-  }, [busy, optimizing, fleetCount, eligibleSelectedIds.length]);
+  }, [busy, optimizing, savingCapacity, fleetCount, eligibleSelectedSjCount, savedCapacities]);
 
-  const canRunOptimize = !disabledReason && !busy && !optimizing;
+  const onSaveCapacity = async () => {
+    if (savingCapacity) return;
+    const p1 = parseArmadaCapacityQtyInput(cap1Draft);
+    const p2 = parseArmadaCapacityQtyInput(cap2Draft);
+    if (p1.error || p2.error) {
+      setCapacitySavedOk(false);
+      setCapacityErr("Kapasitas harus bilangan bulat lebih dari 0.");
+      return;
+    }
+    setSavingCapacity(true);
+    setCapacityErr("");
+    setCapacitySavedOk(false);
+    try {
+      const payload = {
+        armada_1_capacity_qty_sj: p1.value,
+        armada_2_capacity_qty_sj: p2.value,
+      };
+      const data = fixtureMode
+        ? saveFixtureArmadaCapacity(payload)
+        : await api.saveArmadaCapacity(payload);
+      const c1 = data?.armada_1_capacity_qty_sj ?? p1.value;
+      const c2 = data?.armada_2_capacity_qty_sj ?? p2.value;
+      setSavedCapacities({
+        armada_1_capacity_qty_sj: c1,
+        armada_2_capacity_qty_sj: c2,
+      });
+      setCap1Draft(formatArmadaCapacityQty(c1));
+      setCap2Draft(formatArmadaCapacityQty(c2));
+      setCapacitySavedOk(true);
+    } catch (e) {
+      setCapacitySavedOk(false);
+      setCapacityErr(capacitySaveErrorText(e, formatApiError(e, "Gagal menyimpan kapasitas.")));
+    } finally {
+      setSavingCapacity(false);
+    }
+  };
+
+  const canRunOptimize = !disabledReason && !busy && !optimizing && !savingCapacity;
 
   const onToggle = (id) => {
     clearOutcome();
@@ -233,8 +329,11 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
 
   const createdRoutes = Array.isArray(createResult?.routes) ? createResult.routes : [];
   const createdCount = Number(
-    createResult?.created_route_count || createdRoutes.length || createResult?.fleet_count || 0,
+    createResult?.created_route_count != null
+      ? createResult.created_route_count
+      : createdRoutes.length || 0,
   );
+  const unassignedRows = Array.isArray(createResult?.unassigned) ? createResult.unassigned : [];
   const rootTestId = isMobile ? "mds-review-root" : "ds-review-root";
 
   if (!allowed) {
@@ -393,6 +492,79 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
               </span>
             </div>
 
+            <div data-testid="mds-review-capacity" style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontWeight: 700, color: "#0f172a" }}>Pengaturan Kapasitas Armada</div>
+              <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>Armada 1</span>
+                  <span className="muted" style={{ fontSize: 12 }}>Kapasitas Qty SJ</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={cap1Draft}
+                    onChange={(e) => {
+                      setCapacitySavedOk(false);
+                      setCapacityErr("");
+                      setCap1Draft(e.target.value);
+                    }}
+                    data-testid="mds-review-capacity-armada-1"
+                    aria-label="Kapasitas Qty SJ Armada 1"
+                    style={{
+                      border: "1px solid #94a3b8",
+                      borderRadius: 4,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>Armada 2</span>
+                  <span className="muted" style={{ fontSize: 12 }}>Kapasitas Qty SJ</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={cap2Draft}
+                    onChange={(e) => {
+                      setCapacitySavedOk(false);
+                      setCapacityErr("");
+                      setCap2Draft(e.target.value);
+                    }}
+                    data-testid="mds-review-capacity-armada-2"
+                    aria-label="Kapasitas Qty SJ Armada 2"
+                    style={{
+                      border: "1px solid #94a3b8",
+                      borderRadius: 4,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  style={savingCapacity ? PRIMARY_BTN_DISABLED : PRIMARY_BTN}
+                  data-testid="mds-review-save-capacity"
+                  disabled={savingCapacity}
+                  onClick={() => void onSaveCapacity()}
+                >
+                  {savingCapacity ? "Menyimpan..." : "Simpan Kapasitas"}
+                </button>
+                {capacitySavedOk ? (
+                  <span className="muted" style={{ fontSize: 12 }} data-testid="mds-review-capacity-saved">
+                    Kapasitas tersimpan
+                  </span>
+                ) : null}
+              </div>
+              {capacityErr ? (
+                <div style={{ color: "var(--danger, #b00020)", fontSize: 12 }} data-testid="mds-review-capacity-error">
+                  {capacityErr}
+                </div>
+              ) : null}
+            </div>
+
             <div data-testid="mds-review-fleet-count">
               <div style={{ fontWeight: 700, marginBottom: 8, color: "#0f172a" }}>Jumlah Armada</div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -405,7 +577,7 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
                 >
                   <div style={{ fontWeight: 700 }}>1 Armada</div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    Semua PO eligible disusun dalam satu rute.
+                    Semua Surat Jalan eligible disusun dalam satu rute.
                   </div>
                 </button>
                 <button
@@ -417,7 +589,7 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
                 >
                   <div style={{ fontWeight: 700 }}>2 Armada</div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                    PO eligible dibagi secara geografis menjadi dua rute.
+                    SJ eligible dibagi geografis; SJ berbeda dari PO yang sama boleh ke armada berbeda.
                   </div>
                 </button>
               </div>
@@ -446,9 +618,11 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
           <section style={PANEL} data-testid="mds-review-success">
             <div style={{ display: "grid", gap: 10 }}>
               <strong style={{ color: "#0f172a", fontSize: 15 }}>
-                {createdCount === 1
-                  ? "1 rute berhasil dibuat dan dioptimalkan."
-                  : `${createdCount} rute berhasil dibuat dan dioptimalkan.`}
+                {createdCount === 0
+                  ? "Tidak ada rute yang dapat dialokasikan pada kapasitas tersimpan."
+                  : createdCount === 1
+                    ? "1 rute berhasil dibuat dan dioptimalkan."
+                    : `${createdCount} rute berhasil dibuat dan dioptimalkan.`}
               </strong>
               {fixtureMode ? (
                 <div className="muted" style={{ fontSize: 12 }}>
@@ -464,14 +638,55 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
                   <CreatedRouteSummary key={route.route_id || index} route={route} index={index} />
                 ))}
               </div>
-              <button
-                type="button"
-                style={PRIMARY_BTN}
-                data-testid="mds-review-open-optimasi-rute"
-                onClick={openOptimasiRute}
-              >
-                Buka Optimasi Rute
-              </button>
+              {unassignedRows.length ? (
+                <div data-testid="mds-review-unassigned" style={{ display: "grid", gap: 8 }}>
+                  <strong style={{ color: "#0f172a", fontSize: 14 }}>Belum Teralokasi</strong>
+                  {unassignedRows.map((row) => {
+                    const units = Array.isArray(row.sj_units) && row.sj_units.length
+                      ? row.sj_units
+                      : [{
+                          shipment_id: row.sales_order_id,
+                          sj_number: row.sj_label || "—",
+                          sj_load_qty: row.sj_load_qty,
+                        }];
+                    return units.map((unit, ui) => (
+                      <div
+                        key={`${row.sales_order_id}-${unit.shipment_id || ui}`}
+                        className="muted"
+                        style={{
+                          fontSize: 12,
+                          border: "1px solid #e2e8f0",
+                          borderRadius: 4,
+                          padding: 8,
+                          background: "#fff",
+                        }}
+                        data-testid={`mds-review-unassigned-${row.sales_order_id}-${unit.shipment_id || ui}`}
+                      >
+                        <div>
+                          <strong>{row.customer_name || "—"}</strong>
+                          {" · "}
+                          {row.order_number || row.sales_order_id}
+                          {" · SJ "}
+                          {unit.sj_number || row.sj_label || "—"}
+                          {" · Qty SJ "}
+                          {fmtQty(unit.sj_load_qty ?? row.sj_load_qty)}
+                        </div>
+                        <div>{row.reason || row.unassigned_reason || "Kapasitas armada tidak mencukupi"}</div>
+                      </div>
+                    ));
+                  })}
+                </div>
+              ) : null}
+              {createdCount > 0 ? (
+                <button
+                  type="button"
+                  style={PRIMARY_BTN}
+                  data-testid="mds-review-open-optimasi-rute"
+                  onClick={openOptimasiRute}
+                >
+                  Buka Optimasi Rute
+                </button>
+              ) : null}
             </div>
           </section>
         ) : null}

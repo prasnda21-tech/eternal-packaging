@@ -101,7 +101,9 @@ async def ensure_indexes(db) -> None:
     await db[COL_STOPS].create_index("route_id")
     await db[COL_STOPS].create_index([("route_id", 1), ("id", 1)], unique=True)
     await db[COL_STOPS].create_index("sales_order_id")
+    await db[COL_STOPS].create_index("shipment_id")
     await db[COL_STOPS].create_index([("source_type", 1), ("sales_order_id", 1)])
+    await db[COL_STOPS].create_index([("source_type", 1), ("shipment_id", 1)])
     await db[COL_VERSIONS].create_index("id", unique=True)
     await db[COL_VERSIONS].create_index("route_id")
     await db[COL_VERSIONS].create_index([("route_id", 1), ("optimization_version", 1)], unique=True)
@@ -251,6 +253,9 @@ def public_stop(doc: dict, settings: dict | None = None) -> dict:
         "display_order": doc.get("display_order"),
         "source_type": _normalize_source_type(doc.get("source_type")),
         "sales_order_id": doc.get("sales_order_id"),
+        "shipment_id": doc.get("shipment_id"),
+        "sj_number": doc.get("sj_number"),
+        "sj_load_qty": doc.get("sj_load_qty"),
         "delivery_id": doc.get("delivery_id"),
         "delivery_schedule_id": doc.get("delivery_schedule_id"),
         "driver_user_id": doc.get("driver_user_id"),
@@ -564,6 +569,9 @@ async def add_stop(db, route_id: str, payload: dict, actor: dict, perms: set) ->
         "display_order": next_order,
         "source_type": _normalize_source_type(payload.get("source_type") or route.get("source_type")),
         "sales_order_id": str(payload.get("sales_order_id") or "").strip() or None,
+        "shipment_id": str(payload.get("shipment_id") or "").strip() or None,
+        "sj_number": str(payload.get("sj_number") or "").strip() or None,
+        "sj_load_qty": payload.get("sj_load_qty") if payload.get("sj_load_qty") is not None else None,
         "delivery_id": str(payload.get("delivery_id") or "").strip() or None,
         "delivery_schedule_id": str(payload.get("delivery_schedule_id") or "").strip() or None,
         "driver_user_id": str(payload.get("driver_user_id") or "").strip() or None,
