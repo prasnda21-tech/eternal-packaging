@@ -7,7 +7,7 @@ import MobileChatRoomPage from "../mobile/MobileChatRoomPage";
 import { MessageBubble, WorkContextCard, WorkPickerModal, EditMembersModal } from "../components/chat/ChatShared";
 import { NAV_KEYS } from "../lib/navAccess";
 import { visibleGlobalWorkspaceCatalog } from "../lib/globalWorkspace";
-import { activeMobileNav, visibleMobileNavItems } from "../lib/mobileWorkspaces";
+import { activeMobileNav, MOBILE_HEADER_CHAT, visibleMobileNavItems } from "../lib/mobileWorkspaces";
 
 const mockNavigate = jest.fn();
 let mockRoomId = "r1";
@@ -130,6 +130,7 @@ function seedApi() {
     client_message_id: "cm-1",
     created_at: "2026-09-10T01:01:00Z",
   });
+  api.chatUnreadSummary.mockResolvedValue({ total_unread: 3 });
 }
 
 describe("Chat web UI", () => {
@@ -648,9 +649,9 @@ describe("Chat PWA", () => {
     container.remove();
   });
 
-  test("nav includes chat and unread path active", () => {
-    const items = visibleMobileNavItems((p) => p === NAV_KEYS.chat || p === "chat.use");
-    expect(items.some((i) => i.id === "chat")).toBe(true);
+  test("nav includes chat header destination and unread path active", () => {
+    expect(MOBILE_HEADER_CHAT.to).toBe("/m/chat");
+    expect(visibleMobileNavItems((p) => p === NAV_KEYS.chat || p === "chat.use").some((i) => i.id === "chat")).toBe(false);
     expect(activeMobileNav("/m/chat/r1")).toBe("chat");
   });
 
@@ -660,6 +661,10 @@ describe("Chat PWA", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="mobile-chat-page"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-topbar"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-header-chat"]').getAttribute("href")).toBe("/m/chat");
+    expect(container.querySelector('[data-testid="mobile-header-notifications"]').getAttribute("href")).toBe("/m/notifications");
+    expect(container.querySelector('[data-testid="mobile-topbar-title"]').textContent).toBe("Chat");
     expect(container.textContent).toContain("DM Peer");
   });
 
@@ -669,6 +674,9 @@ describe("Chat PWA", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="mobile-chat-room-page"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-topbar"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-chat-back"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-header-chat"]')).toBeTruthy();
     const input = container.querySelector('[data-testid="chat-composer-input"]');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
     await act(async () => {

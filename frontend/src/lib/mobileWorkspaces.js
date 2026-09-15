@@ -44,10 +44,21 @@ export const MOBILE_NAV_ITEMS = [
     // Predicate uses canAccessRoutePage (nav.route_optimizer + route_optimizer.*).
     visibleWhen: canSeeMobileOptimasiRute,
   },
-  { id: "chat", label: "Chat", to: "/m/chat", anyOf: [NAV_KEYS.chat, "chat.use"] },
-  { id: "notifications", label: "Notifikasi", to: "/m/notifications" },
   { id: "profile", label: "Profil", to: "/m/profile" },
 ];
+
+export const MOBILE_HEADER_CHAT = {
+  id: "chat",
+  label: "Chat",
+  to: "/m/chat",
+  anyOf: [NAV_KEYS.chat, "chat.use"],
+};
+
+export const MOBILE_HEADER_NOTIFICATIONS = {
+  id: "notifications",
+  label: "Notifikasi",
+  to: "/m/notifications",
+};
 
 export function permittedMobileWorkspaces(hasPerm) {
   if (typeof hasPerm !== "function") return [];

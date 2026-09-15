@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
+import MobileTopBar from "./MobileTopBar";
 import { useAuth } from "../lib/auth";
 import {
   CHAT_ACCEPT,
@@ -162,15 +163,12 @@ export default function MobileChatRoomPage() {
 
   return (
     <div className="mop-chat-page" data-testid="mobile-chat-room-page">
-      <header className="mop-topbar" style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 12px" }}>
-        <button type="button" onClick={() => navigate("/m/chat")} data-testid="mobile-chat-back">←</button>
-        <div>
-          <strong data-testid="mobile-chat-title">
-            {roomDisplayTitle(room, { members, meId })}
-          </strong>
-          <div className="chat-ws-status">{wsStatus}</div>
-        </div>
-      </header>
+      <MobileTopBar
+        title={<span data-testid="mobile-chat-title">{roomDisplayTitle(room, { members, meId })}</span>}
+        subtitle={wsStatus}
+        onBack={() => navigate("/m/chat")}
+        backTestId="mobile-chat-back"
+      />
       <div className="chat-messages" data-testid="mobile-chat-messages" ref={messagesRef}>
         {messages.map((m) => (
           <MessageBubble

@@ -1,8 +1,7 @@
-import { Bell, CalendarDays, ClipboardList, MessageCircle, Package, Route, Truck, UserRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CalendarDays, ClipboardList, Package, Route, Truck, UserRound, X } from "lucide-react";
+import { useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import api from "../lib/api";
 import { activeMobileNav, visibleMobileNavItems } from "../lib/mobileWorkspaces";
 import { useMobileNav } from "./MobileNavContext";
 
@@ -12,8 +11,6 @@ const ICONS = {
   schedule: CalendarDays,
   deliverySchedule: Truck,
   optimasiRute: Route,
-  chat: MessageCircle,
-  notifications: Bell,
   profile: UserRound,
 };
 
@@ -22,22 +19,6 @@ export default function MobileSidebar({ pathname }) {
   const { menuOpen, closeMenu } = useMobileNav();
   const active = activeMobileNav(pathname);
   const items = visibleMobileNavItems(hasPerm);
-  const [unread, setUnread] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await api.chatUnreadSummary();
-        if (!cancelled) setUnread(Number(res?.total_unread || 0));
-      } catch {
-        if (!cancelled) setUnread(0);
-      }
-    };
-    load();
-    const t = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [pathname]);
 
   useEffect(() => {
     closeMenu();
@@ -86,11 +67,6 @@ export default function MobileSidebar({ pathname }) {
               >
                 {Icon ? <Icon size={18} aria-hidden /> : null}
                 <span className="mop-sidebar-item-label">{item.label}</span>
-                {item.id === "chat" && unread > 0 ? (
-                  <span className="mop-menu-item-badge" data-testid="mobile-menu-chat-unread">
-                    {unread > 99 ? "99+" : unread}
-                  </span>
-                ) : null}
               </NavLink>
             );
           })}

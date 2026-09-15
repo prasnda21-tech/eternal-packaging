@@ -1,6 +1,8 @@
 import {
   MOBILE_WORKSPACES,
   MOBILE_NAV_ITEMS,
+  MOBILE_HEADER_CHAT,
+  MOBILE_HEADER_NOTIFICATIONS,
   OPS_ACTIVE_ROLE_IDS,
   activeMobileNav,
   deliveryScheduleShowsTable,
@@ -330,17 +332,20 @@ describe("mobile cards and nav", () => {
 
   test("Jadwal Produksi and Jadwal Pengiriman nav are permission gated, not role-name gated", () => {
     expect(visibleMobileNavItems((p) => p === "schedule.view").map((i) => i.id))
-      .toEqual(["tasks", "orders", "schedule", "deliverySchedule", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "schedule", "deliverySchedule", "profile"]);
     expect(visibleMobileNavItems((p) => p === "nav.production_schedule").map((i) => i.id))
-      .toEqual(["tasks", "orders", "schedule", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "schedule", "profile"]);
     expect(visibleMobileNavItems((p) => p === "nav.delivery_schedule").map((i) => i.id))
-      .toEqual(["tasks", "orders", "deliverySchedule", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "deliverySchedule", "profile"]);
     expect(visibleMobileNavItems((p) => p === "operator.update").map((i) => i.id))
-      .toEqual(["tasks", "orders", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "profile"]);
     expect(visibleMobileNavItems((p) => p === "admin").map((i) => i.id))
-      .toEqual(["tasks", "orders", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "profile"]);
     expect(visibleMobileNavItems((p) => p === "driver").map((i) => i.id))
-      .toEqual(["tasks", "orders", "notifications", "profile"]);
+      .toEqual(["tasks", "orders", "profile"]);
+    expect(MOBILE_HEADER_CHAT.to).toBe("/m/chat");
+    expect(MOBILE_HEADER_NOTIFICATIONS.to).toBe("/m/notifications");
+    expect(MOBILE_NAV_ITEMS.some((i) => i.id === "chat" || i.id === "notifications")).toBe(false);
   });
 
   test("Optimasi Rute PWA nav uses existing permission model, not DRIVER role name", () => {

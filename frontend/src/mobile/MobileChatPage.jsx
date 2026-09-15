@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import MobileTopBar from "./MobileTopBar";
 import {
   formatChatTime,
   previewText,
@@ -45,9 +46,7 @@ export default function MobileChatPage() {
 
   return (
     <div className="mop-chat-page" data-testid="mobile-chat-page">
-      <header className="mop-topbar" style={{ padding: "10px 12px" }}>
-        <strong>Chat</strong>
-      </header>
+      <MobileTopBar title="Chat" />
       <div className="chat-filters">
         {[
           ["all", "Semua"],

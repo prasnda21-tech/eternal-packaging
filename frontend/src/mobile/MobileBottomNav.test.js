@@ -10,6 +10,7 @@ const mockHasPerm = jest.fn(() => false);
 jest.mock("react-router-dom", () => ({
   Outlet: () => <div data-testid="outlet" />,
   useLocation: () => ({ pathname: "/m/orders" }),
+  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
   NavLink: ({ to, children, className, onClick, ...props }) => (
     <a
       href={to}
@@ -91,7 +92,11 @@ describe("PWA left sidebar menu", () => {
     expect(container.querySelector('[data-testid="mobile-nav-orders"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-nav-schedule"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-nav-deliverySchedule"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mobile-nav-chat"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-nav-chat"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-nav-notifications"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-nav-profile"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-header-chat"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-header-notifications"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-nav-deliverySchedule"]').getAttribute("href")).toBe("/m/delivery-schedule");
   });
 

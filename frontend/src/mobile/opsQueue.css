@@ -147,6 +147,19 @@
   min-width: 0;
 }
 
+.mop-root--ops-wide .ops-queue-header .mop-header-actions {
+  margin-left: 0;
+}
+
+.mop-root--ops-wide .ops-queue-header .mop-header-action {
+  color: var(--ops-navy);
+}
+
+.mop-root--ops-wide .ops-queue-header.is-compact .ops-qh-clock,
+.mop-root--ops-wide .ops-queue-header.is-compact .ops-qh-admin {
+  display: none;
+}
+
 .mop-root--ops-wide .ops-qh-title {
   margin: 0;
   font-size: 18px;
@@ -936,6 +949,9 @@
   }
   .mop-root--ops-wide .ops-qh-title {
     font-size: 16px;
+  }
+  .mop-root--ops-wide .ops-queue-header .mop-header-actions {
+    margin-left: auto;
   }
   .mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-cluster {
     flex: 1 1 88px !important;
