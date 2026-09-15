@@ -1,7 +1,9 @@
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
+  REPEAT_ORDER_QUERY_PARAM,
   clearRepeatDerivedFormFields,
   mapRepeatSourceToFormPatch,
+  resolveRepeatMasterCustomer,
 } from "../lib/salesOrderRepeat";
 import {
   PREVIEW_CUSTOMER_BAKSO_ROSSO_ID,
@@ -95,8 +97,7 @@ describe("salesOrderRepeat mapping", () => {
     expect(formPatch.current_stage).toBeUndefined();
     expect(formPatch.discount).toBeUndefined();
     expect(formPatch.discount_amount).toBeUndefined();
-    expect(designFiles).toHaveLength(1);
-    expect(designFiles[0].name).toBe("design-a.png");
+    expect(designFiles).toEqual([]);
     expect(sourcePoNumber).toBe("PO/10/09/26/001");
   });
 
@@ -120,13 +121,13 @@ describe("salesOrderRepeat mapping", () => {
     expect(result.designFiles).toEqual([]);
   });
 
-  test("copies only design files from dto (non-design absent)", () => {
-    const { designFiles } = mapRepeatSourceToFormPatch(sampleSource(), {
+  test("does not copy artwork files", () => {
+    const { designFiles, formPatch } = mapRepeatSourceToFormPatch(sampleSource(), {
       customer_id: "cust-1",
       customer: "PT Repeat",
     });
-    expect(designFiles.map((f) => f.name)).toEqual(["design-a.png"]);
-    expect(designFiles.every((f) => f.data_url.startsWith("data:"))).toBe(true);
+    expect(designFiles).toEqual([]);
+    expect(formPatch.design_files).toBeUndefined();
   });
 
   test("same-name lines stay independent", () => {
@@ -137,6 +138,30 @@ describe("salesOrderRepeat mapping", () => {
     expect(formPatch.line_items).toHaveLength(2);
     expect(formPatch.line_items[0].quantity).toBe(1000);
     expect(formPatch.line_items[1].quantity).toBe(500);
+  });
+
+  test("unlinked source can apply onto selected canonical customer", () => {
+    const { formPatch } = mapRepeatSourceToFormPatch(
+      sampleSource({ customer_id: null }),
+      { customer_id: "cust-1", customer: "Selected Name" }
+    );
+    expect(formPatch.customer_id).toBe("cust-1");
+    expect(formPatch.line_items).toHaveLength(2);
+  });
+
+  test("resolveRepeatMasterCustomer matches exact id then unique normalized name", () => {
+    const masters = [
+      { id: "cust-1", name: "PT Repeat" },
+      { id: "cust-2", name: "PT Lain" },
+    ];
+    expect(resolveRepeatMasterCustomer(sampleSource(), masters).id).toBe("cust-1");
+    expect(
+      resolveRepeatMasterCustomer({ customer: "pt  repeat", customer_id: "" }, masters).id
+    ).toBe("cust-1");
+    expect(
+      resolveRepeatMasterCustomer({ customer: "Unknown Co", customer_id: "" }, masters)
+    ).toBeNull();
+    expect(REPEAT_ORDER_QUERY_PARAM).toBe("repeat_order_id");
   });
 
   test("clearRepeatDerivedFormFields resets commercial fields", () => {
@@ -174,10 +199,13 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(src).toMatch(/api\.salesOrderRepeatSource/);
     expect(src).toMatch(/data-testid="repeat-confirm-modal"/);
     expect(src).toMatch(/Salin detail dari PO terakhir ini\?/);
+    expect(src).toMatch(/Salin detail dari PO ini\?/);
     expect(src).toMatch(/Gunakan Repeat Order/);
     expect(src).toMatch(/data-testid="btn-repeat-cancel"/);
     expect(src).toMatch(/data-testid="btn-repeat-confirm"/);
-    expect(src).toMatch(/applyRepeatOrder/);
+    expect(src).toMatch(/handleRepeatSpecificPo/);
+    expect(src).toMatch(/btn-repeat-order-\$\{o\.id\}/);
+    expect(src).toMatch(/REPEAT_ORDER_QUERY_PARAM/);
     expect(src).toMatch(/mapRepeatSourceToFormPatch/);
   });
 
@@ -197,12 +225,14 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(src).toMatch(/AbortController/);
   });
 
-  test("submit uses canonical createSalesOrder and optional design_files only", () => {
+  test("submit uses canonical createSalesOrder and does not send artwork", () => {
     expect(src).toMatch(/api\.createSalesOrder\(payload\)/);
-    expect(src).toMatch(/design_files: \(repeatDesignFiles/);
+    expect(src).not.toMatch(/design_files: \(repeatDesignFiles/);
+    expect(src).not.toMatch(/repeatDesignFiles/);
     expect(src).not.toMatch(/setForm\(source/);
     expect(src).not.toMatch(/setFormData\(source/);
     expect(apiSrc).toMatch(/salesOrderRepeatSource/);
+    expect(apiSrc).toMatch(/salesOrderRepeatSourceByOrder/);
     expect(apiSrc).toMatch(/\/sales-orders\/repeat-source/);
   });
 
@@ -213,11 +243,10 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(src).not.toMatch(/delivery_proofs/);
     expect(src).toMatch(/mapRepeatSourceToFormPatch\(/);
     expect(src).toMatch(/po_number: prev\.po_number/);
-    expect(src).toMatch(/customer_id: prev\.customer_id/);
     expect(src).toMatch(/order_date: prev\.order_date/);
     expect(src).toMatch(/estimated_delivery: prev\.estimated_delivery/);
     expect(src).toMatch(/deadline: prev\.deadline/);
-    expect(src).toMatch(/customer_phone: prev\.customer_phone/);
+    expect(src).toMatch(/customer_phone: masterPatch\.customer_phone \|\| prev\.customer_phone/);
     const mapped = mapRepeatSourceToFormPatch(
       {
         source_po_number: "PO/X",
@@ -243,6 +272,7 @@ describe("PesananPenjualan Repeat Order UI contracts", () => {
     expect(mapped.formPatch.order_date).toBeUndefined();
     expect(mapped.formPatch.estimated_delivery).toBeUndefined();
     expect(mapped.formPatch.deadline).toBeUndefined();
+    expect(mapped.designFiles).toEqual([]);
   });
 
   test("customer live search requires explicit selection for customer_id", () => {

@@ -16,7 +16,11 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 
 import httpx
 from server import app, current_user
-from services.sales_order_repeat import build_repeat_source_dto, find_latest_valid_repeat_source
+from services.sales_order_repeat import (
+    build_repeat_source_dto,
+    find_latest_valid_repeat_source,
+    find_repeat_source_by_order_id,
+)
 
 
 TINY_PNG = (
@@ -250,20 +254,20 @@ async def test_repeat_payload_excludes_operational_and_workflow():
     assert "id" not in dto["line_items"][0]
     assert "discount" not in dto
     assert "discount_amount" not in dto
-    assert dto["design_file_count"] == 1
-    assert dto["design_files"][0]["name"] == "design-a.png"
-    assert "id" not in dto["design_files"][0]
+    assert dto["design_file_count"] == 0
+    assert dto["design_files"] == []
 
 
 @pytest.mark.anyio
-async def test_only_design_attachments_included():
+async def test_artwork_never_copied_into_repeat_dto():
     order = _base_order()
     dto = build_repeat_source_dto(order)
-    names = [f["name"] for f in dto["design_files"]]
-    assert names == ["design-a.png"]
-    assert "bukti.pdf" not in names
+    assert dto["design_files"] == []
+    assert dto["design_file_count"] == 0
+    assert "bukti.pdf" not in str(dto)
     assert "sj.pdf" not in str(dto)
     assert "proof.jpg" not in str(dto)
+    assert "design-a.png" not in str(dto.get("design_files"))
 
 
 @pytest.mark.anyio
@@ -290,7 +294,9 @@ async def test_http_repeat_source_success_and_zero_writes():
             assert len(src["line_items"]) == 2
             assert "current_stage" not in src
             assert "payment_files" not in src
-            assert src["design_file_count"] == 1
+            assert src["design_file_count"] == 0
+            assert src["design_files"] == []
+            assert data.get("mode") == "customer"
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -332,6 +338,135 @@ async def test_http_unauthorized_source_inaccessible():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             res = await client.get("/api/sales-orders/repeat-source", params={"customer_id": cid})
             assert res.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_specific_po_repeat_uses_exact_selected_order():
+    import server
+
+    cid = f"cust-specific-{uuid.uuid4().hex[:8]}"
+    older = _base_order(
+        customer_id=cid,
+        po_number=f"PO-OLD-{uuid.uuid4().hex[:5].upper()}",
+        created_at=(datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),
+        notes="older",
+    )
+    selected = _base_order(
+        customer_id=cid,
+        po_number=f"PO-SEL-{uuid.uuid4().hex[:5].upper()}",
+        created_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        notes="selected-po",
+    )
+    newer = _base_order(
+        customer_id=cid,
+        po_number=f"PO-NEW-{uuid.uuid4().hex[:5].upper()}",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        notes="newest",
+    )
+    await server.db.orders.insert_many([older, selected, newer])
+
+    found = await find_repeat_source_by_order_id(server.db, selected["id"])
+    assert found is not None
+    assert found["po_number"] == selected["po_number"]
+    assert found["notes"] == "selected-po"
+
+    latest = await find_latest_valid_repeat_source(server.db, cid)
+    assert latest["po_number"] == newer["po_number"]
+
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.get(
+                "/api/sales-orders/repeat-source",
+                params={"order_id": selected["id"]},
+            )
+            assert res.status_code == 200, res.text
+            data = res.json()
+            assert data["found"] is True
+            assert data["mode"] == "order"
+            assert data["source"]["source_po_number"] == selected["po_number"]
+            assert data["source"]["notes"] == "selected-po"
+            assert data["source"]["design_files"] == []
+            assert "current_stage" not in data["source"]
+            assert "packing_status" not in data["source"]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_latest_repeat_prefers_canonical_customer_id_over_name_fallback():
+    import server
+
+    cid = f"cust-canon-{uuid.uuid4().hex[:8]}"
+    name = f"PT Canon {uuid.uuid4().hex[:5]}"
+    await server.db.sales_customers.insert_one(
+        {"id": cid, "name": name, "normalized_name": name.lower()}
+    )
+    unlinked_newer = _base_order(
+        customer_id=None,
+        customer=name,
+        po_number=f"PO-UNL-{uuid.uuid4().hex[:5].upper()}",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        notes="unlinked-newer",
+    )
+    linked_older = _base_order(
+        customer_id=cid,
+        customer=name,
+        po_number=f"PO-LNK-{uuid.uuid4().hex[:5].upper()}",
+        created_at=(datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+        notes="linked-older",
+    )
+    await server.db.orders.insert_many([unlinked_newer, linked_older])
+
+    found = await find_latest_valid_repeat_source(server.db, cid)
+    assert found is not None
+    assert found["po_number"] == linked_older["po_number"]
+    assert found["notes"] == "linked-older"
+
+
+@pytest.mark.anyio
+async def test_latest_repeat_name_fallback_only_when_unlinked():
+    import server
+
+    cid = f"cust-fb-{uuid.uuid4().hex[:8]}"
+    name = f"PT Fallback {uuid.uuid4().hex[:5]}"
+    await server.db.sales_customers.insert_one(
+        {"id": cid, "name": name, "normalized_name": name.lower()}
+    )
+    unlinked = _base_order(
+        customer_id=None,
+        customer=name,
+        po_number=f"PO-FB-{uuid.uuid4().hex[:5].upper()}",
+        notes="legacy-unlinked",
+    )
+    other = _base_order(
+        customer_id=f"other-{uuid.uuid4().hex[:8]}",
+        customer=name,
+        po_number=f"PO-OTH-{uuid.uuid4().hex[:5].upper()}",
+        created_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+        notes="other-stable-id",
+    )
+    await server.db.orders.insert_many([unlinked, other])
+
+    found = await find_latest_valid_repeat_source(server.db, cid)
+    assert found is not None
+    assert found["po_number"] == unlinked["po_number"]
+
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.get("/api/sales-orders/repeat-source", params={"customer_id": cid})
+            assert res.status_code == 200, res.text
+            data = res.json()
+            assert data["found"] is True
+            assert data["customer_id"] == cid
+            assert data["source"]["customer_id"] == cid
+            assert data["source"]["source_po_number"] == unlinked["po_number"]
+            assert data["source"]["design_files"] == []
     finally:
         app.dependency_overrides.pop(current_user, None)
 

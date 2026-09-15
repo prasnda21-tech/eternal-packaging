@@ -21,8 +21,10 @@ import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
+  REPEAT_ORDER_QUERY_PARAM,
   clearRepeatDerivedFormFields,
   mapRepeatSourceToFormPatch,
+  resolveRepeatMasterCustomer,
 } from "../lib/salesOrderRepeat";
 import {
   getPreviewMasterCustomers,
@@ -80,7 +82,9 @@ export default function PesananPenjualan() {
 
   const canCreate = hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const canDelete = hasPerm("po.delete") || user?.role === "admin";
-  const [viewMode, setViewMode] = useState("list"); // 'list' | 'create'
+  const [viewMode, setViewMode] = useState(() =>
+    searchParams.get(REPEAT_ORDER_QUERY_PARAM) ? "create" : "list"
+  ); // 'list' | 'create'
   
   // List state
   const [orders, setOrders] = useState([]);
@@ -141,12 +145,12 @@ export default function PesananPenjualan() {
 
   // Repeat Order (create-form prefill only)
   const [repeatSourceIndicator, setRepeatSourceIndicator] = useState("");
-  const [repeatDesignFiles, setRepeatDesignFiles] = useState([]);
   const [repeatBusy, setRepeatBusy] = useState(false);
   const [repeatMsg, setRepeatMsg] = useState("");
   const [repeatConfirm, setRepeatConfirm] = useState(null);
   const repeatAbortRef = useRef(null);
   const repeatRequestCustomerIdRef = useRef(null);
+  const consumedRepeatOrderIdRef = useRef(null);
   const selectedCustomerIdRef = useRef(null);
 
   useEffect(() => {
@@ -155,7 +159,6 @@ export default function PesananPenjualan() {
 
   const clearRepeatState = useCallback(() => {
     setRepeatSourceIndicator("");
-    setRepeatDesignFiles([]);
     setRepeatMsg("");
     setRepeatConfirm(null);
     repeatAbortRef.current?.abort();
@@ -217,6 +220,7 @@ export default function PesananPenjualan() {
   // Sync filter/search into URL so browser Back restores list presentation state.
   useEffect(() => {
     if (viewMode !== "list") return;
+    if (searchParams.get(REPEAT_ORDER_QUERY_PARAM)) return;
     const next = new URLSearchParams();
     if (searchQuery.trim()) next.set("q", searchQuery.trim());
     if (statusFilter && statusFilter !== "all") next.set("status", statusFilter);
@@ -298,7 +302,7 @@ export default function PesananPenjualan() {
   }, [previewRepeatOrderActive, options.master_customers]);
 
   const handleCustomerTextChange = (newCustomer) => {
-    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatConfirm);
     clearRepeatState();
     const patch = {
       customer: newCustomer,
@@ -323,7 +327,7 @@ export default function PesananPenjualan() {
 
   const handleCustomerSelect = (masterMatch) => {
     if (!masterMatch?.id) return;
-    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatConfirm);
     clearRepeatState();
     const customerName = String(masterMatch.name || "").trim();
     const patch = applyMasterCustomerBaseline(masterMatch, customerName);
@@ -345,7 +349,7 @@ export default function PesananPenjualan() {
   };
 
   const handleCustomerClear = () => {
-    const hadRepeat = Boolean(repeatSourceIndicator || repeatDesignFiles.length || repeatConfirm);
+    const hadRepeat = Boolean(repeatSourceIndicator || repeatConfirm);
     clearRepeatState();
     setFormData((prev) => {
       const base = hadRepeat
@@ -555,6 +559,7 @@ export default function PesananPenjualan() {
       setRepeatConfirm({
         customerId,
         source: data.source,
+        mode: "customer",
       });
     } catch (e) {
       if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
@@ -567,45 +572,103 @@ export default function PesananPenjualan() {
     }
   };
 
+  const handleRepeatSpecificPo = async (orderId) => {
+    const oid = String(orderId || "").trim();
+    if (!oid) return;
+    setRepeatMsg("");
+    setRepeatBusy(true);
+    repeatAbortRef.current?.abort();
+    const ac = new AbortController();
+    repeatAbortRef.current = ac;
+    try {
+      if (viewMode !== "create") {
+        setViewMode("create");
+      }
+      const data = await api.salesOrderRepeatSourceByOrder(oid, { signal: ac.signal });
+      if (ac.signal.aborted) return;
+      if (!data?.found || !data?.source) {
+        setRepeatMsg("Pesanan tidak dapat di-repeat (tidak ditemukan atau tidak valid).");
+        setRepeatConfirm(null);
+        return;
+      }
+      setRepeatConfirm({
+        customerId: data.source.customer_id || null,
+        source: data.source,
+        mode: "order",
+        orderId: oid,
+      });
+    } catch (e) {
+      if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
+        return;
+      }
+      const det = e.response?.data?.detail;
+      setRepeatMsg(typeof det === "object" ? det.message : (det || "Gagal memuat pesanan untuk Repeat Order."));
+    } finally {
+      if (!ac.signal.aborted) setRepeatBusy(false);
+    }
+  };
+
   const applyRepeatOrder = () => {
     if (!repeatConfirm?.source) return;
-    const customerId = formData.customer_id;
-    if (!customerId || repeatConfirm.customerId !== customerId) {
-      setRepeatConfirm(null);
-      setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
-      return;
+    const source = repeatConfirm.source;
+    const masters = masterCustomersForSearch || [];
+    const master = resolveRepeatMasterCustomer(source, masters);
+    const selected = master
+      ? { customer_id: master.id, customer: master.name }
+      : {
+          customer_id: formData.customer_id || source.customer_id || null,
+          customer: formData.customer || source.customer || "",
+        };
+    if (repeatConfirm.mode === "customer") {
+      const customerId = formData.customer_id;
+      if (!customerId || (repeatConfirm.customerId && repeatConfirm.customerId !== customerId)) {
+        setRepeatConfirm(null);
+        setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
+        return;
+      }
+      selected.customer_id = customerId;
+      selected.customer = formData.customer;
     }
-    const { formPatch, designFiles, sourcePoNumber } = mapRepeatSourceToFormPatch(
-      repeatConfirm.source,
-      { customer_id: customerId, customer: formData.customer }
-    );
+    const { formPatch, sourcePoNumber } = mapRepeatSourceToFormPatch(source, selected);
     if (!formPatch) {
       setRepeatConfirm(null);
       setRepeatMsg(REPEAT_NO_PREVIOUS_MESSAGE);
       return;
     }
+    const selectedMaster =
+      (masters || []).find((m) => String(m?.id || "") === String(selected.customer_id || "")) || master;
+    const masterPatch = selectedMaster
+      ? applyMasterCustomerBaseline(selectedMaster, selected.customer)
+      : {};
     setFormData((prev) => ({
       ...prev,
+      ...masterPatch,
       ...formPatch,
-      // Keep new-order identity + date defaults + selected customer master baseline
       po_number: prev.po_number,
       created_by_user: prev.created_by_user,
-      customer: prev.customer,
-      customer_id: prev.customer_id,
-      customer_phone: prev.customer_phone,
-      customer_address: prev.customer_address,
-      customer_pic: prev.customer_pic,
-      customer_email: prev.customer_email,
-      customer_city: prev.customer_city,
+      customer_phone: masterPatch.customer_phone || prev.customer_phone,
+      customer_address: masterPatch.customer_address || prev.customer_address,
+      customer_pic: masterPatch.customer_pic || prev.customer_pic,
+      customer_email: masterPatch.customer_email || prev.customer_email,
+      customer_city: masterPatch.customer_city || prev.customer_city,
       order_date: prev.order_date,
       estimated_delivery: prev.estimated_delivery,
       deadline: prev.deadline,
     }));
-    setRepeatDesignFiles(designFiles);
     setRepeatSourceIndicator(sourcePoNumber || "");
     setRepeatConfirm(null);
     setRepeatMsg("");
   };
+
+  useEffect(() => {
+    const rid = (searchParams.get(REPEAT_ORDER_QUERY_PARAM) || "").trim();
+    if (!rid || !canCreate) return;
+    if (consumedRepeatOrderIdRef.current === rid) return;
+    consumedRepeatOrderIdRef.current = rid;
+    resetForm();
+    setViewMode("create");
+    void handleRepeatSpecificPo(rid);
+  }, [searchParams, canCreate]);
 
   const handleFormSubmit = async (e) => {
     e?.preventDefault?.();
@@ -658,13 +721,6 @@ export default function PesananPenjualan() {
           unit: (li.unit || "pcs").trim(),
           production_process: li.production_process === "non_print" ? "non_print" : "print",
         })),
-        design_files: (repeatDesignFiles || [])
-          .filter((f) => f?.data_url)
-          .map((f) => ({
-            name: f.name || "design",
-            data_url: f.data_url,
-            content_type: f.content_type || undefined,
-          })),
       };
 
       const res = await api.createSalesOrder(payload);
@@ -912,11 +968,6 @@ export default function PesananPenjualan() {
                 {repeatMsg ? (
                   <div data-testid="repeat-empty-message" style={{ marginTop: 6, fontSize: "0.8rem", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "6px 10px" }}>
                     {repeatMsg}
-                  </div>
-                ) : null}
-                {repeatDesignFiles.length > 0 ? (
-                  <div data-testid="repeat-design-files" style={{ marginTop: 6, fontSize: "0.78rem", color: "#475569" }}>
-                    Design file yang akan disalin: {repeatDesignFiles.map((f) => f.name).join(", ")}
                   </div>
                 ) : null}
               </div>
@@ -1575,6 +1626,21 @@ export default function PesananPenjualan() {
                             >
                               Lihat PO
                             </Link>
+                            {canCreate && !isCancelled && (
+                              <button
+                                type="button"
+                                data-testid={`btn-repeat-order-${o.id}`}
+                                title="Repeat Order dari PO ini"
+                                onClick={() => {
+                                  resetForm();
+                                  setViewMode("create");
+                                  void handleRepeatSpecificPo(o.id);
+                                }}
+                                style={{ display: "inline-block", padding: "4px 8px", background: "#f8fafc", color: "#0f172a", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+                              >
+                                Repeat Order
+                              </button>
+                            )}
                             {canProcessDelivery && (
                               <Link
                                 to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
@@ -1619,7 +1685,9 @@ export default function PesananPenjualan() {
       {repeatConfirm && (
         <div className="modal-overlay" data-testid="repeat-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
           <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 460, margin: 16 }}>
-            <h3 style={{ margin: "0 0 8px" }}>Salin detail dari PO terakhir ini?</h3>
+            <h3 style={{ margin: "0 0 8px" }}>
+              {repeatConfirm.mode === "order" ? "Salin detail dari PO ini?" : "Salin detail dari PO terakhir ini?"}
+            </h3>
             <dl style={{ margin: "0 0 16px", fontSize: "0.9rem" }}>
               <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
                 <dt style={{ color: "#64748b", minWidth: 110 }}>No PO</dt>

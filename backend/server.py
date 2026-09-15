@@ -105,6 +105,8 @@ from services.order_prediction import (
 from services.sales_order_repeat import (
     build_repeat_source_dto,
     find_latest_valid_repeat_source,
+    find_repeat_source_by_order_id,
+    stamp_canonical_customer,
 )
 from services.workflow_entries import append_qty_entry, find_by_action_id, seed_legacy, sum_entry_qty
 from services.customer_tracking import strip_tracking_secret as _strip_tracking_secret
@@ -9139,31 +9141,43 @@ async def set_sales_customer_status_endpoint(
 
 @api_router.get("/sales-orders/repeat-source")
 async def get_sales_order_repeat_source(
-    customer_id: str,
+    customer_id: Optional[str] = None,
+    order_id: Optional[str] = None,
     user=Depends(current_user),
 ):
-    """Read-only: latest valid PO for exact customer_id as a copy-safe Repeat Order DTO.
+    """Read-only Repeat Order source.
 
-    Zero writes. Does not return raw order documents or workflow/operational fields.
+    Modes:
+    - order_id: exact selected PO
+    - customer_id: latest valid PO for canonical customer_id (name fallback only
+      for still-unlinked legacy rows)
+
+    Zero writes. Does not return raw order documents, artwork, or workflow fields.
     """
     await _require_any_perm(user, "sales_order.create", "po.edit", "po.import.view")
+    oid = (order_id or "").strip()
     cid = (customer_id or "").strip()
-    if not cid:
-        raise HTTPException(400, "customer_id wajib diisi.")
+    if not oid and not cid:
+        raise HTTPException(400, "order_id atau customer_id wajib diisi.")
+
+    if oid:
+        source = await find_repeat_source_by_order_id(db, oid)
+        if not source:
+            return {"found": False, "mode": "order", "order_id": oid, "source": None}
+        dto = build_repeat_source_dto(source)
+        return {"found": True, "mode": "order", "order_id": oid, "source": dto}
 
     source = await find_latest_valid_repeat_source(db, cid)
     if not source:
-        return {"found": False, "customer_id": cid, "source": None}
+        return {"found": False, "mode": "customer", "customer_id": cid, "source": None}
 
-    # Authoritative match: selected customer remains the lookup authority.
-    if str(source.get("customer_id") or "").strip() != cid:
-        return {"found": False, "customer_id": cid, "source": None}
-
-    dto = build_repeat_source_dto(source)
+    master = await db.sales_customers.find_one({"id": cid}, {"_id": 0, "id": 1, "name": 1})
+    master_name = (master or {}).get("name") or ""
+    dto = stamp_canonical_customer(build_repeat_source_dto(source), cid, master_name)
     if str(dto.get("customer_id") or "").strip() != cid:
-        return {"found": False, "customer_id": cid, "source": None}
+        return {"found": False, "mode": "customer", "customer_id": cid, "source": None}
 
-    return {"found": True, "customer_id": cid, "source": dto}
+    return {"found": True, "mode": "customer", "customer_id": cid, "source": dto}
 
 
 @api_router.get("/sales-orders/options")
