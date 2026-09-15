@@ -378,7 +378,11 @@ function cellContent(col, ctx) {
       }
       return null;
     case "sj":
-      return row.delivery_note_number || "-";
+      return (
+        <span data-testid={variant === "mobile" ? `mobile-schedule-sj-${row.po_number}` : undefined}>
+          {row.delivery_note_number || "-"}
+        </span>
+      );
     case "driver":
       return row.driver_name || "-";
     case "status":

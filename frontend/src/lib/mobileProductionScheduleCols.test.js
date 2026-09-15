@@ -8,8 +8,8 @@ describe("mobileProductionScheduleCols", () => {
   test("compact ops order is prio, date, customer, item, qty, then Cup/Screen/Prod", () => {
     const keys = MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.key);
     const labels = MOBILE_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label);
-    expect(keys).toEqual(["prio", "work_date", "customer", "item", "qty", "helper", "screen", "qty_cetak", "packing", "loading", "shipped"]);
-    expect(labels).toEqual(["Prioritas", "Tgl Kerja", "Customer / No PO", "Item Line", "Qty Total", "Cup", "Screen", "Prod", "Pack", "Load", "Kirim"]);
+    expect(keys).toEqual(["prio", "work_date", "customer", "sj", "item", "qty", "helper", "screen", "qty_cetak", "packing", "loading", "shipped"]);
+    expect(labels).toEqual(["Prioritas", "Tgl Kerja", "Customer / No PO", "Surat Jalan", "Item Line", "Qty Total", "Cup", "Screen", "Prod", "Pack", "Load", "Kirim"]);
   });
 
   test("Zona Driver Tahap Aktif and reclaimed columns are absent from PWA cols", () => {

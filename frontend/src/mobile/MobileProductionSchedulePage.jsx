@@ -25,8 +25,7 @@ import {
 } from "../lib/mobileSchedule";
 import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
 import {
-  OPS_TOOLBAR_FILTERS,
-  OPS_MORE_FILTERS,
+  OPS_QUICK_FILTERS,
   matchesProductionOpsSearch,
   opsQuickFilterCounts,
   productionOpsBadge,
@@ -55,6 +54,16 @@ import {
   storageUserKey,
 } from "../lib/poListReturn";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
+
+const SCHEDULE_FILTER_RAIL_KEYS = [
+  "semua",
+  "hari_ini",
+  "besok",
+  "terlambat",
+  "belum_dijadwalkan",
+  "minggu_ini",
+  "semua_aktif",
+];
 
 export function scheduleLoadErrorMessage(err) {
   const status = err?.response?.status;
@@ -210,7 +219,7 @@ export default function MobileProductionSchedulePage() {
 
   return (
     <div className="mop-schedule-root">
-      <OpsQueueHeader title="Jadwal Produksi" />
+      <OpsQueueHeader title="Jadwal Produksi" showBrand={false} subtitle="" />
       <main className="mop-content mop-schedule-page" data-testid="mobile-schedule-page">
         {!allowed && (
           <div className="mop-error" data-testid="mobile-schedule-forbidden">
@@ -231,74 +240,11 @@ export default function MobileProductionSchedulePage() {
               }}
             />
             <div className="mop-schedule-toolbar" data-testid="mobile-schedule-toolbar">
-              <div className="mop-ops-quick" data-testid="mobile-schedule-quick-filters">
-                {OPS_TOOLBAR_FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    className={`mop-ops-chip mop-ops-chip--${f.key}${quick === f.key ? " is-active" : ""}`}
-                    data-testid={`mobile-schedule-quick-${f.key}`}
-                    onClick={() => setQuick(f.key)}
-                  >
-                    {f.label}
-                    <span className="mop-ops-chip-count" data-testid={`mobile-schedule-quick-count-${f.key}`}>
-                      {quickCounts[f.key] ?? 0}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <ProductionScheduleSearchCluster
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                inputTestId="mobile-schedule-search"
-                searchButtonTestId="mobile-schedule-search-btn"
-                placeholder="Cari customer / PO / item"
-              />
-              <div className="mop-schedule-filter-actions" data-testid="mobile-schedule-filter-actions">
-                <button
-                  type="button"
-                  className={"mop-btn-ghost" + (filterOpen ? " is-active" : "")}
-                  onClick={() => setFilterOpen((v) => !v)}
-                  data-testid="mobile-schedule-filter-btn"
-                >
-                  <Filter size={12} /> Filter
-                </button>
-                <button
-                  type="button"
-                  className="mop-btn-ghost mop-schedule-reset"
-                  onClick={resetFilters}
-                  disabled={!filtersActive}
-                  data-testid="mobile-schedule-reset"
-                >
-                  Reset
-                </button>
-                <span className="mop-schedule-count" data-testid="mobile-schedule-count">
-                  {filtered.length} / {rows.length} entri
-                </span>
-              </div>
-            </div>
-            {filterOpen && (
-              <div className="mop-ds-filter-panel" data-testid="mobile-schedule-filter-panel">
-                <label className="mop-schedule-check">
-                  <input
-                    type="checkbox"
-                    checked={includeCompleted}
-                    onChange={(e) => setIncludeCompleted(e.target.checked)}
-                    data-testid="mobile-schedule-include-completed"
-                  />
-                  Selesai
-                </label>
-                <label className="mop-schedule-check">
-                  <input
-                    type="checkbox"
-                    checked={includeCancelled}
-                    onChange={(e) => setIncludeCancelled(e.target.checked)}
-                    data-testid="mobile-schedule-include-cancelled"
-                  />
-                  Cancelled
-                </label>
-                <div className="mop-ops-quick mop-ops-quick-more" data-testid="mobile-schedule-more-filters">
-                  {OPS_MORE_FILTERS.map((f) => (
+              <div className="mop-ops-quick mop-ops-filter-rail" data-testid="mobile-schedule-quick-filters">
+                {SCHEDULE_FILTER_RAIL_KEYS.map((key) => {
+                  const f = OPS_QUICK_FILTERS.find((item) => item.key === key);
+                  if (!f) return null;
+                  return (
                     <button
                       key={f.key}
                       type="button"
@@ -311,10 +257,57 @@ export default function MobileProductionSchedulePage() {
                         {quickCounts[f.key] ?? 0}
                       </span>
                     </button>
-                  ))}
+                  );
+                })}
+                <label className={`mop-ops-chip mop-ops-chip--selesai${includeCompleted ? " is-active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={includeCompleted}
+                    onChange={(e) => setIncludeCompleted(e.target.checked)}
+                    data-testid="mobile-schedule-include-completed"
+                  />
+                  Selesai
+                </label>
+                <label className={`mop-ops-chip mop-ops-chip--cancelled${includeCancelled ? " is-active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={includeCancelled}
+                    onChange={(e) => setIncludeCancelled(e.target.checked)}
+                    data-testid="mobile-schedule-include-cancelled"
+                  />
+                  Cancelled
+                </label>
+                <ProductionScheduleSearchCluster
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  inputTestId="mobile-schedule-search"
+                  searchButtonTestId="mobile-schedule-search-btn"
+                  placeholder="Cari PO / customer"
+                />
+                <div className="mop-schedule-filter-actions" data-testid="mobile-schedule-filter-actions">
+                  <button
+                    type="button"
+                    className={"mop-btn-ghost" + (filterOpen ? " is-active" : "")}
+                    onClick={() => setFilterOpen((v) => !v)}
+                    data-testid="mobile-schedule-filter-btn"
+                  >
+                    <Filter size={12} /> Filter
+                  </button>
+                  <button
+                    type="button"
+                    className="mop-btn-ghost mop-schedule-reset"
+                    onClick={resetFilters}
+                    disabled={!filtersActive}
+                    data-testid="mobile-schedule-reset"
+                  >
+                    Reset
+                  </button>
+                  <span className="mop-schedule-count" data-testid="mobile-schedule-count">
+                    {filtered.length} / {rows.length} entri
+                  </span>
                 </div>
               </div>
-            )}
+            </div>
             {loading && (
               <p className="mop-empty" data-testid="mobile-schedule-loading">Memuat jadwal produksi...</p>
             )}
