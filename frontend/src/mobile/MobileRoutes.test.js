@@ -48,6 +48,9 @@ describe("mobile route wiring", () => {
     expect(detail).toMatch(/selectMobileWorkspace/);
     expect(detail).toMatch(/hasPerm\(selected\.permission\)/);
     expect(detail).toMatch(/WORKSPACE_VIEWS\[selected\.id\]/);
+    expect(detail).toMatch(/MobileTaskModal/);
+    expect(detail).toMatch(/onRequestClose/);
+    expect(detail).toMatch(/getPwaDeliveryTaskPreviewOrder/);
   });
 
   test("order detail topbar uses customer primary title and PO secondary meta", () => {

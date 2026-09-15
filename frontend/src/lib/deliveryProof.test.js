@@ -24,6 +24,7 @@ import {
   findDeliveryShipment,
   isShipmentDelivered,
   pengirimanSjOptions,
+  pengirimanSjDisplayLabel,
   proofsForShipment,
   selectedPengirimanShipmentId,
 } from "./deliveryProof";
@@ -284,6 +285,10 @@ describe("deliveryProof helpers", () => {
       delivery_confirmations: [],
     };
     expect(pengirimanSjOptions(order).map((o) => o.id)).toEqual(["sj-1", "sj-2"]);
+    expect(pengirimanSjOptions(order).map((o) => pengirimanSjDisplayLabel(o))).toEqual(["SJ/001", "SJ/001_2"]);
+    expect(pengirimanSjOptions(order).every((o) => !String(o.label).includes(o.id) || o.label === o.number || o.label.startsWith(o.number))).toBe(true);
+    expect(pengirimanSjDisplayLabel({ number: "SJ/2026/09/07/000031 3", id: "3ab43353-5705-476b-97fd-f3beb1b1314c" })).toBe("SJ/2026/09/07/000031 3");
+    expect(pengirimanSjDisplayLabel({ number: "SJ/2026/09/07/000031 3", id: "3ab43353-5705-476b-97fd-f3beb1b1314c" })).not.toContain("3ab43353");
     expect(activeDeliveryBatch(order).id).toBe("sj-2");
     expect(canUploadDeliveryBatchPhoto(order)).toBe(false);
     expect(canUploadDeliveryBatchPhoto(order, sj1)).toBe(true);

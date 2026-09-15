@@ -2,7 +2,17 @@ import { useEffect, useReducer, useState } from "react";
 import SignaturePad from "../../components/SignaturePad";
 import { INITIAL_SIGNATURE_MODAL, signatureModalReducer } from "../../lib/mobileSignature";
 
-export default function MobileSignatureModal({ open, role, readOnly, onCancel, onSave }) {
+export default function MobileSignatureModal({
+  open,
+  role,
+  readOnly,
+  title,
+  context,
+  saveLabel = "Simpan Tanda Tangan",
+  children,
+  onCancel,
+  onSave,
+}) {
   const [state, dispatch] = useReducer(signatureModalReducer, INITIAL_SIGNATURE_MODAL);
   const [padKey, setPadKey] = useState(0);
   useEffect(() => {
@@ -15,10 +25,13 @@ export default function MobileSignatureModal({ open, role, readOnly, onCancel, o
   }, [open, role, readOnly]);
 
   if (!open || readOnly) return null;
-  const title = role === "driver" ? "Tanda Tangan Driver" : "Tanda Tangan Penerima";
+  const resolvedTitle = title
+    || (role === "driver" ? "Tanda Tangan Pengirim" : "Tanda Tangan Penerima");
   return (
-    <div className="mop-sig-modal" role="dialog" aria-modal="true" aria-label={title} data-testid="mobile-signature-modal">
-      <h2>{title}</h2>
+    <div className="mop-sig-modal" role="dialog" aria-modal="true" aria-label={resolvedTitle} data-testid="mobile-signature-modal">
+      <h2>{resolvedTitle}</h2>
+      {context ? <p className="mop-sig-context" data-testid="mobile-sig-context">{context}</p> : null}
+      {children}
       <div className="mop-sig-canvas-wrap">
         <SignaturePad
           key={padKey}
@@ -37,7 +50,7 @@ export default function MobileSignatureModal({ open, role, readOnly, onCancel, o
           onClick={() => onSave(state.draft)}
           data-testid="mobile-sig-save"
         >
-          Simpan
+          {saveLabel}
         </button>
       </div>
     </div>

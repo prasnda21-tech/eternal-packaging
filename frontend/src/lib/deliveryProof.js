@@ -258,6 +258,14 @@ export function isShipmentDelivered(order, shipment) {
   return qtyDeliveredForShipment(order, shipment) >= batch;
 }
 
+/** Operator-facing SJ text. Never include internal shipment UUID. */
+export function pengirimanSjDisplayLabel(opt, { includeDelivered = false } = {}) {
+  const number = String(opt?.number || "").trim();
+  if (!number) return "";
+  if (includeDelivered && opt?.delivered) return `${number} · Terkirim`;
+  return number;
+}
+
 export function pengirimanSjOptions(order) {
   return _shipments(order).map((sh, i) => {
     const id = deliveryBatchIdentity(sh) || `sj-${i}`;
@@ -265,6 +273,7 @@ export function pengirimanSjOptions(order) {
     const date = String(sh.delivery_date || "").slice(0, 10);
     const qty = deliveryBatchQty(sh);
     const delivered = isShipmentDelivered(order, sh);
+    const display = pengirimanSjDisplayLabel({ number, delivered }, { includeDelivered: true });
     return {
       id,
       shipment: sh,
@@ -273,7 +282,7 @@ export function pengirimanSjOptions(order) {
       qty,
       delivered,
       shipmentIndex: sh.shipment_index || i + 1,
-      label: date ? `${number} · ${id}` : `${number} · ${id}`,
+      label: display,
     };
   });
 }
