@@ -9,6 +9,7 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from quantity_rules import shipments_stored
+from services.delivery_schedule import apply_effective_location_to_atom
 from services.surat_jalan_files import (
     entry_lines,
     file_for_shipment,
@@ -182,6 +183,7 @@ def sj_units_for_order(order: dict) -> List[dict]:
             "shipment_id": sid,
             "sj_number": canonical_sj_number(sh) or sid,
             "sj_load_qty": load,
+            "delivery_location": sh.get("delivery_location") if isinstance(sh.get("delivery_location"), dict) else None,
         })
     return units
 
@@ -248,7 +250,8 @@ def expand_eligible_to_sj_atoms(
 ) -> List[dict]:
     """Expand PO review rows into one capacity/persist atom per canonical SJ.
 
-    Different SJ from the same PO become independent atoms (same customer coords).
+    Different SJ from the same PO become independent atoms with per-SJ
+    effective coordinates (SJ override if valid, else PO location).
     One SJ is never split. skip_shipment_ids omits SJ already on an active route.
     skip_sales_order_ids covers legacy PO-level stops that have no shipment_id.
     """
@@ -308,6 +311,7 @@ def expand_eligible_to_sj_atoms(
                 "sj_units": [u],
                 "shipment_ids": [sid],
             })
+            apply_effective_location_to_atom(atoms[-1], u.get("delivery_location"))
     return atoms
 
 

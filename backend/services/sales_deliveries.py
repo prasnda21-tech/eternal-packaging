@@ -34,6 +34,7 @@ from services.physical_stock_engine import (
     release_sales_delivery_stock,
     finalize_sales_delivery_stock,
 )
+from services.delivery_schedule import persistable_delivery_location
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,7 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
         "suggested_sj_number": suggested_sj,
         "can_create_delivery": (not is_cancelled and total_remaining > 0),
         "deliveries": existing_deliveries,
+        "delivery_location": persistable_delivery_location(order.get("delivery_location")),
     }
 
 
@@ -576,6 +578,7 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
         final_sales = str(payload.get("sales") if payload.get("sales") is not None else summary["sales"]).strip()
         final_expedition = str(payload.get("expedition") if payload.get("expedition") is not None else summary["expedition"]).strip()
         final_notes = str(payload.get("notes") if payload.get("notes") is not None else "").strip()
+        sj_location = persistable_delivery_location(payload.get("delivery_location"))
 
         # Retry loop in case of race condition / concurrent submission
         max_retries = 3
@@ -625,6 +628,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "is_cancelled": False,
                 "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
+            if sj_location:
+                delivery_doc["delivery_location"] = sj_location
 
             # Pre-check physical stock availability before persisting delivery
             await precheck_sales_delivery(db, order, validated_lines)
@@ -670,6 +675,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     "created_by": user.get("email") or "",
                     "sales_delivery_id": delivery_id,
                 }
+                if sj_location:
+                    shipment_entry["delivery_location"] = sj_location
 
                 await db.orders.update_one(
                     {"id": summary["po_id"], "shipments.id": {"$ne": delivery_id}},

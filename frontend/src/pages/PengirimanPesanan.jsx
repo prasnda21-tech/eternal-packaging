@@ -19,6 +19,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
+import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
 
 function getTodayString() {
   const d = new Date();
@@ -72,6 +73,7 @@ export default function PengirimanPesanan() {
   const [formBusy, setFormBusy] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [sjLocationOverride, setSjLocationOverride] = useState(null);
 
   // Detail Modal / View State
   const [selectedDeliveryId, setSelectedDeliveryId] = useState(null);
@@ -123,6 +125,7 @@ export default function PengirimanPesanan() {
   const loadPoSummary = useCallback(async (poId) => {
     if (!poId) {
       setPoSummary(null);
+      setSjLocationOverride(null);
       return;
     }
     setPoSummaryLoading(true);
@@ -131,6 +134,7 @@ export default function PengirimanPesanan() {
     try {
       const data = await api.getPoDeliverySummary(poId);
       setPoSummary(data);
+      setSjLocationOverride(null);
 
       // Pre-fill header fields
       setFormData((prev) => {
@@ -321,6 +325,8 @@ export default function PengirimanPesanan() {
       notes: formData.notes,
       line_items: lineItemsPayload,
     };
+    const locationOverride = sjOverridePayload(sjLocationOverride);
+    if (locationOverride) payload.delivery_location = locationOverride;
 
     setFormBusy(true);
     try {
@@ -693,6 +699,15 @@ export default function PengirimanPesanan() {
                 style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
               />
             </div>
+
+            {poSummary && (
+              <SjDeliveryLocationPicker
+                poLocation={poSummary.delivery_location || null}
+                override={sjLocationOverride}
+                onOverrideChange={setSjLocationOverride}
+                disabled={formBusy}
+              />
+            )}
 
             {/* Catatan */}
             <div style={{ marginTop: 12 }}>

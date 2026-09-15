@@ -717,3 +717,103 @@ async def test_create_two_requires_two_eligible():
         json={"order_ids": [a], "fleet_count": 2},
     )
     assert two.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_expand_atoms_use_per_sj_effective_location():
+    from services.independent_route.fleet_capacity import expand_eligible_to_sj_atoms
+    loc_a = {"lat": -6.2, "lng": 106.8}
+    loc_b = {"lat": -6.3, "lng": 106.9}
+    loc_c = {"lat": -6.4, "lng": 107.0}
+    row = {
+        "sales_order_id": "po-1",
+        "lat": loc_a["lat"],
+        "lng": loc_a["lng"],
+        "planning_snapshot": {"lat": loc_a["lat"], "lng": loc_a["lng"], "address": "PO-A"},
+        "sj_units": [
+            {"shipment_id": "s1", "sj_number": "SJ1", "sj_load_qty": 100},
+            {"shipment_id": "s2", "sj_number": "SJ2", "sj_load_qty": 100, "delivery_location": loc_b},
+            {"shipment_id": "s3", "sj_number": "SJ3", "sj_load_qty": 100, "delivery_location": loc_c},
+        ],
+    }
+    atoms = expand_eligible_to_sj_atoms([row])
+    by_id = {a["shipment_id"]: a for a in atoms}
+    assert by_id["s1"]["lat"] == -6.2 and by_id["s1"]["lng"] == 106.8
+    assert by_id["s2"]["lat"] == -6.3 and by_id["s2"]["lng"] == 106.9
+    assert by_id["s3"]["lat"] == -6.4 and by_id["s3"]["lng"] == 107.0
+    assert by_id["s2"]["planning_snapshot"]["lat"] == -6.3
+    invalid_row = {
+        "sales_order_id": "po-2",
+        "lat": loc_a["lat"],
+        "lng": loc_a["lng"],
+        "planning_snapshot": {"lat": loc_a["lat"], "lng": loc_a["lng"]},
+        "sj_units": [
+            {"shipment_id": "s4", "sj_number": "SJ4", "sj_load_qty": 50, "delivery_location": {"lat": -6.9}},
+            {"shipment_id": "s5", "sj_number": "SJ5", "sj_load_qty": 50, "delivery_location": {"lat": 0, "lng": 0}},
+        ],
+    }
+    inv = expand_eligible_to_sj_atoms([invalid_row])
+    assert all(a["lat"] == -6.2 and a["lng"] == 106.8 for a in inv)
+
+    sj_only = {
+        "sales_order_id": "po-3",
+        "lat": None,
+        "lng": None,
+        "planning_snapshot": {},
+        "sj_units": [
+            {"shipment_id": "s6", "sj_number": "SJ6", "sj_load_qty": 10, "delivery_location": loc_b},
+        ],
+    }
+    only = expand_eligible_to_sj_atoms([sj_only])
+    assert only[0]["lat"] == -6.3 and only[0]["lng"] == 106.9
+
+
+@pytest.mark.anyio
+async def test_preview_fleets_uses_per_sj_coordinates():
+    await _clean()
+    user = await _upsert_user(_user())
+    client = await client_for(user)
+    oid = f"{PREFIX}-MULTI-SJ"
+    loc_a = {"lat": -6.20, "lng": 106.80, "formatted_address": "PO-A"}
+    loc_b = {"lat": -6.31, "lng": 106.91, "formatted_address": "SJ-B"}
+    loc_c = {"lat": -6.42, "lng": 107.02, "formatted_address": "SJ-C"}
+    s1, s2 = f"sj-{oid}-1", f"sj-{oid}-2"
+    order = _order(oid, lat=-6.20, lng=106.80, address="PO-A")
+    order["delivery_location"] = loc_a
+    order["shipments"] = [
+        {"id": s1, "number": "SJ-B", "lines": [{"name": "Box", "qty": 100}], "delivery_location": loc_b},
+        {"id": s2, "number": "SJ-C", "lines": [{"name": "Box", "qty": 100}], "delivery_location": loc_c},
+    ]
+    order["surat_jalan_files"] = [
+        {"id": s1, "shipment_id": s1, "name": "SJ-B.pdf", "storage_path": f"/sj/{s1}.pdf", "lines": [{"name": "Box", "qty": 100}]},
+        {"id": s2, "shipment_id": s2, "name": "SJ-C.pdf", "storage_path": f"/sj/{s2}.pdf", "lines": [{"name": "Box", "qty": 100}]},
+    ]
+    await server.db.orders.insert_one(order)
+    sj_only_id = f"{PREFIX}-SJ-ONLY"
+    sj_only = _order(sj_only_id, address="No PO pin")
+    sj_only["delivery_location"] = {}
+    sj_only["shipments"][0]["delivery_location"] = loc_b
+    await server.db.orders.insert_one(sj_only)
+
+    review = await client.post(
+        "/api/route-optimizer/from-schedule/review",
+        json={"order_ids": [oid, sj_only_id]},
+    )
+    assert review.status_code == 200, review.text
+    by_id = {row["sales_order_id"]: row for row in review.json()["rows"]}
+    assert by_id[oid]["eligible"] is True
+    assert by_id[sj_only_id]["eligible"] is True
+
+    preview = await client.post(
+        "/api/route-optimizer/from-schedule/preview-fleets",
+        json={"order_ids": [oid], "fleet_count": 1},
+    )
+    assert preview.status_code == 200, preview.text
+    stops = preview.json()["fleets"][0]["stops"]
+    by_ship = {s.get("shipment_id") or s.get("assignment_id"): s for s in stops}
+    assert by_ship[s1]["lat"] == loc_b["lat"]
+    assert by_ship[s1]["lng"] == loc_b["lng"]
+    assert by_ship[s2]["lat"] == loc_c["lat"]
+    assert by_ship[s2]["lng"] == loc_c["lng"]
+    fresh = await server.db.orders.find_one({"id": oid}, {"_id": 0})
+    assert fresh["delivery_location"]["lat"] == loc_a["lat"]

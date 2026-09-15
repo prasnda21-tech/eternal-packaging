@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from services.delivery_schedule import (
     SCHEDULE_PROJECTION,
     effective_delivery_date,
+    public_delivery_location,
     schedule_row,
 )
 from services.delivery_stops import order_location, parse_location
@@ -87,6 +88,7 @@ BRIDGE_ORDER_PROJECTION = {
     "shipments.file_id": 1,
     "shipments.lines": 1,
     "shipments.accurate_shipment_id": 1,
+    "shipments.delivery_location": 1,
     "surat_jalan_files.id": 1,
     "surat_jalan_files.name": 1,
     "surat_jalan_files.content_type": 1,
@@ -357,6 +359,14 @@ def eligibility_for_order(
         reasons.append("Surat Jalan belum siap.")
     address = _text(loc.get("formatted_address") or order.get("address"))
     has_coords = is_valid_coordinate(loc.get("lat"), loc.get("lng"))
+    if not has_coords:
+        for u in sj_units_for_order(order):
+            sj = public_delivery_location(u.get("delivery_location"))
+            if sj.get("lat") is not None:
+                has_coords = True
+                if not address:
+                    address = _text(sj.get("formatted_address"))
+                break
     if not address and not has_coords:
         reasons.append("Alamat belum tersedia")
     if not has_coords:

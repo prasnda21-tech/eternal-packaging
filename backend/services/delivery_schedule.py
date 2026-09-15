@@ -67,6 +67,7 @@ SCHEDULE_PROJECTION = {
     "shipments.delivery_date": 1,
     "shipments.created_at": 1,
     "shipments.lines": 1,
+    "shipments.delivery_location": 1,
     "loading_checklist.driver_name": 1,
     "loading_checklist.driver_user_id": 1,
     "delivery_outlet_id": 1,
@@ -282,6 +283,76 @@ def sj_item_lines(order: dict, shipment: Optional[dict] = None) -> List[dict]:
     return []
 
 
+def public_delivery_location(raw: Any) -> dict:
+    """Valid nested delivery_location, or empty lat/lng.
+
+    Validity is is_valid_coordinate: finite pair, in range, not (0, 0).
+    Incomplete / one-sided / out-of-range pairs are not valid.
+    """
+    from services.delivery_stops import parse_location
+    from services.independent_route.geo import is_valid_coordinate
+    loc = parse_location(raw)
+    if is_valid_coordinate(loc.get("lat"), loc.get("lng")):
+        return {
+            "lat": float(loc["lat"]),
+            "lng": float(loc["lng"]),
+            "place_id": loc.get("place_id"),
+            "formatted_address": loc.get("formatted_address"),
+        }
+    return {
+        "lat": None,
+        "lng": None,
+        "place_id": loc.get("place_id"),
+        "formatted_address": loc.get("formatted_address"),
+    }
+
+
+def persistable_delivery_location(raw: Any) -> Optional[dict]:
+    """Normalized SJ override for storage. Invalid/empty → None (do not persist)."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    loc = public_delivery_location(raw)
+    if loc.get("lat") is None or loc.get("lng") is None:
+        return None
+    out = {"lat": loc["lat"], "lng": loc["lng"]}
+    if loc.get("place_id"):
+        out["place_id"] = loc["place_id"]
+        out["google_place_id"] = loc["place_id"]
+    if loc.get("formatted_address"):
+        out["formatted_address"] = loc["formatted_address"]
+    return out
+
+
+def effective_delivery_location(
+    shipment: Optional[dict] = None,
+    order: Optional[dict] = None,
+) -> dict:
+    """SJ override if valid, else PO location if valid, else empty."""
+    sj_raw = shipment.get("delivery_location") if isinstance(shipment, dict) else None
+    sj = public_delivery_location(sj_raw)
+    if sj.get("lat") is not None:
+        return sj
+    po_raw = order.get("delivery_location") if isinstance(order, dict) else None
+    return public_delivery_location(po_raw)
+
+
+def apply_effective_location_to_atom(atom: dict, shipment_override: Any) -> dict:
+    """If the SJ unit has a valid override, replace atom coords. Else keep PO coords."""
+    sj = public_delivery_location(shipment_override)
+    if sj.get("lat") is None:
+        return atom
+    atom["lat"] = sj["lat"]
+    atom["lng"] = sj["lng"]
+    snap = dict(atom.get("planning_snapshot") or {})
+    snap["lat"] = sj["lat"]
+    snap["lng"] = sj["lng"]
+    if sj.get("formatted_address"):
+        snap["address"] = sj["formatted_address"]
+        atom["address"] = sj["formatted_address"]
+    atom["planning_snapshot"] = snap
+    return atom
+
+
 def schedule_row(
     order: dict,
     today: Optional[str] = None,
@@ -294,10 +365,7 @@ def schedule_row(
     code = schedule_status_code(order, today, lead_time_days, schedule_date=tanggal)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
-    # Presentation-only coords for Status Lokasi (frontend locationSetupStatusLabel).
-    # Lazy import avoids circular import with delivery_stops.
-    from services.delivery_stops import parse_location
-    loc = parse_location(order.get("delivery_location"))
+    loc = effective_delivery_location(sh, order)
     matched_sj = _shipment_sj_number(sh)
     shipment_id = _shipment_sj_id(sh)
     return {
