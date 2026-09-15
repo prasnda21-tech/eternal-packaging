@@ -83,4 +83,50 @@ describe("Loading SJ verification helpers", () => {
     expect(after.code).toBe("packing_insufficient");
     expect(after.surat_jalan_id).toBe("file-b");
   });
+
+  test("ORANJE replaced SJ confirmation still blocks as prior Loading", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const lid = "LID Connect Inject Frosted/Dop Victory";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const order = {
+      line_items: [
+        { name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" },
+        { name: lid, quantity: 1000, production_process: "non_print", accurate_item_id: "3950" },
+      ],
+      packing_info: {
+        qty_packed: 1000,
+        lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 0 }],
+      },
+      shipments: [{
+        id: sj,
+        number: "SJ/2026/09/08/000006",
+        lines: [
+          { line_idx: 0, line_id: "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_0", qty: 1000 },
+          { line_idx: 1, line_id: "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_1", qty: 1000 },
+        ],
+      }],
+      surat_jalan_files: [{
+        id: sj,
+        shipment_id: sj,
+        sj_number: "SJ/2026/09/08/000006",
+        total_qty: 2000,
+        lines: [
+          { line_idx: 0, line_id: "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_0", qty: 1000 },
+          { line_idx: 1, line_id: "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_1", qty: 1000 },
+        ],
+      }],
+      loading_confirmations: [{
+        id: "old-c0",
+        surat_jalan_id: old,
+        lines: [{ line_idx: 0, qty: 1000 }],
+      }],
+    };
+    const st = loadingVerificationStatus(order, sj);
+    expect(st.code).toBe("prior_loading_consumed");
+    expect(st.surat_jalan_id).toBe(sj);
+    expect(String(st.reason || "")).toMatch(/sudah pernah dikonfirmasi Loading/);
+    expect(String(st.reason || "")).toContain(cup);
+    expect(String(st.reason || "")).not.toMatch(/Packing belum mencukupi/);
+  });
 });
