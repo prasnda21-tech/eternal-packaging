@@ -107,9 +107,14 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
       setErr("Pilih Surat Jalan yang diverifikasi.");
       return;
     }
-    if (String(verification?.code || "").includes("packing")) {
+    const verifyCode = String(verification?.code || "");
+    if (verifyCode.includes("packing") || verifyCode === "prior_loading_consumed") {
       if (!verification?.reason) {
-        setErr("Packing belum mencukupi untuk konfirmasi Loading.");
+        setErr(
+          verifyCode === "prior_loading_consumed"
+            ? "Qty sudah pernah dikonfirmasi Loading."
+            : "Packing belum mencukupi untuk konfirmasi Loading.",
+        );
       }
       return;
     }

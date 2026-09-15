@@ -21,6 +21,8 @@ from quantity_rules import (
     packed_qty_for_line,
     packing_line_breakdown,
     packing_shortfall_for_sj_match,
+    qty_confirmed_loading_for_line,
+    qty_loaded_for_line,
     qty_packed,
     sj_qty_for_line,
     validate_loading_match_confirmation,
@@ -510,4 +512,328 @@ def test_legacy_loading_info_still_blocks_physical_remaining():
     assert packed_qty_for_line(o, 0) == 1000
     assert available_for_sj_loading_line(o, SJ_ID, 0) == 0
     msg = packing_shortfall_for_sj_match(o, SJ_ID)
-    assert msg and "tersedia 0" in msg
+    assert msg and "sudah pernah dikonfirmasi Loading" in msg
+    assert "Packing belum mencukupi" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Exact production ORANJE shape (PO/2026/09/08/000006)
+# ---------------------------------------------------------------------------
+
+ORANJE_CUP = "14 oz Inject Datar Frosted Klir"
+ORANJE_LID = "LID Connect Inject Frosted/Dop Victory"
+ORANJE_SJ = "e076bb1d-c360-4746-b789-49a0e42edfd2"
+ORANJE_OLD = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2"
+ORANJE_LINE0 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_0"
+ORANJE_LINE1 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_1"
+
+
+def _oranje_production(*, old_confs=None, extra_shipments=None, extra_files=None, extra_confs=None):
+    """PO lines: accurate_item_id + array position only. No stored line_id/line_idx.
+
+    SJ lines: line_id + line_idx, no accurate_item_id.
+    Packing lines: line_idx only.
+    """
+    confs = list(old_confs or [])
+    if extra_confs:
+        confs.extend(extra_confs)
+    shipments = [{
+        "id": ORANJE_SJ,
+        "sales_delivery_id": ORANJE_SJ,
+        "number": "SJ/2026/09/08/000006",
+        "total_qty": 2000,
+        "lines": [
+            {"line_idx": 0, "line_id": ORANJE_LINE0, "qty": 1000},
+            {"line_idx": 1, "line_id": ORANJE_LINE1, "qty": 1000},
+        ],
+    }]
+    files = [{
+        "id": ORANJE_SJ,
+        "shipment_id": ORANJE_SJ,
+        "sj_number": "SJ/2026/09/08/000006",
+        "total_qty": 2000,
+        "lines": [
+            {"line_idx": 0, "line_id": ORANJE_LINE0, "qty": 1000},
+            {"line_idx": 1, "line_id": ORANJE_LINE1, "qty": 1000},
+        ],
+    }]
+    if extra_shipments:
+        shipments.extend(extra_shipments)
+    if extra_files:
+        files.extend(extra_files)
+    return {
+        "id": "po-oranje-000006",
+        "po_number": "PO/2026/09/08/000006",
+        "customer_name": "ORANJE",
+        "current_stage": 13,
+        "line_items": [
+            {
+                "name": ORANJE_CUP,
+                "quantity": 1000,
+                "production_process": "print",
+                "accurate_item_id": "8350",
+            },
+            {
+                "name": ORANJE_LID,
+                "quantity": 1000,
+                "production_process": "non_print",
+                "accurate_item_id": "3950",
+            },
+        ],
+        "packing_info": {
+            "qty_packed": 1000,
+            "lines": [
+                {"line_idx": 0, "packed_qty": 1000},
+                {"line_idx": 1, "packed_qty": 0},
+            ],
+        },
+        "shipments": shipments,
+        "surat_jalan_files": files,
+        "loading_confirmations": confs,
+        "loading_snapshots": [],
+        "loading_discrepancies": [],
+    }
+
+
+def test_oranje_unmatched_line_id_falls_back_to_explicit_line_idx():
+    o = _oranje_production()
+    sj0 = {"line_idx": 0, "line_id": ORANJE_LINE0, "qty": 1000}
+    sj1 = {"line_idx": 1, "line_id": ORANJE_LINE1, "qty": 1000}
+    assert match_po_line_idx(o, sj0) == (0, None)
+    assert match_po_line_idx(o, sj1) == (1, None)
+    assert packed_qty_for_line(o, 0) == 1000
+    assert packed_qty_for_line(o, 1) == 0
+    built = {ln["line_idx"]: ln for ln in build_sj_loading_lines(o, ORANJE_SJ)}
+    assert built[0]["qty"] == 1000
+    assert built[0]["name"] == ORANJE_CUP
+    assert built[1]["qty"] == 1000
+    assert built[1]["name"] == ORANJE_LID
+
+
+def test_oranje_missing_line_idx_does_not_become_zero():
+    o = _oranje_production()
+    idx, err = match_po_line_idx(o, {"line_id": ORANJE_LINE0, "qty": 1000})
+    assert idx is None
+    assert err
+    idx2, err2 = match_po_line_idx(o, {"qty": 1000})
+    assert idx2 is None
+    assert err2
+
+
+def test_oranje_accurate_item_id_still_resolves_when_present():
+    o = _oranje_production()
+    assert match_po_line_idx(o, {"accurate_item_id": "8350", "qty": 1000}) == (0, None)
+    assert match_po_line_idx(o, {"accurate_item_id": "3950", "qty": 1000}) == (1, None)
+
+
+def test_oranje_modern_line_id_still_wins_over_stale_idx():
+    o = _oranje_production()
+    o["line_items"][0]["line_id"] = ORANJE_LINE0
+    o["line_items"][1]["line_id"] = ORANJE_LINE1
+    assert match_po_line_idx(o, {"line_idx": 1, "line_id": ORANJE_LINE0}) == (0, None)
+    assert match_po_line_idx(o, {"line_idx": 0, "line_id": ORANJE_LINE1}) == (1, None)
+
+
+def test_oranje_historical_confirmation_still_reduces_physical():
+    """Replaced dc9c... confirmations still consume packed Cup on live e076..."""
+    old = [{
+        "id": "old-c0",
+        "surat_jalan_id": ORANJE_OLD,
+        "lines": [{"line_idx": 0, "qty": 1000}],
+    }]
+    o = _oranje_production(old_confs=old)
+    assert qty_loaded_for_line(o, 0) == 1000
+    assert qty_confirmed_loading_for_line(o, 0) == 1000
+    assert loaded_qty_for_sj_line(o, ORANJE_SJ, 0) == 0
+    assert packed_qty_for_line(o, 0) == 1000
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 1) == 1000
+    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    assert msg and ORANJE_CUP in msg
+    assert "Packing belum mencukupi" not in msg
+    assert "sudah pernah dikonfirmasi Loading" in msg
+    assert "sisa fisik 0" in msg
+    assert validate_loading_match_confirmation(o, ORANJE_SJ)
+    st = loading_verification_status(o, ORANJE_SJ)
+    assert st.get("code") == "prior_loading_consumed"
+    assert "Packing belum mencukupi" not in str(st.get("reason") or "")
+
+
+def test_oranje_historical_both_lines_still_reduce_physical():
+    old = [{
+        "id": "old-both",
+        "surat_jalan_id": ORANJE_OLD,
+        "lines": [{"line_idx": 0, "qty": 1000}, {"line_idx": 1, "qty": 1000}],
+    }]
+    o = _oranje_production(old_confs=old)
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 1) == 0
+    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    assert msg and "Packing belum mencukupi" not in msg
+    assert validate_loading_match_confirmation(o, ORANJE_SJ)
+
+
+def test_oranje_summary_verification_confirm_parity():
+    o = _oranje_production(old_confs=[{
+        "id": "old-c0",
+        "surat_jalan_id": ORANJE_OLD,
+        "lines": [{"line_idx": 0, "qty": 1000}],
+    }])
+    a0 = available_for_sj_loading_line(o, ORANJE_SJ, 0)
+    a1 = available_for_sj_loading_line(o, ORANJE_SJ, 1)
+    short = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    confirm = validate_loading_match_confirmation(o, ORANJE_SJ)
+    st = loading_verification_status(o, ORANJE_SJ)
+    assert a0 == 0
+    assert a1 == 1000
+    assert short and "sudah pernah dikonfirmasi Loading" in short
+    assert confirm == short
+    assert st.get("code") == "prior_loading_consumed"
+    assert st.get("reason") == short
+
+
+def test_oranje_packed_zero_still_blocks_cup():
+    o = _oranje_production()
+    o["packing_info"]["lines"][0]["packed_qty"] = 0
+    o["packing_info"]["qty_packed"] = 0
+    assert packed_qty_for_line(o, 0) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
+    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    assert msg and ORANJE_CUP in msg
+    assert "Packing belum mencukupi" in msg
+    assert "tersedia 0" in msg
+    assert validate_loading_match_confirmation(o, ORANJE_SJ)
+
+
+def test_oranje_same_name_lines_stay_separate():
+    o = _oranje_production()
+    o["line_items"][1]["name"] = ORANJE_CUP
+    o["line_items"][1]["production_process"] = "print"
+    assert packed_qty_for_line(o, 0) == 1000
+    assert packed_qty_for_line(o, 1) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 1000
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 1) == 0
+    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    assert msg and ORANJE_CUP in msg
+
+
+def test_live_other_sj_load_still_reduces_physical():
+    """SJ1 live load 1000 of packed 1000 leaves SJ2 physical 0 — not an orphan."""
+    later_ship = {
+        "id": "sj-later",
+        "number": "SJ/2026/09/08/000007",
+        "sales_delivery_id": "sj-later",
+        "total_qty": 500,
+        "lines": [{"line_idx": 0, "line_id": ORANJE_LINE0, "qty": 500}],
+    }
+    later_file = {
+        "id": "sj-later",
+        "shipment_id": "sj-later",
+        "sj_number": "SJ/2026/09/08/000007",
+        "total_qty": 500,
+        "lines": [{"line_idx": 0, "line_id": ORANJE_LINE0, "qty": 500}],
+    }
+    o = _oranje_production(
+        extra_shipments=[later_ship],
+        extra_files=[later_file],
+        extra_confs=[{
+            "id": "c-live",
+            "surat_jalan_id": ORANJE_SJ,
+            "lines": [{"line_idx": 0, "qty": 1000}],
+        }],
+    )
+    assert qty_loaded_for_line(o, 0) == 1000
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
+    assert available_for_sj_loading_line(o, "sj-later", 0) == 0
+    msg = packing_shortfall_for_sj_match(o, "sj-later")
+    assert msg and "sudah pernah dikonfirmasi Loading" in msg
+    assert "Packing belum mencukupi" not in msg
+
+
+def test_blank_surat_jalan_id_confirmation_still_reduces_physical():
+    o = _oranje_production(extra_confs=[{
+        "id": "legacy-blank",
+        "surat_jalan_id": "",
+        "lines": [{"line_idx": 0, "qty": 1000}],
+    }])
+    assert qty_loaded_for_line(o, 0) == 1000
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
+    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    assert msg and "sudah pernah dikonfirmasi Loading" in msg
+
+
+def test_oranje_cancelled_historical_loading_does_not_reduce_physical():
+    o = _oranje_production(old_confs=[{
+        "id": "old-c0",
+        "surat_jalan_id": ORANJE_OLD,
+        "cancelled": True,
+        "lines": [{"line_idx": 0, "qty": 1000}],
+    }])
+    assert qty_loaded_for_line(o, 0) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 1000
+    assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
+    assert validate_loading_match_confirmation(o, ORANJE_SJ) is None
+
+
+def test_oranje_deleted_historical_loading_does_not_reduce_physical():
+    o = _oranje_production(old_confs=[{
+        "id": "old-c0",
+        "surat_jalan_id": ORANJE_OLD,
+        "deleted": True,
+        "lines": [{"line_idx": 0, "qty": 1000}],
+    }])
+    assert qty_loaded_for_line(o, 0) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 1000
+    assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
+
+
+def test_partial_prior_loading_is_not_packing_shortage():
+    o = _oranje_production(old_confs=[{
+        "id": "old-partial",
+        "surat_jalan_id": ORANJE_OLD,
+        "lines": [{"line_idx": 0, "qty": 600}],
+    }])
+    assert packed_qty_for_line(o, 0) == 1000
+    assert qty_loaded_for_line(o, 0) == 600
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 400
+    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
+    assert msg and "Sisa fisik tidak mencukupi" in msg
+    assert "Packing belum mencukupi" not in msg
+    assert "sudah Loading 600" in msg
+    st = loading_verification_status(o, ORANJE_SJ)
+    assert st.get("code") == "prior_loading_consumed"
+
+
+def test_unrelated_item_line_cannot_consume_another_line():
+    o = _oranje_production(old_confs=[{
+        "id": "old-lid",
+        "surat_jalan_id": ORANJE_OLD,
+        "lines": [{"line_idx": 1, "qty": 1000}],
+    }])
+    assert qty_loaded_for_line(o, 0) == 0
+    assert qty_loaded_for_line(o, 1) == 1000
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 1000
+    assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
+
+
+def test_selected_sj_already_loaded_is_not_prior_loading_blocker():
+    o = _oranje_production(extra_confs=[{
+        "id": "c-live",
+        "surat_jalan_id": ORANJE_SJ,
+        "lines": [{"line_idx": 0, "qty": 1000}, {"line_idx": 1, "qty": 1000}],
+    }])
+    assert loaded_qty_for_sj_line(o, ORANJE_SJ, 0) == 1000
+    assert qty_loaded_for_line(o, 0) == 1000
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
+    assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
+    st = loading_verification_status(o, ORANJE_SJ)
+    assert st.get("code") not in ("packing_insufficient", "prior_loading_consumed")
+
+
+def test_non_print_packed_zero_is_not_packing_shortage():
+    o = _oranje_production()
+    assert packed_qty_for_line(o, 1) == 0
+    assert available_for_sj_loading_line(o, ORANJE_SJ, 1) == 1000
+    assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
+    st = loading_verification_status(o, ORANJE_SJ)
+    assert st.get("code") != "packing_insufficient"
