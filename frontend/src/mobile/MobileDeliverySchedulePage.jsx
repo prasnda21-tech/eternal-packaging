@@ -21,7 +21,9 @@ import {
   MOBILE_DELIVERY_STATUS_COL_KEYS,
   canOptimizeFromDeliverySchedule,
   canViewMobileDeliverySchedule,
+  deliveryRowWithProductionStatus,
   groupSjItemLines,
+  indexProductionStatusByOrderId,
   mobileDeliverySheetColumnStyle,
   mobileScheduleReviewHref,
   optimizationStatusMeta,
@@ -47,7 +49,7 @@ import {
   sortByOpsQueue,
 } from "../lib/mobileOpsQueue";
 import { buildOpsRoleSummaryModel } from "../lib/mobileOpsRoleSummary";
-import { canViewMobileSchedule } from "../lib/mobileSchedule";
+import { canViewMobileSchedule, mobileProductionDashboardParams } from "../lib/mobileSchedule";
 import MobileOpsRoleSummary from "./components/MobileOpsRoleSummary";
 import OpsScheduleThead from "./components/OpsScheduleThead";
 import OpsRoleMark from "./components/OpsRoleMark";
@@ -65,7 +67,7 @@ import {
   poNavStateFromList,
   storageUserKey,
 } from "../lib/poListReturn";
-import { packMarkTone, loadMarkTone, kirimMarkTone, cupMarkTone, screenMarkTone, prodMarkTone } from "../lib/mobileOpsStatusMark";
+import { deliveryRoleMarkTones } from "../lib/mobileOpsStatusMark";
 import { formatIdQty } from "../lib/productionScheduleQty";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
@@ -195,6 +197,7 @@ export default function MobileDeliverySchedulePage() {
   const [params, setParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
   const allowed = canViewMobileDeliverySchedule(hasPerm);
+  const canOpenProduction = canViewMobileSchedule(hasPerm);
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
   const requestedWs = params.get("ws") || "";
   const taskChoice = useMemo(
@@ -216,6 +219,7 @@ export default function MobileDeliverySchedulePage() {
     q: "",
   });
   const [rows, setRows] = useState([]);
+  const [productionRows, setProductionRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [taskRows, setTaskRows] = useState([]);
@@ -251,21 +255,36 @@ export default function MobileDeliverySchedulePage() {
     if (!allowed) {
       setBusy(false);
       setRows([]);
+      setProductionRows([]);
       setErr("");
       return;
     }
     setBusy(true);
     setErr("");
     try {
-      const d = await withTimeout(api.deliverySchedule(), MOBILE_LOAD_TIMEOUT_MS);
+      const productionP = canOpenProduction
+        ? withTimeout(
+          api.productionDashboard(mobileProductionDashboardParams({
+            includeCancelled: false,
+            includeCompleted: true,
+          })),
+          MOBILE_LOAD_TIMEOUT_MS,
+        ).catch(() => ({ rows: [] }))
+        : Promise.resolve({ rows: [] });
+      const [d, prod] = await Promise.all([
+        withTimeout(api.deliverySchedule(), MOBILE_LOAD_TIMEOUT_MS),
+        productionP,
+      ]);
       setRows(d.rows || []);
+      setProductionRows(Array.isArray(prod?.rows) ? prod.rows : []);
     } catch (e) {
       setRows([]);
+      setProductionRows([]);
       setErr(deliveryScheduleLoadErrorMessage(e));
     } finally {
       setBusy(false);
     }
-  }, [allowed]);
+  }, [allowed, canOpenProduction]);
 
   const loadTasks = useCallback(async (division) => {
     if (!allowed || !division) {
@@ -318,7 +337,10 @@ export default function MobileDeliverySchedulePage() {
     () => buildOpsRoleSummaryModel({ productionRows: null, deliveryRows: rows }),
     [rows],
   );
-  const canOpenProduction = canViewMobileSchedule(hasPerm);
+  const productionById = useMemo(
+    () => indexProductionStatusByOrderId(productionRows),
+    [productionRows],
+  );
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
   const sortedTasks = useMemo(() => sortOperationalTasks(taskRows), [taskRows]);
   const workWsId = selectedTask?.id;
@@ -594,6 +616,11 @@ export default function MobileDeliverySchedulePage() {
                     {visible.map((r) => {
                       const badge = deliveryOpsBadge(r);
                       const workHref = mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId, r);
+                      const productionRow = r?.id != null && String(r.id).trim() !== ""
+                        ? productionById.get(String(r.id).trim())
+                        : undefined;
+                      const statusRow = deliveryRowWithProductionStatus(r, productionById);
+                      const tones = deliveryRoleMarkTones(statusRow, Boolean(productionRow));
                       return (
                         <tr
                           key={r.shipment_id ? `${r.id}:${r.shipment_id}` : (r.id || r.order_number)}
@@ -646,42 +673,42 @@ export default function MobileDeliverySchedulePage() {
                           </td>
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
-                              tone={r.helper_required != null ? cupMarkTone(r) : "idle"}
+                              tone={tones.cup}
                               title="Persiapan Cup"
                               testid={`mds-cup-${r.order_number}`}
                             />
                           </td>
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
-                              tone={r.screen_qty != null && String(r.screen_qty).trim() !== "" ? screenMarkTone(r) : "idle"}
+                              tone={tones.screen}
                               title="Screener"
                               testid={`mds-screen-${r.order_number}`}
                             />
                           </td>
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
-                              tone={Number(r.print_qty_total) > 0 ? prodMarkTone(r) : "idle"}
+                              tone={tones.prod}
                               title="Produksi"
                               testid={`mds-prod-${r.order_number}`}
                             />
                           </td>
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
-                              tone={packMarkTone(r)}
+                              tone={tones.pack}
                               title={packingProgressText(r)}
                               testid={`mds-packing-${r.order_number}`}
                             />
                           </td>
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
-                              tone={loadMarkTone()}
+                              tone={tones.load}
                               title="Loading tidak tersedia dari payload jadwal pengiriman"
                               testid={`mds-load-${r.order_number}`}
                             />
                           </td>
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
-                              tone={kirimMarkTone(r)}
+                              tone={tones.kirim}
                               title={`Terkirim ${formatIdQty(r.qty_delivered ?? 0)} / ${formatIdQty(r.qty_total ?? 0)}`}
                               testid={`mds-terkirim-${r.order_number}`}
                             />

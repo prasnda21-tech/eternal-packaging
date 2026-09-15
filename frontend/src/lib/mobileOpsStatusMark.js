@@ -28,10 +28,20 @@ export function screenMarkTone(row) {
   return "pending";
 }
 
+/** Canonical printable completed qty: operators when present, else dashboard/delivery totals. */
+export function prodCompletedQty(row) {
+  if (Array.isArray(row?.operators) && row.operators.length > 0) {
+    return printableCompletedQty(row.operators);
+  }
+  const reported = Number(row?.print_completed_qty ?? row?.qty_printed_operator);
+  if (Number.isFinite(reported)) return reported;
+  return printableCompletedQty(row?.operators);
+}
+
 export function prodMarkTone(row) {
   const target = Number(row?.print_qty_total);
   if (!Number.isFinite(target) || target <= 0) return "idle";
-  return qtyMarkTone(printableCompletedQty(row?.operators), target);
+  return qtyMarkTone(prodCompletedQty(row), target);
 }
 
 export function packMarkTone(row) {
@@ -49,4 +59,22 @@ export function kirimMarkTone(row) {
   if (Number.isFinite(pct) && pct >= 100) return "done";
   if (Number.isFinite(pct) && pct > 0) return "pending";
   return qtyMarkTone(row?.qty_delivered ?? 0, row?.qty_total ?? row?.total_quantity);
+}
+
+/**
+ * Delivery Status per Role tones.
+ * Screen stays idle unless production source is attached or screen_qty is present —
+ * GET /delivery/schedule has no screen_qty, and screenMarkTone would otherwise
+ * mark every row pending.
+ */
+export function deliveryRoleMarkTones(row, productionAttached = false) {
+  const screenReady = productionAttached || screenerFilled(row);
+  return {
+    cup: cupMarkTone(row),
+    screen: screenReady ? screenMarkTone(row) : "idle",
+    prod: prodMarkTone(row),
+    pack: packMarkTone(row),
+    load: loadMarkTone(),
+    kirim: kirimMarkTone(row),
+  };
 }

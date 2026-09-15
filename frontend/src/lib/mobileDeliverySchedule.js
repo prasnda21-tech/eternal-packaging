@@ -98,6 +98,66 @@ export function sjItemLineKey(line, fallbackIdx = 0) {
   return `${ship}:pos:${fallbackIdx}`;
 }
 
+const PRODUCTION_ROLE_STATUS_FIELDS = [
+  "helper_required",
+  "helper_prepared",
+  "screen_qty",
+  "current_stage",
+  "cancelled",
+  "hold",
+  "operators",
+  "print_completed_qty",
+];
+
+function canonicalOrderId(value) {
+  if (value == null) return "";
+  const id = String(value).trim();
+  return id;
+}
+
+/** Index Jadwal Produksi rows by canonical order id only. Never name / line_idx / 0. */
+export function indexProductionStatusByOrderId(rows) {
+  const map = new Map();
+  for (const row of rows || []) {
+    const id = canonicalOrderId(row?.id);
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, row);
+  }
+  return map;
+}
+
+/**
+ * Attach canonical Cup/Screen/Prod fields from a matching production row.
+ * Refuses merge unless both sides share the same order id.
+ * Does not copy packing / loading / delivery qty.
+ */
+export function withProductionRoleStatus(deliveryRow, productionRow) {
+  if (!deliveryRow || typeof deliveryRow !== "object") return deliveryRow;
+  const deliveryId = canonicalOrderId(deliveryRow.id);
+  const productionId = canonicalOrderId(productionRow?.id);
+  if (!deliveryId || !productionId || deliveryId !== productionId) return deliveryRow;
+  const next = { ...deliveryRow };
+  for (const key of PRODUCTION_ROLE_STATUS_FIELDS) {
+    if (productionRow[key] !== undefined) next[key] = productionRow[key];
+  }
+  const deliveryPrint = Number(next.print_qty_total);
+  const productionPrint = Number(productionRow.print_qty_total);
+  if (!(Number.isFinite(deliveryPrint) && deliveryPrint > 0)
+    && Number.isFinite(productionPrint) && productionPrint > 0) {
+    next.print_qty_total = productionRow.print_qty_total;
+  }
+  return next;
+}
+
+export function deliveryRowWithProductionStatus(deliveryRow, productionById) {
+  const id = canonicalOrderId(deliveryRow?.id);
+  if (!id) return deliveryRow;
+  const productionRow = productionById instanceof Map
+    ? productionById.get(id)
+    : productionById?.[id];
+  return withProductionRoleStatus(deliveryRow, productionRow);
+}
+
 export const ROUTE_OPT_ACTION_PERMS = [
   "route_optimizer.create",
   "route_optimizer.optimize",
