@@ -24,9 +24,10 @@ import {
   rowsFromProductionDashboard,
 } from "../lib/mobileSchedule";
 import {
+  EXACT_SJ_REQUIRED_MESSAGE,
   mobileScheduleWorkHref,
   permittedOpsActiveRoles,
-  scheduleRowShipmentId,
+  roleRequiresExactShipment,
   selectOpsActiveRole,
 } from "../lib/mobileWorkspaces";
 import {
@@ -131,7 +132,7 @@ export default function MobileProductionSchedulePage() {
   );
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
   const [filterOpen, setFilterOpen] = useState(false);
-  const sheetZoom = useProductionSheetZoom();
+  const sheetZoom = useProductionSheetZoom({ userId: userKey });
   const scrollRestored = useRef(false);
   const [task, setTask] = useState({
     open: false,
@@ -255,8 +256,18 @@ export default function MobileProductionSchedulePage() {
   const openRow = (row) => {
     if (!row?.id || !activeRole?.id) return;
     persistScroll();
-    const needsShipment = activeRole.id === "loading" || activeRole.id === "delivery";
-    const shipmentId = needsShipment ? scheduleRowShipmentId(row) : "";
+    if (roleRequiresExactShipment(activeRole.id)) {
+      setTask({
+        open: true,
+        order: null,
+        shipmentId: "",
+        row,
+        busy: false,
+        err: EXACT_SJ_REQUIRED_MESSAGE,
+      });
+      return;
+    }
+    const shipmentId = "";
     setTask({ open: true, order: null, shipmentId, row, busy: true, err: "" });
     (async () => {
       try {

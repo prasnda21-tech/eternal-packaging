@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   PRODUCTION_SHEET_ZOOM_PERSIST_MS,
-  PRODUCTION_SHEET_ZOOM_PINCH_SMOOTH_RATE,
   PRODUCTION_SHEET_ZOOM_SMOOTH_RATE,
   applyProductionSheetZoomVar,
   beginSheetPinch,
@@ -10,19 +9,20 @@ import {
   endSheetPinch,
   eventTouches,
   persistProductionSheetZoom,
+  pinchAnchorInViewport,
   pinchDistance,
-  productionSheetZoomFromNormalizedDelta,
+  productionSheetZoomFromWheel,
   productionSheetZoomSmoothDt,
   readProductionSheetZoom,
-  normalizeProductionSheetWheelDelta,
   shouldHandleProductionSheetWheel,
   stepProductionSheetDisplayZoom,
   updateSheetPinch,
   zoomScrollPreserve,
 } from "../lib/productionSheetZoom";
 
-export default function useProductionSheetZoom() {
-  const [zoom, setZoom] = useState(() => readProductionSheetZoom());
+export default function useProductionSheetZoom({ userId } = {}) {
+  const persistUserId = String(userId || "").trim();
+  const [zoom, setZoom] = useState(() => readProductionSheetZoom(undefined, persistUserId));
   const [viewportNode, setViewportNode] = useState(null);
   const viewportRef = useRef(null);
   const targetZoomRef = useRef(zoom);
@@ -30,11 +30,13 @@ export default function useProductionSheetZoom() {
   const originRef = useRef(null);
   const lastTimeRef = useRef(0);
   const rafRef = useRef(0);
+  const liveRafRef = useRef(0);
   const smoothRateRef = useRef(PRODUCTION_SHEET_ZOOM_SMOOTH_RATE);
   const pendingZoomRef = useRef(null);
-  const pendingWheelDeltaRef = useRef(null);
-  const pendingWheelStartRef = useRef(null);
+  const pendingLiveRef = useRef(null);
   const persistTimerRef = useRef(0);
+  const userIdRef = useRef(persistUserId);
+  userIdRef.current = persistUserId;
   const gestureRef = useRef(createSheetPinchGesture(zoom));
   const tickRef = useRef(null);
 
@@ -47,7 +49,7 @@ export default function useProductionSheetZoom() {
     if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current);
     persistTimerRef.current = window.setTimeout(() => {
       persistTimerRef.current = 0;
-      persistProductionSheetZoom(next);
+      persistProductionSheetZoom(next, undefined, userIdRef.current);
       setZoom((prev) => (prev === next ? prev : next));
     }, PRODUCTION_SHEET_ZOOM_PERSIST_MS);
   }, []);
@@ -79,8 +81,6 @@ export default function useProductionSheetZoom() {
       return;
     }
     const dt = productionSheetZoomSmoothDt((now - last) / 1000);
-    pendingWheelDeltaRef.current = null;
-    pendingWheelStartRef.current = null;
     pendingZoomRef.current = null;
 
     const oldDisplay = displayZoomRef.current;
@@ -110,11 +110,23 @@ export default function useProductionSheetZoom() {
     return target;
   }, [ensureLoop, persistSoon]);
 
-  const applyZoom = useCallback((next, origin) => {
-    pendingWheelDeltaRef.current = null;
-    pendingWheelStartRef.current = null;
-    return setTargetZoom(next, origin, PRODUCTION_SHEET_ZOOM_PINCH_SMOOTH_RATE);
-  }, [setTargetZoom]);
+  const applyLivePinchZoom = useCallback((next, origin) => {
+    const target = clampProductionSheetZoom(next);
+    targetZoomRef.current = target;
+    pendingZoomRef.current = target;
+    pendingLiveRef.current = { zoom: target, origin: origin || originRef.current };
+    if (origin) originRef.current = origin;
+    persistSoon(target);
+    if (liveRafRef.current) return target;
+    liveRafRef.current = window.requestAnimationFrame(() => {
+      liveRafRef.current = 0;
+      const pending = pendingLiveRef.current;
+      pendingLiveRef.current = null;
+      if (!pending) return;
+      paintDisplay(displayZoomRef.current, pending.zoom, pending.origin);
+    });
+    return target;
+  }, [paintDisplay, persistSoon]);
 
   useLayoutEffect(() => {
     const el = viewportRef.current;
@@ -124,6 +136,7 @@ export default function useProductionSheetZoom() {
 
   useEffect(() => () => {
     if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
+    if (liveRafRef.current) window.cancelAnimationFrame(liveRafRef.current);
     if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current);
   }, []);
 
@@ -154,20 +167,26 @@ export default function useProductionSheetZoom() {
       };
     };
 
+    const originFromTouches = (a, b) => {
+      const rect = el.getBoundingClientRect();
+      const anchor = pinchAnchorInViewport(rect, a, b);
+      return { originX: anchor.originX, originY: anchor.originY };
+    };
+
     const onWheel = (event) => {
       if (!shouldHandleProductionSheetWheel(event)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (pendingWheelDeltaRef.current == null) {
-        pendingWheelDeltaRef.current = 0;
-        pendingWheelStartRef.current = targetZoomRef.current;
+      const current = pendingLiveRef.current?.zoom ?? displayZoomRef.current;
+      const next = productionSheetZoomFromWheel(current, event.deltaY, event.deltaMode);
+      if (next !== current) {
+        gestureRef.current = {
+          ...gestureRef.current,
+          suppressClick: true,
+          moved: true,
+        };
       }
-      pendingWheelDeltaRef.current += normalizeProductionSheetWheelDelta(event.deltaY, event.deltaMode);
-      const target = productionSheetZoomFromNormalizedDelta(
-        pendingWheelStartRef.current,
-        pendingWheelDeltaRef.current,
-      );
-      setTargetZoom(target, originFromClient(event.clientX, event.clientY), PRODUCTION_SHEET_ZOOM_SMOOTH_RATE);
+      applyLivePinchZoom(next, originFromClient(event.clientX, event.clientY));
     };
 
     const onTouchStart = (event) => {
@@ -175,15 +194,16 @@ export default function useProductionSheetZoom() {
       if (touches.length < 2) return;
       const dist = pinchDistance(touches[0], touches[1]);
       if (!(dist > 0)) return;
-      const midX = (touches[0].clientX + touches[1].clientX) / 2;
-      const midY = (touches[0].clientY + touches[1].clientY) / 2;
-      const origin = originFromClient(midX, midY);
+      const origin = originFromTouches(touches[0], touches[1]);
       const visual = displayZoomRef.current;
       targetZoomRef.current = visual;
       pendingZoomRef.current = visual;
-      pendingWheelDeltaRef.current = null;
-      pendingWheelStartRef.current = null;
-      smoothRateRef.current = PRODUCTION_SHEET_ZOOM_PINCH_SMOOTH_RATE;
+      pendingLiveRef.current = null;
+      if (rafRef.current) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+      lastTimeRef.current = 0;
       gestureRef.current = beginSheetPinch(gestureRef.current, visual, dist, {
         centerX: origin.originX,
         centerY: origin.originY,
@@ -199,9 +219,7 @@ export default function useProductionSheetZoom() {
       const dist = pinchDistance(touches[0], touches[1]);
       const next = updateSheetPinch(gestureRef.current, dist);
       gestureRef.current = next;
-      const midX = (touches[0].clientX + touches[1].clientX) / 2;
-      const midY = (touches[0].clientY + touches[1].clientY) / 2;
-      applyZoom(next.zoom, originFromClient(midX, midY));
+      applyLivePinchZoom(next.zoom, originFromTouches(touches[0], touches[1]));
     };
 
     const endPinch = () => {
@@ -227,7 +245,7 @@ export default function useProductionSheetZoom() {
       el.removeEventListener("touchend", endPinch);
       el.removeEventListener("touchcancel", endPinch);
     };
-  }, [applyZoom, setTargetZoom, viewportNode]);
+  }, [applyLivePinchZoom, setTargetZoom, viewportNode]);
 
   const consumeClickSuppression = useCallback(() => {
     if (gestureRef.current.pinching || gestureRef.current.suppressClick) {
@@ -240,5 +258,5 @@ export default function useProductionSheetZoom() {
     return false;
   }, []);
 
-  return { zoom, applyZoom, setViewportRef, viewportRef, consumeClickSuppression, gestureRef };
+  return { zoom, applyZoom: applyLivePinchZoom, setViewportRef, viewportRef, consumeClickSuppression, gestureRef };
 }

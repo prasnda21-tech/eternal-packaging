@@ -3,6 +3,7 @@
 import { Menu } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { useMobileNav } from "../MobileNavContext";
+import MobileHeaderActions from "./MobileHeaderActions";
 
 function formatOpsClock(now = new Date()) {
   const date = new Intl.DateTimeFormat("id-ID", {
@@ -69,6 +70,7 @@ export default function OpsQueueHeader({
         <h1 className="ops-qh-title" data-testid="mobile-topbar-title">{title}</h1>
         {subtitle ? <p className="ops-qh-sub">{subtitle}</p> : null}
       </div>
+      <MobileHeaderActions />
       <div className="ops-qh-clock">
         <p className="ops-qh-date">{clock.date}</p>
         <p>

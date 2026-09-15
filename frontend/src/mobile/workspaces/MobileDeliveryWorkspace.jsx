@@ -35,7 +35,7 @@ import {
 } from "../../lib/deliveryProof";
 import { compressImage } from "../../lib/imageCompress";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
-import { deliveryAddressFromOrder, mapsSearchUrl } from "../../lib/mobileWorkspaces";
+import { deliveryAddressFromOrder, EXACT_SJ_REQUIRED_MESSAGE, mapsSearchUrl } from "../../lib/mobileWorkspaces";
 import { applyLocalSignature } from "../../lib/mobileSignature";
 import { fileUrl } from "../../lib/api";
 import { applyPreviewDeliveryMutation } from "../../lib/pwaDeliveryTaskPreview";
@@ -67,15 +67,27 @@ function statusTone(selectedDelivered, batchAllowed) {
 
 export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onRequestClose, shipmentId }) {
   const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
-  const shipmentHint = () => shipmentId || urlShipmentId();
+  const explicitShipmentId = String(shipmentId || "").trim();
+  const lockedToRequested = Boolean(explicitShipmentId);
+  const shipmentHint = () => explicitShipmentId || urlShipmentId();
   const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, shipmentHint()));
   const sjIdsKey = sjOptions.map((o) => o.id).join("|");
   useEffect(() => {
-    const next = selectedPengirimanShipmentId(order, shipmentId || sjId || urlShipmentId());
+    const hint = explicitShipmentId || urlShipmentId();
+    if (hint) {
+      const next = selectedPengirimanShipmentId(order, hint);
+      if (next !== sjId) setSjId(next);
+      return;
+    }
+    const next = selectedPengirimanShipmentId(order, sjId);
     if (next && next !== sjId) setSjId(next);
-  }, [sjIdsKey, order, sjId, shipmentId]);
-  const activeShipment = findDeliveryShipment(order, sjId) || sjOptions[0]?.shipment || null;
-  const activeSjOption = sjOptions.find((o) => o.id === (activeShipment?.id || sjId)) || sjOptions[0] || null;
+  }, [sjIdsKey, order, sjId, explicitShipmentId]);
+  const lookupId = lockedToRequested ? (sjId || explicitShipmentId) : sjId;
+  const activeShipment = findDeliveryShipment(order, lookupId);
+  const activeSjOption = sjOptions.find((o) => (
+    o.id === sjId
+    || (activeShipment && (o.shipment === activeShipment || o.id === activeShipment.id))
+  )) || null;
   const selectedDelivered = isShipmentDelivered(order, activeShipment);
   const delivered = selectedDelivered || order?.delivery_status === "Terkirim" || !!order?.terkirim_confirmed;
   const proofs = proofsForShipment(order, activeShipment);
@@ -98,7 +110,9 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
 
   const orderSig = order?.delivery_recipient_signature;
   const driverSig = order?.delivery_driver_signature;
-  const canMutate = canEdit && !delivered;
+  const shipmentResolved = Boolean(activeShipment);
+  const unmatchedRequested = lockedToRequested && !shipmentResolved;
+  const canMutate = canEdit && !delivered && shipmentResolved;
   const batchPhotoReady = canUploadDeliveryBatchPhoto(order, activeShipment);
   const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order, activeShipment);
   const batchReadiness = deliveryBatchPhotoReadiness(order, activeShipment);
@@ -180,7 +194,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
     patchSlot(clientId, { status: "uploading" });
     try {
       if (isPreview) {
-        onUpdated(applyPreviewDeliveryMutation(order, "photo", { shipmentId: activeShipment?.id || sjId }));
+        onUpdated(applyPreviewDeliveryMutation(order, "photo", { shipmentId: activeShipment.id }));
         dropSlot(clientId);
         return;
       }
@@ -199,7 +213,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         onUpdated(latestOrder);
         patchSlot(clientId, { replaceId: null });
       }
-      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, activeShipment?.id || sjId);
+      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, activeShipment.id);
       latestOrder = res.order;
       onUpdated(latestOrder);
       if (replaceId && currentProofs.length < MAX_PHOTOS) {
@@ -251,6 +265,10 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   };
 
   const confirm = async () => {
+    if (!activeShipment) {
+      setErr(EXACT_SJ_REQUIRED_MESSAGE);
+      return;
+    }
     const blocked = confirmDeliveredBlockReason(
       proofs, recipientName, localSig.recipient, orderSig, localSig.driver, driverSig,
     );
@@ -269,7 +287,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         if (localSig.driver) {
           latest = applyPreviewDeliveryMutation(latest, "driver-sig");
         }
-        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: activeShipment?.id || sjId });
+        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: activeShipment.id });
         onUpdated(latest);
         setLocalSig({ recipient: null, driver: null });
         onRequestClose?.();
@@ -280,7 +298,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName,
           signatureDataUrl: localSig.recipient,
-          shipmentId: activeShipment?.id || sjId,
+          shipmentId: activeShipment.id,
         });
         latest = res.order;
         onUpdated(latest);
@@ -288,14 +306,14 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       if (localSig.driver) {
         const res = await api.uploadDeliveryDriverSignature(latest.id, {
           signatureDataUrl: localSig.driver,
-          shipmentId: activeShipment?.id || sjId,
+          shipmentId: activeShipment.id,
         });
         latest = res.order;
         onUpdated(latest);
       }
       const res = await api.confirmDelivered(order.id, {
         action_id: newActionId(),
-        shipment_id: activeShipment?.id || sjId,
+        shipment_id: activeShipment.id,
       });
       onUpdated(res.order);
       setLocalSig({ recipient: null, driver: null });
@@ -390,15 +408,19 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
           <span className="mop-delivery-task-mark" aria-hidden="true"><Truck size={22} /></span>
           <div>
             <h2>Surat Jalan &amp; Pengiriman</h2>
-            {sjOptions.length > 1 ? (
+            {sjOptions.length > 1 || unmatchedRequested ? (
               <label className="mop-delivery-sj-select-wrap" data-testid="mobile-pengiriman-sj-select-wrap">
                 <span className="mop-sr-only">Surat Jalan</span>
                 <select
-                  value={activeSjOption?.id || sjId || ""}
-                  onChange={(e) => setSjId(e.target.value)}
+                  value={activeSjOption?.id || ""}
+                  onChange={(e) => { if (!lockedToRequested) setSjId(e.target.value); }}
+                  disabled={lockedToRequested}
                   data-testid="mobile-pengiriman-sj-select"
                   aria-label="Pilih Surat Jalan"
                 >
+                  {!activeSjOption ? (
+                    <option value="">Pilih Surat Jalan</option>
+                  ) : null}
                   {sjOptions.map((opt) => (
                     <option key={opt.id} value={opt.id}>
                       {pengirimanSjDisplayLabel(opt, { includeDelivered: true })}
@@ -429,10 +451,10 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         </button>
       </header>
 
-      {sjOptions.length === 1 && (
+      {sjOptions.length === 1 && !unmatchedRequested && (
         <span hidden data-testid="mobile-pengiriman-sj-select-wrap">
           <select
-            value={activeSjOption?.id || sjId || ""}
+            value={activeSjOption?.id || ""}
             onChange={(e) => setSjId(e.target.value)}
             data-testid="mobile-pengiriman-sj-select"
             aria-hidden="true"
@@ -523,9 +545,9 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
           {batchPhotoBlockReason}
         </p>
       )}
-      {err && (
+      {(unmatchedRequested || err) && (
         <div className="mop-error" data-testid="mobile-delivery-error">
-          {err}
+          {err || EXACT_SJ_REQUIRED_MESSAGE}
         </div>
       )}
 

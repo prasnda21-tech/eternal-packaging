@@ -101,8 +101,7 @@ function sjIdentityKeys(row) {
 
 /** Aliases for the selected dropdown SJ (file id, shipment id, SJ number). */
 export function selectedSjIdentitySet(order, selectedSjId = null) {
-  const files = sjFilesForLoading(order);
-  const targetSjId = String(selectedSjId || files[0]?.id || "").trim();
+  const targetSjId = String(selectedSjId || "").trim();
   const ids = new Set(targetSjId ? [targetSjId] : []);
   const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
   const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
@@ -119,8 +118,7 @@ export function selectedSjIdentitySet(order, selectedSjId = null) {
 }
 
 function selectedSjLineSource(order, selectedSjId = null) {
-  const files = sjFilesForLoading(order);
-  const targetSjId = String(selectedSjId || files[0]?.id || "").trim();
+  const targetSjId = String(selectedSjId || "").trim();
   const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
   const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
   const matchingFile = sjFiles.find((f) => sjIdentityKeys(f).includes(targetSjId)) || null;
@@ -142,7 +140,7 @@ export function loadingPoLines(order, selectedSjId = null) {
   const lis = Array.isArray(order?.line_items) ? order.line_items : [];
   const snapshot = Array.isArray(order?.shipment_lines) ? order.shipment_lines : [];
   const files = sjFilesForLoading(order);
-  const targetSjId = selectedSjId || files[0]?.id || "";
+  const targetSjId = String(selectedSjId || "").trim();
   const { matchingSj, lineSource } = selectedSjLineSource(order, targetSjId);
 
   const targetIds = selectedSjIdentitySet(order, targetSjId);
@@ -436,7 +434,7 @@ function physicalBlockFromSelectedLines(poLines) {
 /** Selected-SJ verification. Never reuse order-level enrich from another / latest SJ. */
 export function loadingVerificationStatus(order, suratJalanId = null) {
   const files = sjFilesForLoading(order);
-  const sid = String(suratJalanId || files[0]?.id || "").trim();
+  const sid = String(suratJalanId || "").trim();
   const identities = selectedSjIdentitySet(order, sid);
   const enriched = order?.loading_verification_status;
   const enrichMatchesSelected = !!(

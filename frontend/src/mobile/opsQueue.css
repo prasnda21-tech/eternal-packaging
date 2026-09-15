@@ -147,6 +147,19 @@
   min-width: 0;
 }
 
+.mop-root--ops-wide .ops-queue-header .mop-header-actions {
+  margin-left: 0;
+}
+
+.mop-root--ops-wide .ops-queue-header .mop-header-action {
+  color: var(--ops-navy);
+}
+
+.mop-root--ops-wide .ops-queue-header.is-compact .ops-qh-clock,
+.mop-root--ops-wide .ops-queue-header.is-compact .ops-qh-admin {
+  display: none;
+}
+
 .mop-root--ops-wide .ops-qh-title {
   margin: 0;
   font-size: 18px;
@@ -606,9 +619,9 @@
 }
 
 .mop-root--ops-wide .production-sheet-table {
-  --production-sheet-zoom: 1;
-  min-width: 1180px;
-  width: max(100%, 1180px);
+  min-width: calc(1180px * var(--production-sheet-zoom, 1));
+  width: max-content;
+  max-width: none;
   border-collapse: separate;
   border-spacing: 0;
 }
@@ -618,17 +631,17 @@
   background: var(--ops-thead) !important;
   color: var(--ops-navy-text) !important;
   border-bottom: 1px solid var(--ops-border) !important;
-  font-size: 12px !important;
+  font-size: calc(12px * var(--production-sheet-zoom, 1)) !important;
   font-weight: 700 !important;
   letter-spacing: 0 !important;
   text-transform: none !important;
-  padding: 8px 10px !important;
+  padding: calc(8px * var(--production-sheet-zoom, 1)) calc(10px * var(--production-sheet-zoom, 1)) !important;
   height: auto;
 }
 
 .mop-root--ops-wide .mop-ops-thead .mop-ops-status-group {
   text-align: center;
-  font-size: 12px;
+  font-size: calc(12px * var(--production-sheet-zoom, 1));
   letter-spacing: 0;
   text-transform: none;
   font-weight: 800;
@@ -636,16 +649,16 @@
 
 .mop-root--ops-wide .mop-ops-thead .mop-ops-status-sub {
   text-align: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--production-sheet-zoom, 1));
   font-weight: 600;
   color: var(--ops-muted);
-  padding: 4px 6px !important;
+  padding: calc(4px * var(--production-sheet-zoom, 1)) calc(6px * var(--production-sheet-zoom, 1)) !important;
 }
 
 .mop-root--ops-wide .production-sheet-table tbody td {
-  padding: 7px 10px;
+  padding: calc(7px * var(--production-sheet-zoom, 1)) calc(10px * var(--production-sheet-zoom, 1));
   vertical-align: top;
-  font-size: 13px;
+  font-size: calc(13px * var(--production-sheet-zoom, 1));
   font-weight: 500;
   border-bottom: 1px solid #eef2f6;
   background: #fff;
@@ -661,21 +674,21 @@
 }
 
 .mop-root--ops-wide .mop-ops-customer {
-  font-size: 15px;
+  font-size: calc(15px * var(--production-sheet-zoom, 1));
   font-weight: 800;
   color: var(--ops-navy-text);
   line-height: 1.2;
 }
 
 .mop-root--ops-wide .mop-ops-po {
-  font-size: 12px;
+  font-size: calc(12px * var(--production-sheet-zoom, 1));
   font-weight: 500;
   color: var(--ops-po);
   font-family: Inter, "Segoe UI", sans-serif;
 }
 
 .mop-root--ops-wide .mop-ops-qty-total {
-  font-size: 15px;
+  font-size: calc(15px * var(--production-sheet-zoom, 1));
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   color: var(--ops-navy-text);
@@ -688,7 +701,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  font-size: 13px;
+  font-size: calc(13px * var(--production-sheet-zoom, 1));
   line-height: 1.35;
   color: var(--ops-navy-text);
 }
@@ -712,10 +725,10 @@
 }
 
 .mop-root--ops-wide .mop-ops-badge {
-  min-height: 20px;
-  padding: 2px 8px;
+  min-height: calc(20px * var(--production-sheet-zoom, 1));
+  padding: calc(2px * var(--production-sheet-zoom, 1)) calc(8px * var(--production-sheet-zoom, 1));
   border-radius: 4px;
-  font-size: 10px;
+  font-size: calc(10px * var(--production-sheet-zoom, 1));
   font-weight: 800;
   letter-spacing: 0.04em;
 }
@@ -936,6 +949,9 @@
   }
   .mop-root--ops-wide .ops-qh-title {
     font-size: 16px;
+  }
+  .mop-root--ops-wide .ops-queue-header .mop-header-actions {
+    margin-left: auto;
   }
   .mop-root--ops-wide .mop-schedule-toolbar .production-schedule-search-cluster {
     flex: 1 1 88px !important;
