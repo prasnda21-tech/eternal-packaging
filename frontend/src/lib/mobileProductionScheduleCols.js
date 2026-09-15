@@ -37,7 +37,7 @@ const OPS_COL_PATCH = {
   qty: { label: "Qty Total", baseWidth: 84, minWidth: 64 },
   helper: { label: "Cup", baseWidth: 48, minWidth: 44 },
   screen: { label: "Screen", filter: "screener", baseWidth: 52, minWidth: 44 },
-  qty_cetak: { label: "Prod", baseWidth: 48, minWidth: 44 },
+  qty_cetak: { label: "Cetak", baseWidth: 48, minWidth: 44 },
   packing: { label: "Pack", baseWidth: 48, minWidth: 44, num: true },
   loading: { label: "Load", baseWidth: 48, minWidth: 44 },
   shipped: { label: "Kirim", baseWidth: 48, minWidth: 44 },
@@ -45,7 +45,7 @@ const OPS_COL_PATCH = {
 
 /**
  * Compact PWA operational columns:
- * Prioritas · Tgl Kerja · Customer/PO · Item Line · Qty · Cup · Screen · Prod
+ * Prioritas · Tgl Kerja · Customer/PO · Item Line · Qty · Cup · Screen · Cetak
  */
 export function buildMobileProductionScheduleCols(source = PRODUCTION_SCHEDULE_TABLE_COLS) {
   const byKey = new Map(source.map((c) => [c.key, { ...c }]));

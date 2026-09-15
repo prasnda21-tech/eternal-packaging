@@ -12,7 +12,7 @@ import { cupMarkTone, prodMarkTone, screenMarkTone, packMarkTone, loadMarkTone, 
 
 function MobileRoleMark({ tone, title, testid }) {
   const kind = tone === "done" || tone === "pending" ? tone : "idle";
-  const label = kind === "done" ? "selesai" : kind === "pending" ? "berjalan" : "tidak tersedia";
+  const label = kind === "done" ? "selesai semua" : kind === "pending" ? "sebagian dikerjakan" : "belum dikerjakan";
   return (
     <span className={`mop-ops-mark is-${kind}`} title={title || label} data-testid={testid} aria-label={label}>
       {kind === "done" ? "✓" : kind === "idle" ? "—" : ""}
@@ -288,7 +288,7 @@ function cellContent(col, ctx) {
         return (
           <MobileRoleMark
             tone={prodMarkTone(row)}
-            title={cetakProg?.text || "Produksi"}
+            title={cetakProg?.text || "Cetak"}
             testid={`prod-qty-cetak-${row.po_number}`}
           />
         );

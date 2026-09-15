@@ -688,7 +688,7 @@ export default function MobileDeliverySchedulePage() {
                           <td className="production-sheet-cell num">
                             <OpsRoleMark
                               tone={tones.prod}
-                              title="Produksi"
+                              title="Cetak"
                               testid={`mds-prod-${r.order_number}`}
                             />
                           </td>

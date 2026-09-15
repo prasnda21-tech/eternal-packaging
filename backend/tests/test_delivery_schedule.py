@@ -805,3 +805,90 @@ def test_role_status_does_not_leak_or_overwrite_sj_locations():
     assert by_id["sh-1"]["role_status"]["load"] == "done"
     assert by_id["sh-2"]["role_status"]["load"] == "pending"
     assert by_id["sh-1"]["role_status"]["pack"] == by_id["sh-2"]["role_status"]["pack"] == "done"
+
+
+def test_sj_qty_payload_no_sj_still_emits_no_row():
+    assert schedule_rows(_role_po(shipments=[])) == []
+
+
+def test_sj_qty_payload_one_sj_has_own_load_and_delivered_fields():
+    o = _role_po(
+        shipments=[{
+            "id": "sh-1",
+            "number": "SJ-1",
+            "shipment_index": 1,
+            "delivery_date": "2026-09-15",
+            "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cetak", "qty": 5000}],
+        }],
+        loading_confirmations=[{
+            "id": "c1",
+            "surat_jalan_id": "sh-1",
+            "lines": [{"line_idx": 0, "qty": 5000}],
+        }],
+        delivery_confirmations=[{"shipment_id": "sh-1", "qty": 5000}],
+    )
+    rows = schedule_rows(o)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["qty_loaded"] == 5000
+    assert row["qty_load_need"] == 5000
+    assert row["qty_delivered_sj"] == 5000
+    assert row["qty_sj"] == 5000
+
+
+def test_sj_qty_payload_two_sj_load_and_kirim_stay_isolated():
+    o = _role_po(
+        loading_confirmations=[{
+            "id": "c1",
+            "surat_jalan_id": "sh-1",
+            "lines": [{"line_idx": 0, "qty": 5000}],
+        }],
+        delivery_confirmations=[{"shipment_id": "sh-1", "qty": 5000}],
+    )
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["qty_loaded"] == 5000
+    assert by_id["sh-1"]["qty_load_need"] == 5000
+    assert by_id["sh-2"]["qty_loaded"] == 0
+    assert by_id["sh-2"]["qty_load_need"] == 5000
+    assert by_id["sh-1"]["qty_delivered_sj"] == 5000
+    assert by_id["sh-1"]["qty_sj"] == 5000
+    assert by_id["sh-2"]["qty_delivered_sj"] == 0
+    assert by_id["sh-2"]["qty_sj"] == 5000
+
+
+def test_sj_qty_payload_partial_loading_and_partial_delivery_numerators():
+    o = _role_po(
+        loading_confirmations=[{
+            "id": "c1",
+            "surat_jalan_id": "sh-2",
+            "lines": [{"line_idx": 0, "qty": 2000}],
+        }],
+        delivery_confirmations=[{"shipment_id": "sh-2", "qty": 2000}],
+    )
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["qty_loaded"] == 0
+    assert by_id["sh-1"]["qty_load_need"] == 5000
+    assert by_id["sh-2"]["qty_loaded"] == 2000
+    assert by_id["sh-2"]["qty_load_need"] == 5000
+    assert by_id["sh-1"]["qty_delivered_sj"] == 0
+    assert by_id["sh-1"]["qty_sj"] == 5000
+    assert by_id["sh-2"]["qty_delivered_sj"] == 2000
+    assert by_id["sh-2"]["qty_sj"] == 5000
+
+
+def test_sj_qty_payload_does_not_change_location_precedence():
+    loc_a = {"lat": -6.2, "lng": 106.8, "formatted_address": "PO-A"}
+    loc_b = {"lat": -6.3, "lng": 106.9, "formatted_address": "SJ-B"}
+    loc_c = {"lat": -6.4, "lng": 107.0, "formatted_address": "SJ-C"}
+    o = _role_po(delivery_location=loc_a)
+    o["shipments"][0]["delivery_location"] = loc_b
+    o["shipments"][1]["delivery_location"] = loc_c
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["lat"] == -6.3 and by_id["sh-1"]["lng"] == 106.9
+    assert by_id["sh-2"]["lat"] == -6.4 and by_id["sh-2"]["lng"] == 107.0
+    assert o["delivery_location"]["lat"] == -6.2
+    assert by_id["sh-1"]["qty_sj"] == 5000
+    assert by_id["sh-2"]["qty_sj"] == 5000

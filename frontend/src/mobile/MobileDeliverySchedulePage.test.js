@@ -544,7 +544,7 @@ describe("MobileDeliverySchedulePage", () => {
       "Status per Role",
       "Cup",
       "Screen",
-      "Prod",
+      "Cetak",
       "Pack",
       "Load",
       "Kirim",
@@ -814,7 +814,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(markKind(container.querySelector('[data-testid="mds-prod-PO-100"]'))).toBe("pending");
     expect(markKind(container.querySelector('[data-testid="mds-packing-PO-100"]'))).toBe("pending");
     expect(markKind(container.querySelector('[data-testid="mds-load-PO-100"]'))).toBe("idle");
-    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-100"]'))).toBe("pending");
+    expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-100"]'))).toBe("idle");
   });
 
   test("overlays canonical production cup/screen/prod onto packing-active delivery row", async () => {
@@ -923,7 +923,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(markKind(container.querySelector('[data-testid="mds-packing-PO-RENEA-2"]'))).toBe("pending");
   });
 
-  test("packing done + loading done + pengiriman current shows Pack/Load green and Kirim orange", async () => {
+  test("4/5/6 Pack amber, Load partial amber, Kirim partial amber from persisted SJ qty", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockDeliverySchedule.mockResolvedValue({
       rows: [{
@@ -935,21 +935,26 @@ describe("MobileDeliverySchedulePage", () => {
         shipment_id: "sh-a",
         sj_label: "SJ-A",
         latest_sj_number: "SJ-A",
+        packing_status: "Berjalan",
         qty_packed: 4000,
         qty_total: 10000,
-        qty_delivered: 0,
-        percent_delivered: 0,
-        role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "pending" },
+        qty_delivered: 4000,
+        percent_delivered: 40,
+        qty_loaded: 4000,
+        qty_load_need: 10000,
+        qty_delivered_sj: 4000,
+        qty_sj: 10000,
+        role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "done" },
       }],
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-A"]'))).toBe("done");
-    expect(markKind(container.querySelector('[data-testid="mds-load-PO-A"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-A"]'))).toBe("pending");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-A"]'))).toBe("pending");
     expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-A"]'))).toBe("pending");
   });
 
-  test("pengiriman complete shows Kirim done", async () => {
+  test("6. Kirim complete from this SJ qty_delivered_sj", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockDeliverySchedule.mockResolvedValue({
       rows: [{
@@ -961,15 +966,23 @@ describe("MobileDeliverySchedulePage", () => {
         shipment_id: "sh-b",
         sj_label: "SJ-B",
         latest_sj_number: "SJ-B",
-        role_status: { pack: "done", load: "done", kirim: "done" },
+        percent_delivered: 100,
+        qty_delivered: 800,
+        qty_total: 800,
+        packing_status: "Sudah",
+        qty_delivered_sj: 800,
+        qty_sj: 800,
+        role_status: { pack: "pending", load: "done", kirim: "idle" },
       }],
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
+    expect(markKind(container.querySelector('[data-testid="mds-packing-PO-B"]'))).toBe("done");
     expect(markKind(container.querySelector('[data-testid="mds-terkirim-PO-B"]'))).toBe("done");
+    expect(markKind(container.querySelector('[data-testid="mds-load-PO-B"]'))).toBe("idle");
   });
 
-  test("two SJ of the same PO isolate Load/Kirim", async () => {
+  test("7. two SJ of the same PO isolate Load and Kirim", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockDeliverySchedule.mockResolvedValue({
       rows: [
@@ -982,7 +995,15 @@ describe("MobileDeliverySchedulePage", () => {
           shipment_id: "sh-1",
           sj_label: "SJ-1",
           latest_sj_number: "SJ-1",
-          role_status: { pack: "done", load: "done", kirim: "done" },
+          packing_status: "Sudah",
+          percent_delivered: 100,
+          qty_delivered: 400,
+          qty_total: 400,
+          qty_loaded: 400,
+          qty_load_need: 400,
+          qty_delivered_sj: 400,
+          qty_sj: 400,
+          role_status: { pack: "done", load: "done", kirim: "idle" },
         },
         {
           id: "po-multi",
@@ -993,20 +1014,30 @@ describe("MobileDeliverySchedulePage", () => {
           shipment_id: "sh-2",
           sj_label: "SJ-2",
           latest_sj_number: "SJ-2",
-          role_status: { pack: "done", load: "pending", kirim: "idle" },
+          packing_status: "Sudah",
+          percent_delivered: 0,
+          qty_delivered: 0,
+          qty_total: 400,
+          qty_loaded: 200,
+          qty_load_need: 400,
+          qty_delivered_sj: 0,
+          qty_sj: 400,
+          role_status: { pack: "done", load: "done", kirim: "done" },
         },
       ],
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(markKind(container.querySelector('[data-testid="mds-load-PO-MULTI"]'))).toBe("done");
     const rows = container.querySelectorAll('[data-testid^="mds-row-PO-MULTI-"]');
     expect(rows).toHaveLength(2);
     const loadMarks = container.querySelectorAll('[data-testid="mds-load-PO-MULTI"]');
     const kirimMarks = container.querySelectorAll('[data-testid="mds-terkirim-PO-MULTI"]');
+    const packMarks = container.querySelectorAll('[data-testid="mds-packing-PO-MULTI"]');
+    expect(markKind(packMarks[0])).toBe("done");
+    expect(markKind(packMarks[1])).toBe("done");
     expect(markKind(loadMarks[0])).toBe("done");
-    expect(markKind(kirimMarks[0])).toBe("done");
     expect(markKind(loadMarks[1])).toBe("pending");
+    expect(markKind(kirimMarks[0])).toBe("done");
     expect(markKind(kirimMarks[1])).toBe("idle");
   });
 
