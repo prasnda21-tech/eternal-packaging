@@ -24,11 +24,11 @@ function fmt(n) {
   return Number(n || 0).toLocaleString("id-ID");
 }
 
-export default function MobileLoadingWorkspace({ order, canEdit, onUpdated }) {
+export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, shipmentId }) {
   const { hasPerm } = useAuth();
   const [params] = useSearchParams();
   const sjFiles = sjFilesForLoading(order);
-  const activeSj = matchLoadingSjFile(sjFiles, params.get("shipment"));
+  const activeSj = matchLoadingSjFile(sjFiles, shipmentId || params.get("shipment"));
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const avail = loadingAvailability(order, poLines, sjFiles);
@@ -115,7 +115,7 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated }) {
   };
 
   return (
-    <section data-testid="mobile-ws-loading">
+    <section data-testid="mobile-ws-loading" className="mop-ws-role mop-ws-role--loading">
       <div className="mop-ws-header"><h2>LOADING</h2></div>
       <p className="mop-card-meta" data-testid="mobile-loading-subtitle">Verifikasi Kesesuaian SJ</p>
       <MobileStatusBadge status={status} />

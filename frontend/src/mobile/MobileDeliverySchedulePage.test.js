@@ -16,6 +16,7 @@ const mockHasPerm = jest.fn(() => false);
 const mockDeliverySchedule = jest.fn();
 const mockDivisionTasks = jest.fn();
 const mockProductionDashboard = jest.fn();
+const mockGetOrder = jest.fn();
 const mockNavigate = jest.fn();
 const mockDsRouter = {
   search: "",
@@ -45,6 +46,7 @@ jest.mock("../lib/api", () => ({
     deliverySchedule: (...args) => mockDeliverySchedule(...args),
     divisionTasks: (...args) => mockDivisionTasks(...args),
     productionDashboard: (...args) => mockProductionDashboard(...args),
+    getOrder: (...args) => mockGetOrder(...args),
     listDeliveryOutlets: jest.fn(async () => ({ outlets: [] })),
   },
 }));
@@ -135,13 +137,18 @@ describe("MobileDeliverySchedulePage", () => {
     mockDeliverySchedule.mockReset();
     mockDivisionTasks.mockReset();
     mockProductionDashboard.mockReset();
+    mockGetOrder.mockReset();
     mockNavigate.mockReset();
     mockDsRouter.search = "";
     mockDsRouter.setParams.mockClear();
     mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
     mockDivisionTasks.mockResolvedValue({ tasks: [] });
     mockProductionDashboard.mockResolvedValue({ rows: [] });
+    mockGetOrder.mockResolvedValue({
+      order: { id: "o1", po_number: "PO-100", customer: "PT Alpha", line_items: [] },
+    });
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -347,15 +354,17 @@ describe("MobileDeliverySchedulePage", () => {
     expect(src).not.toMatch(/delivery\.route\.optimize/);
   });
 
-  test("CASE A — Loading + Pengiriman options from role strip eligibility", async () => {
+  test("CASE A — Loading + Pengiriman options from Role Aktif eligibility", async () => {
     mockHasPerm.mockImplementation((p) => (
       p === "schedule.view" || p === "loading.update" || p === "delivery.update"
     ));
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
     expect(container.querySelector('[data-testid="mds-task-select"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mop-ops-role-loading"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeFalsy();
+    const select = container.querySelector('[data-testid="mop-active-role-input"]');
+    expect([...select.options].map((o) => o.value)).toEqual(["loading", "delivery"]);
+    expect([...select.options].map((o) => o.textContent)).toEqual(["Loading", "Pengiriman"]);
     expect(container.textContent).not.toMatch(/TUGAS/);
   });
 
@@ -365,7 +374,8 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
     expect(container.querySelector('[data-testid="mds-task-select"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]').className).toMatch(/is-active/);
+    expect(container.querySelector('[data-testid="mop-active-role-current"]').textContent).toBe("Pengiriman");
+    expect(container.querySelector('[data-testid="mop-active-role-input"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
     expect(mockDivisionTasks).not.toHaveBeenCalled();
   });
@@ -383,9 +393,10 @@ describe("MobileDeliverySchedulePage", () => {
     expect(mockDeliverySchedule).toHaveBeenCalled();
     expect(mockDivisionTasks).not.toHaveBeenCalled();
 
-    const loadingRole = container.querySelector('[data-testid="mop-ops-role-pengiriman"]');
+    const select = container.querySelector('[data-testid="mop-active-role-input"]');
     await act(async () => {
-      loadingRole.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      select.value = "delivery";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=delivery");
     mockDsRouter.search = "ws=delivery";
@@ -422,9 +433,11 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => {
       row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/o1?ws=delivery&shipment=sh-100", expect.objectContaining({
-      state: expect.objectContaining({ from: "/m/delivery-schedule?ws=delivery" }),
-    }));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockGetOrder).toHaveBeenCalledWith("o1");
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
 
     capturePoOpenFromList({
       user: { id: "u-mds" },
@@ -442,7 +455,7 @@ describe("MobileDeliverySchedulePage", () => {
     // Refresh keeps query-backed selection (CASE G)
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]').className).toMatch(/is-active/);
+    expect(container.querySelector('[data-testid="mop-active-role-current"]').textContent).toBe("Pengiriman");
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
   });
 
@@ -477,16 +490,19 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=delivery";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    const role = container.querySelector('[data-testid="mop-ops-role-loading"]');
+    const select = container.querySelector('[data-testid="mop-active-role-input"]');
     await act(async () => {
-      role.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      select.value = "loading";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(mockDeliverySchedule.mock.calls.every((c) => c.length === 0 || c[0] === undefined)).toBe(true);
     expect(String(mockDsRouter.setParams.mock.calls.at(-1)[0])).toContain("ws=loading");
   });
 
   test("Loading row click opens Loading workspace for the selected shipment", async () => {
-    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "loading.update");
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match"
+    ));
     mockDsRouter.search = "ws=loading";
     mockDeliverySchedule.mockResolvedValue({
       rows: [
@@ -524,12 +540,14 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => {
       sep12.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockNavigate).toHaveBeenCalledWith(
-      "/m/orders/po001?ws=loading&shipment=sh-2",
-      expect.objectContaining({
-        state: expect.objectContaining({ from: "/m/delivery-schedule?ws=loading" }),
-      }),
-    );
+    await flush();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockGetOrder).toHaveBeenCalledWith("po001");
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-loading-confirm-match"]')).toBeTruthy();
+    expect(container.textContent).toContain("Verifikasi Kesesuaian SJ");
+    expect(container.querySelector(".mop-stepper")).toBeFalsy();
   });
 
   test("PWA table shows Item Line after Customer and drops Driver/Status/Aksi", async () => {
@@ -569,7 +587,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-quick-filters"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeFalsy();
     const identity = container.querySelector('[data-testid="mds-identity-PO-100-sh-100"]');
     expect(identity.querySelector(".mop-ops-customer").textContent).toBe("PT Alpha");
     expect(identity.querySelector(".mop-ops-po").textContent).toBe("PO-100");
@@ -735,7 +753,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeTruthy();
   });
 
-  test("pengiriman role count matches active delivery rows; packing/loading unsupported", async () => {
+  test("pengiriman Role Aktif does not use six-tile summary counts", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     mockDeliverySchedule.mockResolvedValue({
       rows: [
@@ -745,11 +763,9 @@ describe("MobileDeliverySchedulePage", () => {
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mop-ops-role-count-pengiriman"]').textContent.trim()).toBe("1");
-    expect(container.querySelector('[data-testid="mop-ops-role-count-packing"]').textContent.trim()).toBe("—");
-    expect(container.querySelector('[data-testid="mop-ops-role-count-loading"]').textContent.trim()).toBe("—");
-    expect(container.querySelector('[data-testid="mop-ops-role-count-prep"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-ops-role-pengiriman"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
   });
 
   test("quick filters search Filter and Reset share one nowrap horizontal rail", async () => {
@@ -803,7 +819,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(pageSrc).toMatch(/matchesDeliveryOpsSearch/);
     expect(pageSrc).toMatch(/deliveryQuickMatch/);
     expect(pageSrc).toMatch(/matchesDeliveryScheduleFilters/);
-    expect(pageSrc).toMatch(/buildOpsRoleSummaryModel\(\{\s*productionRows:\s*null,\s*deliveryRows:\s*sjRows/);
+    expect(pageSrc).not.toMatch(/buildOpsRoleSummaryModel/);
     expect(pageSrc).toMatch(/showBrand=\{false\}/);
   });
 

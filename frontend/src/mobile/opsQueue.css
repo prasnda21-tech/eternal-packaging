@@ -52,6 +52,17 @@
   overflow: hidden;
 }
 
+.mop-root--ops-wide .mop-active-role {
+  margin: 0 12px 4px;
+  max-width: 280px;
+  padding: 6px 10px;
+}
+
+.mop-root--ops-wide .mop-active-role select {
+  min-height: 34px;
+  font-size: 13px;
+}
+
 /* ---- Header ---- */
 .mop-root--ops-wide .ops-queue-header {
   display: flex;

@@ -40,7 +40,7 @@ export default function MobilePackingWorkspace({ order, canEdit, onUpdated }) {
   };
 
   return (
-    <section data-testid="mobile-ws-packing">
+    <section data-testid="mobile-ws-packing" className="mop-ws-role mop-ws-role--packing">
       <div className="mop-ws-header"><h2>PACKING</h2></div>
       <MobileStatusBadge status={status} />
       <MobileMetricStrip

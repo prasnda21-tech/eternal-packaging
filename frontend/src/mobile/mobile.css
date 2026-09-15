@@ -1965,6 +1965,100 @@
   min-width: 0;
 }
 
+.mop-task-context {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+}
+
+.mop-task-context div {
+  min-width: 0;
+}
+
+.mop-task-context span {
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.mop-task-context strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+  color: #0b1f2a;
+  overflow-wrap: anywhere;
+}
+
+.mop-task-modal--prep { --mop-role: #0891b2; --mop-role-soft: #ecfeff; }
+.mop-task-modal--screener { --mop-role: #7c3aed; --mop-role-soft: #f5f3ff; }
+.mop-task-modal--print { --mop-role: #2563eb; --mop-role-soft: #eff6ff; }
+.mop-task-modal--packing { --mop-role: #ea580c; --mop-role-soft: #fff7ed; }
+.mop-task-modal--loading { --mop-role: #0f766e; --mop-role-soft: #f0fdfa; }
+
+.mop-task-modal--prep .mop-task-modal-head,
+.mop-task-modal--screener .mop-task-modal-head,
+.mop-task-modal--print .mop-task-modal-head,
+.mop-task-modal--packing .mop-task-modal-head,
+.mop-task-modal--loading .mop-task-modal-head {
+  margin: -8px -16px 12px;
+  padding: 12px 16px;
+  background: var(--mop-role);
+  color: #fff;
+}
+
+.mop-task-modal--prep .mop-task-modal-head-text h2,
+.mop-task-modal--screener .mop-task-modal-head-text h2,
+.mop-task-modal--print .mop-task-modal-head-text h2,
+.mop-task-modal--packing .mop-task-modal-head-text h2,
+.mop-task-modal--loading .mop-task-modal-head-text h2,
+.mop-task-modal--prep .mop-task-modal-head-text p,
+.mop-task-modal--screener .mop-task-modal-head-text p,
+.mop-task-modal--print .mop-task-modal-head-text p,
+.mop-task-modal--packing .mop-task-modal-head-text p,
+.mop-task-modal--loading .mop-task-modal-head-text p {
+  color: #fff;
+}
+
+.mop-task-modal--prep .mop-task-modal-icon,
+.mop-task-modal--screener .mop-task-modal-icon,
+.mop-task-modal--print .mop-task-modal-icon,
+.mop-task-modal--packing .mop-task-modal-icon,
+.mop-task-modal--loading .mop-task-modal-icon {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.mop-task-modal--prep .mop-task-modal-x,
+.mop-task-modal--screener .mop-task-modal-x,
+.mop-task-modal--print .mop-task-modal-x,
+.mop-task-modal--packing .mop-task-modal-x,
+.mop-task-modal--loading .mop-task-modal-x {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.mop-task-modal--prep .mop-btn-primary,
+.mop-task-modal--screener .mop-btn-primary,
+.mop-task-modal--print .mop-btn-primary,
+.mop-task-modal--packing .mop-btn-primary,
+.mop-task-modal--loading .mop-btn-primary {
+  background: var(--mop-role);
+  border-color: var(--mop-role);
+  color: #fff;
+}
+
+.mop-task-modal .mop-ws-role .mop-ws-header {
+  display: none;
+}
+
 .mop-task-close-btn {
   width: 100%;
   min-height: 48px;

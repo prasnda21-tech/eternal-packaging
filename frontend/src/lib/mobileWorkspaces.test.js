@@ -1,6 +1,7 @@
 import {
   MOBILE_WORKSPACES,
   MOBILE_NAV_ITEMS,
+  OPS_ACTIVE_ROLE_IDS,
   activeMobileNav,
   deliveryScheduleShowsTable,
   loadingAvailability,
@@ -13,9 +14,11 @@ import {
   packingMetrics,
   permittedDeliveryScheduleTaskContexts,
   permittedMobileWorkspaces,
+  permittedOpsActiveRoles,
   poCardPresentation,
   selectDeliveryScheduleTaskContext,
   selectMobileWorkspace,
+  selectOpsActiveRole,
   taskSummaryFromList,
   visibleMobileNavItems,
 } from "./mobileWorkspaces";
@@ -58,6 +61,28 @@ describe("mobile workspace permissions", () => {
 
   test("catalog has no Semua workspace", () => {
     expect(MOBILE_WORKSPACES.some((w) => /semua/i.test(w.label) || w.id === "all")).toBe(false);
+  });
+});
+
+describe("ops active role selector", () => {
+  test("excludes sample and unauthorized roles", () => {
+    const opts = permittedOpsActiveRoles(permSet(
+      "helper.prepare",
+      "packing.update",
+      "operator.sample_upload",
+      "screen.update",
+    ));
+    expect(opts.map((w) => w.id)).toEqual(["screener", "prep", "packing"]);
+    expect(OPS_ACTIVE_ROLE_IDS).not.toContain("sample");
+    expect(opts.some((w) => w.id === "sample")).toBe(false);
+  });
+
+  test("stored unauthorized role falls back to first permitted", () => {
+    const helper = permSet("packing.update", "loading.update");
+    const denied = selectOpsActiveRole(helper, "screener");
+    expect(denied.unauthorized).toBe(true);
+    expect(denied.selected.id).toBe("packing");
+    expect(denied.permitted.map((w) => w.id)).toEqual(["packing", "loading"]);
   });
 });
 

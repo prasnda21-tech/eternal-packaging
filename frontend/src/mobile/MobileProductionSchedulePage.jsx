@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Filter } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import { formatApiError } from "../lib/errors";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
@@ -23,7 +23,12 @@ import {
   mobileProductionDashboardParams,
   rowsFromProductionDashboard,
 } from "../lib/mobileSchedule";
-import { mobileScheduleWorkHref } from "../lib/mobileWorkspaces";
+import {
+  mobileScheduleWorkHref,
+  permittedOpsActiveRoles,
+  scheduleRowShipmentId,
+  selectOpsActiveRole,
+} from "../lib/mobileWorkspaces";
 import {
   OPS_QUICK_FILTERS,
   matchesProductionOpsSearch,
@@ -33,26 +38,29 @@ import {
   sortByOpsQueue,
   productionQueueRank,
 } from "../lib/mobileOpsQueue";
-import { buildOpsRoleSummaryModel } from "../lib/mobileOpsRoleSummary";
-import { canViewMobileDeliverySchedule } from "../lib/mobileDeliverySchedule";
-import MobileOpsRoleSummary from "./components/MobileOpsRoleSummary";
+import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
+import MobileTaskModal, { opsRoleIcon } from "./components/MobileTaskModal";
 import OpsScheduleThead from "./components/OpsScheduleThead";
 import OpsQueueHeader from "./components/OpsQueueHeader";
 import OpsQueueLegend from "./components/OpsQueueLegend";
+import MobileScreenerWorkspace from "./workspaces/MobileScreenerWorkspace";
+import MobileHelperPrepWorkspace from "./workspaces/MobileHelperPrepWorkspace";
+import MobilePackingWorkspace from "./workspaces/MobilePackingWorkspace";
+import MobilePrintWorkspace from "./workspaces/MobilePrintWorkspace";
+import MobileLoadingWorkspace from "./workspaces/MobileLoadingWorkspace";
+import MobileDeliveryWorkspace from "./workspaces/MobileDeliveryWorkspace";
 import {
   MOBILE_PROD_FILTER_KEY,
   MOBILE_PROD_SCROLL_KEY,
+  readActiveRoleId,
   readJsonSession,
   readScrollSession,
   scopedOpsKey,
+  writeActiveRoleId,
   writeJsonSession,
   writeScrollSession,
 } from "../lib/mobileOpsSession";
-import {
-  capturePoOpenFromList,
-  poNavStateFromList,
-  storageUserKey,
-} from "../lib/poListReturn";
+import { storageUserKey } from "../lib/poListReturn";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 
 const SCHEDULE_FILTER_RAIL_KEYS = [
@@ -64,6 +72,23 @@ const SCHEDULE_FILTER_RAIL_KEYS = [
   "minggu_ini",
   "semua_aktif",
 ];
+
+const SCHEDULE_WORKSPACE_VIEWS = {
+  screener: MobileScreenerWorkspace,
+  prep: MobileHelperPrepWorkspace,
+  packing: MobilePackingWorkspace,
+  print: MobilePrintWorkspace,
+  loading: MobileLoadingWorkspace,
+  delivery: MobileDeliveryWorkspace,
+};
+
+function scheduleTaskContext(order, row) {
+  return {
+    customer: getCanonicalCustomerName(order || row || {}),
+    po: order?.po_number || row?.po_number || row?.order_number || "",
+    sj: row?.latest_sj_number || row?.sj_label || order?.delivery_note_number || "",
+  };
+}
 
 export function scheduleLoadErrorMessage(err) {
   const status = err?.response?.status;
@@ -77,10 +102,16 @@ export function scheduleLoadErrorMessage(err) {
 }
 
 export default function MobileProductionSchedulePage() {
-  const navigate = useNavigate();
   const { user, hasPerm } = useAuth();
   const allowed = canViewMobileSchedule(hasPerm);
   const userKey = storageUserKey(user);
+  const permittedIds = permittedOpsActiveRoles(hasPerm).map((w) => w.id).join("|");
+  const roleChoice = useMemo(
+    () => selectOpsActiveRole(hasPerm, readActiveRoleId(userKey)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [userKey, permittedIds],
+  );
+  const [activeRoleId, setActiveRoleId] = useState(roleChoice.selected?.id || "");
   const filterKey = scopedOpsKey(MOBILE_PROD_FILTER_KEY, userKey);
   const scrollKey = scopedOpsKey(MOBILE_PROD_SCROLL_KEY, userKey);
   const saved = readJsonSession(filterKey, {
@@ -102,6 +133,32 @@ export default function MobileProductionSchedulePage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const sheetZoom = useProductionSheetZoom();
   const scrollRestored = useRef(false);
+  const [task, setTask] = useState({
+    open: false,
+    order: null,
+    shipmentId: "",
+    row: null,
+    busy: false,
+    err: "",
+  });
+
+  const activeRoles = roleChoice.permitted;
+  const activeRole = activeRoles.find((ws) => ws.id === activeRoleId) || roleChoice.selected;
+
+  useEffect(() => {
+    const next = selectOpsActiveRole(hasPerm, readActiveRoleId(userKey) || activeRoleId);
+    const id = next.selected?.id || "";
+    setActiveRoleId(id);
+    if (readActiveRoleId(userKey) !== id) writeActiveRoleId(userKey, id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userKey, permittedIds]);
+
+  const setActiveRole = (id) => {
+    const next = selectOpsActiveRole(hasPerm, id);
+    const resolved = next.selected?.id || "";
+    setActiveRoleId(resolved);
+    writeActiveRoleId(userKey, resolved);
+  };
 
   const filterState = {
     ...FILTER_DEFAULTS,
@@ -169,11 +226,6 @@ export default function MobileProductionSchedulePage() {
   const sorted = useMemo(() => sortByOpsQueue(filtered, productionQueueRank), [filtered]);
   const displayRows = useMemo(() => buildProductionScheduleDisplayRows(sorted), [sorted]);
   const quickCounts = useMemo(() => opsQuickFilterCounts(searched, productionQuickMatch), [searched]);
-  const roleSummary = useMemo(
-    () => buildOpsRoleSummaryModel({ productionRows: rows, deliveryRows: null }),
-    [rows],
-  );
-  const canOpenDelivery = canViewMobileDeliverySchedule(hasPerm);
   const filtersActive = productionFiltersAreActive(filterState) || quick !== "semua_aktif";
 
   useLayoutEffect(() => {
@@ -201,21 +253,31 @@ export default function MobileProductionSchedulePage() {
   };
 
   const openRow = (row) => {
+    if (!row?.id || !activeRole?.id) return;
     persistScroll();
-    const href = mobileScheduleWorkHref(row.id, hasPerm, "production");
-    if (!href || !row?.id) return;
-    const state = poNavStateFromList({
-      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/schedule",
-      search: typeof window !== "undefined" ? window.location.search : "",
-    });
-    capturePoOpenFromList({
-      user,
-      orderId: row.id,
-      pathname: typeof window !== "undefined" ? window.location.pathname : "/m/schedule",
-      search: typeof window !== "undefined" ? window.location.search : "",
-    });
-    navigate(href, { state });
+    const needsShipment = activeRole.id === "loading" || activeRole.id === "delivery";
+    const shipmentId = needsShipment ? scheduleRowShipmentId(row) : "";
+    setTask({ open: true, order: null, shipmentId, row, busy: true, err: "" });
+    (async () => {
+      try {
+        const d = await withTimeout(api.getOrder(row.id), MOBILE_LOAD_TIMEOUT_MS);
+        setTask((prev) => ({ ...prev, order: d?.order || d, busy: false }));
+      } catch (e) {
+        setTask((prev) => ({
+          ...prev,
+          busy: false,
+          err: formatApiError(e, "Gagal memuat PO."),
+        }));
+      }
+    })();
   };
+
+  const closeTask = () => setTask({
+    open: false, order: null, shipmentId: "", row: null, busy: false, err: "",
+  });
+
+  const Workspace = activeRole ? SCHEDULE_WORKSPACE_VIEWS[activeRole.id] : null;
+  const taskContext = scheduleTaskContext(task.order, task.row);
 
   return (
     <div className="mop-schedule-root">
@@ -228,17 +290,16 @@ export default function MobileProductionSchedulePage() {
         )}
         {allowed && (
           <>
-            <MobileOpsRoleSummary
-              roles={roleSummary.map((role) => ({
-                ...role,
-                interactive: role.source === "delivery" && canOpenDelivery,
-              }))}
-              onSelectRole={(role) => {
-                if (role.source === "delivery" && canOpenDelivery && role.href) {
-                  navigate(role.href);
-                }
-              }}
-            />
+            {activeRoles.length > 0 && (
+              <MobileWorkspaceSelect
+                workspaces={activeRoles}
+                value={activeRole?.id || ""}
+                onChange={setActiveRole}
+                label="Role Aktif"
+                testid="mop-active-role"
+                className="mop-active-role"
+              />
+            )}
             <div className="mop-schedule-toolbar" data-testid="mobile-schedule-toolbar">
               <div className="mop-ops-quick mop-ops-filter-rail" data-testid="mobile-schedule-quick-filters">
                 {SCHEDULE_FILTER_RAIL_KEYS.map((key) => {
@@ -353,7 +414,7 @@ export default function MobileProductionSchedulePage() {
                       const qtyProg = poTotalQtyDisplay(row);
                       const cetakProg = operatorQtyCetakProgress(row, row.displayOperator?.splits);
                       const isToday = isScheduledToday(row);
-                      const href = mobileScheduleWorkHref(row.id, hasPerm, "production");
+                      const href = mobileScheduleWorkHref(row.id, hasPerm, "production", activeRole?.id, row);
                       const badge = productionOpsBadge(row);
                       return (
                         <tr
@@ -403,6 +464,30 @@ export default function MobileProductionSchedulePage() {
               </div>
             )}
             <OpsQueueLegend />
+            <MobileTaskModal
+              open={task.open}
+              onClose={closeTask}
+              title={activeRole?.label}
+              icon={opsRoleIcon(activeRole?.id)}
+              roleId={activeRole?.id}
+              hideHeader={activeRole?.id === "delivery"}
+              context={activeRole?.id === "delivery" ? null : taskContext}
+              showClose={activeRole?.id !== "delivery"}
+              testid="mobile-task-modal"
+              labelledBy="mobile-task-modal-title"
+            >
+              {task.busy && <p className="mop-empty" data-testid="mop-schedule-task-loading">Memuat tugas...</p>}
+              {task.err && <div className="mop-error" data-testid="mop-schedule-task-error">{task.err}</div>}
+              {task.order && Workspace ? (
+                <Workspace
+                  order={task.order}
+                  canEdit={hasPerm(activeRole.permission)}
+                  onUpdated={(next) => setTask((prev) => ({ ...prev, order: next || prev.order }))}
+                  onRequestClose={closeTask}
+                  shipmentId={task.shipmentId}
+                />
+              ) : null}
+            </MobileTaskModal>
           </>
         )}
       </main>

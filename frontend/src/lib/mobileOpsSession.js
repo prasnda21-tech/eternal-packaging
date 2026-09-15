@@ -1,4 +1,6 @@
-/** Session persistence for PWA ops tables (filters + scroll). Zoom uses productionSheetZoom. */
+/** Session persistence for PWA ops tables (filters + scroll). Zoom uses productionSheetZoom.
+ * Active Role uses user-scoped localStorage (survives PWA navigation until logout).
+ */
 
 function store() {
   try {
@@ -8,10 +10,19 @@ function store() {
   }
 }
 
+function localStore() {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
 export const MOBILE_PROD_FILTER_KEY = "eternal.ui.mobile-prod-schedule-filters";
 export const MOBILE_DELIVERY_FILTER_KEY = "eternal.ui.mobile-delivery-schedule-filters";
 export const MOBILE_PROD_SCROLL_KEY = "eternal.ui.mobile-prod-schedule-scroll";
 export const MOBILE_DELIVERY_SCROLL_KEY = "eternal.ui.mobile-delivery-schedule-scroll";
+export const MOBILE_ACTIVE_ROLE_KEY = "eternal.ui.mobile-active-role";
 
 /** User-scope legacy ops keys so logout / user switch cannot leak view state. */
 export function scopedOpsKey(baseKey, userId) {
@@ -86,25 +97,48 @@ const OPS_KEY_PREFIXES = [
   MOBILE_DELIVERY_SCROLL_KEY,
 ];
 
-/** Remove scoped + legacy unscoped ops session keys for a user. */
-export function clearMobileOpsSessionForUser(userId) {
-  const s = store();
+const LOCAL_OPS_KEY_PREFIXES = [
+  MOBILE_ACTIVE_ROLE_KEY,
+];
+
+export function readActiveRoleId(userId) {
+  const s = localStore();
+  if (!s) return "";
+  try {
+    const raw = s.getItem(scopedOpsKey(MOBILE_ACTIVE_ROLE_KEY, userId));
+    if (raw == null || raw === "") return "";
+    return String(raw).trim();
+  } catch {
+    return "";
+  }
+}
+
+export function writeActiveRoleId(userId, roleId) {
+  const s = localStore();
   if (!s) return;
+  const key = scopedOpsKey(MOBILE_ACTIVE_ROLE_KEY, userId);
+  const id = String(roleId || "").trim();
+  try {
+    if (!id) s.removeItem(key);
+    else s.setItem(key, id);
+  } catch {
+    /* quota */
+  }
+}
+
+function clearPrefixedKeys(storage, prefixes, userId) {
+  if (!storage) return;
   const uid = userId != null ? String(userId) : "";
   const toRemove = [];
   try {
-    for (let i = 0; i < s.length; i += 1) {
-      const k = s.key(i);
+    for (let i = 0; i < storage.length; i += 1) {
+      const k = storage.key(i);
       if (!k) continue;
-      for (const base of OPS_KEY_PREFIXES) {
-        if (k === base || (uid && k === `${base}.${uid}`) || k.startsWith(`${base}.`)) {
-          // Only clear this user's scoped key, or legacy unscoped when uid provided/cleared broadly
-          if (k === base || (uid && k === `${base}.${uid}`)) toRemove.push(k);
-        }
+      for (const base of prefixes) {
+        if (k === base || (uid && k === `${base}.${uid}`)) toRemove.push(k);
       }
     }
-    // Also clear legacy unscoped keys on any logout (prevent cross-user leak via shared key)
-    OPS_KEY_PREFIXES.forEach((base) => {
+    prefixes.forEach((base) => {
       if (!toRemove.includes(base)) toRemove.push(base);
       if (uid) {
         const scoped = `${base}.${uid}`;
@@ -112,9 +146,15 @@ export function clearMobileOpsSessionForUser(userId) {
       }
     });
     toRemove.forEach((k) => {
-      try { s.removeItem(k); } catch { /* ignore */ }
+      try { storage.removeItem(k); } catch { /* ignore */ }
     });
   } catch {
     /* ignore */
   }
+}
+
+/** Remove scoped + legacy unscoped ops session keys for a user. */
+export function clearMobileOpsSessionForUser(userId) {
+  clearPrefixedKeys(store(), OPS_KEY_PREFIXES, userId);
+  clearPrefixedKeys(localStore(), LOCAL_OPS_KEY_PREFIXES, userId);
 }

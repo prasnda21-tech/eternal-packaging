@@ -19,6 +19,7 @@ const mockNavigate = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [new URLSearchParams(""), jest.fn()],
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
 }), { virtual: true });
 
@@ -237,8 +238,10 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-schedule-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-search-btn"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-ringkasan"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeTruthy();
-    expect(container.querySelectorAll('[data-testid^="mop-ops-role-"]').length).toBeGreaterThanOrEqual(6);
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-ops-role-aside"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Satu Sistem, Setiap Role");
+    expect(container.querySelector('[data-testid="mop-active-role"]')).toBeFalsy();
     expect(container.querySelector(".production-sheet-table .mop-ops-badge")).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-scroll"]').className).toMatch(/mop-schedule-scroll/);
     expect(container.querySelector('[data-testid="mobile-schedule-count"]').textContent).toBe("2 / 2 entri");
@@ -428,19 +431,29 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.productionExport).not.toHaveBeenCalled();
   });
 
-  test("row click opens role-relevant workspace when permitted, else PO detail", async () => {
+  test("row click opens role-relevant workspace when permitted, else stays on schedule", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
     const rows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')];
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.getAttribute("data-to") === "/m/orders/po-1")).toBe(true);
     await act(async () => { rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1", expect.objectContaining({ state: expect.any(Object) }));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(api.getOrder).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeFalsy();
 
     mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "screen.update");
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
     await renderPage();
     const screenerRows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')];
     expect(screenerRows[0].getAttribute("data-to")).toBe("/m/orders/po-1?ws=screener");
+    await act(async () => { screenerRows[0].dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-ws-screener"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Catatan");
   });
 
   test("unauthorized direct URL is blocked and does not render the spreadsheet", async () => {
@@ -560,12 +573,39 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector(".production-sheet-table .mop-ops-badge")).toBeTruthy();
   });
 
-  test("row navigation remains available outside a zoom gesture", async () => {
+  test("row click opens active-role task modal without PO summary navigation", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "packing.update");
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-active-role-current"]')?.textContent
+      || container.querySelector('[data-testid="mop-active-role-input"]')?.value).toMatch(/Packing|packing/i);
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(api.getOrder).toHaveBeenCalledWith("po-1");
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Catatan");
+  });
+
+  test("row navigation remains available outside a zoom gesture", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "packing.update");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
     await renderPage();
     const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
     await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/po-1", expect.objectContaining({ state: expect.any(Object) }));
+    await flush();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
   });
 
   test("PWA Screen column is qty-only and screen_size column is absent", async () => {
@@ -589,18 +629,38 @@ describe("MobileProductionSchedulePage", () => {
     expect(screenCell.textContent).not.toContain("/");
   });
 
-  test("role summary counts match loaded production dataset and packing/loading stay unsupported", async () => {
+  test("role summary strip is gone; Role Aktif lists only permitted workspaces without sample", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "helper.prepare" || p === "packing.update" || p === "operator.sample_upload"
+    ));
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
-    for (const id of ["prep", "screener", "produksi", "packing", "loading", "pengiriman"]) {
-      expect(container.querySelector(`[data-testid="mop-ops-role-${id}"]`)).toBeTruthy();
-    }
-    expect(container.querySelector('[data-testid="mop-ops-role-count-prep"]').textContent.trim()).toBe("1");
-    expect(container.querySelector('[data-testid="mop-ops-role-urgent-prep"]').textContent).toMatch(/1 urgent/);
-    expect(container.querySelector('[data-testid="mop-ops-role-count-screener"]').textContent.trim()).toBe("1");
-    expect(container.querySelector('[data-testid="mop-ops-role-count-produksi"]').textContent.trim()).toBe("1");
-    expect(container.querySelector('[data-testid="mop-ops-role-count-packing"]').textContent.trim()).toBe("—");
-    expect(container.querySelector('[data-testid="mop-ops-role-count-loading"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-ops-role-produksi"]')).toBeFalsy();
+    const select = container.querySelector('[data-testid="mop-active-role-input"]');
+    expect(select).toBeTruthy();
+    expect([...select.options].map((o) => o.value)).toEqual(["prep", "packing"]);
+    expect([...select.options].map((o) => o.textContent)).not.toContain("Upload Sampel Cetak");
+    expect(container.querySelector('[data-testid="mobile-schedule-thead"]').textContent).toContain("Status per Role");
+  });
+
+  test("persisted packing role restores and revoked role falls back", async () => {
+    const { writeActiveRoleId, readActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "packing");
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "helper.prepare" || p === "packing.update"
+    ));
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-input"]').value).toBe("packing");
+    expect(readActiveRoleId("u-mps")).toBe("packing");
+
+    writeActiveRoleId("u-mps", "packing");
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "helper.prepare");
+    await act(async () => { root.render(<MobileProductionSchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mop-active-role-current"]').textContent).toBe("Persiapan Cup");
+    expect(readActiveRoleId("u-mps")).toBe("prep");
   });
 
   test("Hari Ini filter count matches visible population after click", async () => {
@@ -744,5 +804,30 @@ describe("MobileProductionSchedulePage", () => {
     expect(pack.className).toMatch(/is-pending/);
     expect(load.className).toMatch(/is-idle/);
     expect(kirim.className).toMatch(/is-idle/);
+  });
+
+  test("redesigned workspaces keep existing handlers and hide generic Catatan", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const screener = fs.readFileSync(path.join(__dirname, "workspaces/MobileScreenerWorkspace.jsx"), "utf8");
+    const helper = fs.readFileSync(path.join(__dirname, "workspaces/MobileHelperPrepWorkspace.jsx"), "utf8");
+    const printWs = fs.readFileSync(path.join(__dirname, "workspaces/MobilePrintWorkspace.jsx"), "utf8");
+    const packing = fs.readFileSync(path.join(__dirname, "workspaces/MobilePackingWorkspace.jsx"), "utf8");
+    const loading = fs.readFileSync(path.join(__dirname, "workspaces/MobileLoadingWorkspace.jsx"), "utf8");
+    expect(screener).not.toMatch(/<span>Catatan<\/span>/);
+    expect(screener).toMatch(/api\.updateScreenerInfo/);
+    expect(helper).toMatch(/api\.updateHelperPrepItems/);
+    expect(helper).toMatch(/MobileQtyStepper/);
+    expect(printWs).toMatch(/operatorMyAssignmentModels/);
+    expect(printWs).toMatch(/pickSubmitSplit/);
+    expect(printWs).toMatch(/api\.updateOperatorProgress/);
+    expect(packing).toMatch(/api\.savePackingInfo/);
+    expect(loading).toMatch(/confirmLoadingMatch/);
+    expect(loading).toMatch(/reportLoadingDiscrepancy/);
+    expect(loading).toMatch(/Catatan \(opsional\)/);
+    expect(loading).not.toMatch(/MobileQtyStepper/);
+    const page = fs.readFileSync(path.join(__dirname, "MobileProductionSchedulePage.jsx"), "utf8");
+    expect(page).not.toMatch(/MobileOpsRoleSummary/);
+    expect(page).toMatch(/api\.getOrder/);
   });
 });

@@ -54,7 +54,7 @@ export default function MobilePrintWorkspace({ order, canEdit, onUpdated }) {
   };
 
   return (
-    <section data-testid="mobile-ws-print">
+    <section data-testid="mobile-ws-print" className="mop-ws-role mop-ws-role--print">
       <div className="mop-ws-header"><h2>CETAK</h2></div>
       <MobileStatusBadge status={status} />
       <MobileDesignFile order={order} />

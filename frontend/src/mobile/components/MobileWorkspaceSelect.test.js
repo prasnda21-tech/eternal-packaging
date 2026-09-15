@@ -53,4 +53,25 @@ describe("MobileWorkspaceSelect", () => {
     expect(container.querySelector('[data-testid="mobile-workspace-select-current"]').textContent).toBe("Screener");
     expect(container.querySelector("select")).toBeFalsy();
   });
+
+  test("Role Aktif label lists only provided workspaces", async () => {
+    await act(async () => {
+      root.render(
+        <MobileWorkspaceSelect
+          label="Role Aktif"
+          testid="mop-active-role"
+          workspaces={[
+            { id: "prep", label: "Persiapan Cup" },
+            { id: "packing", label: "Packing" },
+          ]}
+          value="packing"
+        />,
+      );
+    });
+    expect(container.querySelector('[data-testid="mop-active-role"]')).toBeTruthy();
+    expect(container.textContent).toContain("Role Aktif");
+    const select = container.querySelector('[data-testid="mop-active-role-input"]');
+    expect([...select.options].map((o) => o.value)).toEqual(["prep", "packing"]);
+    expect(select.value).toBe("packing");
+  });
 });
