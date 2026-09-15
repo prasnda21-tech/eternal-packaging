@@ -446,9 +446,105 @@ def test_schedule_row_missing_shipments_or_lines_is_empty_safe():
     assert schedule_row(_po())["sj_item_lines"] == []
     assert schedule_row(_po(shipments=None))["sj_item_lines"] == []
     assert schedule_row(_po(shipments="bad"))["sj_item_lines"] == []
-    assert schedule_rows(_po(shipments=[{"id": "sh-x", "number": "SJ/X"}]))[0]["sj_item_lines"] == []
     assert schedule_row(_po(), shipment={"id": "sh-x", "number": "SJ/X", "lines": None})["sj_item_lines"] == []
     assert sj_item_lines({}, {"id": "sh-x", "lines": ["skip", {"name": "Ok", "qty": 5}]}) == [
         {"shipment_id": "sh-x", "sj_number": None, "line_id": None, "line_idx": None, "name": "Ok", "qty": 5},
     ]
     assert sj_item_lines(_po(shipments=[{"id": "sh-x", "number": "SJ/X", "lines": [{"name": "Nope", "qty": 1}]}])) == []
+
+
+def test_schedule_rows_no_sj_returns_empty():
+    """A — PO with no Surat Jalan must not appear on Jadwal Pengiriman."""
+    assert schedule_rows(_po()) == []
+    assert schedule_rows(_po(shipments=None)) == []
+    assert schedule_rows(_po(shipments=[])) == []
+    assert schedule_rows(_po(shipments="bad")) == []
+
+
+def test_schedule_rows_missing_sj_id_excluded():
+    """C1 — dated shipment with number but no canonical id is not a schedule row."""
+    o = _po(shipments=[{
+        "number": "SJ001",
+        "delivery_date": "2026-09-10",
+        "lines": [{"line_id": "a", "line_idx": 0, "name": "Cup", "qty": 100}],
+    }])
+    assert schedule_rows(o) == []
+
+
+def test_schedule_rows_missing_sj_number_excluded():
+    """C2 — dated shipment with id but blank number is not a schedule row."""
+    o = _po(shipments=[{
+        "id": "sh-1",
+        "number": "",
+        "sj_number": "",
+        "delivery_date": "2026-09-10",
+        "lines": [{"line_id": "a", "line_idx": 0, "name": "Cup", "qty": 100}],
+    }])
+    assert schedule_rows(o) == []
+
+
+def test_schedule_rows_mixed_valid_and_invalid_keeps_only_canonical_sj():
+    """E — invalid partial shipment must not hide or replace the valid SJ row."""
+    o = _po(shipments=[
+        {
+            "id": "sh-valid",
+            "number": "SJ001",
+            "shipment_index": 1,
+            "delivery_date": "2026-09-10",
+            "lines": [{"line_id": "a", "line_idx": 0, "name": "Cup", "qty": 100}],
+        },
+        {
+            "id": "sh-partial",
+            "number": "",
+            "sj_number": "",
+            "shipment_index": 2,
+            "delivery_date": "2026-09-11",
+            "lines": [{"line_id": "b", "line_idx": 1, "name": "Lid", "qty": 50}],
+        },
+    ])
+    rows = schedule_rows(o)
+    assert len(rows) == 1
+    assert rows[0]["shipment_id"] == "sh-valid"
+    assert rows[0]["sj_label"] == "SJ001"
+    assert rows[0]["effective_delivery_date"] == "2026-09-10"
+
+
+def test_schedule_rows_deleted_last_sj_returns_empty():
+    """F — after last canonical SJ is removed, do not emit a PO-level row."""
+    o = _po(shipments=[])
+    assert schedule_rows(o) == []
+    leftover_undated = _po(shipments=[{"id": "sh-x", "number": "SJ/X"}])
+    assert schedule_rows(leftover_undated) == []
+
+
+def test_schedule_rows_partial_sj_qty_does_not_require_full_po_qty():
+    """PO 10,000 with one valid SJ 5,000 is one row; remainder without SJ is not a row."""
+    o = _po(
+        total_quantity=10000,
+        line_items=[{"name": "Cup", "quantity": 10000}],
+        shipments=[{
+            "id": "sh-half",
+            "number": "SJ001",
+            "shipment_index": 1,
+            "delivery_date": "2026-09-10",
+            "lines": [{"line_id": "a", "line_idx": 0, "name": "Cup", "qty": 5000}],
+        }],
+    )
+    rows = schedule_rows(o)
+    assert len(rows) == 1
+    assert rows[0]["shipment_id"] == "sh-half"
+    assert rows[0]["sj_label"] == "SJ001"
+    assert rows[0]["sj_item_lines"][0]["qty"] == 5000
+
+    o["shipments"].append({
+        "id": "sh-half-2",
+        "number": "SJ001-2",
+        "shipment_index": 2,
+        "delivery_date": "2026-09-11",
+        "lines": [{"line_id": "b", "line_idx": 0, "name": "Cup", "qty": 5000}],
+    })
+    rows2 = schedule_rows(o)
+    assert len(rows2) == 2
+    assert [r["sj_label"] for r in rows2] == ["SJ001", "SJ001-2"]
+    assert [r["shipment_id"] for r in rows2] == ["sh-half", "sh-half-2"]
+    assert [r["sj_item_lines"][0]["qty"] for r in rows2] == [5000, 5000]

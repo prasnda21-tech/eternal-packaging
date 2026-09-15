@@ -211,6 +211,14 @@ def _shipment_sj_number(sh: Optional[dict]) -> Optional[str]:
     return num or None
 
 
+def _shipment_sj_id(sh: Optional[dict]) -> Optional[str]:
+    """Canonical Surat Jalan id: shipment.id || sales_delivery_id."""
+    if not isinstance(sh, dict):
+        return None
+    sid = str(sh.get("id") or sh.get("sales_delivery_id") or "").strip()
+    return sid or None
+
+
 def shipment_delivery_date(sh: Optional[dict]) -> Optional[str]:
     """Persisted Pengiriman delivery_date on the shipment — not invented from SJ suffix."""
     if not isinstance(sh, dict):
@@ -291,7 +299,7 @@ def schedule_row(
     from services.delivery_stops import parse_location
     loc = parse_location(order.get("delivery_location"))
     matched_sj = _shipment_sj_number(sh)
-    shipment_id = str(sh.get("id") or sh.get("sales_delivery_id") or "").strip() or None if sh else None
+    shipment_id = _shipment_sj_id(sh)
     return {
         "id": order.get("id"),
         "order_number": order.get("po_number") or "",
@@ -336,14 +344,19 @@ def schedule_rows(
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
 ) -> List[dict]:
-    """One Jadwal Pengiriman row per dated shipment; otherwise one PO-level row.
+    """One Jadwal Pengiriman row per dated canonical Surat Jalan.
 
+    Eligible shipment: delivery_date AND canonical SJ id AND canonical SJ number.
     Same-date shipments stay separate; shipment_index is the existing sequence
     tie-break (Pengiriman Kirim #), never SJ-suffix parsing.
+    No valid canonical SJ → no rows (never a PO-level fallback).
     """
-    dated = dated_schedule_shipments(order)
+    dated = [
+        sh for sh in dated_schedule_shipments(order)
+        if _shipment_sj_id(sh) and _shipment_sj_number(sh)
+    ]
     if not dated:
-        return [schedule_row(order, today=today, lead_time_days=lead_time_days)]
+        return []
     dated = sorted(
         dated,
         key=lambda sh: (shipment_delivery_date(sh) or "", _shipment_index(sh), str(sh.get("created_at") or "")),
