@@ -65,14 +65,15 @@ function statusTone(selectedDelivered, batchAllowed) {
   return { key: "idle", label: "Belum siap" };
 }
 
-export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onRequestClose }) {
+export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onRequestClose, shipmentId }) {
   const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
-  const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, urlShipmentId()));
+  const shipmentHint = () => shipmentId || urlShipmentId();
+  const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, shipmentHint()));
   const sjIdsKey = sjOptions.map((o) => o.id).join("|");
   useEffect(() => {
-    const next = selectedPengirimanShipmentId(order, sjId || urlShipmentId());
+    const next = selectedPengirimanShipmentId(order, shipmentId || sjId || urlShipmentId());
     if (next && next !== sjId) setSjId(next);
-  }, [sjIdsKey, order, sjId]);
+  }, [sjIdsKey, order, sjId, shipmentId]);
   const activeShipment = findDeliveryShipment(order, sjId) || sjOptions[0]?.shipment || null;
   const activeSjOption = sjOptions.find((o) => o.id === (activeShipment?.id || sjId)) || sjOptions[0] || null;
   const selectedDelivered = isShipmentDelivered(order, activeShipment);

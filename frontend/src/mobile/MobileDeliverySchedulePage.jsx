@@ -34,9 +34,13 @@ import { canAccessRoutePage } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
 import { sortOperationalTasks } from "../lib/mobileTaskCard";
 import {
+  DELIVERY_SCHEDULE_TASK_IDS,
   deliveryScheduleShowsTable,
   mobileScheduleWorkHref,
+  permittedOpsActiveRoles,
+  scheduleRowShipmentId,
   selectDeliveryScheduleTaskContext,
+  selectOpsActiveRole,
 } from "../lib/mobileWorkspaces";
 import {
   OPS_QUICK_FILTERS,
@@ -48,25 +52,24 @@ import {
   packingProgressText,
   sortByOpsQueue,
 } from "../lib/mobileOpsQueue";
-import { buildOpsRoleSummaryModel } from "../lib/mobileOpsRoleSummary";
 import { canViewMobileSchedule, mobileProductionDashboardParams } from "../lib/mobileSchedule";
-import MobileOpsRoleSummary from "./components/MobileOpsRoleSummary";
+import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
+import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
+import MobileTaskModal, { opsRoleIcon } from "./components/MobileTaskModal";
 import OpsScheduleThead from "./components/OpsScheduleThead";
 import OpsRoleMark from "./components/OpsRoleMark";
 import {
   MOBILE_DELIVERY_FILTER_KEY,
   MOBILE_DELIVERY_SCROLL_KEY,
+  readActiveRoleId,
   readJsonSession,
   readScrollSession,
   scopedOpsKey,
+  writeActiveRoleId,
   writeJsonSession,
   writeScrollSession,
 } from "../lib/mobileOpsSession";
-import {
-  capturePoOpenFromList,
-  poNavStateFromList,
-  storageUserKey,
-} from "../lib/poListReturn";
+import { storageUserKey } from "../lib/poListReturn";
 import { deliveryRoleMarkTones } from "../lib/mobileOpsStatusMark";
 import { formatIdQty } from "../lib/productionScheduleQty";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
@@ -76,7 +79,29 @@ import { ProductionScheduleSearchCluster } from "../components/ProductionSchedul
 import OpsQueueHeader from "./components/OpsQueueHeader";
 import OpsQueueLegend from "./components/OpsQueueLegend";
 import MobileTaskCard from "./components/MobileTaskCard";
-import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
+import MobileScreenerWorkspace from "./workspaces/MobileScreenerWorkspace";
+import MobileHelperPrepWorkspace from "./workspaces/MobileHelperPrepWorkspace";
+import MobilePackingWorkspace from "./workspaces/MobilePackingWorkspace";
+import MobilePrintWorkspace from "./workspaces/MobilePrintWorkspace";
+import MobileLoadingWorkspace from "./workspaces/MobileLoadingWorkspace";
+import MobileDeliveryWorkspace from "./workspaces/MobileDeliveryWorkspace";
+
+const SCHEDULE_WORKSPACE_VIEWS = {
+  screener: MobileScreenerWorkspace,
+  prep: MobileHelperPrepWorkspace,
+  packing: MobilePackingWorkspace,
+  print: MobilePrintWorkspace,
+  loading: MobileLoadingWorkspace,
+  delivery: MobileDeliveryWorkspace,
+};
+
+function scheduleTaskContext(order, row) {
+  return {
+    customer: getCanonicalCustomerName(order || row || {}),
+    po: order?.po_number || row?.po_number || row?.order_number || "",
+    sj: row?.latest_sj_number || row?.sj_label || order?.delivery_note_number || "",
+  };
+}
 
 function ProgressCell({ pct, tone, testid, title, primaryLabel, contextLabel }) {
   const p = clampPercent(pct);
@@ -210,6 +235,13 @@ export default function MobileDeliverySchedulePage() {
   const listPathname = location.pathname || "/m/delivery-schedule";
   const listSearch = location.search || "";
   const userKey = storageUserKey(user);
+  const permittedIds = permittedOpsActiveRoles(hasPerm).map((w) => w.id).join("|");
+  const roleChoice = useMemo(
+    () => selectOpsActiveRole(hasPerm, readActiveRoleId(userKey)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [userKey, permittedIds],
+  );
+  const [activeRoleId, setActiveRoleId] = useState(roleChoice.selected?.id || "");
   const filterKey = scopedOpsKey(MOBILE_DELIVERY_FILTER_KEY, userKey);
   const scrollKey = scopedOpsKey(MOBILE_DELIVERY_SCROLL_KEY, userKey);
   const saved = readJsonSession(filterKey, {
@@ -234,22 +266,51 @@ export default function MobileDeliverySchedulePage() {
   const [reloadKey, setReloadKey] = useState(0);
   const sheetZoom = useProductionSheetZoom();
   const scrollRestored = useRef(false);
+  const [task, setTask] = useState({
+    open: false,
+    order: null,
+    shipmentId: "",
+    row: null,
+    busy: false,
+    err: "",
+  });
 
-  // Keep selected task context in ?ws= so refresh + Back restore it (presentation only).
+  const activeRoles = roleChoice.permitted;
+  const activeRole = activeRoles.find((ws) => ws.id === activeRoleId) || roleChoice.selected;
+
   useEffect(() => {
-    if (!allowed || !taskContexts.length || !selectedTask?.id) return;
-    if (params.get("ws") === selectedTask.id) return;
-    const next = new URLSearchParams(params);
-    next.set("ws", selectedTask.id);
-    setParams(next, { replace: true });
-  }, [allowed, taskContexts.length, selectedTask?.id, params, setParams]);
+    const next = selectOpsActiveRole(hasPerm, readActiveRoleId(userKey) || activeRoleId);
+    const id = next.selected?.id || "";
+    setActiveRoleId(id);
+    if (readActiveRoleId(userKey) !== id) writeActiveRoleId(userKey, id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userKey, permittedIds]);
 
   const setTaskContextId = (id) => {
     if (!id) return;
+    if (!DELIVERY_SCHEDULE_TASK_IDS.includes(id)) return;
     const next = new URLSearchParams(params);
     next.set("ws", id);
     setParams(next, { replace: true });
   };
+
+  const setActiveRole = (id) => {
+    const next = selectOpsActiveRole(hasPerm, id);
+    const resolved = next.selected?.id || "";
+    setActiveRoleId(resolved);
+    writeActiveRoleId(userKey, resolved);
+    if (DELIVERY_SCHEDULE_TASK_IDS.includes(resolved)) setTaskContextId(resolved);
+  };
+
+  // Persist packing/loading/delivery in ?ws= only. Never write prep/screener/print.
+  useEffect(() => {
+    if (!allowed || !activeRoleId) return;
+    if (!DELIVERY_SCHEDULE_TASK_IDS.includes(activeRoleId)) return;
+    if (params.get("ws") === activeRoleId) return;
+    const next = new URLSearchParams(params);
+    next.set("ws", activeRoleId);
+    setParams(next, { replace: true });
+  }, [allowed, activeRoleId, params, setParams]);
 
   const load = useCallback(async () => {
     if (!allowed) {
@@ -333,17 +394,15 @@ export default function MobileDeliverySchedulePage() {
   const sorted = useMemo(() => sortDeliveryRows(quickFiltered, sort), [quickFiltered, sort]);
   const visible = useMemo(() => sortByOpsQueue(sorted, deliveryQueueRank), [sorted]);
   const quickCounts = useMemo(() => opsQuickFilterCounts(filteredRows, deliveryQuickMatch), [filteredRows]);
-  const roleSummary = useMemo(
-    () => buildOpsRoleSummaryModel({ productionRows: null, deliveryRows: rows }),
-    [rows],
-  );
   const productionById = useMemo(
     () => indexProductionStatusByOrderId(productionRows),
     [productionRows],
   );
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
   const sortedTasks = useMemo(() => sortOperationalTasks(taskRows), [taskRows]);
-  const workWsId = selectedTask?.id;
+  const workWsId = (activeRole?.id && DELIVERY_SCHEDULE_TASK_IDS.includes(activeRole.id))
+    ? activeRole.id
+    : selectedTask?.id;
 
   useLayoutEffect(() => {
     if (!showTable || busy || scrollRestored.current) return;
@@ -360,20 +419,6 @@ export default function MobileDeliverySchedulePage() {
     const el = sheetZoom.viewportRef?.current;
     if (!el) return;
     writeScrollSession(scrollKey, el.scrollLeft, el.scrollTop);
-  };
-
-  const openPoReturnState = (orderId) => {
-    persistScroll();
-    capturePoOpenFromList({
-      user,
-      orderId,
-      pathname: listPathname,
-      search: listSearch,
-    });
-    return poNavStateFromList({
-      pathname: listPathname,
-      search: listSearch,
-    });
   };
 
   const setDraft = (key, value) => setDraftFilters((prev) => ({ ...prev, [key]: value }));
@@ -397,10 +442,31 @@ export default function MobileDeliverySchedulePage() {
   };
 
   const openRow = (r) => {
-    if (!r?.id) return;
-    const state = openPoReturnState(r.id);
-    navigate(mobileScheduleWorkHref(r.id, hasPerm, "delivery", workWsId, r), { state });
+    if (!r?.id || !activeRole?.id) return;
+    persistScroll();
+    const needsShipment = activeRole.id === "loading" || activeRole.id === "delivery";
+    const shipmentId = needsShipment ? scheduleRowShipmentId(r) : "";
+    setTask({ open: true, order: null, shipmentId, row: r, busy: true, err: "" });
+    (async () => {
+      try {
+        const d = await withTimeout(api.getOrder(r.id), MOBILE_LOAD_TIMEOUT_MS);
+        setTask((prev) => ({ ...prev, order: d?.order || d, busy: false }));
+      } catch (e) {
+        setTask((prev) => ({
+          ...prev,
+          busy: false,
+          err: formatApiError(e, "Gagal memuat PO."),
+        }));
+      }
+    })();
   };
+
+  const closeTask = () => setTask({
+    open: false, order: null, shipmentId: "", row: null, busy: false, err: "",
+  });
+
+  const Workspace = activeRole ? SCHEDULE_WORKSPACE_VIEWS[activeRole.id] : null;
+  const taskContext = scheduleTaskContext(task.order, task.row);
 
   const onRefresh = () => setReloadKey((n) => n + 1);
 
@@ -466,23 +532,16 @@ export default function MobileDeliverySchedulePage() {
 
             {showTable && (
             <>
-            <MobileOpsRoleSummary
-              roles={roleSummary.map((role) => ({
-                ...role,
-                interactive: (role.source === "delivery" && Boolean(role.workspaceId))
-                  || (role.source === "production" && canOpenProduction),
-              }))}
-              activeRoleId={selectedTask?.id || ""}
-              onSelectRole={(role) => {
-                if (role.source === "delivery" && role.workspaceId) {
-                  setTaskContextId(role.workspaceId);
-                  return;
-                }
-                if (role.source === "production" && canOpenProduction && role.href) {
-                  navigate(role.href);
-                }
-              }}
-            />
+            {activeRoles.length > 0 && (
+              <MobileWorkspaceSelect
+                workspaces={activeRoles}
+                value={activeRole?.id || ""}
+                onChange={setActiveRole}
+                label="Role Aktif"
+                testid="mop-active-role"
+                className="mop-active-role"
+              />
+            )}
             <div className="mop-schedule-toolbar mop-ds-toolbar" data-testid="mobile-delivery-schedule-toolbar">
               <div className="mop-ops-quick mop-ops-filter-rail" data-testid="mds-quick-filters">
                 {OPS_QUICK_FILTERS.map((f) => (
@@ -732,6 +791,30 @@ export default function MobileDeliverySchedulePage() {
               </div>
             )}
             {showTable && !busy && !err ? <OpsQueueLegend /> : null}
+            <MobileTaskModal
+              open={task.open}
+              onClose={closeTask}
+              title={activeRole?.label}
+              icon={opsRoleIcon(activeRole?.id)}
+              roleId={activeRole?.id}
+              hideHeader={activeRole?.id === "delivery"}
+              context={activeRole?.id === "delivery" ? null : taskContext}
+              showClose={activeRole?.id !== "delivery"}
+              testid="mobile-task-modal"
+              labelledBy="mobile-task-modal-title"
+            >
+              {task.busy && <p className="mop-empty" data-testid="mop-schedule-task-loading">Memuat tugas...</p>}
+              {task.err && <div className="mop-error" data-testid="mop-schedule-task-error">{task.err}</div>}
+              {task.order && Workspace ? (
+                <Workspace
+                  order={task.order}
+                  canEdit={hasPerm(activeRole.permission)}
+                  onUpdated={(next) => setTask((prev) => ({ ...prev, order: next || prev.order }))}
+                  onRequestClose={closeTask}
+                  shipmentId={task.shipmentId}
+                />
+              ) : null}
+            </MobileTaskModal>
           </>
         )}
       </main>

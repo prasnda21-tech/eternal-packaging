@@ -15,7 +15,6 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
   const ready = getWorkflowReady(order);
   const status = mobileWorkStatus(model.headerDone, model.headerTarget);
   const [qty, setQty] = useState("");
-  const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const locked = ready.screener !== true || !canEdit;
@@ -29,7 +28,7 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
     setBusy(true);
     setErr("");
     try {
-      const res = await api.updateScreenerInfo(order.id, { qty: n, notes, action_id: newActionId() });
+      const res = await api.updateScreenerInfo(order.id, { qty: n, notes: "", action_id: newActionId() });
       onUpdated(res.order);
       setQty("");
     } catch (e) {
@@ -40,7 +39,7 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
   };
 
   return (
-    <section data-testid="mobile-ws-screener">
+    <section data-testid="mobile-ws-screener" className="mop-ws-role mop-ws-role--screener">
       <div className="mop-ws-header"><h2>SCREENER</h2></div>
       <MobileStatusBadge status={status} />
       <MobileDesignFile order={order} />
@@ -55,10 +54,6 @@ export default function MobileScreenerWorkspace({ order, canEdit, onUpdated }) {
       {locked && <p className="mop-card-meta">{model.gateMsg}</p>}
       {err && <div className="mop-error">{err}</div>}
       <MobileQtyStepper id="screener-qty" label="Qty Screener" value={qty} onChange={setQty} disabled={locked || busy} />
-      <label className="mop-field">
-        <span>Catatan</span>
-        <input value={notes} onChange={(e) => setNotes(e.target.value)} disabled={locked || busy} />
-      </label>
       <button type="button" className="mop-btn-primary" disabled={locked || busy} onClick={save}>Simpan Screener</button>
     </section>
   );

@@ -1,10 +1,13 @@
 import {
+  MOBILE_ACTIVE_ROLE_KEY,
   MOBILE_DELIVERY_FILTER_KEY,
   MOBILE_PROD_FILTER_KEY,
   clearMobileOpsSessionForUser,
   clearSessionKey,
+  readActiveRoleId,
   readJsonSession,
   scopedOpsKey,
+  writeActiveRoleId,
   writeJsonSession,
 } from "./mobileOpsSession";
 import {
@@ -16,6 +19,7 @@ import {
 describe("mobileOpsSession user scoping", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    localStorage.clear();
     clearAllMobileTaskListRetention();
   });
 
@@ -47,6 +51,17 @@ describe("mobileOpsSession user scoping", () => {
     expect(sessionStorage.getItem(scopedOpsKey(MOBILE_DELIVERY_FILTER_KEY, "u-1"))).toBeNull();
     expect(sessionStorage.getItem(scopedOpsKey(MOBILE_PROD_FILTER_KEY, "u-1"))).toBeNull();
     clearSessionKey("noop");
+  });
+
+  test("active role is user-scoped localStorage and logout clears it", () => {
+    writeActiveRoleId("u-1", "packing");
+    writeActiveRoleId("u-2", "loading");
+    expect(readActiveRoleId("u-1")).toBe("packing");
+    expect(readActiveRoleId("u-2")).toBe("loading");
+    expect(localStorage.getItem(scopedOpsKey(MOBILE_ACTIVE_ROLE_KEY, "u-1"))).toBe("packing");
+    clearMobileOpsSessionForUser("u-1");
+    expect(readActiveRoleId("u-1")).toBe("");
+    expect(readActiveRoleId("u-2")).toBe("loading");
   });
 
   test("logout also drops in-memory task list snapshots", () => {

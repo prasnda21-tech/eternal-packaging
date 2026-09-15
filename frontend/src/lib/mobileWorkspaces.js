@@ -54,6 +54,37 @@ export function permittedMobileWorkspaces(hasPerm) {
   return MOBILE_WORKSPACES.filter((ws) => hasPerm(ws.permission));
 }
 
+/**
+ * Schedule "Role Aktif" catalog — permission-filtered, never role-name.
+ * Excludes sample. Do not use OPS_ROLE_SUMMARY as RBAC authority.
+ */
+export const OPS_ACTIVE_ROLE_IDS = ["prep", "screener", "print", "packing", "loading", "delivery"];
+
+export function permittedOpsActiveRoles(hasPerm) {
+  const allowed = new Set(OPS_ACTIVE_ROLE_IDS);
+  return permittedMobileWorkspaces(hasPerm).filter((ws) => allowed.has(ws.id));
+}
+
+/**
+ * Resolve persisted/requested Role Aktif against current permissions.
+ * Unauthorized/missing id never grants access — falls back to first permitted.
+ */
+export function selectOpsActiveRole(hasPerm, requestedId) {
+  const permitted = permittedOpsActiveRoles(hasPerm);
+  if (!permitted.length) {
+    return { permitted, selected: null, unauthorized: Boolean(requestedId) };
+  }
+  const match = permitted.find((ws) => ws.id === requestedId);
+  if (match) return { permitted, selected: match, unauthorized: false };
+  return { permitted, selected: permitted[0], unauthorized: Boolean(requestedId) };
+}
+
+/** SJ identity from a schedule row — never invent or match by item name. */
+export function scheduleRowShipmentId(row) {
+  const id = row?.shipment_id;
+  return id != null && String(id).trim() !== "" ? String(id) : "";
+}
+
 export function visibleMobileNavItems(hasPerm) {
   return MOBILE_NAV_ITEMS.filter((item) => {
     if (typeof item.visibleWhen === "function") {

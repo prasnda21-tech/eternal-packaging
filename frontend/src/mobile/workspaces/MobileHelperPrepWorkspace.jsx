@@ -40,7 +40,7 @@ export default function MobileHelperPrepWorkspace({ order, canEdit, onUpdated })
   };
 
   return (
-    <section data-testid="mobile-ws-prep">
+    <section data-testid="mobile-ws-prep" className="mop-ws-role mop-ws-role--prep">
       <div className="mop-ws-header"><h2>PERSIAPAN CUP</h2></div>
       <MobileStatusBadge status={status} />
       <MobileMetricStrip items={[

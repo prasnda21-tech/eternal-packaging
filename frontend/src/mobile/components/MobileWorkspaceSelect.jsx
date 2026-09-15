@@ -6,18 +6,20 @@ export default function MobileWorkspaceSelect({
   onChange,
   label = "Pilih Tugas",
   testid = "mobile-workspace-select",
+  className = "",
 }) {
   if (!workspaces.length) return null;
+  const wrapClass = ["mop-ws-select", className].filter(Boolean).join(" ");
   if (workspaces.length === 1) {
     return (
-      <div className="mop-ws-select mop-ws-select--single" data-testid={testid}>
+      <div className={`${wrapClass} mop-ws-select--single`} data-testid={testid}>
         <span className="mop-ws-select-label">{label}</span>
         <strong data-testid={`${testid}-current`}>{workspaces[0].label}</strong>
       </div>
     );
   }
   return (
-    <label className="mop-ws-select" data-testid={testid}>
+    <label className={wrapClass} data-testid={testid}>
       <span className="mop-ws-select-label">{label}</span>
       <select
         value={value || workspaces[0]?.id || ""}
