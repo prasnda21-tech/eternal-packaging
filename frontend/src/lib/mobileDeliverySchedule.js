@@ -217,3 +217,55 @@ export function mobileDeliverySheetColumnStyle(col) {
     minWidth: `calc(${w}px * var(--production-sheet-zoom, 1))`,
   };
 }
+
+/** Canonical SJ id from GET /delivery/schedule — shipment.id || sales_delivery_id. */
+export function canonicalDeliverySjId(row) {
+  return String(row?.shipment_id || "").trim();
+}
+
+/**
+ * Canonical SJ number from the same schedule row.
+ * Matches desktop scheduleRowSjNumber: sj_label → latest_sj_number → sj_numbers[0].
+ */
+export function canonicalDeliverySjNumber(row) {
+  const label = String(row?.sj_label || "").trim();
+  if (label) return label;
+  const latest = String(row?.latest_sj_number || "").trim();
+  if (latest) return latest;
+  const first = Array.isArray(row?.sj_numbers) ? String(row.sj_numbers[0] || "").trim() : "";
+  return first;
+}
+
+/**
+ * PWA Jadwal Pengiriman visibility: a current valid Surat Jalan on the schedule row.
+ * Does not infer from packing, loading, production, estimation date, or customer name.
+ * Cancelled/deleted SJ follows GET /delivery/schedule emission (no invented is_cancelled).
+ */
+export function isValidPwaDeliverySjRow(row) {
+  return Boolean(canonicalDeliverySjId(row) && canonicalDeliverySjNumber(row));
+}
+
+export function pwaDeliverySjRowKey(row) {
+  const orderId = String(row?.id || "").trim();
+  const sjId = canonicalDeliverySjId(row);
+  if (orderId && sjId) return `${orderId}:${sjId}`;
+  return sjId || orderId || String(row?.order_number || "");
+}
+
+/**
+ * One canonical SJ → one PWA table row.
+ * Drops no-SJ PO rows (including overdue/today/future estimate-only rows).
+ * Dedupes by order id + shipment_id. Never groups by customer / item / display text.
+ */
+export function pwaDeliveryScheduleRows(rows) {
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    if (!isValidPwaDeliverySjRow(row)) continue;
+    const key = pwaDeliverySjRowKey(row);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}

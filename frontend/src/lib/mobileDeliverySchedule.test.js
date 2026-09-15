@@ -5,11 +5,16 @@ import {
   MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS,
   canEditMobileDeliveryScheduleLocation,
   canViewMobileDeliverySchedule,
+  canonicalDeliverySjId,
+  canonicalDeliverySjNumber,
   deliveryRowWithProductionStatus,
   groupSjItemLines,
   indexProductionStatusByOrderId,
+  isValidPwaDeliverySjRow,
   mobileDeliveryOrderHref,
   mobileDeliveryWorkHref,
+  pwaDeliveryScheduleRows,
+  pwaDeliverySjRowKey,
   sjItemLineKey,
   sjItemLinesFromRow,
   withProductionRoleStatus,
@@ -103,6 +108,10 @@ describe("mobileDeliverySchedule access", () => {
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Deadline")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Jadwal Manual")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tgl Kirim")).toBe(true);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tanggal Kerja")).toBe(false);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => /notif/i.test(c.label))).toBe(false);
+    expect(keys).not.toContain("work_date");
+    expect(keys).not.toContain("notification");
   });
 });
 
@@ -341,6 +350,162 @@ describe("production role-status overlay identity", () => {
     expect(merged.helper_required).toBe(10);
     expect(merged.qty_packed).toBe(4);
     expect(merged.qty_delivered).toBe(1);
+  });
+});
+
+describe("PWA SJ-only visibility and row identity", () => {
+  const valid = {
+    id: "po-a",
+    order_number: "PO-A",
+    shipment_id: "sh-1",
+    sj_label: "SJ-001",
+    latest_sj_number: "SJ-001",
+    sj_item_lines: [
+      { shipment_id: "sh-1", sj_number: "SJ-001", line_id: "a", line_idx: 0, name: "Item A", qty: 10 },
+    ],
+    effective_delivery_date: "2026-09-15",
+    qty_packed: 10,
+  };
+
+  test("CASE 1 valid SJ is visible", () => {
+    expect(isValidPwaDeliverySjRow(valid)).toBe(true);
+    expect(canonicalDeliverySjId(valid)).toBe("sh-1");
+    expect(canonicalDeliverySjNumber(valid)).toBe("SJ-001");
+    expect(pwaDeliveryScheduleRows([valid])).toHaveLength(1);
+  });
+
+  test("CASE 2 overdue estimate without SJ is hidden", () => {
+    const row = {
+      id: "po-b",
+      order_number: "PO-B",
+      status: "terlambat",
+      effective_delivery_date: "2026-09-01",
+      qty_packed: 100,
+      shipment_id: null,
+      sj_label: "",
+      latest_sj_number: "",
+      sj_item_lines: [],
+    };
+    expect(isValidPwaDeliverySjRow(row)).toBe(false);
+    expect(pwaDeliveryScheduleRows([row])).toEqual([]);
+  });
+
+  test("CASE 3 today estimate without SJ is hidden", () => {
+    const row = {
+      id: "po-today",
+      effective_delivery_date: "2026-09-15",
+      status: "hari_ini",
+      shipment_id: "",
+      sj_label: "",
+    };
+    expect(pwaDeliveryScheduleRows([row])).toEqual([]);
+  });
+
+  test("CASE 4 future estimate without SJ is hidden", () => {
+    const row = {
+      id: "po-future",
+      effective_delivery_date: "2026-09-30",
+      status: "terjadwal",
+      sj_label: "",
+      shipment_id: null,
+    };
+    expect(pwaDeliveryScheduleRows([row])).toEqual([]);
+  });
+
+  test("CASE 5 production complete without SJ is hidden", () => {
+    const row = {
+      id: "po-prod",
+      current_stage: 11,
+      print_qty_total: 1000,
+      qty_printed_operator: 1000,
+      shipment_id: null,
+      sj_label: "",
+    };
+    expect(pwaDeliveryScheduleRows([row])).toEqual([]);
+  });
+
+  test("CASE 6 packing activity without SJ is hidden", () => {
+    const row = {
+      id: "po-pack",
+      qty_packed: 5000,
+      qty_total: 5000,
+      shipment_id: null,
+      latest_sj_number: "",
+    };
+    expect(pwaDeliveryScheduleRows([row])).toEqual([]);
+  });
+
+  test("CASE 7 one PO one SJ one item is one row", () => {
+    expect(pwaDeliveryScheduleRows([valid])).toHaveLength(1);
+    expect(pwaDeliverySjRowKey(valid)).toBe("po-a:sh-1");
+  });
+
+  test("CASE 8/9 one SJ with 3 and 5 item lines stays one row and keeps all lines", () => {
+    const three = {
+      ...valid,
+      sj_item_lines: [
+        { shipment_id: "sh-1", sj_number: "SJ-001", line_id: "a", line_idx: 0, name: "A", qty: 1 },
+        { shipment_id: "sh-1", sj_number: "SJ-001", line_id: "b", line_idx: 1, name: "B", qty: 2 },
+        { shipment_id: "sh-1", sj_number: "SJ-001", line_id: "c", line_idx: 2, name: "C", qty: 3 },
+      ],
+    };
+    const five = {
+      ...valid,
+      sj_item_lines: [
+        ...three.sj_item_lines,
+        { shipment_id: "sh-1", sj_number: "SJ-001", line_id: "d", line_idx: 3, name: "D", qty: 4 },
+        { shipment_id: "sh-1", sj_number: "SJ-001", line_id: "e", line_idx: 4, name: "E", qty: 5 },
+      ],
+    };
+    expect(pwaDeliveryScheduleRows([three])).toHaveLength(1);
+    expect(sjItemLinesFromRow(three)).toHaveLength(3);
+    expect(pwaDeliveryScheduleRows([five])).toHaveLength(1);
+    expect(sjItemLinesFromRow(five).map((ln) => ln.name)).toEqual(["A", "B", "C", "D", "E"]);
+    expect(sjItemLinesFromRow(five).some((ln) => String(ln.name).includes("+"))).toBe(false);
+  });
+
+  test("CASE 10 two valid SJ on one PO stay two rows keyed by SJ id", () => {
+    const sj2 = {
+      ...valid,
+      shipment_id: "sh-2",
+      sj_label: "SJ-002",
+      latest_sj_number: "SJ-002",
+      sj_item_lines: [
+        { shipment_id: "sh-2", sj_number: "SJ-002", line_id: "z", line_idx: 0, name: "Z", qty: 9 },
+      ],
+    };
+    const rows = pwaDeliveryScheduleRows([valid, sj2]);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => canonicalDeliverySjId(r))).toEqual(["sh-1", "sh-2"]);
+    expect(pwaDeliverySjRowKey(rows[0])).not.toBe(pwaDeliverySjRowKey(rows[1]));
+  });
+
+  test("CASE 11 blank number or null id is not a valid SJ; leftover number without id is hidden", () => {
+    expect(isValidPwaDeliverySjRow({ shipment_id: "sh-x", sj_label: "" })).toBe(false);
+    expect(isValidPwaDeliverySjRow({ shipment_id: null, sj_label: "SJ-OLD" })).toBe(false);
+    expect(isValidPwaDeliverySjRow({ shipment_id: "", latest_sj_number: "SJ-OLD" })).toBe(false);
+    expect(pwaDeliveryScheduleRows([
+      { id: "po-x", shipment_id: "sh-x", sj_label: "" },
+      { id: "po-x", shipment_id: null, sj_label: "SJ-OLD" },
+    ])).toEqual([]);
+  });
+
+  test("does not group by customer name or first item, and does not map missing line_idx to 0", () => {
+    const a = { ...valid, id: "po-1", customer_name: "SAME", shipment_id: "sh-a", sj_label: "SJ-A" };
+    const b = { ...valid, id: "po-2", customer_name: "SAME", shipment_id: "sh-b", sj_label: "SJ-B" };
+    const rows = pwaDeliveryScheduleRows([a, b]);
+    expect(rows).toHaveLength(2);
+    expect(sjItemLineKey({ shipment_id: "sh-a", name: "Cup" }, 3)).not.toBe("sh-a:idx:0:3");
+  });
+
+  test("duplicate join of the same SJ collapses to one row", () => {
+    expect(pwaDeliveryScheduleRows([valid, { ...valid }])).toHaveLength(1);
+  });
+
+  test("zoom is not an input to SJ grouping", () => {
+    const grouped = pwaDeliveryScheduleRows([valid, { ...valid, shipment_id: "sh-2", sj_label: "SJ-002" }]);
+    expect(grouped).toHaveLength(2);
+    expect(pwaDeliveryScheduleRows([valid, { ...valid, shipment_id: "sh-2", sj_label: "SJ-002" }], 1.4)).toHaveLength(2);
   });
 });
 

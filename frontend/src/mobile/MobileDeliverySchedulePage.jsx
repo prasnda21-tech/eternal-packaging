@@ -27,9 +27,16 @@ import {
   mobileDeliverySheetColumnStyle,
   mobileScheduleReviewHref,
   optimizationStatusMeta,
+  pwaDeliveryScheduleRows,
+  pwaDeliverySjRowKey,
   sjItemLineKey,
   sjItemLinesFromRow,
 } from "../lib/mobileDeliverySchedule";
+import {
+  getPwaDeliverySjPreviewProductionRows,
+  getPwaDeliverySjPreviewRows,
+  isPwaDeliverySjPreviewEnabled,
+} from "../lib/mobileDeliverySchedulePreview";
 import { canAccessRoutePage } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
 import { sortOperationalTasks } from "../lib/mobileTaskCard";
@@ -199,6 +206,7 @@ export default function MobileDeliverySchedulePage() {
   const allowed = canViewMobileDeliverySchedule(hasPerm);
   const canOpenProduction = canViewMobileSchedule(hasPerm);
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
+  const previewEnabled = isPwaDeliverySjPreviewEnabled(params.toString() || location.search);
   const requestedWs = params.get("ws") || "";
   const taskChoice = useMemo(
     () => selectDeliveryScheduleTaskContext(hasPerm, requestedWs),
@@ -259,6 +267,13 @@ export default function MobileDeliverySchedulePage() {
       setErr("");
       return;
     }
+    if (previewEnabled) {
+      setBusy(false);
+      setErr("");
+      setRows(getPwaDeliverySjPreviewRows());
+      setProductionRows(getPwaDeliverySjPreviewProductionRows());
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -284,7 +299,7 @@ export default function MobileDeliverySchedulePage() {
     } finally {
       setBusy(false);
     }
-  }, [allowed, canOpenProduction]);
+  }, [allowed, canOpenProduction, previewEnabled]);
 
   const loadTasks = useCallback(async (division) => {
     if (!allowed || !division) {
@@ -320,11 +335,12 @@ export default function MobileDeliverySchedulePage() {
     writeJsonSession(filterKey, { filters, quick, sort, q });
   }, [filterKey, filters, quick, sort, q]);
 
+  const sjRows = useMemo(() => pwaDeliveryScheduleRows(rows), [rows]);
   const filteredRows = useMemo(
-    () => (rows || [])
+    () => (sjRows || [])
       .filter((r) => matchesDeliveryScheduleFilters(r, filters))
       .filter((r) => matchesDeliveryOpsSearch(r, q)),
-    [rows, filters, q],
+    [sjRows, filters, q],
   );
   const quickFiltered = useMemo(
     () => filteredRows.filter((r) => deliveryQuickMatch(r, quick)),
@@ -334,8 +350,8 @@ export default function MobileDeliverySchedulePage() {
   const visible = useMemo(() => sortByOpsQueue(sorted, deliveryQueueRank), [sorted]);
   const quickCounts = useMemo(() => opsQuickFilterCounts(filteredRows, deliveryQuickMatch), [filteredRows]);
   const roleSummary = useMemo(
-    () => buildOpsRoleSummaryModel({ productionRows: null, deliveryRows: rows }),
-    [rows],
+    () => buildOpsRoleSummaryModel({ productionRows: null, deliveryRows: sjRows }),
+    [sjRows],
   );
   const productionById = useMemo(
     () => indexProductionStatusByOrderId(productionRows),
@@ -529,7 +545,7 @@ export default function MobileDeliverySchedulePage() {
                   </button>
                 </div>
                 <span className="mop-schedule-count" data-testid="mds-count">
-                  {visible.length} / {rows.length} entri
+                  {visible.length} / {sjRows.length} entri
                 </span>
                 <button
                   type="button"
@@ -579,9 +595,14 @@ export default function MobileDeliverySchedulePage() {
                 </button>
               </div>
             )}
+            {showTable && previewEnabled && (
+              <p className="mop-ds-preview-note" data-testid="mds-sj-preview-banner">
+                Mode fixture lokal. 3 dummy skenario — tidak menulis produksi.
+              </p>
+            )}
             {showTable && !busy && !err && (
               <div
-                className="mop-schedule-scroll production-sheet production-sheet-viewport"
+                className="mop-schedule-scroll production-sheet production-sheet-viewport mop-ds-sheet-viewport"
                 data-testid="mds-scroll"
                 ref={sheetZoom.setViewportRef}
                 style={productionSheetZoomStyle(sheetZoom.zoom)}
@@ -623,8 +644,8 @@ export default function MobileDeliverySchedulePage() {
                       const tones = deliveryRoleMarkTones(statusRow, Boolean(productionRow));
                       return (
                         <tr
-                          key={r.shipment_id ? `${r.id}:${r.shipment_id}` : (r.id || r.order_number)}
-                          className="production-sheet-row mop-schedule-row"
+                          key={pwaDeliverySjRowKey(r)}
+                          className="production-sheet-row mop-schedule-row mop-ds-sj-row"
                           data-testid={r.shipment_id ? `mds-row-${r.order_number}-${r.shipment_id}` : `mds-row-${r.order_number}`}
                           data-to={workHref}
                           tabIndex={0}
@@ -721,7 +742,7 @@ export default function MobileDeliverySchedulePage() {
                         <td
                           colSpan={MOBILE_DELIVERY_SCHEDULE_COLS.length}
                           className="production-sheet-empty mop-schedule-filter-empty"
-                          data-testid={rows.length === 0 ? "mds-empty" : "mds-filter-empty"}
+                          data-testid={sjRows.length === 0 ? "mds-empty" : "mds-filter-empty"}
                         >
                           Tidak ada jadwal pengiriman.
                         </td>

@@ -96,6 +96,8 @@ const sampleRows = [
     percent_delivered: 40,
     percent_ready_to_ship: 60,
     sj_label: "SJ-1",
+    latest_sj_number: "SJ-1",
+    shipment_id: "sh-100",
     sj_files: [],
     sj_file_count: 0,
     sj_item_lines: [],
@@ -164,11 +166,11 @@ describe("MobileDeliverySchedulePage", () => {
     expect(mockDeliverySchedule).toHaveBeenCalledTimes(1);
     expect(mockDeliverySchedule).toHaveBeenCalledWith();
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-quick-filters"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=packing");
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=packing");
     expect(container.querySelector('[data-testid="mds-dapat-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-load-PO-100"]').textContent.trim()).toBe("—");
     expect(container.querySelector('[data-testid="mds-qty-PO-100"]').textContent).toContain("5.000");
@@ -271,7 +273,7 @@ describe("MobileDeliverySchedulePage", () => {
     await flush();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery");
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery&shipment=sh-100");
   });
 
   test("does not authorize edit by role name driver", async () => {
@@ -279,7 +281,7 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => {
       root.render(<MobileDeliverySchedulePage />);
     });
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
   });
 
@@ -376,7 +378,7 @@ describe("MobileDeliverySchedulePage", () => {
     await flush();
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-task-list"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=loading");
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=loading&shipment=sh-100");
     expect(mockDeliverySchedule).toHaveBeenCalled();
     expect(mockDivisionTasks).not.toHaveBeenCalled();
 
@@ -389,7 +391,7 @@ describe("MobileDeliverySchedulePage", () => {
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery");
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery&shipment=sh-100");
     expect(mockDeliverySchedule).toHaveBeenCalled();
   });
 
@@ -404,7 +406,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-table"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-task-list"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=loading");
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]').getAttribute("data-to")).toBe("/m/orders/o1?ws=loading&shipment=sh-100");
     expect(mockDeliverySchedule).toHaveBeenCalledWith();
     expect(mockDivisionTasks).not.toHaveBeenCalled();
   });
@@ -414,12 +416,12 @@ describe("MobileDeliverySchedulePage", () => {
     mockDsRouter.search = "ws=delivery";
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    const row = container.querySelector('[data-testid="mds-row-PO-100"]');
-    expect(row.getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery");
+    const row = container.querySelector('[data-testid="mds-row-PO-100-sh-100"]');
+    expect(row.getAttribute("data-to")).toBe("/m/orders/o1?ws=delivery&shipment=sh-100");
     await act(async () => {
       row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/o1?ws=delivery", expect.objectContaining({
+    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/o1?ws=delivery&shipment=sh-100", expect.objectContaining({
       state: expect.objectContaining({ from: "/m/delivery-schedule?ws=delivery" }),
     }));
 
@@ -553,17 +555,19 @@ describe("MobileDeliverySchedulePage", () => {
     expect(labels).not.toContain("Aksi");
     expect(labels).not.toContain("Zona");
     expect(labels).not.toContain("Tahap Aktif");
+    expect(labels).not.toContain("Tanggal Kerja");
+    expect(labels).not.toContain("Notifikasi");
     expect(container.querySelector('[data-testid="mds-status-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-optimasi-rute"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-quick-filters"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mop-ops-role-summary"]')).toBeTruthy();
-    const identity = container.querySelector('[data-testid="mds-identity-PO-100"]');
+    const identity = container.querySelector('[data-testid="mds-identity-PO-100-sh-100"]');
     expect(identity.querySelector(".mop-ops-customer").textContent).toBe("PT Alpha");
     expect(identity.querySelector(".mop-ops-po").textContent).toBe("PO-100");
     expect(container.querySelector('[data-testid="mds-task-select"]') || container.textContent).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-item-lines-PO-100"]').textContent).toBe("—");
+    expect(container.querySelector('[data-testid="mds-item-lines-PO-100-sh-100"]').textContent).toBe("—");
     expect(container.textContent).not.toMatch(/item_label/);
   });
 
@@ -585,7 +589,7 @@ describe("MobileDeliverySchedulePage", () => {
     });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
-    const cell = container.querySelector('[data-testid="mds-item-lines-PO-100"]');
+    const cell = container.querySelector('[data-testid="mds-item-lines-PO-100-sh-100"]');
     expect(cell.textContent).toContain("Cup 12oz");
     expect(cell.textContent).toContain("1.000");
     expect(cell.querySelector(".mds-item-line-prefix")?.textContent).toBe("- ");
@@ -691,7 +695,10 @@ describe("MobileDeliverySchedulePage", () => {
           id: "o2",
           order_number: "PO-200",
           customer_name: "CV Beta",
-          sj_item_lines: [{ name: "Lid PET", qty: 500, line_id: "z", line_idx: 0 }],
+          shipment_id: "sh-200",
+          sj_label: "SJ-2",
+          latest_sj_number: "SJ-2",
+          sj_item_lines: [{ shipment_id: "sh-200", sj_number: "SJ-2", name: "Lid PET", qty: 500, line_id: "z", line_idx: 0 }],
         },
       ],
     });
@@ -703,19 +710,19 @@ describe("MobileDeliverySchedulePage", () => {
       setter.call(input, "Alpha");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-row-PO-200"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-200-sh-200"]')).toBeFalsy();
     await act(async () => {
       setter.call(input, "Lid PET");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="mds-row-PO-200"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-200-sh-200"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeFalsy();
     await act(async () => {
       setter.call(input, "PO-100");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="mds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-100-sh-100"]')).toBeTruthy();
   });
 
   test("pengiriman role count matches active delivery rows; packing/loading unsupported", async () => {
@@ -786,7 +793,7 @@ describe("MobileDeliverySchedulePage", () => {
     expect(pageSrc).toMatch(/matchesDeliveryOpsSearch/);
     expect(pageSrc).toMatch(/deliveryQuickMatch/);
     expect(pageSrc).toMatch(/matchesDeliveryScheduleFilters/);
-    expect(pageSrc).toMatch(/buildOpsRoleSummaryModel\(\{\s*productionRows:\s*null,\s*deliveryRows:\s*rows/);
+    expect(pageSrc).toMatch(/buildOpsRoleSummaryModel\(\{\s*productionRows:\s*null,\s*deliveryRows:\s*sjRows/);
     expect(pageSrc).toMatch(/showBrand=\{false\}/);
   });
 
@@ -831,6 +838,9 @@ describe("MobileDeliverySchedulePage", () => {
         percent_delivered: 0,
         print_qty_total: 1000,
         qty_printed_operator: 1000,
+        sj_label: "SJ-LALAP",
+        latest_sj_number: "SJ-LALAP",
+        shipment_id: "sh-1",
         sj_item_lines: [
           { shipment_id: "sh-1", line_id: "lid-a", line_idx: 0, name: "Cup 16oz", qty: 600 },
           { shipment_id: "sh-1", line_id: "lid-b", line_idx: 1, name: "Cup 16oz", qty: 400 },
@@ -880,6 +890,9 @@ describe("MobileDeliverySchedulePage", () => {
           percent_delivered: 0,
           print_qty_total: 100,
           qty_printed_operator: 100,
+          shipment_id: "sh-renea-1",
+          sj_label: "SJ-RENEA-1",
+          latest_sj_number: "SJ-RENEA-1",
         },
         {
           id: "po-renea-2",
@@ -893,6 +906,9 @@ describe("MobileDeliverySchedulePage", () => {
           percent_delivered: 0,
           print_qty_total: 100,
           qty_printed_operator: 0,
+          shipment_id: "sh-renea-2",
+          sj_label: "SJ-RENEA-2",
+          latest_sj_number: "SJ-RENEA-2",
         },
       ],
     });
@@ -926,5 +942,131 @@ describe("MobileDeliverySchedulePage", () => {
     expect(markKind(container.querySelector('[data-testid="mds-cup-PO-100"]'))).toBe("idle");
     expect(markKind(container.querySelector('[data-testid="mds-screen-PO-100"]'))).toBe("idle");
     expect(markKind(container.querySelector('[data-testid="mds-prod-PO-100"]'))).toBe("pending");
+  });
+
+  test("SJ-only gate hides overdue/today/future/packing rows without valid SJ", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          id: "overdue",
+          order_number: "PO-OVERDUE",
+          customer_name: "No SJ Overdue",
+          status: "terlambat",
+          effective_delivery_date: "2026-09-01",
+          qty_packed: 9000,
+          shipment_id: null,
+          sj_label: "",
+          sj_item_lines: [],
+        },
+        {
+          id: "today",
+          order_number: "PO-TODAY",
+          status: "hari_ini",
+          effective_delivery_date: "2026-09-15",
+          shipment_id: "",
+          sj_label: "",
+        },
+        {
+          id: "future",
+          order_number: "PO-FUTURE",
+          status: "terjadwal",
+          effective_delivery_date: "2026-09-30",
+          sj_label: "",
+        },
+        {
+          id: "packed",
+          order_number: "PO-PACK",
+          qty_packed: 5000,
+          qty_total: 5000,
+          current_stage: 11,
+          sj_label: "",
+          shipment_id: null,
+        },
+        {
+          ...sampleRows[0],
+          id: "ok",
+          order_number: "PO-OK",
+          shipment_id: "sh-ok",
+          sj_label: "SJ-OK",
+          latest_sj_number: "SJ-OK",
+        },
+      ],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-row-PO-OVERDUE"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-TODAY"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-FUTURE"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-PACK"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-OK-sh-ok"]')).toBeTruthy();
+    expect(container.querySelectorAll("tbody tr.mop-ds-sj-row")).toHaveLength(1);
+  });
+
+  test("one SJ with 5 item lines stays one table row and does not hide with +N", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        shipment_id: "sh-5",
+        sj_label: "SJ-5",
+        latest_sj_number: "SJ-5",
+        sj_item_lines: [
+          { shipment_id: "sh-5", sj_number: "SJ-5", line_id: "a", line_idx: 0, name: "Item A", qty: 100 },
+          { shipment_id: "sh-5", sj_number: "SJ-5", line_id: "b", line_idx: 1, name: "Item B", qty: 200 },
+          { shipment_id: "sh-5", sj_number: "SJ-5", line_id: "c", line_idx: 2, name: "Item C", qty: 300 },
+          { shipment_id: "sh-5", sj_number: "SJ-5", line_id: "d", line_idx: 3, name: "Item D", qty: 400 },
+          { shipment_id: "sh-5", sj_number: "SJ-5", line_id: "e", line_idx: 4, name: "Item E", qty: 500 },
+        ],
+      }],
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelectorAll("tbody tr.mop-ds-sj-row")).toHaveLength(1);
+    const cell = container.querySelector('[data-testid="mds-item-lines-PO-100-sh-5"]');
+    expect(cell.textContent).toContain("Item A");
+    expect(cell.textContent).toContain("Item B");
+    expect(cell.textContent).toContain("Item C");
+    expect(cell.textContent).toContain("Item D");
+    expect(cell.textContent).toContain("Item E");
+    expect(cell.textContent).not.toMatch(/\+\d/);
+    expect(container.querySelectorAll('[data-testid^="mds-item-line-PO-100-sh-5-"]').length).toBe(5);
+  });
+
+  test("local 3-dummy preview payload: overdue hidden, 1 SJ = 1 row, 2 SJ = 2 rows", async () => {
+    const { getPwaDeliverySjPreviewRows } = require("../lib/mobileDeliverySchedulePreview");
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({ rows: getPwaDeliverySjPreviewRows() });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    expect(container.querySelector('[data-testid="mds-row-PO-DUMMY-2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-row-PO-DUMMY-1-sh-dummy-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-DUMMY-3-sh-dummy-3a"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-row-PO-DUMMY-3-sh-dummy-3b"]')).toBeTruthy();
+    expect(container.querySelectorAll("tbody tr.mop-ds-sj-row")).toHaveLength(3);
+    const multi = container.querySelector('[data-testid="mds-item-lines-PO-DUMMY-1-sh-dummy-1"]');
+    expect(multi.textContent).toContain("Cup 16oz Datar");
+    expect(multi.textContent).toContain("Lid 16oz Datar");
+    expect(multi.textContent).toContain("Cup 22oz Gelas");
+    expect(multi.textContent).not.toMatch(/\+\d/);
+    const labels = headerLabels(container);
+    expect(labels).not.toContain("Tanggal Kerja");
+    expect(labels).not.toContain("Notifikasi");
+    expect(container.querySelector('[data-testid="mds-cup-PO-DUMMY-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-load-PO-DUMMY-1"]').textContent.trim()).toBe("—");
+  });
+
+  test("PWA delivery keeps canonical sheet zoom, horizontal scroll, and SJ row separators", () => {
+    const pageSrc = fs.readFileSync(path.join(__dirname, "MobileDeliverySchedulePage.jsx"), "utf8");
+    const css = fs.readFileSync(path.join(__dirname, "mobile.css"), "utf8");
+    expect(pageSrc).toMatch(/useProductionSheetZoom/);
+    expect(pageSrc).toMatch(/productionSheetZoomStyle/);
+    expect(pageSrc).toMatch(/pwaDeliveryScheduleRows/);
+    expect(pageSrc).toMatch(/isPwaDeliverySjPreviewEnabled/);
+    expect(pageSrc).not.toMatch(/Tanggal Kerja/);
+    expect(pageSrc).not.toMatch(/Notifikasi/);
+    expect(css).toMatch(/mop-ds-sj-row/);
+    expect(css).toMatch(/border-bottom:\s*1px solid #9aa0a6/);
+    expect(css).toMatch(/mop-ds-sheet-viewport[\s\S]*overflow-x:\s*auto/);
   });
 });
