@@ -720,4 +720,27 @@ describe("MobileProductionSchedulePage", () => {
     expect(opsCss).toMatch(/\.mop-ops-filter-rail[\s\S]*overflow-x:\s*auto/);
     expect(opsCss).toMatch(/\.mop-ops-filter-rail[\s\S]*overflow-y:\s*hidden/);
   });
+
+  test("role_status from production row drives Pack/Load/Kirim like the task form", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        current_stage: 13,
+        packing_status: "Berjalan",
+        packing_qty: 4000,
+        qty_delivered: 0,
+        role_status: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "pending" },
+      }],
+      total: 1,
+    });
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    await act(async () => { root.render(<MobileProductionSchedulePage />); });
+    await flush();
+    const pack = container.querySelector('[data-testid="prod-packing-PO-1001"]');
+    const load = container.querySelector('[data-testid="prod-loading-PO-1001"]');
+    const kirim = container.querySelector('[data-testid="prod-shipped-PO-1001"]');
+    expect(pack.className).toMatch(/is-done/);
+    expect(load.className).toMatch(/is-done/);
+    expect(kirim.className).toMatch(/is-pending/);
+  });
 });

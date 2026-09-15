@@ -46,6 +46,7 @@ function sjRow({
   printTotal = 0,
   printed = 0,
   urgent = false,
+  roleStatus = null,
 }) {
   const deliveredPct = qtyTotal > 0 ? Math.round((qtyDelivered / qtyTotal) * 100) : 0;
   return {
@@ -74,6 +75,7 @@ function sjRow({
     optimization_status: "belum_dioptimasi",
     optimization_status_label: "Belum Dioptimasi",
     preview: true,
+    role_status: roleStatus,
   };
 }
 
@@ -102,6 +104,7 @@ export function getPwaDeliverySjPreviewScenarios() {
             line("sh-dummy-1", "SJ-DUMMY-001", "lid-b", 1, "Lid 16oz Datar", 2000),
             line("sh-dummy-1", "SJ-DUMMY-001", "lid-c", 2, "Cup 22oz Gelas", 2000),
           ],
+          roleStatus: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "pending" },
         }),
       ],
     },
@@ -154,6 +157,7 @@ export function getPwaDeliverySjPreviewScenarios() {
             line("sh-dummy-3a", "SJ-DUMMY-003A", "lid-x", 0, "Cup 12oz PET", 1000),
             line("sh-dummy-3a", "SJ-DUMMY-003A", "lid-y", 1, "Lid 12oz PET", 2000),
           ],
+          roleStatus: { cup: "done", screen: "done", prod: "done", pack: "done", load: "done", kirim: "done" },
         }),
         sjRow({
           id: "preview-d3",
@@ -172,6 +176,7 @@ export function getPwaDeliverySjPreviewScenarios() {
             line("sh-dummy-3b", "SJ-DUMMY-003B", "lid-q", 1, "Lid 9oz Datar", 800),
             line("sh-dummy-3b", "SJ-DUMMY-003B", "lid-r", 2, "Sedotan Pack", 1400),
           ],
+          roleStatus: { cup: "done", screen: "done", prod: "done", pack: "done", load: "pending", kirim: "idle" },
         }),
       ],
     },

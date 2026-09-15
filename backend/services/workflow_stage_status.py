@@ -6,18 +6,25 @@ quantity_rules + workflow_gates.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
+    delivery_batch_identity,
+    delivery_batch_qty,
     eligible_delivery_qty,
     is_fully_delivered,
+    loaded_qty_for_sj_line,
+    loading_confirmations_stored,
     loading_status_semantic,
+    match_po_line_idx,
     print_status,
     qty_delivered,
     qty_packed,
     requires_printing,
+    shipment_is_delivered,
+    sj_lines_stored,
     surat_jalan_created,
     surat_jalan_status_semantic,
 )
@@ -343,3 +350,114 @@ def workflow_stage_rows(order: dict) -> List[Dict[str, str]]:
             "label": chip["label"],
         })
     return rows
+
+
+# PWA Status per Role — same chips as Alur Pekerjaan, not a second engine.
+ROLE_STAGE_INDEX = {
+    "cup": STAGE_HELPER,
+    "screen": STAGE_SCREENER,
+    "prod": STAGE_CETAK,
+    "pack": STAGE_PACKING,
+    "load": STAGE_LOADING,
+    "kirim": STAGE_TERKIRIM,
+}
+
+
+def chip_to_role_tone(state: str) -> str:
+    """done/bypass → done (green); current → pending (orange); else idle (dash)."""
+    if state in ("done", "bypass"):
+        return "done"
+    if state == "current":
+        return "pending"
+    return "idle"
+
+
+def role_status_from_order(order: dict) -> Dict[str, str]:
+    """PO-level Cup/Screen/Prod/Pack/Load/Kirim from resolve_stage_chip."""
+    cs = _cs(order)
+    return {
+        key: chip_to_role_tone(resolve_stage_chip(idx, order, cs)["state"])
+        for key, idx in ROLE_STAGE_INDEX.items()
+    }
+
+
+def _shipment_identity_keys(shipment: Optional[dict]) -> set:
+    keys = set()
+    if not isinstance(shipment, dict):
+        return keys
+    for k in ("id", "sales_delivery_id", "number", "sj_number", "file_id"):
+        val = str(shipment.get(k) or "").strip()
+        if val:
+            keys.add(val)
+    return keys
+
+
+def _confirmation_for_shipment(order: dict, shipment: Optional[dict]) -> bool:
+    keys = _shipment_identity_keys(shipment)
+    if not keys:
+        return False
+    for conf in loading_confirmations_stored(order):
+        if str(conf.get("surat_jalan_id") or "").strip() in keys:
+            return True
+    return False
+
+
+def _sj_loaded_vs_need(order: dict, shipment: Optional[dict]) -> tuple:
+    """Loaded qty vs this SJ's own lines — existing SJ loading helpers only."""
+    need = delivery_batch_qty(shipment)
+    sj_id = delivery_batch_identity(shipment)
+    if not sj_id:
+        return 0, need
+    lines = sj_lines_stored(order, sj_id)
+    if not lines and isinstance(shipment, dict) and isinstance(shipment.get("lines"), list):
+        lines = [ln for ln in shipment["lines"] if isinstance(ln, dict)]
+    loaded = 0
+    line_need = 0
+    for ln in lines:
+        idx, err = match_po_line_idx(order, ln)
+        if err or idx is None:
+            try:
+                idx = int(ln.get("line_idx"))
+            except (TypeError, ValueError):
+                continue
+        qty = ln.get("qty") if isinstance(ln, dict) and ln.get("qty") is not None else (
+            ln.get("quantity") if isinstance(ln, dict) else 0
+        )
+        try:
+            line_need += max(0, int(qty or 0))
+        except (TypeError, ValueError):
+            pass
+        loaded += loaded_qty_for_sj_line(order, sj_id, int(idx))
+    if line_need > 0:
+        need = line_need
+    return loaded, need
+
+
+def _load_tone_for_shipment(order: dict, shipment: dict) -> str:
+    """Loading chip meaning, scoped to one SJ so SJ1 cannot mark SJ2 done."""
+    loaded, need = _sj_loaded_vs_need(order, shipment)
+    if need > 0 and loaded >= need:
+        return "done"
+    if loaded > 0 or _confirmation_for_shipment(order, shipment):
+        return "pending"
+    # Canonical SJ row exists → same as Loading current after Surat Jalan created.
+    return "pending"
+
+
+def _kirim_tone_for_shipment(order: dict, shipment: dict) -> str:
+    """Pengiriman chip meaning, scoped to one SJ."""
+    if shipment_is_delivered(order, shipment):
+        return "done"
+    loaded, need = _sj_loaded_vs_need(order, shipment)
+    if need > 0 and loaded >= need:
+        return "pending"
+    return "idle"
+
+
+def role_status_for_schedule_row(order: dict, shipment: Optional[dict] = None) -> Dict[str, str]:
+    """Schedule Status per Role: PO chips + SJ-scoped Load/Kirim when a shipment is present."""
+    roles = role_status_from_order(order)
+    if isinstance(shipment, dict) and delivery_batch_identity(shipment):
+        roles["load"] = _load_tone_for_shipment(order, shipment)
+        roles["kirim"] = _kirim_tone_for_shipment(order, shipment)
+    return roles

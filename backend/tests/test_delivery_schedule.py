@@ -647,3 +647,161 @@ def test_persistable_delivery_location_rejects_partial_and_zero():
     order = {"delivery_location": {"lat": -6.2, "lng": 106.8}}
     eff = effective_delivery_location(sj, order)
     assert eff["lat"] == -6.3
+
+
+def _role_po(**extra):
+    base = {
+        "id": "ord-role",
+        "po_number": "PO/2026/ROLE",
+        "customer": "RENEA",
+        "design_status": "Approved",
+        "payment_bypassed": True,
+        "operator_splits": [{"line_idx": 0, "quantity": 10000, "qty_completed": 10000}],
+        "helper_prep": {"qty_prepared": 10000},
+        "screener_info": {"screen_qty": 10},
+        "sample_files": [{"id": "s1"}],
+        "sample_approved": True,
+        "line_items": [{"id": "lid-a", "name": "Cetak", "quantity": 10000, "production_process": "print"}],
+        "packing_info": {"qty_packed": 4000, "lines": [{"line_idx": 0, "line_id": "lid-a", "packed_qty": 4000}]},
+        "current_stage": 12,
+        "delivery_status": "Belum Terkirim",
+        "qty_delivered": 0,
+        "total_quantity": 10000,
+        "cancelled": False,
+        "surat_jalan_created": True,
+        "surat_jalan_files": [
+            {"id": "sh-1", "shipment_id": "sh-1", "name": "SJ-1.pdf", "uploaded_at": "t1"},
+            {"id": "sh-2", "shipment_id": "sh-2", "name": "SJ-2.pdf", "uploaded_at": "t2"},
+        ],
+        "shipments": [
+            {
+                "id": "sh-1",
+                "number": "SJ-1",
+                "shipment_index": 1,
+                "delivery_date": "2026-09-15",
+                "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cetak", "qty": 5000}],
+            },
+            {
+                "id": "sh-2",
+                "number": "SJ-2",
+                "shipment_index": 2,
+                "delivery_date": "2026-09-16",
+                "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cetak", "qty": 5000}],
+            },
+        ],
+    }
+    base.update(extra)
+    return base
+
+
+def test_schedule_packing_chip_done_when_stage_past_packing_even_if_qty_partial():
+    from services.workflow_stage_status import resolve_stage_chip, STAGE_PACKING
+
+    o = _role_po()
+    assert o["packing_info"]["qty_packed"] == 4000
+    assert resolve_stage_chip(STAGE_PACKING, o, 12)["state"] == "done"
+    rows = schedule_rows(o)
+    assert rows[0]["qty_packed"] == 4000
+    assert rows[0]["role_status"]["pack"] == "done"
+
+
+def test_schedule_loading_complete_and_not_complete():
+    o = _role_po(
+        current_stage=13,
+        loading_confirmations=[{
+            "id": "c1",
+            "surat_jalan_id": "sh-1",
+            "lines": [{"line_idx": 0, "qty": 5000}],
+        }],
+    )
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["role_status"]["load"] == "done"
+    assert by_id["sh-2"]["role_status"]["load"] == "pending"
+    assert by_id["sh-1"]["role_status"]["load"] != by_id["sh-2"]["role_status"]["load"]
+
+
+def test_schedule_kirim_current_zero_delivered_is_pending_not_idle():
+    o = _role_po(
+        current_stage=13,
+        loading_confirmations=[{
+            "id": "c1",
+            "surat_jalan_id": "sh-1",
+            "lines": [{"line_idx": 0, "qty": 5000}],
+        }],
+        qty_delivered=0,
+        delivery_status="Belum Terkirim",
+    )
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["role_status"]["kirim"] == "pending"
+    assert by_id["sh-2"]["role_status"]["kirim"] == "idle"
+
+
+def test_schedule_kirim_complete_only_for_delivered_sj():
+    o = _role_po(
+        current_stage=13,
+        loading_confirmations=[
+            {"id": "c1", "surat_jalan_id": "sh-1", "lines": [{"line_idx": 0, "qty": 5000}]},
+            {"id": "c2", "surat_jalan_id": "sh-2", "lines": [{"line_idx": 0, "qty": 5000}]},
+        ],
+        shipments=[
+            {
+                "id": "sh-1",
+                "number": "SJ-1",
+                "shipment_index": 1,
+                "delivery_date": "2026-09-15",
+                "delivered_at": "2026-09-15T10:00:00+07:00",
+                "delivery_status": "Terkirim",
+                "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cetak", "qty": 5000}],
+            },
+            {
+                "id": "sh-2",
+                "number": "SJ-2",
+                "shipment_index": 2,
+                "delivery_date": "2026-09-16",
+                "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cetak", "qty": 5000}],
+            },
+        ],
+    )
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["role_status"]["kirim"] == "done"
+    assert by_id["sh-1"]["role_status"]["load"] == "done"
+    assert by_id["sh-2"]["role_status"]["kirim"] != "done"
+    assert by_id["sh-2"]["role_status"]["load"] == "done"
+
+
+def test_schedule_no_sj_rows_remain_excluded():
+    assert schedule_rows(_role_po(shipments=[])) == []
+    assert schedule_rows(_role_po(shipments=[{
+        "id": "sh-x",
+        "number": "",
+        "delivery_date": "2026-09-15",
+        "lines": [{"line_idx": 0, "qty": 1}],
+    }])) == []
+
+
+def test_role_status_does_not_leak_or_overwrite_sj_locations():
+    loc_a = {"lat": -6.2, "lng": 106.8, "formatted_address": "PO-A"}
+    loc_b = {"lat": -6.3, "lng": 106.9, "formatted_address": "SJ-B"}
+    loc_c = {"lat": -6.4, "lng": 107.0, "formatted_address": "SJ-C"}
+    o = _role_po(
+        delivery_location=loc_a,
+        current_stage=13,
+        loading_confirmations=[{
+            "id": "c1",
+            "surat_jalan_id": "sh-1",
+            "lines": [{"line_idx": 0, "qty": 5000}],
+        }],
+    )
+    o["shipments"][0]["delivery_location"] = loc_b
+    o["shipments"][1]["delivery_location"] = loc_c
+    rows = schedule_rows(o)
+    by_id = {r["shipment_id"]: r for r in rows}
+    assert by_id["sh-1"]["lat"] == -6.3 and by_id["sh-1"]["lng"] == 106.9
+    assert by_id["sh-2"]["lat"] == -6.4 and by_id["sh-2"]["lng"] == 107.0
+    assert o["delivery_location"]["lat"] == -6.2
+    assert by_id["sh-1"]["role_status"]["load"] == "done"
+    assert by_id["sh-2"]["role_status"]["load"] == "pending"
+    assert by_id["sh-1"]["role_status"]["pack"] == by_id["sh-2"]["role_status"]["pack"] == "done"
