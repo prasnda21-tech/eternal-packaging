@@ -37,8 +37,7 @@ import {
   selectDeliveryScheduleTaskContext,
 } from "../lib/mobileWorkspaces";
 import {
-  OPS_TOOLBAR_FILTERS,
-  OPS_MORE_FILTERS,
+  OPS_QUICK_FILTERS,
   deliveryOpsBadge,
   deliveryQuickMatch,
   deliveryQueueRank,
@@ -385,7 +384,7 @@ export default function MobileDeliverySchedulePage() {
 
   return (
     <div className="mop-schedule-root mop-delivery-schedule-root">
-      <OpsQueueHeader title="Jadwal Pengiriman" />
+      <OpsQueueHeader title="Jadwal Pengiriman" showBrand={false} subtitle="" />
       <main className="mop-content mop-schedule-page" data-testid="mobile-delivery-schedule-page">
         {!allowed && (
           <div className="mop-error" data-testid="mobile-delivery-schedule-forbidden">
@@ -463,8 +462,8 @@ export default function MobileDeliverySchedulePage() {
               }}
             />
             <div className="mop-schedule-toolbar mop-ds-toolbar" data-testid="mobile-delivery-schedule-toolbar">
-              <div className="mop-ops-quick" data-testid="mds-quick-filters">
-                {OPS_TOOLBAR_FILTERS.map((f) => (
+              <div className="mop-ops-quick mop-ops-filter-rail" data-testid="mds-quick-filters">
+                {OPS_QUICK_FILTERS.map((f) => (
                   <button
                     key={f.key}
                     type="button"
@@ -478,65 +477,65 @@ export default function MobileDeliverySchedulePage() {
                     </span>
                   </button>
                 ))}
+                <ProductionScheduleSearchCluster
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  inputTestId="mds-search"
+                  searchButtonTestId="mds-search-btn"
+                  placeholder="Cari customer / PO / SJ / item"
+                />
+                <div className="mop-schedule-filter-actions" data-testid="mds-filter-actions">
+                  <button
+                    type="button"
+                    className={"mop-btn-ghost mop-ds-filter-btn" + (activeFilterCount > 0 ? " is-active" : "")}
+                    onClick={openFilterPanel}
+                    data-testid="mds-filter-btn"
+                    aria-label="Filter"
+                    aria-expanded={filterOpen}
+                  >
+                    <Filter size={13} aria-hidden />
+                    <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mop-btn-ghost mop-schedule-reset"
+                    onClick={resetFilters}
+                    disabled={activeFilterCount === 0 && quick === "semua_aktif" && !String(q || "").trim()}
+                    data-testid="mds-filter-reset"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <span className="mop-schedule-count" data-testid="mds-count">
+                  {visible.length} / {rows.length} entri
+                </span>
+                <button
+                  type="button"
+                  className="mop-btn-ghost mop-ops-toolbar-refresh"
+                  onClick={onRefresh}
+                  title="Muat ulang"
+                  data-testid="mds-refresh"
+                  disabled={busy}
+                  aria-label="Muat ulang"
+                >
+                  <RefreshCw size={14} className={busy ? "spin" : ""} aria-hidden />
+                </button>
+                {canOptimize && (
+                  <button
+                    type="button"
+                    className="mop-btn-primary"
+                    data-testid="mds-optimasi-rute"
+                    disabled={busy || visible.length === 0}
+                    onClick={() => {
+                      persistScroll();
+                      const ids = visible.map((r) => r.id).filter(Boolean);
+                      navigate(mobileScheduleReviewHref(ids));
+                    }}
+                  >
+                    Optimasi Rute
+                  </button>
+                )}
               </div>
-              <ProductionScheduleSearchCluster
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                inputTestId="mds-search"
-                searchButtonTestId="mds-search-btn"
-                placeholder="Cari customer / PO / SJ / item"
-              />
-              <div className="mop-schedule-filter-actions" data-testid="mds-filter-actions">
-                <button
-                  type="button"
-                  className={"mop-btn-ghost mop-ds-filter-btn" + (activeFilterCount > 0 ? " is-active" : "")}
-                  onClick={openFilterPanel}
-                  data-testid="mds-filter-btn"
-                  aria-label="Filter"
-                  aria-expanded={filterOpen}
-                >
-                  <Filter size={13} aria-hidden />
-                  <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
-                </button>
-                <button
-                  type="button"
-                  className="mop-btn-ghost mop-schedule-reset"
-                  onClick={resetFilters}
-                  disabled={activeFilterCount === 0 && quick === "semua_aktif" && !String(q || "").trim()}
-                  data-testid="mds-filter-reset"
-                >
-                  Reset
-                </button>
-              </div>
-              <span className="mop-schedule-count" data-testid="mds-count">
-                {visible.length} / {rows.length} entri
-              </span>
-              <button
-                type="button"
-                className="mop-btn-ghost mop-ops-toolbar-refresh"
-                onClick={onRefresh}
-                title="Muat ulang"
-                data-testid="mds-refresh"
-                disabled={busy}
-                aria-label="Muat ulang"
-              >
-                <RefreshCw size={14} className={busy ? "spin" : ""} aria-hidden />
-              </button>
-              {canOptimize && (
-                <button
-                  type="button"
-                  className="mop-btn-primary"
-                  data-testid="mds-optimasi-rute"
-                  disabled={busy || visible.length === 0}
-                  onClick={() => {
-                    persistScroll();
-                    const ids = visible.map((r) => r.id).filter(Boolean);
-                    navigate(mobileScheduleReviewHref(ids));
-                  }}
-                >
-                  Optimasi Rute
-                </button>
-              )}
             </div>
             </>
             )}
@@ -733,22 +732,6 @@ export default function MobileDeliverySchedulePage() {
               </button>
             </header>
             <div className="mop-ds-filter-fields">
-              <div className="mop-ops-quick mop-ops-quick-more" data-testid="mds-more-filters">
-                {OPS_MORE_FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    className={`mop-ops-chip mop-ops-chip--${f.key}${quick === f.key ? " is-active" : ""}`}
-                    data-testid={`mds-quick-${f.key}`}
-                    onClick={() => setQuick(f.key)}
-                  >
-                    {f.label}
-                    <span className="mop-ops-chip-count" data-testid={`mds-quick-count-${f.key}`}>
-                      {quickCounts[f.key] ?? 0}
-                    </span>
-                  </button>
-                ))}
-              </div>
               <label className="mop-ds-filter-field">
                 <span>Nama Customer</span>
                 <input type="text" value={draftFilters.customer} onChange={(e) => setDraft("customer", e.target.value)} placeholder="Cari customer" data-testid="mds-adv-customer" />

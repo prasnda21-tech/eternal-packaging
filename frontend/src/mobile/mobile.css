@@ -600,7 +600,11 @@
 }
 
 .mop-ds-toolbar {
-  gap: 6px;
+  gap: 0;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .mop-ds-filter-btn.is-active {

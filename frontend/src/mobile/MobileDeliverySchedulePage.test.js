@@ -723,6 +723,61 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mop-ops-role-count-prep"]').textContent.trim()).toBe("—");
   });
 
+  test("quick filters search Filter and Reset share one nowrap horizontal rail", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "route_optimizer.create" || p === "route_optimizer.optimize"
+    ));
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    const rail = container.querySelector('[data-testid="mds-quick-filters"]');
+    expect(rail).toBeTruthy();
+    expect(rail.className).toMatch(/mop-ops-filter-rail/);
+    expect(rail.querySelector('[data-testid="mds-quick-semua"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-quick-hari_ini"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-quick-terlambat"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-quick-besok"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-quick-belum_dijadwalkan"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-quick-minggu_ini"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-quick-semua_aktif"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-search"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-filter-btn"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-filter-reset"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-filter-actions"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="mds-optimasi-rute"]')).toBeTruthy();
+    const order = [
+      "mds-quick-semua",
+      "mds-quick-hari_ini",
+      "mds-quick-terlambat",
+      "mds-quick-besok",
+      "mds-quick-belum_dijadwalkan",
+      "mds-quick-minggu_ini",
+      "mds-quick-semua_aktif",
+    ].map((id) => rail.querySelector(`[data-testid="${id}"]`));
+    order.forEach((el, idx) => {
+      if (idx === 0) return;
+      expect(el.compareDocumentPosition(order[idx - 1]) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    });
+    const search = rail.querySelector('[data-testid="mds-search"]');
+    const filterBtn = rail.querySelector('[data-testid="mds-filter-btn"]');
+    const resetBtn = rail.querySelector('[data-testid="mds-filter-reset"]');
+    const lastChip = rail.querySelector('[data-testid="mds-quick-semua_aktif"]');
+    expect(lastChip.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(search.compareDocumentPosition(filterBtn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(filterBtn.compareDocumentPosition(resetBtn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector(".mop-schedule-toolbar--stacked")).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-more-filters"]')).toBeFalsy();
+    const opsCss = fs.readFileSync(path.join(__dirname, "opsQueue.css"), "utf8");
+    expect(opsCss).toMatch(/\.mop-ops-filter-rail[\s\S]*flex-wrap:\s*nowrap/);
+    expect(opsCss).toMatch(/\.mop-ops-filter-rail[\s\S]*overflow-x:\s*auto/);
+    expect(opsCss).toMatch(/\.mop-ops-filter-rail[\s\S]*overflow-y:\s*hidden/);
+    const pageSrc = fs.readFileSync(path.join(__dirname, "MobileDeliverySchedulePage.jsx"), "utf8");
+    expect(pageSrc).toMatch(/matchesDeliveryOpsSearch/);
+    expect(pageSrc).toMatch(/deliveryQuickMatch/);
+    expect(pageSrc).toMatch(/matchesDeliveryScheduleFilters/);
+    expect(pageSrc).toMatch(/buildOpsRoleSummaryModel\(\{\s*productionRows:\s*null,\s*deliveryRows:\s*rows/);
+    expect(pageSrc).toMatch(/showBrand=\{false\}/);
+  });
+
   test("ops table keeps horizontal scroll wrapper, compact Optimasi Rute, and 1180px min-width", () => {
     const css = fs.readFileSync(path.join(__dirname, "mobile.css"), "utf8");
     const opsCss = fs.readFileSync(path.join(__dirname, "opsQueue.css"), "utf8");
