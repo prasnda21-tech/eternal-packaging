@@ -1417,6 +1417,9 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
                             f"Loading tidak dapat dilakukan karena qty eligible "
                             f"untuk '{name}' belum tersedia."
                         )
+                    prior = print_physical_block_reason(order, idx, max(qty, sj_avail, 1))
+                    if prior:
+                        return prior
                     return (
                         f"Loading tidak dapat dilakukan karena belum ada qty Packing "
                         f"yang tersedia untuk '{name}'."
@@ -1432,6 +1435,9 @@ def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list)
                     return (
                         f"Qty Loading '{name}' ({qty}) melebihi qty eligible yang tersedia ({physical_avail})."
                     )
+                prior = print_physical_block_reason(order, idx, qty)
+                if prior:
+                    return prior
                 return (
                     f"Qty Loading '{name}' ({qty}) melebihi qty Packing yang tersedia ({physical_avail})."
                 )
@@ -1967,6 +1973,7 @@ def loading_status_semantic(order: dict) -> str:
 
 LOADING_STATUS_WAITING = "waiting_verification"
 LOADING_STATUS_PACKING_SHORT = "packing_insufficient"
+LOADING_STATUS_PRIOR_LOADED = "prior_loading_consumed"
 LOADING_STATUS_READY = "ready_to_verify"
 LOADING_STATUS_HELD_MISMATCH = "held_qty_mismatch"
 LOADING_STATUS_COMPLETE = "loading_complete"
@@ -1974,10 +1981,59 @@ LOADING_STATUS_COMPLETE = "loading_complete"
 MSG_LOADING_PACKING_SHORT_FMT = (
     "Packing belum mencukupi untuk {item}: diperlukan {need}, tersedia {have}."
 )
+MSG_LOADING_PRIOR_LOADED_FMT = (
+    "Qty sudah pernah dikonfirmasi Loading untuk {item}: diperlukan {need}, sisa fisik {have}."
+)
+MSG_LOADING_PRIOR_LOADED_PARTIAL_FMT = (
+    "Sisa fisik tidak mencukupi untuk {item}: diperlukan {need}, sisa fisik {have} (sudah Loading {loaded})."
+)
 
 
 def _fmt_qty_id(n: int) -> str:
     return f"{int(n):,}".replace(",", ".")
+
+
+def is_packing_shortfall_reason(msg: Optional[str]) -> bool:
+    return bool(msg) and str(msg).startswith("Packing belum mencukupi")
+
+
+def print_physical_block_reason(order: dict, line_idx: int, need: int) -> Optional[str]:
+    """Classify print-line block: true packing shortage vs prior Loading.
+
+    Non-print callers should not use this — they keep eligible-qty wording.
+    """
+    idx = int(line_idx)
+    need = max(0, int(need))
+    if need <= 0:
+        return None
+    lis = order.get("line_items") or []
+    if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
+        return None
+    packed = packed_qty_for_line(order, idx)
+    physical = physical_qty_for_loading_line(order, idx)
+    already = qty_loaded_for_line(order, idx)
+    remain = max(0, physical - already)
+    if remain >= need:
+        return None
+    name = _line_name(order, idx)
+    if packed < need:
+        return MSG_LOADING_PACKING_SHORT_FMT.format(
+            item=name, need=_fmt_qty_id(need), have=_fmt_qty_id(remain),
+        )
+    if already > 0 and remain <= 0:
+        return MSG_LOADING_PRIOR_LOADED_FMT.format(
+            item=name, need=_fmt_qty_id(need), have=_fmt_qty_id(remain),
+        )
+    if already > 0:
+        return MSG_LOADING_PRIOR_LOADED_PARTIAL_FMT.format(
+            item=name,
+            need=_fmt_qty_id(need),
+            have=_fmt_qty_id(remain),
+            loaded=_fmt_qty_id(already),
+        )
+    return MSG_LOADING_PACKING_SHORT_FMT.format(
+        item=name, need=_fmt_qty_id(need), have=_fmt_qty_id(remain),
+    )
 
 
 
@@ -2062,15 +2118,14 @@ def packing_shortfall_for_sj_match(order: dict, surat_jalan_id: str) -> Optional
         if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
             continue
         have = packed_qty_for_line(order, idx)
-        # remaining packing after prior loads on this PO line
+        # remaining packing after prior loads on this PO line (all non-cancelled)
         already_loaded = qty_loaded_for_line(order, idx)
         avail_pack = max(0, have - already_loaded) if is_print_line(lis[idx] if 0 <= idx < len(lis) else {"production_process": "print"}) else need
         # For print: physical available must cover this SJ remainder
         physical = physical_qty_for_loading_line(order, idx)
         remain_phys = max(0, physical - qty_loaded_for_line(order, idx))
         if remain_phys < need:
-            name = _line_name(order, idx)
-            return MSG_LOADING_PACKING_SHORT_FMT.format(item=name, need=_fmt_qty_id(need), have=_fmt_qty_id(remain_phys))
+            return print_physical_block_reason(order, idx, need)
     return None
 
 
@@ -2370,9 +2425,16 @@ def loading_verification_status(order: dict, surat_jalan_id: Optional[str] = Non
         }
     short = packing_shortfall_for_sj_match(order, sid)
     if short:
+        if is_packing_shortfall_reason(short):
+            return {
+                "code": LOADING_STATUS_PACKING_SHORT,
+                "label": "Packing Belum Mencukupi",
+                "surat_jalan_id": sid,
+                "reason": short,
+            }
         return {
-            "code": LOADING_STATUS_PACKING_SHORT,
-            "label": "Packing Belum Mencukupi",
+            "code": LOADING_STATUS_PRIOR_LOADED,
+            "label": "Qty Sudah Dikonfirmasi Loading",
             "surat_jalan_id": sid,
             "reason": short,
         }

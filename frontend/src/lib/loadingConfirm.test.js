@@ -696,4 +696,101 @@ describe("Loading confirm helpers", () => {
     expect(avail.blocked).toBe(true);
     expect(avail.reason).toMatch(/qty Packing/i);
   });
+
+  test("ORANJE historical confirmation on replaced SJ id still consumes physical qty", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const lid = "LID Connect Inject Frosted/Dop Victory";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const line0 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_0";
+    const line1 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_1";
+    const order = {
+      line_items: [
+        { name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" },
+        { name: lid, quantity: 1000, production_process: "non_print", accurate_item_id: "3950" },
+      ],
+      packing_info: {
+        qty_packed: 1000,
+        lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 0 }],
+      },
+      shipments: [{
+        id: sj,
+        number: "SJ/2026/09/08/000006",
+        lines: [
+          { line_idx: 0, line_id: line0, qty: 1000 },
+          { line_idx: 1, line_id: line1, qty: 1000 },
+        ],
+      }],
+      surat_jalan_files: [{
+        id: sj,
+        shipment_id: sj,
+        sj_number: "SJ/2026/09/08/000006",
+        total_qty: 2000,
+        lines: [
+          { line_idx: 0, line_id: line0, qty: 1000 },
+          { line_idx: 1, line_id: line1, qty: 1000 },
+        ],
+      }],
+      loading_confirmations: [{
+        id: "old-c0",
+        surat_jalan_id: old,
+        lines: [{ line_idx: 0, qty: 1000 }, { line_idx: 1, qty: 1000 }],
+      }],
+    };
+    const lines = loadingPoLines(order, sj);
+    expect(lines.reduce((s, r) => s + r.qty_sj, 0)).toBe(2000);
+    expect(lines[0].name).toBe(cup);
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].loaded).toBe(0);
+    expect(lines[0].loaded_all).toBe(1000);
+    expect(lines[0].available).toBe(0);
+    expect(lines[0].physical_available).toBe(0);
+    expect(lines[1].name).toBe(lid);
+    expect(lines[1].production_process).toBe("non_print");
+    expect(lines[1].loaded).toBe(0);
+    expect(lines[1].loaded_all).toBe(1000);
+    expect(lines[1].available).toBe(0);
+    const ver = loadingVerificationStatus(order, sj);
+    expect(ver.code).toBe("prior_loading_consumed");
+    expect(String(ver.reason || "")).toMatch(/sudah pernah dikonfirmasi Loading/);
+    expect(String(ver.reason || "")).toMatch(/sisa fisik 0/);
+    expect(String(ver.reason || "")).toContain(cup);
+    expect(String(ver.reason || "")).not.toMatch(/Packing belum mencukupi/);
+    const draft = validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }, { line_idx: 1, qty: "1000" }], lines);
+    expect(draft.ok).toBe(false);
+    expect(String(draft.error || "")).toMatch(/sudah pernah dikonfirmasi Loading/);
+    expect(String(draft.error || "")).not.toMatch(/Packing belum mencukupi/);
+  });
+
+  test("partial prior Loading is not a Packing shortage", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const order = {
+      line_items: [{ name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [{ id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      surat_jalan_files: [{ id: sj, shipment_id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      loading_confirmations: [{
+        id: "old-partial",
+        surat_jalan_id: old,
+        lines: [{ line_idx: 0, qty: 600 }],
+      }],
+    };
+    const lines = loadingPoLines(order, sj);
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].loaded).toBe(0);
+    expect(lines[0].loaded_all).toBe(600);
+    expect(lines[0].physical_available).toBe(400);
+    expect(lines[0].available).toBe(400);
+    const ver = loadingVerificationStatus(order, sj);
+    expect(ver.code).toBe("prior_loading_consumed");
+    expect(String(ver.reason || "")).toMatch(/Sisa fisik tidak mencukupi/);
+    expect(String(ver.reason || "")).toMatch(/sisa fisik 400/);
+    expect(String(ver.reason || "")).toMatch(/sudah Loading 600/);
+    expect(String(ver.reason || "")).not.toMatch(/Packing belum mencukupi/);
+    const draft = validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines);
+    expect(draft.ok).toBe(false);
+    expect(String(draft.error || "")).toMatch(/Sisa fisik tidak mencukupi/);
+  });
 });
