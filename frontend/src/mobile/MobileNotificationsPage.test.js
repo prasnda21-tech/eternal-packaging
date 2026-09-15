@@ -88,4 +88,49 @@ describe("MobileNotificationsPage regression", () => {
     expect(src).toMatch(/markNotificationRead/);
     expect(src).toMatch(/deep_link/);
   });
+
+  test("CASE 13 existing inbox renders canonical SJ-created notification without a schedule table", async () => {
+    api.listNotifications.mockResolvedValue({
+      notifications: [
+        {
+          id: "n-sj-1",
+          event_type: "surat_jalan_created",
+          title: "Surat Jalan dibuat — Helper",
+          body: "PO PO-SJ-1 / PT Kirim. SJ SJ-001.",
+          po_number: "PO-SJ-1",
+          decision: "helper",
+          deep_link: "/m/orders/ord-sj-1",
+          order_id: "ord-sj-1",
+          is_read: false,
+          read_at: null,
+          created_at: "2026-09-15T08:00:00Z",
+        },
+      ],
+    });
+    api.markNotificationRead.mockResolvedValue({
+      notification: { id: "n-sj-1", is_read: true, read_at: "2026-09-15T08:01:00Z" },
+    });
+
+    await act(async () => {
+      root.render(<MobileNotificationsPage />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const item = container.querySelector('[data-testid="mobile-notification-n-sj-1"]');
+    expect(item).toBeTruthy();
+    expect(item.textContent).toContain("Surat Jalan dibuat — Helper");
+    expect(item.textContent).toContain("SJ SJ-001");
+    expect(item.textContent).toContain("PO PO-SJ-1");
+    expect(container.querySelector('[data-testid="mds-table"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Status per Role");
+
+    await act(async () => {
+      item.click();
+      await Promise.resolve();
+    });
+    expect(api.markNotificationRead).toHaveBeenCalledWith("n-sj-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/m/orders/ord-sj-1");
+  });
 });

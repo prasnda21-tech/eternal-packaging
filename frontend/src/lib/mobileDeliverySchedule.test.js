@@ -110,8 +110,13 @@ describe("mobileDeliverySchedule access", () => {
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tgl Kirim")).toBe(true);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Tanggal Kerja")).toBe(false);
     expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => /notif/i.test(c.label))).toBe(false);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Helper")).toBe(false);
+    expect(MOBILE_DELIVERY_SCHEDULE_COLS.some((c) => c.label === "Kepala Produksi")).toBe(false);
     expect(keys).not.toContain("work_date");
     expect(keys).not.toContain("notification");
+    expect(keys).not.toContain("notif_helper");
+    expect(keys).not.toContain("notif_driver");
+    expect(keys).not.toContain("notif_kepala");
   });
 });
 

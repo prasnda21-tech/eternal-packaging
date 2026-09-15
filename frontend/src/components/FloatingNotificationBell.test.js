@@ -347,4 +347,31 @@ describe("FloatingNotificationBell", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="web-notif-badge"]').textContent).toBe("1");
   });
+
+  test("CASE 13 existing bell renders canonical SJ-created notification", async () => {
+    api.listNotifications.mockResolvedValue({
+      notifications: [notif({
+        id: "sj-h1",
+        title: "Surat Jalan dibuat — Helper",
+        body: "PO PO-SJ-1 / PT Kirim. SJ SJ-001.",
+        po_number: "PO-SJ-1",
+        decision: "helper",
+        event_type: "surat_jalan_created",
+        deep_link: "/m/orders/ord-sj-1",
+        order_id: "ord-sj-1",
+      })],
+    });
+    await renderBell();
+    expect(container.querySelector('[data-testid="web-notif-badge"]').textContent).toBe("1");
+    const bell = container.querySelector('[data-testid="web-notif-bell-button"]');
+    await act(async () => {
+      firePointer(bell, "pointerdown", { clientX: 1, clientY: 1, pointerId: 1 });
+      firePointer(bell, "pointerup", { clientX: 1, clientY: 1, pointerId: 1 });
+    });
+    const row = container.querySelector('[data-testid="web-notif-item-sj-h1"]');
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain("Surat Jalan dibuat — Helper");
+    expect(row.textContent).toContain("SJ SJ-001");
+    expect(row.textContent).toContain("PO-SJ-1");
+  });
 });

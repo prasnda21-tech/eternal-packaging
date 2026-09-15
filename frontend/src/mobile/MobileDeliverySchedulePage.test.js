@@ -550,13 +550,19 @@ describe("MobileDeliverySchedulePage", () => {
       "Load",
       "Kirim",
     ]);
+    expect(labels).not.toContain("Notifikasi");
+    expect(labels).not.toContain("Helper");
     expect(labels).not.toContain("Driver");
+    expect(labels).not.toContain("Kepala Produksi");
     expect(labels).not.toContain("Status");
     expect(labels).not.toContain("Aksi");
     expect(labels).not.toContain("Zona");
     expect(labels).not.toContain("Tahap Aktif");
     expect(labels).not.toContain("Tanggal Kerja");
-    expect(labels).not.toContain("Notifikasi");
+    expect(container.querySelector('[data-testid="mds-notif-group"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-notif-helper-PO-100-sh-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-cup-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-load-PO-100"]').textContent.trim()).toBe("—");
     expect(container.querySelector('[data-testid="mds-status-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-kerja-PO-100"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-atur-lokasi-PO-100"]')).toBeFalsy();
@@ -646,7 +652,10 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mds-item-lines-PO001-sh-2"]').textContent).not.toContain("Cup");
     const labels = headerLabels(container);
     expect(labels.indexOf("Item Line")).toBe(labels.indexOf("Customer / No PO") + 1);
+    expect(labels).not.toContain("Notifikasi");
+    expect(labels).not.toContain("Helper");
     expect(labels).not.toContain("Driver");
+    expect(labels).not.toContain("Kepala Produksi");
     expect(labels).not.toContain("Status");
     expect(labels).not.toContain("Aksi");
     expect(labels).not.toContain("Rute");
@@ -1052,8 +1061,14 @@ describe("MobileDeliverySchedulePage", () => {
     const labels = headerLabels(container);
     expect(labels).not.toContain("Tanggal Kerja");
     expect(labels).not.toContain("Notifikasi");
+    expect(labels).not.toContain("Helper");
+    expect(labels).not.toContain("Driver");
+    expect(labels).not.toContain("Kepala Produksi");
+    expect(labels).toContain("Status per Role");
     expect(container.querySelector('[data-testid="mds-cup-PO-DUMMY-1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-load-PO-DUMMY-1"]').textContent.trim()).toBe("—");
+    expect(container.querySelector('[data-testid="mds-notif-group"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid^="mds-notif-helper-"]')).toBeFalsy();
   });
 
   test("PWA delivery keeps canonical sheet zoom, horizontal scroll, and SJ row separators", () => {
@@ -1063,8 +1078,9 @@ describe("MobileDeliverySchedulePage", () => {
     expect(pageSrc).toMatch(/productionSheetZoomStyle/);
     expect(pageSrc).toMatch(/pwaDeliveryScheduleRows/);
     expect(pageSrc).toMatch(/isPwaDeliverySjPreviewEnabled/);
-    expect(pageSrc).not.toMatch(/Tanggal Kerja/);
+    expect(pageSrc).not.toMatch(/pwaSjNotificationTones/);
     expect(pageSrc).not.toMatch(/Notifikasi/);
+    expect(pageSrc).not.toMatch(/Tanggal Kerja/);
     expect(css).toMatch(/mop-ds-sj-row/);
     expect(css).toMatch(/border-bottom:\s*1px solid #9aa0a6/);
     expect(css).toMatch(/mop-ds-sheet-viewport[\s\S]*overflow-x:\s*auto/);
