@@ -294,51 +294,73 @@ describe("route opt eligibility fixtures (1/2 fleet create)", () => {
     expect(sharedSrc).not.toMatch(/createFleetPairFromSchedule/);
     expect(sharedSrc).not.toMatch(/optimizeFromSchedule\(/);
     expect(sharedSrc).toMatch(/createFleetsFromSchedule/);
+    expect(sharedSrc).toMatch(/Pengaturan Kapasitas Armada/);
+    expect(sharedSrc).toMatch(/Simpan Kapasitas/);
+    expect(sharedSrc).toMatch(/Kapasitas tersimpan/);
+    const capIdx = sharedSrc.indexOf("Pengaturan Kapasitas Armada");
+    const fleetIdx = sharedSrc.indexOf("Jumlah Armada");
+    const optIdx = sharedSrc.indexOf("mds-review-optimasi-armada");
+    expect(capIdx).toBeGreaterThan(-1);
+    expect(fleetIdx).toBeGreaterThan(capIdx);
+    expect(optIdx).toBeGreaterThan(fleetIdx);
     expect(sharedSrc).not.toMatch(/mds-review-fleet-driver-select/);
   });
 
-  test("fixture covers four clusters, urgents, ineligibles, and local 1/2-fleet preview", () => {
-    const review = fixtures.getRouteOptEligibilityPreviewReview();
-    expect(review.rows.length).toBeGreaterThanOrEqual(20);
-    const eligible = review.rows.filter((r) => r.eligible);
-    const urgent = eligible.filter((r) => r.urgent);
-    expect(eligible.length).toBeGreaterThanOrEqual(16);
-    expect(urgent.length).toBeGreaterThanOrEqual(5);
-    expect(review.rows.some((r) => !r.eligible && /Surat Jalan/i.test(r.reason || ""))).toBe(true);
-    expect(review.rows.some((r) => !r.eligible && /Koordinat/i.test((r.reasons || []).join(" ")))).toBe(true);
-
-    const one = fixtures.buildRouteOptEligibilityCreateFleets({
-      orderIds: eligible.map((r) => r.sales_order_id),
-      fleetCount: 1,
+  test("fixture is exactly 3 capacity SJ-atom dummy records", () => {
+    fixtures.saveFixtureArmadaCapacity({
+      armada_1_capacity_qty_sj: 40000,
+      armada_2_capacity_qty_sj: 20000,
     });
-    expect(one.created).toBe(true);
-    expect(one.persisted).toBe(false);
-    expect(one.fleet_count).toBe(1);
-    expect(one.routes).toHaveLength(1);
-    expect(one.schedule_input_fingerprint).toBeTruthy();
-    expect(one.created).toBe(true);
-    expect(one.persisted).toBe(false);
-    expect(one.routes[0].label).toMatch(/Armada 1/);
-    expect(new Set(one.routes[0].order_ids).size).toBe(eligible.length);
-
+    const review = fixtures.getRouteOptEligibilityPreviewReview();
+    expect(review.rows).toHaveLength(3);
+    expect(review.rows.map((r) => r.order_number)).toEqual([
+      "PO-DUMMY-1",
+      "PO-DUMMY-2",
+      "PO-DUMMY-3",
+    ]);
+    const d2 = review.rows[1];
+    expect(d2.sj_units.map((u) => u.shipment_id)).toEqual(["sj-dummy-2a", "sj-dummy-2b"]);
+    expect(d2.sj_units.map((u) => u.sj_load_qty)).toEqual([30000, 20000]);
+    expect(review.rows[0].sj_units).toHaveLength(1);
+    expect(review.rows[2].sj_units[0].sj_load_qty).toBe(50000);
 
     const two = fixtures.buildRouteOptEligibilityCreateFleets({
-      orderIds: eligible.map((r) => r.sales_order_id),
+      orderIds: review.rows.map((r) => r.sales_order_id),
       fleetCount: 2,
     });
     expect(two.created).toBe(true);
     expect(two.persisted).toBe(false);
     expect(two.fleet_count).toBe(2);
     expect(two.routes).toHaveLength(2);
-    const a1 = new Set(two.routes[0].order_ids);
-    const a2 = new Set(two.routes[1].order_ids);
-    expect(a1.size + a2.size).toBe(eligible.length);
-    expect([...a1].some((id) => a2.has(id))).toBe(false);
-    for (const panel of two.routes) {
-      expect(panel.label).toMatch(/Armada [12]/);
-      expect(panel.route_id).toBeTruthy();
-      expect(panel.order_ids.length).toBeGreaterThan(0);
-    }
+    const bySj = {};
+    two.routes.forEach((route) => {
+      (route.shipment_ids || []).forEach((sid) => {
+        bySj[sid] = route.label;
+      });
+    });
+    expect(bySj["sj-dummy-1"]).toMatch(/Armada 1/);
+    expect(bySj["sj-dummy-2a"]).toBeTruthy();
+    expect(bySj["sj-dummy-2b"]).toBeTruthy();
+    expect(bySj["sj-dummy-2a"]).not.toBe(bySj["sj-dummy-2b"]);
+    expect(bySj["sj-dummy-3"]).toBeUndefined();
+    const unassignedIds = (two.unassigned || []).map((u) => u.shipment_id || u.assignment_id);
+    expect(unassignedIds).toEqual(["sj-dummy-3"]);
+    expect([...new Set([bySj["sj-dummy-2a"], bySj["sj-dummy-2b"], ...unassignedIds])]).toHaveLength(3);
+
+    const onePoTwoSj = fixtures.buildRouteOptEligibilityCreateFleets({
+      orderIds: ["preview-cap-d2"],
+      fleetCount: 2,
+    });
+    const split = {};
+    onePoTwoSj.routes.forEach((route) => {
+      (route.shipment_ids || []).forEach((sid) => {
+        split[sid] = route.label;
+      });
+    });
+    expect(split["sj-dummy-2a"]).toBeTruthy();
+    expect(split["sj-dummy-2b"]).toBeTruthy();
+    expect(split["sj-dummy-2a"]).not.toBe(split["sj-dummy-2b"]);
+    expect(onePoTwoSj.unassigned || []).toHaveLength(0);
 
     expect(() => fixtures.buildRouteOptEligibilityPreviewFleetPairResult()).toThrow(/retired|previewFleets/i);
   });
