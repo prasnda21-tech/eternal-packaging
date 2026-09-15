@@ -132,7 +132,7 @@ export default function MobileProductionSchedulePage() {
   );
   const [quick, setQuick] = useState(saved.quick || "semua_aktif");
   const [filterOpen, setFilterOpen] = useState(false);
-  const sheetZoom = useProductionSheetZoom();
+  const sheetZoom = useProductionSheetZoom({ userId: userKey });
   const scrollRestored = useRef(false);
   const [task, setTask] = useState({
     open: false,

@@ -11,6 +11,7 @@ import {
   PRODUCTION_SHEET_ZOOM_STORAGE_KEY,
   productionSheetZoomFromPinch,
   productionSheetZoomFromWheel,
+  productionSheetZoomStorageKey,
 } from "../lib/productionSheetZoom";
 import MobileProductionSchedulePage, { scheduleLoadErrorMessage } from "./MobileProductionSchedulePage";
 
@@ -498,7 +499,7 @@ describe("MobileProductionSchedulePage", () => {
     const afterOne = Number(zoomVar());
     const target = productionSheetZoomFromWheel(PRODUCTION_SHEET_ZOOM_DEFAULT, -80);
     expect(afterOne).toBeGreaterThan(Number(before));
-    expect(afterOne).toBeLessThan(target);
+    expect(afterOne).toBe(target);
     await flushZoom();
     expect(Number(zoomVar())).toBe(target);
   });
@@ -549,7 +550,7 @@ describe("MobileProductionSchedulePage", () => {
   });
 
   test("localStorage preference restores spreadsheet zoom", async () => {
-    window.localStorage.setItem(PRODUCTION_SHEET_ZOOM_STORAGE_KEY, "1.2");
+    window.localStorage.setItem(productionSheetZoomStorageKey("u-mps"), "1.2");
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
     await renderPage();
     expect(zoomVar()).toBe("1.2");

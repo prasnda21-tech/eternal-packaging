@@ -549,7 +549,7 @@
 }
 
 .mop-schedule-root .production-sheet-table tbody td {
-  padding: 7px 8px;
+  padding: calc(7px * var(--production-sheet-zoom, 1)) calc(8px * var(--production-sheet-zoom, 1));
   vertical-align: top;
 }
 
@@ -1690,7 +1690,8 @@
 }
 
 .mop-schedule-root .production-sheet-table {
-  min-width: 100%;
+  min-width: calc(1180px * var(--production-sheet-zoom, 1));
+  width: max-content;
 }
 
 /* Compact Filter + Reset cluster in the upper PWA toolbar (no separate lower row). */
