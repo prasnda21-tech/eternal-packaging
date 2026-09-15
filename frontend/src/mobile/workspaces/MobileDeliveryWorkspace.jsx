@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, ImagePlus } from "lucide-react";
+import {
+  Camera,
+  CheckCircle2,
+  FileText,
+  ImagePlus,
+  PenLine,
+  Signature,
+  Truck,
+  X,
+} from "lucide-react";
 import api from "../../lib/api";
 import { formatApiError } from "../../lib/errors";
 import { newActionId } from "../../lib/workflowEntries";
 import {
-  MIN_DELIVERY_PROOFS,
   MAX_PHOTOS,
   DELIVERY_PROOF_ACCEPT,
   canSubmitConfirmDelivered,
@@ -20,15 +28,20 @@ import {
   findDeliveryShipment,
   isShipmentDelivered,
   pengirimanSjOptions,
+  pengirimanSjDisplayLabel,
   proofsForShipment,
   selectedPengirimanShipmentId,
+  authoritativeDriverDisplayName,
 } from "../../lib/deliveryProof";
 import { compressImage } from "../../lib/imageCompress";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
 import { deliveryAddressFromOrder, mapsSearchUrl } from "../../lib/mobileWorkspaces";
 import { applyLocalSignature } from "../../lib/mobileSignature";
 import { fileUrl } from "../../lib/api";
+import { applyPreviewDeliveryMutation } from "../../lib/pwaDeliveryTaskPreview";
 import MobileSignatureModal from "../components/MobileSignatureModal";
+import MobileDeliverySjModal, { formatKirimDate } from "../components/MobileDeliverySjModal";
+import MobileTaskModal from "../components/MobileTaskModal";
 
 function newClientId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -46,7 +59,13 @@ function urlShipmentId() {
   }
 }
 
-export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
+function statusTone(selectedDelivered, batchAllowed) {
+  if (selectedDelivered) return { key: "done", label: "Terkirim" };
+  if (batchAllowed) return { key: "wait", label: "Siap Kirim" };
+  return { key: "idle", label: "Belum siap" };
+}
+
+export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onRequestClose }) {
   const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
   const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, urlShipmentId()));
   const sjIdsKey = sjOptions.map((o) => o.id).join("|");
@@ -68,6 +87,8 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
   const [recipientName, setRecipientName] = useState(order?.delivery_recipient_signature?.recipient_name || "");
   const [localSig, setLocalSig] = useState({ recipient: null, driver: null });
   const [modal, setModal] = useState({ open: false, role: null });
+  const [sjOpen, setSjOpen] = useState(false);
+  const [photoOpen, setPhotoOpen] = useState(false);
   const [picker, setPicker] = useState(null);
   const [preview, setPreview] = useState(null);
   const [localSlots, setLocalSlots] = useState([]);
@@ -91,6 +112,13 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     driverSig,
   ) && batchPhotoReady && canMutate && !photoBusy;
   const emptySlots = canWritePhoto ? emptyDeliveryPhotoSlotCount(proofs.length, localSlots.length) : 0;
+  const sjLabel = pengirimanSjDisplayLabel(activeSjOption);
+  const tone = statusTone(selectedDelivered, batchReadiness.allowed);
+  const driverSigned = !!(localSig.driver || driverSig?.signature_storage_path || driverSig?.driver_signature_storage_path || driverSig?.driver_signed_at);
+  const recipientSigned = !!(localSig.recipient || ((orderSig?.id && (orderSig?.signature_storage_path || orderSig?.recipient_signed_at))));
+  const photoCount = proofs.length;
+  const driverName = authoritativeDriverDisplayName(order);
+  const isPreview = !!order?.preview;
 
   const closePicker = () => setPicker(null);
 
@@ -144,11 +172,17 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     const clientErr = deliveryProofClientError(file);
     if (clientErr) {
       patchSlot(clientId, { status: "error", error: clientErr });
+      setErr(clientErr);
       pickingRef.current = false;
       return;
     }
     patchSlot(clientId, { status: "uploading" });
     try {
+      if (isPreview) {
+        onUpdated(applyPreviewDeliveryMutation(order, "photo", { shipmentId: activeShipment?.id || sjId }));
+        dropSlot(clientId);
+        return;
+      }
       const compressed = await compressImage(file);
       const uploadFile = compressed?.file || file;
       const sizeErr = deliveryProofCompressedSizeError(uploadFile);
@@ -202,6 +236,10 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     setBusy(true);
     setErr("");
     try {
+      if (isPreview) {
+        onUpdated(applyPreviewDeliveryMutation(order, "photo-delete", { proofId: proof.id }));
+        return;
+      }
       const res = await api.deleteDeliveryProof(order.id, proof.id);
       onUpdated(res.order);
     } catch (e) {
@@ -222,6 +260,20 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
     setBusy(true);
     setErr("");
     try {
+      if (isPreview) {
+        let latest = order;
+        if (localSig.recipient) {
+          latest = applyPreviewDeliveryMutation(latest, "recipient-sig", { recipientName });
+        }
+        if (localSig.driver) {
+          latest = applyPreviewDeliveryMutation(latest, "driver-sig");
+        }
+        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: activeShipment?.id || sjId });
+        onUpdated(latest);
+        setLocalSig({ recipient: null, driver: null });
+        onRequestClose?.();
+        return;
+      }
       let latest = order;
       if (localSig.recipient) {
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
@@ -246,6 +298,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
       });
       onUpdated(res.order);
       setLocalSig({ recipient: null, driver: null });
+      onRequestClose?.();
     } catch (e) {
       setErr(formatApiError(e, proofUploadUserError(e)));
     } finally {
@@ -254,49 +307,17 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
   };
 
   const pickerTitle = picker?.type === "replace" ? "Ganti Bukti Pengiriman" : "Tambah Bukti Pengiriman";
+  const photoSubtitle = photoBusy
+    ? "Mengunggah..."
+    : photoCount > 0
+      ? `${photoCount} Foto tersimpan`
+      : "Upload / Lihat foto";
+  const driverSubtitle = driverSigned ? "✓ Sudah ditandatangani" : "Isi tanda tangan";
+  const recipientSubtitle = recipientSigned ? "✓ Sudah ditandatangani" : "Isi tanda tangan";
+  const driverContext = [sjLabel, driverName].filter(Boolean).join(" · ");
 
-  return (
-    <section data-testid="mobile-ws-delivery">
-      <div className="mop-ws-header"><h2>PENGIRIMAN</h2></div>
-      {sjOptions.length > 0 && (
-        <label className="mop-field" data-testid="mobile-pengiriman-sj-select-wrap">
-          <span>Surat Jalan</span>
-          <select
-            value={activeSjOption?.id || sjId || ""}
-            onChange={(e) => setSjId(e.target.value)}
-            data-testid="mobile-pengiriman-sj-select"
-          >
-            {sjOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.number} · {opt.id}{opt.delivered ? " · Terkirim" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {activeSjOption && (
-        <div className="mop-file" data-testid="mobile-pengiriman-selected-sj-card">
-          <span>Surat Jalan</span>
-          <strong data-testid="mobile-pengiriman-selected-sj-number">{activeSjOption.number}</strong>
-          <p data-testid="mobile-pengiriman-selected-sj-qty">Qty {Number(activeSjOption.qty || 0).toLocaleString("id-ID")} pcs</p>
-          <p data-testid="mobile-pengiriman-selected-loading">
-            Loading {Number(batchReadiness.loadedTotal || 0).toLocaleString("id-ID")} / {Number(batchReadiness.requiredTotal || activeSjOption.qty || 0).toLocaleString("id-ID")}
-          </p>
-          <p data-testid="mobile-pengiriman-selected-status">
-            {selectedDelivered ? "Terkirim" : (batchReadiness.allowed ? "Siap dikirim" : "Belum siap")}
-          </p>
-        </div>
-      )}
-      <div className="mop-file">
-        <span>Customer</span>
-        <strong className="mop-card-title" style={{ display: "block" }} data-testid="mobile-delivery-customer">{getCanonicalCustomerName(order)}</strong>
-        <p>{address || "Alamat tidak tersedia"}</p>
-        {maps ? (
-          <a className="mop-btn-primary" style={{ display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }} href={maps} target="_blank" rel="noreferrer">
-            Buka Maps
-          </a>
-        ) : null}
-      </div>
+  const photoPanel = (
+    <>
       <h3>Bukti Pengiriman</h3>
       <div className="mop-photos">
         {proofs.map((p, i) => (
@@ -307,7 +328,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
               <span>Foto {i + 1}</span>
             )}
             <div className="mop-photo-actions">
-              <button type="button" onClick={() => setPreview({ src: fileUrl(p.storage_path), alt: `Bukti pengiriman ${i + 1}` })} data-testid={`mobile-proof-view-${p.id || i}`}>
+              <button type="button" onClick={() => setPreview({ src: p.storage_path ? fileUrl(p.storage_path) : "", alt: `Bukti pengiriman ${i + 1}` })} data-testid={`mobile-proof-view-${p.id || i}`}>
                 Lihat
               </button>
               {canMutate && (
@@ -358,6 +379,176 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
           );
         })}
       </div>
+    </>
+  );
+
+  return (
+    <section data-testid="mobile-ws-delivery" className="mop-delivery-task">
+      <header className="mop-delivery-task-head">
+        <div className="mop-delivery-task-head-main">
+          <span className="mop-delivery-task-mark" aria-hidden="true"><Truck size={22} /></span>
+          <div>
+            <h2>Surat Jalan &amp; Pengiriman</h2>
+            {sjOptions.length > 1 ? (
+              <label className="mop-delivery-sj-select-wrap" data-testid="mobile-pengiriman-sj-select-wrap">
+                <span className="mop-sr-only">Surat Jalan</span>
+                <select
+                  value={activeSjOption?.id || sjId || ""}
+                  onChange={(e) => setSjId(e.target.value)}
+                  data-testid="mobile-pengiriman-sj-select"
+                  aria-label="Pilih Surat Jalan"
+                >
+                  {sjOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {pengirimanSjDisplayLabel(opt, { includeDelivered: true })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <p className="mop-delivery-sj-number" data-testid="mobile-pengiriman-selected-sj-number">
+                {sjLabel || "Surat Jalan"}
+              </p>
+            )}
+            {sjOptions.length > 1 && (
+              <p className="mop-delivery-sj-number" data-testid="mobile-pengiriman-selected-sj-number">
+                {sjLabel}
+              </p>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="mop-task-modal-x"
+          onClick={() => onRequestClose?.()}
+          aria-label="Tutup"
+          data-testid="mobile-delivery-close-x"
+        >
+          <X size={20} aria-hidden="true" />
+        </button>
+      </header>
+
+      {sjOptions.length === 1 && (
+        <span hidden data-testid="mobile-pengiriman-sj-select-wrap">
+          <select
+            value={activeSjOption?.id || sjId || ""}
+            onChange={(e) => setSjId(e.target.value)}
+            data-testid="mobile-pengiriman-sj-select"
+            aria-hidden="true"
+          >
+            {sjOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {pengirimanSjDisplayLabel(opt, { includeDelivered: true })}
+              </option>
+            ))}
+          </select>
+        </span>
+      )}
+
+      <article className="mop-delivery-customer-card">
+        <span>Customer</span>
+        <strong className="mop-card-title" data-testid="mobile-delivery-customer">{getCanonicalCustomerName(order)}</strong>
+        <p>{address || "Alamat tidak tersedia"}</p>
+        {maps ? (
+          <a className="mop-delivery-maps" href={maps} target="_blank" rel="noreferrer">Buka Maps</a>
+        ) : null}
+      </article>
+
+      <div className="mop-delivery-info-row">
+        <div>
+          <span>Tanggal Kirim</span>
+          <strong data-testid="mobile-delivery-ship-date">
+            {formatKirimDate(activeSjOption?.date || order?.tanggal_pengiriman)}
+          </strong>
+        </div>
+        <div>
+          <span>Status</span>
+          <strong
+            className={`mop-badge is-${tone.key}`}
+            data-testid="mobile-pengiriman-selected-status"
+          >
+            {tone.label}
+          </strong>
+        </div>
+      </div>
+
+      <div className="mop-delivery-action-grid">
+        <button
+          type="button"
+          className="mop-delivery-action is-sj"
+          onClick={() => setSjOpen(true)}
+          data-testid="mobile-delivery-sj-action"
+        >
+          <FileText size={22} aria-hidden="true" />
+          <span className="mop-delivery-action-title">Surat Jalan</span>
+          <span className="mop-delivery-action-sub">Lihat detail dokumen</span>
+        </button>
+        <button
+          type="button"
+          className="mop-delivery-action is-driver"
+          onClick={() => canMutate && setModal({ open: true, role: "driver" })}
+          disabled={!canMutate}
+          data-testid="mobile-delivery-driver-sign-action"
+        >
+          <PenLine size={22} aria-hidden="true" />
+          <span className="mop-delivery-action-title">TTD Pengirim</span>
+          <span className="mop-delivery-action-sub">{driverSubtitle}</span>
+        </button>
+        <button
+          type="button"
+          className="mop-delivery-action is-recipient"
+          onClick={() => canMutate && setModal({ open: true, role: "recipient" })}
+          disabled={!canMutate}
+          data-testid="mobile-delivery-recipient-sign-action"
+        >
+          <Signature size={22} aria-hidden="true" />
+          <span className="mop-delivery-action-title">TTD Penerima</span>
+          <span className="mop-delivery-action-sub">{recipientSubtitle}</span>
+        </button>
+        <button
+          type="button"
+          className="mop-delivery-action is-photo"
+          onClick={() => setPhotoOpen(true)}
+          data-testid="mobile-delivery-photo-action"
+        >
+          <Camera size={22} aria-hidden="true" />
+          <span className="mop-delivery-action-title">Foto Bukti</span>
+          <span className="mop-delivery-action-sub">{photoSubtitle}</span>
+        </button>
+      </div>
+
+      {canMutate && !canWritePhoto && batchPhotoBlockReason && (
+        <p className="mop-muted" data-testid="mobile-proof-batch-readiness-hint">
+          {batchPhotoBlockReason}
+        </p>
+      )}
+      {err && (
+        <div className="mop-error" data-testid="mobile-delivery-error">
+          {err}
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="mop-delivery-confirm"
+        disabled={!canConfirm || busy || photoBusy}
+        onClick={confirm}
+        data-testid="mobile-confirm-delivered"
+      >
+        <CheckCircle2 size={22} aria-hidden="true" />
+        <span className="mop-delivery-action-title">Konfirmasi Terkirim</span>
+        <span className="mop-delivery-action-sub">Selesaikan pengiriman</span>
+      </button>
+
+      <button
+        type="button"
+        className="mop-task-close-btn"
+        onClick={() => onRequestClose?.()}
+        data-testid="mobile-delivery-close"
+      >
+        Tutup
+      </button>
+
       <input
         ref={cameraRef}
         type="file"
@@ -377,37 +568,31 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
         data-testid="mobile-delivery-gallery-input"
         aria-label="Pilih foto dari galeri"
       />
-      <label className="mop-field">
-        <span>Nama Penerima</span>
-        <input value={recipientName} onChange={(e) => setRecipientName(e.target.value)} disabled={!canMutate} data-testid="mobile-recipient-name" />
-      </label>
-      <div className="mop-file">
-        <strong>TTD PENERIMA</strong>
-        {(localSig.recipient || orderSig?.signature_storage_path) ? <p>TTD Tersimpan ✓</p> : null}
-        <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled={!canMutate} onClick={() => setModal({ open: true, role: "recipient" })}>
-          Buat TTD Penerima
+
+      <MobileTaskModal
+        open={photoOpen}
+        onClose={() => { setPhotoOpen(false); closePicker(); }}
+        title="Foto Bukti"
+        subtitle={photoSubtitle}
+        icon={<Camera size={22} aria-hidden="true" />}
+        testid="mobile-delivery-photo-modal"
+      >
+        {photoPanel}
+        {canMutate && !canWritePhoto && batchPhotoBlockReason && (
+          <p className="mop-muted" data-testid="mobile-proof-batch-readiness-hint-modal">
+            {batchPhotoBlockReason}
+          </p>
+        )}
+        <button
+          type="button"
+          className="mop-task-close-btn"
+          onClick={() => setPhotoOpen(false)}
+          data-testid="mobile-delivery-photo-close"
+        >
+          Tutup
         </button>
-      </div>
-      <div className="mop-file">
-        <strong>TTD DRIVER</strong>
-        {(localSig.driver || driverSig?.signature_storage_path || driverSig?.driver_signature_storage_path) ? <p>TTD Tersimpan ✓</p> : null}
-        <button type="button" className="mop-btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled={!canMutate} onClick={() => setModal({ open: true, role: "driver" })}>
-          Buat TTD Driver
-        </button>
-      </div>
-      {canMutate && !canWritePhoto && batchPhotoBlockReason && (
-        <p className="mop-muted" data-testid="mobile-proof-batch-readiness-hint">
-          {batchPhotoBlockReason}
-        </p>
-      )}
-      {err && (
-        <div className="mop-error" data-testid="mobile-delivery-error">
-          {err}
-        </div>
-      )}
-      <button type="button" className="mop-btn-primary" disabled={!canConfirm || busy || photoBusy} onClick={confirm} data-testid="mobile-confirm-delivered">
-        Konfirmasi Terkirim
-      </button>
+      </MobileTaskModal>
+
       {picker && canMutate && (
         <div className="mop-sheet-backdrop" data-testid="mobile-photo-picker-sheet" onClick={closePicker}>
           <div className="mop-sheet" role="dialog" aria-modal="true" aria-label={pickerTitle} onClick={(e) => e.stopPropagation()}>
@@ -428,19 +613,45 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated }) {
       )}
       {preview?.src && (
         <div className="mop-photo-lightbox" data-testid="mobile-delivery-photo-preview" onClick={() => setPreview(null)}>
-          <img src={preview.src} alt={preview.alt || "Pratinjau bukti pengiriman"} />
+          <img src={preview.src} alt={preview.alt || "Pratinjau bukti pengiriman" } />
         </div>
       )}
+      <MobileDeliverySjModal
+        open={sjOpen}
+        onClose={() => setSjOpen(false)}
+        order={order}
+        shipment={activeShipment}
+        sjOption={activeSjOption}
+        statusLabel={tone.label}
+      />
       <MobileSignatureModal
         open={modal.open}
         role={modal.role}
         readOnly={delivered}
+        title={modal.role === "recipient" ? "Tanda Tangan Penerima" : "Tanda Tangan Pengirim"}
+        context={modal.role === "recipient" ? sjLabel : driverContext}
         onCancel={() => setModal({ open: false, role: null })}
         onSave={(dataUrl) => {
           setLocalSig((cur) => applyLocalSignature(cur, modal.role, dataUrl));
+          if (isPreview) {
+            const kind = modal.role === "recipient" ? "recipient-sig" : "driver-sig";
+            onUpdated(applyPreviewDeliveryMutation(order, kind, { recipientName }));
+          }
           setModal({ open: false, role: null });
         }}
-      />
+      >
+        {modal.role === "recipient" ? (
+          <label className="mop-field mop-sig-name-field">
+            <span>Nama Penerima</span>
+            <input
+              value={recipientName}
+              onChange={(e) => setRecipientName(e.target.value)}
+              disabled={!canMutate}
+              data-testid="mobile-recipient-name"
+            />
+          </label>
+        ) : null}
+      </MobileSignatureModal>
     </section>
   );
 }

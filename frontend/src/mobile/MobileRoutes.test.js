@@ -52,6 +52,9 @@ describe("mobile route wiring", () => {
     expect(detail).toMatch(/selectMobileWorkspace/);
     expect(detail).toMatch(/hasPerm\(selected\.permission\)/);
     expect(detail).toMatch(/WORKSPACE_VIEWS\[selected\.id\]/);
+    expect(detail).toMatch(/MobileTaskModal/);
+    expect(detail).toMatch(/onRequestClose/);
+    expect(detail).toMatch(/getPwaDeliveryTaskPreviewOrder/);
   });
 
   test("order detail topbar uses customer primary title and PO secondary meta", () => {
@@ -89,7 +92,7 @@ describe("mobile route wiring", () => {
     expect(dsPage).toMatch(/useProductionSheetZoom/);
     expect(dsPage).toMatch(/production-sheet-viewport/);
     expect(dsPage).toMatch(/canViewMobileDeliverySchedule/);
-    expect(dsPage).toMatch(/canEditMobileDeliveryScheduleLocation/);
+    expect(dsLib).toMatch(/canEditMobileDeliveryScheduleLocation/);
     expect(dsPage).toMatch(/mobileScheduleWorkHref/);
     expect(dsPage).toMatch(/OPS_QUICK_FILTERS|mds-quick/);
     expect(dsPage).toMatch(/qty_packed|PackingCell|packingProgressText/);
@@ -136,7 +139,9 @@ describe("mobile route wiring", () => {
     expect(packing).toMatch(/label: "Sisa"/);
     expect(print).toMatch(/label: "Sisa"/);
     expect(loading).toMatch(/Remaining Qty/);
-    expect(loading).toMatch(/Sisa \{Number\(line\.available/);
+    expect(loading).toMatch(/Item non-cetak — Packing dilewati/);
+    expect(loading).toMatch(/loadingAvailability/);
+    expect(loading).toMatch(/avail\.blocked/);
   });
 
   test("orders list uses canonical listOrders and cannot stay loading after error", () => {

@@ -5,10 +5,12 @@ import { useAuth } from "../lib/auth";
 import { getCanonicalCustomerName } from "../lib/canonicalCustomer";
 import { formatDeadline } from "../lib/constants";
 import { poCardPresentation, selectMobileWorkspace } from "../lib/mobileWorkspaces";
+import { getPwaDeliveryTaskPreviewOrder } from "../lib/pwaDeliveryTaskPreview";
 import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
 import MobileTopBar from "./MobileTopBar";
 import MobileStageFlow from "./components/MobileStageFlow";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
+import MobileTaskModal from "./components/MobileTaskModal";
 import MobileScreenerWorkspace from "./workspaces/MobileScreenerWorkspace";
 import MobileHelperPrepWorkspace from "./workspaces/MobileHelperPrepWorkspace";
 import MobilePackingWorkspace from "./workspaces/MobilePackingWorkspace";
@@ -42,8 +44,21 @@ export default function MobileOrderDetailPage() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [taskOpen, setTaskOpen] = useState(false);
 
   const load = async ({ background } = {}) => {
+    const previewOrder = getPwaDeliveryTaskPreviewOrder(
+      id,
+      typeof window !== "undefined" ? window.location.search : "",
+      typeof window !== "undefined" ? window : undefined,
+    );
+    if (previewOrder) {
+      setOrder(previewOrder);
+      setErr("");
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (background && order) setRefreshing(true);
     else setLoading(true);
     setErr("");
@@ -62,6 +77,11 @@ export default function MobileOrderDetailPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    if (order && selected) setTaskOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id, selected?.id]);
 
   const onUpdated = (next) => {
     if (next) setOrder(next);
@@ -139,7 +159,33 @@ export default function MobileOrderDetailPage() {
             )}
             {choice.unauthorized && <p className="mop-card-meta">Workspace diminta tidak diizinkan. Menampilkan workspace yang tersedia.</p>}
             {Workspace ? (
-              <Workspace order={order} canEdit={hasPerm(selected.permission)} onUpdated={onUpdated} />
+              <>
+                {!taskOpen && (
+                  <button
+                    type="button"
+                    className="mop-btn-primary"
+                    onClick={() => setTaskOpen(true)}
+                    data-testid="mobile-open-task-modal"
+                  >
+                    Buka {selected.label}
+                  </button>
+                )}
+                <MobileTaskModal
+                  open={taskOpen}
+                  onClose={() => setTaskOpen(false)}
+                  title={selected.label}
+                  hideHeader={selected.id === "delivery"}
+                  testid="mobile-task-modal"
+                  labelledBy="mobile-task-modal-title"
+                >
+                  <Workspace
+                    order={order}
+                    canEdit={hasPerm(selected.permission)}
+                    onUpdated={onUpdated}
+                    onRequestClose={() => setTaskOpen(false)}
+                  />
+                </MobileTaskModal>
+              </>
             ) : (
               <p className="mop-empty">Tidak ada workspace operasional untuk akun ini.</p>
             )}

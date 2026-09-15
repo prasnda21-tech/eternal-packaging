@@ -18,6 +18,11 @@ jest.mock("../../lib/api", () => ({
   fileUrl: (p) => p,
 }));
 
+jest.mock("../../components/SignaturePad", () => ({
+  __esModule: true,
+  default: () => <div data-testid="mobile-sig-pad-stub" />,
+}));
+
 jest.mock("../../lib/imageCompress", () => ({
   __esModule: true,
   compressImage: (file) => Promise.resolve({ file, compressed: false, sizeKB: 1 }),
@@ -117,10 +122,18 @@ describe("PWA Pengiriman gallery picker", () => {
     container.remove();
   });
 
+  const openPhoto = () => {
+    act(() => container.querySelector('[data-testid="mobile-delivery-photo-action"]').click());
+  };
+  const openRecipient = () => {
+    act(() => container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').click());
+  };
+
   test("authorized editor sees Tambah Foto plus camera and gallery choices", () => {
     act(() => {
       root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} />);
     });
+    openPhoto();
     expect(container.textContent).toContain("Tambah Foto");
     expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
     act(() => container.querySelector('[data-testid="mobile-add-photo"]').click());
@@ -149,6 +162,7 @@ describe("PWA Pengiriman gallery picker", () => {
     act(() => {
       root.render(<MobileDeliveryWorkspace order={cupLidReadyOrder} canEdit onUpdated={() => {}} />);
     });
+    openPhoto();
     expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-proof-batch-readiness-hint"]')).toBeFalsy();
   });
@@ -173,6 +187,7 @@ describe("PWA Pengiriman gallery picker", () => {
         delivery_proofs: [{ id: "p1", storage_path: "proofs/p1.jpg" }],
       }} canEdit={false} onUpdated={() => {}} />);
     });
+    openPhoto();
     expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-photo-gallery"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-proof-replace-p1"]')).toBeFalsy();
@@ -189,9 +204,12 @@ describe("PWA Pengiriman gallery picker", () => {
         delivery_proofs: [{ id: "p1", storage_path: "proofs/p1.jpg" }, { id: "p2", storage_path: "proofs/p2.jpg" }],
       }} canEdit onUpdated={() => {}} />);
     });
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="mobile-delivery-driver-sign-action"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').disabled).toBe(true);
+    openPhoto();
     expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-proof-delete-p1"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="mobile-recipient-name"]').disabled).toBe(true);
   });
 
   test("selected gallery image enters preview/upload flow and counts after upload", async () => {
@@ -224,6 +242,7 @@ describe("PWA Pengiriman gallery picker", () => {
     await flush();
     expect(container.textContent).toMatch(/Gagal mengunggah foto/);
     expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+    openPhoto();
     expect(container.querySelector('[data-testid^="mobile-proof-retry-"]')).toBeTruthy();
   });
 
@@ -275,6 +294,7 @@ describe("PWA Pengiriman gallery picker", () => {
     act(() => {
       root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} />);
     });
+    openRecipient();
     const name = container.querySelector('[data-testid="mobile-recipient-name"]');
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
@@ -287,8 +307,8 @@ describe("PWA Pengiriman gallery picker", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
-    expect(container.textContent).toContain("TTD PENERIMA");
-    expect(container.textContent).toContain("TTD DRIVER");
+    expect(container.textContent).toContain("TTD Penerima");
+    expect(container.textContent).toContain("TTD Pengirim");
   });
 
   test("HEIC is rejected with the supported-format message", async () => {
@@ -340,12 +360,146 @@ describe("PWA Pengiriman gallery picker", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ/001");
-    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toMatch(/Siap dikirim/);
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toMatch(/Siap Kirim/);
     act(() => {
       select.value = "sj-2";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ/001_2");
     expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toMatch(/Belum siap/);
+  });
+
+  test("SJ visible text hides UUID while select value keeps shipment id", () => {
+    const uuid = "3ab43353-5705-476b-97fd-f3beb1b1314c";
+    const uuid2 = "7c91e2a0-4b18-4d6f-9c22-0e8f1a2b3c4d";
+    const order = {
+      ...baseOrder,
+      shipments: [
+        { id: uuid, number: "SJ/2026/09/07/000031 1", delivery_date: "2026-09-15", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 },
+        { id: uuid2, number: "SJ/2026/09/07/000031 2", delivery_date: "2026-09-15", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 },
+      ],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: uuid, lines: [{ line_idx: 0, qty: 10 }] }],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} />);
+    });
+    const select = container.querySelector('[data-testid="mobile-pengiriman-sj-select"]');
+    expect(select.value).toBe(uuid);
+    expect(select.textContent).toContain("SJ/2026/09/07/000031 1");
+    expect(select.textContent).not.toContain(uuid);
+    expect(select.textContent).not.toContain(uuid2);
+    expect(container.textContent).not.toContain(uuid);
+    expect(container.textContent).toMatch(/SJ\/2026\/09\/07\/000031 1/);
+  });
+
+  test("Surat Jalan button opens modal and close returns to delivery actions", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-sj-detail-modal"]')).toBeFalsy();
+    act(() => container.querySelector('[data-testid="mobile-delivery-sj-action"]').click());
+    expect(container.querySelector('[data-testid="mobile-sj-detail-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-sj-detail-number"]').textContent).toContain("SJ-1");
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeTruthy();
+    act(() => container.querySelector('[data-testid="mobile-sj-detail-close"]').click());
+    expect(container.querySelector('[data-testid="mobile-sj-detail-modal"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-delivery-sj-action"]')).toBeTruthy();
+  });
+
+  test("TTD Pengirim and TTD Penerima open the existing signature interaction", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} />);
+    });
+    act(() => container.querySelector('[data-testid="mobile-delivery-driver-sign-action"]').click());
+    expect(container.querySelector('[data-testid="mobile-signature-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-signature-modal"] h2').textContent).toBe("Tanda Tangan Pengirim");
+    act(() => container.querySelector('[data-testid="mobile-sig-cancel"]').click());
+    act(() => container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').click());
+    expect(container.querySelector('[data-testid="mobile-signature-modal"] h2').textContent).toBe("Tanda Tangan Penerima");
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]')).toBeTruthy();
+  });
+
+  test("Foto Bukti reuses existing camera/gallery action", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} />);
+    });
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-delivery-photo-modal"]')).toBeTruthy();
+    act(() => container.querySelector('[data-testid="mobile-add-photo"]').click());
+    expect(container.querySelector('[data-testid="mobile-photo-camera"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-photo-gallery"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-camera-input"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-gallery-input"]')).toBeTruthy();
+  });
+
+  test("Konfirmasi Terkirim reuses existing handler and shipment id", async () => {
+    const ready = {
+      ...baseOrder,
+      delivery_proofs: [
+        { id: "p1", shipment_id: "s1", storage_path: "a.jpg" },
+        { id: "p2", shipment_id: "s1", storage_path: "b.jpg" },
+      ],
+      delivery_recipient_signature: {
+        id: "r1",
+        signature_storage_path: "r.png",
+        recipient_signed_at: "t",
+        recipient_name: "Budi",
+      },
+      delivery_driver_signature: {
+        id: "d1",
+        signature_storage_path: "d.png",
+        driver_signed_at: "t",
+      },
+    };
+    api.confirmDelivered.mockResolvedValue({ order: { ...ready, delivery_status: "Terkirim", terkirim_confirmed: true } });
+    const onUpdated = jest.fn();
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={ready} canEdit onUpdated={onUpdated} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
+      shipment_id: "s1",
+    }));
+    expect(onUpdated).toHaveBeenCalled();
+  });
+
+  test("new UI has no manual Qty Terkirim input", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.textContent).not.toMatch(/Qty Terkirim/i);
+    expect(container.querySelector('input[name="qty_delivered"]')).toBeFalsy();
+    expect(deliverySrc).not.toMatch(/Qty Terkirim/);
+    expect(deliverySrc).toMatch(/confirmDeliveredBlockReason/);
+    expect(deliverySrc).toMatch(/api\.confirmDelivered\(order\.id/);
+  });
+
+  test("already-delivered SJ keeps completed/disabled confirmation", () => {
+    const done = {
+      ...baseOrder,
+      shipments: [{
+        id: "s1",
+        number: "SJ-1",
+        delivered_at: "2026-09-10T10:00:00+07:00",
+        delivery_status: "Terkirim",
+        lines: [{ line_idx: 0, qty: 10 }],
+        total_qty: 10,
+      }],
+      delivery_status: "Terkirim",
+      terkirim_confirmed: true,
+      delivery_proofs: [
+        { id: "p1", shipment_id: "s1", storage_path: "a.jpg" },
+        { id: "p2", shipment_id: "s1", storage_path: "b.jpg" },
+      ],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={done} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toBe("Terkirim");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
   });
 });
