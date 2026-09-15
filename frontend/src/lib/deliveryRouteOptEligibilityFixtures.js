@@ -125,13 +125,14 @@ export function partitionPreviewStopsIntoTwoFleets(stops) {
 }
 
 function orderUrgentFirst(stops) {
-  const keyOf = (s) => String(s.id || s.sales_order_id || "");
+  const keyOf = (s) => String(s.assignment_id || s.shipment_id || s.id || "");
   const urgent = stops.filter((s) => s.urgent).sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
   const normal = stops.filter((s) => !s.urgent).sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
   return [...urgent, ...normal].map((s, idx) => ({
     ...s,
     id: keyOf(s),
-    sales_order_id: keyOf(s),
+    assignment_id: keyOf(s),
+    sales_order_id: s.sales_order_id,
     stop_sequence: idx + 1,
     priority_id: s.urgent ? "p1" : "p3",
   }));
@@ -151,14 +152,27 @@ function row({
   driverName = null,
   address = "",
   area = "",
+  sjUnits = null,
+  sjLoadQty = null,
 }) {
+  const units = Array.isArray(sjUnits)
+    ? sjUnits
+    : (sjLabel && sjLabel !== "—"
+      ? [{ shipment_id: `sh-${id}`, sj_number: sjLabel, sj_load_qty: 10000 }]
+      : []);
+  const load = sjLoadQty != null
+    ? Number(sjLoadQty)
+    : units.reduce((sum, u) => sum + Number(u.sj_load_qty || 0), 0);
   return {
     sales_order_id: id,
     delivery_id: id,
     order_number: po,
     customer_name: customer,
     sj_label: sjLabel,
-    sj_numbers: sjLabel && sjLabel !== "—" ? [sjLabel] : [],
+    sj_numbers: units.map((u) => u.sj_number).filter(Boolean),
+    shipment_ids: units.map((u) => u.shipment_id).filter(Boolean),
+    sj_units: units,
+    sj_load_qty: eligible ? load : 0,
     eligible,
     reasons: reasons || [],
     reason: reasons && reasons.length ? reasons[0] : null,
@@ -176,91 +190,102 @@ function row({
   };
 }
 
+export function expandPreviewRowsToSjAtoms(rows) {
+  const atoms = [];
+  const seen = new Set();
+  (rows || []).forEach((r) => {
+    const units = (Array.isArray(r.sj_units) ? r.sj_units : []).filter(
+      (u) => u && String(u.shipment_id || "").trim() && Number(u.sj_load_qty || 0) > 0,
+    );
+    if (!units.length) {
+      const id = String(r.sales_order_id || r.id || "").trim();
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      atoms.push({
+        ...r,
+        id,
+        assignment_id: id,
+        shipment_id: r.shipment_id || null,
+        sj_load_qty: 0,
+        sj_units: [],
+        shipment_ids: [],
+      });
+      return;
+    }
+    units.forEach((u) => {
+      const sid = String(u.shipment_id).trim();
+      if (!sid || seen.has(sid)) return;
+      seen.add(sid);
+      atoms.push({
+        ...r,
+        id: sid,
+        assignment_id: sid,
+        shipment_id: sid,
+        sj_number: u.sj_number || sid,
+        sj_label: u.sj_number || sid,
+        sj_load_qty: Number(u.sj_load_qty || 0),
+        sj_units: [u],
+        shipment_ids: [sid],
+      });
+    });
+  });
+  return atoms;
+}
+
 /**
- * ~20 deterministic PO across 4 geographic clusters, ≥5 urgent,
- * mixed SJ/location ineligibles, no preselected route drivers.
+ * Exactly 3 representative dummy records for capacity SJ atomicity preview.
+ * DUMMY 1: one SJ that fits Armada 1.
+ * DUMMY 2: same PO, two different SJ that may go to different armadas.
+ * DUMMY 3: one SJ larger than both vehicle capacities → Belum Teralokasi.
  */
 export function getRouteOptEligibilityPreviewReview() {
-  const clusters = [
-    { area: "Jakarta Utara", lat: -6.12, lng: 106.88 },
-    { area: "Bandung", lat: -6.91, lng: 107.61 },
-    { area: "Surabaya", lat: -7.25, lng: 112.75 },
-    { area: "Padang", lat: -0.95, lng: 100.35 },
+  const rows = [
+    row({
+      id: "preview-cap-d1",
+      po: "PO-DUMMY-1",
+      customer: "Dummy Toko Satu SJ",
+      sjLabel: "SJ-DUMMY-1",
+      eligible: true,
+      reasons: [],
+      lat: -6.12,
+      lng: 106.88,
+      address: "Jl Preview Jakarta Utara No 1",
+      area: "Jakarta Utara",
+      sjUnits: [{ shipment_id: "sj-dummy-1", sj_number: "SJ-DUMMY-1", sj_load_qty: 10000 }],
+      sjLoadQty: 10000,
+    }),
+    row({
+      id: "preview-cap-d2",
+      po: "PO-DUMMY-2",
+      customer: "Dummy Toko Dua SJ",
+      sjLabel: "SJ-DUMMY-2A, SJ-DUMMY-2B",
+      eligible: true,
+      reasons: [],
+      lat: -6.91,
+      lng: 107.61,
+      address: "Jl Preview Bandung No 2",
+      area: "Bandung",
+      sjUnits: [
+        { shipment_id: "sj-dummy-2a", sj_number: "SJ-DUMMY-2A", sj_load_qty: 30000 },
+        { shipment_id: "sj-dummy-2b", sj_number: "SJ-DUMMY-2B", sj_load_qty: 20000 },
+      ],
+      sjLoadQty: 50000,
+    }),
+    row({
+      id: "preview-cap-d3",
+      po: "PO-DUMMY-3",
+      customer: "Dummy Toko Overflow",
+      sjLabel: "SJ-DUMMY-3",
+      eligible: true,
+      reasons: [],
+      lat: -7.25,
+      lng: 112.75,
+      address: "Jl Preview Surabaya No 3",
+      area: "Surabaya",
+      sjUnits: [{ shipment_id: "sj-dummy-3", sj_number: "SJ-DUMMY-3", sj_load_qty: 50000 }],
+      sjLoadQty: 50000,
+    }),
   ];
-  const rows = [];
-  let n = 0;
-  const urgentSlots = new Set([1, 6, 11, 16, 2]); // 5 urgent across clusters
-  for (let c = 0; c < 4; c += 1) {
-    for (let j = 0; j < 4; j += 1) {
-      n += 1;
-      const id = `preview-po-${String(n).padStart(2, "0")}`;
-      const urgent = urgentSlots.has(n);
-      rows.push(row({
-        id,
-        po: `PO-PREVIEW-${String(n).padStart(3, "0")}`,
-        customer: `Preview Toko ${clusters[c].area} ${j + 1}`,
-        sjLabel: `SJ-PREVIEW-${String(n).padStart(3, "0")}`,
-        eligible: true,
-        reasons: [],
-        lat: clusters[c].lat + j * 0.012,
-        lng: clusters[c].lng + j * 0.012,
-        urgent,
-        address: `Jl Preview ${clusters[c].area} No ${j + 1}`,
-        area: clusters[c].area,
-        driverUserId: n === 3 ? "drv-existing-order" : null,
-        driverName: n === 3 ? "Existing Order Driver" : null,
-      }));
-    }
-  }
-  // Ineligibles
-  rows.push(row({
-    id: "preview-inelig-bad-sj",
-    po: "PO-PREVIEW-017",
-    customer: "Preview Toko SJ Incomplete",
-    sjLabel: "—",
-    eligible: false,
-    reasons: ["Surat Jalan belum siap."],
-    lat: -6.2,
-    lng: 106.8,
-    address: "Jl Preview SJ Incomplete",
-    area: "Jakarta",
-  }));
-  rows.push(row({
-    id: "preview-inelig-bad-loc",
-    po: "PO-PREVIEW-018",
-    customer: "Preview Toko Lokasi Invalid",
-    sjLabel: "SJ-PREVIEW-018",
-    eligible: false,
-    reasons: ["Koordinat belum tersedia"],
-    lat: null,
-    lng: null,
-    address: "Jl Preview tanpa koordinat",
-    area: "Jakarta",
-  }));
-  rows.push(row({
-    id: "preview-inelig-both",
-    po: "PO-PREVIEW-019",
-    customer: "Preview Toko SJ+Lokasi",
-    sjLabel: "—",
-    eligible: false,
-    reasons: ["Surat Jalan belum siap.", "Koordinat belum tersedia"],
-    lat: null,
-    lng: null,
-    address: "",
-    area: "",
-  }));
-  rows.push(row({
-    id: "preview-inelig-delivered",
-    po: "PO-PREVIEW-020",
-    customer: "Preview Toko Terkirim",
-    sjLabel: "SJ-PREVIEW-020",
-    eligible: false,
-    reasons: ["Sudah terkirim"],
-    lat: -6.22,
-    lng: 106.82,
-    address: "Jl Preview Terkirim",
-    area: "Jakarta",
-  }));
 
   const eligible = rows.filter((r) => r.eligible);
   return {
@@ -269,7 +294,7 @@ export function getRouteOptEligibilityPreviewReview() {
       selected: rows.length,
       eligible: eligible.length,
       ineligible: rows.length - eligible.length,
-      drivers: 1,
+      drivers: 0,
       routes_to_create: 0,
     },
     groups: [],
@@ -293,10 +318,21 @@ function fleetPanel(label, orderedStops) {
     priority_id: s.urgent ? "p1" : "p3",
   }));
   const fleetKey = String(label || "").toLowerCase().includes("2") ? "armada_2" : "armada_1";
+  const shipmentIds = stops.map((s) => String(s.shipment_id || s.assignment_id || s.id || "")).filter(Boolean);
+  const poIds = [];
+  const seenPo = new Set();
+  stops.forEach((s) => {
+    const oid = String(s.sales_order_id || "");
+    if (oid && !seenPo.has(oid)) {
+      seenPo.add(oid);
+      poIds.push(oid);
+    }
+  });
   return {
     label,
     fleet_key: fleetKey,
-    order_ids: stops.map((s) => s.sales_order_id),
+    order_ids: poIds,
+    shipment_ids: shipmentIds,
     stops,
     total_orders: stops.length,
     total_urgent: stops.filter((s) => s.urgent).length,
@@ -313,23 +349,24 @@ export function buildRouteOptEligibilityPreviewFleets({ orderIds, fleetCount = 2
   const selected = new Set((orderIds || []).map(String));
   const eligible = review.rows.filter((r) => selected.has(String(r.sales_order_id)) && r.eligible);
   const ineligible = review.rows.filter((r) => selected.has(String(r.sales_order_id)) && !r.eligible);
+  const atoms = expandPreviewRowsToSjAtoms(eligible);
   const count = Number(fleetCount);
   if (count !== 1 && count !== 2) {
     throw new Error("fleet_count harus 1 atau 2.");
   }
   if (count === 1) {
-    if (eligible.length < 1) {
-      throw new Error("Optimasi 1 Armada membutuhkan minimal 1 PO eligible.");
+    if (atoms.length < 1) {
+      throw new Error("Optimasi 1 Armada membutuhkan minimal 1 Surat Jalan eligible.");
     }
-    const ordered = orderUrgentFirst(eligible);
+    const ordered = orderUrgentFirst(atoms);
     const fleets = [fleetPanel("Armada 1", ordered)];
-    const fingerprint = `fixture-fp-1-${ordered.map((s) => s.sales_order_id).join(",")}`;
+    const fingerprint = `fixture-fp-1-${ordered.map((s) => s.assignment_id || s.id).join(",")}`;
     return {
       ok: true,
       preview: true,
       preview_fingerprint: fingerprint,
       fleet_count: 1,
-      eligible_order_ids: ordered.map((s) => s.sales_order_id),
+      eligible_order_ids: eligible.map((s) => s.sales_order_id),
       excluded_rows: ineligible,
       fleets,
       review,
@@ -341,12 +378,12 @@ export function buildRouteOptEligibilityPreviewFleets({ orderIds, fleetCount = 2
       },
     };
   }
-  if (eligible.length < 2) {
-    throw new Error("Optimasi 2 Armada membutuhkan minimal 2 PO eligible.");
+  if (atoms.length < 2) {
+    throw new Error("Optimasi 2 Armada membutuhkan minimal 2 Surat Jalan eligible.");
   }
   const parted = partitionPreviewStopsIntoTwoFleets(
-    eligible.map((r) => ({
-      id: r.sales_order_id,
+    atoms.map((r) => ({
+      id: r.assignment_id || r.id,
       lat: r.lat,
       lng: r.lng,
       urgent: r.urgent,
@@ -356,13 +393,13 @@ export function buildRouteOptEligibilityPreviewFleets({ orderIds, fleetCount = 2
   const a1 = orderUrgentFirst(parted.armada_1);
   const a2 = orderUrgentFirst(parted.armada_2);
   const fleets = [fleetPanel("Armada 1", a1), fleetPanel("Armada 2", a2)];
-  const fingerprint = `fixture-fp-2-${a1.map((s) => s.sales_order_id).join(",")}|${a2.map((s) => s.sales_order_id).join(",")}`;
+  const fingerprint = `fixture-fp-2-${a1.map((s) => s.assignment_id || s.id).join(",")}|${a2.map((s) => s.assignment_id || s.id).join(",")}`;
   return {
     ok: true,
     preview: true,
     preview_fingerprint: fingerprint,
     fleet_count: 2,
-    eligible_order_ids: [...a1, ...a2].map((s) => s.sales_order_id),
+    eligible_order_ids: eligible.map((s) => s.sales_order_id),
     excluded_rows: ineligible,
     fleets,
     review,
@@ -385,17 +422,28 @@ export function buildRouteOptEligibilityPreviewFleetPairResult() {
 
 /** Local one-stage create+optimize simulation (fixture mode only; zero persistence). */
 export function buildRouteOptEligibilityCreateFleets({ orderIds, fleetCount = 2 } = {}) {
+  const cap = getFixtureArmadaCapacity();
+  if (cap.armada_1_capacity_qty_sj == null || cap.armada_2_capacity_qty_sj == null) {
+    throw new Error("Kapasitas armada belum disimpan. Simpan Kapasitas Qty SJ Armada 1 dan Armada 2 terlebih dahulu.");
+  }
   const preview = buildRouteOptEligibilityPreviewFleets({ orderIds, fleetCount });
-  const routes = (preview.fleets || []).map((fleet, index) => ({
-    route_id: `fixture-route-${index + 1}`,
-    label: fleet.label,
-    fleet_group_id: fleetCount === 2 ? "fixture-fleet-group" : null,
-    order_ids: fleet.order_ids || [],
-    stop_count: Number(fleet.total_orders || (fleet.order_ids || []).length || 0),
-    urgent_count: Number(fleet.total_urgent || 0),
-    estimated_distance_m: fleet.estimated_distance_m ?? null,
-    status: "OPTIMIZED",
-  }));
+  const capacities = fleetCount === 1
+    ? [cap.armada_1_capacity_qty_sj]
+    : [cap.armada_1_capacity_qty_sj, cap.armada_2_capacity_qty_sj];
+    const packed = applyFixtureCapacity(preview.fleets || [], capacities);
+    const routes = packed.fleets.map((fleet, index) => ({
+      route_id: `fixture-route-${index + 1}`,
+      label: fleet.label,
+      fleet_group_id: fleetCount === 2 ? "fixture-fleet-group" : null,
+      order_ids: fleet.order_ids || [],
+      shipment_ids: fleet.shipment_ids || [],
+      stop_count: Number(fleet.total_orders || (fleet.shipment_ids || []).length || 0),
+      urgent_count: Number(fleet.total_urgent || 0),
+      sj_load_qty: Number(fleet.sj_load_qty || 0),
+      sj_numbers: (fleet.stops || []).map((s) => s.sj_number || s.sj_label).filter(Boolean),
+      estimated_distance_m: fleet.estimated_distance_m ?? null,
+      status: "OPTIMIZED",
+    }));
   return {
     ok: true,
     created: true,
@@ -409,12 +457,117 @@ export function buildRouteOptEligibilityCreateFleets({ orderIds, fleetCount = 2 
     schedule_input_fingerprint: preview.preview_fingerprint,
     eligible_order_ids: preview.eligible_order_ids,
     excluded_rows: preview.excluded_rows,
+    unassigned: packed.unassigned,
+    unassigned_reason: packed.unassigned.length ? "Kapasitas armada tidak mencukupi" : null,
+    capacities_used: {
+      armada_1_capacity_qty_sj: cap.armada_1_capacity_qty_sj,
+      armada_2_capacity_qty_sj: fleetCount === 2 ? cap.armada_2_capacity_qty_sj : null,
+      capacity_unit: "qty_surat_jalan",
+    },
     routes,
     review: preview.review,
     summary: {
       ...preview.summary,
       created_route_count: routes.length,
       reused: false,
+      unassigned_count: packed.unassigned.length,
     },
   };
+}
+
+let fixtureArmadaCapacity = {
+  armada_1_capacity_qty_sj: 40000,
+  armada_2_capacity_qty_sj: 20000,
+};
+
+export function getFixtureArmadaCapacity() {
+  return { ...fixtureArmadaCapacity };
+}
+
+export function saveFixtureArmadaCapacity({ armada_1_capacity_qty_sj, armada_2_capacity_qty_sj } = {}) {
+  fixtureArmadaCapacity = {
+    armada_1_capacity_qty_sj,
+    armada_2_capacity_qty_sj,
+  };
+  return {
+    ...getFixtureArmadaCapacity(),
+    capacity_unit: "qty_surat_jalan",
+  };
+}
+
+function applyFixtureCapacity(fleets, capacities) {
+  const remaining = capacities.map((c) => Number(c));
+  const packed = capacities.map(() => []);
+  const queued = [];
+  const seen = new Set();
+  fleets.forEach((fleet, fi) => {
+    (fleet.stops || []).forEach((stop) => {
+      const id = String(stop.assignment_id || stop.shipment_id || stop.id || "");
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      queued.push({ preferred: Math.min(fi, remaining.length - 1), stop });
+    });
+  });
+  const overflow = [];
+  queued.forEach(({ preferred, stop }) => {
+    const load = Number(stop.sj_load_qty || 0);
+    if (load <= remaining[preferred]) {
+      packed[preferred].push(stop);
+      remaining[preferred] -= load;
+    } else {
+      overflow.push(stop);
+    }
+  });
+  const unassigned = [];
+  overflow.forEach((stop) => {
+    const load = Number(stop.sj_load_qty || 0);
+    let placed = false;
+    for (let i = 0; i < remaining.length; i += 1) {
+      if (load <= remaining[i]) {
+        packed[i].push(stop);
+        remaining[i] -= load;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      unassigned.push({
+        sales_order_id: stop.sales_order_id,
+        order_number: stop.order_number,
+        customer_name: stop.customer_name,
+        sj_label: stop.sj_label,
+        sj_number: stop.sj_number || stop.sj_label,
+        sj_units: stop.sj_units || [],
+        sj_load_qty: load,
+        shipment_id: stop.shipment_id || stop.assignment_id,
+        assignment_id: stop.assignment_id || stop.shipment_id,
+        shipment_ids: stop.shipment_ids || [stop.shipment_id || stop.assignment_id].filter(Boolean),
+        reason: "Kapasitas armada tidak mencukupi",
+        unassigned_reason: "Kapasitas armada tidak mencukupi",
+      });
+    }
+  });
+  const nextFleets = fleets.map((fleet, i) => {
+    const stops = packed[i] || [];
+    const shipmentIds = stops.map((s) => String(s.shipment_id || s.assignment_id || s.id || "")).filter(Boolean);
+    const poIds = [];
+    const seenPo = new Set();
+    stops.forEach((s) => {
+      const oid = String(s.sales_order_id || "");
+      if (oid && !seenPo.has(oid)) {
+        seenPo.add(oid);
+        poIds.push(oid);
+      }
+    });
+    return {
+      ...fleet,
+      stops,
+      order_ids: poIds,
+      shipment_ids: shipmentIds,
+      total_orders: stops.length,
+      total_urgent: stops.filter((s) => s.urgent).length,
+      sj_load_qty: stops.reduce((sum, s) => sum + Number(s.sj_load_qty || 0), 0),
+    };
+  }).filter((f) => (f.shipment_ids || []).length > 0);
+  return { fleets: nextFleets, unassigned };
 }

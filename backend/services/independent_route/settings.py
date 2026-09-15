@@ -12,6 +12,7 @@ from services.independent_route.constants import (
     STRATEGY_NEAREST,
 )
 from services.independent_route.geo import is_valid_coordinate, point_from_snapshot
+from services.independent_route.fleet_capacity import CapacityError, parse_capacity_qty
 
 
 def now_iso() -> str:
@@ -37,6 +38,8 @@ def default_settings() -> dict:
             "viewport_lng": 118.0,
             "viewport_zoom": 5,
         },
+        "armada_1_capacity_qty_sj": None,
+        "armada_2_capacity_qty_sj": None,
     }
 
 
@@ -106,6 +109,11 @@ def normalize_settings(payload: dict | None) -> dict:
         end_mode = base["default_end_mode"]
     if strategy not in ("NEAREST", "FARTHEST", "SHORTEST"):
         strategy = base["default_strategy"]
+    try:
+        cap1 = parse_capacity_qty(src.get("armada_1_capacity_qty_sj"), label="Kapasitas Armada 1")
+        cap2 = parse_capacity_qty(src.get("armada_2_capacity_qty_sj"), label="Kapasitas Armada 2")
+    except CapacityError as exc:
+        raise ValueError(exc.message) from exc
     return {
         "warehouse": warehouse,
         "default_start_mode": start_mode,
@@ -113,6 +121,8 @@ def normalize_settings(payload: dict | None) -> dict:
         "default_strategy": strategy,
         "priority_levels": _normalize_priority_levels(src.get("priority_levels")),
         "map_defaults": dict(base["map_defaults"]),
+        "armada_1_capacity_qty_sj": cap1,
+        "armada_2_capacity_qty_sj": cap2,
     }
 
 
@@ -140,7 +150,10 @@ async def load_settings(db) -> dict:
 
 
 async def save_settings(db, payload: dict, user: dict) -> dict:
-    cfg = normalize_settings(payload)
+    existing = await load_settings(db)
+    incoming = dict(payload or {})
+    merged = {**existing, **incoming}
+    cfg = normalize_settings(merged)
     await db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {
@@ -157,3 +170,29 @@ async def save_settings(db, payload: dict, user: dict) -> dict:
         upsert=True,
     )
     return cfg
+
+
+def armada_capacity_public(settings: dict | None) -> dict:
+    src = settings or {}
+    return {
+        "armada_1_capacity_qty_sj": src.get("armada_1_capacity_qty_sj"),
+        "armada_2_capacity_qty_sj": src.get("armada_2_capacity_qty_sj"),
+        "capacity_unit": "qty_surat_jalan",
+    }
+
+
+async def save_armada_capacity(db, payload: dict, user: dict) -> dict:
+    """Atomically persist both Armada 1 and Armada 2 Qty SJ capacities."""
+    src = payload or {}
+    try:
+        cap1 = parse_capacity_qty(src.get("armada_1_capacity_qty_sj"), label="Kapasitas Armada 1")
+        cap2 = parse_capacity_qty(src.get("armada_2_capacity_qty_sj"), label="Kapasitas Armada 2")
+    except CapacityError as exc:
+        raise ValueError(exc.message) from exc
+    if cap1 is None or cap2 is None:
+        raise ValueError("Kapasitas Armada 1 dan Armada 2 wajib diisi dan harus lebih dari 0.")
+    existing = await load_settings(db)
+    existing["armada_1_capacity_qty_sj"] = cap1
+    existing["armada_2_capacity_qty_sj"] = cap2
+    cfg = await save_settings(db, existing, user)
+    return armada_capacity_public(cfg)

@@ -1,9 +1,10 @@
 """HTTP routes for the independent Route Optimizer."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from fastapi import HTTPException
 
 from services.independent_route.constants import (
     PERM_CREATE,
@@ -19,6 +20,7 @@ from services.independent_route import places as places_svc
 from services.independent_route import settings as settings_svc
 from services.independent_route import store
 from services.independent_route import delivery_bridge
+from services.independent_route.fleet_capacity import CapacityError
 
 
 class LoosePayload(BaseModel):
@@ -45,6 +47,12 @@ class ScheduleOptimizePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     order_ids: List[str] = Field(default_factory=list)
     fleet_count: Optional[int] = None
+
+
+class ArmadaCapacityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    armada_1_capacity_qty_sj: Any
+    armada_2_capacity_qty_sj: Any
 
 
 def _actor(user: dict) -> dict:
@@ -75,8 +83,40 @@ def register_independent_route_routes(
     @api_router.put("/route-optimizer/settings")
     async def put_settings(payload: LoosePayload, user=Depends(current_user)):
         await require_perm(user, PERM_SETTINGS_MANAGE)
-        cfg = await settings_svc.save_settings(get_db(), payload.model_dump(), _actor(user))
+        try:
+            cfg = await settings_svc.save_settings(get_db(), payload.model_dump(), _actor(user))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return {"settings": cfg}
+
+    @api_router.get("/route-optimizer/settings/armada-capacity")
+    async def get_armada_capacity(user=Depends(current_user)):
+        await require_any_perm(
+            user,
+            PERM_VIEW,
+            PERM_CREATE,
+            PERM_OPTIMIZE,
+            PERM_MANAGE,
+            PERM_NAV,
+            PERM_SETTINGS_VIEW,
+            PERM_SETTINGS_MANAGE,
+        )
+        cfg = await settings_svc.load_settings(get_db())
+        return settings_svc.armada_capacity_public(cfg)
+
+    @api_router.put("/route-optimizer/settings/armada-capacity")
+    async def put_armada_capacity(payload: ArmadaCapacityPayload, user=Depends(current_user)):
+        await require_any_perm(user, PERM_OPTIMIZE, PERM_MANAGE, PERM_SETTINGS_MANAGE)
+        try:
+            return await settings_svc.save_armada_capacity(
+                get_db(),
+                payload.model_dump(),
+                _actor(user),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except CapacityError as exc:
+            raise HTTPException(400, exc.message) from exc
 
     @api_router.get("/route-optimizer/outlets/search")
     async def search_outlets(q: str = "", user=Depends(current_user)):
