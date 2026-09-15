@@ -7,6 +7,8 @@ const mockReview = jest.fn();
 const mockCreateFleets = jest.fn();
 const mockPreviewFleets = jest.fn();
 const mockOptimizeFromSchedule = jest.fn();
+const mockGetCapacity = jest.fn();
+const mockSaveCapacity = jest.fn();
 const mockNavigate = jest.fn();
 let mockSearchParams = new URLSearchParams("ids=ord-a,ord-b");
 
@@ -31,6 +33,8 @@ jest.mock("../lib/api", () => ({
     createFleetsFromSchedule: (...args) => mockCreateFleets(...args),
     previewFleetsFromSchedule: (...args) => mockPreviewFleets(...args),
     optimizeFromSchedule: (...args) => mockOptimizeFromSchedule(...args),
+    getArmadaCapacity: (...args) => mockGetCapacity(...args),
+    saveArmadaCapacity: (...args) => mockSaveCapacity(...args),
   },
 }));
 
@@ -139,6 +143,14 @@ describe("MobileDeliveryRouteReviewPage PWA one-stage create", () => {
     mockCreateFleets.mockReset().mockResolvedValue(createResult(2));
     mockPreviewFleets.mockReset();
     mockOptimizeFromSchedule.mockReset();
+    mockGetCapacity.mockReset().mockResolvedValue({
+      armada_1_capacity_qty_sj: 50000,
+      armada_2_capacity_qty_sj: 40000,
+    });
+    mockSaveCapacity.mockReset().mockResolvedValue({
+      armada_1_capacity_qty_sj: 50000,
+      armada_2_capacity_qty_sj: 40000,
+    });
     mockNavigate.mockReset();
   });
 
@@ -157,6 +169,7 @@ describe("MobileDeliveryRouteReviewPage PWA one-stage create", () => {
     expect(container.querySelector('[data-testid="mds-review-fleet-count-1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-review-fleet-count-2"]')).toBeTruthy();
     expect(container.textContent).toMatch(/Buat Optimasi Rute|Jumlah Armada|Optimasi Rute/);
+    expect(container.querySelector('[data-testid="mds-review-capacity"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-review-fleet-driver-select-armada_1"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-review-simpan-2-rute"]')).toBeFalsy();
     expect(container.textContent).not.toMatch(/Simpan 2 Rute/);

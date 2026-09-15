@@ -651,6 +651,8 @@ export const api = {
   salesActivityActivateMigration: (batchId) => client.post(`/sales-activity/import/batches/${encodeURIComponent(batchId)}/activate`, { confirm: true }).then((r) => r.data),
   independentRouteSettings: () => client.get(`/route-optimizer/settings`).then((r) => r.data),
   updateIndependentRouteSettings: (payload) => client.put(`/route-optimizer/settings`, payload).then((r) => r.data),
+  getArmadaCapacity: () => client.get(`/route-optimizer/settings/armada-capacity`).then((r) => r.data),
+  saveArmadaCapacity: (payload) => client.put(`/route-optimizer/settings/armada-capacity`, payload).then((r) => r.data),
   searchIndependentRouteOutlets: (q) => client.get(`/route-optimizer/outlets/search`, { params: { q } }).then((r) => r.data),
   independentRoutePlacesStatus: () => client.get(`/route-optimizer/places/status`).then((r) => r.data),
   searchIndependentRoutePlaces: (q) => client.get(`/route-optimizer/places/search`, { params: { q } }).then((r) => r.data),

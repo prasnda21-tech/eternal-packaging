@@ -92,6 +92,6 @@ FLEET_LABEL_1 = "Armada 1"
 FLEET_LABEL_2 = "Armada 2"
 FLEET_PARTITION_VERSION = "fleet_partition_v1"
 
-# Persistent schedule→armada create (driverless)
-SCHEDULE_FLEET_CREATE_VERSION = "schedule_fleet_create_v1"
+# Persistent schedule→armada create (driverless). v3 assigns by canonical SJ, not whole PO.
+SCHEDULE_FLEET_CREATE_VERSION = "schedule_fleet_create_v3"
 FLEET_GROUP_ID_PREFIX = "ifg"
