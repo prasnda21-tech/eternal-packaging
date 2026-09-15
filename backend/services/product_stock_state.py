@@ -31,6 +31,8 @@ STATUS_INITIALIZING = "INITIALIZING"
 STATUS_INITIALIZED = "INITIALIZED"
 HOLDING_TEAM_ROLE = "holding_team"
 HOLDING_TEAM_ONLY_MSG = "Hanya HOLDING_TEAM yang dapat mengkoreksi saldo awal stok fisik"
+OPENING_CORRECTION_CONFLICT_MSG = "Ada mutasi stok yang sedang berjalan untuk item ini"
+OPENING_CORRECTION_SOURCE = "OPENING_BALANCE_CORRECTION"
 
 _init_lock = asyncio.Lock()
 
@@ -312,96 +314,188 @@ def require_holding_team(user: Optional[Dict[str, Any]]) -> None:
         raise HTTPException(403, HOLDING_TEAM_ONLY_MSG)
 
 
-async def correct_opening_balance(
-    db,
-    master_item_id: str,
-    payload: Dict[str, Any],
-    user: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """HOLDING_TEAM-only append-only correction of current physical buckets.
+def _opening_correction_conflict() -> HTTPException:
+    return HTTPException(409, OPENING_CORRECTION_CONFLICT_MSG)
 
-    Does NOT delete/overwrite SALDO_AWAL. Does NOT insert a second SALDO_AWAL.
-    Does NOT reset initialized. Does NOT change physical_stock settings.
-    Target is current physical qty (unprinted + printed), not a history replay.
-    """
-    require_holding_team(user)
 
-    mid = str(master_item_id or "").strip()
-    if not mid:
-        raise HTTPException(400, "master_item_id wajib diisi")
+def _item_state_filter(mid: str) -> Dict[str, Any]:
+    return {"$or": [{"_id": mid}, {"master_item_id": mid}]}
 
-    master = await db.master_items.find_one({"id": mid}, {"_id": 0})
-    if not master:
-        master = await db.master_items.find_one({"accurate_item_id": mid}, {"_id": 0})
-        if master:
-            mid = master["id"]
-        else:
-            raise HTTPException(404, f"Produk dengan ID '{mid}' tidak ditemukan")
 
-    state = await get_product_stock_state(db, mid)
-    if not state or not state.get("initialized") or state.get("status") != STATUS_INITIALIZED:
-        raise HTTPException(400, "Saldo awal stok fisik produk belum ditetapkan")
+def _qty_fields(unprinted: Any, printed: Any, total: Any) -> Dict[str, Any]:
+    return {
+        "unprinted_qty": unprinted,
+        "printed_qty": printed,
+        "total_qty": total,
+    }
 
-    if state.get("pending_event"):
-        raise HTTPException(409, "Ada mutasi stok yang sedang berjalan untuk item ini")
 
-    note = str((payload or {}).get("note") or (payload or {}).get("reason") or "").strip()
-    if not note:
-        raise HTTPException(400, "Alasan koreksi wajib diisi")
+def _pending_event_id(state: Optional[Dict[str, Any]]) -> str:
+    pending = (state or {}).get("pending_event")
+    if isinstance(pending, dict):
+        return str(pending.get("event_id") or "").strip()
+    return ""
 
-    new_unp = validate_non_negative_number((payload or {}).get("unprinted_qty"), "unprinted_qty")
-    new_pri = validate_non_negative_number((payload or {}).get("printed_qty"), "printed_qty")
-    raw_total = (payload or {}).get("total_qty")
-    new_tot = new_unp + new_pri
-    if raw_total is not None:
-        declared = validate_non_negative_number(raw_total, "total_qty")
-        if abs(declared - new_tot) > 1e-6:
-            raise HTTPException(
-                400,
-                f"Invarian tidak terpenuhi: Total ({declared}) harus sama dengan "
-                f"Belum Dicetak ({new_unp}) + Sudah Dicetak ({new_pri})",
-            )
 
-    old_unp = safe_float(state.get("unprinted_qty"))
-    old_pri = safe_float(state.get("printed_qty"))
-    old_tot = safe_float(state.get("total_qty"))
-    d_unp = new_unp - old_unp
-    d_pri = new_pri - old_pri
-    d_tot = new_tot - old_tot
+def _qty_matches(state: Optional[Dict[str, Any]], unprinted: Any, printed: Any, total: Any) -> bool:
+    if not state:
+        return False
+    return (
+        abs(safe_float(state.get("unprinted_qty")) - safe_float(unprinted)) < 1e-9
+        and abs(safe_float(state.get("printed_qty")) - safe_float(printed)) < 1e-9
+        and abs(safe_float(state.get("total_qty")) - safe_float(total)) < 1e-9
+    )
 
-    client_request_id = str((payload or {}).get("client_request_id") or "").strip() or str(uuid.uuid4())
-    event_key = f"opening_correction:{mid}:{client_request_id}"
-    existing = await db.stock_movements.find_one(
+
+async def _find_opening_correction_movement(db, event_key: str) -> Optional[Dict[str, Any]]:
+    return await db.stock_movements.find_one(
         {"$or": [{"event_key": event_key}, {"id": event_key}, {"_id": event_key}]},
         {"_id": 0},
     )
-    if existing:
-        fresh = await get_product_stock_state(db, mid)
-        return {
-            "unchanged": abs(d_unp) < 1e-9 and abs(d_pri) < 1e-9,
-            "idempotent": True,
-            "stock_state": fresh,
-            "movement": existing,
-            "message": "Koreksi saldo awal sudah tercatat",
-        }
 
-    actor = _actor_from_user(user)
-    stamp = now_iso()
-    old_qty = {"unprinted_qty": old_unp, "printed_qty": old_pri, "total_qty": old_tot}
-    new_qty = {"unprinted_qty": new_unp, "printed_qty": new_pri, "total_qty": new_tot}
 
-    if abs(d_unp) < 1e-9 and abs(d_pri) < 1e-9:
-        return {
-            "unchanged": True,
-            "idempotent": False,
-            "stock_state": state,
-            "movement": None,
-            "old_qty": old_qty,
-            "new_qty": new_qty,
-            "message": "Tidak ada selisih koreksi",
-        }
+async def _claim_opening_correction(db, mid: str, snapshot: Dict[str, Any], claim_data: Dict[str, Any]) -> bool:
+    """Atomically occupy pending_event on the exact current physical snapshot.
 
-    movement = await record_stock_movement(
+    Reuses the physical_stock_engine pending_event lock field so an in-flight
+    engine mutation cannot be claimed over, and a held correction claim blocks
+    the engine's pending_event: None CAS.
+    """
+    query = _item_state_filter(mid)
+    query.update({
+        "status": STATUS_INITIALIZED,
+        "initialized": True,
+        "pending_event": None,
+        "unprinted_qty": snapshot["unprinted_qty"],
+        "printed_qty": snapshot["printed_qty"],
+        "total_qty": snapshot["total_qty"],
+    })
+    res = await db[COLLECTION].update_one(
+        query,
+        {"$set": {"pending_event": claim_data, "updated_at": claim_data.get("claimed_at")}},
+    )
+    return bool(getattr(res, "matched_count", 0))
+
+
+async def _release_opening_correction_claim(db, mid: str, claim_data: Dict[str, Any]) -> None:
+    query = _item_state_filter(mid)
+    query["pending_event"] = claim_data
+    await db[COLLECTION].update_one(query, {"$set": {"pending_event": None}})
+
+
+async def _apply_opening_correction_state(
+    db,
+    mid: str,
+    claim_data: Dict[str, Any],
+    *,
+    new_unp: Any,
+    new_pri: Any,
+    new_tot: Any,
+    stamp: str,
+    correction_audit: Dict[str, Any],
+    version: Any,
+) -> bool:
+    """Commit physical buckets and release the claim in one update.
+
+    Ledger must already exist (or this is the no-delta release path).
+    Filter requires the exact claim document so a concurrent engine/other
+    correction cannot be overwritten.
+    """
+    old_qty = claim_data.get("old_qty") or {}
+    query = _item_state_filter(mid)
+    query.update({
+        "pending_event": claim_data,
+        "unprinted_qty": old_qty.get("unprinted_qty"),
+        "printed_qty": old_qty.get("printed_qty"),
+        "total_qty": old_qty.get("total_qty"),
+    })
+    next_version = 1
+    try:
+        next_version = int(version or 0) + 1
+    except (TypeError, ValueError):
+        next_version = 1
+    res = await db[COLLECTION].update_one(
+        query,
+        {
+            "$set": {
+                "unprinted_qty": new_unp,
+                "printed_qty": new_pri,
+                "total_qty": new_tot,
+                "updated_at": stamp,
+                "initialized": True,
+                "status": STATUS_INITIALIZED,
+                "last_opening_correction": correction_audit,
+                "pending_event": None,
+                "version": next_version,
+            }
+        },
+    )
+    return bool(getattr(res, "matched_count", 0))
+
+
+async def _recover_opening_correction_state(
+    db,
+    mid: str,
+    event_key: str,
+    movement: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """If ledger exists and this event still holds pending_event, finish the state commit."""
+    raw = await db[COLLECTION].find_one(_item_state_filter(mid))
+    if not raw:
+        return None
+    pending = raw.get("pending_event")
+    if not isinstance(pending, dict) or str(pending.get("event_id") or "") != event_key:
+        return await get_product_stock_state(db, mid)
+
+    new_qty = pending.get("new_qty") or {}
+    new_unp = new_qty.get("unprinted_qty", movement.get("unprinted_after"))
+    new_pri = new_qty.get("printed_qty", movement.get("printed_after"))
+    new_tot = new_qty.get("total_qty", movement.get("balance_after"))
+    stamp = pending.get("claimed_at") or now_iso()
+    audit = pending.get("correction_audit") or {
+        "old_qty": pending.get("old_qty"),
+        "new_qty": new_qty,
+        "corrected_by": pending.get("actor"),
+        "corrected_at": stamp,
+        "note": pending.get("note") or "",
+        "movement_id": movement.get("id") or event_key,
+        "client_request_id": pending.get("client_request_id") or "",
+    }
+    await _apply_opening_correction_state(
+        db,
+        mid,
+        pending,
+        new_unp=new_unp,
+        new_pri=new_pri,
+        new_tot=new_tot,
+        stamp=stamp,
+        correction_audit=audit,
+        version=raw.get("version"),
+    )
+    return await get_product_stock_state(db, mid)
+
+
+async def _record_opening_correction_movement(
+    db,
+    *,
+    mid: str,
+    master: Dict[str, Any],
+    state: Dict[str, Any],
+    event_key: str,
+    note: str,
+    actor: Optional[Dict[str, str]],
+    stamp: str,
+    old_unp: Any,
+    old_pri: Any,
+    old_tot: Any,
+    new_unp: Any,
+    new_pri: Any,
+    new_tot: Any,
+    d_unp: Any,
+    d_pri: Any,
+    d_tot: Any,
+) -> Dict[str, Any]:
+    return await record_stock_movement(
         db,
         movement_type=MOVEMENT_KOREKSI,
         master_item_id=mid,
@@ -426,8 +520,182 @@ async def correct_opening_balance(
         unprinted_after=new_unp,
         printed_before=old_pri,
         printed_after=new_pri,
-        source_event_type="OPENING_BALANCE_CORRECTION",
+        source_event_type=OPENING_CORRECTION_SOURCE,
         source_event_id=event_key,
+    )
+
+
+async def correct_opening_balance(
+    db,
+    master_item_id: str,
+    payload: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """HOLDING_TEAM-only append-only correction of current physical buckets.
+
+    Does NOT delete/overwrite SALDO_AWAL. Does NOT insert a second SALDO_AWAL.
+    Does NOT reset initialized. Does NOT change physical_stock settings.
+    Target is current physical qty (unprinted + printed), not a history replay.
+
+    Concurrency: claim pending_event against the exact current snapshot, then
+    write KOREKSI, then commit buckets and release the claim in one update.
+    Distinct concurrent requests cannot both commit from the same before-state.
+    """
+    require_holding_team(user)
+
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "master_item_id wajib diisi")
+
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0})
+    if not master:
+        master = await db.master_items.find_one({"accurate_item_id": mid}, {"_id": 0})
+        if master:
+            mid = master["id"]
+        else:
+            raise HTTPException(404, f"Produk dengan ID '{mid}' tidak ditemukan")
+
+    note = str((payload or {}).get("note") or (payload or {}).get("reason") or "").strip()
+    if not note:
+        raise HTTPException(400, "Alasan koreksi wajib diisi")
+
+    new_unp = validate_non_negative_number((payload or {}).get("unprinted_qty"), "unprinted_qty")
+    new_pri = validate_non_negative_number((payload or {}).get("printed_qty"), "printed_qty")
+    raw_total = (payload or {}).get("total_qty")
+    new_tot = new_unp + new_pri
+    if raw_total is not None:
+        declared = validate_non_negative_number(raw_total, "total_qty")
+        if abs(declared - new_tot) > 1e-6:
+            raise HTTPException(
+                400,
+                f"Invarian tidak terpenuhi: Total ({declared}) harus sama dengan "
+                f"Belum Dicetak ({new_unp}) + Sudah Dicetak ({new_pri})",
+            )
+
+    client_request_id = str((payload or {}).get("client_request_id") or "").strip() or str(uuid.uuid4())
+    event_key = f"opening_correction:{mid}:{client_request_id}"
+    existing = await _find_opening_correction_movement(db, event_key)
+    if existing:
+        fresh = await _recover_opening_correction_state(db, mid, event_key, existing)
+        return {
+            "unchanged": _qty_matches(fresh, new_unp, new_pri, new_tot),
+            "idempotent": True,
+            "stock_state": fresh,
+            "movement": existing,
+            "message": "Koreksi saldo awal sudah tercatat",
+        }
+
+    state = await get_product_stock_state(db, mid)
+    if not state or not state.get("initialized") or state.get("status") != STATUS_INITIALIZED:
+        raise HTTPException(400, "Saldo awal stok fisik produk belum ditetapkan")
+
+    held_id = _pending_event_id(state)
+    if held_id and held_id != event_key:
+        raise _opening_correction_conflict()
+
+    raw_state = await db[COLLECTION].find_one(_item_state_filter(mid))
+    pending = (raw_state or {}).get("pending_event") if raw_state else None
+    resume_claim = isinstance(pending, dict) and str(pending.get("event_id") or "") == event_key
+
+    cas_unp = (raw_state or state).get("unprinted_qty")
+    cas_pri = (raw_state or state).get("printed_qty")
+    cas_tot = (raw_state or state).get("total_qty")
+    old_unp = safe_float(cas_unp)
+    old_pri = safe_float(cas_pri)
+    old_tot = safe_float(cas_tot)
+    d_unp = new_unp - old_unp
+    d_pri = new_pri - old_pri
+    d_tot = new_tot - old_tot
+    old_qty = _qty_fields(old_unp, old_pri, old_tot)
+    new_qty = _qty_fields(new_unp, new_pri, new_tot)
+    actor = _actor_from_user(user)
+    stamp = now_iso()
+    snapshot = _qty_fields(cas_unp, cas_pri, cas_tot)
+
+    claim_data = {
+        "event_id": event_key,
+        "master_item_id": mid,
+        "stage": "CLAIMED",
+        "source_event_type": OPENING_CORRECTION_SOURCE,
+        "client_request_id": client_request_id,
+        "old_qty": old_qty,
+        "new_qty": new_qty,
+        "note": note,
+        "actor": actor,
+        "claimed_at": stamp,
+    }
+
+    if resume_claim:
+        claim_data = pending
+        resume_old = claim_data.get("old_qty") or old_qty
+        resume_new = claim_data.get("new_qty") or new_qty
+        old_unp = safe_float(resume_old.get("unprinted_qty"))
+        old_pri = safe_float(resume_old.get("printed_qty"))
+        old_tot = safe_float(resume_old.get("total_qty"))
+        new_unp = safe_float(resume_new.get("unprinted_qty"), new_unp)
+        new_pri = safe_float(resume_new.get("printed_qty"), new_pri)
+        new_tot = safe_float(resume_new.get("total_qty"), new_tot)
+        d_unp = new_unp - old_unp
+        d_pri = new_pri - old_pri
+        d_tot = new_tot - old_tot
+        old_qty = _qty_fields(old_unp, old_pri, old_tot)
+        new_qty = _qty_fields(new_unp, new_pri, new_tot)
+        stamp = claim_data.get("claimed_at") or stamp
+        actor = claim_data.get("actor") or actor
+        note = claim_data.get("note") or note
+    else:
+        claimed = await _claim_opening_correction(db, mid, snapshot, claim_data)
+        if not claimed:
+            raced = await _find_opening_correction_movement(db, event_key)
+            if raced:
+                fresh = await _recover_opening_correction_state(db, mid, event_key, raced)
+                return {
+                    "unchanged": _qty_matches(fresh, new_unp, new_pri, new_tot),
+                    "idempotent": True,
+                    "stock_state": fresh,
+                    "movement": raced,
+                    "message": "Koreksi saldo awal sudah tercatat",
+                }
+            fresh = await get_product_stock_state(db, mid)
+            if _pending_event_id(fresh) == event_key:
+                raw_state = await db[COLLECTION].find_one(_item_state_filter(mid))
+                pending = (raw_state or {}).get("pending_event")
+                if isinstance(pending, dict):
+                    claim_data = pending
+            else:
+                raise _opening_correction_conflict()
+
+    if abs(d_unp) < 1e-9 and abs(d_pri) < 1e-9:
+        await _release_opening_correction_claim(db, mid, claim_data)
+        fresh = await get_product_stock_state(db, mid)
+        return {
+            "unchanged": True,
+            "idempotent": False,
+            "stock_state": fresh or state,
+            "movement": None,
+            "old_qty": old_qty,
+            "new_qty": new_qty,
+            "message": "Tidak ada selisih koreksi",
+        }
+
+    movement = await _record_opening_correction_movement(
+        db,
+        mid=mid,
+        master=master,
+        state=state,
+        event_key=event_key,
+        note=note,
+        actor=actor,
+        stamp=stamp,
+        old_unp=old_unp,
+        old_pri=old_pri,
+        old_tot=old_tot,
+        new_unp=new_unp,
+        new_pri=new_pri,
+        new_tot=new_tot,
+        d_unp=d_unp,
+        d_pri=d_pri,
+        d_tot=d_tot,
     )
 
     correction_audit = {
@@ -439,20 +707,58 @@ async def correct_opening_balance(
         "movement_id": movement.get("id") or event_key,
         "client_request_id": client_request_id,
     }
-    await db[COLLECTION].update_one(
-        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
-        {
-            "$set": {
-                "unprinted_qty": new_unp,
-                "printed_qty": new_pri,
-                "total_qty": new_tot,
-                "updated_at": stamp,
-                "initialized": True,
-                "status": STATUS_INITIALIZED,
-                "last_opening_correction": correction_audit,
-            }
-        },
+    raw_after_claim = await db[COLLECTION].find_one(_item_state_filter(mid))
+    stored_for_filter = (raw_after_claim or {}).get("pending_event")
+    if not isinstance(stored_for_filter, dict) or str(stored_for_filter.get("event_id") or "") != event_key:
+        saved = await _recover_opening_correction_state(db, mid, event_key, movement)
+        if not _qty_matches(saved, new_unp, new_pri, new_tot):
+            raise HTTPException(
+                500,
+                "Koreksi tercatat di ledger tetapi gagal menerapkan saldo fisik. Coba lagi.",
+            )
+        return {
+            "unchanged": False,
+            "idempotent": True,
+            "stock_state": saved,
+            "movement": movement,
+            "old_qty": old_qty,
+            "new_qty": new_qty,
+            "corrected_by": actor,
+            "corrected_at": stamp,
+            "note": note,
+            "message": "Koreksi saldo awal stok fisik berhasil",
+        }
+
+    applied = await _apply_opening_correction_state(
+        db,
+        mid,
+        stored_for_filter,
+        new_unp=new_unp,
+        new_pri=new_pri,
+        new_tot=new_tot,
+        stamp=stamp,
+        correction_audit=correction_audit,
+        version=(raw_after_claim or {}).get("version"),
     )
+    if not applied:
+        saved = await _recover_opening_correction_state(db, mid, event_key, movement)
+        if not _qty_matches(saved, new_unp, new_pri, new_tot):
+            raise HTTPException(
+                500,
+                "Koreksi tercatat di ledger tetapi gagal menerapkan saldo fisik. Coba lagi.",
+            )
+        return {
+            "unchanged": False,
+            "idempotent": True,
+            "stock_state": saved,
+            "movement": movement,
+            "old_qty": old_qty,
+            "new_qty": new_qty,
+            "corrected_by": actor,
+            "corrected_at": stamp,
+            "note": note,
+            "message": "Koreksi saldo awal stok fisik berhasil",
+        }
     saved = await get_product_stock_state(db, mid)
     return {
         "unchanged": False,
