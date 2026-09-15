@@ -57,11 +57,41 @@ export const MOBILE_DELIVERY_SCHEDULE_COLS = [
   { key: "packing", label: "Pack", width: 48, num: true },
   { key: "loading", label: "Load", width: 48, num: true },
   { key: "shipped", label: "Kirim", width: 48, sort: "shipped", num: true },
+  { key: "notif_helper", label: "Helper", width: 56, num: true },
+  { key: "notif_driver", label: "Driver", width: 56, num: true },
+  { key: "notif_kepala", label: "Kepala Produksi", width: 88, num: true },
 ];
 
 export const MOBILE_DELIVERY_STATUS_COL_KEYS = [
   "cup", "screen", "prod", "packing", "loading", "shipped",
 ];
+
+export const MOBILE_DELIVERY_NOTIF_COL_KEYS = [
+  "notif_helper", "notif_driver", "notif_kepala",
+];
+
+export const PWA_SJ_NOTIFICATION_ROLES = {
+  notif_helper: { role: "helper", label: "Helper" },
+  notif_driver: { role: "driver", label: "Driver" },
+  notif_kepala: { role: "head_production", label: "Kepala Produksi" },
+};
+
+export function idlePwaSjNotifications() {
+  return { helper: "idle", driver: "idle", head_production: "idle" };
+}
+
+/** Marks from GET /delivery/schedule sj_notifications only — never packing/production/estimation. */
+export function pwaSjNotificationTones(row) {
+  const src = row?.sj_notifications && typeof row.sj_notifications === "object"
+    ? row.sj_notifications
+    : {};
+  const tone = (role) => (src[role] === "sent" ? "done" : "idle");
+  return {
+    helper: tone("helper"),
+    driver: tone("driver"),
+    head_production: tone("head_production"),
+  };
+}
 
 /** Exact SJ lines from GET /delivery/schedule — never item_label / PO line_items. */
 export function sjItemLinesFromRow(row) {

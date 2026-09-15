@@ -1825,6 +1825,9 @@
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
+.mop-ops-thead .mop-ops-notif-group {
+  letter-spacing: 0.02em;
+}
 .mop-ops-thead .mop-ops-status-sub {
   text-align: center;
   font-size: 11px;

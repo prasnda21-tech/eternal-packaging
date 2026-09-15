@@ -6177,6 +6177,14 @@ async def list_delivery_schedule(user=Depends(current_user)):
             r.setdefault("optimization_status", "belum_dioptimasi")
             r.setdefault("optimization_status_label", "Belum Dioptimasi")
             r.setdefault("route_id", None)
+    try:
+        from services.notifications import attach_sj_created_notification_status
+        await attach_sj_created_notification_status(db, rows)
+    except Exception:
+        from services.notifications import idle_sj_notification_status
+        idle = idle_sj_notification_status()
+        for r in rows:
+            r.setdefault("sj_notifications", dict(idle))
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
 
 
