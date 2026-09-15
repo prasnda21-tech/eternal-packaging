@@ -196,6 +196,13 @@ export const api = {
         ...config,
       })
       .then((r) => r.data),
+  salesOrderRepeatSourceByOrder: (orderId, config = {}) =>
+    client
+      .get(`/sales-orders/repeat-source`, {
+        params: { order_id: orderId },
+        ...config,
+      })
+      .then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   replaceSalesOrderLineProduct: (orderId, lineIdx, payload) =>

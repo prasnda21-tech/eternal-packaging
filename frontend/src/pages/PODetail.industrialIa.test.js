@@ -38,6 +38,7 @@ describe("Detail PO industrial information architecture", () => {
     expect(detail).toMatch(/data-testid="po-atur-lokasi"/);
     expect(detail).toMatch(/data-testid="copy-tracking-link"/);
     expect(detail).toMatch(/data-testid="btn-proses-pengiriman-pesanan"/);
+    expect(detail).toMatch(/data-testid="btn-repeat-order-detail"/);
     expect(detail).toMatch(/data-testid="btn-buat-faktur-penjualan"/);
     expect(detail).toMatch(/data-testid="rollback-button"/);
     expect(detail).toMatch(/data-testid="cancel-po-button"/);

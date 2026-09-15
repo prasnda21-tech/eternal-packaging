@@ -1,13 +1,14 @@
 /**
  * Explicit Repeat Order mapping: copy-safe source DTO → create-form patch.
  * Never blind-spreads the source object into form state.
+ * Artwork is never copied.
  */
 
 export const REPEAT_NO_PREVIOUS_MESSAGE =
   "Tidak ada pesanan sebelumnya untuk customer ini.";
 
-// Order-specific create-form fields only.
-// Do NOT copy: customer_phone (master baseline), order_date / estimated_delivery / deadline (new-form dates).
+export const REPEAT_ORDER_QUERY_PARAM = "repeat_order_id";
+
 const HEADER_FIELDS = [
   "outlet",
   "recipient",
@@ -18,6 +19,29 @@ const HEADER_FIELDS = [
   "expedition",
   "notes",
 ];
+
+export function normalizeCustomerName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function resolveRepeatMasterCustomer(source, masters) {
+  const list = Array.isArray(masters) ? masters : [];
+  const sourceId = String(source?.customer_id || "").trim();
+  if (sourceId) {
+    const byId = list.find((m) => String(m?.id || "").trim() === sourceId);
+    if (byId) return byId;
+  }
+  const norm = normalizeCustomerName(source?.customer);
+  if (!norm) return null;
+  const hits = list.filter((m) => normalizeCustomerName(m?.name) === norm);
+  if (hits.length === 1) return hits[0];
+  return null;
+}
 
 function mapLineItem(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -41,20 +65,10 @@ function mapLineItem(raw) {
   };
 }
 
-function mapDesignFile(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const dataUrl = typeof raw.data_url === "string" ? raw.data_url : "";
-  if (!dataUrl.startsWith("data:")) return null;
-  return {
-    name: String(raw.name || "design").trim() || "design",
-    data_url: dataUrl,
-    content_type: raw.content_type ? String(raw.content_type) : "",
-  };
-}
-
 /**
  * Build a controlled form patch from a repeat-source DTO.
- * Selected customer (id + display name) remains authoritative.
+ * Selected customer (id + display name) remains authoritative when provided.
+ * Artwork is never mapped.
  */
 export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
   const customerId = selectedCustomer?.customer_id || null;
@@ -62,7 +76,9 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
   if (!source || typeof source !== "object") {
     return { formPatch: null, designFiles: [], sourcePoNumber: "" };
   }
-  if (customerId && String(source.customer_id || "").trim() !== String(customerId).trim()) {
+  const sourceCid = String(source.customer_id || "").trim();
+  const selectedCid = String(customerId || "").trim();
+  if (sourceCid && selectedCid && sourceCid !== selectedCid) {
     return { formPatch: null, designFiles: [], sourcePoNumber: "" };
   }
 
@@ -72,7 +88,7 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
 
   const formPatch = {
     customer: customerName || String(source.customer || "").trim(),
-    customer_id: customerId || source.customer_id || null,
+    customer_id: selectedCid || sourceCid || null,
   };
 
   for (const key of HEADER_FIELDS) {
@@ -84,11 +100,9 @@ export function mapRepeatSourceToFormPatch(source, selectedCustomer) {
     formPatch.line_items = lineItems;
   }
 
-  const designFiles = (source.design_files || []).map(mapDesignFile).filter(Boolean);
-
   return {
     formPatch,
-    designFiles,
+    designFiles: [],
     sourcePoNumber: String(source.source_po_number || "").trim(),
   };
 }

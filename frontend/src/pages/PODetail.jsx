@@ -341,6 +341,7 @@ export default function PODetail() {
   const canEditPoInfo = hasPerm("po.edit");
   const canSetLocation = hasPerm("delivery.location.manage");
   const canCreateDelivery = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
+  const canRepeatOrder = hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const {
     showProcess: canProcessSalesDelivery,
     showAllQtyDone: salesDeliveryAllQtyDone,
@@ -355,7 +356,7 @@ export default function PODetail() {
     canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
     canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
-    canManageSuratJalan || canCreateDelivery || canEditPoInfo || canReplaceLineProduct
+    canManageSuratJalan || canCreateDelivery || canEditPoInfo || canReplaceLineProduct || canRepeatOrder
   );
 
   const copyTrackingLink = async () => {
@@ -509,6 +510,16 @@ export default function PODetail() {
           <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
             {order.priority === "urgent" ? "URGENT" : "NORMAL"}
           </span>
+          {canRepeatOrder && !order.cancelled && (
+            <Link
+              to={`/penjualan/pesanan-penjualan?repeat_order_id=${encodeURIComponent(order.id)}`}
+              className="ghost sm"
+              data-testid="btn-repeat-order-detail"
+              title="Buat pesanan baru dari PO ini"
+            >
+              Repeat Order
+            </Link>
+          )}
           {canManageUrgent && (
             <button type="button" className="ghost sm" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
               <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
