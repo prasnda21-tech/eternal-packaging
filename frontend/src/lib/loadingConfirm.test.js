@@ -626,6 +626,9 @@ describe("Loading confirm helpers", () => {
     const b = loadingPoLines(order, "sj-b");
     expect(a[0].loaded).toBe(400);
     expect(a[0].available).toBe(0);
+    expect(loadingPoLines(order, "missing")[0].qty_sj).toBe(0);
+    expect(loadingPoLines(order, "")[0].qty_sj).toBe(0);
+    expect(loadingPoLines(order, "missing")[0].qty_sj).not.toBe(a[0].qty_sj);
     expect(b[0].loaded).toBe(0);
     expect(b[0].physical_available).toBe(600);
     expect(b[0].sj_available).toBe(600);

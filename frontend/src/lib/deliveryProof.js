@@ -299,12 +299,12 @@ export function proofsForShipment(order, shipment) {
 export function selectedPengirimanShipmentId(order, preferredId = "") {
   const options = pengirimanSjOptions(order);
   const want = String(preferredId || "").trim();
-  if (want && options.some((o) => o.id === want || shipmentIdentityKeys(order, o.shipment).has(want))) {
+  if (want) {
     const hit = options.find((o) => o.id === want || shipmentIdentityKeys(order, o.shipment).has(want));
-    return hit?.id || want;
+    return hit?.id || "";
   }
-  const open = options.find((o) => !o.delivered);
-  return (open || options[0])?.id || "";
+  if (options.length === 1) return options[0].id || "";
+  return "";
 }
 
 export function deliveryBatchIdentity(shipment) {

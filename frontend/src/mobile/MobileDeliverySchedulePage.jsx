@@ -43,8 +43,11 @@ import { sortOperationalTasks } from "../lib/mobileTaskCard";
 import {
   DELIVERY_SCHEDULE_TASK_IDS,
   deliveryScheduleShowsTable,
+  EXACT_SJ_REQUIRED_MESSAGE,
+  matchLoadingSjFile,
   mobileScheduleWorkHref,
   permittedOpsActiveRoles,
+  roleRequiresExactShipment,
   scheduleRowShipmentId,
   selectDeliveryScheduleTaskContext,
   selectOpsActiveRole,
@@ -80,6 +83,8 @@ import { storageUserKey } from "../lib/poListReturn";
 import { deliveryRoleMarkTones } from "../lib/mobileOpsStatusMark";
 import { formatIdQty } from "../lib/productionScheduleQty";
 import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
+import { sjFilesForLoading } from "../lib/loadingConfirm";
+import { findDeliveryShipment } from "../lib/deliveryProof";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
@@ -102,11 +107,88 @@ const SCHEDULE_WORKSPACE_VIEWS = {
   delivery: MobileDeliveryWorkspace,
 };
 
+function orderMatchesRequestedShipment(roleId, order, shipmentId) {
+  const wanted = String(shipmentId || "").trim();
+  if (!wanted) return false;
+  if (roleId === "loading") return Boolean(matchLoadingSjFile(sjFilesForLoading(order), wanted));
+  if (roleId === "delivery") return Boolean(findDeliveryShipment(order, wanted));
+  return true;
+}
+
 function scheduleTaskContext(order, row) {
   return {
     customer: getCanonicalCustomerName(order || row || {}),
     po: order?.po_number || row?.po_number || row?.order_number || "",
     sj: row?.latest_sj_number || row?.sj_label || order?.delivery_note_number || "",
+  };
+}
+
+/** Local preview-only order from dummy SJ rows. Never invents a shipment_id. */
+function previewOrderFromDummyRows(orderId, previewRows) {
+  const id = String(orderId || "");
+  const group = (Array.isArray(previewRows) ? previewRows : []).filter(
+    (row) => row?.preview && String(row.id) === id,
+  );
+  if (!group.length) return null;
+  const first = group[0];
+  const shipments = group.map((row) => {
+    const sid = scheduleRowShipmentId(row);
+    if (!sid) return null;
+    const number = String(row.sj_label || row.latest_sj_number || sid);
+    const lines = (row.sj_item_lines || []).map((ln) => ({
+      line_idx: ln.line_idx,
+      line_id: ln.line_id,
+      name: ln.name,
+      qty: ln.qty,
+    }));
+    return {
+      id: sid,
+      shipment_id: sid,
+      number,
+      sj_number: number,
+      delivery_date: String(row.effective_delivery_date || "").slice(0, 10),
+      lines,
+      total_qty: lines.reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0),
+    };
+  }).filter(Boolean);
+  return {
+    id,
+    preview: true,
+    po_number: first.order_number,
+    customer: first.customer_name,
+    customer_name: first.customer_name,
+    address: first.customer_name || "",
+    shipments,
+    surat_jalan_files: shipments.map((sh) => ({
+      id: sh.id,
+      file_id: sh.id,
+      shipment_id: sh.id,
+      number: sh.number,
+      sj_number: sh.number,
+      lines: sh.lines,
+      total_qty: sh.total_qty,
+    })),
+    line_items: shipments.flatMap((sh) => sh.lines.map((ln) => ({
+      name: ln.name,
+      quantity: ln.qty,
+      line_id: ln.line_id,
+      production_process: "print",
+    }))),
+    packing_info: {
+      qty_packed: shipments.reduce((sum, sh) => sum + Number(sh.total_qty || 0), 0),
+      lines: shipments.flatMap((sh) => sh.lines.map((ln) => ({
+        line_idx: ln.line_idx,
+        line_id: ln.line_id,
+        packed_qty: ln.qty,
+      }))),
+    },
+    loading_confirmations: shipments.map((sh) => ({
+      id: `preview-load-${sh.id}`,
+      surat_jalan_id: sh.id,
+      lines: sh.lines.map((ln) => ({ line_idx: ln.line_idx, qty: ln.qty })),
+    })),
+    delivery_proofs: [],
+    delivery_status: "Belum Terkirim",
   };
 }
 
@@ -460,13 +542,52 @@ export default function MobileDeliverySchedulePage() {
   const openRow = (r) => {
     if (!r?.id || !activeRole?.id) return;
     persistScroll();
-    const needsShipment = activeRole.id === "loading" || activeRole.id === "delivery";
+    const needsShipment = roleRequiresExactShipment(activeRole.id);
     const shipmentId = needsShipment ? scheduleRowShipmentId(r) : "";
+    if (needsShipment && !shipmentId) {
+      setTask({
+        open: true,
+        order: null,
+        shipmentId: "",
+        row: r,
+        busy: false,
+        err: EXACT_SJ_REQUIRED_MESSAGE,
+      });
+      return;
+    }
+    if (previewEnabled && r.preview) {
+      const previewOrder = previewOrderFromDummyRows(r.id, getPwaDeliverySjPreviewRows());
+      if (previewOrder) {
+        if (needsShipment && !orderMatchesRequestedShipment(activeRole.id, previewOrder, shipmentId)) {
+          setTask({
+            open: true,
+            order: null,
+            shipmentId,
+            row: r,
+            busy: false,
+            err: EXACT_SJ_REQUIRED_MESSAGE,
+          });
+          return;
+        }
+        setTask({ open: true, order: previewOrder, shipmentId, row: r, busy: false, err: "" });
+        return;
+      }
+    }
     setTask({ open: true, order: null, shipmentId, row: r, busy: true, err: "" });
     (async () => {
       try {
         const d = await withTimeout(api.getOrder(r.id), MOBILE_LOAD_TIMEOUT_MS);
-        setTask((prev) => ({ ...prev, order: d?.order || d, busy: false }));
+        const loaded = d?.order || d;
+        if (needsShipment && !orderMatchesRequestedShipment(activeRole.id, loaded, shipmentId)) {
+          setTask((prev) => ({
+            ...prev,
+            order: null,
+            busy: false,
+            err: EXACT_SJ_REQUIRED_MESSAGE,
+          }));
+          return;
+        }
+        setTask((prev) => ({ ...prev, order: loaded, busy: false }));
       } catch (e) {
         setTask((prev) => ({
           ...prev,

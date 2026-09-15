@@ -145,7 +145,21 @@ describe("MobileDeliverySchedulePage", () => {
     mockDivisionTasks.mockResolvedValue({ tasks: [] });
     mockProductionDashboard.mockResolvedValue({ rows: [] });
     mockGetOrder.mockResolvedValue({
-      order: { id: "o1", po_number: "PO-100", customer: "PT Alpha", line_items: [] },
+      order: {
+        id: "o1",
+        po_number: "PO-100",
+        customer: "PT Alpha",
+        line_items: [{ name: "Cup", quantity: 10, line_id: "l0" }],
+        packing_info: { qty_packed: 10, lines: [{ line_idx: 0, packed_qty: 10 }] },
+        shipments: [{ id: "sh-100", number: "SJ-1", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 }],
+        surat_jalan_files: [{
+          id: "sj-100",
+          shipment_id: "sh-100",
+          sj_number: "SJ-1",
+          lines: [{ line_idx: 0, qty: 10 }],
+        }],
+        loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-100", lines: [{ line_idx: 0, qty: 10 }] }],
+      },
     });
     sessionStorage.clear();
     localStorage.clear();
@@ -501,7 +515,7 @@ describe("MobileDeliverySchedulePage", () => {
 
   test("Loading row click opens Loading workspace for the selected shipment", async () => {
     mockHasPerm.mockImplementation((p) => (
-      p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match"
+      p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match" || p === "delivery_note.view_file"
     ));
     mockDsRouter.search = "ws=loading";
     mockDeliverySchedule.mockResolvedValue({
@@ -531,6 +545,26 @@ describe("MobileDeliverySchedulePage", () => {
         },
       ],
     });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po001",
+        po_number: "PO001",
+        customer: "PT Multi",
+        line_items: [
+          { name: "Cup", quantity: 1000, line_id: "lid-cup", production_process: "print" },
+          { name: "Lid", quantity: 1000, line_id: "lid-lid", production_process: "print" },
+        ],
+        packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 1000 }] },
+        shipments: [
+          { id: "sh-1", number: "SJ001", lines: [{ line_idx: 0, line_id: "lid-cup", qty: 1000 }], total_qty: 1000 },
+          { id: "sh-2", number: "SJ001-2", lines: [{ line_idx: 1, line_id: "lid-lid", qty: 1000 }], total_qty: 1000 },
+        ],
+        surat_jalan_files: [
+          { id: "sj-1", shipment_id: "sh-1", sj_number: "SJ001", lines: [{ line_idx: 0, line_id: "lid-cup", qty: 1000 }] },
+          { id: "sj-2", shipment_id: "sh-2", sj_number: "SJ001-2", lines: [{ line_idx: 1, line_id: "lid-lid", qty: 1000 }] },
+        ],
+      },
+    });
     await act(async () => { root.render(<MobileDeliverySchedulePage />); });
     await flush();
     const sep10 = container.querySelector('[data-testid="mds-row-PO001-sh-1"]');
@@ -548,6 +582,272 @@ describe("MobileDeliverySchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-loading-confirm-match"]')).toBeTruthy();
     expect(container.textContent).toContain("Verifikasi Kesesuaian SJ");
     expect(container.querySelector(".mop-stepper")).toBeFalsy();
+    const sjLink = container.querySelector('a[href*="sj-2"], a[href*="sh-2"]');
+    expect(sjLink).toBeTruthy();
+    expect(container.querySelector('a[href*="sj-1"]')).toBeFalsy();
+  });
+
+  test("Loading SJ1 and SJ2 rows isolate exact Surat Jalan identity", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match" || p === "delivery_note.view_file"
+    ));
+    mockDsRouter.search = "ws=loading";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          shipment_id: "sh-1",
+          latest_sj_number: "SJ001",
+          sj_label: "SJ001",
+          sj_item_lines: [{ shipment_id: "sh-1", sj_number: "SJ001", name: "Cup", qty: 1000, line_idx: 0 }],
+        },
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          shipment_id: "sh-2",
+          latest_sj_number: "SJ001-2",
+          sj_label: "SJ001-2",
+          sj_item_lines: [{ shipment_id: "sh-2", sj_number: "SJ001-2", name: "Lid", qty: 1000, line_idx: 1 }],
+        },
+      ],
+    });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po001",
+        po_number: "PO001",
+        customer: "PT Multi",
+        line_items: [{ name: "Cup", quantity: 1000, line_id: "lid-cup" }, { name: "Lid", quantity: 1000, line_id: "lid-lid" }],
+        packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 1000 }] },
+        surat_jalan_files: [
+          { id: "sj-1", shipment_id: "sh-1", sj_number: "SJ001", lines: [{ line_idx: 0, qty: 1000 }] },
+          { id: "sj-2", shipment_id: "sh-2", sj_number: "SJ001-2", lines: [{ line_idx: 1, qty: 1000 }] },
+        ],
+      },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeTruthy();
+    expect(container.querySelector('a[href*="sj-1"]')).toBeTruthy();
+    expect(container.querySelector('a[href*="sj-2"]')).toBeFalsy();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-task-modal-close"]').click();
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-sh-2"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeTruthy();
+    expect(container.querySelector('a[href*="sj-2"]')).toBeTruthy();
+    expect(container.querySelector('a[href*="sj-1"]')).toBeFalsy();
+  });
+
+  test("Loading unmatched shipment_id fails closed and does not open SJ1", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match"
+    ));
+    mockDsRouter.search = "ws=loading";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        id: "po001",
+        order_number: "PO001",
+        shipment_id: "missing-sj",
+        latest_sj_number: "SJ-GHOST",
+        sj_label: "SJ-GHOST",
+      }],
+    });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po001",
+        surat_jalan_files: [
+          { id: "sj-1", shipment_id: "sh-1", sj_number: "SJ001", lines: [{ line_idx: 0, qty: 1000 }] },
+        ],
+      },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-missing-sj"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(mockGetOrder).toHaveBeenCalledWith("po001");
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
+      .toMatch(/Surat Jalan tidak dapat ditentukan/);
+  });
+
+  test("Pengiriman SJ1 and SJ2 rows isolate exact Surat Jalan identity", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          shipment_id: "sh-1",
+          latest_sj_number: "SJ001",
+          sj_label: "SJ001",
+        },
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          shipment_id: "sh-2",
+          latest_sj_number: "SJ001-2",
+          sj_label: "SJ001-2",
+        },
+      ],
+    });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po001",
+        po_number: "PO001",
+        customer: "PT Multi",
+        line_items: [{ name: "Cup", quantity: 2000, line_id: "LA", production_process: "print" }],
+        packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 2000 }] },
+        shipments: [
+          { id: "sh-1", number: "SJ001", lines: [{ line_idx: 0, qty: 1000 }], total_qty: 1000 },
+          { id: "sh-2", number: "SJ001-2", lines: [{ line_idx: 0, qty: 1000 }], total_qty: 1000 },
+        ],
+        loading_confirmations: [{ id: "c1", surat_jalan_id: "sh-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+      },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-sh-1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("sh-1");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ001");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').disabled).toBe(true);
+    const closeBtn = container.querySelector('[data-testid="mobile-delivery-close-x"]');
+    await act(async () => { closeBtn.click(); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-sh-2"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("sh-2");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ001-2");
+  });
+
+  test("Pengiriman unmatched shipment_id fails closed and does not select first undelivered", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.update");
+    mockDsRouter.search = "ws=delivery";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        id: "po001",
+        order_number: "PO001",
+        shipment_id: "missing-sj",
+        latest_sj_number: "SJ-GHOST",
+        sj_label: "SJ-GHOST",
+      }],
+    });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po001",
+        shipments: [
+          { id: "sh-1", number: "SJ001", delivered_at: "t", delivery_status: "Terkirim", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 },
+          { id: "sh-2", number: "SJ001-2", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 },
+        ],
+      },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-missing-sj"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
+      .toMatch(/Surat Jalan tidak dapat ditentukan/);
+  });
+
+  test("stale and empty shipment identities fail closed for Loading and Pengiriman", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "delivery.update"
+    ));
+    mockDsRouter.search = "ws=loading";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "po001",
+          order_number: "PO001",
+          shipment_id: "stale-sj-old",
+          latest_sj_number: "SJ-STALE",
+          sj_label: "SJ-STALE",
+        },
+      ],
+    });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po001",
+        shipments: [{ id: "sh-1", number: "SJ001", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 }],
+        surat_jalan_files: [{ id: "sj-1", shipment_id: "sh-1", sj_number: "SJ001" }],
+      },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO001-stale-sj-old"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
+      .toMatch(/Surat Jalan tidak dapat ditentukan/);
+  });
+
+  test("valid single-SJ Loading flow still opens the exact shipment", async () => {
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match" || p === "delivery_note.view_file"
+    ));
+    mockDsRouter.search = "ws=loading";
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        id: "po-single",
+        order_number: "PO-SINGLE",
+        shipment_id: "sh-only",
+        latest_sj_number: "SJ-ONLY",
+        sj_label: "SJ-ONLY",
+      }],
+    });
+    mockGetOrder.mockResolvedValue({
+      order: {
+        id: "po-single",
+        po_number: "PO-SINGLE",
+        surat_jalan_files: [{
+          id: "sj-only",
+          shipment_id: "sh-only",
+          sj_number: "SJ-ONLY",
+          lines: [{ line_idx: 0, qty: 10 }],
+        }],
+        line_items: [{ name: "Cup", quantity: 10 }],
+        packing_info: { qty_packed: 10, lines: [{ line_idx: 0, packed_qty: 10 }] },
+      },
+    });
+    await act(async () => { root.render(<MobileDeliverySchedulePage />); });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="mds-row-PO-SINGLE-sh-only"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeTruthy();
+    expect(container.querySelector('a[href*="sj-only"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]')).toBeFalsy();
   });
 
   test("PWA table shows Item Line after Customer and drops Driver/Status/Aksi", async () => {

@@ -306,6 +306,37 @@ describe("deliveryProof helpers", () => {
     expect(isShipmentDelivered(shippedSj1, sj2)).toBe(false);
     expect(findDeliveryShipment(order, "sj-1").id).toBe("sj-1");
     expect(selectedPengirimanShipmentId(order, "sj-1")).toBe("sj-1");
+    expect(selectedPengirimanShipmentId(order, "sj-2")).toBe("sj-2");
+    expect(selectedPengirimanShipmentId(order, "missing")).toBe("");
+    expect(selectedPengirimanShipmentId(order, "")).toBe("");
+    expect(findDeliveryShipment(order, "missing")).toBeNull();
+    expect(findDeliveryShipment(order, "")).toBeNull();
+  });
+
+  test("selected Pengiriman shipment fails closed without first-undelivered or options[0] fallback", () => {
+    const delivered = {
+      id: "sj-1",
+      number: "SJ1",
+      delivered_at: "t",
+      delivery_status: "Terkirim",
+      lines: [{ line_idx: 0, qty: 10 }],
+      total_qty: 10,
+    };
+    const open = {
+      id: "sj-2",
+      number: "SJ2",
+      lines: [{ line_idx: 0, qty: 10 }],
+      total_qty: 10,
+    };
+    const order = { shipments: [delivered, open] };
+    expect(selectedPengirimanShipmentId(order, "sj-1")).toBe("sj-1");
+    expect(selectedPengirimanShipmentId(order, "sj-2")).toBe("sj-2");
+    expect(selectedPengirimanShipmentId(order, "missing")).toBe("");
+    expect(selectedPengirimanShipmentId(order, "")).toBe("");
+    const single = { shipments: [open] };
+    expect(selectedPengirimanShipmentId(single, "")).toBe("sj-2");
+    expect(selectedPengirimanShipmentId(single, "missing")).toBe("");
+    expect(findDeliveryShipment(single, "missing")).toBeNull();
   });
 
   test("same-name lines stay isolated by line_idx in selected SJ readiness", () => {

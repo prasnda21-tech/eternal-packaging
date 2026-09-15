@@ -85,6 +85,21 @@ export function scheduleRowShipmentId(row) {
   return id != null && String(id).trim() !== "" ? String(id) : "";
 }
 
+export const EXACT_SJ_REQUIRED_MESSAGE =
+  "Surat Jalan tidak dapat ditentukan. Buka Jadwal Pengiriman dan pilih SJ yang tepat.";
+
+export function roleRequiresExactShipment(roleId) {
+  return roleId === "loading" || roleId === "delivery";
+}
+
+/** Canonical SJ identity aliases already used by Loading files / shipments. Exact strings only. */
+export function loadingSjIdentityKeys(file) {
+  if (!file || typeof file !== "object") return [];
+  return [file.id, file.file_id, file.shipment_id, file.sales_delivery_id, file.number, file.sj_number]
+    .map((v) => String(v || "").trim())
+    .filter(Boolean);
+}
+
 export function visibleMobileNavItems(hasPerm) {
   return MOBILE_NAV_ITEMS.filter((item) => {
     if (typeof item.visibleWhen === "function") {
@@ -180,13 +195,9 @@ export function mobileScheduleWorkHref(orderId, hasPerm, table, workspaceId, row
 /** Pick the SJ already identified on the schedule row; never invent or match by item name. */
 export function matchLoadingSjFile(sjFiles, shipmentId) {
   const list = Array.isArray(sjFiles) ? sjFiles : [];
-  if (!shipmentId) return list[0] || null;
-  const wanted = String(shipmentId);
-  return list.find((f) => (
-    String(f?.id || "") === wanted
-    || String(f?.file_id || "") === wanted
-    || String(f?.shipment_id || "") === wanted
-  )) || list[0] || null;
+  const wanted = String(shipmentId || "").trim();
+  if (!wanted) return null;
+  return list.find((f) => loadingSjIdentityKeys(f).includes(wanted)) || null;
 }
 
 export function activeMobileNav(pathname) {

@@ -354,7 +354,9 @@ describe("PWA Pengiriman gallery picker", () => {
     });
     const select = container.querySelector('[data-testid="mobile-pengiriman-sj-select"]');
     expect(select).toBeTruthy();
-    expect(select.querySelectorAll("option")).toHaveLength(2);
+    expect(select.value).toBe("");
+    expect(select.querySelectorAll("option").length).toBeGreaterThanOrEqual(2);
+    expect([...select.options].some((o) => o.value === "")).toBe(true);
     act(() => {
       select.value = "sj-1";
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -384,12 +386,64 @@ describe("PWA Pengiriman gallery picker", () => {
       root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} />);
     });
     const select = container.querySelector('[data-testid="mobile-pengiriman-sj-select"]');
-    expect(select.value).toBe(uuid);
+    expect(select.value).toBe("");
+    expect(select.disabled).toBe(false);
     expect(select.textContent).toContain("SJ/2026/09/07/000031 1");
     expect(select.textContent).not.toContain(uuid);
     expect(select.textContent).not.toContain(uuid2);
     expect(container.textContent).not.toContain(uuid);
     expect(container.textContent).toMatch(/SJ\/2026\/09\/07\/000031 1/);
+  });
+
+  test("explicit shipmentId always wins over default multi-SJ selection", () => {
+    const multi = {
+      ...baseOrder,
+      line_items: [{ name: "Line A", quantity: 2000, line_id: "LA", production_process: "print" }],
+      packing_info: { qty_packed: 2000, lines: [{ line_idx: 0, packed_qty: 2000 }] },
+      shipments: [
+        { id: "sj-1", number: "SJ/001", delivery_date: "2026-09-10", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }], total_qty: 1000 },
+        { id: "sj-2", number: "SJ/001_2", delivery_date: "2026-09-12", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }], total_qty: 1000 },
+      ],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={multi} canEdit onUpdated={() => {}} shipmentId="sj-2" />);
+    });
+    const select = container.querySelector('[data-testid="mobile-pengiriman-sj-select"]');
+    expect(select.value).toBe("sj-2");
+    expect(select.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("SJ/001_2");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toMatch(/Belum siap/);
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]')).toBeFalsy();
+  });
+
+  test("unmatched explicit shipmentId does not open another SJ", () => {
+    const multi = {
+      ...baseOrder,
+      shipments: [
+        { id: "sj-1", number: "SJ/001", delivery_date: "2026-09-10", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 },
+        { id: "sj-2", number: "SJ/001_2", delivery_date: "2026-09-12", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 },
+      ],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 10 }] }],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={multi} canEdit onUpdated={() => {}} shipmentId="missing-sj" />);
+    });
+    const select = container.querySelector('[data-testid="mobile-pengiriman-sj-select"]');
+    expect(select.value).toBe("");
+    expect(select.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]')?.textContent || "").not.toContain("SJ/001");
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Surat Jalan tidak dapat ditentukan/);
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+  });
+
+  test("explicit unmatched id still fails closed on a single-SJ order", () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={baseOrder} canEdit onUpdated={() => {}} shipmentId="missing-sj" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]')?.textContent || "").not.toBe("SJ-1");
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Surat Jalan tidak dapat ditentukan/);
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
   });
 
   test("Surat Jalan button opens modal and close returns to delivery actions", () => {

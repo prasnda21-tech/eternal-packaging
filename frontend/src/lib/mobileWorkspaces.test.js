@@ -6,8 +6,11 @@ import {
   deliveryScheduleShowsTable,
   loadingAvailability,
   loadingSkipsPacking,
+  EXACT_SJ_REQUIRED_MESSAGE,
   matchLoadingSjFile,
+  scheduleRowShipmentId,
   mobileLoadingScheduleHref,
+  roleRequiresExactShipment,
   mobileScheduleWorkHref,
   mobileTaskHref,
   mobileWorkStatus,
@@ -135,15 +138,28 @@ describe("Jadwal Pengiriman task-context selector", () => {
       .toBe("/m/orders/o1?ws=delivery&shipment=sh-1");
   });
 
-  test("matchLoadingSjFile uses shipment identity, not item name", () => {
+  test("matchLoadingSjFile uses exact shipment identity and never falls back to first SJ", () => {
     const files = [
-      { id: "sj-a", shipment_id: "sh-1", sj_number: "SJ001" },
-      { id: "sj-b", shipment_id: "sh-2", sj_number: "SJ001-2" },
+      { id: "sj-a", shipment_id: "sh-1", sj_number: "SJ001", sales_delivery_id: "acc-1" },
+      { id: "sj-b", shipment_id: "sh-2", sj_number: "SJ001-2", number: "SJ001-2" },
     ];
+    expect(matchLoadingSjFile(files, "sh-1").id).toBe("sj-a");
     expect(matchLoadingSjFile(files, "sh-2").id).toBe("sj-b");
     expect(matchLoadingSjFile(files, "sj-a").id).toBe("sj-a");
-    expect(matchLoadingSjFile(files, null).id).toBe("sj-a");
-    expect(matchLoadingSjFile(files, "missing").id).toBe("sj-a");
+    expect(matchLoadingSjFile(files, "SJ001-2").id).toBe("sj-b");
+    expect(matchLoadingSjFile(files, "acc-1").id).toBe("sj-a");
+    expect(matchLoadingSjFile(files, null)).toBeNull();
+    expect(matchLoadingSjFile(files, "")).toBeNull();
+    expect(matchLoadingSjFile(files, "missing")).toBeNull();
+    expect(matchLoadingSjFile(files, "stale-sj-old")).toBeNull();
+    expect(scheduleRowShipmentId({})).toBe("");
+    expect(scheduleRowShipmentId({ shipment_id: null })).toBe("");
+    expect(scheduleRowShipmentId({ shipment_id: "   " })).toBe("");
+    expect(scheduleRowShipmentId({ shipment_id: "demo-sj-hardfail-001" })).toBe("demo-sj-hardfail-001");
+    expect(roleRequiresExactShipment("loading")).toBe(true);
+    expect(roleRequiresExactShipment("delivery")).toBe(true);
+    expect(roleRequiresExactShipment("packing")).toBe(false);
+    expect(EXACT_SJ_REQUIRED_MESSAGE).toMatch(/Jadwal Pengiriman/);
   });
 
   test("screener/print permissions are not Jadwal Pengiriman task contexts", () => {

@@ -594,6 +594,38 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.textContent).not.toContain("Catatan");
   });
 
+  test("active Loading on /m/schedule refuses without guessing an SJ", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "loading.update" || p === "loading.confirm_match");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-current"]')?.textContent
+      || container.querySelector('[data-testid="mop-active-role-input"]')?.value).toMatch(/Loading|loading/i);
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(api.getOrder).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-ws-loading"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
+      .toMatch(/Surat Jalan tidak dapat ditentukan/);
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
+      .toMatch(/Jadwal Pengiriman/);
+  });
+
+  test("active Pengiriman on /m/schedule refuses without guessing an SJ", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.update");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-current"]')?.textContent
+      || container.querySelector('[data-testid="mop-active-role-input"]')?.value).toMatch(/Pengiriman|delivery/i);
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(api.getOrder).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-ws-delivery"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mop-schedule-task-error"]').textContent)
+      .toMatch(/Surat Jalan tidak dapat ditentukan/);
+  });
+
   test("row navigation remains available outside a zoom gesture", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "packing.update");
     api.productionDashboard.mockResolvedValue({ rows: sampleRows });
