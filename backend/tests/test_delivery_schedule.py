@@ -13,9 +13,11 @@ from services.delivery_schedule import (
     apply_reschedule,
     apply_set_date,
     effective_delivery_date,
+    effective_delivery_location,
     find_reschedule_by_action_id,
     matches_schedule_filters,
     original_deadline,
+    persistable_delivery_location,
     public_reschedule_snippet,
     reschedule_rows,
     schedule_row,
@@ -306,8 +308,8 @@ def test_schedule_row_exposes_delivery_coords_for_status_lokasi():
     assert address_only["lng"] is None
 
     zero = schedule_row(_po(delivery_location={"lat": 0, "lng": 0}))
-    assert zero["lat"] == 0.0
-    assert zero["lng"] == 0.0
+    assert zero["lat"] is None
+    assert zero["lng"] is None
 
 
 def test_schedule_row_one_shipment_one_line():
@@ -548,3 +550,100 @@ def test_schedule_rows_partial_sj_qty_does_not_require_full_po_qty():
     assert [r["sj_label"] for r in rows2] == ["SJ001", "SJ001-2"]
     assert [r["shipment_id"] for r in rows2] == ["sh-half", "sh-half-2"]
     assert [r["sj_item_lines"][0]["qty"] for r in rows2] == [5000, 5000]
+
+
+def _dated_sj(sid, number, loc=None, qty=5000):
+    sh = {
+        "id": sid,
+        "number": number,
+        "shipment_index": int(sid.split("-")[-1]) if str(sid).split("-")[-1].isdigit() else 1,
+        "delivery_date": "2026-09-10",
+        "lines": [{"line_id": sid, "line_idx": 0, "name": "Cup", "qty": qty}],
+    }
+    if loc is not None:
+        sh["delivery_location"] = loc
+    return sh
+
+
+def test_effective_location_po_only_then_sj_override():
+    loc_a = {"lat": -6.2, "lng": 106.8, "formatted_address": "PO-A"}
+    loc_b = {"lat": -6.3, "lng": 106.9, "formatted_address": "SJ-B"}
+    loc_c = {"lat": -6.4, "lng": 107.0, "formatted_address": "SJ-C"}
+    po = _po(
+        delivery_location=loc_a,
+        total_quantity=10000,
+        line_items=[{"name": "Cup", "quantity": 10000}],
+        shipments=[
+            _dated_sj("sh-1", "SJ001", None, 5000),
+            _dated_sj("sh-2", "SJ001-2", loc_b, 3000),
+            _dated_sj("sh-3", "SJ001-3", loc_c, 2000),
+        ],
+    )
+    po["shipments"][0]["shipment_index"] = 1
+    po["shipments"][1]["shipment_index"] = 2
+    po["shipments"][2]["shipment_index"] = 3
+
+    # A — PO only
+    a = next(r for r in schedule_rows(po) if r["shipment_id"] == "sh-1")
+    assert a["lat"] == -6.2
+    assert a["lng"] == 106.8
+
+    # C/D — SJ override wins per shipment
+    b = next(r for r in schedule_rows(po) if r["shipment_id"] == "sh-2")
+    c = next(r for r in schedule_rows(po) if r["shipment_id"] == "sh-3")
+    assert b["lat"] == -6.3 and b["lng"] == 106.9
+    assert c["lat"] == -6.4 and c["lng"] == 107.0
+    assert po["delivery_location"]["lat"] == -6.2
+
+
+def test_effective_location_sj_only_when_po_empty():
+    loc_b = {"lat": -6.31, "lng": 106.91}
+    po = _po(shipments=[_dated_sj("sh-1", "SJ001", loc_b)])
+    po["shipments"][0]["shipment_index"] = 1
+    rows = schedule_rows(po)
+    assert len(rows) == 1
+    assert rows[0]["lat"] == -6.31
+    assert rows[0]["lng"] == 106.91
+
+
+def test_effective_location_invalid_sj_falls_back_to_po():
+    loc_a = {"lat": -6.2, "lng": 106.8}
+    po = _po(
+        delivery_location=loc_a,
+        shipments=[
+            _dated_sj("sh-lat-only", "SJ001", {"lat": -6.5}),
+            _dated_sj("sh-lng-only", "SJ001-2", {"lng": 106.9}),
+            _dated_sj("sh-zero", "SJ001-3", {"lat": 0, "lng": 0}),
+            _dated_sj("sh-range", "SJ001-4", {"lat": 91, "lng": 106.8}),
+        ],
+    )
+    for i, sh in enumerate(po["shipments"], start=1):
+        sh["shipment_index"] = i
+        sh["delivery_date"] = "2026-09-10"
+    rows = schedule_rows(po)
+    assert len(rows) == 4
+    for r in rows:
+        assert r["lat"] == -6.2
+        assert r["lng"] == 106.8
+
+
+def test_effective_location_neither_is_empty():
+    po = _po(shipments=[_dated_sj("sh-1", "SJ001", {"lat": -6.5})])
+    po["shipments"][0]["shipment_index"] = 1
+    rows = schedule_rows(po)
+    assert len(rows) == 1
+    assert rows[0]["lat"] is None
+    assert rows[0]["lng"] is None
+
+
+def test_persistable_delivery_location_rejects_partial_and_zero():
+    assert persistable_delivery_location({"lat": -6.2, "lng": 106.8})["lat"] == -6.2
+    assert persistable_delivery_location({"lat": -6.2}) is None
+    assert persistable_delivery_location({"lng": 106.8}) is None
+    assert persistable_delivery_location({"lat": 0, "lng": 0}) is None
+    assert persistable_delivery_location({"lat": 91, "lng": 10}) is None
+    assert persistable_delivery_location(None) is None
+    sj = {"delivery_location": {"lat": -6.3, "lng": 106.9}}
+    order = {"delivery_location": {"lat": -6.2, "lng": 106.8}}
+    eff = effective_delivery_location(sj, order)
+    assert eff["lat"] == -6.3

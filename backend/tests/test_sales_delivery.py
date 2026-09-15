@@ -906,3 +906,70 @@ async def test_early_create_allowed_when_packing_incomplete():
         await server.db.orders.delete_many({"po_number": "PO-EARLY-1"})
         await server.db.sales_deliveries.delete_many({"po_number": {"$regex": "^PO-EARLY-1"}})
 
+
+@pytest.mark.anyio
+async def test_create_persists_sj_location_without_mutating_po():
+    loc_a = {"lat": -6.2, "lng": 106.8, "formatted_address": "PO-A"}
+    loc_b = {"lat": -6.35, "lng": 106.95, "formatted_address": "SJ-B"}
+    po_num = f"PO/2026/09/15/{uuid.uuid4().hex[:6].upper()}"
+    po = await create_helper_po(po_num, [{"name": "Cup 12oz", "quantity": 1000, "unit": "pcs"}])
+    await server.db.orders.update_one({"id": po["id"]}, {"$set": {"delivery_location": loc_a}})
+    admin = {"email": "crm@eternalpackaging.com", "name": "CRM Sales", "role": "crm"}
+    app.dependency_overrides[current_user] = lambda: admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            summary = await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")
+            assert summary.status_code == 200
+            assert summary.json()["delivery_location"]["lat"] == -6.2
+
+            created = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "delivery_date": "2026-09-15",
+                "line_items": [{"line_idx": 0, "qty": 400}],
+                "delivery_location": loc_b,
+            })
+            assert created.status_code == 200, created.text
+            delivery = created.json()["delivery"]
+            assert delivery["delivery_location"]["lat"] == -6.35
+            assert delivery["delivery_location"]["lng"] == 106.95
+
+            stored = await server.db.sales_deliveries.find_one({"id": delivery["id"]}, {"_id": 0})
+            assert stored["delivery_location"]["lat"] == -6.35
+            order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert order["delivery_location"]["lat"] == -6.2
+            ships = order.get("shipments") or []
+            assert len(ships) == 1
+            assert ships[0]["delivery_location"]["lat"] == -6.35
+
+            no_override = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "delivery_date": "2026-09-16",
+                "line_items": [{"line_idx": 0, "qty": 300}],
+            })
+            assert no_override.status_code == 200, no_override.text
+            d2 = no_override.json()["delivery"]
+            assert "delivery_location" not in d2 or d2.get("delivery_location") in (None, {})
+            order2 = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert order2["delivery_location"]["lat"] == -6.2
+            ships2 = order2.get("shipments") or []
+            assert len(ships2) == 2
+            second = next(s for s in ships2 if s["id"] == d2["id"])
+            assert "delivery_location" not in second or second.get("delivery_location") in (None, {})
+
+            invalid = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "delivery_date": "2026-09-17",
+                "line_items": [{"line_idx": 0, "qty": 100}],
+                "delivery_location": {"lat": -6.9},
+            })
+            assert invalid.status_code == 200, invalid.text
+            d3 = invalid.json()["delivery"]
+            assert "delivery_location" not in d3 or d3.get("delivery_location") in (None, {})
+            order3 = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert order3["delivery_location"]["lat"] == -6.2
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await server.db.orders.delete_many({"id": po["id"]})
+        await server.db.sales_deliveries.delete_many({"po_id": po["id"]})
+

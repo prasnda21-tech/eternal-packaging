@@ -8891,6 +8891,14 @@ class SalesDeliveryLineItemInput(BaseModel):
     notes: Optional[str] = ""
 
 
+class SalesDeliveryLocationInput(BaseModel):
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    place_id: Optional[str] = None
+    google_place_id: Optional[str] = None
+    formatted_address: Optional[str] = None
+
+
 class SalesDeliveryCreatePayload(BaseModel):
     po_id: str
     delivery_date: Optional[str] = None
@@ -8902,6 +8910,7 @@ class SalesDeliveryCreatePayload(BaseModel):
     expedition: Optional[str] = None
     notes: Optional[str] = ""
     line_items: List[SalesDeliveryLineItemInput]
+    delivery_location: Optional[SalesDeliveryLocationInput] = None
 
 
 # ---------- Sales Invoice (Faktur Penjualan) ----------

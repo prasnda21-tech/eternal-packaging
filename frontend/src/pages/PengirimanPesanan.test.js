@@ -29,6 +29,9 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/sales/);
     expect(src).toMatch(/expedition/);
     expect(src).toMatch(/notes/);
+    expect(src).toMatch(/SjDeliveryLocationPicker/);
+    expect(src).toMatch(/sjOverridePayload/);
+    expect(src).toMatch(/delivery_location/);
   });
 
   test("supports multi-line items with exact line identity and remaining quantities", () => {
@@ -164,5 +167,30 @@ describe("Pengiriman Pesanan Nav Integration", () => {
     expect(typeof api.getPoDeliverySummary).toBe("function");
     expect(typeof api.createSalesDelivery).toBe("function");
     expect(typeof api.salesDeliveryPdfUrl).toBe("function");
+  });
+});
+
+describe("SJ location override on create form", () => {
+  const src = fs.readFileSync(path.join(__dirname, "PengirimanPesanan.jsx"), "utf8");
+  const picker = fs.readFileSync(path.join(__dirname, "../components/SjDeliveryLocationPicker.jsx"), "utf8");
+  const modal = fs.readFileSync(path.join(__dirname, "../components/OutletLocationModal.jsx"), "utf8");
+
+  test("shows PO fallback and SJ override without saving outlet", () => {
+    expect(src).toMatch(/poSummary\.delivery_location/);
+    expect(src).toMatch(/sjLocationOverride/);
+    expect(src).toMatch(/sjOverridePayload\(sjLocationOverride\)/);
+    expect(src).toMatch(/if \(locationOverride\) payload\.delivery_location = locationOverride/);
+    expect(src).not.toMatch(/saveDeliveryOutlet/);
+    expect(picker).not.toMatch(/saveDeliveryOutlet/);
+    expect(picker).not.toMatch(/buildSaveDeliveryOutletPayload/);
+    expect(picker).toMatch(/Titik Lokasi Pengiriman/);
+    expect(picker).toMatch(/Menggunakan titik lokasi PO \(fallback\)/);
+    expect(picker).toMatch(/Menggunakan titik lokasi Surat Jalan/);
+    expect(picker).toMatch(/sj-location-clear/);
+    expect(picker).toMatch(/Hapus override — kembali ke lokasi PO/);
+    expect(picker).toMatch(/OutletLocationMap/);
+    expect(picker).toMatch(/searchDeliveryPlaces/);
+    expect(picker).toMatch(/resolveDeliveryMapsLink/);
+    expect(modal).toMatch(/saveDeliveryOutlet/);
   });
 });
