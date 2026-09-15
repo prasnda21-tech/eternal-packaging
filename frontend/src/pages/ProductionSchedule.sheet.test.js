@@ -11,6 +11,8 @@ import {
   productionSheetZoomFromWheel,
 } from "../lib/productionSheetZoom";
 import ProductionSchedule from "./ProductionSchedule";
+import { productionTodayKey } from "../lib/productionScheduleFilters";
+import { buildProductionScheduleHariIniPreviewDummyRows, shiftProductionDateKey } from "../lib/productionScheduleHariIniPreviewDummy";
 
 const mockHasPerm = jest.fn(() => true);
 
@@ -340,31 +342,34 @@ describe("ProductionSchedule spreadsheet", () => {
   });
 
   test("Hari Ini table keeps today + unfinished carry-over and hides future/unscheduled/historical-complete", async () => {
+    const today = productionTodayKey();
+    const past = shiftProductionDateKey(today, -2);
+    const future = shiftProductionDateKey(today, 1);
     api.productionDashboard.mockResolvedValue({
       rows: [
         {
-          id: "a", po_number: "PO-TODAY-OPEN", work_date: "2026-09-14", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
-          operators: [{ split_id: "a", operator_email: "a@x.com", operator_name: "A", quantity: 1000, qty_completed: 100, work_date: "2026-09-14", line_printable: true }],
+          id: "a", po_number: "PO-TODAY-OPEN", work_date: today, current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "a", operator_email: "a@x.com", operator_name: "A", quantity: 1000, qty_completed: 100, work_date: today, line_printable: true }],
         },
         {
-          id: "b", po_number: "PO-TODAY-DONE", work_date: "2026-09-14", current_stage: 14, status_final: "Terkirim", total_quantity: 1000, print_qty_total: 1000,
-          operators: [{ split_id: "b", operator_email: "b@x.com", operator_name: "B", quantity: 1000, qty_completed: 1000, work_date: "2026-09-14", line_printable: true }],
+          id: "b", po_number: "PO-TODAY-DONE", work_date: today, current_stage: 14, status_final: "Terkirim", total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "b", operator_email: "b@x.com", operator_name: "B", quantity: 1000, qty_completed: 1000, work_date: today, line_printable: true }],
         },
         {
-          id: "b2", po_number: "PO-TODAY-DONE-ACTIVE", work_date: "2026-09-14", current_stage: 8, status_final: "Operator", total_quantity: 1000, print_qty_total: 1000,
-          operators: [{ split_id: "b2", operator_email: "b2@x.com", operator_user_id: "u-b2", operator_name: "B2", quantity: 1000, qty_completed: 1000, work_date: "2026-09-14", line_printable: true }],
+          id: "b2", po_number: "PO-TODAY-DONE-ACTIVE", work_date: today, current_stage: 8, status_final: "Operator", total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "b2", operator_email: "b2@x.com", operator_user_id: "u-b2", operator_name: "B2", quantity: 1000, qty_completed: 1000, work_date: today, line_printable: true }],
         },
         {
-          id: "c", po_number: "PO-CARRY", work_date: "2026-09-12", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
-          operators: [{ split_id: "c", operator_email: "c@x.com", operator_name: "C", quantity: 1000, qty_completed: 400, work_date: "2026-09-12", line_printable: true }],
+          id: "c", po_number: "PO-CARRY", work_date: past, current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "c", operator_email: "c@x.com", operator_name: "C", quantity: 1000, qty_completed: 400, work_date: past, line_printable: true }],
         },
         {
-          id: "d", po_number: "PO-HIST-DONE", work_date: "2026-09-12", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
-          operators: [{ split_id: "d", operator_email: "d@x.com", operator_name: "D", quantity: 1000, qty_completed: 1000, work_date: "2026-09-12", line_printable: true }],
+          id: "d", po_number: "PO-HIST-DONE", work_date: past, current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "d", operator_email: "d@x.com", operator_name: "D", quantity: 1000, qty_completed: 1000, work_date: past, line_printable: true }],
         },
         {
-          id: "e", po_number: "PO-FUTURE", work_date: "2026-09-15", current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
-          operators: [{ split_id: "e", operator_email: "e@x.com", operator_name: "E", quantity: 1000, qty_completed: 0, work_date: "2026-09-15", line_printable: true }],
+          id: "e", po_number: "PO-FUTURE", work_date: future, current_stage: 8, total_quantity: 1000, print_qty_total: 1000,
+          operators: [{ split_id: "e", operator_email: "e@x.com", operator_name: "E", quantity: 1000, qty_completed: 0, work_date: future, line_printable: true }],
         },
         { id: "f", po_number: "PO-UNSCHED", work_date: null, current_stage: 8, operators: [] },
       ],
@@ -422,5 +427,74 @@ describe("ProductionSchedule spreadsheet", () => {
     await flush();
     expect(select.value).toBe("all");
     expect(from.value).toBe("2026-09-14");
+  });
+
+  test("date-column popups have Hari Ini; non-date and toolbar do not", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 1 });
+    await renderPage();
+    expect(container.querySelector('[data-testid="prod-th-today-work_date"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-th-today-deadline"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-th-today-customer"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-th-today-operator"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-filters"] .prod-th-today')).toBeFalsy();
+    const toolbarHariIni = [...container.querySelectorAll('[data-testid="prod-filters"] button')]
+      .some((btn) => btn.textContent.trim() === "Hari Ini");
+    expect(toolbarHariIni).toBe(false);
+  });
+
+  test("Hari Ini sets independent today ranges and composes with operator; reset clears", async () => {
+    const dummy = buildProductionScheduleHariIniPreviewDummyRows();
+    api.productionDashboard.mockResolvedValue({ rows: dummy, total: dummy.length });
+    await renderPage();
+    const today = productionTodayKey();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-today-work_date"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-workdate-from"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-workdate-to"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-date-from"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-date-to"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-today-deadline"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-date-from"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-date-to"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-workdate-from"]').value).toBe(today);
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-filter-deadline-clear"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    const operator = container.querySelector('[data-testid="prod-filter-operator"]');
+    await act(async () => {
+      operator.value = "Fauzan";
+      operator.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prod-th-filter-work_date-clear"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-workdate-from"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-workdate-to"]').value).toBe("");
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
   });
 });

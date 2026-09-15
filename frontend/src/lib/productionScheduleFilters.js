@@ -336,6 +336,22 @@ export function applyWorkDateRangeControl(from, to, currentFilter) {
   return { workDateFilter: currentFilter, workDateFrom: from, workDateTo: to };
 }
 
+/** Calendar-day range for a column date-filter "Hari Ini" shortcut (WIB). */
+export function applyDateRangeTodayShortcut(now = new Date()) {
+  const today = productionTodayKey(now);
+  return { from: today, to: today };
+}
+
+export function applyWorkDateTodayShortcut(currentFilter, now = new Date()) {
+  const { from, to } = applyDateRangeTodayShortcut(now);
+  return applyWorkDateRangeControl(from, to, currentFilter);
+}
+
+export function applyDeadlineTodayShortcut(now = new Date()) {
+  const { from, to } = applyDateRangeTodayShortcut(now);
+  return { dateFrom: from, dateTo: to };
+}
+
 function poHasTodayWorkload(row, today, includeCompleted) {
   return productionScheduleWorkUnits(row).some((unit) => isTodayWorkloadUnit(unit, today, includeCompleted));
 }

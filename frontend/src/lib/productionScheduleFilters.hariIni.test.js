@@ -5,6 +5,9 @@ import {
   applyProductionFilters,
   applyWorkDateFilterControl,
   applyWorkDateRangeControl,
+  applyDateRangeTodayShortcut,
+  applyDeadlineTodayShortcut,
+  applyWorkDateTodayShortcut,
   buildHariIniDisplayRows,
   isScheduledToday,
   isScheduledWorkUnfinished,
@@ -340,6 +343,19 @@ describe("Hari Ini workload predicate", () => {
       workDateFilter: "all",
       workDateFrom: "2026-09-15",
       workDateTo: "2026-09-16",
+    });
+    expect(applyDateRangeTodayShortcut(new Date("2026-09-15T10:00:00+07:00"))).toEqual({
+      from: "2026-09-15",
+      to: "2026-09-15",
+    });
+    expect(applyWorkDateTodayShortcut("hari_ini", new Date("2026-09-15T10:00:00+07:00"))).toEqual({
+      workDateFilter: "all",
+      workDateFrom: "2026-09-15",
+      workDateTo: "2026-09-15",
+    });
+    expect(applyDeadlineTodayShortcut(new Date("2026-09-15T10:00:00+07:00"))).toEqual({
+      dateFrom: "2026-09-15",
+      dateTo: "2026-09-15",
     });
   });
 

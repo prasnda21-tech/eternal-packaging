@@ -2368,6 +2368,7 @@
 .prod-th-popover select,.prod-th-popover input[type=date],.prod-th-popover input:not([type=checkbox]){width:100%;border:1px solid var(--line);background:var(--surface);padding:4px 8px;font-size:12px;color:var(--ink);font-family:inherit;min-height:28px;border-radius:2px}
 .prod-th-popover label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--soft)}
 .prod-th-clear{align-self:flex-start}
+.prod-th-today{align-self:flex-start;font-size:11px;min-height:26px;padding:2px 8px;letter-spacing:.02em}
 
 /* Audit table */
 .audit-table{overflow-x:auto}

@@ -12,13 +12,16 @@ import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "..
 import {
   FILTER_DEFAULTS,
   applyProductionFilters,
+  applyDeadlineTodayShortcut,
   applyWorkDateFilterControl,
   applyWorkDateRangeControl,
+  applyWorkDateTodayShortcut,
   buildHariIniDisplayRows,
   isScheduledToday,
   productionFiltersAreActive,
   sortProductionRows,
 } from "../lib/productionScheduleFilters";
+import { isProductionScheduleHariIniPreviewHost, mergeHariIniPreviewDummyRows } from "../lib/productionScheduleHariIniPreviewDummy";
 import { buildProductionScheduleDisplayRows } from "../lib/productionScheduleDisplayRows";
 import { operatorQtyCetakProgress, poTotalQtyDisplay } from "../lib/productionScheduleQty";
 import { buildProductionScheduleSummary } from "../lib/productionScheduleSummary";
@@ -61,6 +64,20 @@ function columnFilterActive(filter, s) {
     case "status": return s.statusFilter !== "all";
     default: return false;
   }
+}
+
+function DateFilterTodayShortcut({ testid, onClick }) {
+  return (
+    <button type="button" className="ghost sm prod-th-today" onClick={onClick} data-testid={testid}>
+      Hari Ini
+    </button>
+  );
+}
+
+function ingestProductionDashboard(d) {
+  const nextRows = mergeHariIniPreviewDummyRows(d?.rows || []);
+  const total = isProductionScheduleHariIniPreviewHost() ? nextRows.length : (d?.total || 0);
+  return { rows: nextRows, total };
 }
 
 function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onClear, children }) {
@@ -136,15 +153,20 @@ export default function ProductionSchedule() {
     setErr("");
     try {
       const d = await api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter }));
-      setRows(d.rows || []);
-      setTotal(d.total || 0);
+      const ingested = ingestProductionDashboard(d);
+      setRows(ingested.rows);
+      setTotal(ingested.total);
     } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
     finally { setBusy(false); }
   };
 
   const { lastUpdated: schedLastUpdated, isPolling: schedIsPolling, refreshNow: refreshSched } = useAutoRefresh(
     () => api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter })),
-    { intervalMs: 30_000, enabled: true, onData: (d) => { setRows(d.rows || []); setTotal(d.total || 0); } }
+    { intervalMs: 30_000, enabled: true, onData: (d) => {
+      const ingested = ingestProductionDashboard(d);
+      setRows(ingested.rows);
+      setTotal(ingested.total);
+    } }
   );
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [includeCancelled, includeCompleted, workDateFilter]);
 
@@ -273,6 +295,14 @@ export default function ProductionSchedule() {
           <>
             <label>Dari <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} data-testid="prod-date-from"/></label>
             <label>Sampai <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} data-testid="prod-date-to"/></label>
+            <DateFilterTodayShortcut
+              testid="prod-th-today-deadline"
+              onClick={() => {
+                const next = applyDeadlineTodayShortcut();
+                setDateFrom(next.dateFrom);
+                setDateTo(next.dateTo);
+              }}
+            />
           </>
         );
       case "work_date":
@@ -305,6 +335,15 @@ export default function ProductionSchedule() {
               setWorkDateFrom(next.workDateFrom);
               setWorkDateTo(next.workDateTo);
             }} data-testid="prod-workdate-to"/></label>
+            <DateFilterTodayShortcut
+              testid="prod-th-today-work_date"
+              onClick={() => {
+                const next = applyWorkDateTodayShortcut(workDateFilter);
+                setWorkDateFilter(next.workDateFilter);
+                setWorkDateFrom(next.workDateFrom);
+                setWorkDateTo(next.workDateTo);
+              }}
+            />
           </>
         );
       case "prio":
