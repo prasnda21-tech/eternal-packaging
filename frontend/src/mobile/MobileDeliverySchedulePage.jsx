@@ -272,7 +272,7 @@ export default function MobileDeliverySchedulePage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState(EMPTY_DELIVERY_FILTERS);
   const [reloadKey, setReloadKey] = useState(0);
-  const sheetZoom = useProductionSheetZoom();
+  const sheetZoom = useProductionSheetZoom({ userId: userKey });
   const scrollRestored = useRef(false);
   const [task, setTask] = useState({
     open: false,

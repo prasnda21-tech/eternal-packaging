@@ -177,8 +177,8 @@ describe("mobile delivery schedule filter parity with Web", () => {
 
 describe("delivery schedule pinch/zoom reuses production sheet helpers", () => {
   test("default/min/max match Jadwal Produksi", () => {
-    expect(PRODUCTION_SHEET_ZOOM_DEFAULT).toBe(0.85);
-    expect(PRODUCTION_SHEET_ZOOM_MIN).toBe(0.45);
+    expect(PRODUCTION_SHEET_ZOOM_DEFAULT).toBe(1);
+    expect(PRODUCTION_SHEET_ZOOM_MIN).toBe(0.6);
     expect(PRODUCTION_SHEET_ZOOM_MAX).toBe(1.5);
     expect(clampProductionSheetZoom(0)).toBe(PRODUCTION_SHEET_ZOOM_MIN);
     expect(clampProductionSheetZoom(9)).toBe(PRODUCTION_SHEET_ZOOM_MAX);

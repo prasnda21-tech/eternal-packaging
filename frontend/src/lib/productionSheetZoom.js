@@ -1,6 +1,6 @@
-export const PRODUCTION_SHEET_ZOOM_MIN = 0.45;
+export const PRODUCTION_SHEET_ZOOM_MIN = 0.60;
 export const PRODUCTION_SHEET_ZOOM_MAX = 1.5;
-export const PRODUCTION_SHEET_ZOOM_DEFAULT = 0.85;
+export const PRODUCTION_SHEET_ZOOM_DEFAULT = 1;
 export const PRODUCTION_SHEET_ZOOM_STORAGE_KEY = "eternal.ui.production-sheet-zoom";
 export const PRODUCTION_SHEET_ZOOM_CSS_VAR = "--production-sheet-zoom";
 export const PRODUCTION_SHEET_ZOOM_SENSITIVITY = 0.0017;
@@ -24,11 +24,16 @@ export function clampProductionSheetZoom(value) {
   return Math.round(n * 10000) / 10000;
 }
 
-export function readProductionSheetZoom(storage) {
+export function productionSheetZoomStorageKey(userId) {
+  const uid = userId != null && String(userId).trim() !== "" ? String(userId).trim() : "";
+  return uid ? `${PRODUCTION_SHEET_ZOOM_STORAGE_KEY}.${uid}` : PRODUCTION_SHEET_ZOOM_STORAGE_KEY;
+}
+
+export function readProductionSheetZoom(storage, userId) {
   try {
     const store = storage || (typeof localStorage !== "undefined" ? localStorage : null);
     if (!store) return PRODUCTION_SHEET_ZOOM_DEFAULT;
-    const raw = store.getItem(PRODUCTION_SHEET_ZOOM_STORAGE_KEY);
+    const raw = store.getItem(productionSheetZoomStorageKey(userId));
     if (raw == null || raw === "") return PRODUCTION_SHEET_ZOOM_DEFAULT;
     return clampProductionSheetZoom(Number(raw));
   } catch {
@@ -36,11 +41,11 @@ export function readProductionSheetZoom(storage) {
   }
 }
 
-export function persistProductionSheetZoom(zoom, storage) {
+export function persistProductionSheetZoom(zoom, storage, userId) {
   try {
     const store = storage || (typeof localStorage !== "undefined" ? localStorage : null);
     if (!store) return;
-    store.setItem(PRODUCTION_SHEET_ZOOM_STORAGE_KEY, String(clampProductionSheetZoom(zoom)));
+    store.setItem(productionSheetZoomStorageKey(userId), String(clampProductionSheetZoom(zoom)));
   } catch {
     /* quota / private mode */
   }
@@ -159,7 +164,16 @@ export function simulateProductionSheetDisplayZoom(
 export function applyProductionSheetZoomVar(element, zoom) {
   if (!element || !element.style) return clampProductionSheetZoom(zoom);
   const next = clampProductionSheetZoom(zoom);
-  element.style.setProperty(PRODUCTION_SHEET_ZOOM_CSS_VAR, String(next));
+  const token = String(next);
+  element.style.setProperty(PRODUCTION_SHEET_ZOOM_CSS_VAR, token);
+  if (element.dataset) element.dataset.productionSheetZoom = token;
+  if (typeof element.querySelector === "function") {
+    const table = element.querySelector(".production-sheet-table");
+    if (table?.style) {
+      table.style.setProperty(PRODUCTION_SHEET_ZOOM_CSS_VAR, token);
+      if (table.dataset) table.dataset.productionSheetZoom = token;
+    }
+  }
   return next;
 }
 
@@ -169,6 +183,26 @@ export function pinchDistance(a, b) {
   const dy = Number(a.clientY) - Number(b.clientY);
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return 0;
   return Math.hypot(dx, dy);
+}
+
+export function pinchMidpoint(a, b) {
+  if (!a || !b) return { x: 0, y: 0 };
+  const x = (Number(a.clientX) + Number(b.clientX)) / 2;
+  const y = (Number(a.clientY) + Number(b.clientY)) / 2;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { x: 0, y: 0 };
+  return { x, y };
+}
+
+export function pinchAnchorInViewport(viewportRect, a, b) {
+  const mid = pinchMidpoint(a, b);
+  const left = Number(viewportRect?.left) || 0;
+  const top = Number(viewportRect?.top) || 0;
+  return {
+    originX: mid.x - left,
+    originY: mid.y - top,
+    midX: mid.x,
+    midY: mid.y,
+  };
 }
 
 export function productionSheetZoomFromPinch(startZoom, startDistance, currentDistance) {

@@ -270,7 +270,7 @@ describe("ProductionSchedule spreadsheet", () => {
     const afterOne = Number(viewport.style.getPropertyValue(PRODUCTION_SHEET_ZOOM_CSS_VAR));
     const target = productionSheetZoomFromWheel(PRODUCTION_SHEET_ZOOM_DEFAULT, -80);
     expect(afterOne).toBeGreaterThan(PRODUCTION_SHEET_ZOOM_DEFAULT);
-    expect(afterOne).toBeLessThan(target);
+    expect(afterOne).toBe(target);
     await flushZoom();
     expect(Number(viewport.style.getPropertyValue(PRODUCTION_SHEET_ZOOM_CSS_VAR))).toBe(target);
   });

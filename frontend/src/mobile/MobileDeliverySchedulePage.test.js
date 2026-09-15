@@ -827,7 +827,7 @@ describe("MobileDeliverySchedulePage", () => {
     const css = fs.readFileSync(path.join(__dirname, "mobile.css"), "utf8");
     const opsCss = fs.readFileSync(path.join(__dirname, "opsQueue.css"), "utf8");
     expect(css).toMatch(/\.mop-schedule-scroll \{[\s\S]*overflow:\s*auto/);
-    expect(opsCss).toMatch(/\.mop-root--ops-wide \.production-sheet-table \{[\s\S]*min-width:\s*1180px/);
+    expect(opsCss).toMatch(/\.mop-root--ops-wide \.production-sheet-table \{[\s\S]*min-width:\s*calc\(1180px \* var\(--production-sheet-zoom, 1\)\)/);
     expect(opsCss).toMatch(/overflow-x:\s*auto/);
     const pageSrc = fs.readFileSync(path.join(__dirname, "MobileDeliverySchedulePage.jsx"), "utf8");
     expect(pageSrc).toMatch(/mop-schedule-scroll/);
@@ -1222,7 +1222,8 @@ describe("MobileDeliverySchedulePage", () => {
   test("PWA delivery keeps canonical sheet zoom, horizontal scroll, and SJ row separators", () => {
     const pageSrc = fs.readFileSync(path.join(__dirname, "MobileDeliverySchedulePage.jsx"), "utf8");
     const css = fs.readFileSync(path.join(__dirname, "mobile.css"), "utf8");
-    expect(pageSrc).toMatch(/useProductionSheetZoom/);
+    expect(pageSrc).toMatch(/consumeClickSuppression/);
+    expect(pageSrc).toMatch(/useProductionSheetZoom\(\{ userId: userKey \}\)/);
     expect(pageSrc).toMatch(/productionSheetZoomStyle/);
     expect(pageSrc).toMatch(/pwaDeliveryScheduleRows/);
     expect(pageSrc).toMatch(/isPwaDeliverySjPreviewEnabled/);
