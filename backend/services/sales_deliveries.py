@@ -701,6 +701,15 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     await finalize_sales_delivery_stock(db, claimed_stock, user)
                 else:
                     await handle_sales_delivery_created(db, order, delivery_doc, user)
+                try:
+                    from services.notifications import emit_surat_jalan_created_notifications
+                    await emit_surat_jalan_created_notifications(
+                        db,
+                        order=order,
+                        shipment=shipment_entry,
+                    )
+                except Exception:
+                    logger.exception("surat jalan created notifications failed")
                 return delivery_doc
             except DuplicateKeyError:
                 if claimed_stock:
