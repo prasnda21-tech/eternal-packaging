@@ -8,6 +8,7 @@ from permissions import effective_permissions, with_loading_permission_defaults
 from quantity_rules import (
     apply_loading_discrepancy,
     apply_loading_match_confirmation,
+    available_for_sj_loading_line,
     delivery_batch_photo_readiness,
     loading_verification_status,
     packing_shortfall_for_sj_match,
@@ -254,3 +255,19 @@ def test_historical_loading_confirmations_still_readable_for_readiness():
         confirmed_at="t2", action_id="a-new",
     )
     assert any(s.get("sj_fingerprint") for s in o.get("loading_snapshots") or [])
+
+
+def test_replaced_sj_confirmation_still_blocks_and_is_not_packing_shortage():
+    o = _base_order(packed_cup=5000)
+    o["loading_confirmations"] = [{
+        "id": "orphan",
+        "surat_jalan_id": "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2",
+        "lines": [{"line_idx": 0, "qty": 5000}],
+    }]
+    assert available_for_sj_loading_line(o, "sj1", 0) == 0
+    msg = packing_shortfall_for_sj_match(o, "sj1")
+    assert msg and "sudah pernah dikonfirmasi Loading" in msg
+    assert "Packing belum mencukupi" not in msg
+    assert validate_loading_match_confirmation(o, "sj1") == msg
+    st = loading_verification_status(o, "sj1")
+    assert st.get("code") == "prior_loading_consumed"

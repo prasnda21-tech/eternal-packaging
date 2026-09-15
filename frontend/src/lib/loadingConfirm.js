@@ -185,6 +185,7 @@ export function loadingPoLines(order, selectedSjId = null) {
         qty_sj: physical,
         packed,
         loaded: loadedSnap,
+        loaded_all: loadedSnap,
         available: Math.max(0, availSnap),
         physical_available: Math.max(0, availSnap),
         sj_available: Math.max(0, availSnap),
@@ -195,11 +196,13 @@ export function loadingPoLines(order, selectedSjId = null) {
     let loadedForSj = 0;
     let totalLoadedLine = legacyLoadedForLine(order, idx);
     for (const conf of confirmations) {
+      const confSj = String(conf.surat_jalan_id || "").trim();
       for (const ln of conf.lines || []) {
-        if (Number(ln.line_idx) === idx) {
+        const confIdx = explicitLineIdx(ln?.line_idx);
+        if (confIdx === idx) {
           const qty = Number(ln.qty ?? ln.quantity ?? 0) || 0;
           totalLoadedLine += qty;
-          if (targetIds.has(String(conf.surat_jalan_id))) {
+          if (targetIds.has(confSj)) {
             loadedForSj += qty;
           }
         }
@@ -222,6 +225,7 @@ export function loadingPoLines(order, selectedSjId = null) {
       qty_sj: sjLineQty,
       packed,
       loaded: loadedForSj,
+      loaded_all: totalLoadedLine,
       available,
       physical_available: physicalAvailable,
       sj_available: sjAvailable,
@@ -311,11 +315,25 @@ export function validateLoadingDraftLines(rows, poLines) {
       if (avail <= 0) {
         if (po?.physical_available <= 0) {
           const nonPrint = String(po?.production_process || "").toLowerCase() === "non_print";
+          if (nonPrint) {
+            return {
+              ok: false,
+              error: "Loading tidak dapat dilakukan karena qty eligible belum tersedia.",
+              lines: [],
+            };
+          }
+          const packed = Number(po?.packed || 0);
+          const need = Number(po?.sj_available || po?.qty_sj || qty);
+          if (packed >= need && Number(po?.loaded_all || 0) > 0) {
+            return {
+              ok: false,
+              error: `Qty sudah pernah dikonfirmasi Loading untuk ${po.name}: diperlukan ${fmtQtyId(need)}, sisa fisik ${fmtQtyId(po.physical_available)}.`,
+              lines: [],
+            };
+          }
           return {
             ok: false,
-            error: nonPrint
-              ? "Loading tidak dapat dilakukan karena qty eligible belum tersedia."
-              : "Loading tidak dapat dilakukan karena belum ada qty Packing.",
+            error: "Loading tidak dapat dilakukan karena belum ada qty Packing.",
             lines: [],
           };
         }
@@ -323,11 +341,25 @@ export function validateLoadingDraftLines(rows, poLines) {
       }
       if (po?.physical_available != null && qty > po.physical_available) {
         const nonPrint = String(po?.production_process || "").toLowerCase() === "non_print";
+        if (nonPrint) {
+          return {
+            ok: false,
+            error: `Qty melebihi qty eligible yang tersedia (${po.physical_available}).`,
+            lines: [],
+          };
+        }
+        const packed = Number(po?.packed || 0);
+        const loadedAll = Number(po?.loaded_all || 0);
+        if (packed >= qty && loadedAll > 0) {
+          return {
+            ok: false,
+            error: `Sisa fisik tidak mencukupi untuk ${po.name}: diperlukan ${fmtQtyId(qty)}, sisa fisik ${fmtQtyId(po.physical_available)} (sudah Loading ${fmtQtyId(loadedAll)}).`,
+            lines: [],
+          };
+        }
         return {
           ok: false,
-          error: nonPrint
-            ? `Qty melebihi qty eligible yang tersedia (${po.physical_available}).`
-            : `Qty melebihi qty Packing yang tersedia (${po.physical_available}).`,
+          error: `Qty melebihi qty Packing yang tersedia (${po.physical_available}).`,
           lines: [],
         };
       }
@@ -368,20 +400,36 @@ function fmtQtyId(n) {
   return Number(n || 0).toLocaleString("id-ID");
 }
 
-function packingShortfallFromSelectedLines(poLines) {
+function physicalBlockFromSelectedLines(poLines) {
   const printShort = (poLines || []).find((ln) => (
     ln.production_process !== "non_print"
     && Number(ln.qty_sj || 0) > 0
     && Number(ln.physical_available || 0) < Number(ln.sj_available || ln.qty_sj || 0)
-    && Number(ln.available || 0) <= 0
     && Number(ln.loaded || 0) < Number(ln.qty_sj || 0)
   ));
   if (!printShort) return null;
   const need = Number(printShort.sj_available || printShort.qty_sj || 0);
-  const have = Number(printShort.physical_available || 0);
+  const remain = Number(printShort.physical_available || 0);
+  const packed = Number(printShort.packed || 0);
+  const loadedAll = Number(printShort.loaded_all ?? 0);
+  if (packed < need) {
+    return {
+      kind: "packing_insufficient",
+      line: printShort,
+      reason: `Packing belum mencukupi untuk ${printShort.name}: diperlukan ${fmtQtyId(need)}, tersedia ${fmtQtyId(remain)}.`,
+    };
+  }
+  if (remain <= 0) {
+    return {
+      kind: "prior_loading_consumed",
+      line: printShort,
+      reason: `Qty sudah pernah dikonfirmasi Loading untuk ${printShort.name}: diperlukan ${fmtQtyId(need)}, sisa fisik ${fmtQtyId(remain)}.`,
+    };
+  }
   return {
+    kind: "prior_loading_consumed",
     line: printShort,
-    reason: `Packing belum mencukupi untuk ${printShort.name}: diperlukan ${fmtQtyId(need)}, tersedia ${fmtQtyId(have)}.`,
+    reason: `Sisa fisik tidak mencukupi untuk ${printShort.name}: diperlukan ${fmtQtyId(need)}, sisa fisik ${fmtQtyId(remain)} (sudah Loading ${fmtQtyId(loadedAll)}).`,
   };
 }
 
@@ -421,11 +469,19 @@ export function loadingVerificationStatus(order, suratJalanId = null) {
     return { ...enriched, surat_jalan_id: sid };
   }
 
-  const short = packingShortfallFromSelectedLines(poLines);
+  const short = physicalBlockFromSelectedLines(poLines);
   if (short) {
+    if (short.kind === "packing_insufficient") {
+      return {
+        code: "packing_insufficient",
+        label: "Packing Belum Mencukupi",
+        surat_jalan_id: sid,
+        reason: short.reason,
+      };
+    }
     return {
-      code: "packing_insufficient",
-      label: "Packing Belum Mencukupi",
+      code: "prior_loading_consumed",
+      label: "Qty Sudah Dikonfirmasi Loading",
       surat_jalan_id: sid,
       reason: short.reason,
     };

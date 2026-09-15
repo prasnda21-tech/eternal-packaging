@@ -206,13 +206,18 @@ describe("Loading confirm helpers", () => {
   });
 
   test("packed 0 on the exact SJ line still blocks Loading", () => {
-    const lines = loadingPoLines({
+    const order = {
       line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
       packing_info: { lines: [{ line_idx: 0, packed_qty: 0 }] },
       surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
-    }, "sj1");
+    };
+    const lines = loadingPoLines(order, "sj1");
     expect(lines[0].available).toBe(0);
     expect(validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines).ok).toBe(false);
+    const ver = loadingVerificationStatus(order, "sj1");
+    expect(ver.code).toBe("packing_insufficient");
+    expect(String(ver.reason || "")).toMatch(/Packing belum mencukupi/);
+    expect(String(ver.reason || "")).toMatch(/tersedia 0/);
   });
 
   test("same-name lines do not share packing", () => {
@@ -555,6 +560,288 @@ describe("Loading confirm helpers", () => {
     expect(loadingVerificationStatus(order, "file-uuid-a").code).toBe("ready_to_verify");
   });
 
+  test("ORANJE unmatched SJ line_id falls back to explicit line_idx", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const lid = "LID Connect Inject Frosted/Dop Victory";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const line0 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_0";
+    const line1 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_1";
+    const order = {
+      line_items: [
+        { name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" },
+        { name: lid, quantity: 1000, production_process: "non_print", accurate_item_id: "3950" },
+      ],
+      packing_info: {
+        qty_packed: 1000,
+        lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 0 }],
+      },
+      shipments: [{
+        id: sj,
+        number: "SJ/2026/09/08/000006",
+        lines: [
+          { line_idx: 0, line_id: line0, qty: 1000 },
+          { line_idx: 1, line_id: line1, qty: 1000 },
+        ],
+      }],
+      surat_jalan_files: [{
+        id: sj,
+        shipment_id: sj,
+        sj_number: "SJ/2026/09/08/000006",
+        lines: [
+          { line_idx: 0, line_id: line0, qty: 1000 },
+          { line_idx: 1, line_id: line1, qty: 1000 },
+        ],
+      }],
+    };
+    expect(resolveLoadingPoLineIdx(order, { line_idx: 0, line_id: line0 })).toBe(0);
+    expect(resolveLoadingPoLineIdx(order, { line_idx: 1, line_id: line1 })).toBe(1);
+    expect(resolveLoadingPoLineIdx(order, { line_id: line0, qty: 1000 })).toBeNull();
+    expect(resolveLoadingPoLineIdx(order, { qty: 1000 })).toBeNull();
+    const lines = loadingPoLines(order, sj);
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].available).toBe(1000);
+    expect(lines[1].packed).toBe(0);
+    expect(lines[1].available).toBe(1000);
+    expect(lines.reduce((s, r) => s + r.qty_sj, 0)).toBe(2000);
+    expect(loadingVerificationStatus(order, sj).code).toBe("ready_to_verify");
+  });
+
+  test("ORANJE historical confirmation on replaced SJ id still consumes physical qty", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const lid = "LID Connect Inject Frosted/Dop Victory";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const line0 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_0";
+    const line1 = "89db8fba-4cc0-4e74-bb49-ad67fa18ba0d_line_1";
+    const order = {
+      line_items: [
+        { name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" },
+        { name: lid, quantity: 1000, production_process: "non_print", accurate_item_id: "3950" },
+      ],
+      packing_info: {
+        qty_packed: 1000,
+        lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 0 }],
+      },
+      shipments: [{
+        id: sj,
+        number: "SJ/2026/09/08/000006",
+        lines: [
+          { line_idx: 0, line_id: line0, qty: 1000 },
+          { line_idx: 1, line_id: line1, qty: 1000 },
+        ],
+      }],
+      surat_jalan_files: [{
+        id: sj,
+        shipment_id: sj,
+        sj_number: "SJ/2026/09/08/000006",
+        total_qty: 2000,
+        lines: [
+          { line_idx: 0, line_id: line0, qty: 1000 },
+          { line_idx: 1, line_id: line1, qty: 1000 },
+        ],
+      }],
+      loading_confirmations: [{
+        id: "old-c0",
+        surat_jalan_id: old,
+        lines: [{ line_idx: 0, qty: 1000 }, { line_idx: 1, qty: 1000 }],
+      }],
+    };
+    const lines = loadingPoLines(order, sj);
+    expect(lines.reduce((s, r) => s + r.qty_sj, 0)).toBe(2000);
+    expect(lines[0].name).toBe(cup);
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].loaded).toBe(0);
+    expect(lines[0].loaded_all).toBe(1000);
+    expect(lines[0].available).toBe(0);
+    expect(lines[0].physical_available).toBe(0);
+    expect(lines[1].name).toBe(lid);
+    expect(lines[1].production_process).toBe("non_print");
+    expect(lines[1].loaded).toBe(0);
+    expect(lines[1].loaded_all).toBe(1000);
+    expect(lines[1].available).toBe(0);
+    const ver = loadingVerificationStatus(order, sj);
+    expect(ver.code).toBe("prior_loading_consumed");
+    expect(String(ver.reason || "")).toMatch(/sudah pernah dikonfirmasi Loading/);
+    expect(String(ver.reason || "")).toMatch(/sisa fisik 0/);
+    expect(String(ver.reason || "")).toContain(cup);
+    expect(String(ver.reason || "")).not.toMatch(/Packing belum mencukupi/);
+    const draft = validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }, { line_idx: 1, qty: "1000" }], lines);
+    expect(draft.ok).toBe(false);
+    expect(String(draft.error || "")).toMatch(/sudah pernah dikonfirmasi Loading/);
+    expect(String(draft.error || "")).not.toMatch(/Packing belum mencukupi/);
+  });
+
+  test("deleted historical Loading restores physical availability", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const order = {
+      line_items: [{ name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [{ id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      surat_jalan_files: [{ id: sj, shipment_id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      loading_confirmations: [{
+        id: "old-c0",
+        surat_jalan_id: old,
+        deleted: true,
+        lines: [{ line_idx: 0, qty: 1000 }],
+      }],
+    };
+    expect(loadingPoLines(order, sj)[0].available).toBe(1000);
+    expect(loadingVerificationStatus(order, sj).code).toBe("ready_to_verify");
+  });
+
+  test("cancelled historical Loading restores physical availability", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const order = {
+      line_items: [{ name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [{ id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      surat_jalan_files: [{ id: sj, shipment_id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      loading_confirmations: [{
+        id: "old-c0",
+        surat_jalan_id: old,
+        cancelled: true,
+        lines: [{ line_idx: 0, qty: 1000 }],
+      }],
+    };
+    const lines = loadingPoLines(order, sj);
+    expect(lines[0].loaded_all).toBe(0);
+    expect(lines[0].available).toBe(1000);
+    expect(loadingVerificationStatus(order, sj).code).toBe("ready_to_verify");
+  });
+
+  test("partial prior Loading is not a Packing shortage", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const sj = "e076bb1d-c360-4746-b789-49a0e42edfd2";
+    const old = "dc9c9875-9d8b-47c0-ad6f-37af8d15a1a2";
+    const order = {
+      line_items: [{ name: cup, quantity: 1000, production_process: "print", accurate_item_id: "8350" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [{ id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      surat_jalan_files: [{ id: sj, shipment_id: sj, lines: [{ line_idx: 0, qty: 1000 }] }],
+      loading_confirmations: [{
+        id: "old-partial",
+        surat_jalan_id: old,
+        lines: [{ line_idx: 0, qty: 600 }],
+      }],
+    };
+    const lines = loadingPoLines(order, sj);
+    expect(lines[0].packed).toBe(1000);
+    expect(lines[0].loaded).toBe(0);
+    expect(lines[0].loaded_all).toBe(600);
+    expect(lines[0].physical_available).toBe(400);
+    expect(lines[0].available).toBe(400);
+    const ver = loadingVerificationStatus(order, sj);
+    expect(ver.code).toBe("prior_loading_consumed");
+    expect(String(ver.reason || "")).toMatch(/Sisa fisik tidak mencukupi/);
+    expect(String(ver.reason || "")).toMatch(/sisa fisik 400/);
+    expect(String(ver.reason || "")).toMatch(/sudah Loading 600/);
+    expect(String(ver.reason || "")).not.toMatch(/Packing belum mencukupi/);
+    const draft = validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines);
+    expect(draft.ok).toBe(false);
+    expect(String(draft.error || "")).toMatch(/Sisa fisik tidak mencukupi/);
+  });
+
+  test("confirmation without line_idx does not collapse onto line 0", () => {
+    const order = {
+      line_items: [
+        { name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" },
+        { name: "Other Cup", quantity: 1000, production_process: "print", line_id: "LB" },
+      ],
+      packing_info: {
+        lines: [
+          { line_idx: 0, line_id: "LA", packed_qty: 1000 },
+          { line_idx: 1, line_id: "LB", packed_qty: 1000 },
+        ],
+      },
+      surat_jalan_files: [{
+        id: "sj1",
+        lines: [
+          { line_idx: 0, line_id: "LA", qty: 1000 },
+          { line_idx: 1, line_id: "LB", qty: 1000 },
+        ],
+      }],
+      loading_confirmations: [{
+        id: "no-idx",
+        surat_jalan_id: "other",
+        lines: [{ qty: 1000 }],
+      }],
+    };
+    const lines = loadingPoLines(order, "sj1");
+    expect(lines[0].loaded_all).toBe(0);
+    expect(lines[0].available).toBe(1000);
+    expect(lines[1].available).toBe(1000);
+  });
+
+  test("live other-SJ confirmation still reduces physical remaining", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [{ name: cup, quantity: 2000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 2000 }] },
+      shipments: [
+        { id: "sj-1", number: "SJ-1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "sj-2", number: "SJ-2", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-1", shipment_id: "sj-1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "sj-2", shipment_id: "sj-2", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+      ],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    const later = loadingPoLines(order, "sj-2");
+    expect(later[0].loaded).toBe(0);
+    expect(later[0].loaded_all).toBe(1000);
+    expect(later[0].available).toBe(1000);
+    expect(later[0].physical_available).toBe(1000);
+    const selected = loadingPoLines(order, "sj-1");
+    expect(selected[0].loaded).toBe(1000);
+    expect(selected[0].available).toBe(0);
+    expect(selected[0].physical_available).toBe(1000);
+  });
+
+  test("live SJ1 load of packed 1000 leaves SJ2 physical remaining 0", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [{ name: cup, quantity: 1000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [
+        { id: "sj-1", number: "SJ-1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "sj-2", number: "SJ-2", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-1", shipment_id: "sj-1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+        { id: "sj-2", shipment_id: "sj-2", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] },
+      ],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    const later = loadingPoLines(order, "sj-2");
+    expect(later[0].loaded).toBe(0);
+    expect(later[0].loaded_all).toBe(1000);
+    expect(later[0].physical_available).toBe(0);
+    expect(later[0].available).toBe(0);
+    const ver = loadingVerificationStatus(order, "sj-2");
+    expect(ver.code).toBe("prior_loading_consumed");
+    expect(String(ver.reason || "")).not.toMatch(/Packing belum mencukupi/);
+  });
+
+  test("modern PO line_id still wins over unmatched accurate_item_id absence", () => {
+    expect(resolveLoadingPoLineIdx({
+      line_items: [
+        { name: "Cup", line_id: "LA", accurate_item_id: "8350" },
+        { name: "Lid", line_id: "LB", accurate_item_id: "3950" },
+      ],
+    }, { line_id: "LA", line_idx: 1 })).toBe(0);
+    expect(resolveLoadingPoLineIdx({
+      line_items: [
+        { name: "Cup", accurate_item_id: "8350" },
+        { name: "Lid", accurate_item_id: "3950" },
+      ],
+    }, { accurate_item_id: "3950" })).toBe(1);
+  });
+
   test("frontend and backend agreement fixture: current format ready", () => {
     const order = {
       line_items: [
@@ -573,5 +860,36 @@ describe("Loading confirm helpers", () => {
     const lines = loadingPoLines(order, "sj1");
     expect(lines[0].available).toBe(1000);
     expect(loadingVerificationStatus(order, "sj1").code).toBe("ready_to_verify");
+  });
+
+  test("selected SJ already loaded is complete, not prior-loading", () => {
+    const cup = "14 oz Inject Datar Frosted Klir";
+    const order = {
+      line_items: [{ name: cup, quantity: 1000, production_process: "print", line_id: "LA" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+      surat_jalan_files: [{ id: "sj1", shipment_id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+      loading_confirmations: [{ id: "c1", surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    const lines = loadingPoLines(order, "sj1");
+    expect(lines[0].loaded).toBe(1000);
+    expect(lines[0].loaded_all).toBe(1000);
+    expect(lines[0].available).toBe(0);
+    const ver = loadingVerificationStatus(order, "sj1");
+    expect(ver.code).toBe("loading_complete");
+    expect(ver.code).not.toBe("prior_loading_consumed");
+    expect(ver.code).not.toBe("packing_insufficient");
+  });
+
+  test("non_print packed 0 is not a Packing shortage", () => {
+    const order = {
+      line_items: [{ name: "LID Connect Inject Frosted/Dop Victory", quantity: 1000, production_process: "non_print" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 0 }] },
+      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, qty: 1000 }] }],
+    };
+    const lines = loadingPoLines(order, "sj1");
+    expect(lines[0].packed).toBe(0);
+    expect(lines[0].available).toBe(1000);
+    expect(loadingVerificationStatus(order, "sj1").code).not.toBe("packing_insufficient");
   });
 });
