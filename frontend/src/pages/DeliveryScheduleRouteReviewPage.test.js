@@ -7,6 +7,8 @@ const mockReview = jest.fn();
 const mockCreateFleets = jest.fn();
 const mockPreviewFleets = jest.fn();
 const mockOptimizeFromSchedule = jest.fn();
+const mockGetCapacity = jest.fn();
+const mockSaveCapacity = jest.fn();
 const mockNavigate = jest.fn();
 let mockSearchParams = new URLSearchParams("ids=ord-a,ord-b");
 
@@ -31,6 +33,8 @@ jest.mock("../lib/api", () => ({
     createFleetsFromSchedule: (...args) => mockCreateFleets(...args),
     previewFleetsFromSchedule: (...args) => mockPreviewFleets(...args),
     optimizeFromSchedule: (...args) => mockOptimizeFromSchedule(...args),
+    getArmadaCapacity: (...args) => mockGetCapacity(...args),
+    saveArmadaCapacity: (...args) => mockSaveCapacity(...args),
   },
 }));
 
@@ -139,6 +143,14 @@ describe("DeliveryScheduleRouteReviewPage desktop one-stage create", () => {
     mockCreateFleets.mockReset().mockResolvedValue(createResult(2));
     mockPreviewFleets.mockReset();
     mockOptimizeFromSchedule.mockReset();
+    mockGetCapacity.mockReset().mockResolvedValue({
+      armada_1_capacity_qty_sj: 50000,
+      armada_2_capacity_qty_sj: 40000,
+    });
+    mockSaveCapacity.mockReset().mockResolvedValue({
+      armada_1_capacity_qty_sj: 50000,
+      armada_2_capacity_qty_sj: 40000,
+    });
     mockNavigate.mockReset();
   });
 
@@ -157,6 +169,15 @@ describe("DeliveryScheduleRouteReviewPage desktop one-stage create", () => {
     expect(container.querySelector('[data-testid="mds-review-fleet-count-1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-review-fleet-count-2"]')).toBeTruthy();
     expect(container.textContent).toMatch(/Buat Optimasi Rute|Jumlah Armada|Optimasi Rute/);
+    expect(container.textContent).toMatch(/Pengaturan Kapasitas Armada/);
+    expect(container.querySelector('[data-testid="mds-review-capacity"]')).toBeTruthy();
+    const capIdx = container.textContent.indexOf("Pengaturan Kapasitas Armada");
+    const fleetIdx = container.textContent.indexOf("Jumlah Armada");
+    expect(capIdx).toBeGreaterThan(-1);
+    expect(fleetIdx).toBeGreaterThan(capIdx);
+    expect(container.querySelector('[data-testid="mds-review-save-capacity"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-capacity-armada-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mds-review-capacity-armada-2"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mds-review-fleet-driver-select-armada_1"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mds-review-simpan-2-rute"]')).toBeFalsy();
     expect(container.textContent).not.toMatch(/Simpan 2 Rute/);
@@ -264,5 +285,48 @@ describe("DeliveryScheduleRouteReviewPage desktop one-stage create", () => {
     });
     expect(container.querySelector('[data-testid="mds-review-error"]')).toBeTruthy();
     expect(container.textContent).toMatch(/PO eligible tidak cukup|Gagal membuat/);
+  });
+
+  test("Simpan Kapasitas is separate from Optimasi Rute and confirms", async () => {
+    mockSaveCapacity.mockResolvedValue({
+      armada_1_capacity_qty_sj: 50000,
+      armada_2_capacity_qty_sj: 40000,
+    });
+    await act(async () => {
+      root.render(<DeliveryScheduleRouteReviewPage />);
+    });
+    expect(container.querySelector('[data-testid="mds-review-capacity-armada-1"]').value).toMatch(/50\.000|50000/);
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-save-capacity"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockSaveCapacity).toHaveBeenCalledWith({
+      armada_1_capacity_qty_sj: 50000,
+      armada_2_capacity_qty_sj: 40000,
+    });
+    expect(mockCreateFleets).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mds-review-capacity-saved"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/Kapasitas tersimpan/);
+  });
+
+  test("invalid capacity is rejected and does not show saved", async () => {
+    await act(async () => {
+      root.render(<DeliveryScheduleRouteReviewPage />);
+    });
+    const i1 = container.querySelector('[data-testid="mds-review-capacity-armada-1"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(i1, "0");
+      i1.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mds-review-save-capacity"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockSaveCapacity).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mds-review-capacity-saved"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mds-review-capacity-error"]')).toBeTruthy();
   });
 });
