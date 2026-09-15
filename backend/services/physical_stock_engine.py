@@ -167,6 +167,60 @@ async def check_stock_availability(
     return state
 
 
+async def _product_stock_is_initialized(db, master_item_id: str) -> bool:
+    """Read-only check matching require_product_stock_initialized semantics.
+
+    True only when state exists, initialized is true, and status is INITIALIZED.
+    Used by production-flow wrappers so missing opening stock is a no-op
+    instead of HTTP 400. Does not create or mutate stock state.
+    """
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        return False
+    state = await get_product_stock_state(db, mid)
+    return bool(state and state.get("initialized") and state.get("status") == STATUS_INITIALIZED)
+
+
+async def _production_flow_stock_can_mutate(
+    db,
+    master_item_id: str,
+    transaction_qty: float,
+    transaction_uom: Optional[str],
+    *,
+    movement_type: str,
+    is_print: bool,
+) -> bool:
+    """Read-only: True iff initialized and bucket qty is sufficient for this mutation.
+
+    Missing, uninitialized, or insufficient physical stock → False (skip mutation).
+    Does not raise business stock errors. Does not inspect pending_event.
+    """
+    if not await _product_stock_is_initialized(db, master_item_id):
+        return False
+    mid = str(master_item_id).strip()
+    state = await get_product_stock_state(db, mid)
+    if not state:
+        return False
+    base_qty, _, _, _ = await resolve_transaction_conversion(
+        db, mid, transaction_qty, transaction_uom
+    )
+    req = abs(safe_float(base_qty))
+    if req <= 0:
+        return True
+    m_type = str(movement_type or "").strip().upper()
+    if m_type in (MOVEMENT_STATUS_CETAK, "PEMAKAIAN_CETAK"):
+        return safe_float(state.get("unprinted_qty", 0)) >= req
+    if m_type in (MOVEMENT_PENGIRIMAN, "STOK_KELUAR"):
+        if is_print:
+            if safe_float(state.get("printed_qty", 0)) < req:
+                return False
+        else:
+            if safe_float(state.get("unprinted_qty", 0)) < req:
+                return False
+        return safe_float(state.get("total_qty", 0)) >= req
+    return False
+
+
 async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
     """Inspects canonical source business records to determine if source committed."""
     ref_type = str(pending_event.get("reference_type") or "").strip().lower()
@@ -892,6 +946,11 @@ async def handle_operator_progress(
 
     if not mid:
         return None
+    if not await _production_flow_stock_can_mutate(
+        db, mid, inc, target_line.get("unit"),
+        movement_type=MOVEMENT_STATUS_CETAK, is_print=True,
+    ):
+        return None
 
     order_id = str(order.get("id") or "").strip()
     line_id = str(target_line.get("line_id") or line_idx)
@@ -947,11 +1006,16 @@ async def handle_packing_completed(
         mid = target_line.get("master_item_id")
         if not mid:
             continue
+        proc = str(target_line.get("production_process") or "").strip().lower()
+        is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, target_line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
 
         act_id = str(inc.get("action_id") or uuid.uuid4())
         event_id = f"stock_out:packing:{order_id}:{act_id}:{idx}"
-        proc = str(target_line.get("production_process") or "").strip().lower()
-        is_p = proc != "non_print"
 
         mov = await execute_durable_stock_event(
             db,
@@ -1004,10 +1068,15 @@ async def handle_loading_confirmed(
         mid = target_line.get("master_item_id")
         if not mid:
             continue
-
-        event_id = f"stock_out:loading:{order_id}:{rec_id}:{idx}"
         proc = str(target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, target_line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
+
+        event_id = f"stock_out:loading:{order_id}:{rec_id}:{idx}"
 
         mov = await execute_durable_stock_event(
             db,
@@ -1064,11 +1133,16 @@ async def handle_sales_delivery_created(
 
         if not mid:
             continue
+        proc = str(line.get("production_process") or "").strip().lower()
+        is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
 
         line_id = str(line.get("line_id") or line.get("line_idx", 0))
         event_id = f"stock_out:sales_delivery:{del_id}:{line_id}"
-        proc = str(line.get("production_process") or "").strip().lower()
-        is_p = proc != "non_print"
 
         mov = await execute_durable_stock_event(
             db,
@@ -1123,10 +1197,15 @@ async def handle_delivery_confirmed(
             mid = lis[idx].get("master_item_id")
         if not mid:
             continue
-
-        event_id = f"stock_out:delivery:{order_id}:{conf_id}:{idx}"
         proc = str(line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
+
+        event_id = f"stock_out:delivery:{order_id}:{conf_id}:{idx}"
 
         mov = await execute_durable_stock_event(
             db,
@@ -1223,6 +1302,11 @@ async def precheck_operator_progress(
 
     if not mid:
         return
+    if not await _production_flow_stock_can_mutate(
+        db, mid, inc, target_line.get("unit"),
+        movement_type=MOVEMENT_STATUS_CETAK, is_print=True,
+    ):
+        return
 
     base_qty, _, _, _ = await resolve_transaction_conversion(
         db, mid, inc, target_line.get("unit")
@@ -1256,6 +1340,11 @@ async def precheck_packing_completed(
             continue
         proc = str(target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, target_line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
         bucket = "printed" if is_p else "unprinted"
         base_qty, _, _, _ = await resolve_transaction_conversion(
             db, mid, qty, target_line.get("unit")
@@ -1287,6 +1376,11 @@ async def precheck_loading_confirmed(
             continue
         proc = str(target_line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, target_line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
         bucket = "printed" if is_p else "unprinted"
         base_qty, _, _, _ = await resolve_transaction_conversion(
             db, mid, qty, target_line.get("unit")
@@ -1320,6 +1414,11 @@ async def precheck_sales_delivery(
             continue
         proc = str(line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
         bucket = "printed" if is_p else "unprinted"
         base_qty, _, _, _ = await resolve_transaction_conversion(
             db, mid, qty, line.get("unit")
@@ -1351,6 +1450,11 @@ async def precheck_delivery_confirmed(
             continue
         proc = str(line.get("production_process") or "").strip().lower()
         is_p = proc != "non_print"
+        if not await _production_flow_stock_can_mutate(
+            db, mid, qty, line.get("unit"),
+            movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+        ):
+            continue
         bucket = "printed" if is_p else "unprinted"
         base_qty, _, _, _ = await resolve_transaction_conversion(
             db, mid, qty, line.get("unit")
@@ -1410,6 +1514,11 @@ async def claim_operator_stock(
         if master:
             mid = master["id"]
     if not mid:
+        return None
+    if not await _production_flow_stock_can_mutate(
+        db, mid, inc, target_line.get("unit"),
+        movement_type=MOVEMENT_STATUS_CETAK, is_print=True,
+    ):
         return None
 
     event_id = f"status_cetak:{order['id']}:{idx}:{action_id}"
@@ -1495,6 +1604,11 @@ async def claim_loading_stock(
                 continue
             proc = str(target_line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
+            if not await _production_flow_stock_can_mutate(
+                db, mid, qty, target_line.get("unit"),
+                movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+            ):
+                continue
             event_id = f"loading:{order['id']}:{action_id}:{idx}"
             claim = await claim_durable_stock_event(
                 db,
@@ -1590,6 +1704,11 @@ async def claim_packing_stock(
             act_id = inc.get("action_id") or str(uuid.uuid4())
             proc = str(target_line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
+            if not await _production_flow_stock_can_mutate(
+                db, mid, qty, target_line.get("unit"),
+                movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+            ):
+                continue
             event_id = f"packing:{order['id']}:{act_id}:{idx}"
             claim = await claim_durable_stock_event(
                 db,
@@ -1684,6 +1803,11 @@ async def claim_sales_delivery_stock(
                 continue
             proc = str(line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
+            if not await _production_flow_stock_can_mutate(
+                db, mid, qty, line.get("unit"),
+                movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+            ):
+                continue
             line_id = str(line.get("line_id") or line.get("line_idx", 0))
             event_id = f"stock_out:sales_delivery:{delivery_id}:{line_id}"
             claim = await claim_durable_stock_event(
@@ -1777,6 +1901,11 @@ async def claim_delivery_confirmed_stock(
                 continue
             proc = str(line.get("production_process") or "").strip().lower()
             is_p = proc != "non_print"
+            if not await _production_flow_stock_can_mutate(
+                db, mid, qty, line.get("unit"),
+                movement_type=MOVEMENT_PENGIRIMAN, is_print=is_p,
+            ):
+                continue
             event_id = f"stock_out:delivery:{order['id']}:{action_id}:{idx}"
             claim = await claim_durable_stock_event(
                 db,
