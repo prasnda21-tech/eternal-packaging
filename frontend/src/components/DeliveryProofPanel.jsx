@@ -17,9 +17,11 @@ import {
   deliveryBatchPhotoReadiness,
   findDeliveryShipment,
   isShipmentDelivered,
+  isPengirimanMutationLocked,
   pengirimanSjOptions,
   proofsForShipment,
   selectedPengirimanShipmentId,
+  deliveryBatchIdentity,
 } from "../lib/deliveryProof";
 import { deliveryHistoryEntries, displayOrDash, historyTimeLabel } from "../lib/deliveryHistory";
 import { newActionId } from "../lib/workflowEntries";
@@ -42,19 +44,50 @@ function urlShipmentId() {
   }
 }
 
+function replaceShipmentQuery(shipmentId) {
+  if (typeof window === "undefined" || typeof window.history?.replaceState !== "function") return;
+  try {
+    const url = new URL(window.location.href);
+    const sid = String(shipmentId || "").trim();
+    if (sid) url.searchParams.set("shipment", sid);
+    else url.searchParams.delete("shipment");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== cur) window.history.replaceState(window.history.state, "", next);
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) {
   const { hasPerm, user } = useAuth();
   const fileInput = useRef(null);
   const cameraInput = useRef(null);
+  const blobCacheRef = useRef({});
   const sjOptions = useMemo(() => pengirimanSjOptions(order), [order]);
   const [sjId, setSjId] = useState(() => selectedPengirimanShipmentId(order, urlShipmentId()));
   const sjIdsKey = sjOptions.map((o) => o.id).join("|");
   useEffect(() => {
-    const next = selectedPengirimanShipmentId(order, sjId || urlShipmentId());
-    if (next && next !== sjId) setSjId(next);
+    const hint = urlShipmentId();
+    if (hint) {
+      const next = selectedPengirimanShipmentId(order, hint);
+      if (next !== sjId) setSjId(next);
+      return;
+    }
+    const next = selectedPengirimanShipmentId(order, sjId);
+    if (next !== sjId) setSjId(next);
   }, [sjIdsKey, order, sjId]);
-  const activeShipment = findDeliveryShipment(order, sjId) || sjOptions[0]?.shipment || null;
-  const activeSjOption = sjOptions.find((o) => o.id === (activeShipment ? (activeShipment.id || sjId) : sjId)) || sjOptions[0] || null;
+
+  const urlWant = urlShipmentId();
+  const unmatchedRequested = Boolean(urlWant) && !selectedPengirimanShipmentId(order, urlWant);
+  const lookupId = unmatchedRequested ? urlWant : sjId;
+  const activeShipment = findDeliveryShipment(order, lookupId);
+  const selectedShipmentKey = deliveryBatchIdentity(activeShipment);
+  const activeSjOption = sjOptions.find((o) => (
+    o.id === sjId
+    || (activeShipment && (o.shipment === activeShipment || o.id === activeShipment.id || o.id === selectedShipmentKey))
+  )) || null;
+  const selectionKey = unmatchedRequested ? `unmatched:${urlWant}` : (selectedShipmentKey || sjId || "");
 
   const [staged, setStaged] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -81,28 +114,63 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order.delivery_recipient_signature?.id]);
 
+  useEffect(() => {
+    setStaged((prev) => {
+      prev.forEach((s) => { if (s.previewUrl) URL.revokeObjectURL(s.previewUrl); });
+      return [];
+    });
+    Object.values(blobCacheRef.current).forEach((u) => { if (u) URL.revokeObjectURL(u); });
+    blobCacheRef.current = {};
+    setProofBlobs({});
+    setUploading(false);
+    setErr("");
+    setConfirmUpload(null);
+    setConfirmDeliver(null);
+    setConfirming(false);
+    setDeletingId(null);
+    setPreviewId(null);
+    setSignatureDataUrl(null);
+    setDriverSignatureDataUrl(null);
+    setSavingSig(false);
+    setSigPadKey((k) => k + 1);
+    setDriverPadKey((k) => k + 1);
+    setRecipientName(order.delivery_recipient_signature?.recipient_name || "");
+  }, [selectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const canUpload = hasPerm("delivery.update");
-  const batchPhotoReady = canUploadDeliveryBatchPhoto(order, activeShipment);
-  const batchPhotoBlockReason = deliveryBatchPhotoBlockReason(order, activeShipment);
-  const batchReadiness = deliveryBatchPhotoReadiness(order, activeShipment);
+  const shipmentResolved = Boolean(activeShipment) && Boolean(selectedShipmentKey);
+  const batchPhotoReady = shipmentResolved ? canUploadDeliveryBatchPhoto(order, activeShipment) : false;
+  const batchPhotoBlockReason = !shipmentResolved
+    ? (unmatchedRequested
+      ? "Surat Jalan pada tautan tidak ditemukan."
+      : (sjOptions.length > 1 ? "Pilih Surat Jalan terlebih dahulu." : "Surat Jalan belum dipilih."))
+    : deliveryBatchPhotoBlockReason(order, activeShipment);
+  const batchReadiness = shipmentResolved
+    ? deliveryBatchPhotoReadiness(order, activeShipment)
+    : { allowed: false, loadedTotal: 0, requiredTotal: 0, lines: [] };
   const selectedDelivered = isShipmentDelivered(order, activeShipment);
-  const poDelivered = order.delivery_status === "Terkirim";
-  const canWritePhoto = canUpload && batchPhotoReady && !selectedDelivered && !poDelivered;
+  const mutationLocked = isPengirimanMutationLocked(order, activeShipment);
+  const canWritePhoto = canUpload && shipmentResolved && batchPhotoReady && !mutationLocked;
   const canDelete = hasPerm("delivery.update");
   const canReschedule = hasPerm("delivery.reschedule") || hasPerm("delivery.reschedule.set_date");
   const canSetDate = hasPerm("delivery.reschedule.set_date");
-  const proofs = proofsForShipment(order, activeShipment);
+  const proofs = ((sjOptions.length > 1 && !shipmentResolved) || unmatchedRequested)
+    ? []
+    : proofsForShipment(order, activeShipment);
   const orderSig = order.delivery_recipient_signature;
   const driverSig = order.delivery_driver_signature;
   const driverDisplayName = authoritativeDriverDisplayName(order, user);
   const history = deliveryHistoryEntries(order);
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
+  const photoLimitHint = sjOptions.length > 1
+    ? `Maksimal ${MAX_PHOTOS} foto untuk Surat Jalan ini`
+    : `Batas ${MAX_PHOTOS} foto per PO`;
   const stagedNotYetUploaded = staged.filter((s) => s.status !== "done");
   const freeSlotsForNewSelection = Math.max(0, remainingSlots - stagedNotYetUploaded.length);
   const readyCount = confirmableProofCount(staged);
   const doneCount = staged.filter((s) => s.status === "done").length;
   // Button APPEARS after existing 2-photo rule; submit still needs name + both signatures.
-  const deliverButtonVisible = canUpload && canConfirmDelivered(proofs) && !selectedDelivered && !poDelivered;
+  const deliverButtonVisible = canUpload && shipmentResolved && canConfirmDelivered(proofs) && !mutationLocked;
   const deliverEnabled = deliverButtonVisible && canSubmitConfirmDelivered(
     proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
   );
@@ -112,6 +180,12 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     )
     : null;
 
+  const onSelectSj = (nextId) => {
+    const resolved = selectedPengirimanShipmentId(order, nextId);
+    setSjId(resolved);
+    replaceShipmentQuery(resolved);
+  };
+
   // Load proof images as blob URLs (cookie auth on same origin).
   // Preview-only: skip while the Pengiriman accordion is collapsed so Detail PO
   // does not fetch blobs until the panel is actually visible. Cached blob URLs
@@ -120,7 +194,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     if (!isOpen) return;
     let cancelled = false;
     (async () => {
-      const next = { ...proofBlobs };
+      const next = { ...blobCacheRef.current };
       for (const p of proofs) {
         if (next[p.id]) continue;
         try {
@@ -129,17 +203,19 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
           const blob = await resp.blob();
           if (cancelled) return;
           next[p.id] = URL.createObjectURL(blob);
+          blobCacheRef.current = next;
         } catch { /* ignore */ }
       }
-      if (!cancelled) setProofBlobs(next);
+      if (!cancelled) setProofBlobs({ ...blobCacheRef.current });
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, proofs.length]);
+  }, [isOpen, proofs.length, selectionKey]);
 
   // Cleanup blob URLs
   useEffect(() => () => {
-    Object.values(proofBlobs).forEach((u) => URL.revokeObjectURL(u));
+    Object.values(blobCacheRef.current).forEach((u) => { if (u) URL.revokeObjectURL(u); });
+    blobCacheRef.current = {};
     staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
   }, []);  // eslint-disable-line
 
@@ -161,7 +237,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     // Limit selection to free slots
     const toStage = files.slice(0, freeSlotsForNewSelection);
     if (files.length > toStage.length) {
-      setErr(`Hanya ${toStage.length} foto ditambahkan (batas ${MAX_PHOTOS} foto per PO).`);
+      setErr(`Hanya ${toStage.length} foto ditambahkan (${photoLimitHint}).`);
     }
 
     // Compress each and add to staged (streaming so UI updates progressively)
@@ -219,6 +295,10 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   };
 
   const uploadAll = async () => {
+    if (!selectedShipmentKey) {
+      setErr("Pilih Surat Jalan terlebih dahulu.");
+      return;
+    }
     const toUpload = staged.filter((s) => s.status === "ready" || (s.status === "error" && s.file));
     if (toUpload.length === 0) {
       setErr("Belum ada foto siap upload.");
@@ -233,7 +313,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       try {
         const res = await api.uploadDeliveryProof(latestOrder.id, s.file, s.note || "", (pct) => {
           setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, progress: pct } : x));
-        }, activeShipment?.id || sjId);
+        }, selectedShipmentKey);
         latestOrder = res.order;
         onUpdated(res.order);
         setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "done", progress: 100 } : x));
@@ -306,6 +386,9 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   };
 
   const ensureSignaturesSaved = async () => {
+    if (!selectedShipmentKey) {
+      throw new Error("Pilih Surat Jalan terlebih dahulu.");
+    }
     let latest = order;
     const name = (recipientName || orderSig?.recipient_name || "").trim();
     const recipientSaved = orderSig && orderSig.id && orderSig.frozen !== true
@@ -319,7 +402,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName: name,
           signatureDataUrl,
-          shipmentId: activeShipment?.id || sjId,
+          shipmentId: selectedShipmentKey,
         });
         latest = res.order;
         onUpdated(res.order);
@@ -342,7 +425,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
         try {
           const res = await api.uploadDeliveryDriverSignature(latest.id, {
             signatureDataUrl: driverSignatureDataUrl,
-            shipmentId: activeShipment?.id || sjId,
+            shipmentId: selectedShipmentKey,
           });
           latest = res.order;
           onUpdated(res.order);
@@ -356,13 +439,17 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
   const executeDeliver = async () => {
     if (!confirmDeliver || confirming || uploading || savingSig) return;
+    if (!selectedShipmentKey) {
+      setErr("Pilih Surat Jalan terlebih dahulu.");
+      return;
+    }
     setConfirming(true);
     setErr("");
     try {
       await ensureSignaturesSaved();
       const res = await api.confirmDelivered(order.id, {
         action_id: confirmDeliver.actionId,
-        shipment_id: activeShipment?.id || sjId,
+        shipment_id: selectedShipmentKey,
       });
       onUpdated(res.order);
       setConfirmDeliver(null);
@@ -422,9 +509,12 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             <span className="muted small">Surat Jalan</span>
             <select
               value={activeSjOption?.id || sjId || ""}
-              onChange={(e) => setSjId(e.target.value)}
+              onChange={(e) => onSelectSj(e.target.value)}
               data-testid="pengiriman-sj-select"
             >
+              {(sjOptions.length > 1 || !activeSjOption) && (
+                <option value="">Pilih Surat Jalan</option>
+              )}
               {sjOptions.map((opt) => (
                 <option key={opt.id} value={opt.id}>
                   {opt.number} · {opt.id}{opt.date ? ` · ${opt.date}` : ""}{opt.delivered ? " · Terkirim" : ""}
@@ -487,6 +577,17 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             </div>
           )}
         </div>
+      )}
+
+      {unmatchedRequested && (
+        <p className="muted small" data-testid="pengiriman-sj-unmatched" style={{ padding: "0 16px 10px" }}>
+          Surat Jalan pada tautan tidak ditemukan. Pilih Surat Jalan yang valid.
+        </p>
+      )}
+      {sjOptions.length > 1 && !activeSjOption && !unmatchedRequested && (
+        <p className="muted small" data-testid="pengiriman-sj-required" style={{ padding: "0 16px 10px" }}>
+          Pilih Surat Jalan terlebih dahulu.
+        </p>
       )}
 
       {history.length > 0 && (
@@ -699,7 +800,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
           {err && <div className="error" data-testid="proof-error">{err}</div>}
 
-          {canConfirmDelivered(proofs) && order.delivery_status !== "Terkirim" && (
+          {canConfirmDelivered(proofs) && !mutationLocked && (
             <div className="recipient-signature-block" data-testid="recipient-signature-block" style={{ marginTop: 16 }}>
               <h4 style={{ margin: "0 0 8px" }}>Tanda Tangan Penerima</h4>
               <label className="field" style={{ display: "block", marginBottom: 10 }}>
@@ -798,9 +899,9 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
           {deliverButtonVisible && deliverBlockReason && (
             <p className="muted small" data-testid="confirm-delivered-hint">{deliverBlockReason}</p>
           )}
-          <p className="muted small">
+          <p className="muted small" data-testid="proof-photo-limit-hint">
             Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu isi nama penerima + TTD penerima + TTD driver, kemudian Konfirmasi Terkirim.
-            Batas {MAX_PHOTOS} foto per PO. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
+            {" "}{photoLimitHint}. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
             {remainingSlots > 0 ? ` Sisa slot: ${remainingSlots}.` : " Slot penuh — hapus foto untuk menambah."}
           </p>
         </div>

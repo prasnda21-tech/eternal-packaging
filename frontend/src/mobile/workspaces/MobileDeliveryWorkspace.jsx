@@ -25,7 +25,9 @@ import {
   canUploadDeliveryBatchPhoto,
   deliveryBatchPhotoBlockReason,
   deliveryBatchPhotoReadiness,
+  deliveryBatchIdentity,
   findDeliveryShipment,
+  isPengirimanMutationLocked,
   isShipmentDelivered,
   pengirimanSjOptions,
   pengirimanSjDisplayLabel,
@@ -82,14 +84,15 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
     const next = selectedPengirimanShipmentId(order, sjId);
     if (next && next !== sjId) setSjId(next);
   }, [sjIdsKey, order, sjId, explicitShipmentId]);
-  const lookupId = lockedToRequested ? (sjId || explicitShipmentId) : sjId;
+  const lookupId = lockedToRequested ? explicitShipmentId : sjId;
   const activeShipment = findDeliveryShipment(order, lookupId);
+  const selectedShipmentKey = deliveryBatchIdentity(activeShipment);
   const activeSjOption = sjOptions.find((o) => (
     o.id === sjId
-    || (activeShipment && (o.shipment === activeShipment || o.id === activeShipment.id))
+    || (activeShipment && (o.shipment === activeShipment || o.id === activeShipment.id || o.id === selectedShipmentKey))
   )) || null;
   const selectedDelivered = isShipmentDelivered(order, activeShipment);
-  const delivered = selectedDelivered || order?.delivery_status === "Terkirim" || !!order?.terkirim_confirmed;
+  const delivered = isPengirimanMutationLocked(order, activeShipment);
   const proofs = proofsForShipment(order, activeShipment);
   const address = deliveryAddressFromOrder(order);
   const maps = mapsSearchUrl(address);
@@ -107,6 +110,18 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   const [localSlots, setLocalSlots] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setLocalSlots((prev) => {
+      prev.forEach((s) => {
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+      });
+      return [];
+    });
+    setPreview(null);
+    setPicker(null);
+    setErr("");
+  }, [lookupId]);
 
   const orderSig = order?.delivery_recipient_signature;
   const driverSig = order?.delivery_driver_signature;
@@ -194,7 +209,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
     patchSlot(clientId, { status: "uploading" });
     try {
       if (isPreview) {
-        onUpdated(applyPreviewDeliveryMutation(order, "photo", { shipmentId: activeShipment.id }));
+        onUpdated(applyPreviewDeliveryMutation(order, "photo", { shipmentId: selectedShipmentKey }));
         dropSlot(clientId);
         return;
       }
@@ -213,7 +228,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         onUpdated(latestOrder);
         patchSlot(clientId, { replaceId: null });
       }
-      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, activeShipment.id);
+      const res = await api.uploadDeliveryProof(order.id, uploadFile, "", undefined, selectedShipmentKey);
       latestOrder = res.order;
       onUpdated(latestOrder);
       if (replaceId && currentProofs.length < MAX_PHOTOS) {
@@ -287,7 +302,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         if (localSig.driver) {
           latest = applyPreviewDeliveryMutation(latest, "driver-sig");
         }
-        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: activeShipment.id });
+        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: selectedShipmentKey });
         onUpdated(latest);
         setLocalSig({ recipient: null, driver: null });
         onRequestClose?.();
@@ -298,7 +313,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName,
           signatureDataUrl: localSig.recipient,
-          shipmentId: activeShipment.id,
+          shipmentId: selectedShipmentKey,
         });
         latest = res.order;
         onUpdated(latest);
@@ -306,14 +321,14 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       if (localSig.driver) {
         const res = await api.uploadDeliveryDriverSignature(latest.id, {
           signatureDataUrl: localSig.driver,
-          shipmentId: activeShipment.id,
+          shipmentId: selectedShipmentKey,
         });
         latest = res.order;
         onUpdated(latest);
       }
       const res = await api.confirmDelivered(order.id, {
         action_id: newActionId(),
-        shipment_id: activeShipment.id,
+        shipment_id: selectedShipmentKey,
       });
       onUpdated(res.order);
       setLocalSig({ recipient: null, driver: null });

@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import DeliverySchedulePage, { scheduleRowSjNumber } from "./DeliverySchedulePage";
+import DeliverySchedulePage, { scheduleRowSjNumber, desktopDeliveryPoHref, desktopDeliveryKerjaHref } from "./DeliverySchedulePage";
 import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
 import { STATUS_LOKASI_SORT_DUMMY_ROWS } from "../lib/deliveryScheduleStatusLokasiFixtures";
 import { desktopScheduleReviewHref } from "../lib/mobileDeliverySchedule";
@@ -634,6 +634,92 @@ describe("DeliverySchedulePage Surat Jalan column", () => {
     const btn = container.querySelector('[data-testid="ds-sj-lihat-PO-100"]');
     expect(btn).toBeTruthy();
     expect(btn.textContent).toBe("Lihat");
+  });
+});
+
+describe("DeliverySchedulePage desktop exact-SJ hrefs", () => {
+  test("helpers preserve exact shipment on PO and Kerjakan links", () => {
+    expect(desktopDeliveryPoHref("ord-demo", "demo-multisj-photo-001"))
+      .toBe("/po/ord-demo?shipment=demo-multisj-photo-001");
+    expect(desktopDeliveryPoHref("ord-demo", "demo-multisj-photo-002"))
+      .toBe("/po/ord-demo?shipment=demo-multisj-photo-002");
+    expect(desktopDeliveryPoHref("ord-demo", "demo-multisj-photo-003"))
+      .toBe("/po/ord-demo?shipment=demo-multisj-photo-003");
+    expect(desktopDeliveryKerjaHref("ord-demo", "demo-multisj-photo-001"))
+      .toBe("/po/ord-demo/kerja?divisi=terkirim&shipment=demo-multisj-photo-001");
+    expect(desktopDeliveryKerjaHref("ord-demo", "demo-multisj-photo-002"))
+      .toBe("/po/ord-demo/kerja?divisi=terkirim&shipment=demo-multisj-photo-002");
+    expect(desktopDeliveryKerjaHref("ord-demo", "demo-multisj-photo-003"))
+      .toBe("/po/ord-demo/kerja?divisi=terkirim&shipment=demo-multisj-photo-003");
+  });
+
+  test("helpers fail closed when shipment_id is missing — no invented identity", () => {
+    expect(desktopDeliveryPoHref("ord-demo", "")).toBe("/po/ord-demo");
+    expect(desktopDeliveryPoHref("ord-demo", null)).toBe("/po/ord-demo");
+    expect(desktopDeliveryKerjaHref("ord-demo", "")).toBe("/po/ord-demo/kerja?divisi=terkirim");
+    expect(desktopDeliveryKerjaHref("", "demo-multisj-photo-002")).toBe("");
+  });
+
+  test("SJ 001/002/003 rows keep shipment on PO and Kerjakan links", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "order-demo-multisj-photo",
+          order_number: "DEMO-MULTISJ-PHOTO-PO",
+          shipment_id: "demo-multisj-photo-001",
+          sj_label: "DEMO-MULTISJ-PHOTO-001",
+          latest_sj_number: "DEMO-MULTISJ-PHOTO-001",
+          sj_numbers: ["DEMO-MULTISJ-PHOTO-001"],
+          sj_files: [],
+        },
+        {
+          ...sampleRows[0],
+          id: "order-demo-multisj-photo",
+          order_number: "DEMO-MULTISJ-PHOTO-PO",
+          shipment_id: "demo-multisj-photo-002",
+          sj_label: "DEMO-MULTISJ-PHOTO-002",
+          latest_sj_number: "DEMO-MULTISJ-PHOTO-002",
+          sj_numbers: ["DEMO-MULTISJ-PHOTO-002"],
+          sj_files: [],
+        },
+        {
+          ...sampleRows[0],
+          id: "order-demo-multisj-photo",
+          order_number: "DEMO-MULTISJ-PHOTO-PO",
+          shipment_id: "demo-multisj-photo-003",
+          sj_label: "DEMO-MULTISJ-PHOTO-003",
+          latest_sj_number: "DEMO-MULTISJ-PHOTO-003",
+          sj_numbers: ["DEMO-MULTISJ-PHOTO-003"],
+          sj_files: [],
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+
+    const po001 = container.querySelector('[data-testid="ds-po-link-DEMO-MULTISJ-PHOTO-PO-demo-multisj-photo-001"]');
+    const po002 = container.querySelector('[data-testid="ds-po-link-DEMO-MULTISJ-PHOTO-PO-demo-multisj-photo-002"]');
+    const po003 = container.querySelector('[data-testid="ds-po-link-DEMO-MULTISJ-PHOTO-PO-demo-multisj-photo-003"]');
+    const kerja001 = container.querySelector('[data-testid="ds-kerja-link-DEMO-MULTISJ-PHOTO-PO-demo-multisj-photo-001"]');
+    const kerja002 = container.querySelector('[data-testid="ds-kerja-link-DEMO-MULTISJ-PHOTO-PO-demo-multisj-photo-002"]');
+    const kerja003 = container.querySelector('[data-testid="ds-kerja-link-DEMO-MULTISJ-PHOTO-PO-demo-multisj-photo-003"]');
+
+    expect(po001.getAttribute("href")).toContain("shipment=demo-multisj-photo-001");
+    expect(po002.getAttribute("href")).toContain("shipment=demo-multisj-photo-002");
+    expect(po003.getAttribute("href")).toContain("shipment=demo-multisj-photo-003");
+    expect(kerja001.getAttribute("href")).toContain("shipment=demo-multisj-photo-001");
+    expect(kerja002.getAttribute("href")).toContain("shipment=demo-multisj-photo-002");
+    expect(kerja003.getAttribute("href")).toContain("shipment=demo-multisj-photo-003");
+    expect(kerja001.getAttribute("href")).toContain("divisi=terkirim");
+    expect(po002.getAttribute("href")).not.toContain("demo-multisj-photo-001");
+    expect(kerja003.getAttribute("href")).not.toContain("demo-multisj-photo-001");
+
+    act(() => root.unmount());
+    container.remove();
   });
 });
 

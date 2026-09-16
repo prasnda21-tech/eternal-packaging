@@ -35,7 +35,7 @@ describe("PO Detail delivery cards", () => {
 
   test("Pengiriman panel selects an explicit SJ batch", () => {
     expect(proof).toMatch(/data-testid="pengiriman-sj-select"/);
-    expect(proof).toMatch(/shipment_id: activeShipment/);
+    expect(proof).toMatch(/shipment_id: selectedShipmentKey/);
     expect(proof).toMatch(/pengirimanSjOptions/);
     expect(proof).toMatch(/proofsForShipment/);
     expect(proof).not.toMatch(/activeDeliveryBatch\(order\)/);

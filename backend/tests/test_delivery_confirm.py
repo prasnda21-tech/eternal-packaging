@@ -9,7 +9,9 @@ from quantity_rules import (
     apply_delivery_from_proof_evidence,
     can_confirm_delivery,
     confirm_delivery_block_reason,
+    delivery_proofs_for_upload_limit,
     valid_delivery_proof_count,
+    valid_delivery_proofs_for_shipment,
 )
 
 
@@ -99,3 +101,100 @@ def test_signature_gate_messages():
     o3 = _po(2, with_signature=True)
     o3.pop("delivery_driver_signature", None)
     assert "driver" in (confirm_delivery_block_reason(o3) or "").lower()
+
+
+def _multi_sj_photo_po(proofs=None):
+    return {
+        "line_items": [
+            {"name": "Cup A", "quantity": 1000, "line_id": "LA", "production_process": "print"},
+            {"name": "Cup B", "quantity": 800, "line_id": "LB", "production_process": "print"},
+            {"name": "Lid C", "quantity": 600, "line_id": "LC", "production_process": "non_print"},
+        ],
+        "total_quantity": 2400,
+        "packing_info": {
+            "qty_packed": 1800,
+            "lines": [{"line_idx": 0, "packed_qty": 1000}, {"line_idx": 1, "packed_qty": 800}],
+        },
+        "shipments": [
+            {
+                "id": "demo-multisj-photo-001",
+                "number": "DEMO-MULTISJ-PHOTO-001",
+                "lines": [{"line_idx": 0, "line_id": "LA", "qty": 1000}],
+                "total_qty": 1000,
+            },
+            {
+                "id": "demo-multisj-photo-002",
+                "number": "DEMO-MULTISJ-PHOTO-002",
+                "lines": [{"line_idx": 1, "line_id": "LB", "qty": 800}],
+                "total_qty": 800,
+            },
+            {
+                "id": "demo-multisj-photo-003",
+                "number": "DEMO-MULTISJ-PHOTO-003",
+                "lines": [{"line_idx": 2, "line_id": "LC", "qty": 600}],
+                "total_qty": 600,
+            },
+        ],
+        "loading_confirmations": [
+            {"id": "c1", "surat_jalan_id": "demo-multisj-photo-001", "lines": [{"line_idx": 0, "qty": 1000}]},
+            {"id": "c2", "surat_jalan_id": "demo-multisj-photo-002", "lines": [{"line_idx": 1, "qty": 800}]},
+            {"id": "c3", "surat_jalan_id": "demo-multisj-photo-003", "lines": [{"line_idx": 2, "qty": 600}]},
+        ],
+        "delivery_proofs": proofs or [],
+        "qty_delivered": 0,
+        "delivery_status": "Belum Terkirim",
+        "current_stage": 13,
+    }
+
+
+def test_multi_sj_proofs_are_isolated_by_shipment_id():
+    order = _multi_sj_photo_po([
+        {"id": "p001", "shipment_id": "demo-multisj-photo-001"},
+        {"id": "p002", "shipment_id": "demo-multisj-photo-002"},
+        {"id": "p003", "shipment_id": "demo-multisj-photo-003"},
+    ])
+    sj1, sj2, sj3 = order["shipments"]
+    assert [p["id"] for p in valid_delivery_proofs_for_shipment(order, sj1)] == ["p001"]
+    assert [p["id"] for p in valid_delivery_proofs_for_shipment(order, sj2)] == ["p002"]
+    assert [p["id"] for p in valid_delivery_proofs_for_shipment(order, sj3)] == ["p003"]
+
+
+def test_untagged_legacy_proof_is_not_assigned_to_sibling_sj():
+    order = _multi_sj_photo_po([
+        {"id": "legacy-untagged"},
+        {"id": "p001", "shipment_id": "demo-multisj-photo-001"},
+    ])
+    sj1, sj2, sj3 = order["shipments"]
+    assert [p["id"] for p in valid_delivery_proofs_for_shipment(order, sj1)] == ["p001"]
+    assert valid_delivery_proofs_for_shipment(order, sj2) == []
+    assert valid_delivery_proofs_for_shipment(order, sj3) == []
+    blocked = confirm_delivery_block_reason(order, sj2)
+    assert blocked and "foto" in blocked.lower()
+
+
+def test_single_sj_still_reads_untagged_proofs():
+    order = _po(0)
+    order["delivery_proofs"] = [{"id": "legacy"}]
+    assert [p["id"] for p in valid_delivery_proofs_for_shipment(order, order["shipments"][0])] == ["legacy"]
+
+
+def test_multi_sj_upload_limit_is_per_shipment_not_po():
+    proofs = [{"id": f"p1-{i}", "shipment_id": "demo-multisj-photo-001"} for i in range(5)]
+    proofs += [{"id": f"p2-{i}", "shipment_id": "demo-multisj-photo-002"} for i in range(2)]
+    order = _multi_sj_photo_po(proofs)
+    sj1, sj2, sj3 = order["shipments"]
+    assert len(delivery_proofs_for_upload_limit(order, sj1)) == 5
+    assert len(delivery_proofs_for_upload_limit(order, sj2)) == 2
+    assert len(delivery_proofs_for_upload_limit(order, sj3)) == 0
+    assert len(delivery_proofs_for_upload_limit(order, None)) == 7
+
+
+def test_sibling_proof_does_not_satisfy_current_sj_confirm():
+    order = _multi_sj_photo_po([
+        {"id": "p001a", "shipment_id": "demo-multisj-photo-001"},
+        {"id": "p001b", "shipment_id": "demo-multisj-photo-001"},
+    ])
+    blocked = confirm_delivery_block_reason(order, order["shipments"][1])
+    assert blocked and "foto" in blocked.lower()
+    blocked3 = confirm_delivery_block_reason(order, order["shipments"][2])
+    assert blocked3 and "foto" in blocked3.lower()
