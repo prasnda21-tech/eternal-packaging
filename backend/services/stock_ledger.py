@@ -120,6 +120,7 @@ async def record_stock_movement(
     source_event_type: Optional[str] = None,
     source_event_id: Optional[str] = None,
     reference_type: Optional[str] = None,
+    change_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Records an immutable stock movement atomically.
     
@@ -278,6 +279,8 @@ async def record_stock_movement(
                 "role": (user or {}).get("role") or "",
             },
         }
+        if change_metadata:
+            doc.update(change_metadata)
 
         try:
             await db[COLLECTION].insert_one(doc)

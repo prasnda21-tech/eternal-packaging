@@ -13,6 +13,7 @@ from services.stock_opname_import import (
     apply_opname_import_batch,
     build_opname_import_preview,
     build_opname_template_xlsx,
+    revalidate_opname_apply_rows,
 )
 
 
@@ -89,6 +90,30 @@ def test_export_template_columns_only():
     # Counted column empty for user fill
     assert ws.cell(row=2, column=5).value is None
     assert ws.cell(row=2, column=1).value == "SKU-001"
+    assert ws.protection.sheet is True
+    assert ws.cell(row=2, column=4).protection.locked is True
+    assert ws.cell(row=2, column=5).protection.locked is False
+
+
+def test_apply_rows_are_revalidated_against_live_catalog():
+    catalog = _catalog_10()[:1]
+    rows = [{
+        "item_code": "SKU-001",
+        "item_name": "Tampered",
+        "master_item_id": "forged-master",
+        "physical_system": 99999,
+        "physical_opname": 120,
+        "can_apply": True,
+    }]
+    validated = revalidate_opname_apply_rows(
+        rows,
+        stock_rows=catalog,
+        batch_request_id="batch-1",
+    )
+    assert validated[0]["master_item_id"] == "m1"
+    assert validated[0]["item_name"] == "Item 1"
+    assert validated[0]["physical_system"] == 101
+    assert validated[0]["client_request_id"] == "batch-1:sku-001"
 
 
 def test_preview_10_items_ok_and_available_formula():
@@ -125,9 +150,9 @@ def test_preview_invalid_sku():
         [["NOPE-999", "Ghost", "PCS", 0, 10]],
     )
     preview = build_opname_import_preview(raw, "bad.xlsx", stock_rows=catalog)
-    assert preview["error_count"] == 1
+    assert preview["block_count"] == 1
     assert preview["can_process"] is False
-    assert preview["rows"][0]["status"] == "ERROR"
+    assert preview["rows"][0]["status"] == "BLOCK"
     assert "TIDAK DITEMUKAN" in preview["rows"][0]["message"]
 
 
@@ -141,11 +166,11 @@ def test_preview_duplicate_sku():
         ],
     )
     preview = build_opname_import_preview(raw, "dup.xlsx", stock_rows=catalog)
-    assert preview["rows"][0]["status"] == "OK"
-    assert preview["rows"][1]["status"] == "ERROR"
+    assert preview["rows"][0]["status"] == "BLOCK"
+    assert preview["rows"][1]["status"] == "BLOCK"
     assert "DUPLIKAT" in preview["rows"][1]["message"]
-    assert preview["ok_count"] == 1
-    assert preview["error_count"] == 1
+    assert preview["ok_count"] == 0
+    assert preview["block_count"] == 2
 
 
 def test_preview_empty_and_negative_qty():
@@ -159,7 +184,7 @@ def test_preview_empty_and_negative_qty():
         ],
     )
     preview = build_opname_import_preview(raw, "qty.xlsx", stock_rows=catalog)
-    assert preview["error_count"] == 3
+    assert preview["block_count"] == 3
     msgs = {r["item_code"]: r["message"] for r in preview["rows"]}
     assert "KOSONG" in msgs["SKU-001"]
     assert "NEGATIF" in msgs["SKU-002"]
@@ -348,8 +373,8 @@ async def test_apply_skips_block_and_error_rows():
     )
     preview = build_opname_import_preview(raw, "mix.xlsx", stock_rows=catalog)
     assert preview["ok_count"] == 1
-    assert preview["block_count"] == 1
-    assert preview["error_count"] == 1
+    assert preview["block_count"] == 2
+    assert preview["error_count"] == 0
 
     db = MagicMock()
     batches = MagicMock()

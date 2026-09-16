@@ -15,6 +15,7 @@ import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
@@ -31,6 +32,8 @@ STATUS_INITIALIZING = "INITIALIZING"
 STATUS_INITIALIZED = "INITIALIZED"
 HOLDING_TEAM_ROLE = "holding_team"
 HOLDING_TEAM_ONLY_MSG = "Hanya HOLDING_TEAM yang dapat mengkoreksi saldo awal stok fisik"
+LOCAL_CORRECTION_ENVS = frozenset({"local", "development", "preview", "test"})
+LOCAL_MONGO_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 OPENING_CORRECTION_CONFLICT_MSG = "Ada mutasi stok yang sedang berjalan untuk item ini"
 OPENING_CORRECTION_SOURCE = "OPENING_BALANCE_CORRECTION"
 
@@ -314,6 +317,30 @@ def require_holding_team(user: Optional[Dict[str, Any]]) -> None:
         raise HTTPException(403, HOLDING_TEAM_ONLY_MSG)
 
 
+def can_correct_physical_stock(
+    user: Optional[Dict[str, Any]],
+    app_env: Optional[str],
+    mongo_url: Optional[str] = None,
+) -> bool:
+    role = str((user or {}).get("role") or "").strip().lower()
+    env = str(app_env or "").strip().lower()
+    try:
+        mongo_host = urlparse(str(mongo_url or "")).hostname
+    except ValueError:
+        mongo_host = None
+    explicit_local = env in LOCAL_CORRECTION_ENVS and mongo_host in LOCAL_MONGO_HOSTS
+    return role == HOLDING_TEAM_ROLE or (role == "admin" and explicit_local)
+
+
+def require_physical_stock_correction_access(
+    user: Optional[Dict[str, Any]],
+    app_env: Optional[str],
+    mongo_url: Optional[str] = None,
+) -> None:
+    if not can_correct_physical_stock(user, app_env, mongo_url):
+        raise HTTPException(403, HOLDING_TEAM_ONLY_MSG)
+
+
 def _opening_correction_conflict() -> HTTPException:
     return HTTPException(409, OPENING_CORRECTION_CONFLICT_MSG)
 
@@ -455,6 +482,9 @@ async def _recover_opening_correction_state(
     audit = pending.get("correction_audit") or {
         "old_qty": pending.get("old_qty"),
         "new_qty": new_qty,
+        "difference_qty": safe_float(new_tot) - safe_float((pending.get("old_qty") or {}).get("total_qty")),
+        "changed_by": pending.get("actor"),
+        "changed_at": stamp,
         "corrected_by": pending.get("actor"),
         "corrected_at": stamp,
         "note": pending.get("note") or "",
@@ -522,6 +552,14 @@ async def _record_opening_correction_movement(
         printed_after=new_pri,
         source_event_type=OPENING_CORRECTION_SOURCE,
         source_event_id=event_key,
+        change_metadata={
+            "old_qty": old_tot,
+            "new_qty": new_tot,
+            "difference_qty": d_tot,
+            "changed_by": actor,
+            "changed_at": stamp,
+            "change_note": note,
+        },
     )
 
 
@@ -530,6 +568,9 @@ async def correct_opening_balance(
     master_item_id: str,
     payload: Dict[str, Any],
     user: Optional[Dict[str, Any]] = None,
+    *,
+    app_env: Optional[str] = None,
+    mongo_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """HOLDING_TEAM-only append-only correction of current physical buckets.
 
@@ -541,7 +582,7 @@ async def correct_opening_balance(
     write KOREKSI, then commit buckets and release the claim in one update.
     Distinct concurrent requests cannot both commit from the same before-state.
     """
-    require_holding_team(user)
+    require_physical_stock_correction_access(user, app_env, mongo_url)
 
     mid = str(master_item_id or "").strip()
     if not mid:
@@ -701,6 +742,9 @@ async def correct_opening_balance(
     correction_audit = {
         "old_qty": old_qty,
         "new_qty": new_qty,
+        "difference_qty": d_tot,
+        "changed_by": actor,
+        "changed_at": stamp,
         "corrected_by": actor,
         "corrected_at": stamp,
         "note": note,

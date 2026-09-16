@@ -3575,6 +3575,9 @@ html:has(.prod-schedule-page) #root{
 .stock-src{display:block;font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;line-height:1.2}
 .stock-purchase-cell{display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px}
 .stock-heading-actions{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+.stock-inline-value{display:inline-block;cursor:text;border-bottom:1px dashed currentColor}
+.stock-inline-value:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.stock-inline-input{width:6.5rem;padding:3px 6px;border:1px solid var(--green);border-radius:3px;background:#fff;text-align:right;font:inherit;color:inherit}
 .stock-last-sync,.stock-sync-summary{margin:4px 0 0}
 .penerimaan-no{display:inline-flex;align-items:center;gap:4px;font:inherit;background:none;border:0;padding:0;cursor:pointer;color:inherit}
 .penerimaan-detail-row td{background:#f7f8f6;padding:8px 10px}

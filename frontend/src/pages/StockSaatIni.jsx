@@ -13,6 +13,7 @@ export default function StockSaatIni() {
   const canOpname = canUpdate;
   const canExport = hasPerm("current_stock.export");
   const [data, setData] = useState(null);
+  const canEditPhysical = Boolean(data?.can_correct_physical_stock);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
@@ -22,6 +23,10 @@ export default function StockSaatIni() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [physicalInput, setPhysicalInput] = useState("");
+  const [editRequestId, setEditRequestId] = useState("");
+  const [savingPhysical, setSavingPhysical] = useState(false);
   const loadSeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q]);
@@ -66,6 +71,52 @@ export default function StockSaatIni() {
       setSortDir(col === "name" ? "asc" : "desc");
     }
     setPage(1);
+  };
+
+  const openPhysicalEdit = (item) => {
+    setEditing(item);
+    setPhysicalInput(String(item.physical_qty ?? 0));
+    setEditRequestId(
+      globalThis.crypto?.randomUUID?.()
+      || `stock-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    setErr("");
+  };
+
+  const savePhysical = async () => {
+    if (!editing || savingPhysical) return;
+    const physicalQty = Number(String(physicalInput).replace(",", "."));
+    if (!Number.isFinite(physicalQty) || physicalQty < 0) {
+      setErr("Stock Fisik harus berupa angka non-negatif");
+      return;
+    }
+    setSavingPhysical(true);
+    setErr("");
+    try {
+      await api.currentStockUpdate(editing.master_item_id, {
+        physical_qty: physicalQty,
+        note: "Koreksi manual Stock Fisik dari Stock Saat Ini",
+        client_request_id: editRequestId,
+      });
+      setEditing(null);
+      await load();
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setErr(typeof det === "object" ? det.message : (det || "Gagal mengubah Stock Fisik"));
+    } finally {
+      setSavingPhysical(false);
+    }
+  };
+
+  const handlePhysicalKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      savePhysical();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setEditing(null);
+      setErr("");
+    }
   };
 
   const download = async () => {
@@ -178,7 +229,7 @@ export default function StockSaatIni() {
             <tr>
               <th className="col-fit">Kode</th>
               <th className="col-text">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama Item</button>
+                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama</button>
               </th>
               <th className="col-fit">Satuan</th>
               {data?.stock_engine === "v2" ? (
@@ -228,7 +279,38 @@ export default function StockSaatIni() {
                 <td className="col-fit">{it.unit || "—"}</td>
                 {data?.stock_engine === "v2" ? (
                   <>
-                    <td className="col-fit num mono" data-testid={`stock-physical-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.physical_qty)}</td>
+                    <td className="col-fit num mono" data-testid={`stock-physical-${it.accurate_item_id || it.master_item_id}`}>
+                      {editing?.master_item_id === it.master_item_id ? (
+                        <input
+                          className="stock-inline-input"
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={physicalInput}
+                          onChange={(e) => setPhysicalInput(e.target.value)}
+                          onKeyDown={handlePhysicalKeyDown}
+                          onBlur={() => { if (!savingPhysical) setEditing(null); }}
+                          onFocus={(e) => e.target.select()}
+                          disabled={savingPhysical}
+                          data-testid={`stock-physical-inline-input-${it.master_item_id}`}
+                          autoFocus
+                        />
+                      ) : canEditPhysical && it.master_item_id ? (
+                        <span
+                          className="stock-inline-value"
+                          role="button"
+                          tabIndex={0}
+                          title="Klik untuk koreksi Stock Fisik"
+                          onClick={() => openPhysicalEdit(it)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") openPhysicalEdit(it);
+                          }}
+                          data-testid={`stock-physical-inline-value-${it.master_item_id}`}
+                        >
+                          {fmtQty(it.physical_qty)}
+                        </span>
+                      ) : fmtQty(it.physical_qty)}
+                    </td>
                     <td className="col-fit num mono" data-testid={`stock-outstanding-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.outstanding_so_qty)}</td>
                     <td className="col-fit num mono" data-testid={`stock-unprinted-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.unprinted_qty)}</td>
                     <td className="col-fit num mono" data-testid={`stock-printed-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
@@ -267,7 +349,7 @@ export default function StockSaatIni() {
           <button className="ghost sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
+
     </div>
   );
 }
-

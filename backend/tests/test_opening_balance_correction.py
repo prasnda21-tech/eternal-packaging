@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from services.product_stock_state import (
     HOLDING_TEAM_ONLY_MSG,
     OPENING_CORRECTION_CONFLICT_MSG,
+    can_correct_physical_stock,
     correct_opening_balance,
     initialize_opening_balance,
     get_product_stock_state,
@@ -25,6 +26,17 @@ def test_db():
 HOLDING = {"id": "ht-1", "email": "holding@test.com", "name": "Holding", "role": "holding_team"}
 ADMIN = {"id": "ad-1", "email": "admin@test.com", "name": "Admin", "role": "admin"}
 HEAD = {"id": "hp-1", "email": "kepala@test.com", "name": "Kepala", "role": "head_production"}
+
+
+def test_physical_stock_correction_access_matrix():
+    local_mongo = "mongodb://127.0.0.1:27017"
+    production_mongo = "mongodb://mongo.internal:27017"
+    assert can_correct_physical_stock(ADMIN, "development", local_mongo) is True
+    assert can_correct_physical_stock(HOLDING, "production", production_mongo) is True
+    assert can_correct_physical_stock(ADMIN, "production", production_mongo) is False
+    assert can_correct_physical_stock(HEAD, "production", production_mongo) is False
+    assert can_correct_physical_stock(ADMIN, None) is False
+    assert can_correct_physical_stock(ADMIN, "development", production_mongo) is False
 
 
 async def _seed_opening(test_db, *, unprinted=10000, printed=2000):
@@ -87,6 +99,27 @@ async def test_holding_team_corrects_current_physical(test_db):
     assert not state.get("pending_event")
     settings = await get_physical_stock_settings(test_db)
     assert settings["enabled"] is False
+
+
+@pytest.mark.anyio
+async def test_local_admin_can_correct_only_with_explicit_dev_environment(test_db):
+    prod_id = await _seed_opening(test_db)
+    res = await correct_opening_balance(
+        test_db,
+        prod_id,
+        {
+            "unprinted_qty": 9000,
+            "printed_qty": 2000,
+            "total_qty": 11000,
+            "note": "local preview correction",
+            "client_request_id": "local-admin-1",
+        },
+        user=ADMIN,
+        app_env="development",
+        mongo_url="mongodb://127.0.0.1:27017",
+    )
+    assert res["stock_state"]["total_qty"] == 11000
+    assert res["movement"]["changed_by"]["role"] == "admin"
 
 
 @pytest.mark.anyio

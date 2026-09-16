@@ -154,6 +154,7 @@ from services.stock_opname_import import (
     build_opname_import_preview,
     build_opname_template_xlsx,
     filter_active_stock_rows,
+    revalidate_opname_apply_rows,
 )
 from services.order_prediction_import import (
     COLLECTION as ORDER_PREDICTION_HISTORY_COLLECTION,
@@ -7267,9 +7268,6 @@ STATUS_PO_PROJECTION = {
     "total_quantity": 1,
     "quantity": 1,
     "packing_required_total": 1,
-    "requires_printing": 1,
-    "line_items.name": 1,
-    "line_items.item_name": 1,
     "line_items.quantity": 1,
     "line_items.production_process": 1,
     "operator_splits.qty_completed": 1,
@@ -7309,8 +7307,6 @@ STATUS_PO_PROJECTION = {
     "delivery_note_created_at": 1,
     "loading_completed": 1,
     "loading_completed_at": 1,
-    "loading_qty_status": 1,
-    "loading_confirmations.surat_jalan_id": 1,
     "loading_info.events.at": 1,
     "loading_info.events.created_at": 1,
     "terkirim_confirmed": 1,
@@ -10676,10 +10672,9 @@ async def physical_stock_settings_put(payload: dict = Body(...), user=Depends(cu
 
 
 class CurrentStockPatch(BaseModel):
-    manual_current_qty: Optional[Any] = None
-    manual_purchase_qty: Optional[Any] = None
-    # aliases kept for older clients
-    manual_current_qty_alias: Optional[Any] = None
+    physical_qty: Any
+    note: str
+    client_request_id: str
 
 
 async def _physical_stock_enabled() -> bool:
@@ -10718,6 +10713,16 @@ async def _load_stock_context():
     if await _physical_stock_enabled():
         return await _load_v2_stock_context()
     return await _load_legacy_stock_context()
+
+
+def _current_stock_correction_allowed(user: dict) -> bool:
+    from services.product_stock_state import can_correct_physical_stock
+
+    return can_correct_physical_stock(
+        user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
 
 
 
@@ -10830,6 +10835,9 @@ async def current_stock_list(
     payload["purchase_source"] = source
     payload["last_receipt_sync_at"] = last_sync
     payload["physical_stock_enabled"] = v2_on
+    payload["can_correct_physical_stock"] = bool(
+        v2_on and _current_stock_correction_allowed(user)
+    )
     return payload
 
 
@@ -10867,24 +10875,63 @@ async def current_stock_export(
 async def current_stock_update(
     item_id: str,
     payload: CurrentStockPatch,
-    user=Depends(require_perm("current_stock.update")),
+    user=Depends(current_user),
 ):
-    """Stock Engine V2: manual purchase removed. Opening balance / opname only via dedicated flows."""
-    if getattr(payload, "manual_purchase_qty", None) is not None or getattr(payload, "manual_purchase_qty", None) is not None:
-        raise HTTPException(
-            400,
-            "Pembelian Barang Manual dihapus. Stock bertambah hanya dari Penerimaan Barang resmi.",
-        )
-    if getattr(payload, "manual_current_qty", None) is not None or getattr(payload, "manual_current_qty", None) is not None:
-        raise HTTPException(
-            400,
-            "Qty manual dihapus dari Stock Saat Ini V2. Gunakan Stock Opname.",
-        )
-    raise HTTPException(
-        400,
-        "Stock Saat Ini V2 tidak diedit manual di sini. "
-        "Gunakan Saldo Awal Stok Fisik atau Stock Opname.",
+    """HOLDING_TEAM-only append-only correction of total physical stock."""
+    from services.product_stock_state import (
+        correct_opening_balance,
+        get_product_stock_state,
+        require_physical_stock_correction_access,
+        validate_non_negative_number,
     )
+    app_env = os.environ.get("APP_ENV")
+    mongo_url = os.environ.get("MONGO_URL")
+    require_physical_stock_correction_access(user, app_env, mongo_url)
+    request_id = str(payload.client_request_id or "").strip()
+    if not request_id:
+        raise HTTPException(400, "client_request_id wajib diisi")
+    note = str(payload.note or "").strip()
+    if not note:
+        raise HTTPException(400, "Alasan koreksi wajib diisi")
+
+    state = await get_product_stock_state(db, item_id)
+    if not state or not state.get("initialized"):
+        raise HTTPException(400, "Saldo awal stok fisik produk belum ditetapkan")
+    new_total = validate_non_negative_number(payload.physical_qty, "physical_qty")
+    printed = validate_non_negative_number(state.get("printed_qty", 0), "printed_qty")
+    if new_total < printed:
+        raise HTTPException(
+            400,
+            "Stock Fisik tidak boleh lebih kecil dari bucket Sudah Dicetak",
+        )
+
+    result = await correct_opening_balance(
+        db,
+        item_id,
+        {
+            "unprinted_qty": new_total - printed,
+            "printed_qty": printed,
+            "total_qty": new_total,
+            "note": note,
+            "client_request_id": request_id,
+        },
+        user=user,
+        app_env=app_env,
+        mongo_url=mongo_url,
+    )
+    await _write_audit(
+        "current_stock.physical_correction",
+        user,
+        target_email=f"item:{item_id}",
+        before=result.get("old_qty"),
+        after={
+            "new_qty": result.get("new_qty"),
+            "movement_id": (result.get("movement") or {}).get("id"),
+            "idempotent": result.get("idempotent"),
+        },
+        note=note,
+    )
+    return result
 
 
 class StockOpnamePayload(BaseModel):
@@ -10892,13 +10939,20 @@ class StockOpnamePayload(BaseModel):
     counted_unprinted_qty: Any
     counted_printed_qty: Any
     note: Optional[str] = ""
+    client_request_id: Optional[str] = None
 
 
 @api_router.post("/stock-opname")
 async def stock_opname_apply(
     payload: StockOpnamePayload,
-    user=Depends(require_perm("current_stock.update")),
+    user=Depends(current_user),
 ):
+    from services.product_stock_state import require_physical_stock_correction_access
+    require_physical_stock_correction_access(
+        user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
     result = await apply_stock_opname(
         db,
         master_item_id=payload.master_item_id,
@@ -10906,6 +10960,7 @@ async def stock_opname_apply(
         counted_printed_qty=payload.counted_printed_qty,
         note=payload.note or "",
         user=user,
+        client_request_id=payload.client_request_id,
     )
     await _write_audit(
         "stock_opname.apply",
@@ -10930,6 +10985,7 @@ async def stock_opname_items(
 ):
     rows, _source, _last = await _load_stock_context()
     payload = filter_sort_page_v2(rows, q=q, page=1, page_size=200)
+    payload["can_apply_stock_opname"] = _current_stock_correction_allowed(user)
     return payload
 
 
@@ -10941,7 +10997,7 @@ async def stock_opname_export_template(
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     content = build_opname_template_xlsx(catalog)
-    filename = f"stock-opname-template-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    filename = f"stock-opname-template-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.xlsx"
     return FastAPIResponse(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -10952,8 +11008,14 @@ async def stock_opname_export_template(
 @api_router.post("/stock-opname/import/preview")
 async def stock_opname_import_preview(
     file: UploadFile = File(...),
-    user=Depends(require_perm("current_stock.update")),
+    user=Depends(current_user),
 ):
+    from services.product_stock_state import require_physical_stock_correction_access
+    require_physical_stock_correction_access(
+        user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
     data = await file.read()
     if not data:
         raise HTTPException(400, "File kosong")
@@ -10972,19 +11034,35 @@ class StockOpnameImportApply(BaseModel):
     rows: List[dict]
     filename: Optional[str] = "upload.xlsx"
     note: Optional[str] = ""
+    batch_request_id: str
 
 
 @api_router.post("/stock-opname/import/apply")
 async def stock_opname_import_apply(
     payload: StockOpnameImportApply,
-    user=Depends(require_perm("current_stock.update")),
+    user=Depends(current_user),
 ):
+    from services.product_stock_state import require_physical_stock_correction_access
+    require_physical_stock_correction_access(
+        user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
+    rows, _source, _last = await _load_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
+    catalog = filter_active_stock_rows(rows, masters)
+    validated_rows = revalidate_opname_apply_rows(
+        payload.rows or [],
+        stock_rows=catalog,
+        batch_request_id=payload.batch_request_id,
+    )
     result = await apply_opname_import_batch(
         db,
-        preview_rows=payload.rows or [],
+        preview_rows=validated_rows,
         filename=payload.filename or "upload.xlsx",
         user=user,
         note=payload.note or "",
+        batch_request_id=payload.batch_request_id,
     )
     await _write_audit(
         "stock_opname.import_apply",
