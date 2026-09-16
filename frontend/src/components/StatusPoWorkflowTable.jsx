@@ -173,7 +173,7 @@ export default function StatusPoWorkflowTable({
   };
 
   return (
-    <table className="spo-table ship-table" style={{ minWidth: tableMin }} data-testid="status-po-matrix">
+    <table className="spo-table ship-table" style={{ width: tableMin, minWidth: tableMin }} data-testid="status-po-matrix">
       <colgroup>
         {canSelect && <col style={{ width: widths.check }} />}
         <col style={{ width: widths.po }} />
@@ -189,7 +189,7 @@ export default function StatusPoWorkflowTable({
       </colgroup>
       <thead>
         <tr className="spo-group-row" data-testid="status-po-group-header">
-          <th className="spo-th-group-data spo-sticky" colSpan={dataSpan} style={stickyStyle("check", { left: 0 })}>
+          <th className="spo-th-group-data spo-sticky spo-sticky-last" colSpan={dataSpan} style={stickyStyle("check", { left: 0 })}>
             DATA PO
           </th>
           <th className="spo-th-group-wf" colSpan={STATUS_PO_WORKFLOW_STAGES.length} data-testid="status-po-group-workflow">
@@ -256,7 +256,7 @@ export default function StatusPoWorkflowTable({
               title={s.full}
               data-testid={`status-po-th-wf-${s.key}`}
             >
-              {s.header}
+              <span className="spo-wf-th-label">{s.header}</span>
               <ResizeHandle colKey={s.key} onStart={onResizeStart} />
             </th>
           ))}

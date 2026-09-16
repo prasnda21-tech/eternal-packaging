@@ -16,7 +16,6 @@ import {
   EMPTY_STATUS_PO_FILTERS,
   matchesStatusPoFilters,
   statusPoFilterOptions,
-  statusPoViewLabel,
 } from "../lib/statusPo";
 import { isStatusPoMatrixPreviewEnabled, buildStatusPoMatrixPreviewRows } from "../lib/statusPoPreview";
 import {
@@ -170,18 +169,12 @@ export default function StatusPO() {
     <div className="ship-status-page status-po-page" data-testid="status-po-page">
       <div className="ship-status-chrome">
         <header className="ship-status-heading spo-heading">
-          <span className="spo-heading-accent" aria-hidden="true" />
-          <div>
-            <h1>{title}</h1>
-            {!deliveryTodayPage && (
-              <p className="spo-sub" data-testid="status-po-subtitle">
-                Pantau progress setiap PO dari order masuk hingga pengiriman.
-              </p>
-            )}
-            {!deliveryTodayPage && view ? (
-              <p className="muted small" data-testid="status-po-view-label">{statusPoViewLabel(view)}</p>
-            ) : null}
-          </div>
+          <h1>{title}</h1>
+          {!deliveryTodayPage && (
+            <p className="spo-sub" data-testid="status-po-subtitle">
+              Pantau progress setiap PO dari order masuk hingga pengiriman.
+            </p>
+          )}
         </header>
         <div className="ship-status-toolbar" data-testid="status-po-filter-bar">
           <label className="ship-filter-field spo-filter-po">
@@ -309,12 +302,12 @@ export default function StatusPO() {
         <span data-testid="status-po-count">Menampilkan {visible.length} dari {rows.length} data</span>
       </div>
       <div className="spo-legend" data-testid="status-po-legend">
-        <span className="spo-legend-item">hijau centang = Selesai</span>
-        <span className="spo-legend-item">cincin berwarna = Sedang Berjalan</span>
-        <span className="spo-legend-item">garis abu = Belum Dimulai</span>
-        <span className="spo-legend-item">oranye ! = Tertahan / Perlu Perhatian</span>
-        <span className="spo-legend-item">merah X = Dibatalkan</span>
-        <span className="spo-legend-item">tanda tanya = Tidak dapat ditentukan</span>
+        <span className="spo-legend-item"><span className="spo-legend-mark is-done" aria-hidden="true">✓</span> Selesai</span>
+        <span className="spo-legend-item"><span className="spo-legend-mark is-active" aria-hidden="true">◉</span> Sedang Berjalan</span>
+        <span className="spo-legend-item"><span className="spo-legend-mark is-pending" aria-hidden="true">—</span> Belum Dimulai</span>
+        <span className="spo-legend-item"><span className="spo-legend-mark is-hold" aria-hidden="true">!</span> Tertahan / Perlu Perhatian</span>
+        <span className="spo-legend-item"><span className="spo-legend-mark is-unknown" aria-hidden="true">?</span> Tidak dapat ditentukan</span>
+        <span className="spo-legend-item"><span className="spo-legend-mark is-cancel" aria-hidden="true">✕</span> Dibatalkan</span>
       </div>
       <p className="spo-help" data-testid="status-po-scroll-hint">
         Geser tabel ke kanan untuk melihat seluruh tahapan workflow.

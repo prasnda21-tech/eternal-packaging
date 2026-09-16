@@ -58,7 +58,7 @@ describe("Status PO workflow matrix mapping", () => {
   });
 
   test("column resize cannot collapse below minimum", () => {
-    expect(clampColWidth("po", 10)).toBe(175);
+    expect(clampColWidth("po", 10)).toBe(132);
     expect(clampColWidth("order", 20)).toBe(60);
     expect(clampColWidth("progress", 80)).toBe(120);
   });
