@@ -1,28 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { RefreshCw, Trash2, XCircle } from "lucide-react";
 import api from "../lib/api";
-import { formatDisplayDate } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import ConfirmActionModal from "../components/ConfirmActionModal";
+import StatusPoWorkflowTable from "../components/StatusPoWorkflowTable";
+import "./StatusPO.css";
 import {
   headerCheckState,
   pruneSelection,
   removeSucceeded,
-  selectAllVisible,
-  toggleId,
   visibleRowIds,
 } from "../lib/rowSelection";
 import {
   EMPTY_STATUS_PO_FILTERS,
-  deliveredPercentLabel,
   matchesStatusPoFilters,
   statusPoFilterOptions,
   statusPoViewLabel,
 } from "../lib/statusPo";
+import { isStatusPoMatrixPreviewEnabled, buildStatusPoMatrixPreviewRows } from "../lib/statusPoPreview";
 import {
-  capturePoOpenFromList,
-  poNavStateFromList,
   readListUiState,
   storageUserKey,
   writeListUiState,
@@ -61,6 +58,10 @@ export default function StatusPO() {
     setBusy(true);
     setErr("");
     try {
+      if (isStatusPoMatrixPreviewEnabled(location.search)) {
+        setRows(buildStatusPoMatrixPreviewRows());
+        return;
+      }
       const d = await api.statusPo(view ? { view } : {});
       setRows(d.rows || []);
     } catch (e) {
@@ -70,7 +71,7 @@ export default function StatusPO() {
       setBusy(false);
       loadInFlight.current = false;
     }
-  }, [view]);
+  }, [view, location.search]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -163,20 +164,27 @@ export default function StatusPO() {
     }
   };
 
-  const colCount = canSelect ? 6 : 5;
   const title = deliveryTodayPage ? "Pengiriman Hari Ini" : "Status PO";
 
   return (
     <div className="ship-status-page status-po-page" data-testid="status-po-page">
       <div className="ship-status-chrome">
-        <header className="ship-status-heading">
-          <h1>{title}</h1>
-          {!deliveryTodayPage && view ? (
-            <p className="muted small" data-testid="status-po-view-label">{statusPoViewLabel(view)}</p>
-          ) : null}
+        <header className="ship-status-heading spo-heading">
+          <span className="spo-heading-accent" aria-hidden="true" />
+          <div>
+            <h1>{title}</h1>
+            {!deliveryTodayPage && (
+              <p className="spo-sub" data-testid="status-po-subtitle">
+                Pantau progress setiap PO dari order masuk hingga pengiriman.
+              </p>
+            )}
+            {!deliveryTodayPage && view ? (
+              <p className="muted small" data-testid="status-po-view-label">{statusPoViewLabel(view)}</p>
+            ) : null}
+          </div>
         </header>
         <div className="ship-status-toolbar" data-testid="status-po-filter-bar">
-          <label className="ship-filter-field">
+          <label className="ship-filter-field spo-filter-po">
             <span>No PO</span>
             <input
               type="text"
@@ -186,7 +194,7 @@ export default function StatusPO() {
               data-testid="status-po-filter-po"
             />
           </label>
-          <label className="ship-filter-field">
+          <label className="ship-filter-field spo-filter-customer">
             <span>Customer</span>
             <input
               type="text"
@@ -196,7 +204,7 @@ export default function StatusPO() {
               data-testid="status-po-filter-customer"
             />
           </label>
-          <label className="ship-filter-field">
+          <label className="ship-filter-field spo-filter-status">
             <span>Status</span>
             <select
               value={filters.status}
@@ -210,7 +218,7 @@ export default function StatusPO() {
               ))}
             </select>
           </label>
-          <label className="ship-filter-field">
+          <label className="ship-filter-field spo-filter-date">
             <span>Tanggal Mulai</span>
             <input
               type="date"
@@ -219,7 +227,7 @@ export default function StatusPO() {
               data-testid="status-po-filter-date-from"
             />
           </label>
-          <label className="ship-filter-field">
+          <label className="ship-filter-field spo-filter-date">
             <span>Tanggal Akhir</span>
             <input
               type="date"
@@ -237,7 +245,7 @@ export default function StatusPO() {
             onClick={() => setFilters(EMPTY_STATUS_PO_FILTERS)}
             data-testid="status-po-filter-reset"
           >
-            Reset Filter
+            Reset
           </button>
         </div>
         {canSelect && (
@@ -280,74 +288,38 @@ export default function StatusPO() {
         {err && <div className="error" data-testid="status-po-error">{err}</div>}
       </div>
       <div className="ship-status-grid" data-testid="status-po-table">
-        <table className="ship-table">
-          <thead>
-            <tr>
-              {canSelect && (
-                <th className="ship-check">
-                  <input
-                    ref={headerRef}
-                    type="checkbox"
-                    checked={headerState.checked}
-                    disabled={!visibleIds.length}
-                    onChange={() => setSelected(selectAllVisible(visibleIds, selected))}
-                    aria-label="Pilih Semua (baris tampil)"
-                    data-testid="status-po-select-all"
-                  />
-                </th>
-              )}
-              <th>No PO</th>
-              <th>Tanggal</th>
-              <th>Pelanggan</th>
-              <th>Status</th>
-              <th className="num">Status Terkirim</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((r) => (
-              <tr key={r.id} data-testid={`status-po-row-${r.po_number}`} className={selected.has(r.id) ? "is-selected" : ""}>
-                {canSelect && (
-                  <td className="ship-check">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(r.id)}
-                      onChange={() => setSelected(toggleId(selected, r.id))}
-                      aria-label={`Pilih ${r.po_number}`}
-                      data-testid={`status-po-check-${r.po_number}`}
-                    />
-                  </td>
-                )}
-                <td className="mono">
-                  {r.id ? (
-                    <Link
-                      to={`/po/${r.id}`}
-                      state={poNavStateFromList({ pathname: location.pathname, search: location.search })}
-                      onClick={() => capturePoOpenFromList({
-                        user,
-                        orderId: r.id,
-                        pathname: location.pathname,
-                        search: location.search,
-                      })}
-                      data-testid={`status-po-link-${r.po_number}`}
-                    >
-                      {r.po_number}
-                    </Link>
-                  ) : (r.po_number || "-")}
-                </td>
-                <td className="mono">{formatDisplayDate(r.order_date)}</td>
-                <td className="ship-cust" title={r.customer || undefined}>{r.customer || "-"}</td>
-                <td data-testid={`status-po-status-${r.po_number}`}>{r.status || "-"}</td>
-                <td className="num mono" data-testid={`status-po-delivered-${r.po_number}`}>
-                  {deliveredPercentLabel(r.percent_delivered)}
-                </td>
-              </tr>
-            ))}
-            {!visible.length && !busy && (
-              <tr><td colSpan={colCount} className="empty-state">Tidak ada PO.</td></tr>
-            )}
-          </tbody>
-        </table>
+        {!busy || visible.length ? (
+          <StatusPoWorkflowTable
+            visible={visible}
+            canSelect={canSelect}
+            selected={selected}
+            setSelected={setSelected}
+            visibleIds={visibleIds}
+            headerState={headerState}
+            headerRef={headerRef}
+            user={user}
+            location={location}
+          />
+        ) : null}
+        {busy && !visible.length ? (
+          <p className="muted small" style={{ padding: "12px" }}>Memuat…</p>
+        ) : null}
       </div>
+      <div className="spo-footer" data-testid="status-po-footer">
+        <span data-testid="status-po-count">Menampilkan {visible.length} dari {rows.length} data</span>
+      </div>
+      <div className="spo-legend" data-testid="status-po-legend">
+        <span className="spo-legend-item">hijau centang = Selesai</span>
+        <span className="spo-legend-item">cincin berwarna = Sedang Berjalan</span>
+        <span className="spo-legend-item">garis abu = Belum Dimulai</span>
+        <span className="spo-legend-item">oranye ! = Tertahan / Perlu Perhatian</span>
+        <span className="spo-legend-item">merah X = Dibatalkan</span>
+        <span className="spo-legend-item">tanda tanya = Tidak dapat ditentukan</span>
+      </div>
+      <p className="spo-help" data-testid="status-po-scroll-hint">
+        Geser tabel ke kanan untuk melihat seluruh tahapan workflow.
+        Lebar kolom dapat diubah dengan menarik garis header.
+      </p>
       <ConfirmActionModal
         open={!!bulkAction}
         title={bulkAction === "delete" ? "Hapus Permanen PO Terpilih" : "Batalkan PO Terpilih"}

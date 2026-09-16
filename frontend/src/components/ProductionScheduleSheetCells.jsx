@@ -1,7 +1,12 @@
 import { Link } from "react-router-dom";
 import { XCircle } from "lucide-react";
 import { formatDate, formatDisplayDate } from "../lib/constants";
-import { formatIdQty, operatorPrintableItems } from "../lib/productionScheduleQty";
+import {
+  formatIdQty,
+  formatOperatorAssignedQty,
+  OPERATOR_UNASSIGNED_LABEL,
+  operatorPrintableItems,
+} from "../lib/productionScheduleQty";
 import { screenSizeLabel } from "../lib/screenSize";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
@@ -112,7 +117,7 @@ function ItemCell({ row, variant }) {
   const items = operatorPrintableItems(row.displayOperator?.splits || []);
   if (!items.length) return <span className="muted small">—</span>;
   return items.map((item) => {
-    const qtyPresent = item.quantity !== undefined && item.quantity !== null && item.quantity !== "";
+    const qtyText = formatOperatorAssignedQty(item.quantity);
     return (
       <div
         key={item.key}
@@ -123,9 +128,7 @@ function ItemCell({ row, variant }) {
           : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
       >
         <span className="mop-ops-item-name">{item.name}</span>
-        {qtyPresent ? (
-          <span className="mop-ops-item-qty">{formatIdQty(item.quantity)}</span>
-        ) : null}
+        {qtyText ? <span className="mop-ops-item-qty">{qtyText}</span> : null}
       </div>
     );
   });
@@ -147,15 +150,30 @@ function ScreenSizeCell({ row, variant }) {
   ));
 }
 
+function operatorCellTestId(row, variant, suffix = "") {
+  if (variant === "desktop") return `prod-ops-line-${row.po_number}${suffix}`;
+  return `mobile-schedule-operator-${row.po_number}${suffix}`;
+}
+
+function OperatorAssignmentBlock({ op, testid }) {
+  return (
+    <div className="prod-op-line" data-testid={testid}>
+      <span className="prod-op-name">{op?.operator_name || OPERATOR_UNASSIGNED_LABEL}</span>
+    </div>
+  );
+}
+
 function OperatorCell({ row, qtyProg, variant }) {
   if (row.displayOperatorKey) {
     const op = row.displayOperator;
-    if (!op) return <span className="muted small">Belum ditentukan</span>;
-    return (
-      <div className="prod-op-line" data-testid={variant === "desktop" ? `prod-ops-line-${row.po_number}` : undefined}>
-        <span className="prod-op-name">{op.operator_name || "Belum ditentukan"}</span>
-      </div>
-    );
+    if (!op) {
+      return (
+        <span className="muted small" data-testid={operatorCellTestId(row, variant)}>
+          {OPERATOR_UNASSIGNED_LABEL}
+        </span>
+      );
+    }
+    return <OperatorAssignmentBlock op={op} testid={operatorCellTestId(row, variant)} />;
   }
   if (qtyProg.groups?.length) {
     return qtyProg.groups.map((g) => (
@@ -166,19 +184,23 @@ function OperatorCell({ row, qtyProg, variant }) {
         data-testid={variant === "desktop" ? `prod-ops-line-${row.po_number}-${g.key}` : undefined}
       >
         {(g.operators || []).map((op, i) => (
-          <div key={`${op.operator_email || op.operator_user_id || i}`} className="prod-op-line">
-            <span className="prod-op-name">{op.operator_name || "-"}</span>
-            <span className="prod-op-qty muted small mono">{formatIdQty(op.quantity)}</span>
-          </div>
+          <OperatorAssignmentBlock
+            key={`${op.operator_email || op.operator_user_id || i}`}
+            op={op}
+          />
         ))}
       </div>
     ));
   }
-  if (!(row.operators || []).length) return <span className="muted small">Belum ditentukan</span>;
+  if (!(row.operators || []).length) {
+    return (
+      <span className="muted small" data-testid={operatorCellTestId(row, variant)}>
+        {OPERATOR_UNASSIGNED_LABEL}
+      </span>
+    );
+  }
   return (row.operators || []).map((op, i) => (
-    <div key={i} className="prod-op-line">
-      <span className="prod-op-name">{op.operator_name || "-"}</span>
-    </div>
+    <OperatorAssignmentBlock key={i} op={op} />
   ));
 }
 
@@ -425,7 +447,11 @@ function cellExtras(col, { row, variant, cetakProg, isToday }) {
     extras.push(cetakProg.over ? "prod-qty-over" : "");
     if (variant === "desktop") testids["data-testid"] = `prod-qty-cetak-${row.po_number}`;
   }
-  if (col.key === "operator") extras.push("prod-ops");
+  if (col.key === "operator") {
+    extras.push("prod-ops");
+    if (variant === "mobile") testids["data-testid"] = `mobile-schedule-operator-cell-${row.displayRowKey || row.po_number}`;
+    if (variant === "desktop") testids["data-testid"] = `prod-operator-cell-${row.displayRowKey || row.po_number}`;
+  }
   if (col.key === "packing" && variant === "desktop") {
     testids["data-testid"] = `prod-packing-${row.po_number}`;
   }

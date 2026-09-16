@@ -345,8 +345,8 @@ describe("ProductionSchedule spreadsheet", () => {
       "Plastik PE 28",
     ]);
     expect([...container.querySelectorAll(".mop-ops-item-qty")].map((el) => el.textContent)).toEqual([
-      "2.000",
-      "2.600",
+      "2.000 pcs",
+      "2.600 pcs",
     ]);
     expect(container.textContent).not.toContain("4.600");
     expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 entri");
