@@ -17,6 +17,7 @@ from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 from services.import_parser import ImportParseError, _read_rows
 from services.stock_engine_v2 import apply_stock_opname, compute_available, qty_num
@@ -132,7 +133,7 @@ def filter_active_stock_rows(stock_rows: Iterable[dict], masters: Iterable[dict]
 
 def build_opname_template_xlsx(stock_rows: Iterable[dict]) -> bytes:
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.styles import Alignment, Font, PatternFill, Protection
 
     wb = Workbook()
     ws = wb.active
@@ -158,6 +159,7 @@ def build_opname_template_xlsx(stock_rows: Iterable[dict]) -> bytes:
             qty_num(phys) if phys is not None else 0,
             None,  # user fills counted physical
         ])
+        ws.cell(row=ws.max_row, column=5).protection = Protection(locked=False)
 
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["B"].width = 36
@@ -166,6 +168,7 @@ def build_opname_template_xlsx(stock_rows: Iterable[dict]) -> bytes:
     ws.column_dimensions["E"].width = 28
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
+    ws.protection.sheet = True
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -231,8 +234,9 @@ def build_opname_import_preview(
     qty_idx = mapped.index("physical_counted")
 
     by_code = _index_stock_by_code(stock_rows)
-    seen_codes: Dict[str, int] = {}
+    seen_codes: Dict[str, Tuple[int, int]] = {}
     preview_rows: List[dict] = []
+    batch_request_id = str(uuid.uuid4())
 
     for row_no, cells in enumerate(data_rows, start=2):
         code = str(cells[code_idx] if code_idx < len(cells) else "").strip()
@@ -266,22 +270,27 @@ def build_opname_import_preview(
         }
 
         if not code:
-            base["status"] = "ERROR"
+            base["status"] = "BLOCK"
             base["message"] = "KODE kosong"
             preview_rows.append(base)
             continue
 
         key = code.lower()
         if key in seen_codes:
-            base["status"] = "ERROR"
-            base["message"] = f"KODE DUPLIKAT (juga di baris {seen_codes[key]})"
+            first_idx, first_row = seen_codes[key]
+            first = preview_rows[first_idx]
+            first["status"] = "BLOCK"
+            first["message"] = f"KODE DUPLIKAT (juga di baris {row_no})"
+            first["can_apply"] = False
+            base["status"] = "BLOCK"
+            base["message"] = f"KODE DUPLIKAT (juga di baris {first_row})"
             preview_rows.append(base)
             continue
-        seen_codes[key] = row_no
+        seen_codes[key] = (len(preview_rows), row_no)
 
         stock = by_code.get(key)
         if not stock:
-            base["status"] = "ERROR"
+            base["status"] = "BLOCK"
             base["message"] = "KODE TIDAK DITEMUKAN di Master Barang/Jasa"
             preview_rows.append(base)
             continue
@@ -309,7 +318,7 @@ def build_opname_import_preview(
             base["message"] = "Nama file diabaikan — memakai nama master sistem"
 
         if qty_err:
-            base["status"] = "ERROR"
+            base["status"] = "BLOCK"
             base["message"] = qty_err
             preview_rows.append(base)
             continue
@@ -325,6 +334,7 @@ def build_opname_import_preview(
             "selisih": selisih,
             "unprinted_qty_new": new_unprinted,
             "available_new": available_new,
+            "client_request_id": f"{batch_request_id}:{key}",
         })
 
         if new_unprinted < -1e-9:
@@ -352,11 +362,12 @@ def build_opname_import_preview(
 
     ok_count = sum(1 for r in preview_rows if r["can_apply"])
     block_count = sum(1 for r in preview_rows if r["status"] == "BLOCK")
-    error_count = sum(1 for r in preview_rows if r["status"] == "ERROR")
+    error_count = 0
     unchanged_count = sum(1 for r in preview_rows if r["status"] == "UNCHANGED")
 
     return {
         "filename": filename or "upload.xlsx",
+        "batch_request_id": batch_request_id,
         "rows": preview_rows,
         "total_rows": len(preview_rows),
         "ok_count": ok_count,
@@ -372,6 +383,43 @@ def build_opname_import_preview(
     }
 
 
+def revalidate_opname_apply_rows(
+    preview_rows: List[dict],
+    *,
+    stock_rows: List[dict],
+    batch_request_id: str,
+) -> List[dict]:
+    """Rebuild validation from client quantities against the live catalog."""
+    request_id = str(batch_request_id or "").strip()
+    if not request_id:
+        raise HTTPException(400, "batch_request_id wajib diisi")
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(TEMPLATE_HEADERS)
+    for row in preview_rows or []:
+        ws.append([
+            row.get("item_code") or "",
+            row.get("item_name") or "",
+            row.get("unit") or "",
+            row.get("physical_system"),
+            row.get("physical_opname"),
+        ])
+    buf = BytesIO()
+    wb.save(buf)
+    validated = build_opname_import_preview(
+        buf.getvalue(),
+        "apply-validation.xlsx",
+        stock_rows=stock_rows,
+    )
+    for row in validated["rows"]:
+        code_key = str(row.get("item_code") or "").strip().lower()
+        row["client_request_id"] = f"{request_id}:{code_key}"
+    return validated["rows"]
+
+
 async def apply_opname_import_batch(
     db,
     *,
@@ -379,8 +427,26 @@ async def apply_opname_import_batch(
     filename: str,
     user: Optional[dict] = None,
     note: str = "",
+    batch_request_id: str = "",
 ) -> dict:
     """Apply OK preview rows via existing apply_stock_opname. Append-only ledger."""
+    request_id = str(batch_request_id or "").strip()
+    if request_id:
+        existing_batch = await db[BATCH_COLLECTION].find_one(
+            {"client_request_id": request_id},
+            {"_id": 0},
+        )
+        if existing_batch:
+            return {
+                "batch": existing_batch,
+                "success_count": existing_batch.get("success_count", 0),
+                "failure_count": existing_batch.get("failure_count", 0),
+                "skipped_count": existing_batch.get("skipped_count", 0),
+                "message": "Batch Stock Opname sudah diproses",
+                "stock_engine": "v2",
+                "idempotent": True,
+            }
+
     batch_id = str(uuid.uuid4())
     stamp = _now_iso()
     actor = {
@@ -423,6 +489,7 @@ async def apply_opname_import_batch(
                 counted_printed_qty=printed,
                 note=note or f"Import Opname batch {batch_id[:8]} · {filename}",
                 user=user,
+                client_request_id=row.get("client_request_id"),
             )
             successes.append({
                 "item_code": row.get("item_code"),
@@ -447,6 +514,7 @@ async def apply_opname_import_batch(
 
     item_count = len(preview_rows or [])
     batch_doc = {
+        **({"_id": f"stock_opname_batch:{request_id}"} if request_id else {}),
         "id": batch_id,
         "filename": filename or "upload.xlsx",
         "uploaded_by": actor,
@@ -462,8 +530,26 @@ async def apply_opname_import_batch(
         "skipped": skipped,
         "note": note or "",
         "stock_engine": "v2",
+        "client_request_id": request_id or None,
     }
-    await db[BATCH_COLLECTION].insert_one(batch_doc)
+    try:
+        await db[BATCH_COLLECTION].insert_one(batch_doc)
+    except DuplicateKeyError:
+        existing_batch = await db[BATCH_COLLECTION].find_one(
+            {"client_request_id": request_id},
+            {"_id": 0},
+        )
+        if existing_batch:
+            return {
+                "batch": existing_batch,
+                "success_count": existing_batch.get("success_count", 0),
+                "failure_count": existing_batch.get("failure_count", 0),
+                "skipped_count": existing_batch.get("skipped_count", 0),
+                "message": "Batch Stock Opname sudah diproses",
+                "stock_engine": "v2",
+                "idempotent": True,
+            }
+        raise
 
     public_batch = {k: v for k, v in batch_doc.items() if k != "_id"}
     return {

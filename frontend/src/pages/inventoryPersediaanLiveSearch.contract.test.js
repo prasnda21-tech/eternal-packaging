@@ -42,7 +42,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini clears rows while query pending and remains read-only", () => {
+  test("Stock Saat Ini clears rows while query pending and gates physical edit to holding team", () => {
     expect(stock).toMatch(/useDebouncedLiveSearch/);
     expect(stock).toMatch(/loadSeq/);
     expect(stock).toMatch(/liveSearchTableView/);
@@ -50,7 +50,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-loading/);
     expect(stock).toMatch(/if \(!searchPending\) return/);
     expect(stock).toMatch(/items: \[\]/);
-    expect(stock).not.toMatch(/patchRow|currentStockUpdate|QtyCell/);
+    expect(stock).toMatch(/canEditPhysical.*can_correct_physical_stock/);
+    expect(stock).toMatch(/api\.currentStockUpdate/);
+    expect(stock).toMatch(/stock-physical-inline-input/);
+    expect(stock).toMatch(/e\.key === "Enter"/);
+    expect(stock).toMatch(/e\.key === "Escape"/);
+    expect(stock).toMatch(/Koreksi manual Stock Fisik dari Stock Saat Ini/);
+    expect(stock).not.toMatch(/>Koreksi Stock Fisik</);
     expect(stock).toMatch(/api\.currentStock\(/);
     expect(stock).toMatch(/Cari kode \/ nama \/ Accurate ID \(live\)/);
     expect(stock).not.toMatch(/>Cari</);

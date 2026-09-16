@@ -35,10 +35,9 @@ export default function ProductDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { hasPerm, user } = useAuth();
+  const { hasPerm } = useAuth();
   const canEditConversion = hasPerm("current_stock.update") || hasPerm("master_items.sync");
   const canEditOpeningBalance = hasPerm("current_stock.update") || hasPerm("permissions.manage");
-  const canCorrectOpening = String(user?.role || "").toLowerCase() === "holding_team";
 
   // Active tab: 'umum' | 'stok' | 'mutasi'
   const tabParam = searchParams.get("tab");
@@ -68,13 +67,6 @@ export default function ProductDetail() {
   const [savingOpening, setSavingOpening] = useState(false);
   const [openingSuccess, setOpeningSuccess] = useState("");
   const [openingError, setOpeningError] = useState("");
-  const [showCorrectModal, setShowCorrectModal] = useState(false);
-  const [corrUnprinted, setCorrUnprinted] = useState("");
-  const [corrPrinted, setCorrPrinted] = useState("");
-  const [corrReason, setCorrReason] = useState("");
-  const [corrRequestId, setCorrRequestId] = useState("");
-  const [savingCorrection, setSavingCorrection] = useState(false);
-  const [correctionError, setCorrectionError] = useState("");
 
   // Mutation ledger state
   const [mutations, setMutations] = useState([]);
@@ -231,64 +223,6 @@ export default function ProductDetail() {
       setOpeningError(typeof det === "object" ? det.message : (det || "Gagal menetapkan saldo awal stok fisik"));
     } finally {
       setSavingOpening(false);
-    }
-  };
-
-  const openCorrectModal = () => {
-    if (!canCorrectOpening || !isStockInitialized) return;
-    setCorrUnprinted(String(stockState?.unprinted_qty ?? ""));
-    setCorrPrinted(String(stockState?.printed_qty ?? ""));
-    setCorrReason("");
-    setCorrRequestId(
-      (typeof crypto !== "undefined" && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : `ksa-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    );
-    setCorrectionError("");
-    setShowCorrectModal(true);
-  };
-
-  const handleConfirmCorrection = async () => {
-    if (!canCorrectOpening || savingCorrection) return;
-    setSavingCorrection(true);
-    setCorrectionError("");
-    setOpeningError("");
-    const unprintedStr = corrUnprinted.trim().replace(",", ".");
-    const printedStr = corrPrinted.trim().replace(",", ".");
-    const reason = corrReason.trim();
-    if (!reason) {
-      setCorrectionError("Alasan koreksi wajib diisi");
-      setSavingCorrection(false);
-      return;
-    }
-    const unprinted = parseFloat(unprintedStr);
-    const printed = parseFloat(printedStr);
-    if (unprintedStr === "" || isNaN(unprinted) || unprinted < 0) {
-      setCorrectionError("Belum Dicetak harus berupa angka non-negatif");
-      setSavingCorrection(false);
-      return;
-    }
-    if (printedStr === "" || isNaN(printed) || printed < 0) {
-      setCorrectionError("Sudah Dicetak harus berupa angka non-negatif");
-      setSavingCorrection(false);
-      return;
-    }
-    try {
-      await api.correctOpeningBalance(id, {
-        unprinted_qty: unprinted,
-        printed_qty: printed,
-        total_qty: unprinted + printed,
-        note: reason,
-        client_request_id: corrRequestId,
-      });
-      setOpeningSuccess("Koreksi saldo awal stok fisik berhasil");
-      setShowCorrectModal(false);
-      await loadProduct();
-    } catch (ex) {
-      const det = ex.response?.data?.detail;
-      setCorrectionError(typeof det === "object" ? det.message : (det || "Gagal mengkoreksi saldo awal"));
-    } finally {
-      setSavingCorrection(false);
     }
   };
 
@@ -663,17 +597,6 @@ export default function ProductDetail() {
                   <div className="signal-strip" style={{ marginTop: 14, background: "#ecfdf5", borderColor: "#a7f3d0", color: "#065f46" }}>
                     <div><CheckCircle2 size={16} /><span>{openingSuccess}</span></div>
                   </div>
-                )}
-                {canCorrectOpening && (
-                  <button
-                    type="button"
-                    className="primary"
-                    style={{ marginTop: 16 }}
-                    onClick={openCorrectModal}
-                    data-testid="btn-correct-opening"
-                  >
-                    Koreksi Saldo Awal
-                  </button>
                 )}
               </div>
             ) : (
@@ -1191,101 +1114,6 @@ export default function ProductDetail() {
         </div>
       )}
 
-      {showCorrectModal && (
-        <div
-          className="modal"
-          role="dialog"
-          aria-modal="true"
-          data-testid="correct-opening-modal"
-          onClick={savingCorrection ? undefined : () => setShowCorrectModal(false)}
-        >
-          <div className="modal-inner confirm-action-inner" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3>Koreksi Saldo Awal</h3>
-            </div>
-            <div className="confirm-action-body">
-              <p style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>
-                Koreksi menetapkan <strong>target fisik sekarang</strong>. Mutasi <code>SALDO_AWAL</code> lama tetap di ledger; sistem menambahkan <code>KOREKSI</code>.
-              </p>
-              <dl className="confirm-action-dl" data-testid="correct-opening-current">
-                <div>
-                  <dt>Saldo sekarang (Total)</dt>
-                  <dd>{fmtQty(stockState?.total_qty)} {stockState?.base_uom || normalizedBaseUom}</dd>
-                </div>
-                <div>
-                  <dt>Belum Dicetak sekarang</dt>
-                  <dd>{fmtQty(stockState?.unprinted_qty)} {stockState?.base_uom || normalizedBaseUom}</dd>
-                </div>
-                <div>
-                  <dt>Sudah Dicetak sekarang</dt>
-                  <dd>{fmtQty(stockState?.printed_qty)} {stockState?.base_uom || normalizedBaseUom}</dd>
-                </div>
-              </dl>
-              <div className="form-field" style={{ marginTop: 12 }}>
-                <label htmlFor="corr-unprinted">Belum Dicetak baru ({normalizedBaseUom})</label>
-                <input
-                  id="corr-unprinted"
-                  type="text"
-                  value={corrUnprinted}
-                  onChange={(e) => setCorrUnprinted(e.target.value)}
-                  disabled={savingCorrection}
-                  data-testid="input-correct-unprinted"
-                />
-              </div>
-              <div className="form-field" style={{ marginTop: 8 }}>
-                <label htmlFor="corr-printed">Sudah Dicetak baru ({normalizedBaseUom})</label>
-                <input
-                  id="corr-printed"
-                  type="text"
-                  value={corrPrinted}
-                  onChange={(e) => setCorrPrinted(e.target.value)}
-                  disabled={savingCorrection}
-                  data-testid="input-correct-printed"
-                />
-              </div>
-              <div className="conversion-preview-box" style={{ marginTop: 12 }} data-testid="display-correct-total">
-                <span>Total otomatis:</span>
-                <strong>
-                  {fmtQty(parseQtyInput(corrUnprinted) + parseQtyInput(corrPrinted))} {normalizedBaseUom}
-                </strong>
-              </div>
-              <div className="form-field" style={{ marginTop: 12 }}>
-                <label htmlFor="corr-reason">Alasan koreksi <span style={{ color: "#dc2626" }}>*</span></label>
-                <input
-                  id="corr-reason"
-                  type="text"
-                  value={corrReason}
-                  onChange={(e) => setCorrReason(e.target.value)}
-                  disabled={savingCorrection}
-                  placeholder="Wajib diisi"
-                  data-testid="input-correct-reason"
-                />
-              </div>
-              {correctionError && <p className="error" data-testid="correct-opening-error">{correctionError}</p>}
-            </div>
-            <div className="delete-modal-actions">
-              <button
-                type="button"
-                className="ghost"
-                disabled={savingCorrection}
-                onClick={() => setShowCorrectModal(false)}
-                data-testid="correct-opening-cancel"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                className="primary"
-                disabled={savingCorrection}
-                onClick={handleConfirmCorrection}
-                data-testid="correct-opening-confirm"
-              >
-                {savingCorrection ? "Menyimpan…" : "Konfirmasi Koreksi"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

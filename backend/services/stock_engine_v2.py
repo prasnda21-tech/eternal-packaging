@@ -268,7 +268,14 @@ def build_stock_rows_v2(
         belum = compute_belum_dicetak(outstanding, printed)
         polos = compute_stock_polos(phys["physical_qty"], printed)
         available = compute_available(phys["physical_qty"], outstanding)
-        updated_at = (state or {}).get("updated_at") or (state or {}).get("initialized_at")
+        correction = (state or {}).get("last_opening_correction") or {}
+        changed_by = correction.get("changed_by") or correction.get("corrected_by") or {}
+        updated_at = (
+            correction.get("changed_at")
+            or correction.get("corrected_at")
+            or (state or {}).get("updated_at")
+            or (state or {}).get("initialized_at")
+        )
         last_opname_at = (state or {}).get("last_opname_at")
         rows.append({
             "master_item_id": mid or None,
@@ -298,8 +305,20 @@ def build_stock_rows_v2(
             "manual_purchase_qty": 0,
             "updated_at": updated_at,
             "last_opname_at": last_opname_at,
-            "updated_by": (state or {}).get("initialized_by", {}).get("email") if isinstance((state or {}).get("initialized_by"), dict) else None,
-            "updated_by_name": (state or {}).get("initialized_by", {}).get("name") if isinstance((state or {}).get("initialized_by"), dict) else None,
+            "updated_by": (
+                changed_by.get("email")
+                if isinstance(changed_by, dict) and changed_by
+                else (state or {}).get("initialized_by", {}).get("email")
+                if isinstance((state or {}).get("initialized_by"), dict)
+                else None
+            ),
+            "updated_by_name": (
+                changed_by.get("name")
+                if isinstance(changed_by, dict) and changed_by
+                else (state or {}).get("initialized_by", {}).get("name")
+                if isinstance((state or {}).get("initialized_by"), dict)
+                else None
+            ),
             "formula": "available = max(physical - outstanding_so, 0); belum = max(outstanding_so - printed, 0)",
             "stock_engine": "v2",
         })
@@ -517,6 +536,7 @@ async def apply_stock_opname(
     counted_printed_qty: Any,
     note: str = "",
     user: Optional[dict] = None,
+    client_request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Set physical buckets to counted opname values via a single KOREKSI movement.
 
@@ -526,6 +546,21 @@ async def apply_stock_opname(
     mid = str(master_item_id or "").strip()
     if not mid:
         raise HTTPException(400, "master_item_id wajib diisi")
+
+    request_id = str(client_request_id or "").strip() or str(uuid.uuid4())
+    event_id = f"stock_opname:{mid}:{request_id}"
+    existing = await db.stock_movements.find_one(
+        {"$or": [{"event_key": event_id}, {"id": event_id}, {"_id": event_id}]},
+        {"_id": 0},
+    )
+    if existing:
+        return {
+            "unchanged": False,
+            "idempotent": True,
+            "stock_state": await get_product_stock_state(db, mid),
+            "movement": existing,
+            "message": "Stock Opname sudah tercatat",
+        }
 
     state = await get_product_stock_state(db, mid)
     if not state or not (state.get("initialized") or state.get("status") == "INITIALIZED"):
@@ -555,7 +590,6 @@ async def apply_stock_opname(
             "message": "Tidak ada selisih opname",
         }
 
-    event_id = f"stock_opname:{mid}:{uuid.uuid4()}"
     stamp = now_iso()
     actor = None
     if isinstance(user, dict):
@@ -591,6 +625,19 @@ async def apply_stock_opname(
         movement_id=event_id,
         balance_before=old_tot,
         balance_after=new_tot,
+        unprinted_before=old_unp,
+        unprinted_after=new_unp,
+        printed_before=old_pri,
+        printed_after=new_pri,
+        change_metadata={
+            "old_qty": old_tot,
+            "new_qty": new_tot,
+            "difference_qty": d_tot,
+            "changed_by": actor,
+            "changed_at": stamp,
+            "change_note": note,
+            "client_request_id": request_id,
+        },
     )
 
     updated = await db[STATE_COLLECTION].find_one_and_update(
@@ -612,6 +659,7 @@ async def apply_stock_opname(
                 "updated_at": stamp,
                 "last_opname_at": stamp,
                 "last_opname_movement_id": event_id,
+                "last_opname_by": actor,
             }
         },
         return_document=ReturnDocument.AFTER,
@@ -636,33 +684,7 @@ async def apply_stock_opname(
 
 
 async def ensure_v2_physical_settings(db) -> dict:
-    """Ensure physical stock engine is ON with GR in / sales delivery out for V2."""
-    from services.physical_stock_settings import (
-        SETTINGS_KEY,
-        get_physical_stock_settings,
-        sanitize_settings,
-    )
-    current = await get_physical_stock_settings(db)
-    desired = {
-        **current,
-        "enabled": True,
-        "stock_in_trigger": "goods_receipt",
-        "stock_out_trigger": "sales_delivery",
-        "updated_at": now_iso(),
-        "updated_by": {"name": "stock_engine_v2", "email": "system@local"},
-        "stock_engine_version": 2,
-    }
-    # Always allow sales_delivery even if older settings helper rejected it
-    clean = sanitize_settings(desired)
-    clean["enabled"] = True
-    clean["stock_in_trigger"] = "goods_receipt"
-    clean["stock_out_trigger"] = "sales_delivery"
-    clean["stock_engine_version"] = 2
-    clean["updated_at"] = desired["updated_at"]
-    clean["updated_by"] = desired["updated_by"]
-    await db.app_settings.update_one(
-        {"key": SETTINGS_KEY},
-        {"$set": clean},
-        upsert=True,
-    )
-    return clean
+    """Read physical-stock settings without changing the mutation gate."""
+    from services.physical_stock_settings import get_physical_stock_settings
+
+    return await get_physical_stock_settings(db)
