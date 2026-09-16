@@ -6,17 +6,26 @@ const shell = fs.readFileSync(path.join(__dirname, "components/AppShell.jsx"), "
 const optimizerLayout = fs.readFileSync(path.join(__dirname, "mobile/RouteOptimizerLayout.jsx"), "utf8");
 const mobileLayout = fs.readFileSync(path.join(__dirname, "mobile/MobileOperationalLayout.jsx"), "utf8");
 const fallback = fs.readFileSync(path.join(__dirname, "components/WorkspaceChunkFallback.jsx"), "utf8");
+const boot = fs.readFileSync(path.join(__dirname, "components/AppBootScreen.jsx"), "utf8");
 
-function lazyLine(name) {
+function lazyPage(name) {
   return new RegExp(`const ${name} = lazy\\(\\(\\) => import\\("\\.\\/pages\\/${name}"\\)\\)`);
+}
+
+function lazyMobile(name) {
+  return new RegExp(`const ${name} = lazy\\(\\(\\) => import\\("\\.\\/mobile\\/${name}"\\)\\)`);
 }
 
 function staticPage(name) {
   return new RegExp(`import ${name} from "\\.\\/pages\\/${name}"`);
 }
 
-describe("Phase 2A route code splitting", () => {
-  test("approved page modules use lazy dynamic imports", () => {
+function staticMobile(name) {
+  return new RegExp(`import ${name} from "\\.\\/mobile\\/${name}"`);
+}
+
+describe("Phase 2A / Batch 2A route code splitting", () => {
+  test("desktop ERP and unused pages are isolated from the initial graph", () => {
     [
       "Settings",
       "FakturPenjualan",
@@ -47,36 +56,63 @@ describe("Phase 2A route code splitting", () => {
       "PrediksiOrder",
       "OptimasiRute",
       "OptimasiRuteEditor",
-    ].forEach((name) => {
-      expect(app).toMatch(lazyLine(name));
-      expect(app).not.toMatch(staticPage(name));
-    });
-  });
-
-  test("critical desktop and auth modules remain eager", () => {
-    [
-      "Login",
       "Dashboard",
-      "PesananPenjualan",
-      "ProductionSchedule",
       "PODetail",
       "HoPDashboard",
+      "ProductionSchedule",
+      "SuratJalan",
+      "PesananPenjualan",
+      "MasterBarangJasa",
+      "ProductDetail",
+      "StockSaatIni",
+      "StockOpname",
+      "PenerimaanBarang",
+      "PermintaanPembelian",
+      "PesananPembelian",
+      "FakturPembelian",
+      "PembayaranPembelian",
+      "SalesActivityPage",
+      "SalesActivityOutletDetail",
+      "PoWorkView",
+      "PublicCustomerApproval",
+      "CustomerTrackingPage",
+      "PublicHargaPage",
+      "DivisionTaskPage",
+      "DeliverySchedulePage",
+      "DeliveryScheduleRouteReviewPage",
+      "DeliveryReschedulePage",
+      "DeliveryBatchPage",
+      "FormShowcase",
       "ChatPage",
     ].forEach((name) => {
-      expect(app).toMatch(staticPage(name));
-      expect(app).not.toMatch(lazyLine(name));
+      expect(app).toMatch(lazyPage(name));
+      expect(app).not.toMatch(staticPage(name));
     });
-    expect(app).toMatch(/import AppShell from "\.\/components\/AppShell"/);
-    expect(app).not.toMatch(/const AppShell = lazy/);
+    expect(app).toMatch(/const DivisionTaskIndex = lazy\(\(\) => import\("\.\/pages\/DivisionTaskPage"\)\.then/);
+    expect(app).toMatch(/const AppShell = lazy\(\(\) => import\("\.\/components\/AppShell"\)\)/);
+    expect(app).not.toMatch(/import AppShell from "\.\/components\/AppShell"/);
+  });
+
+  test("auth/bootstrap and driver task-list modules remain eager", () => {
+    expect(app).toMatch(staticPage("Login"));
+    expect(app).not.toMatch(lazyPage("Login"));
+    expect(app).toMatch(staticMobile("MobileOperationalLayout"));
+    expect(app).toMatch(staticMobile("MobileTasksPage"));
+    expect(app).not.toMatch(lazyMobile("MobileOperationalLayout"));
+    expect(app).not.toMatch(lazyMobile("MobileTasksPage"));
+    expect(app).toMatch(/import \{ Protected as AuthProtected, PublicOnly as AuthPublicOnly \} from "\.\/components\/AppBootScreen"/);
     expect(app).toMatch(/import \{ AuthProvider, useAuth \} from "\.\/lib\/auth"/);
     expect(app).toMatch(/function Protected\(/);
     expect(app).toMatch(/function PermGate\(/);
+    expect(app).toMatch(/function PublicOnly\(/);
+    expect(boot).toMatch(/if \(loading\) return <AppBootScreen \/>/);
+    expect(boot).toMatch(/loginPathForLocation/);
+    expect(boot).toMatch(/postLoginPath/);
+    expect(app).toMatch(/<Suspense fallback=\{<WorkspaceChunkFallback \/>\}>/);
   });
 
-  test("/m/* pages stay statically imported", () => {
+  test("unused mobile routes are lazy; driver list path stays static", () => {
     [
-      "MobileOperationalLayout",
-      "MobileTasksPage",
       "MobileOrdersPage",
       "MobileOrderDetailPage",
       "MobileProductionSchedulePage",
@@ -86,12 +122,13 @@ describe("Phase 2A route code splitting", () => {
       "MobileProfilePage",
       "MobileChatPage",
       "MobileChatRoomPage",
+      "RouteOptimizerLayout",
     ].forEach((name) => {
-      expect(app).toMatch(new RegExp(`import ${name} from "\\.\\/mobile\\/${name}"`));
-      expect(app).not.toMatch(new RegExp(`const ${name} = lazy`));
+      expect(app).toMatch(lazyMobile(name));
+      expect(app).not.toMatch(staticMobile(name));
     });
-    expect(app).toMatch(/import RouteOptimizerLayout from "\.\/mobile\/RouteOptimizerLayout"/);
-    expect(app).not.toMatch(/const RouteOptimizerLayout = lazy/);
+    expect(app).toMatch(/path="\/m\/tasks" element=\{<MobileTasksPage \/>\}/);
+    expect(app).toMatch(/path="\/m\/orders\/:id" element=\{<MobileOrderDetailPage \/>\}/);
   });
 
   test("AppShell keeps chrome eager and Suspense wraps only Outlet", () => {
@@ -108,7 +145,7 @@ describe("Phase 2A route code splitting", () => {
     expect(shell.indexOf("<FloatingNotificationBell />")).toBeGreaterThan(suspenseEnd);
   });
 
-  test("RouteOptimizerLayout stays eager; mobile Outlet has Suspense for lazy optimizer pages", () => {
+  test("RouteOptimizerLayout module has no inner lazy; mobile Outlet still has Suspense", () => {
     expect(optimizerLayout).toMatch(/export default function RouteOptimizerLayout/);
     expect(optimizerLayout).toMatch(/return <AppShell \/>/);
     expect(optimizerLayout).toMatch(/return <MobileOperationalLayout \/>/);
@@ -146,3 +183,4 @@ describe("Phase 2A route code splitting", () => {
     expect(app).toMatch(/if \(!ok \|\| !also\) return <Navigate to="\/" replace \/>/);
   });
 });
+

@@ -5,6 +5,7 @@ import { loginPathForLocation, postLoginPath } from "../lib/mobileAuthRedirect";
 
 describe("mobile route wiring", () => {
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+  const boot = fs.readFileSync(path.join(__dirname, "../components/AppBootScreen.jsx"), "utf8");
   const layout = fs.readFileSync(path.join(__dirname, "../mobile/MobileOperationalLayout.jsx"), "utf8");
   const detail = fs.readFileSync(path.join(__dirname, "../mobile/MobileOrderDetailPage.jsx"), "utf8");
   const delivery = fs.readFileSync(path.join(__dirname, "../mobile/workspaces/MobileDeliveryWorkspace.jsx"), "utf8");
@@ -30,8 +31,11 @@ describe("mobile route wiring", () => {
     expect(app).toMatch(/path="\/m\/notifications"/);
     expect(app).toMatch(/path="\/m\/profile"/);
     expect(app).toMatch(/MobileOperationalLayout/);
-    expect(app).toMatch(/loginPathForLocation/);
-    expect(app).toMatch(/postLoginPath/);
+    expect(app).toMatch(/<Route element=\{<Protected><MobileOperationalLayout \/><\/Protected>\}>/);
+    expect(boot).toMatch(/loginPathForLocation/);
+    expect(boot).toMatch(/postLoginPath/);
+    expect(boot).toMatch(/if \(!user\) return <Navigate to=\{loginPathForLocation\(location\.pathname, location\.search\)\} replace \/>/);
+    expect(boot).toMatch(/if \(user\) return <Navigate to=\{postLoginPath\(params\.get\("next"\)\)\} replace \/>/);
     const mobileIdx = app.indexOf("MobileOperationalLayout");
     const shellIdx = app.indexOf("<AppShell");
     expect(mobileIdx).toBeGreaterThan(-1);
@@ -210,3 +214,4 @@ describe("mobile route wiring", () => {
     expect(postLoginPath("/dashboard")).toBe("/");
   });
 });
+
