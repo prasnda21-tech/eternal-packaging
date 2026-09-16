@@ -11,6 +11,7 @@ export const PRODUCTION_SHEET_WHEEL_LINE_PX = 40;
 export const PRODUCTION_SHEET_WHEEL_PAGE_PX = 400;
 export const PRODUCTION_SHEET_ZOOM_PERSIST_MS = 360;
 export const PRODUCTION_SHEET_PINCH_MOVE_PX = 10;
+export const PRODUCTION_SHEET_CLICK_SUPPRESS_MS = 280;
 export const PRODUCTION_SHEET_ZOOM_SMOOTH_RATE = 24;
 export const PRODUCTION_SHEET_ZOOM_PINCH_SMOOTH_RATE = 34;
 export const PRODUCTION_SHEET_ZOOM_SMOOTH_EPSILON = 0.0008;
@@ -311,5 +312,28 @@ export function eventTouches(event) {
 }
 
 export function shouldSuppressSheetRowClick(gesture) {
-  return Boolean(gesture?.pinching || gesture?.suppressClick);
+  return Boolean(gesture?.suppressClick);
+}
+
+const INTERACTIVE_SHEET_ROW_SELECTOR = "a,button,input,select,textarea,label,[role='button']";
+
+/** Genuine controls keep their own action; ordinary cells bubble to the row. */
+export function isInteractiveSheetRowClickTarget(target) {
+  if (!target || typeof target.closest !== "function") return false;
+  return Boolean(target.closest(INTERACTIVE_SHEET_ROW_SELECTOR));
+}
+
+/** Consume at most one armed suppression flag. Pinching alone never stays armed. */
+export function consumeSheetRowClickSuppression(gesture) {
+  if (!gesture?.suppressClick) {
+    return { consumed: false, next: gesture || createSheetPinchGesture() };
+  }
+  return {
+    consumed: true,
+    next: {
+      ...gesture,
+      suppressClick: false,
+      moved: false,
+    },
+  };
 }
