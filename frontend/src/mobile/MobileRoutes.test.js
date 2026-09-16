@@ -157,7 +157,7 @@ describe("mobile route wiring", () => {
     expect(schedulePage).toMatch(/api\.productionDashboard/);
     expect(schedulePage).toMatch(/mobileProductionDashboardParams/);
     expect(mobileSchedule).toMatch(/view: "summary"/);
-    expect(schedulePage).not.toMatch(/api\.getOrder\(/);
+    expect(schedulePage).toMatch(/withTimeout\(\s*api\.getOrder\(row\.id\)/);
     expect(schedulePage).toMatch(/formatApiError/);
     expect(schedulePage).toMatch(/Coba Lagi/);
     expect(schedulePage).toMatch(/Belum ada jadwal produksi\./);
