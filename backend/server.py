@@ -115,12 +115,13 @@ from services.work_panel_settings import SETTINGS_KEY as WORK_PANEL_SETTINGS_KEY
 from services import work_panel_settings as work_panel_cfg
 from services import accurate_creator as accurate_creator_cfg
 from services.dashboard_today import (
-    SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
     build_shipments_today,
     build_work_today,
+    due_today_orders,
     operational_iso,
     parse_operational_date_key,
+    partition_orders_by_delivery,
     resolve_sj_operational_date,
     shipments_today_mongo_query,
     wib_today,
@@ -6174,7 +6175,7 @@ async def list_delivery_schedule(user=Depends(current_user)):
     docs = await db.orders.find(
         {"cancelled": {"$ne": True}},
         SCHEDULE_PROJECTION,
-    ).sort("deadline", 1).to_list(1000)
+    ).sort("deadline", 1).to_list(None)
     rows = []
     for o in docs:
         rows.extend(_delivery_schedule_rows(o))
@@ -6489,9 +6490,6 @@ async def reset_delivery_deadline_manual(order_id: str, user=Depends(current_use
 
 
 # ---------- Dashboard aggregation (Head of Production) ----------
-_DASHBOARD_SUMMARY_LIMIT = 1000
-
-
 def _mongo_keep_if_present(expr):
     """Omit missing keys so Python `.get(key, default)` stays equivalent to find()."""
     return {
@@ -6820,9 +6818,9 @@ def _shape_order_for_dashboard_summary_compute(order: dict) -> dict:
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(user=Depends(require_perm("dashboard.production.view"))):
     raw_orders = await db.orders.aggregate([
-        {"$limit": _DASHBOARD_SUMMARY_LIMIT},
+        {"$match": {"cancelled": {"$ne": True}}},
         {"$project": _orders_dashboard_summary_projection()},
-    ]).to_list(_DASHBOARD_SUMMARY_LIMIT)
+    ]).to_list(None)
     # Cancelled PO tidak boleh ikut card apa pun di Dashboard Produksi.
     orders = [o for o in raw_orders if not o.get("cancelled")]
     # Attach HOLD snapshot (canonical predicate) — dipakai untuk card HOLD.
@@ -6833,36 +6831,25 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
 
     now = datetime.now(timezone.utc)
-    today_iso_date = now.strftime("%Y-%m-%d")
+    today = wib_today(now)
 
-    active_orders = [o for o in orders if o.get("current_stage", 0) < 14]
+    active_orders, completed_orders = partition_orders_by_delivery(
+        orders, _qr_is_fully_delivered
+    )
     urgent_orders = [o for o in active_orders if o.get("priority") == "urgent"]
-    completed_orders = [o for o in orders if o.get("current_stage", 0) >= 14]
 
     total_active = len(active_orders)
     total_urgent = len(urgent_orders)
     total_completed = len(completed_orders)
 
-    def parse_dt(iso):
-        if not iso: return None
-        try:
-            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except Exception:
-            return None
-
-    due_today, overdue = [], []
+    due_today = due_today_orders(active_orders, today)
+    overdue = []
     deadline_h1, deadline_h6 = [], []
     waiting_design, waiting_payment = [], []
     hold_list = []
     # SEMANTIC: satu PO boleh muncul di beberapa list (design + payment + hold,
     # dsb.) — predicate independen, TIDAK bergantung pada current_stage.
     for o in active_orders:
-        # Legacy `deadline` for due_today only (H-1/H-6/overdue use effective).
-        d = parse_dt(o.get("deadline"))
-        if d and d >= now and d.strftime("%Y-%m-%d") == today_iso_date:
-            due_today.append(o)
         # Batch 1: overdue/h1/h6 memakai `delivery_deadline_status` sebagai
         # SOURCE OF TRUTH (sama predicate untuk Dashboard/Schedule/PODetail).
         st = o.get("delivery_deadline_status")
@@ -6882,13 +6869,12 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
     # Per-stage breakdown (count of active orders at each stage, exclude cancelled)
     stage_breakdown = []
     for idx, label in enumerate(STAGES):
-        cnt = sum(1 for o in orders if o.get("current_stage", 0) == idx)
+        cnt = sum(1 for o in active_orders if o.get("current_stage", 0) == idx)
         stage_breakdown.append({"stage": idx, "label": label, "count": cnt})
 
     # Operator load (aggregate qty_scheduled / completed / remaining across active orders)
     op_map = {}
-    for o in orders:
-        if o.get("current_stage", 0) >= 14: continue
+    for o in active_orders:
         for s in o.get("operator_splits", []):
             email = s.get("operator_email")
             if not email: continue
@@ -6970,8 +6956,13 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
         "stage_breakdown": stage_breakdown,
         "operator_load": operator_load,
         "generated_at": now_iso(),
-        "work_today": build_work_today(orders),
-        "shipments_today": build_shipments_today(orders),
+        "work_today": build_work_today(orders, today),
+        "shipments_today": build_shipments_today(
+            await db.orders.find(
+                shipments_today_mongo_query(today), SCHEDULE_PROJECTION
+            ).to_list(None),
+            today,
+        ),
     }
 
 
@@ -6980,7 +6971,9 @@ async def dashboard_today(user=Depends(require_perm("po.view"))):
     """Compact Pengerjaan/Pengiriman Hari Ini. Targeted queries, not a full DB scan."""
     today = wib_today()
     work_docs = await db.orders.find(work_today_mongo_query(today), TODAY_WORK_PROJECTION).to_list(500)
-    ship_docs = await db.orders.find(shipments_today_mongo_query(today), TODAY_SHIP_PROJECTION).to_list(500)
+    ship_docs = await db.orders.find(
+        shipments_today_mongo_query(today), SCHEDULE_PROJECTION
+    ).to_list(None)
     return {
         "date": today.isoformat(),
         "timezone": "WIB",

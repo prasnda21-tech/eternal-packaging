@@ -3,7 +3,7 @@
 Timezone: WIB (UTC+7), same convention as operator_analytics / Analitik Output.
 Pengerjaan uses Jadwal Produksi `work_date` (order + operator_splits), never
 PO created_at as the sole signal.
-Pengiriman uses Surat Jalan / shipment / loading / bukti / delivered timestamps.
+Pengiriman uses the canonical Jadwal Pengiriman rows for the WIB business date.
 Partial shipment stays partial — never treated as full PO terkirim.
 """
 from __future__ import annotations
@@ -281,6 +281,23 @@ def build_work_today(orders: Iterable[dict], today: Optional[date] = None, *, li
     }
 
 
+def partition_orders_by_delivery(orders: Iterable[dict], is_fully_delivered) -> Tuple[List[dict], List[dict]]:
+    """Return (active, completed) from the canonical quantity invariant."""
+    active, completed = [], []
+    for order in orders:
+        (completed if is_fully_delivered(order) else active).append(order)
+    return active, completed
+
+
+def due_today_orders(orders: Iterable[dict], today: date) -> List[dict]:
+    """PO-level target count from authoritative Tanggal Pengiriman snapshot."""
+    key = today.isoformat()
+    return [
+        order for order in orders
+        if order.get("delivery_deadline_effective") == key
+    ]
+
+
 def _shipment_events_today(order: dict, today: date) -> List[dict]:
     events = []
     # Canonical SJ operational date is delivery_note_created_at (set at upload),
@@ -387,10 +404,55 @@ def slim_ship_row(order: dict, today: date) -> dict:
     }
 
 
-def build_shipments_today(orders: Iterable[dict], today: Optional[date] = None, *, limit: int = PREVIEW_LIMIT) -> dict:
+def _slim_schedule_row(row: dict) -> dict:
+    """Dashboard preview derived from the exact Jadwal Pengiriman row."""
+    lines = row.get("sj_item_lines") or []
+    order_id = row.get("id")
+    shipment_id = row.get("shipment_id")
+    return {
+        "id": order_id,
+        "row_id": f"{order_id}:{shipment_id or row.get('shipment_index') or ''}",
+        "shipment_id": shipment_id,
+        "po_number": row.get("order_number") or "",
+        "customer": row.get("customer_name") or "",
+        "outlet": "",
+        "surat_jalan": row.get("sj_label") or row.get("latest_sj_number"),
+        "item": row.get("item_label") or "—",
+        "line_count": len(lines) if lines else 1,
+        "qty": row.get("qty_sj"),
+        "status": row.get("status_label") or "Hari Ini",
+        "partial": row.get("status") != "terkirim",
+        "tanggal_pengiriman": row.get("tanggal_pengiriman"),
+    }
+
+
+def build_shipments_today(
+    orders: Iterable[dict],
+    today: Optional[date] = None,
+    *,
+    limit: int = PREVIEW_LIMIT,
+    schedule_row_builder=None,
+) -> dict:
+    """Exact `status=hari_ini` rows from the canonical delivery schedule.
+
+    One scheduled Surat Jalan is one row, matching the destination page and its
+    count. Upload/loading/proof activity never invents a scheduled delivery.
+    """
+    if schedule_row_builder is None:
+        from services.delivery_schedule import schedule_rows as schedule_row_builder
+
     day = today or wib_today()
-    rows = [slim_ship_row(o, day) for o in orders if is_shipment_today(o, day)]
-    rows.sort(key=lambda r: (r.get("po_number") or "", r.get("id") or ""))
+    day_key = day.isoformat()
+    canonical = []
+    for order in orders:
+        if order.get("cancelled"):
+            continue
+        canonical.extend(
+            row for row in schedule_row_builder(order, today=day_key)
+            if row.get("status") == "hari_ini"
+        )
+    rows = [_slim_schedule_row(row) for row in canonical]
+    rows.sort(key=lambda r: (r.get("po_number") or "", r.get("shipment_id") or ""))
     total = len(rows)
     return {
         "date": day.isoformat(),
@@ -398,7 +460,7 @@ def build_shipments_today(orders: Iterable[dict], today: Optional[date] = None, 
         "total": total,
         "preview": rows[: max(0, int(limit))],
         "has_more": total > int(limit),
-        "source": "shipments.created_at / delivery_note_created_at / loading / delivery_proofs / delivered_at",
+        "source": "delivery_schedule.schedule_rows(status=hari_ini)",
     }
 
 
@@ -414,17 +476,15 @@ def work_today_mongo_query(today: date) -> dict:
 
 
 def shipments_today_mongo_query(today: date) -> dict:
-    """Candidate set = POs already in the shipping pipeline. Exact 'today'
-    match is applied in Python using WIB so mixed ISO offsets stay correct.
-    Does not scan the full orders collection."""
+    """Dated SJ candidates; Python applies the exact canonical WIB predicate.
+
+    The broad value check keeps legacy ISO datetime values compatible.
+    """
     return {
         "cancelled": {"$ne": True},
-        "$or": [
-            {"current_stage": {"$gte": 12}},
-            {"shipments.0": {"$exists": True}},
-            {"delivered_at": {"$exists": True, "$nin": [None, ""]}},
-            {"delivery_note_created_at": {"$exists": True, "$nin": [None, ""]}},
-            {"loading_completed_at": {"$exists": True, "$nin": [None, ""]}},
-            {"delivery_proofs.0": {"$exists": True}},
-        ],
+        "shipments": {
+            "$elemMatch": {
+                "delivery_date": {"$exists": True, "$nin": [None, ""]}
+            }
+        },
     }

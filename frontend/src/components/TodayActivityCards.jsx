@@ -22,7 +22,7 @@ function TodayTable({ title, empty, rows, columns, allHref, allLabel, total, tes
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={r.id || r.po_number} data-testid={`${testid}-row-${r.po_number}`}>
+                <tr key={r.row_id || r.id || r.po_number} data-testid={`${testid}-row-${r.po_number}`}>
                   {columns.map((c) => (
                     <td key={c.key} className={c.num ? "num" : ""}>
                       {c.render ? c.render(r) : (r[c.key] ?? "—")}
