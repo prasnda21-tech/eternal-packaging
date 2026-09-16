@@ -44,13 +44,15 @@ def _new_po(**extra):
             "qty_packed": extra.pop("packed", 0),
             "lines": [{"line_idx": 0, "packed_qty": extra.pop("packed_line", 0)}],
         }),
-        "shipments": extra.pop("shipments", []),
         "surat_jalan_files": extra.pop("surat_jalan_files", [{
             "id": "f-sj-1",
             "name": "sj.pdf",
             "uploaded_at": "2026-08-27T10:00:00+07:00",
             "uploaded_by_name": "Admin",
+            "shipment_id": "f-sj-1",
+            "sj_number": "SJ-1",
         }]),
+        "shipments": extra.pop("shipments", [{"id": "f-sj-1", "number": "SJ-1"}]),
         "delivery_note_number": "SJ-1",
         "delivery_note_created_at": "2026-08-27T10:00:00+07:00",
         "delivery_note_created_by": "admin@x.com",
@@ -119,8 +121,11 @@ def test_c_driver_without_create_schedule():
 
 def test_d_partial_cumulative_loading_and_delivery():
     o = _new_po(surat_jalan_files=[
-        {"id": "f1", "name": "a.pdf"},
-        {"id": "f2", "name": "b.pdf"},
+        {"id": "f1", "name": "a.pdf", "shipment_id": "f1", "sj_number": "SJ-1"},
+        {"id": "f2", "name": "b.pdf", "shipment_id": "f2", "sj_number": "SJ-2"},
+    ], shipments=[
+        {"id": "f1", "number": "SJ-1"},
+        {"id": "f2", "number": "SJ-2"},
     ])
     apply_loading_confirmation(o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 400}], confirmation_id="c1")
     apply_loading_confirmation(o, surat_jalan_id="f2", lines=[{"line_idx": 0, "qty": 300}], confirmation_id="c2")

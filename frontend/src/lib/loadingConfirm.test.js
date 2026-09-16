@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId } from "./loadingConfirm";
 import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
 
@@ -138,6 +138,22 @@ describe("Loading confirm helpers", () => {
     expect(files[0].has_file).toBe(true);
     expect(files[1].id).toBe("sh-2");
     expect(files[1].sj_number).toBe("SJ-100-2");
+  });
+
+  test("desktop selected SJ never silently falls back to first file", () => {
+    const files = [
+      { id: "sj-a", shipment_id: "sh-1", sj_number: "SJ-A" },
+      { id: "sj-b", shipment_id: "sh-2", sj_number: "SJ-B" },
+    ];
+    expect(selectedLoadingSjOrNull(files, "sj-b").id).toBe("sj-b");
+    expect(selectedLoadingSjOrNull(files, "sj-a").id).toBe("sj-a");
+    expect(selectedLoadingSjOrNull(files, "stale-sj-old")).toBeNull();
+    expect(selectedLoadingSjOrNull(files, "missing")).toBeNull();
+    expect(selectedLoadingSjOrNull(files, "")).toBeNull();
+    expect(selectedLoadingSjOrNull(files, null)).toBeNull();
+    expect(nextSelectedLoadingSjId(files, "")).toBe("sj-a");
+    expect(nextSelectedLoadingSjId(files, "sj-b")).toBe("sj-b");
+    expect(nextSelectedLoadingSjId(files, "stale-sj-old")).toBe("stale-sj-old");
   });
 
   test("deleted Surat Jalan file is not offered from leftover shipment", () => {

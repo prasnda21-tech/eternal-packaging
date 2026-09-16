@@ -46,8 +46,13 @@ def _po(*, packed=0, qty_po=1000, print_completed=0, **extra):
         "surat_jalan_files": extra.pop("surat_jalan_files", [{
             "id": "f1",
             "name": "sj.pdf",
+            "shipment_id": "f1",
+            "sj_number": "SJ-1",
         }]),
-        "shipments": extra.pop("shipments", []),
+        "shipments": extra.pop("shipments", [{
+            "id": "f1",
+            "number": "SJ-1",
+        }]),
         "loading_confirmations": extra.pop("loading_confirmations", []),
         "loading_info": extra.pop("loading_info", {}),
     }
@@ -112,10 +117,10 @@ def test_loading_cap_is_per_line_not_po_total():
                 {"line_idx": 1, "packed_qty": 200},
             ],
         },
-        "surat_jalan_files": [{"id": "f1", "name": "sj.pdf"}],
+        "surat_jalan_files": [{"id": "f1", "name": "sj.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}],
         "loading_confirmations": [],
         "loading_info": {},
-        "shipments": [],
+        "shipments": [{"id": "f1", "number": "SJ-1"}],
     }
     assert loading_confirm_cap_for_line(o, 0) == 500
     assert loading_confirm_cap_for_line(o, 1) == 200

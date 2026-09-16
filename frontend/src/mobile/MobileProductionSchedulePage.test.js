@@ -823,6 +823,9 @@ describe("MobileProductionSchedulePage", () => {
     expect(printWs).toMatch(/api\.updateOperatorProgress/);
     expect(packing).toMatch(/api\.savePackingInfo/);
     expect(loading).toMatch(/confirmLoadingMatch/);
+    expect(loading).toMatch(/surat_jalan_id: activeSj\.id/);
+    expect(loading).toMatch(/matchLoadingSjFile/);
+    expect(loading).not.toMatch(/files\[0\]/);
     expect(loading).toMatch(/reportLoadingDiscrepancy/);
     expect(loading).toMatch(/Catatan \(opsional\)/);
     expect(loading).not.toMatch(/MobileQtyStepper/);

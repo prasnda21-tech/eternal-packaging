@@ -28,7 +28,10 @@ describe("Loading restored as SJ qty confirmation", () => {
     expect(panel).toMatch(/surat_jalan_id/);
     expect(panel).toMatch(/Lihat Surat Jalan|loading-sj-lihat/);
     expect(panel).toMatch(/loading-sj-number/);
-    expect(panel).toMatch(/loading-sj-file-row|loading-sj-file-row/);
+    expect(panel).toMatch(/selectedLoadingSjOrNull/);
+    expect(panel).toMatch(/nextSelectedLoadingSjId/);
+    expect(panel).not.toMatch(/files\.find\(\(f\) => f\.id === sjId\) \|\| files\[0\]/);
+    expect(panel).not.toMatch(/setSjId\(files\[0\]\?\.id \|\| ""\)/);
   });
 
   test("PO detail has active Loading action", () => {

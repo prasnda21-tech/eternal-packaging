@@ -4771,15 +4771,18 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
         if err:
             raise HTTPException(400, err)
         stamp = now_iso()
-        record = _qr_apply_loading_confirmation(
-            order,
-            surat_jalan_id=payload.surat_jalan_id,
-            lines=lines,
-            actor=user,
-            confirmation_id=str(uuid.uuid4()),
-            confirmed_at=stamp,
-            action_id=action_id,
-        )
+        try:
+            record = _qr_apply_loading_confirmation(
+                order,
+                surat_jalan_id=payload.surat_jalan_id,
+                lines=lines,
+                actor=user,
+                confirmation_id=str(uuid.uuid4()),
+                confirmed_at=stamp,
+                action_id=action_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if not record.get("id"):
             record["id"] = str(uuid.uuid4())
             order["loading_confirmations"][-1]["id"] = record["id"]
@@ -4856,14 +4859,17 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
             record_holder["idempotent"] = True
             return
         stamp = now_iso()
-        record = _qr_apply_loading_match_confirmation(
-            order,
-            surat_jalan_id=payload.surat_jalan_id,
-            actor=user,
-            confirmation_id=str(uuid.uuid4()),
-            confirmed_at=stamp,
-            action_id=act_id,
-        )
+        try:
+            record = _qr_apply_loading_match_confirmation(
+                order,
+                surat_jalan_id=payload.surat_jalan_id,
+                actor=user,
+                confirmation_id=str(uuid.uuid4()),
+                confirmed_at=stamp,
+                action_id=act_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if not record.get("id"):
             record["id"] = str(uuid.uuid4())
             if order.get("loading_confirmations"):

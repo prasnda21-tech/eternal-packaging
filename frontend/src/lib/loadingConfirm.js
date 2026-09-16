@@ -261,6 +261,23 @@ export function sjFilesForLoading(order) {
   return list;
 }
 
+/** Exact selected Loading SJ. Never falls back to files[0] / first sibling. */
+export function selectedLoadingSjOrNull(files, sjId) {
+  const id = String(sjId || "").trim();
+  if (!id) return null;
+  const list = Array.isArray(files) ? files : [];
+  return list.find((f) => String(f?.id || "") === id) || null;
+}
+
+/** Empty selection may default to the first file. A stale/unknown id stays unresolved. */
+export function nextSelectedLoadingSjId(files, sjId) {
+  const list = Array.isArray(files) ? files : [];
+  const id = String(sjId || "").trim();
+  if (!id) return list[0]?.id ? String(list[0].id) : "";
+  if (list.some((f) => String(f?.id || "") === id)) return id;
+  return id;
+}
+
 export function loadingConfirmations(order) {
   return (Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [])
     .filter((c) => c && !c.cancelled && !c.deleted);
