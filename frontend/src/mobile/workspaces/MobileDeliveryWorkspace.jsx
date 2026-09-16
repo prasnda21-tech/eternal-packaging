@@ -15,9 +15,13 @@ import { newActionId } from "../../lib/workflowEntries";
 import {
   MAX_PHOTOS,
   DELIVERY_PROOF_ACCEPT,
+  canConfirmDelivered,
   canSubmitConfirmDelivered,
   confirmDeliveredBlockReason,
+  hasConfirmableDeliverySignatures,
+  normalizeRecipientName,
   proofUploadUserError,
+  resolveRecipientName,
   deliveryProofClientError,
   deliveryProofCompressedSizeError,
   isDeliveryProofUploadBusy,
@@ -101,6 +105,8 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   const pickerIntentRef = useRef({ type: "add" });
   const pickingRef = useRef(false);
   const [recipientName, setRecipientName] = useState(order?.delivery_recipient_signature?.recipient_name || "");
+  const recipientNameRef = useRef(recipientName);
+  const recipientInputRef = useRef(null);
   const [localSig, setLocalSig] = useState({ recipient: null, driver: null });
   const [modal, setModal] = useState({ open: false, role: null });
   const [sjOpen, setSjOpen] = useState(false);
@@ -109,6 +115,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   const [preview, setPreview] = useState(null);
   const [localSlots, setLocalSlots] = useState([]);
   const [busy, setBusy] = useState(false);
+  const submittingRef = useRef(false);
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -121,8 +128,12 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
     setPreview(null);
     setPicker(null);
     setErr("");
+    submittingRef.current = false;
+    setBusy(false);
     setLocalSig({ recipient: null, driver: null });
-    setRecipientName(order?.delivery_recipient_signature?.recipient_name || "");
+    const nextName = order?.delivery_recipient_signature?.recipient_name || "";
+    recipientNameRef.current = nextName;
+    setRecipientName(nextName);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookupId]);
 
@@ -130,9 +141,27 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   const driverSig = order?.delivery_driver_signature;
   useEffect(() => {
     const n = orderSig?.recipient_name;
-    if (n && !recipientName) setRecipientName(n);
+    if (n && !recipientNameRef.current) {
+      recipientNameRef.current = n;
+      setRecipientName(n);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderSig?.id]);
+
+  const setRecipientNameLive = (value) => {
+    const next = value == null ? "" : String(value);
+    recipientNameRef.current = next;
+    setRecipientName(next);
+    if (err) setErr("");
+  };
+
+  const readLiveRecipientName = () => resolveRecipientName(
+    recipientInputRef.current?.value,
+    recipientNameRef.current,
+    recipientName,
+    orderSig?.recipient_name,
+  );
+
   const shipmentResolved = Boolean(activeShipment);
   const unmatchedRequested = lockedToRequested && !shipmentResolved;
   const canMutate = canEdit && !delivered && shipmentResolved;
@@ -141,9 +170,13 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   const batchReadiness = deliveryBatchPhotoReadiness(order, activeShipment);
   const canWritePhoto = canMutate && batchPhotoReady;
   const photoBusy = isDeliveryProofUploadBusy(localSlots);
+  const liveRecipientName = readLiveRecipientName();
+  const evidenceReady = canConfirmDelivered(proofs)
+    && hasConfirmableDeliverySignatures(localSig.recipient, orderSig, localSig.driver, driverSig)
+    && batchPhotoReady && canMutate && !photoBusy;
   const canConfirm = canSubmitConfirmDelivered(
     proofs,
-    recipientName,
+    liveRecipientName,
     localSig.recipient,
     orderSig,
     localSig.driver,
@@ -288,30 +321,39 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
   };
 
   const confirm = async () => {
+    if (submittingRef.current || busy || photoBusy) return;
     if (!activeShipment) {
       setErr(EXACT_SJ_REQUIRED_MESSAGE);
       return;
     }
+    const name = readLiveRecipientName();
+    if (name !== recipientName) {
+      recipientNameRef.current = name;
+      setRecipientName(name);
+    }
     const blocked = confirmDeliveredBlockReason(
-      proofs, recipientName, localSig.recipient, orderSig, localSig.driver, driverSig,
+      proofs, name, localSig.recipient, orderSig, localSig.driver, driverSig,
     );
-    if (blocked || !canConfirm || photoBusy) {
-      setErr(blocked || "Konfirmasi terkirim belum memenuhi syarat.");
+    if (blocked || !batchPhotoReady || !canMutate || photoBusy) {
+      setErr(blocked || batchPhotoBlockReason || "Konfirmasi terkirim belum memenuhi syarat.");
       return;
     }
+    submittingRef.current = true;
     setBusy(true);
     setErr("");
     try {
-      const name = (recipientName || orderSig?.recipient_name || "").trim();
       if (isPreview) {
         let latest = order;
-        if (localSig.recipient) {
+        if (localSig.recipient || (name && name !== normalizeRecipientName(orderSig?.recipient_name))) {
           latest = applyPreviewDeliveryMutation(latest, "recipient-sig", { recipientName: name });
         }
         if (localSig.driver) {
           latest = applyPreviewDeliveryMutation(latest, "driver-sig");
         }
-        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: selectedShipmentKey });
+        latest = applyPreviewDeliveryMutation(latest, "confirm", {
+          shipmentId: selectedShipmentKey,
+          recipientName: name,
+        });
         onUpdated(latest);
         setLocalSig({ recipient: null, driver: null });
         onRequestClose?.();
@@ -335,9 +377,10 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         latest = res.order;
         onUpdated(latest);
       }
-      const res = await api.confirmDelivered(order.id, {
+      const res = await api.confirmDelivered(latest.id, {
         action_id: newActionId(),
         shipment_id: selectedShipmentKey,
+        recipient_name: name,
       });
       onUpdated(res.order);
       setLocalSig({ recipient: null, driver: null });
@@ -345,6 +388,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
     } catch (e) {
       setErr(formatApiError(e, proofUploadUserError(e)));
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   };
@@ -579,20 +623,25 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         <label className="mop-field mop-delivery-recipient-name">
           <span>Nama Penerima</span>
           <input
+            ref={recipientInputRef}
             type="text"
             value={recipientName}
-            onChange={(e) => setRecipientName(e.target.value)}
+            onChange={(e) => setRecipientNameLive(e.target.value)}
+            onInput={(e) => setRecipientNameLive(e.currentTarget.value)}
             placeholder="Nama penerima barang"
             disabled={busy || photoBusy}
             data-testid="mobile-recipient-name"
-            autoComplete="name"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="words"
+            name="delivery-recipient-name"
           />
         </label>
       ) : null}
       {canMutate && !canConfirm ? (
         <p className="mop-muted" data-testid="mobile-confirm-block-reason">
           {confirmDeliveredBlockReason(
-            proofs, recipientName, localSig.recipient, orderSig, localSig.driver, driverSig,
+            proofs, liveRecipientName, localSig.recipient, orderSig, localSig.driver, driverSig,
           ) || batchPhotoBlockReason || "Konfirmasi terkirim belum memenuhi syarat."}
         </p>
       ) : null}
@@ -600,7 +649,11 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       <button
         type="button"
         className="mop-delivery-confirm"
-        disabled={!canConfirm || busy || photoBusy}
+        disabled={!evidenceReady || busy || photoBusy}
+        onPointerDown={() => {
+          const live = recipientInputRef.current?.value;
+          if (typeof live === "string") setRecipientNameLive(live);
+        }}
         onClick={confirm}
         data-testid="mobile-confirm-delivered"
       >
@@ -704,7 +757,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
           setLocalSig((cur) => applyLocalSignature(cur, modal.role, dataUrl));
           if (isPreview) {
             const kind = modal.role === "recipient" ? "recipient-sig" : "driver-sig";
-            onUpdated(applyPreviewDeliveryMutation(order, kind, { recipientName: (recipientName || "").trim() }));
+            onUpdated(applyPreviewDeliveryMutation(order, kind, { recipientName: readLiveRecipientName() }));
           }
           setModal({ open: false, role: null });
         }}
@@ -714,11 +767,15 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
             <span>Nama Penerima</span>
             <input
               value={recipientName}
-              onChange={(e) => setRecipientName(e.target.value)}
+              onChange={(e) => setRecipientNameLive(e.target.value)}
+              onInput={(e) => setRecipientNameLive(e.currentTarget.value)}
               disabled={!canMutate}
               placeholder="Nama penerima barang"
               data-testid="mobile-recipient-name-modal"
-              autoComplete="name"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="words"
+              name="delivery-recipient-name-modal"
             />
           </label>
         ) : null}

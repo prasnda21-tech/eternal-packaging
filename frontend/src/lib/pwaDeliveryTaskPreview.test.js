@@ -67,6 +67,12 @@ describe("PWA delivery task modal preview fixtures", () => {
     expect(afterRecv.delivery_recipient_signature.recipient_name).toBe("Budi Penerima");
     const emptyRecv = applyPreviewDeliveryMutation(d1, "recipient-sig", { recipientName: "" });
     expect(emptyRecv.delivery_recipient_signature.recipient_name).toBe("");
+    const namedThenConfirm = applyPreviewDeliveryMutation(afterRecv, "confirm", {
+      shipmentId: d1.shipments[0].id,
+      recipientName: "me time",
+    });
+    expect(namedThenConfirm.delivery_recipient_signature.recipient_name).toBe("me time");
+    expect(namedThenConfirm.delivery_status).toBe("Terkirim");
     const live = { id: "real-order", preview: false, delivery_proofs: [] };
     expect(applyPreviewDeliveryMutation(live, "photo", { shipmentId: "x" })).toBe(live);
   });

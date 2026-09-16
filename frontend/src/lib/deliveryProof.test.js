@@ -7,6 +7,7 @@ import {
   proofUploadUserError,
   confirmableProofCount,
   hasValidRecipientName,
+  resolveRecipientName,
   authoritativeDriverDisplayName,
   deliveryProofClientError,
   deliveryProofCompressedSizeError,
@@ -298,10 +299,43 @@ describe("deliveryProof helpers", () => {
     );
   });
 
-  test("proof gates still require photos, name, and both signatures", () => {
-    const proofs = [{ id: "p1" }, { id: "p2" }];
-    expect(canSubmitConfirmDelivered(proofs, "", null, null, null, null)).toBe(false);
-    expect(canSubmitConfirmDelivered(proofs, "Budi", "data:image/png;base64,x", null, "data:image/png;base64,y", null)).toBe(true);
+  test("saved recipient signature without name still counts as signed; name is a separate gate", () => {
+    const proofs = [{ id: "a" }, { id: "b" }];
+    const emptyNamedSig = { id: "s1", recipient_name: "", signature_storage_path: "x", frozen: false };
+    const driver = { id: "d1", driver_signature_storage_path: "y", frozen: false };
+    expect(canSubmitConfirmDelivered(proofs, "", null, emptyNamedSig, null, driver)).toBe(false);
+    expect(confirmDeliveredBlockReason(proofs, "", null, emptyNamedSig, null, driver)).toMatch(/nama/i);
+    expect(canSubmitConfirmDelivered(proofs, "   ", null, emptyNamedSig, null, driver)).toBe(false);
+    expect(confirmDeliveredBlockReason(proofs, "   ", null, emptyNamedSig, null, driver)).toMatch(/nama/i);
+    expect(canSubmitConfirmDelivered(proofs, "me time", null, emptyNamedSig, null, driver)).toBe(true);
+    expect(confirmDeliveredBlockReason(proofs, "me time", null, emptyNamedSig, null, driver)).toBeNull();
+    expect(resolveRecipientName("  me time  ", "", "")).toBe("me time");
+    expect(resolveRecipientName("", "  Budi  ", "X")).toBe("Budi");
+    expect(resolveRecipientName("   ", "", "Budi")).toBe("Budi");
+  });
+
+  test("legacy stored signature missing recipient_name key is still signed; live name unlocks confirm", () => {
+    const proofs = [{ id: "a" }, { id: "b" }];
+    const legacySig = { id: "s-legacy", signature_storage_path: "x", frozen: false, recipient_signed_at: "t" };
+    const driver = { id: "d1", driver_signature_storage_path: "y", frozen: false };
+    expect("recipient_name" in legacySig).toBe(false);
+    expect(canSubmitConfirmDelivered(proofs, "", null, legacySig, null, driver)).toBe(false);
+    expect(confirmDeliveredBlockReason(proofs, "", null, legacySig, null, driver)).toMatch(/nama/i);
+    expect(canSubmitConfirmDelivered(proofs, "me time", null, legacySig, null, driver)).toBe(true);
+    expect(confirmDeliveredBlockReason(proofs, "me time", null, legacySig, null, driver)).toBeNull();
+    expect(canSubmitConfirmDelivered(proofs, "", null, { ...legacySig, recipient_name: "Budi Penerima" }, null, driver)).toBe(true);
+  });
+
+  test("already delivered shipment stays delivered for refresh/idempotency", () => {
+    const sh = { id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10, delivery_status: "Terkirim", delivered_at: "t" };
+    const order = {
+      delivery_status: "Terkirim",
+      qty_delivered: 10,
+      shipments: [sh],
+      delivery_confirmations: [{ id: "c1", action_id: "act-1", shipment_id: "s1", qty: 10, recipient_name: "Budi" }],
+    };
+    expect(isShipmentDelivered(order, sh)).toBe(true);
+    expect(isPengirimanMutationLocked(order, sh)).toBe(true);
   });
 
   test("no SJ yields SJ_NOT_READY", () => {

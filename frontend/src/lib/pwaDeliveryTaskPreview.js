@@ -245,6 +245,13 @@ export function applyPreviewDeliveryMutation(order, kind, payload = {}) {
   }
   if (kind === "confirm") {
     const sid = String(payload.shipmentId || "");
+    const name = String(payload.recipientName || "").trim();
+    if (name && next.delivery_recipient_signature) {
+      next.delivery_recipient_signature = {
+        ...next.delivery_recipient_signature,
+        recipient_name: name,
+      };
+    }
     next.delivery_status = "Terkirim";
     next.terkirim_confirmed = true;
     next.shipments = (order.shipments || []).map((sh) => (
