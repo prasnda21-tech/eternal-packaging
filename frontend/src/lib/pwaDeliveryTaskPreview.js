@@ -239,12 +239,19 @@ export function applyPreviewDeliveryMutation(order, kind, payload = {}) {
       id: "preview-recv-sig-local",
       signature_storage_path: "preview/local-recv.png",
       recipient_signed_at: new Date().toISOString(),
-      recipient_name: payload.recipientName || "Penerima",
+      recipient_name: payload.recipientName || "",
     };
     return next;
   }
   if (kind === "confirm") {
     const sid = String(payload.shipmentId || "");
+    const name = String(payload.recipientName || "").trim();
+    if (name && next.delivery_recipient_signature) {
+      next.delivery_recipient_signature = {
+        ...next.delivery_recipient_signature,
+        recipient_name: name,
+      };
+    }
     next.delivery_status = "Terkirim";
     next.terkirim_confirmed = true;
     next.shipments = (order.shipments || []).map((sh) => (

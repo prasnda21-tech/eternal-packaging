@@ -16,6 +16,7 @@ from services.customer_tracking import (
     public_payload,
 )
 from services.delivery_pod_signature import (
+    apply_recipient_name_to_active_signature,
     build_driver_signature_record,
     build_signature_record,
     clear_active_signature,
@@ -263,6 +264,49 @@ def test_confirm_rejects_empty_recipient_name():
     }
     _with_active_driver_sig(o)
     assert confirm_delivery_block_reason(o)
+
+
+def test_apply_recipient_name_binds_live_name_then_confirm_passes():
+    o = _base_order(delivery_status="Belum Terkirim", qty_delivered=0, delivery_confirmations=[])
+    o["delivery_recipient_signature"] = {
+        "id": "sig", "recipient_name": "", "signature_storage_path": "p",
+        "signature_file_id": "sig", "frozen": False, "recipient_signed_at": "t",
+    }
+    _with_active_driver_sig(o)
+    assert "nama" in (confirm_delivery_block_reason(o) or "").lower()
+    assert apply_recipient_name_to_active_signature(o, "   ") == "Nama penerima wajib diisi sebelum Konfirmasi Terkirim."
+    assert o["delivery_recipient_signature"]["recipient_name"] == ""
+    assert apply_recipient_name_to_active_signature(o, None) == "Nama penerima wajib diisi sebelum Konfirmasi Terkirim."
+    assert apply_recipient_name_to_active_signature(o, "A") == "Nama penerima terlalu pendek."
+    err = apply_recipient_name_to_active_signature(o, "  me time  ")
+    assert err is None
+    assert o["delivery_recipient_signature"]["recipient_name"] == "me time"
+    assert confirm_delivery_block_reason(o) is None
+
+
+def test_apply_recipient_name_does_not_create_a_signature():
+    o = _base_order(delivery_status="Belum Terkirim", qty_delivered=0, delivery_confirmations=[])
+    o.pop("delivery_recipient_signature", None)
+    _with_active_driver_sig(o)
+    assert apply_recipient_name_to_active_signature(o, "Budi Penerima") is None
+    assert not o.get("delivery_recipient_signature")
+    reason = confirm_delivery_block_reason(o) or ""
+    assert "tanda tangan" in reason.lower()
+    assert "nama penerima wajib" not in reason.lower()
+
+
+def test_legacy_signature_without_recipient_name_key_accepts_live_name():
+    o = _base_order(delivery_status="Belum Terkirim", qty_delivered=0, delivery_confirmations=[])
+    o["delivery_recipient_signature"] = {
+        "id": "sig", "signature_storage_path": "p",
+        "signature_file_id": "sig", "frozen": False, "recipient_signed_at": "t",
+    }
+    _with_active_driver_sig(o)
+    assert "recipient_name" not in o["delivery_recipient_signature"]
+    assert "nama" in (confirm_delivery_block_reason(o) or "").lower()
+    assert apply_recipient_name_to_active_signature(o, "  me time  ") is None
+    assert o["delivery_recipient_signature"]["recipient_name"] == "me time"
+    assert confirm_delivery_block_reason(o) is None
 
 
 def test_confirm_rejects_missing_driver_signature():

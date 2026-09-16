@@ -285,7 +285,7 @@ def test_upload_delivery_proof_enforces_batch_guard():
 def test_confirm_delivered_calls_sj_reconcile():
     src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
     assert "_qr_reconcile_sj_quantities_to_loaded_delivery" in src
-    block = src[src.index("async def confirm_delivered") : src.index("async def confirm_delivered") + 3500]
+    block = src[src.index("async def confirm_delivered") : src.index("async def confirm_delivered") + 4500]
     assert "_qr_reconcile_sj_quantities_to_loaded_delivery" in block
 
 

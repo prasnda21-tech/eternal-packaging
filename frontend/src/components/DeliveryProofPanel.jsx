@@ -391,23 +391,25 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     }
     let latest = order;
     const name = (recipientName || orderSig?.recipient_name || "").trim();
-    const recipientSaved = orderSig && orderSig.id && orderSig.frozen !== true
-      && orderSig.recipient_name && (orderSig.signature_storage_path || orderSig.recipient_signed_at);
-    if (!(recipientSaved && (!signatureDataUrl || orderSig.recipient_name === name))) {
-      if (!signatureDataUrl) {
+    const recipientImageSaved = orderSig && orderSig.id && orderSig.frozen !== true
+      && (orderSig.signature_storage_path || orderSig.recipient_signed_at);
+    if (!(recipientImageSaved && (!signatureDataUrl || orderSig.recipient_name === name))) {
+      if (!signatureDataUrl && !recipientImageSaved) {
         throw new Error("Tanda tangan penerima wajib sebelum Konfirmasi Terkirim.");
       }
-      setSavingSig(true);
-      try {
-        const res = await api.uploadDeliveryRecipientSignature(latest.id, {
-          recipientName: name,
-          signatureDataUrl,
-          shipmentId: selectedShipmentKey,
-        });
-        latest = res.order;
-        onUpdated(res.order);
-      } finally {
-        setSavingSig(false);
+      if (signatureDataUrl) {
+        setSavingSig(true);
+        try {
+          const res = await api.uploadDeliveryRecipientSignature(latest.id, {
+            recipientName: name,
+            signatureDataUrl,
+            shipmentId: selectedShipmentKey,
+          });
+          latest = res.order;
+          onUpdated(res.order);
+        } finally {
+          setSavingSig(false);
+        }
       }
     }
     const driverSaved = latest.delivery_driver_signature
@@ -450,6 +452,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       const res = await api.confirmDelivered(order.id, {
         action_id: confirmDeliver.actionId,
         shipment_id: selectedShipmentKey,
+        recipient_name: (recipientName || orderSig?.recipient_name || "").trim(),
       });
       onUpdated(res.order);
       setConfirmDeliver(null);

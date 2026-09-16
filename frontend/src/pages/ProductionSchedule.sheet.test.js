@@ -321,6 +321,37 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[href*="po-1"]')).toBeTruthy();
   });
 
+  test("one operator with two item lines becomes two rows; qty sits on the item line", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        operators: [
+          { split_id: "s-isma-a", operator_user_id: "u-isma", operator_name: "Isma Nur Alamsyah", quantity: 2000, line_idx: 0, line_id: "lid-a", line_name: "Plastik PE 28", line_printable: true, work_date: "2026-08-25" },
+          { split_id: "s-isma-b", operator_user_id: "u-isma", operator_name: "Isma Nur Alamsyah", quantity: 2600, line_idx: 1, line_id: "lid-b", line_name: "Plastik PE 28", line_printable: true, work_date: "2026-08-25" },
+        ],
+      }],
+      total: 1,
+    });
+    await renderPage();
+    const rows = [...container.querySelectorAll('[data-testid="prod-row-PO-1001"]')];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.querySelector(".prod-op-name")?.textContent)).toEqual([
+      "Isma Nur Alamsyah",
+      "Isma Nur Alamsyah",
+    ]);
+    expect(container.querySelector(".prod-op-qty")).toBeFalsy();
+    expect([...container.querySelectorAll(".mop-ops-item-name")].map((el) => el.textContent)).toEqual([
+      "Plastik PE 28",
+      "Plastik PE 28",
+    ]);
+    expect([...container.querySelectorAll(".mop-ops-item-qty")].map((el) => el.textContent)).toEqual([
+      "2.000 pcs",
+      "2.600 pcs",
+    ]);
+    expect(container.textContent).not.toContain("4.600");
+    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 entri");
+  });
+
   test("Screen column shows line-level Screen Besar / Screen Kecil / em dash", async () => {
     api.productionDashboard.mockResolvedValue({
       rows: [{

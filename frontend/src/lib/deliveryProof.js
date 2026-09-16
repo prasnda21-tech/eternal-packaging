@@ -77,9 +77,18 @@ export function hasValidRecipientName(name) {
 }
 
 function hasSavedRecipientSig(orderSig) {
+  // Signature image presence is independent of recipient name. Name is gated
+  // separately so a later Nama Penerima input is not treated as unsigned.
   return !!(orderSig && orderSig.id && orderSig.frozen !== true
-    && (orderSig.signature_storage_path || orderSig.recipient_signed_at)
-    && hasValidRecipientName(orderSig.recipient_name));
+    && (orderSig.signature_storage_path || orderSig.recipient_signed_at));
+}
+
+export function resolveRecipientName(...sources) {
+  for (const src of sources) {
+    const name = normalizeRecipientName(src);
+    if (name) return name;
+  }
+  return "";
 }
 
 function hasSavedDriverSig(driverSig) {
@@ -89,6 +98,17 @@ function hasSavedDriverSig(driverSig) {
 
 function hasCanvasSig(dataUrl) {
   return !!(dataUrl && String(dataUrl).startsWith("data:image/"));
+}
+
+export function hasConfirmableDeliverySignatures(
+  signatureDataUrl,
+  orderSig,
+  driverSignatureDataUrl,
+  driverSig,
+) {
+  const recipientOk = hasSavedRecipientSig(orderSig) || hasCanvasSig(signatureDataUrl);
+  const driverOk = hasSavedDriverSig(driverSig) || hasCanvasSig(driverSignatureDataUrl);
+  return recipientOk && driverOk;
 }
 
 /** Submit eligibility: 2 photos + name + recipient sig + driver sig. */
@@ -101,11 +121,11 @@ export function canSubmitConfirmDelivered(
   driverSig,
 ) {
   if (!canConfirmDelivered(proofs)) return false;
-  const name = normalizeRecipientName(recipientName || orderSig?.recipient_name);
+  const name = resolveRecipientName(recipientName, orderSig?.recipient_name);
   if (!hasValidRecipientName(name)) return false;
-  const recipientOk = hasSavedRecipientSig(orderSig) || hasCanvasSig(signatureDataUrl);
-  const driverOk = hasSavedDriverSig(driverSig) || hasCanvasSig(driverSignatureDataUrl);
-  return recipientOk && driverOk;
+  return hasConfirmableDeliverySignatures(
+    signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig,
+  );
 }
 
 export function confirmDeliveredBlockReason(
@@ -119,7 +139,7 @@ export function confirmDeliveredBlockReason(
   if (!canConfirmDelivered(proofs)) {
     return `Wajib upload minimal ${MIN_DELIVERY_PROOFS} foto bukti kirim sebelum Konfirmasi Terkirim.`;
   }
-  const name = normalizeRecipientName(recipientName || orderSig?.recipient_name);
+  const name = resolveRecipientName(recipientName, orderSig?.recipient_name);
   if (!hasValidRecipientName(name)) {
     return "Nama penerima wajib diisi sebelum Konfirmasi Terkirim.";
   }

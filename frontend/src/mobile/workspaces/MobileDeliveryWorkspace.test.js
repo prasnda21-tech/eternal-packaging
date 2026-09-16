@@ -49,6 +49,13 @@ function setInputFile(input, file) {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function typeInput(el, value) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 const baseOrder = {
   id: "order-delivery-1",
   po_number: "PO-DEL-1",
@@ -61,6 +68,25 @@ const baseOrder = {
   packing_info: { qty_packed: 10, lines: [{ line_idx: 0, packed_qty: 10 }] },
   shipments: [{ id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 10 }] }],
   loading_confirmations: [{ id: "c1", surat_jalan_id: "s1", lines: [{ line_idx: 0, qty: 10 }] }],
+};
+
+const signedReadyOrder = {
+  ...baseOrder,
+  delivery_proofs: [
+    { id: "p1", shipment_id: "s1", storage_path: "a.jpg" },
+    { id: "p2", shipment_id: "s1", storage_path: "b.jpg" },
+  ],
+  delivery_recipient_signature: {
+    id: "r1",
+    signature_storage_path: "r.png",
+    recipient_signed_at: "t",
+    recipient_name: "",
+  },
+  delivery_driver_signature: {
+    id: "d1",
+    signature_storage_path: "d.png",
+    driver_signed_at: "t",
+  },
 };
 
 const unreadOrder = {
@@ -114,6 +140,8 @@ describe("PWA Pengiriman gallery picker", () => {
     URL.revokeObjectURL = jest.fn();
     api.uploadDeliveryProof.mockReset();
     api.deleteDeliveryProof.mockReset();
+    api.uploadDeliveryRecipientSignature.mockReset();
+    api.uploadDeliveryDriverSignature.mockReset();
     api.confirmDelivered.mockReset();
   });
 
@@ -470,7 +498,246 @@ describe("PWA Pengiriman gallery picker", () => {
     act(() => container.querySelector('[data-testid="mobile-sig-cancel"]').click());
     act(() => container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').click());
     expect(container.querySelector('[data-testid="mobile-signature-modal"] h2').textContent).toBe("Tanda Tangan Penerima");
-    expect(container.querySelector('[data-testid="mobile-recipient-name"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-recipient-name-modal"]')).toBeTruthy();
+  });
+
+  test("Nama Penerima is visible on the confirmation screen and gates Konfirmasi Terkirim", async () => {
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={signedReadyOrder} canEdit onUpdated={() => {}} />);
+    });
+    const name = container.querySelector('[data-testid="mobile-recipient-name"]');
+    expect(name).toBeTruthy();
+    expect(container.textContent).toContain("Nama Penerima");
+    expect(name.value).toBe("");
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]').textContent).toMatch(/Nama penerima wajib/);
+
+    const named = {
+      ...signedReadyOrder,
+      delivery_recipient_signature: {
+        id: "r2",
+        signature_storage_path: "r.png",
+        recipient_signed_at: "t",
+        recipient_name: "Budi Penerima",
+      },
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={named} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(false);
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]')).toBeFalsy();
+  });
+
+  test("empty or whitespace Nama Penerima rejects confirm without an API call", async () => {
+    api.confirmDelivered.mockResolvedValue({ order: { ...signedReadyOrder, delivery_status: "Terkirim" } });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={signedReadyOrder} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]').textContent).toMatch(/Nama penerima wajib/);
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    expect(api.confirmDelivered).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Nama penerima wajib/);
+
+    await act(async () => {
+      typeInput(container.querySelector('[data-testid="mobile-recipient-name"]'), "   ");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    expect(api.confirmDelivered).not.toHaveBeenCalled();
+    expect(container.textContent).toMatch(/Nama penerima wajib/);
+  });
+
+  test("typing a valid name clears the error and confirm sends trimmed recipient_name immediately", async () => {
+    const delivered = {
+      ...signedReadyOrder,
+      delivery_status: "Terkirim",
+      terkirim_confirmed: true,
+      delivery_recipient_signature: {
+        ...signedReadyOrder.delivery_recipient_signature,
+        recipient_name: "me time",
+      },
+    };
+    api.confirmDelivered.mockResolvedValue({ order: delivered });
+    const onUpdated = jest.fn();
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={signedReadyOrder} canEdit onUpdated={onUpdated} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]').textContent).toMatch(/Nama penerima wajib/);
+
+    await act(async () => {
+      typeInput(container.querySelector('[data-testid="mobile-recipient-name"]'), "  me time  ");
+    });
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("  me time  ");
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(api.uploadDeliveryRecipientSignature).not.toHaveBeenCalled();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
+      shipment_id: "s1",
+      recipient_name: "me time",
+    }));
+    expect(onUpdated).toHaveBeenCalledWith(delivered);
+  });
+
+  test("confirm payload uses the live input value even if React state is stale", async () => {
+    api.confirmDelivered.mockResolvedValue({
+      order: { ...signedReadyOrder, delivery_status: "Terkirim", terkirim_confirmed: true },
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={signedReadyOrder} canEdit onUpdated={() => {}} />);
+    });
+    const name = container.querySelector('[data-testid="mobile-recipient-name"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(name, "me time");
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
+      recipient_name: "me time",
+    }));
+  });
+
+  test("API failure other than recipient name is shown as-is", async () => {
+    api.confirmDelivered.mockRejectedValue({
+      response: { status: 400, data: { detail: "Qty Loading untuk pengiriman ini belum mencukupi." } },
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={{
+        ...signedReadyOrder,
+        delivery_recipient_signature: {
+          ...signedReadyOrder.delivery_recipient_signature,
+          recipient_name: "Budi Penerima",
+        },
+      }} canEdit onUpdated={() => {}} />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toBe(
+      "Qty Loading untuk pengiriman ini belum mencukupi.",
+    );
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).not.toMatch(/Nama penerima wajib/);
+  });
+
+  test("double click while submitting sends a single confirm request", async () => {
+    let resolveConfirm;
+    api.confirmDelivered.mockImplementation(() => new Promise((resolve) => { resolveConfirm = resolve; }));
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={{
+        ...signedReadyOrder,
+        delivery_recipient_signature: {
+          ...signedReadyOrder.delivery_recipient_signature,
+          recipient_name: "Budi Penerima",
+        },
+      }} canEdit onUpdated={() => {}} />);
+    });
+    const btn = container.querySelector('[data-testid="mobile-confirm-delivered"]');
+    await act(async () => { btn.click(); });
+    await act(async () => { btn.click(); });
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveConfirm({ order: { ...signedReadyOrder, delivery_status: "Terkirim" } });
+    });
+    await flush();
+  });
+
+  test("legacy PO missing recipient_name field confirms after typing a live name", async () => {
+    const legacy = {
+      ...signedReadyOrder,
+      delivery_recipient_signature: {
+        id: "r-legacy",
+        signature_storage_path: "r.png",
+        recipient_signed_at: "t",
+      },
+    };
+    const delivered = {
+      ...legacy,
+      delivery_status: "Terkirim",
+      terkirim_confirmed: true,
+      delivery_recipient_signature: {
+        ...legacy.delivery_recipient_signature,
+        recipient_name: "me time",
+      },
+    };
+    api.confirmDelivered.mockResolvedValue({ order: delivered });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={legacy} canEdit onUpdated={() => {}} />);
+    });
+    expect(legacy.delivery_recipient_signature.recipient_name).toBeUndefined();
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("");
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]').textContent).toMatch(/Nama penerima wajib/);
+    await act(async () => {
+      typeInput(container.querySelector('[data-testid="mobile-recipient-name"]'), "me time");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
+      shipment_id: "s1",
+      recipient_name: "me time",
+    }));
+  });
+
+  test("legacy PO that already has recipient_name still confirms", async () => {
+    const named = {
+      ...signedReadyOrder,
+      delivery_recipient_signature: {
+        ...signedReadyOrder.delivery_recipient_signature,
+        recipient_name: "Budi Penerima",
+      },
+    };
+    api.confirmDelivered.mockResolvedValue({ order: { ...named, delivery_status: "Terkirim" } });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={named} canEdit onUpdated={() => {}} />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    await flush();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
+      recipient_name: "Budi Penerima",
+    }));
+  });
+
+  test("legacy PO already Terkirim does not send a second confirm", async () => {
+    const done = {
+      ...signedReadyOrder,
+      delivery_status: "Terkirim",
+      terkirim_confirmed: true,
+      shipments: [{
+        ...signedReadyOrder.shipments[0],
+        delivery_status: "Terkirim",
+        delivered_at: "2026-09-01T00:00:00+00:00",
+        total_qty: 10,
+      }],
+      delivery_recipient_signature: {
+        ...signedReadyOrder.delivery_recipient_signature,
+        recipient_name: "Budi Penerima",
+        frozen: true,
+      },
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={done} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toBe("Terkirim");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-confirm-delivered"]').click();
+    });
+    expect(api.confirmDelivered).not.toHaveBeenCalled();
   });
 
   test("Foto Bukti reuses existing camera/gallery action", () => {
@@ -517,6 +784,7 @@ describe("PWA Pengiriman gallery picker", () => {
     await flush();
     expect(api.confirmDelivered).toHaveBeenCalledWith("order-delivery-1", expect.objectContaining({
       shipment_id: "s1",
+      recipient_name: "Budi",
     }));
     expect(onUpdated).toHaveBeenCalled();
   });
@@ -529,7 +797,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(container.querySelector('input[name="qty_delivered"]')).toBeFalsy();
     expect(deliverySrc).not.toMatch(/Qty Terkirim/);
     expect(deliverySrc).toMatch(/confirmDeliveredBlockReason/);
-    expect(deliverySrc).toMatch(/api\.confirmDelivered\(order\.id/);
+    expect(deliverySrc).toMatch(/api\.confirmDelivered\(latest\.id/);
   });
 
   test("already-delivered SJ keeps completed/disabled confirmation", () => {

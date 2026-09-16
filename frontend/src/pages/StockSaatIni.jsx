@@ -157,7 +157,11 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
-          <p className="subhead">Stock Saat Ini = MAX(Stock Fisik − Qty Pesanan, 0). Qty Pesanan adalah Outstanding SO aktif. Belum Cetak = MAX(Qty Pesanan − Sudah Dicetak, 0).</p>
+          <p className="subhead" data-testid="stock-formula">
+            {data?.stock_engine === "v2"
+              ? "Stock Saat Ini = MAX(Fisik − Outstanding SO, 0). Belum Dicetak = MAX(Outstanding − Sudah Dicetak, 0). Cetak hanya pindah bucket — tidak memotong Available dua kali."
+              : "(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator"}
+          </p>
         </div>
         <div className="stock-heading-actions">
           {canOpname && (
@@ -228,14 +232,27 @@ export default function StockSaatIni() {
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama</button>
               </th>
               <th className="col-fit">Satuan</th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("physical_qty")}>Stock Fisik</button>
-              </th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan</button>
-              </th>
-              <th className="col-fit num">Belum Cetak</th>
-              <th className="col-fit num">Sudah Dicetak</th>
+              {data?.stock_engine === "v2" ? (
+                <>
+                  <th className="col-fit num">
+                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("physical_qty")}>Stock Fisik</button>
+                  </th>
+                  <th className="col-fit num">
+                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan / Outstanding</button>
+                  </th>
+                  <th className="col-fit num">Belum Dicetak</th>
+                  <th className="col-fit num">Sudah Dicetak</th>
+                </>
+              ) : (
+                <>
+                  <th className="col-fit num">Qty Saat Ini</th>
+                  <th className="col-fit num">Pembelian Barang</th>
+                  <th className="col-fit num">
+                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("qty_po")}>Qty PO</button>
+                  </th>
+                  <th className="col-fit num">Qty Cetak Operator</th>
+                </>
+              )}
               <th className="col-fit num">
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("stock_current")}>Stock Saat Ini</button>
               </th>
@@ -260,41 +277,52 @@ export default function StockSaatIni() {
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
                 <td className="col-fit">{it.unit || "—"}</td>
-                <td className="col-fit num mono" data-testid={`stock-physical-${it.accurate_item_id || it.master_item_id}`}>
-                  {editing?.master_item_id === it.master_item_id ? (
-                    <input
-                      className="stock-inline-input"
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={physicalInput}
-                      onChange={(e) => setPhysicalInput(e.target.value)}
-                      onKeyDown={handlePhysicalKeyDown}
-                      onBlur={() => { if (!savingPhysical) setEditing(null); }}
-                      onFocus={(e) => e.target.select()}
-                      disabled={savingPhysical}
-                      data-testid={`stock-physical-inline-input-${it.master_item_id}`}
-                      autoFocus
-                    />
-                  ) : canEditPhysical && it.master_item_id ? (
-                    <span
-                      className="stock-inline-value"
-                      role="button"
-                      tabIndex={0}
-                      title="Klik untuk koreksi Stock Fisik"
-                      onClick={() => openPhysicalEdit(it)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") openPhysicalEdit(it);
-                      }}
-                      data-testid={`stock-physical-inline-value-${it.master_item_id}`}
-                    >
-                      {fmtQty(it.physical_qty)}
-                    </span>
-                  ) : fmtQty(it.physical_qty)}
-                </td>
-                <td className="col-fit num mono" data-testid={`stock-outstanding-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.outstanding_so_qty)}</td>
-                <td className="col-fit num mono" data-testid={`stock-unprinted-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.unprinted_qty)}</td>
-                <td className="col-fit num mono" data-testid={`stock-printed-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
+                {data?.stock_engine === "v2" ? (
+                  <>
+                    <td className="col-fit num mono" data-testid={`stock-physical-${it.accurate_item_id || it.master_item_id}`}>
+                      {editing?.master_item_id === it.master_item_id ? (
+                        <input
+                          className="stock-inline-input"
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={physicalInput}
+                          onChange={(e) => setPhysicalInput(e.target.value)}
+                          onKeyDown={handlePhysicalKeyDown}
+                          onBlur={() => { if (!savingPhysical) setEditing(null); }}
+                          onFocus={(e) => e.target.select()}
+                          disabled={savingPhysical}
+                          data-testid={`stock-physical-inline-input-${it.master_item_id}`}
+                          autoFocus
+                        />
+                      ) : canEditPhysical && it.master_item_id ? (
+                        <span
+                          className="stock-inline-value"
+                          role="button"
+                          tabIndex={0}
+                          title="Klik untuk koreksi Stock Fisik"
+                          onClick={() => openPhysicalEdit(it)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") openPhysicalEdit(it);
+                          }}
+                          data-testid={`stock-physical-inline-value-${it.master_item_id}`}
+                        >
+                          {fmtQty(it.physical_qty)}
+                        </span>
+                      ) : fmtQty(it.physical_qty)}
+                    </td>
+                    <td className="col-fit num mono" data-testid={`stock-outstanding-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.outstanding_so_qty)}</td>
+                    <td className="col-fit num mono" data-testid={`stock-unprinted-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.unprinted_qty)}</td>
+                    <td className="col-fit num mono" data-testid={`stock-printed-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.printed_qty)}</td>
+                  </>
+                ) : (
+                  <>
+                    <td className="col-fit num mono" data-testid={`stock-manual-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.manual_current_qty)}</td>
+                    <td className="col-fit num mono" data-testid={`stock-purchase-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.purchase_qty)}</td>
+                    <td className="col-fit num mono" data-testid={`stock-po-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.qty_po)}</td>
+                    <td className="col-fit num mono" data-testid={`stock-print-${it.accurate_item_id || it.master_item_id}`}>{fmtQty(it.operator_print_qty)}</td>
+                  </>
+                )}
                 <td className={"col-fit num mono" + (Number(it.stock_current) < 0 ? " stock-neg-val" : "")} data-testid={`stock-current-${it.accurate_item_id || it.master_item_id}`}>
                   {fmtQty(it.stock_current)}
                 </td>

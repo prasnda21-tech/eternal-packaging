@@ -81,7 +81,9 @@ def test_shipment_today_not_created_at_po():
         "delivery_status": "Sebagian Terkirim",
         "line_items": [{"name": "A", "quantity": 10000}, {"name": "B", "quantity": 5000}],
         "shipments": [{
+            "id": "shipment-1",
             "number": "SJ-1",
+            "delivery_date": "2026-08-25",
             "created_at": "2026-08-25T03:00:00+07:00",
             "lines": [{"line_idx": 0, "qty": 4000}],
         }],

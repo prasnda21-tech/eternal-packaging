@@ -115,12 +115,13 @@ from services.work_panel_settings import SETTINGS_KEY as WORK_PANEL_SETTINGS_KEY
 from services import work_panel_settings as work_panel_cfg
 from services import accurate_creator as accurate_creator_cfg
 from services.dashboard_today import (
-    SHIP_PROJECTION as TODAY_SHIP_PROJECTION,
     WORK_PROJECTION as TODAY_WORK_PROJECTION,
     build_shipments_today,
     build_work_today,
+    due_today_orders,
     operational_iso,
     parse_operational_date_key,
+    partition_orders_by_delivery,
     resolve_sj_operational_date,
     shipments_today_mongo_query,
     wib_today,
@@ -5575,6 +5576,7 @@ async def mark_delivered(
 class ConfirmDeliveredPayload(BaseModel):
     action_id: Optional[str] = None
     shipment_id: Optional[str] = None
+    recipient_name: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
@@ -5621,6 +5623,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             raise HTTPException(400, resolve_err)
         if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
             return
+        incoming_name = payload.recipient_name if payload else None
+        if incoming_name is not None:
+            from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+            name_err = apply_recipient_name_to_active_signature(order, incoming_name)
+            if name_err:
+                raise HTTPException(400, name_err)
         blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
         if blocked:
             raise HTTPException(400, blocked)
@@ -6168,7 +6176,7 @@ async def list_delivery_schedule(user=Depends(current_user)):
     docs = await db.orders.find(
         {"cancelled": {"$ne": True}},
         SCHEDULE_PROJECTION,
-    ).sort("deadline", 1).to_list(1000)
+    ).sort("deadline", 1).to_list(None)
     rows = []
     for o in docs:
         rows.extend(_delivery_schedule_rows(o))
@@ -6483,9 +6491,6 @@ async def reset_delivery_deadline_manual(order_id: str, user=Depends(current_use
 
 
 # ---------- Dashboard aggregation (Head of Production) ----------
-_DASHBOARD_SUMMARY_LIMIT = 1000
-
-
 def _mongo_keep_if_present(expr):
     """Omit missing keys so Python `.get(key, default)` stays equivalent to find()."""
     return {
@@ -6814,9 +6819,9 @@ def _shape_order_for_dashboard_summary_compute(order: dict) -> dict:
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(user=Depends(require_perm("dashboard.production.view"))):
     raw_orders = await db.orders.aggregate([
-        {"$limit": _DASHBOARD_SUMMARY_LIMIT},
+        {"$match": {"cancelled": {"$ne": True}}},
         {"$project": _orders_dashboard_summary_projection()},
-    ]).to_list(_DASHBOARD_SUMMARY_LIMIT)
+    ]).to_list(None)
     # Cancelled PO tidak boleh ikut card apa pun di Dashboard Produksi.
     orders = [o for o in raw_orders if not o.get("cancelled")]
     # Attach HOLD snapshot (canonical predicate) — dipakai untuk card HOLD.
@@ -6827,36 +6832,25 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
 
     now = datetime.now(timezone.utc)
-    today_iso_date = now.strftime("%Y-%m-%d")
+    today = wib_today(now)
 
-    active_orders = [o for o in orders if o.get("current_stage", 0) < 14]
+    active_orders, completed_orders = partition_orders_by_delivery(
+        orders, _qr_is_fully_delivered
+    )
     urgent_orders = [o for o in active_orders if o.get("priority") == "urgent"]
-    completed_orders = [o for o in orders if o.get("current_stage", 0) >= 14]
 
     total_active = len(active_orders)
     total_urgent = len(urgent_orders)
     total_completed = len(completed_orders)
 
-    def parse_dt(iso):
-        if not iso: return None
-        try:
-            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except Exception:
-            return None
-
-    due_today, overdue = [], []
+    due_today = due_today_orders(active_orders, today)
+    overdue = []
     deadline_h1, deadline_h6 = [], []
     waiting_design, waiting_payment = [], []
     hold_list = []
     # SEMANTIC: satu PO boleh muncul di beberapa list (design + payment + hold,
     # dsb.) — predicate independen, TIDAK bergantung pada current_stage.
     for o in active_orders:
-        # Legacy `deadline` for due_today only (H-1/H-6/overdue use effective).
-        d = parse_dt(o.get("deadline"))
-        if d and d >= now and d.strftime("%Y-%m-%d") == today_iso_date:
-            due_today.append(o)
         # Batch 1: overdue/h1/h6 memakai `delivery_deadline_status` sebagai
         # SOURCE OF TRUTH (sama predicate untuk Dashboard/Schedule/PODetail).
         st = o.get("delivery_deadline_status")
@@ -6876,13 +6870,12 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
     # Per-stage breakdown (count of active orders at each stage, exclude cancelled)
     stage_breakdown = []
     for idx, label in enumerate(STAGES):
-        cnt = sum(1 for o in orders if o.get("current_stage", 0) == idx)
+        cnt = sum(1 for o in active_orders if o.get("current_stage", 0) == idx)
         stage_breakdown.append({"stage": idx, "label": label, "count": cnt})
 
     # Operator load (aggregate qty_scheduled / completed / remaining across active orders)
     op_map = {}
-    for o in orders:
-        if o.get("current_stage", 0) >= 14: continue
+    for o in active_orders:
         for s in o.get("operator_splits", []):
             email = s.get("operator_email")
             if not email: continue
@@ -6964,8 +6957,13 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
         "stage_breakdown": stage_breakdown,
         "operator_load": operator_load,
         "generated_at": now_iso(),
-        "work_today": build_work_today(orders),
-        "shipments_today": build_shipments_today(orders),
+        "work_today": build_work_today(orders, today),
+        "shipments_today": build_shipments_today(
+            await db.orders.find(
+                shipments_today_mongo_query(today), SCHEDULE_PROJECTION
+            ).to_list(None),
+            today,
+        ),
     }
 
 
@@ -6974,7 +6972,9 @@ async def dashboard_today(user=Depends(require_perm("po.view"))):
     """Compact Pengerjaan/Pengiriman Hari Ini. Targeted queries, not a full DB scan."""
     today = wib_today()
     work_docs = await db.orders.find(work_today_mongo_query(today), TODAY_WORK_PROJECTION).to_list(500)
-    ship_docs = await db.orders.find(shipments_today_mongo_query(today), TODAY_SHIP_PROJECTION).to_list(500)
+    ship_docs = await db.orders.find(
+        shipments_today_mongo_query(today), SCHEDULE_PROJECTION
+    ).to_list(None)
     return {
         "date": today.isoformat(),
         "timezone": "WIB",
@@ -10677,10 +10677,42 @@ class CurrentStockPatch(BaseModel):
     client_request_id: str
 
 
-async def _load_stock_context():
-    """Stock Engine V2 read model: physical ledger + outstanding SO (no manual purchase)."""
+async def _physical_stock_enabled() -> bool:
+    from services.physical_stock_settings import get_physical_stock_settings
+    settings = await get_physical_stock_settings(db)
+    return bool(settings.get("enabled"))
+
+
+async def _load_legacy_stock_context():
+    """Pre-V2 Stock Saat Ini: item_stock_manual + receipts + PO/print aggregates."""
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(10000)
+    orders = await db.orders.find(
+        {"cancelled": {"$ne": True}}, STOCK_ORDER_PROJECTION,
+    ).to_list(20000)
+    manuals = await db[STOCK_MANUAL_COLLECTION].find({}, {"_id": 0}).to_list(10000)
+    receipts = await load_receipts(db)
+    meta = await load_sync_meta(db)
+    source = purchase_source_from_meta(meta)
+    rows = build_stock_rows(
+        masters, orders, manuals, receipts, purchase_source=source,
+    )
+    return rows, source, receipt_last_success_at(meta)
+
+
+async def _load_v2_stock_context():
+    """Stock Engine V2 read model: physical ledger + outstanding SO."""
     rows = await build_current_stock_rows(db)
     return rows, "GOODS_RECEIPT", None
+
+
+async def _load_stock_context():
+    """Toggle is the authority boundary: OFF = legacy read, ON = V2 read.
+
+    GET path is read-only against app_settings / product_stock_state / stock_movements.
+    """
+    if await _physical_stock_enabled():
+        return await _load_v2_stock_context()
+    return await _load_legacy_stock_context()
 
 
 def _current_stock_correction_allowed(user: dict) -> bool:
@@ -10695,10 +10727,12 @@ def _current_stock_correction_allowed(user: dict) -> bool:
 
 
 def _purchase_source_label(source: str) -> str:
-    return "Penerimaan Barang" if source in ("GOODS_RECEIPT", STOCK_PURCHASE_ACCURATE) else "Manual"
+    if source in ("GOODS_RECEIPT",):
+        return "Penerimaan Barang"
+    return "Accurate" if source == STOCK_PURCHASE_ACCURATE else "Manual"
 
 
-def _stock_xlsx(rows: list) -> FastAPIResponse:
+def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
     from io import BytesIO
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill
@@ -10706,10 +10740,17 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
     wb = Workbook()
     ws = wb.active
     ws.title = "Stock Saat Ini"
-    headers = [
-        "Kode", "Nama Item", "Satuan", "Stock Fisik", "Belum Dicetak", "Sudah Dicetak",
-        "Outstanding SO", "Stock Saat Ini", "Terakhir Update",
-    ]
+    if v2:
+        headers = [
+            "Kode", "Nama Item", "Satuan", "Stock Fisik", "Belum Dicetak", "Sudah Dicetak",
+            "Outstanding SO", "Stock Saat Ini", "Terakhir Update",
+        ]
+    else:
+        headers = [
+            "Kode", "Nama Item", "Satuan", "Qty Saat Ini", "Pembelian Barang",
+            "Qty PO", "Qty Cetak Operator", "Stock Saat Ini", "Sumber Pembelian",
+            "Terakhir Update",
+        ]
     ws.append(headers)
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="17313E")
@@ -10724,18 +10765,33 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
             who = r.get("updated_by_name") or r.get("updated_by")
             updated = f"{updated} · {who}" if updated else who
         src = _purchase_source_label(r.get("purchase_source") or STOCK_PURCHASE_SOURCE)
-        ws.append([
-            r.get("item_code") or "",
-            r.get("item_name") or "",
-            r.get("unit") or "",
-            r.get("physical_qty") if r.get("physical_qty") is not None else 0,
-            r.get("unprinted_qty") if r.get("unprinted_qty") is not None else 0,
-            r.get("printed_qty") if r.get("printed_qty") is not None else 0,
-            r.get("outstanding_so_qty") if r.get("outstanding_so_qty") is not None else 0,
-            r.get("stock_current") if r.get("stock_current") is not None else 0,
-            updated,
-        ])
-    for col in range(4, 9):
+        if v2:
+            ws.append([
+                r.get("item_code") or "",
+                r.get("item_name") or "",
+                r.get("unit") or "",
+                r.get("physical_qty") if r.get("physical_qty") is not None else 0,
+                r.get("unprinted_qty") if r.get("unprinted_qty") is not None else 0,
+                r.get("printed_qty") if r.get("printed_qty") is not None else 0,
+                r.get("outstanding_so_qty") if r.get("outstanding_so_qty") is not None else 0,
+                r.get("stock_current") if r.get("stock_current") is not None else 0,
+                updated,
+            ])
+        else:
+            ws.append([
+                r.get("item_code") or "",
+                r.get("item_name") or "",
+                r.get("unit") or "",
+                r.get("manual_current_qty") if r.get("manual_current_qty") is not None else 0,
+                r.get("purchase_qty") if r.get("purchase_qty") is not None else 0,
+                r.get("qty_po") if r.get("qty_po") is not None else 0,
+                r.get("operator_print_qty") if r.get("operator_print_qty") is not None else 0,
+                r.get("stock_current") if r.get("stock_current") is not None else 0,
+                src,
+                updated,
+            ])
+    last_num_col = 8 if v2 else 8
+    for col in range(4, last_num_col + 1):
         for row_idx in range(2, ws.max_row + 1):
             ws.cell(row=row_idx, column=col).number_format = "0"
     ws.auto_filter.ref = ws.dimensions
@@ -10761,14 +10817,27 @@ async def current_stock_list(
     page_size: int = 50,
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows, source, last_sync = await _load_stock_context()
-    payload = filter_sort_page_v2(
-        rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
-        page=page, page_size=page_size,
-    )
+    v2_on = await _physical_stock_enabled()
+    rows, source, last_sync = await (_load_v2_stock_context() if v2_on else _load_legacy_stock_context())
+    if v2_on:
+        payload = filter_sort_page_v2(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=page, page_size=page_size,
+        )
+    else:
+        payload = filter_stock_page(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=page, page_size=page_size, purchase_source=source,
+            last_receipt_sync_at=last_sync,
+        )
+        payload["stock_engine"] = "legacy"
+        payload["formula"] = "(manual_current_qty + purchase_qty) - po_qty - operator_print_qty"
     payload["purchase_source"] = source
     payload["last_receipt_sync_at"] = last_sync
-    payload["can_correct_physical_stock"] = _current_stock_correction_allowed(user)
+    payload["physical_stock_enabled"] = v2_on
+    payload["can_correct_physical_stock"] = bool(
+        v2_on and _current_stock_correction_allowed(user)
+    )
     return payload
 
 
@@ -10780,18 +10849,26 @@ async def current_stock_export(
     sort_dir: str = "asc",
     user=Depends(require_perm("current_stock.export")),
 ):
-    rows, _source, _last_sync = await _load_stock_context()
-    payload = filter_sort_page_v2(
-        rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
-        page=1, page_size=max(1, len(rows) or 1),
-    )
+    v2_on = await _physical_stock_enabled()
+    rows, source, _last_sync = await (_load_v2_stock_context() if v2_on else _load_legacy_stock_context())
+    if v2_on:
+        payload = filter_sort_page_v2(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=1, page_size=max(1, len(rows) or 1),
+        )
+    else:
+        payload = filter_stock_page(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=1, page_size=max(1, len(rows) or 1), purchase_source=source,
+            last_receipt_sync_at=_last_sync,
+        )
     filtered = payload.get("items") or payload.get("rows") or []
     await _write_audit(
         "current_stock.export", user, target_email=None,
         before=None, after={"count": len(filtered), "stock_filter": stock_filter, "q": q},
         note="Export Stock Saat Ini",
     )
-    return _stock_xlsx(filtered)
+    return _stock_xlsx(filtered, v2=v2_on)
 
 
 @api_router.patch("/current-stock/{item_id}")
@@ -13187,4 +13264,3 @@ async def seed():
     admin_seed = await db.users.find_one({"email": "admin@eternalpackaging.com"})
     if admin_seed and (admin_seed.get("role") != "admin" or admin_seed.get("name") != "Admin"):
         await db.users.update_one({"id": admin_seed["id"]}, {"$set": {"role": "admin", "name": "Admin", "updated_at": now_iso()}})
-

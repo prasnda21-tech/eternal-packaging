@@ -1,50 +1,12 @@
-import { lazy } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
+import { lazy, Suspense } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Protected as AuthProtected, PublicOnly as AuthPublicOnly } from "./components/AppBootScreen";
+import WorkspaceChunkFallback from "./components/WorkspaceChunkFallback";
 import { AuthProvider, useAuth } from "./lib/auth";
-import { loginPathForLocation, postLoginPath } from "./lib/mobileAuthRedirect";
 import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
-import MobileOrdersPage from "./mobile/MobileOrdersPage";
-import MobileOrderDetailPage from "./mobile/MobileOrderDetailPage";
-import MobileProductionSchedulePage from "./mobile/MobileProductionSchedulePage";
-import MobileDeliverySchedulePage from "./mobile/MobileDeliverySchedulePage";
-import MobileDeliveryRouteReviewPage from "./mobile/MobileDeliveryRouteReviewPage";
-import MobileNotificationsPage from "./mobile/MobileNotificationsPage";
-import MobileProfilePage from "./mobile/MobileProfilePage";
-import AppShell from "./components/AppShell";
 import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import PODetail from "./pages/PODetail";
-import HoPDashboard from "./pages/HoPDashboard";
-import ProductionSchedule from "./pages/ProductionSchedule";
-import SuratJalan from "./pages/SuratJalan";
-import PesananPenjualan from "./pages/PesananPenjualan";
-import MasterBarangJasa from "./pages/MasterBarangJasa";
-import ProductDetail from "./pages/ProductDetail";
-import StockSaatIni from "./pages/StockSaatIni";
-import StockOpname from "./pages/StockOpname";
-import PenerimaanBarang from "./pages/PenerimaanBarang";
-import PermintaanPembelian from "./pages/PermintaanPembelian";
-import PesananPembelian from "./pages/PesananPembelian";
-import FakturPembelian from "./pages/FakturPembelian";
-import PembayaranPembelian from "./pages/PembayaranPembelian";
-import SalesActivityPage from "./pages/SalesActivityPage";
-import SalesActivityOutletDetail from "./pages/SalesActivityOutletDetail";
-import PoWorkView from "./pages/PoWorkView";
-import PublicCustomerApproval from "./pages/PublicCustomerApproval";
-import CustomerTrackingPage from "./pages/CustomerTrackingPage";
-import PublicHargaPage from "./pages/PublicHargaPage";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
-import DivisionTaskPage, { DivisionTaskIndex } from "./pages/DivisionTaskPage";
-import DeliverySchedulePage from "./pages/DeliverySchedulePage";
-import DeliveryScheduleRouteReviewPage from "./pages/DeliveryScheduleRouteReviewPage";
-import DeliveryReschedulePage from "./pages/DeliveryReschedulePage";
-import DeliveryBatchPage from "./pages/DeliveryBatchPage";
-import FormShowcase from "./pages/FormShowcase";
-import ChatPage from "./pages/ChatPage";
-import MobileChatPage from "./mobile/MobileChatPage";
-import MobileChatRoomPage from "./mobile/MobileChatRoomPage";
-import RouteOptimizerLayout from "./mobile/RouteOptimizerLayout";
 import "@/App.css";
 import "@/productionSheet.css";
 import "@/ui-system.css";
@@ -78,26 +40,58 @@ const GajiOperator = lazy(() => import("./pages/GajiOperator"));
 const PrediksiOrder = lazy(() => import("./pages/PrediksiOrder"));
 const OptimasiRute = lazy(() => import("./pages/OptimasiRute"));
 const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const PODetail = lazy(() => import("./pages/PODetail"));
+const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
+const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
+const SuratJalan = lazy(() => import("./pages/SuratJalan"));
+const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
+const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
+const ProductDetail = lazy(() => import("./pages/ProductDetail"));
+const StockSaatIni = lazy(() => import("./pages/StockSaatIni"));
+const StockOpname = lazy(() => import("./pages/StockOpname"));
+const PenerimaanBarang = lazy(() => import("./pages/PenerimaanBarang"));
+const PermintaanPembelian = lazy(() => import("./pages/PermintaanPembelian"));
+const PesananPembelian = lazy(() => import("./pages/PesananPembelian"));
+const FakturPembelian = lazy(() => import("./pages/FakturPembelian"));
+const PembayaranPembelian = lazy(() => import("./pages/PembayaranPembelian"));
+const SalesActivityPage = lazy(() => import("./pages/SalesActivityPage"));
+const SalesActivityOutletDetail = lazy(() => import("./pages/SalesActivityOutletDetail"));
+const PoWorkView = lazy(() => import("./pages/PoWorkView"));
+const PublicCustomerApproval = lazy(() => import("./pages/PublicCustomerApproval"));
+const CustomerTrackingPage = lazy(() => import("./pages/CustomerTrackingPage"));
+const PublicHargaPage = lazy(() => import("./pages/PublicHargaPage"));
+const DivisionTaskPage = lazy(() => import("./pages/DivisionTaskPage"));
+const DivisionTaskIndex = lazy(() => import("./pages/DivisionTaskPage").then((mod) => ({ default: mod.DivisionTaskIndex })));
+const DeliverySchedulePage = lazy(() => import("./pages/DeliverySchedulePage"));
+const DeliveryScheduleRouteReviewPage = lazy(() => import("./pages/DeliveryScheduleRouteReviewPage"));
+const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage"));
+const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
+const FormShowcase = lazy(() => import("./pages/FormShowcase"));
+const ChatPage = lazy(() => import("./pages/ChatPage"));
+const AppShell = lazy(() => import("./components/AppShell"));
+const RouteOptimizerLayout = lazy(() => import("./mobile/RouteOptimizerLayout"));
+const MobileOrdersPage = lazy(() => import("./mobile/MobileOrdersPage"));
+const MobileOrderDetailPage = lazy(() => import("./mobile/MobileOrderDetailPage"));
+const MobileProductionSchedulePage = lazy(() => import("./mobile/MobileProductionSchedulePage"));
+const MobileDeliverySchedulePage = lazy(() => import("./mobile/MobileDeliverySchedulePage"));
+const MobileDeliveryRouteReviewPage = lazy(() => import("./mobile/MobileDeliveryRouteReviewPage"));
+const MobileNotificationsPage = lazy(() => import("./mobile/MobileNotificationsPage"));
+const MobileProfilePage = lazy(() => import("./mobile/MobileProfilePage"));
+const MobileChatPage = lazy(() => import("./mobile/MobileChatPage"));
+const MobileChatRoomPage = lazy(() => import("./mobile/MobileChatRoomPage"));
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage"];
 const PHYSICAL_STOCK_SETTINGS_PERMS = ["current_stock.view", "current_stock.update", "permissions.manage"];
 const SETTINGS_HUB_PERMS = [...SETTINGS_PERMS, "current_stock.view", "current_stock.update"];
 const PhysicalStockSettingsRoute = Settings;
 
-function Protected({ children }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-  if (loading) return <div className="loading">Memuat...</div>;
-  if (!user) return <Navigate to={loginPathForLocation(location.pathname, location.search)} replace />;
-  return children;
+function Protected(props) {
+  return <AuthProtected {...props} />;
 }
 
-function PublicOnly({ children }) {
-  const { user, loading } = useAuth();
-  const [params] = useSearchParams();
-  if (loading) return <div className="loading">Memuat...</div>;
-  if (user) return <Navigate to={postLoginPath(params.get("next"))} replace />;
-  return children;
+function PublicOnly(props) {
+  return <AuthPublicOnly {...props} />;
 }
 
 function PermGate({ anyOf, alsoAnyOf, children }) {
@@ -188,6 +182,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <Suspense fallback={<WorkspaceChunkFallback />}>
         <Routes>
           <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
           {/* Public — customer pages (no login required) */}
@@ -303,7 +298,9 @@ export default function App() {
           <Route path="/dev/form-showcase" element={<FormShowcase />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
   );
 }
+

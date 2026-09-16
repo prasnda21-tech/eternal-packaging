@@ -445,6 +445,23 @@ describe("Hari Ini exact work-unit regressions", () => {
     expect(display[0].displayOperator.splits[0].qty_completed).toBe(600);
   });
 
+  test("same operator two item lines on today stay two rows with line qty", () => {
+    const row = po({
+      operators: [
+        sameBudi({ date: TODAY, qty: 2000, done: 0, extra: { line_idx: 0, line_id: "lid-a", line_name: "Plastik PE 28" } }),
+        sameBudi({ date: TODAY, qty: 2600, done: 0, extra: { line_idx: 1, line_id: "lid-b", line_name: "Plastik PE 28" } }),
+      ],
+    });
+    const units = productionScheduleWorkUnits(row);
+    expect(units).toHaveLength(1);
+    expect(units[0].scheduled).toBe(4600);
+    const display = displayHariIni([row], true);
+    expect(display).toHaveLength(2);
+    expect(display.map((r) => r.displayOperator.operator_name)).toEqual(["Budi", "Budi"]);
+    expect(display.map((r) => r.displayOperator.quantity)).toEqual([2000, 2600]);
+    expect(display.every((r) => r.displayWorkDate === TODAY)).toBe(true);
+  });
+
   test("4. SAME OPERATOR two historical dates → only unfinished 13/09", () => {
     const row = po({
       operators: [
