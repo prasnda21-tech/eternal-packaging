@@ -7,15 +7,29 @@ from typing import Any, Dict, Iterable, List, Optional
 from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
+    PRINT_STATUS_NOT_STARTED,
     is_fully_delivered,
+    loading_status_semantic,
     packing_status_semantic,
     print_completed_qty,
     print_status,
     qty_delivered,
+    requires_printing,
+    surat_jalan_created,
+    surat_jalan_status_semantic,
 )
 from services.dashboard_today import is_shipment_today, is_work_today, wib_today
 from services.shipment_status import shipment_status_row, status_percent, status_percent_display
-from workflow_gates import customer_design_approved, design_ok
+from workflow_gates import (
+    customer_design_approved,
+    design_ok,
+    helper_done,
+    payment_ok,
+    penjadwalan_done,
+    sample_ok,
+    sample_uploaded,
+    screener_done,
+)
 
 STAGES = (
     "Order Masuk", "Design", "Approval Design", "Payment", "Approval Payment",
@@ -28,9 +42,164 @@ STATUS_PO_VIEWS = (
     "design", "payment", "hold", "completed", "work_today", "delivery_today",
 )
 
+STATUS_PO_STAGE_KEYS = (
+    "order", "design", "appr_design", "payment", "appr_payment",
+    "jadwal", "screen", "helper", "operator", "sample",
+    "cetak", "packing", "sj", "loading", "kirim",
+)
+
 
 def _has_value(v: Any) -> bool:
     return v is not None and str(v).strip() != ""
+
+
+def _has_file_records(files: Any) -> bool:
+    if not isinstance(files, list) or not files:
+        return False
+    return any(isinstance(f, dict) and f for f in files)
+
+
+def item_line_names(order: dict) -> List[str]:
+    """Item names only from existing line_items. No qty. One PO stays one row."""
+    names: List[str] = []
+    seen = set()
+    for li in order.get("line_items") or []:
+        if not isinstance(li, dict):
+            continue
+        name = str(li.get("name") or li.get("item_name") or li.get("product_name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def _overlay_row_flags(state: str, *, cancelled: bool, hold: bool) -> str:
+    if cancelled:
+        return "cancelled"
+    if hold and state == "active":
+        return "hold"
+    return state
+
+
+def status_po_workflow(order: dict) -> Dict[str, str]:
+    """Explicit per-stage state from existing order evidence. Never sequential current_stage completion."""
+    order = order or {}
+    cancelled = bool(order.get("cancelled"))
+    hold = bool(order.get("hold"))
+
+    def out(state: str) -> str:
+        return _overlay_row_flags(state, cancelled=cancelled, hold=hold)
+
+    workflow: Dict[str, str] = {}
+
+    if order.get("id") or _has_value(order.get("po_number")):
+        workflow["order"] = out("completed")
+    else:
+        workflow["order"] = out("unknown")
+
+    if order.get("design_bypassed") or _has_file_records(order.get("design_files")):
+        workflow["design"] = out("completed")
+    else:
+        workflow["design"] = out("pending")
+
+    if design_ok(order):
+        workflow["appr_design"] = out("completed")
+    elif _has_file_records(order.get("design_files")):
+        workflow["appr_design"] = out("active")
+    else:
+        workflow["appr_design"] = out("pending")
+
+    if order.get("payment_bypassed") or _has_file_records(order.get("payment_files")):
+        workflow["payment"] = out("completed")
+    else:
+        workflow["payment"] = out("pending")
+
+    if payment_ok(order):
+        workflow["appr_payment"] = out("completed")
+    elif _has_file_records(order.get("payment_files")):
+        workflow["appr_payment"] = out("active")
+    else:
+        workflow["appr_payment"] = out("pending")
+
+    if penjadwalan_done(order) or (order.get("operator_splits") or []):
+        workflow["jadwal"] = out("completed")
+    else:
+        workflow["jadwal"] = out("pending")
+
+    if screener_done(order):
+        workflow["screen"] = out("completed")
+    else:
+        workflow["screen"] = out("pending")
+
+    if helper_done(order):
+        workflow["helper"] = out("completed")
+    else:
+        workflow["helper"] = out("pending")
+
+    if sample_uploaded(order):
+        workflow["operator"] = out("completed")
+    else:
+        workflow["operator"] = out("pending")
+
+    if sample_ok(order):
+        workflow["sample"] = out("completed")
+    elif sample_uploaded(order):
+        workflow["sample"] = out("active")
+    else:
+        workflow["sample"] = out("pending")
+
+    if not requires_printing(order):
+        workflow["cetak"] = out("completed")
+    else:
+        pst = print_status(order)
+        if pst == PRINT_STATUS_DONE:
+            workflow["cetak"] = out("completed")
+        elif pst == PRINT_STATUS_IN_PROGRESS:
+            workflow["cetak"] = out("active")
+        elif pst == PRINT_STATUS_NOT_STARTED:
+            workflow["cetak"] = out("pending")
+        else:
+            workflow["cetak"] = out("unknown")
+
+    pack = packing_status_semantic(order)
+    if pack == "Sudah":
+        workflow["packing"] = out("completed")
+    elif pack == "Berjalan":
+        workflow["packing"] = out("active")
+    elif pack == "Belum":
+        workflow["packing"] = out("pending")
+    else:
+        workflow["packing"] = out("unknown")
+
+    sj_created = _surat_jalan_created(order) or surat_jalan_created(order)
+    sj_sem = order.get("surat_jalan_status_semantic") or surat_jalan_status_semantic(order)
+    if sj_created:
+        if sj_sem == "completed":
+            workflow["sj"] = out("completed")
+        else:
+            workflow["sj"] = out("active")
+    else:
+        workflow["sj"] = out("pending")
+
+    load_sem = loading_status_semantic(order)
+    info = order.get("loading_info") or {}
+    has_load_events = bool((info.get("events") or []) if isinstance(info, dict) else [])
+    if order.get("loading_completed") or load_sem == "completed":
+        workflow["loading"] = out("completed")
+    elif load_sem == "partial" or has_load_events or (order.get("loading_confirmations") or []):
+        workflow["loading"] = out("active")
+    else:
+        workflow["loading"] = out("pending")
+
+    if is_fully_delivered(order) or order.get("terkirim_confirmed") or order.get("delivery_status") == "Terkirim":
+        workflow["kirim"] = out("completed")
+    elif qty_delivered(order) > 0 or order.get("delivery_status") == "Sebagian Terkirim":
+        workflow["kirim"] = out("active")
+    else:
+        workflow["kirim"] = out("pending")
+
+    return {key: workflow.get(key, "unknown") for key in STATUS_PO_STAGE_KEYS}
 
 
 def _surat_jalan_created(order: dict) -> bool:
@@ -208,6 +377,7 @@ def status_po_row(order: dict) -> dict:
         "po_number": order.get("po_number") or ship.get("order_number") or "",
         "order_date": order.get("order_date") or ship.get("order_date"),
         "customer": order.get("customer") or ship.get("customer_name") or "",
+        "item_lines": item_line_names(order),
         "status": effective_workflow_status(order),
         "percent_delivered": ship.get("percent_delivered"),
         "percent_delivered_display": ship.get("percent_delivered_display"),
@@ -216,6 +386,7 @@ def status_po_row(order: dict) -> dict:
         "current_stage": order.get("current_stage"),
         "cancelled": bool(order.get("cancelled")),
         "hold": bool(order.get("hold")),
+        "workflow": status_po_workflow(order),
     }
 
 
