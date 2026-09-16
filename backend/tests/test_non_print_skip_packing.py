@@ -46,8 +46,10 @@ def _mixed(*, print_qty=500, non_print_qty=300, packed_print=0, sj=True):
             "qty_packed": packed_print,
             "lines": ([{"line_idx": 0, "packed_qty": packed_print}] if packed_print else []),
         },
-        "surat_jalan_files": [{"id": "f1", "name": "sj.pdf"}] if sj else [],
-        "shipments": [],
+        "surat_jalan_files": (
+            [{"id": "f1", "name": "sj.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}] if sj else []
+        ),
+        "shipments": ([{"id": "f1", "number": "SJ-1"}] if sj else []),
         "loading_confirmations": [],
         "loading_info": {},
     }
@@ -65,8 +67,10 @@ def _non_print_only(*, qty=400, sj=False, stage=11):
         ],
         "total_quantity": qty,
         "packing_info": {},
-        "surat_jalan_files": [{"id": "f1", "name": "sj.pdf"}] if sj else [],
-        "shipments": [],
+        "surat_jalan_files": (
+            [{"id": "f1", "name": "sj.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}] if sj else []
+        ),
+        "shipments": ([{"id": "f1", "number": "SJ-1"}] if sj else []),
         "loading_confirmations": [],
         "loading_info": {},
     }

@@ -13,6 +13,8 @@ import {
   loadingLineLabel,
   loadingPoLines,
   sjFilesForLoading,
+  selectedLoadingSjOrNull,
+  nextSelectedLoadingSjId,
   canDeleteLoadingConfirmation,
   loadingVerificationStatus,
   sjLinesForDiscrepancy,
@@ -56,10 +58,11 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
 
   const fileIdsKey = files.map((f) => f.id).join("|");
   useEffect(() => {
-    if (!files.some((f) => f.id === sjId)) setSjId(files[0]?.id || "");
+    const next = nextSelectedLoadingSjId(files, sjId);
+    if (!sjId && next) setSjId(next);
   }, [fileIdsKey, sjId, files]);
 
-  const activeSj = files.find((f) => f.id === sjId) || files[0] || null;
+  const activeSj = selectedLoadingSjOrNull(files, sjId);
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const confirmations = loadingConfirmations(order);
