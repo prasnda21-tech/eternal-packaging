@@ -48,13 +48,14 @@ def now_iso() -> str:
 
 
 def default_settings() -> Dict[str, Any]:
-    # Default remains OFF (main safety). Stock Engine V2 turns this ON via
-    # ensure_v2_physical_settings() on app startup — not via silent default.
+    # Default remains OFF. Stock Engine V2 is activated only by an explicit
+    # ops action (activate_v2_physical_settings / PUT physical-stock settings),
+    # never by deploy/startup alone.
     return {
         "key": SETTINGS_KEY,
         "enabled": False,
         "stock_in_trigger": "goods_receipt",
-        "stock_out_trigger": "sales_delivery",
+        "stock_out_trigger": "loading_confirmation",
         "updated_at": None,
         "updated_by": None,
     }

@@ -199,9 +199,11 @@ class _FakeColl:
 
     async def find_one(self, query, *a, **k):
         for d in self.docs:
-            mid = d.get("master_item_id") or d.get("id")
             if not isinstance(query, dict):
                 continue
+            if query.get("key") and d.get("key") == query.get("key"):
+                return dict(d)
+            mid = d.get("master_item_id") or d.get("id")
             if query.get("id") == mid or query.get("master_item_id") == mid:
                 return dict(d)
             for clause in query.get("$or") or []:
@@ -248,7 +250,12 @@ class _FakeDB:
             "base_uom": "PCS",
         }])
         self.stock_movements = _FakeColl([])
-        self.app_settings = _FakeColl([])
+        self.app_settings = _FakeColl([{
+            "key": "physical_stock",
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "sales_delivery",
+        }])
 
     def __getitem__(self, name):
         return getattr(self, name)
@@ -273,6 +280,40 @@ async def test_validate_so_allows_within_available():
         db,
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
     )
+
+
+@pytest.mark.anyio
+async def test_validate_so_off_does_not_block_when_v2_state_missing():
+    """A. OFF + missing V2 state + qty>0 must not fail on V2 availability."""
+    db = _FakeDB()
+    db.app_settings.docs = [{
+        "key": "physical_stock",
+        "enabled": False,
+        "stock_in_trigger": "goods_receipt",
+        "stock_out_trigger": "loading_confirmation",
+    }]
+    db.product_stock_state.docs = []
+    await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 9999}],
+    )
+    assert db.app_settings.updates == []
+    assert db.product_stock_state.inserts == []
+    assert db.stock_movements.inserts == []
+
+
+@pytest.mark.anyio
+async def test_validate_so_on_missing_state_rejects():
+    """B. ON + no initialized V2 state => reject."""
+    db = _FakeDB()
+    db.product_stock_state.docs = []
+    with pytest.raises(HTTPException) as ei:
+        await validate_sales_order_availability(
+            db,
+            [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 1}],
+        )
+    assert ei.value.status_code == 400
+    assert ei.value.detail == STOCK_INSUFFICIENT_MSG
 
 
 @pytest.mark.anyio
@@ -320,3 +361,67 @@ def test_gr_cancel_guard_mentions_stock_movements():
     src = open(pgr.__file__, encoding="utf-8").read()
     assert "stock_movements" in src
     assert "cancel" in src
+
+
+@pytest.mark.anyio
+async def test_ensure_v2_physical_settings_does_not_write_app_settings(monkeypatch):
+    """Startup probe must remain read-only against app_settings."""
+    from services import stock_engine_v2 as v2
+
+    class _FakeDB:
+        def __init__(self):
+            self.app_settings = self
+            self.writes = 0
+
+        async def update_one(self, *args, **kwargs):
+            self.writes += 1
+            raise AssertionError("ensure_v2_physical_settings must not write app_settings")
+
+        async def find_one(self, *args, **kwargs):
+            return None
+
+    async def _fake_get(db):
+        return {
+            "key": "physical_stock",
+            "enabled": False,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "loading_confirmation",
+        }
+
+    monkeypatch.setattr(
+        "services.physical_stock_settings.get_physical_stock_settings",
+        _fake_get,
+    )
+    db = _FakeDB()
+    settings = await v2.ensure_v2_physical_settings(db)
+    assert settings["enabled"] is False
+    assert db.writes == 0
+
+
+@pytest.mark.anyio
+async def test_activate_v2_physical_settings_writes_explicit_profile(monkeypatch):
+    """Phase-2 activation is the only path that enables V2 profile in app_settings."""
+    from services import stock_engine_v2 as v2
+
+    class _FakeColl:
+        def __init__(self):
+            self.sets = []
+
+        async def update_one(self, filt, update, upsert=False):
+            self.sets.append({"filt": filt, "update": update, "upsert": upsert})
+
+        async def find_one(self, *args, **kwargs):
+            return None
+
+    class _FakeDB:
+        def __init__(self):
+            self.app_settings = _FakeColl()
+
+    db = _FakeDB()
+    clean = await v2.activate_v2_physical_settings(db, user={"email": "ops@test", "name": "Ops"})
+    assert clean["enabled"] is True
+    assert clean["stock_in_trigger"] == "goods_receipt"
+    assert clean["stock_out_trigger"] == "sales_delivery"
+    assert clean["stock_engine_version"] == 2
+    assert len(db.app_settings.sets) == 1
+    assert db.app_settings.sets[0]["upsert"] is True

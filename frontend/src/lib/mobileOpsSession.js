@@ -2,6 +2,8 @@
  * Active Role uses user-scoped localStorage (survives PWA navigation until logout).
  */
 
+import { clearAllMobileTaskListRetention } from "./mobileTaskListRetention";
+
 function store() {
   try {
     return typeof sessionStorage !== "undefined" ? sessionStorage : null;
@@ -155,6 +157,7 @@ function clearPrefixedKeys(storage, prefixes, userId) {
 
 /** Remove scoped + legacy unscoped ops session keys for a user. */
 export function clearMobileOpsSessionForUser(userId) {
+  clearAllMobileTaskListRetention();
   clearPrefixedKeys(store(), OPS_KEY_PREFIXES, userId);
   clearPrefixedKeys(localStore(), LOCAL_OPS_KEY_PREFIXES, userId);
 }
