@@ -239,7 +239,7 @@ export function applyPreviewDeliveryMutation(order, kind, payload = {}) {
       id: "preview-recv-sig-local",
       signature_storage_path: "preview/local-recv.png",
       recipient_signed_at: new Date().toISOString(),
-      recipient_name: payload.recipientName || "Penerima",
+      recipient_name: payload.recipientName || "",
     };
     return next;
   }
