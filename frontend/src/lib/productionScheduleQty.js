@@ -17,6 +17,14 @@ export function formatIdQty(n) {
   return qtyInt(n).toLocaleString("id-ID");
 }
 
+export const OPERATOR_UNASSIGNED_LABEL = "Belum ditugaskan";
+
+/** Operator-column assigned qty only — not PO total, not line total. */
+export function formatOperatorAssignedQty(qty) {
+  if (qty == null || qty === "") return "";
+  return `${formatIdQty(qty)} pcs`;
+}
+
 export function printQtyProgress(row) {
   const actual = qtyInt(row?.print_completed_qty);
   const target = qtyInt(row?.print_qty_total);

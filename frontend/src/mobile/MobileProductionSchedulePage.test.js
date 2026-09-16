@@ -205,9 +205,8 @@ describe("MobileProductionSchedulePage", () => {
       "Prioritas",
       "Tgl Kerja",
       "Customer / No PO",
-      "Surat Jalan",
+      "Operator",
       "Item Line",
-      "Qty Total",
       "Status per Role",
       "Cup",
       "Screen",
@@ -221,20 +220,28 @@ describe("MobileProductionSchedulePage", () => {
     expect(headers).not.toContain("Tahap Aktif");
     expect(headers).not.toContain("Payment");
     expect(headers).not.toContain("Packing");
-    expect(headers).toContain("Surat Jalan");
+    expect(headers).not.toContain("Surat Jalan");
+    expect(headers).not.toContain("Qty Total");
+    expect(headers).toContain("Operator");
+    expect(headers).toContain("Item Line");
     expect(headers).not.toContain("No PO");
     expect(headers.filter((h) => h === "Screen")).toHaveLength(1);
     expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(2);
     const identity = container.querySelector('[data-testid="mobile-schedule-identity-PO-1001"]');
     expect(identity.querySelector(".mop-ops-customer").textContent).toBe("PT Example");
-    expect(container.querySelector('[data-testid="mobile-schedule-sj-PO-1001"]').textContent).toBe("SJ-1001");
+    expect(container.querySelector('[data-testid="mobile-schedule-sj-PO-1001"]')).toBeFalsy();
+    const opCells = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-line')];
+    expect(opCells.map((el) => el.querySelector(".prod-op-name").textContent)).toEqual(["Budi", "Sari"]);
+    expect(opCells.map((el) => el.querySelector(".prod-op-qty").textContent)).toEqual(["10.000 pcs", "500 pcs"]);
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1002"]').textContent).toContain("Belum ditugaskan");
     expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-0"]')).toBeFalsy();
     expect(container.querySelectorAll('[data-testid="mobile-schedule-item-PO-1001"]').length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".mop-ops-item-qty").length).toBe(0);
+    expect(container.querySelector('[data-testid^="mobile-schedule-item-line-PO-1001"]').textContent.trim()).toBe("Cup 16oz");
     expect(container.textContent).toContain("Cup 16oz");
     expect(container.textContent).toContain("25/08/26");
     expect(container.textContent).not.toContain("2026-08-25");
     expect(container.textContent).toContain("Belum Dijadwalkan");
-    expect(container.textContent).toContain("25.000");
     expect(container.querySelector('[data-testid="prod-screen-qty-PO-1001"]').getAttribute("aria-label")).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="mobile-schedule-search-btn"]')).toBeTruthy();
@@ -263,6 +270,137 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.getOrder).not.toHaveBeenCalled();
     expect(api.listOrders).not.toHaveBeenCalled();
     expect(api.productionExport).not.toHaveBeenCalled();
+  });
+
+  test("one operator assignment is one row with operator qty and item name only", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        id: "po-one",
+        po_number: "PO-001",
+        customer: "Customer A",
+        work_date: "2026-09-16",
+        current_stage: 8,
+        status_final: "Operator",
+        total_quantity: 5000,
+        print_qty_total: 5000,
+        operators: [{
+          split_id: "s-budi",
+          operator_name: "Budi",
+          operator_email: "budi@x.com",
+          quantity: 5000,
+          line_printable: true,
+          line_name: "Cup 16oz",
+          line_id: "lid-a",
+          line_idx: 0,
+          work_date: "2026-09-16",
+        }],
+      }],
+    });
+    await renderPage();
+    const rows = container.querySelectorAll('[data-testid="mobile-schedule-row-PO-001"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".prod-op-name").textContent).toBe("Budi");
+    expect(rows[0].querySelector(".prod-op-qty").textContent).toBe("5.000 pcs");
+    expect(rows[0].querySelector(".mop-ops-qty-total")).toBeFalsy();
+    const itemCell = rows[0].querySelector('[data-testid="mobile-schedule-item-PO-001"]');
+    expect(itemCell.textContent).toContain("Cup 16oz");
+    expect(itemCell.querySelector(".mop-ops-item-qty")).toBeFalsy();
+    expect(itemCell.textContent).not.toContain("5.000");
+  });
+
+  test("one PO with two or three operators splits into one row per assignment", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        id: "po-multi",
+        po_number: "PO-001",
+        customer: "Customer A",
+        work_date: "2026-09-16",
+        current_stage: 8,
+        status_final: "Operator",
+        total_quantity: 15000,
+        print_qty_total: 15000,
+        operators: [
+          { split_id: "s1", operator_name: "Budi", operator_email: "budi@x.com", quantity: 5000, line_printable: true, line_name: "Cup 16oz", line_id: "lid-a", line_idx: 0, work_date: "2026-09-16" },
+          { split_id: "s2", operator_name: "Andi", operator_email: "andi@x.com", quantity: 7000, line_printable: true, line_name: "Cup 16oz", line_id: "lid-a", line_idx: 0, work_date: "2026-09-17" },
+          { split_id: "s3", operator_name: "Cici", operator_email: "cici@x.com", quantity: 3000, line_printable: true, line_name: "Cup 16oz", line_id: "lid-a", line_idx: 0, work_date: "2026-09-18" },
+        ],
+      }],
+    });
+    await renderPage();
+    const rows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-001"]')];
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.querySelector(".prod-op-name").textContent)).toEqual(["Budi", "Andi", "Cici"]);
+    expect(rows.map((row) => row.querySelector(".prod-op-qty").textContent)).toEqual(["5.000 pcs", "7.000 pcs", "3.000 pcs"]);
+    rows.forEach((row) => {
+      expect(row.querySelector(".mop-ops-customer").textContent).toBe("Customer A");
+      expect(row.querySelector(".mop-ops-po").textContent).toBe("PO-001");
+      expect(row.querySelector(".mop-ops-qty-total")).toBeFalsy();
+      const itemCell = row.querySelector('[data-testid="mobile-schedule-item-PO-001"]');
+      expect(itemCell.textContent).toContain("Cup 16oz");
+      expect(itemCell.querySelector(".mop-ops-item-qty")).toBeFalsy();
+      expect(itemCell.textContent).not.toMatch(/5\.000|7\.000|3\.000/);
+    });
+    expect(container.querySelector('[data-testid="mobile-schedule-thead"]').textContent).toContain("Status per Role");
+  });
+
+  test("unassigned PO shows Belum ditugaskan without fabricating an operator", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        id: "po-empty",
+        po_number: "PO-X",
+        customer: "No Op",
+        current_stage: 8,
+        status_final: "Penjadwalan",
+        total_quantity: 4000,
+        operators: [],
+      }],
+    });
+    await renderPage();
+    const rows = container.querySelectorAll('[data-testid="mobile-schedule-row-PO-X"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("Belum ditugaskan");
+    expect(rows[0].textContent).not.toContain("pcs");
+    expect(rows[0].getAttribute("data-operator-key")).toBe("unassigned");
+  });
+
+  test("search still filters canonical POs before operator-row expansion", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        {
+          id: "po-keep",
+          po_number: "PO-KEEP",
+          customer: "Keep Co",
+          work_date: "2026-09-16",
+          current_stage: 8,
+          status_final: "Operator",
+          total_quantity: 2000,
+          operators: [
+            { split_id: "k1", operator_name: "Budi", operator_email: "budi@x.com", quantity: 1000, line_printable: true, work_date: "2026-09-16" },
+            { split_id: "k2", operator_name: "Andi", operator_email: "andi@x.com", quantity: 1000, line_printable: true, work_date: "2026-09-16" },
+          ],
+        },
+        {
+          id: "po-drop",
+          po_number: "PO-DROP",
+          customer: "Other Co",
+          work_date: "2026-09-16",
+          current_stage: 8,
+          status_final: "Operator",
+          total_quantity: 100,
+          operators: [{ split_id: "d1", operator_name: "Dedi", operator_email: "dedi@x.com", quantity: 100, line_printable: true, work_date: "2026-09-16" }],
+        },
+      ],
+    });
+    await renderPage();
+    const input = container.querySelector('[data-testid="mobile-schedule-search"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(input, "PO-KEEP");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-KEEP"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="mobile-schedule-row-PO-DROP"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-schedule-thead"]').textContent).toContain("Status per Role");
   });
 
   test("Tanggal Pengerjaan displays DD/MM/YY without mutating raw work_date", async () => {
@@ -857,8 +995,8 @@ describe("MobileProductionSchedulePage", () => {
     });
     await renderPage();
     const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
-    const qtyCell = [...row.querySelectorAll("td")].find((td) => td.querySelector(".mop-ops-qty-total")) || row.querySelectorAll("td")[1];
-    await act(async () => { qtyCell.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const itemCell = row.querySelector('[data-testid="mobile-schedule-item-PO-1001"]') || row.querySelectorAll("td")[1];
+    await act(async () => { itemCell.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
     expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
     await closeTaskModal();
@@ -866,7 +1004,7 @@ describe("MobileProductionSchedulePage", () => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "native";
-    qtyCell.appendChild(btn);
+    itemCell.appendChild(btn);
     await act(async () => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
     expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeFalsy();
