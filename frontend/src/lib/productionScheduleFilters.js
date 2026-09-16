@@ -2,9 +2,10 @@
 
 import {
   buildGroupedDisplayOperator,
-  productionScheduleDisplayRowKey,
+  productionScheduleAssignmentKey,
   productionScheduleOperatorIdentity,
   productionScheduleSplitWorkDate,
+  toProductionScheduleDisplayRow,
 } from "./productionScheduleDisplayRows";
 import { isPrintableScheduleSplit, printableCompletedQty } from "./productionScheduleQty";
 
@@ -292,19 +293,21 @@ export function isTodayWorkloadRow(row, today, includeCompleted = true) {
   return productionScheduleWorkUnits(row).some((unit) => isTodayWorkloadUnit(unit, today, includeCompleted));
 }
 
-function displayRowFromWorkUnit(row, unit) {
-  const displayOperator = unit.splits.length ? buildGroupedDisplayOperator(unit.splits) : null;
-  return {
-    ...row,
-    displayRowKey: productionScheduleDisplayRowKey(row.id, `${unit.operatorKey}::${unit.workDate}`),
-    displayOperatorKey: unit.operatorKey,
-    displayOperator,
-    displayWorkDate: unit.workDate,
-    work_date: unit.workDate,
-    operator_work_dates: unit.workDate
-      ? [{ split_id: unit.operatorKey, operator_name: displayOperator?.operator_name, work_date: unit.workDate }]
-      : [],
-  };
+function displayRowsFromWorkUnit(row, unit) {
+  const splits = unit.splits.length ? unit.splits : [null];
+  return splits.map((split, index) => {
+    const list = split ? [split] : [];
+    const displayOperator = list.length ? buildGroupedDisplayOperator(list) : null;
+    const assignmentKey = split
+      ? productionScheduleAssignmentKey(split, index)
+      : undefined;
+    return toProductionScheduleDisplayRow(row, {
+      operatorKey: unit.operatorKey,
+      displayOperator,
+      displayWorkDate: unit.workDate,
+      assignmentKey: assignmentKey || (unit.workDate ? `date:${unit.workDate}` : undefined),
+    });
+  });
 }
 
 export function buildHariIniDisplayRows(rows, today, includeCompleted = true) {
@@ -313,7 +316,7 @@ export function buildHariIniDisplayRows(rows, today, includeCompleted = true) {
     const units = productionScheduleWorkUnits(row).filter((unit) => (
       isTodayWorkloadUnit(unit, today, includeCompleted)
     ));
-    for (const unit of units) out.push(displayRowFromWorkUnit(row, unit));
+    for (const unit of units) out.push(...displayRowsFromWorkUnit(row, unit));
   }
   return out;
 }

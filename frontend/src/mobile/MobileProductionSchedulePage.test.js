@@ -971,11 +971,14 @@ describe("MobileProductionSchedulePage", () => {
       }],
     });
     await renderPage();
+    expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(3);
     expect(container.textContent).toContain("Cup A");
     expect(container.textContent).toContain("Lid B");
     expect(container.textContent).toContain("Cup C");
+    expect([...container.querySelectorAll(".mop-ops-item-qty")].map((el) => el.textContent)).toEqual(["1.000", "2.000", "3.000"]);
     expect(container.textContent).not.toMatch(/\+1 item/);
     expect(container.textContent).not.toMatch(/item lainnya/);
+    expect(container.textContent).not.toContain("6.000");
   });
 
   test("today customer cells stay unpainted and the table wrapper can scroll horizontally", async () => {

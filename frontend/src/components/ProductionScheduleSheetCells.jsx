@@ -116,14 +116,14 @@ function ItemCell({ row, variant }) {
     return (
       <div
         key={item.key}
-        className={`prod-schedule-item-line${variant === "mobile" ? " mop-ops-item-line" : ""}`}
+        className="prod-schedule-item-line mop-ops-item-line"
         title={item.name}
         data-testid={variant === "desktop"
           ? `prod-item-line-${row.po_number}-${item.key}`
           : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
       >
         <span className="mop-ops-item-name">{item.name}</span>
-        {variant === "mobile" && qtyPresent ? (
+        {qtyPresent ? (
           <span className="mop-ops-item-qty">{formatIdQty(item.quantity)}</span>
         ) : null}
       </div>
@@ -154,9 +154,6 @@ function OperatorCell({ row, qtyProg, variant }) {
     return (
       <div className="prod-op-line" data-testid={variant === "desktop" ? `prod-ops-line-${row.po_number}` : undefined}>
         <span className="prod-op-name">{op.operator_name || "Belum ditentukan"}</span>
-        {op.quantity != null && op.quantity !== "" ? (
-          <span className="prod-op-qty muted small mono">{formatIdQty(op.quantity)}</span>
-        ) : null}
       </div>
     );
   }

@@ -289,6 +289,20 @@
   line-height: 1.25;
 }
 
+.production-sheet-table .prod-schedule-item-line.mop-ops-item-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.production-sheet-table .mop-ops-item-qty {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 700;
+}
+
 .production-schedule-search-cluster {
   display: flex;
   align-items: center;
@@ -709,6 +723,13 @@
   white-space: nowrap;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-item-line.mop-ops-item-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .prod-schedule-page .production-sheet-table .prod-status-akhir {
