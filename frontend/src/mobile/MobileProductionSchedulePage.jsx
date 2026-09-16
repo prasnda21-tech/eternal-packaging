@@ -448,6 +448,8 @@ export default function MobileProductionSchedulePage() {
                           className={`production-sheet-row mop-schedule-row${row.hold ? " hold" : ""}${row.cancelled ? " cancelled" : ""}`}
                           data-testid={`mobile-schedule-row-${row.po_number}`}
                           data-row-key={row.displayRowKey}
+                          data-operator-key={row.displayOperatorKey || "unassigned"}
+                          data-operator-qty={row.displayOperator?.quantity ?? ""}
                           data-to={href}
                           tabIndex={0}
                           onClick={(event) => activateRow(row, event)}

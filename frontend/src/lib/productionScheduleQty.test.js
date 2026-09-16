@@ -1,4 +1,4 @@
-import { formatIdQty, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell, operatorQtyCetakProgress, operatorPrintableItems, poTotalQtyDisplay } from "./productionScheduleQty";
+import { formatIdQty, formatOperatorAssignedQty, OPERATOR_UNASSIGNED_LABEL, printQtyProgress, scheduledPrintQtyProgress, totalQtyScheduledCell, operatorQtyCetakProgress, operatorPrintableItems, poTotalQtyDisplay } from "./productionScheduleQty";
 
 describe("Jadwal Produksi Total Qty print progress", () => {
   test("TEST 1: 5.000 / 10.000 not PO 15.000", () => {
@@ -316,5 +316,12 @@ describe("operator Qty Cetak display", () => {
     const cell = poTotalQtyDisplay({ total_quantity: 20000 });
     expect(cell.text).toBe("20.000");
     expect(cell.text).not.toMatch(/Cup|Item/);
+  });
+
+  test("operator assigned qty is formatted separately from PO total", () => {
+    expect(formatOperatorAssignedQty(5000)).toBe("5.000 pcs");
+    expect(formatOperatorAssignedQty(7000)).toBe("7.000 pcs");
+    expect(formatOperatorAssignedQty(null)).toBe("");
+    expect(OPERATOR_UNASSIGNED_LABEL).toBe("Belum ditugaskan");
   });
 });

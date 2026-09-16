@@ -35,6 +35,7 @@ describe("buildProductionScheduleDisplayRows", () => {
     const display = buildProductionScheduleDisplayRows(rows);
     expect(display).toHaveLength(1);
     expect(display[0].displayOperator.operator_name).toBe("Budi");
+    expect(display[0].displayOperator.quantity).toBe(500);
     expect(display[0].id).toBe("po-1");
   });
 
@@ -42,6 +43,7 @@ describe("buildProductionScheduleDisplayRows", () => {
     const display = buildProductionScheduleDisplayRows([poThree]);
     expect(display).toHaveLength(3);
     expect(display.map((row) => row.displayOperator.operator_name)).toEqual(["Budi", "Andi", "Cici"]);
+    expect(display.map((row) => row.displayOperator.quantity)).toEqual([1000, 1200, 800]);
     display.forEach((row) => {
       expect(row.displayOperator).toBeTruthy();
       expect(row.po_number).toBe("PO-001");
