@@ -224,6 +224,44 @@ describe("useProductionSheetZoom live gestures", () => {
     expect(harnessApi.consumeClickSuppression()).toBe(true);
   });
 
+  test("two-finger rest does not consume a normal click", async () => {
+    await renderHarness();
+    await dispatchTouches("touchstart", [{ x: 10, y: 10 }, { x: 110, y: 10 }]);
+    expect(harnessApi.gestureRef.current.pinching).toBe(true);
+    expect(shouldSuppressSheetRowClick(harnessApi.gestureRef.current)).toBe(false);
+    expect(harnessApi.consumeClickSuppression()).toBe(false);
+  });
+
+  test("ctrl+wheel does not permanently disable the next real click", async () => {
+    await renderHarness();
+    await dispatchWheel({ ctrlKey: true, deltaY: 40 });
+    await flushRaf();
+    expect(shouldSuppressSheetRowClick(harnessApi.gestureRef.current)).toBe(true);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    });
+    expect(shouldSuppressSheetRowClick(harnessApi.gestureRef.current)).toBe(false);
+    expect(harnessApi.consumeClickSuppression()).toBe(false);
+  });
+
+  test("ordinary wheel does not arm click suppression", async () => {
+    await renderHarness();
+    await dispatchWheel({ ctrlKey: false, deltaY: 240 });
+    await flushRaf();
+    expect(shouldSuppressSheetRowClick(harnessApi.gestureRef.current)).toBe(false);
+    expect(harnessApi.consumeClickSuppression()).toBe(false);
+  });
+
+  test("after pinch suppression is consumed, the next click is not suppressed", async () => {
+    await renderHarness();
+    await dispatchTouches("touchstart", [{ x: 10, y: 10 }, { x: 110, y: 10 }]);
+    await dispatchTouches("touchmove", [{ x: 10, y: 10 }, { x: 180, y: 10 }]);
+    await flushRaf();
+    await dispatchTouches("touchend", []);
+    expect(harnessApi.consumeClickSuppression()).toBe(true);
+    expect(harnessApi.consumeClickSuppression()).toBe(false);
+  });
+
   test("live wheel does not re-render React per frame", async () => {
     await renderHarness();
     const rendersAfterMount = renders;

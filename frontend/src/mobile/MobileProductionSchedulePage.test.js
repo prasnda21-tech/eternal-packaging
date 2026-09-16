@@ -641,6 +641,237 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeTruthy();
   });
 
+  const clickScheduleRow = async () => {
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    return row;
+  };
+
+  const clickScheduleCell = async (index) => {
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    const cells = [...row.querySelectorAll("td")];
+    const cell = cells.at(index);
+    await act(async () => { cell.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    return cell;
+  };
+
+  const closeTaskModal = async () => {
+    const close = container.querySelector('[data-testid="mobile-task-modal-close"]');
+    if (!close) return;
+    await act(async () => { close.click(); });
+    await flush();
+  };
+
+  const allOpsPerm = (p) => (
+    p === "schedule.view"
+    || p === "screen.update"
+    || p === "helper.prepare"
+    || p === "packing.update"
+    || p === "loading.update"
+    || p === "delivery.update"
+  );
+
+  test("Screen allowed + active opens Screen modal, not another role", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "screener");
+    mockHasPerm.mockImplementation(allOpsPerm);
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [{ name: "Cup", quantity: 1000 }] },
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-input"]').value).toBe("screener");
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-screener"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
+  });
+
+  test("Helper allowed + active opens Helper modal", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "prep");
+    mockHasPerm.mockImplementation(allOpsPerm);
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: {
+        id: "po-1",
+        po_number: "PO-1001",
+        customer: "PT Example",
+        line_items: [{ name: "Cup", quantity: 1000, line_id: "lid-a" }],
+      },
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-input"]').value).toBe("prep");
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-prep"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-screener"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
+  });
+
+  test("active Packing does not open Screen when both are allowed", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "packing");
+    mockHasPerm.mockImplementation(allOpsPerm);
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-input"]').value).toBe("packing");
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-screener"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
+  });
+
+  test("unauthorized Screen does not open Screen workspace", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "screener");
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "packing.update");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="mop-active-role-input"]')?.value
+      || container.querySelector('[data-testid="mop-active-role-current"]')?.textContent).toMatch(/packing|Packing/i);
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-screener"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+  });
+
+  test("role not permitted fails closed and does not insert a PO summary", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    await renderPage();
+    await clickScheduleRow();
+    expect(api.getOrder).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  test("normal click without pinch opens; pinch blocks one click; next real click opens", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "packing.update");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-task-modal-close"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeFalsy();
+
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    await act(async () => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { ctrlKey: true, deltaY: 40, bubbles: true, cancelable: true }));
+    });
+    await flushRaf();
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeFalsy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    });
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+  });
+
+  test("ordinary wheel does not suppress a following row click", async () => {
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "packing.update");
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    const viewport = container.querySelector('[data-testid="mobile-schedule-scroll"]');
+    await act(async () => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { ctrlKey: false, deltaY: 240, bubbles: true, cancelable: true }));
+    });
+    await flushRaf();
+    await clickScheduleRow();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+  });
+
+  test("entire production row is clickable: first, middle, last cells follow Role Aktif", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    mockHasPerm.mockImplementation(allOpsPerm);
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [{ name: "Cup", quantity: 1000 }] },
+    });
+    const cases = [
+      { role: "screener", workspace: "mobile-ws-screener", others: ["mobile-ws-prep", "mobile-ws-packing"] },
+      { role: "prep", workspace: "mobile-ws-prep", others: ["mobile-ws-screener", "mobile-ws-packing"] },
+      { role: "packing", workspace: "mobile-ws-packing", others: ["mobile-ws-screener", "mobile-ws-prep"] },
+    ];
+    for (const spec of cases) {
+      act(() => { root.unmount(); });
+      root = createRoot(container);
+      writeActiveRoleId("u-mps", spec.role);
+      await renderPage();
+      expect(container.querySelector('[data-testid="mop-active-role-input"]').value).toBe(spec.role);
+      const cells = [...container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]').querySelectorAll("td")];
+      expect(cells.length).toBeGreaterThanOrEqual(3);
+      const indexes = [0, Math.floor(cells.length / 2), cells.length - 1];
+      for (const idx of indexes) {
+        await clickScheduleCell(idx);
+        expect(container.querySelector(`[data-testid="${spec.workspace}"]`)).toBeTruthy();
+        spec.others.forEach((other) => {
+          expect(container.querySelector(`[data-testid="${other}"]`)).toBeFalsy();
+        });
+        expect(container.querySelector('[data-testid="mobile-po-ringkasan"]')).toBeFalsy();
+        await closeTaskModal();
+      }
+    }
+  });
+
+  test("Packing role opens Packing when a Screen status cell is clicked", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "packing");
+    mockHasPerm.mockImplementation(allOpsPerm);
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    const mark = container.querySelector('[data-testid="prod-screen-qty-PO-1001"]');
+    await act(async () => { mark.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-ws-screener"]')).toBeFalsy();
+  });
+
+  test("whitespace inside a cell opens the row; interactive child does not", async () => {
+    const { writeActiveRoleId } = require("../lib/mobileOpsSession");
+    writeActiveRoleId("u-mps", "packing");
+    mockHasPerm.mockImplementation(allOpsPerm);
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows });
+    api.getOrder.mockResolvedValue({
+      order: { id: "po-1", po_number: "PO-1001", customer: "PT Example", line_items: [] },
+    });
+    await renderPage();
+    const row = container.querySelector('[data-testid="mobile-schedule-row-PO-1001"]');
+    const qtyCell = [...row.querySelectorAll("td")].find((td) => td.querySelector(".mop-ops-qty-total")) || row.querySelectorAll("td")[1];
+    await act(async () => { qtyCell.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-ws-packing"]')).toBeTruthy();
+    await closeTaskModal();
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "native";
+    qtyCell.appendChild(btn);
+    await act(async () => { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flush();
+    expect(container.querySelector('[data-testid="mobile-task-modal"]')).toBeFalsy();
+  });
+
   test("PWA Screen column is qty-only and screen_size column is absent", async () => {
     mockHasPerm.mockImplementation((p) => p === "schedule.view");
     api.productionDashboard.mockResolvedValue({

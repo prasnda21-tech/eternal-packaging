@@ -18,9 +18,11 @@ import {
   applyProductionSheetZoomVar,
   beginSheetPinch,
   clampProductionSheetZoom,
+  consumeSheetRowClickSuppression,
   createSheetPinchGesture,
   endSheetPinch,
   eventTouches,
+  isInteractiveSheetRowClickTarget,
   persistProductionSheetZoom,
   pinchAnchorInViewport,
   pinchDistance,
@@ -183,6 +185,41 @@ describe("productionSheetZoom", () => {
     expect(ended.startDistance).toBe(0);
     expect(shouldSuppressSheetRowClick(ended)).toBe(true);
     expect(shouldSuppressSheetRowClick(endSheetPinch(still))).toBe(false);
+  });
+
+  test("normal click is not suppressed; only suppressClick is consumed once", () => {
+    const idle = createSheetPinchGesture(1);
+    expect(shouldSuppressSheetRowClick(idle)).toBe(false);
+    expect(consumeSheetRowClickSuppression(idle).consumed).toBe(false);
+    const pinching = beginSheetPinch(idle, 1, 100);
+    expect(pinching.pinching).toBe(true);
+    expect(shouldSuppressSheetRowClick(pinching)).toBe(false);
+    expect(consumeSheetRowClickSuppression(pinching).consumed).toBe(false);
+    const armed = { ...pinching, suppressClick: true, moved: true };
+    expect(shouldSuppressSheetRowClick(armed)).toBe(true);
+    const first = consumeSheetRowClickSuppression(armed);
+    expect(first.consumed).toBe(true);
+    expect(first.next.suppressClick).toBe(false);
+    expect(consumeSheetRowClickSuppression(first.next).consumed).toBe(false);
+  });
+
+  test("interactive controls are ignored; ordinary cells are row-clickable", () => {
+    const root = document.createElement("tr");
+    const td = document.createElement("td");
+    const text = document.createElement("span");
+    text.textContent = "Qty";
+    td.appendChild(text);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    td.appendChild(btn);
+    const link = document.createElement("a");
+    link.href = "/x";
+    td.appendChild(link);
+    root.appendChild(td);
+    expect(isInteractiveSheetRowClickTarget(text)).toBe(false);
+    expect(isInteractiveSheetRowClickTarget(td)).toBe(false);
+    expect(isInteractiveSheetRowClickTarget(btn)).toBe(true);
+    expect(isInteractiveSheetRowClickTarget(link)).toBe(true);
   });
 
   test("style variable uses the spreadsheet zoom token", () => {

@@ -86,7 +86,7 @@ import { MOBILE_LOAD_TIMEOUT_MS, withTimeout } from "../lib/mobileRequest";
 import { sjFilesForLoading } from "../lib/loadingConfirm";
 import { findDeliveryShipment } from "../lib/deliveryProof";
 import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
-import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
+import { isInteractiveSheetRowClickTarget, productionSheetZoomStyle } from "../lib/productionSheetZoom";
 import { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
 import OpsQueueHeader from "./components/OpsQueueHeader";
 import OpsQueueLegend from "./components/OpsQueueLegend";
@@ -540,7 +540,16 @@ export default function MobileDeliverySchedulePage() {
   };
 
   const openRow = (r) => {
-    if (!r?.id || !activeRole?.id) return;
+    if (!r?.id) return;
+    if (!activeRole?.id || !hasPerm(activeRole.permission)) {
+      const next = selectOpsActiveRole(hasPerm, activeRoleId);
+      const resolved = next.selected?.id || "";
+      if (resolved !== activeRoleId) {
+        setActiveRoleId(resolved);
+        writeActiveRoleId(userKey, resolved);
+      }
+      return;
+    }
     persistScroll();
     const needsShipment = roleRequiresExactShipment(activeRole.id);
     const shipmentId = needsShipment ? scheduleRowShipmentId(r) : "";
@@ -596,6 +605,12 @@ export default function MobileDeliverySchedulePage() {
         }));
       }
     })();
+  };
+
+  const activateRow = (row, event) => {
+    if (isInteractiveSheetRowClickTarget(event?.target)) return;
+    if (sheetZoom.consumeClickSuppression()) return;
+    openRow(row);
   };
 
   const closeTask = () => setTask({
@@ -829,15 +844,11 @@ export default function MobileDeliverySchedulePage() {
                           data-testid={r.shipment_id ? `mds-row-${r.order_number}-${r.shipment_id}` : `mds-row-${r.order_number}`}
                           data-to={workHref}
                           tabIndex={0}
-                          onClick={() => {
-                            if (sheetZoom.consumeClickSuppression()) return;
-                            openRow(r);
-                          }}
+                          onClick={(event) => activateRow(r, event)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
-                              if (sheetZoom.consumeClickSuppression()) return;
-                              openRow(r);
+                              activateRow(r, event);
                             }
                           }}
                         >

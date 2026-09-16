@@ -62,7 +62,7 @@ import {
   writeScrollSession,
 } from "../lib/mobileOpsSession";
 import { storageUserKey } from "../lib/poListReturn";
-import { productionSheetZoomStyle } from "../lib/productionSheetZoom";
+import { isInteractiveSheetRowClickTarget, productionSheetZoomStyle } from "../lib/productionSheetZoom";
 
 const SCHEDULE_FILTER_RAIL_KEYS = [
   "semua",
@@ -254,7 +254,16 @@ export default function MobileProductionSchedulePage() {
   };
 
   const openRow = (row) => {
-    if (!row?.id || !activeRole?.id) return;
+    if (!row?.id) return;
+    if (!activeRole?.id || !hasPerm(activeRole.permission)) {
+      const next = selectOpsActiveRole(hasPerm, activeRoleId);
+      const resolved = next.selected?.id || "";
+      if (resolved !== activeRoleId) {
+        setActiveRoleId(resolved);
+        writeActiveRoleId(userKey, resolved);
+      }
+      return;
+    }
     persistScroll();
     if (roleRequiresExactShipment(activeRole.id)) {
       setTask({
@@ -281,6 +290,12 @@ export default function MobileProductionSchedulePage() {
         }));
       }
     })();
+  };
+
+  const activateRow = (row, event) => {
+    if (isInteractiveSheetRowClickTarget(event?.target)) return;
+    if (sheetZoom.consumeClickSuppression()) return;
+    openRow(row);
   };
 
   const closeTask = () => setTask({
@@ -435,15 +450,11 @@ export default function MobileProductionSchedulePage() {
                           data-row-key={row.displayRowKey}
                           data-to={href}
                           tabIndex={0}
-                          onClick={() => {
-                            if (sheetZoom.consumeClickSuppression()) return;
-                            openRow(row);
-                          }}
+                          onClick={(event) => activateRow(row, event)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
-                              if (sheetZoom.consumeClickSuppression()) return;
-                              openRow(row);
+                              activateRow(row, event);
                             }
                           }}
                         >

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  PRODUCTION_SHEET_CLICK_SUPPRESS_MS,
   PRODUCTION_SHEET_ZOOM_PERSIST_MS,
   PRODUCTION_SHEET_ZOOM_SMOOTH_RATE,
   applyProductionSheetZoomVar,
   beginSheetPinch,
   clampProductionSheetZoom,
+  consumeSheetRowClickSuppression,
   createSheetPinchGesture,
   endSheetPinch,
   eventTouches,
@@ -35,10 +37,47 @@ export default function useProductionSheetZoom({ userId } = {}) {
   const pendingZoomRef = useRef(null);
   const pendingLiveRef = useRef(null);
   const persistTimerRef = useRef(0);
+  const suppressTimerRef = useRef(0);
   const userIdRef = useRef(persistUserId);
   userIdRef.current = persistUserId;
   const gestureRef = useRef(createSheetPinchGesture(zoom));
   const tickRef = useRef(null);
+
+  const clearSuppressTimer = useCallback(() => {
+    if (!suppressTimerRef.current) return;
+    window.clearTimeout(suppressTimerRef.current);
+    suppressTimerRef.current = 0;
+  }, []);
+
+  const disarmClickSuppression = useCallback(() => {
+    clearSuppressTimer();
+    const consumed = consumeSheetRowClickSuppression(gestureRef.current);
+    if (gestureRef.current.pinching) {
+      gestureRef.current = consumed.next;
+      return;
+    }
+    gestureRef.current = createSheetPinchGesture(targetZoomRef.current);
+  }, [clearSuppressTimer]);
+
+  const armClickSuppression = useCallback(() => {
+    gestureRef.current = {
+      ...gestureRef.current,
+      suppressClick: true,
+      moved: true,
+    };
+    clearSuppressTimer();
+    suppressTimerRef.current = window.setTimeout(() => {
+      suppressTimerRef.current = 0;
+      if (gestureRef.current.pinching) {
+        gestureRef.current = {
+          ...gestureRef.current,
+          suppressClick: false,
+        };
+        return;
+      }
+      gestureRef.current = createSheetPinchGesture(targetZoomRef.current);
+    }, PRODUCTION_SHEET_CLICK_SUPPRESS_MS);
+  }, [clearSuppressTimer]);
 
   const setViewportRef = useCallback((node) => {
     viewportRef.current = node;
@@ -138,6 +177,7 @@ export default function useProductionSheetZoom({ userId } = {}) {
     if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
     if (liveRafRef.current) window.cancelAnimationFrame(liveRafRef.current);
     if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current);
+    if (suppressTimerRef.current) window.clearTimeout(suppressTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -180,11 +220,7 @@ export default function useProductionSheetZoom({ userId } = {}) {
       const current = pendingLiveRef.current?.zoom ?? displayZoomRef.current;
       const next = productionSheetZoomFromWheel(current, event.deltaY, event.deltaMode);
       if (next !== current) {
-        gestureRef.current = {
-          ...gestureRef.current,
-          suppressClick: true,
-          moved: true,
-        };
+        armClickSuppression();
       }
       applyLivePinchZoom(next, originFromClient(event.clientX, event.clientY));
     };
@@ -226,11 +262,7 @@ export default function useProductionSheetZoom({ userId } = {}) {
       if (!gestureRef.current.pinching && !gestureRef.current.suppressClick) return;
       gestureRef.current = endSheetPinch(gestureRef.current);
       if (!gestureRef.current.suppressClick) return;
-      window.setTimeout(() => {
-        if (!gestureRef.current.pinching) {
-          gestureRef.current = createSheetPinchGesture(targetZoomRef.current);
-        }
-      }, 280);
+      armClickSuppression();
     };
 
     el.addEventListener("wheel", onWheel, { passive: false, capture: true });
@@ -244,19 +276,17 @@ export default function useProductionSheetZoom({ userId } = {}) {
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", endPinch);
       el.removeEventListener("touchcancel", endPinch);
+      clearSuppressTimer();
+      gestureRef.current = createSheetPinchGesture(targetZoomRef.current);
     };
-  }, [applyLivePinchZoom, setTargetZoom, viewportNode]);
+  }, [applyLivePinchZoom, armClickSuppression, clearSuppressTimer, setTargetZoom, viewportNode]);
 
   const consumeClickSuppression = useCallback(() => {
-    if (gestureRef.current.pinching || gestureRef.current.suppressClick) {
-      gestureRef.current = {
-        ...gestureRef.current,
-        suppressClick: false,
-      };
-      return true;
-    }
-    return false;
-  }, []);
+    const { consumed } = consumeSheetRowClickSuppression(gestureRef.current);
+    if (!consumed) return false;
+    disarmClickSuppression();
+    return true;
+  }, [disarmClickSuppression]);
 
   return { zoom, applyZoom: applyLivePinchZoom, setViewportRef, viewportRef, consumeClickSuppression, gestureRef };
 }
