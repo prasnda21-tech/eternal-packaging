@@ -220,30 +220,24 @@ def _hop_payload(server, raw_orders, *, lead_days=3, now=None):
         server._attach_deadline_snapshot(o, lead_days)
 
     now = now or datetime(2026, 9, 13, 6, 0, tzinfo=timezone.utc)
-    today_iso_date = now.strftime("%Y-%m-%d")
-    active_orders = [o for o in orders if o.get("current_stage", 0) < 14]
+    from quantity_rules import is_fully_delivered
+    from services.dashboard_today import (
+        due_today_orders,
+        partition_orders_by_delivery,
+        wib_today,
+    )
+    today = wib_today(now)
+    active_orders, completed_orders = partition_orders_by_delivery(
+        orders, is_fully_delivered
+    )
     urgent_orders = [o for o in active_orders if o.get("priority") == "urgent"]
-    completed_orders = [o for o in orders if o.get("current_stage", 0) >= 14]
 
-    def parse_dt(iso):
-        if not iso:
-            return None
-        try:
-            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except Exception:
-            return None
-
-    due_today, overdue = [], []
+    due_today = due_today_orders(active_orders, today)
+    overdue = []
     deadline_h1, deadline_h6 = [], []
     waiting_design, waiting_payment = [], []
     hold_list = []
     for o in active_orders:
-        d = parse_dt(o.get("deadline"))
-        if d and d >= now and d.strftime("%Y-%m-%d") == today_iso_date:
-            due_today.append(o)
         st = o.get("delivery_deadline_status")
         if st == "overdue":
             overdue.append(o)
@@ -260,13 +254,11 @@ def _hop_payload(server, raw_orders, *, lead_days=3, now=None):
 
     stage_breakdown = []
     for idx, label in enumerate(server.STAGES):
-        cnt = sum(1 for o in orders if o.get("current_stage", 0) == idx)
+        cnt = sum(1 for o in active_orders if o.get("current_stage", 0) == idx)
         stage_breakdown.append({"stage": idx, "label": label, "count": cnt})
 
     op_map = {}
-    for o in orders:
-        if o.get("current_stage", 0) >= 14:
-            continue
+    for o in active_orders:
         for s in o.get("operator_splits", []):
             email = s.get("operator_email")
             if not email:
@@ -348,8 +340,9 @@ def _hop_payload(server, raw_orders, *, lead_days=3, now=None):
         "completed": [slim(o) for o in completed_orders],
         "stage_breakdown": stage_breakdown,
         "operator_load": operator_load,
-        "work_today": build_work_today(orders, now.astimezone(timezone(timedelta(hours=7))).date()),
-        "shipments_today": build_shipments_today(orders, now.astimezone(timezone(timedelta(hours=7))).date()),
+        "work_today": build_work_today(orders, today),
+        # Endpoint loads schedule candidates through a separate SCHEDULE_PROJECTION query.
+        "shipments_today": build_shipments_today([], today),
     }
 
 
@@ -386,11 +379,11 @@ def test_handler_uses_dedicated_aggregate_not_full_find():
     body = _summary_fn_body()
     assert "aggregate" in body
     assert "_orders_dashboard_summary_projection" in body
-    assert "_DASHBOARD_SUMMARY_LIMIT" in body
     assert 'find({}, {"_id": 0}).to_list(1000)' not in body
-    assert '{"$limit": _DASHBOARD_SUMMARY_LIMIT}' in body
+    assert 'to_list(None)' in body
     assert '"$project": _orders_dashboard_summary_projection()' in body
-    assert '"$match"' not in body
+    assert '{"$match": {"cancelled": {"$ne": True}}}' in body
+    assert '"$limit"' not in body
     assert '"$sort"' not in body
     assert "cancelled" in body
     assert 'if not o.get("cancelled")' in body
@@ -406,10 +399,10 @@ def test_handler_uses_dedicated_aggregate_not_full_find():
     assert "create_index" not in body
 
 
-def test_cancelled_match_not_moved_before_limit():
+def test_cancelled_is_filtered_before_projection_without_truncation():
     body = _summary_fn_body()
-    assert '{"cancelled": {"$ne": True}}' not in body
-    assert '"$match"' not in body
+    assert '{"cancelled": {"$ne": True}}' in body
+    assert '"$limit"' not in body
     assert 'orders = [o for o in raw_orders if not o.get("cancelled")]' in body
 
 
@@ -419,7 +412,7 @@ def test_projection_is_not_phase2b_or_action_center():
     assert "_orders_dashboard_list_projection" not in proj
     assert "_orders_action_center_projection" not in proj
     assert "Dedicated; not Phase 2B or Action Center" in proj
-    assert "_DASHBOARD_SUMMARY_LIMIT = 1000" in SERVER
+    assert "_DASHBOARD_SUMMARY_LIMIT" not in SERVER
 
 
 def test_projection_source_excludes_heavy_top_level_fields():
@@ -591,7 +584,10 @@ def test_active_vs_completed_and_urgent():
     now = datetime(2026, 9, 13, 6, 0, tzinfo=timezone.utc)
     active = _base_print_po(id="a", current_stage=8, priority="normal")
     urgent = _base_print_po(id="u", po_number="PO-U", current_stage=3, priority="urgent")
-    done = _base_print_po(id="d", po_number="PO-D", current_stage=14, priority="urgent")
+    done = _base_print_po(
+        id="d", po_number="PO-D", current_stage=14, priority="urgent",
+        qty_delivered=100, delivery_status="Terkirim",
+    )
     _, out, _ = _assert_hop_parity(server, active, urgent, done, now=now)
     assert out["kpi"]["total_active"] == 2
     assert out["kpi"]["completed"] == 1
@@ -601,7 +597,7 @@ def test_active_vs_completed_and_urgent():
     assert {o["id"] for o in out["active"]} == {"a", "u"}
 
 
-def test_due_today_uses_legacy_deadline_not_tanggal_pengiriman():
+def test_due_today_uses_tanggal_pengiriman_not_legacy_deadline():
     server = _import_server()
     now = datetime(2026, 9, 13, 6, 0, tzinfo=timezone.utc)
     due = _base_print_po(
@@ -618,11 +614,11 @@ def test_due_today_uses_legacy_deadline_not_tanggal_pengiriman():
         scheduled_delivery_date="2026-09-13",
     )
     _, out, _ = _assert_hop_parity(server, due, not_due, now=now)
-    assert {o["id"] for o in out["due_today"]} == {"due"}
+    assert {o["id"] for o in out["due_today"]} == {"later"}
     assert out["kpi"]["due_today"] == 1
     due_row = out["due_today"][0]
-    assert due_row["deadline"] == due["deadline"]
-    assert due_row["delivery_deadline_effective"] != due_row["deadline"]
+    assert due_row["deadline"] == not_due["deadline"]
+    assert due_row["delivery_deadline_effective"] == "2026-09-13"
 
 
 def test_deadline_h1_h6_overdue_use_snapshot_status():
@@ -737,7 +733,7 @@ def test_operator_load_and_stage_breakdown_parity():
     assert stages[11] == 1
 
 
-def test_shipments_today_and_delivery_proof_uploaded_at():
+def test_shipments_today_does_not_count_proof_activity_as_schedule():
     server = _import_server()
     now = datetime(2026, 9, 13, 6, 0, tzinfo=timezone.utc)
     proof_only = _base_print_po(
@@ -751,8 +747,7 @@ def test_shipments_today_and_delivery_proof_uploaded_at():
         delivery_proofs=[{"uploaded_at": _iso(now.replace(hour=10)), "data_url": _blob("Z")}],
     )
     _, out, _ = _assert_hop_parity(server, proof_only, now=now)
-    assert out["shipments_today"]["total"] == 1
-    assert out["shipments_today"]["preview"][0]["id"] == "pr"
+    assert out["shipments_today"]["total"] == 0
 
 
 def test_packed_zero_does_not_invent_loading():
@@ -858,7 +853,7 @@ def test_endpoint_zero_write_and_contract():
             self.docs = docs
 
         async def to_list(self, n):
-            assert n == server._DASHBOARD_SUMMARY_LIMIT
+            assert n is None
             return copy.deepcopy(self.docs)
 
     fake_orders = MagicMock()
@@ -868,7 +863,7 @@ def test_endpoint_zero_write_and_contract():
     fake_orders.delete_one = MagicMock()
     fake_orders.replace_one = MagicMock()
     fake_orders.bulk_write = MagicMock()
-    fake_orders.find = MagicMock()
+    fake_orders.find.return_value = _FakeAgg([])
 
     async def _run():
         with patch.object(server.db, "orders", fake_orders):
@@ -876,7 +871,7 @@ def test_endpoint_zero_write_and_contract():
                 return await server.dashboard_summary(user={"role": "admin"})
 
     result = asyncio.run(_run())
-    fake_orders.find.assert_not_called()
+    fake_orders.find.assert_called_once()
     fake_orders.update_one.assert_not_called()
     fake_orders.insert_one.assert_not_called()
     fake_orders.delete_one.assert_not_called()
@@ -884,7 +879,7 @@ def test_endpoint_zero_write_and_contract():
     fake_orders.bulk_write.assert_not_called()
     fake_orders.aggregate.assert_called_once()
     pipeline = fake_orders.aggregate.call_args[0][0]
-    assert pipeline[0] == {"$limit": 1000}
+    assert pipeline[0] == {"$match": {"cancelled": {"$ne": True}}}
     assert "$project" in pipeline[1]
     for k in _RESPONSE_KEYS:
         assert k in result
@@ -896,14 +891,16 @@ def test_endpoint_zero_write_and_contract():
 def test_helpers_unchanged_in_endpoint():
     body = _summary_fn_body()
     assert "def slim(o):" in body
-    assert "def parse_dt(iso):" in body
+    assert "partition_orders_by_delivery" in body
+    assert "due_today_orders" in body
+    assert "wib_today(now)" in body
     assert "stage_breakdown" in body
     assert "operator_load" in body
     assert "waiting_design.append" in body
     assert 'o.get("design_status") != "Approved"' in body
     assert 'o.get("priority") == "urgent"' in body
-    assert 'o.get("current_stage", 0) >= 14' in body
-    assert 'o.get("deadline")' in body
+    assert "_qr_is_fully_delivered" in body
+    assert 'o.get("deadline")' not in body
     assert "delivery_deadline_status" in body
 
 
