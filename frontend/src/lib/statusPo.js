@@ -20,7 +20,7 @@ export const STATUS_PO_VIEWS = {
   delivery_today: "Pengiriman Hari Ini",
 };
 
-export const STATUS_PO_COLUMNS = ["No PO", "Tanggal", "Pelanggan", "Status", "Status Terkirim"];
+export const STATUS_PO_COLUMNS = ["No PO", "Tanggal", "Pelanggan", "Item Line", "Status Saat Ini", "Progress", "Aksi"];
 
 export function statusPoViewLabel(view) {
   return STATUS_PO_VIEWS[view] || "Semua PO";
