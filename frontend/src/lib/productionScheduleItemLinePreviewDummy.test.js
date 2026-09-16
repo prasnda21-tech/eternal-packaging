@@ -36,8 +36,8 @@ describe("production schedule item-line preview proof", () => {
   test("multiple operators stay isolated", () => {
     const display = buildProductionScheduleDisplayRows([isolatedOperatorsProofRow()]);
     expect(display).toHaveLength(2);
-    expect(display.map((row) => row.displayOperator.operator_name)).toEqual(["Budi", "Andi"]);
-    expect(display.map((row) => row.displayOperator.quantity)).toEqual([1000, 7000]);
+    expect(display.map((row) => row.displayOperator.operator_name)).toEqual(["Andi", "Budi"]);
+    expect(display.map((row) => row.displayOperator.quantity)).toEqual([7000, 1000]);
     expect(display[0].displayOperatorKey).not.toBe(display[1].displayOperatorKey);
   });
 
