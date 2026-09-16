@@ -10682,18 +10682,52 @@ class CurrentStockPatch(BaseModel):
     manual_current_qty_alias: Optional[Any] = None
 
 
-async def _load_stock_context():
-    """Stock Engine V2 read model: physical ledger + outstanding SO (no manual purchase)."""
+async def _physical_stock_enabled() -> bool:
+    from services.physical_stock_settings import get_physical_stock_settings
+    settings = await get_physical_stock_settings(db)
+    return bool(settings.get("enabled"))
+
+
+async def _load_legacy_stock_context():
+    """Pre-V2 Stock Saat Ini: item_stock_manual + receipts + PO/print aggregates."""
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(10000)
+    orders = await db.orders.find(
+        {"cancelled": {"$ne": True}}, STOCK_ORDER_PROJECTION,
+    ).to_list(20000)
+    manuals = await db[STOCK_MANUAL_COLLECTION].find({}, {"_id": 0}).to_list(10000)
+    receipts = await load_receipts(db)
+    meta = await load_sync_meta(db)
+    source = purchase_source_from_meta(meta)
+    rows = build_stock_rows(
+        masters, orders, manuals, receipts, purchase_source=source,
+    )
+    return rows, source, receipt_last_success_at(meta)
+
+
+async def _load_v2_stock_context():
+    """Stock Engine V2 read model: physical ledger + outstanding SO."""
     rows = await build_current_stock_rows(db)
     return rows, "GOODS_RECEIPT", None
 
 
+async def _load_stock_context():
+    """Toggle is the authority boundary: OFF = legacy read, ON = V2 read.
+
+    GET path is read-only against app_settings / product_stock_state / stock_movements.
+    """
+    if await _physical_stock_enabled():
+        return await _load_v2_stock_context()
+    return await _load_legacy_stock_context()
+
+
 
 def _purchase_source_label(source: str) -> str:
-    return "Penerimaan Barang" if source in ("GOODS_RECEIPT", STOCK_PURCHASE_ACCURATE) else "Manual"
+    if source in ("GOODS_RECEIPT",):
+        return "Penerimaan Barang"
+    return "Accurate" if source == STOCK_PURCHASE_ACCURATE else "Manual"
 
 
-def _stock_xlsx(rows: list) -> FastAPIResponse:
+def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
     from io import BytesIO
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill
@@ -10701,10 +10735,17 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
     wb = Workbook()
     ws = wb.active
     ws.title = "Stock Saat Ini"
-    headers = [
-        "Kode", "Nama Item", "Satuan", "Stock Fisik", "Belum Dicetak", "Sudah Dicetak",
-        "Outstanding SO", "Stock Saat Ini", "Terakhir Update",
-    ]
+    if v2:
+        headers = [
+            "Kode", "Nama Item", "Satuan", "Stock Fisik", "Belum Dicetak", "Sudah Dicetak",
+            "Outstanding SO", "Stock Saat Ini", "Terakhir Update",
+        ]
+    else:
+        headers = [
+            "Kode", "Nama Item", "Satuan", "Qty Saat Ini", "Pembelian Barang",
+            "Qty PO", "Qty Cetak Operator", "Stock Saat Ini", "Sumber Pembelian",
+            "Terakhir Update",
+        ]
     ws.append(headers)
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="17313E")
@@ -10719,18 +10760,33 @@ def _stock_xlsx(rows: list) -> FastAPIResponse:
             who = r.get("updated_by_name") or r.get("updated_by")
             updated = f"{updated} · {who}" if updated else who
         src = _purchase_source_label(r.get("purchase_source") or STOCK_PURCHASE_SOURCE)
-        ws.append([
-            r.get("item_code") or "",
-            r.get("item_name") or "",
-            r.get("unit") or "",
-            r.get("physical_qty") if r.get("physical_qty") is not None else 0,
-            r.get("unprinted_qty") if r.get("unprinted_qty") is not None else 0,
-            r.get("printed_qty") if r.get("printed_qty") is not None else 0,
-            r.get("outstanding_so_qty") if r.get("outstanding_so_qty") is not None else 0,
-            r.get("stock_current") if r.get("stock_current") is not None else 0,
-            updated,
-        ])
-    for col in range(4, 9):
+        if v2:
+            ws.append([
+                r.get("item_code") or "",
+                r.get("item_name") or "",
+                r.get("unit") or "",
+                r.get("physical_qty") if r.get("physical_qty") is not None else 0,
+                r.get("unprinted_qty") if r.get("unprinted_qty") is not None else 0,
+                r.get("printed_qty") if r.get("printed_qty") is not None else 0,
+                r.get("outstanding_so_qty") if r.get("outstanding_so_qty") is not None else 0,
+                r.get("stock_current") if r.get("stock_current") is not None else 0,
+                updated,
+            ])
+        else:
+            ws.append([
+                r.get("item_code") or "",
+                r.get("item_name") or "",
+                r.get("unit") or "",
+                r.get("manual_current_qty") if r.get("manual_current_qty") is not None else 0,
+                r.get("purchase_qty") if r.get("purchase_qty") is not None else 0,
+                r.get("qty_po") if r.get("qty_po") is not None else 0,
+                r.get("operator_print_qty") if r.get("operator_print_qty") is not None else 0,
+                r.get("stock_current") if r.get("stock_current") is not None else 0,
+                src,
+                updated,
+            ])
+    last_num_col = 8 if v2 else 8
+    for col in range(4, last_num_col + 1):
         for row_idx in range(2, ws.max_row + 1):
             ws.cell(row=row_idx, column=col).number_format = "0"
     ws.auto_filter.ref = ws.dimensions
@@ -10756,13 +10812,24 @@ async def current_stock_list(
     page_size: int = 50,
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows, source, last_sync = await _load_stock_context()
-    payload = filter_sort_page_v2(
-        rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
-        page=page, page_size=page_size,
-    )
+    v2_on = await _physical_stock_enabled()
+    rows, source, last_sync = await (_load_v2_stock_context() if v2_on else _load_legacy_stock_context())
+    if v2_on:
+        payload = filter_sort_page_v2(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=page, page_size=page_size,
+        )
+    else:
+        payload = filter_stock_page(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=page, page_size=page_size, purchase_source=source,
+            last_receipt_sync_at=last_sync,
+        )
+        payload["stock_engine"] = "legacy"
+        payload["formula"] = "(manual_current_qty + purchase_qty) - po_qty - operator_print_qty"
     payload["purchase_source"] = source
     payload["last_receipt_sync_at"] = last_sync
+    payload["physical_stock_enabled"] = v2_on
     return payload
 
 
@@ -10774,18 +10841,26 @@ async def current_stock_export(
     sort_dir: str = "asc",
     user=Depends(require_perm("current_stock.export")),
 ):
-    rows, _source, _last_sync = await _load_stock_context()
-    payload = filter_sort_page_v2(
-        rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
-        page=1, page_size=max(1, len(rows) or 1),
-    )
+    v2_on = await _physical_stock_enabled()
+    rows, source, _last_sync = await (_load_v2_stock_context() if v2_on else _load_legacy_stock_context())
+    if v2_on:
+        payload = filter_sort_page_v2(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=1, page_size=max(1, len(rows) or 1),
+        )
+    else:
+        payload = filter_stock_page(
+            rows, q=q, stock_filter=stock_filter, sort_by=sort_by, sort_dir=sort_dir,
+            page=1, page_size=max(1, len(rows) or 1), purchase_source=source,
+            last_receipt_sync_at=_last_sync,
+        )
     filtered = payload.get("items") or payload.get("rows") or []
     await _write_audit(
         "current_stock.export", user, target_email=None,
         before=None, after={"count": len(filtered), "stock_filter": stock_filter, "q": q},
         note="Export Stock Saat Ini",
     )
-    return _stock_xlsx(filtered)
+    return _stock_xlsx(filtered, v2=v2_on)
 
 
 @api_router.patch("/current-stock/{item_id}")
@@ -12878,9 +12953,15 @@ async def seed():
     await _opening_balance_ensure_indexes(db)
     await ensure_chat_indexes(db)
     try:
-        await ensure_v2_physical_settings(db)
+        # Read-only probe — must not enable Stock V2 or rewrite app_settings on deploy.
+        v2_settings = await ensure_v2_physical_settings(db)
+        logger.info(
+            "Stock Engine V2 settings probe: enabled=%s out_trigger=%s",
+            bool(v2_settings.get("enabled")),
+            v2_settings.get("stock_out_trigger"),
+        )
     except Exception as e:
-        logger.warning("Stock Engine V2 settings ensure failed: %s", e)
+        logger.warning("Stock Engine V2 settings probe failed: %s", e)
     from services.notification_indexes import ensure_indexes as ensure_notification_indexes
     await ensure_notification_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable

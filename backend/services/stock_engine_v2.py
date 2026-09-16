@@ -449,7 +449,17 @@ async def validate_sales_order_availability(
 
     For revise, exclude_order_id removes that order's current outstanding from the
     denominator so the revision is compared against free stock + its own prior reservation.
+
+    V2 availability is authoritative only while physical_stock.enabled is true.
+    While OFF, this gate is a no-op so missing product_stock_state cannot reject
+    legitimate Accurate / new sales orders.
     """
+    from services.physical_stock_settings import get_physical_stock_settings
+
+    settings = await get_physical_stock_settings(db)
+    if not bool(settings.get("enabled")):
+        return
+
     # Build baseline outstanding excluding this order
     masters = await db.master_items.find({}, {"_id": 0, "id": 1, "accurate_item_id": 1}).to_list(10000)
     orders = await db.orders.find(
@@ -636,23 +646,49 @@ async def apply_stock_opname(
 
 
 async def ensure_v2_physical_settings(db) -> dict:
-    """Ensure physical stock engine is ON with GR in / sales delivery out for V2."""
+    """Read-only probe of physical-stock settings for Stock V2 compatibility.
+
+    Deploy/startup MUST NOT silently enable Stock V2 or rewrite app_settings.
+    Activation is an explicit ops action via activate_v2_physical_settings()
+    (also reachable through PUT /api/settings/physical-stock).
+    """
+    from services.physical_stock_settings import get_physical_stock_settings
+
+    return await get_physical_stock_settings(db)
+
+
+async def activate_v2_physical_settings(db, user=None) -> dict:
+    """Explicitly enable Stock V2 physical settings (GR in / sales delivery out).
+
+    This is the only path that writes the V2 activation profile into app_settings.
+    """
     from services.physical_stock_settings import (
         SETTINGS_KEY,
         get_physical_stock_settings,
         sanitize_settings,
     )
+
     current = await get_physical_stock_settings(db)
+    actor = None
+    if isinstance(user, dict):
+        actor = {
+            "id": str(user.get("id") or user.get("_id") or ""),
+            "name": user.get("name") or user.get("email") or "User",
+            "email": user.get("email") or "",
+            "role": user.get("role") or "",
+        }
+    else:
+        actor = {"name": "stock_engine_v2", "email": "system@local"}
+
     desired = {
         **current,
         "enabled": True,
         "stock_in_trigger": "goods_receipt",
         "stock_out_trigger": "sales_delivery",
         "updated_at": now_iso(),
-        "updated_by": {"name": "stock_engine_v2", "email": "system@local"},
+        "updated_by": actor,
         "stock_engine_version": 2,
     }
-    # Always allow sales_delivery even if older settings helper rejected it
     clean = sanitize_settings(desired)
     clean["enabled"] = True
     clean["stock_in_trigger"] = "goods_receipt"
