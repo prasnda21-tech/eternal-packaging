@@ -53,7 +53,7 @@ describe("buildProductionScheduleDisplayRows", () => {
     });
     const keys = display.map((row) => row.displayRowKey);
     expect(new Set(keys).size).toBe(3);
-    expect(keys[0]).toBe(productionScheduleDisplayRowKey("po-1", "email:budi@x.com"));
+    expect(keys[0]).toBe(productionScheduleDisplayRowKey("po-1", "email:budi@x.com", "s-a"));
   });
 
   test("canonical PO count stays 1 while display rows are 3", () => {
@@ -88,24 +88,27 @@ describe("buildProductionScheduleDisplayRows", () => {
     expect(productionScheduleAssignmentKey(row.operators[0], 0)).not.toBe(productionScheduleAssignmentKey(row.operators[1], 1));
   });
 
-  test("same operator across two splits → 1 row and retains split/line identities", () => {
+  test("same operator across two item lines → 2 rows with repeated name and line qty", () => {
     const row = {
       id: "po-same",
       po_number: "PO-S",
       operators: [
-        { split_id: "s1", operator_email: "nanda@x.com", operator_user_id: "u-nanda", operator_name: "Nanda Operator", line_idx: 0, line_id: "lid-a", quantity: 100 },
-        { split_id: "s2", operator_email: "nanda@x.com", operator_user_id: "u-nanda", operator_name: "Nanda Operator", line_idx: 2, line_id: "lid-b", quantity: 50 },
+        { split_id: "s1", operator_email: "nanda@x.com", operator_user_id: "u-nanda", operator_name: "Nanda Operator", line_idx: 0, line_id: "lid-a", line_name: "Plastik PE 28", quantity: 2000 },
+        { split_id: "s2", operator_email: "nanda@x.com", operator_user_id: "u-nanda", operator_name: "Nanda Operator", line_idx: 2, line_id: "lid-b", line_name: "Plastik PE 28", quantity: 2600 },
       ],
     };
     const display = buildProductionScheduleDisplayRows([row]);
-    expect(display).toHaveLength(1);
-    expect(display[0].displayOperator.operator_name).toBe("Nanda Operator");
-    expect(display[0].displayOperator.quantity).toBe(150);
-    expect(display[0].displayOperator.operator_split_ids).toEqual(["s1", "s2"]);
-    expect(display[0].displayOperator.line_ids).toEqual(["lid-a", "lid-b"]);
-    expect(display[0].displayOperator.line_indices).toEqual([0, 2]);
-    expect(display[0].displayOperator.splits).toHaveLength(2);
-    expect(display[0].displayRowKey).toBe(productionScheduleDisplayRowKey("po-same", productionScheduleOperatorIdentity(row.operators[0])));
+    expect(display).toHaveLength(2);
+    expect(display.map((r) => r.displayOperator.operator_name)).toEqual(["Nanda Operator", "Nanda Operator"]);
+    expect(display.map((r) => r.displayOperator.quantity)).toEqual([2000, 2600]);
+    expect(display.map((r) => r.displayOperator.line_id)).toEqual(["lid-a", "lid-b"]);
+    expect(display.map((r) => r.displayOperator.splits)).toEqual([
+      [row.operators[0]],
+      [row.operators[1]],
+    ]);
+    expect(display[0].displayRowKey).not.toBe(display[1].displayRowKey);
+    expect(display[0].po_number).toBe("PO-S");
+    expect(display[1].po_number).toBe("PO-S");
   });
 
   test("same display name but different stable operator IDs → 2 rows", () => {
@@ -146,7 +149,25 @@ describe("buildProductionScheduleDisplayRows", () => {
     expect(display.every((row) => row.po_number === "PO-001")).toBe(true);
   });
 
-  test("mixed split work dates do not invent earliest/latest; PO-level date is used", () => {
+  test("identical item names keep separate qty and do not aggregate", () => {
+    const row = {
+      id: "po-pe",
+      po_number: "PO-PE",
+      customer: "Customer A",
+      operators: [
+        { split_id: "s1", operator_user_id: "u-isma", operator_name: "Isma Nur Alamsyah", line_name: "Plastik PE 28", line_id: "lid-a", line_idx: 0, line_printable: true, quantity: 2000 },
+        { split_id: "s2", operator_user_id: "u-isma", operator_name: "Isma Nur Alamsyah", line_name: "Plastik PE 28", line_id: "lid-b", line_idx: 1, line_printable: true, quantity: 2600 },
+      ],
+    };
+    const display = buildProductionScheduleDisplayRows([row]);
+    expect(display).toHaveLength(2);
+    expect(display[0].displayOperator.quantity + display[1].displayOperator.quantity).toBe(4600);
+    expect(display[0].displayOperator.quantity).toBe(2000);
+    expect(display[1].displayOperator.quantity).toBe(2600);
+    expect(display.every((r) => r.customer === "Customer A")).toBe(true);
+  });
+
+  test("mixed split work dates stay on their own assignment rows", () => {
     const row = {
       id: "po-dates",
       po_number: "PO-W",
@@ -157,9 +178,9 @@ describe("buildProductionScheduleDisplayRows", () => {
       ],
     };
     const display = buildProductionScheduleDisplayRows([row]);
-    expect(display).toHaveLength(1);
-    expect(display[0].displayWorkDate).toBe("2026-09-10");
-    expect(display[0].work_date).toBe("2026-09-10");
+    expect(display).toHaveLength(2);
+    expect(display.map((r) => r.displayWorkDate)).toEqual(["2026-09-01", "2026-09-08"]);
+    expect(display.map((r) => r.work_date)).toEqual(["2026-09-01", "2026-09-08"]);
   });
 
   test("non-cetak splits are excluded from operator rows and items", () => {
@@ -178,7 +199,7 @@ describe("buildProductionScheduleDisplayRows", () => {
     expect(display[0].displayOperator.splits.every((op) => op.line_printable !== false)).toBe(true);
   });
 
-  test("same-name items keep distinct line identities on one operator row", () => {
+  test("same-name items keep distinct line identities on separate rows", () => {
     const row = {
       id: "po-same-name",
       operators: [
@@ -187,8 +208,8 @@ describe("buildProductionScheduleDisplayRows", () => {
       ],
     };
     const display = buildProductionScheduleDisplayRows([row]);
-    expect(display).toHaveLength(1);
-    expect(display[0].displayOperator.line_ids).toEqual(["lid-a", "lid-b"]);
-    expect(display[0].displayOperator.operator_split_ids).toEqual(["s1", "s2"]);
+    expect(display).toHaveLength(2);
+    expect(display.map((r) => r.displayOperator.line_id)).toEqual(["lid-a", "lid-b"]);
+    expect(display.map((r) => r.displayOperator.split_id)).toEqual(["s1", "s2"]);
   });
 });

@@ -1,8 +1,7 @@
-/** View-model expansion: one spreadsheet display row per distinct operator in a PO.
+/** View-model expansion: one spreadsheet display row per operator assignment + item line.
 
 Presentation only. Canonical PO rows stay 1:1 with the dashboard payload.
-Multiple splits for the same operator collapse to one visible row; split/line
-identities are retained on the display-row model.
+The same operator name may repeat across rows; qty stays on that item line.
 */
 
 import { isPrintableScheduleSplit } from "./productionScheduleQty";
@@ -26,8 +25,37 @@ export function productionScheduleAssignmentKey(op, index = 0) {
   return `${person}::${line}::${idx}::${index}`;
 }
 
-export function productionScheduleDisplayRowKey(orderId, operatorKey) {
-  return `${orderId || "po"}::${operatorKey || "unassigned"}`;
+export function productionScheduleDisplayRowKey(orderId, operatorKey, assignmentKey) {
+  const person = operatorKey || "unassigned";
+  if (assignmentKey) return `${orderId || "po"}::${person}::${assignmentKey}`;
+  return `${orderId || "po"}::${person}`;
+}
+
+export function toProductionScheduleDisplayRow(row, {
+  operatorKey,
+  displayOperator,
+  displayWorkDate,
+  assignmentKey,
+} = {}) {
+  const key = operatorKey || "unassigned";
+  const next = {
+    ...row,
+    displayRowKey: productionScheduleDisplayRowKey(row.id, key, assignmentKey),
+    displayOperatorKey: key,
+    displayOperator: displayOperator || null,
+    displayWorkDate: displayWorkDate || null,
+  };
+  if (displayOperator || assignmentKey) {
+    next.work_date = displayWorkDate || row.work_date || null;
+    next.operator_work_dates = displayWorkDate
+      ? [{
+        split_id: assignmentKey || key,
+        operator_name: displayOperator?.operator_name,
+        work_date: displayWorkDate,
+      }]
+      : [];
+  }
+  return next;
 }
 
 export function productionScheduleSplitWorkDate(row, op) {
@@ -113,48 +141,36 @@ export function buildProductionScheduleDisplayRows(rows) {
       const printTarget = Number(row?.print_qty_total);
       const nonPrint = Number(row?.non_print_qty_total);
       if (printTarget === 0 && nonPrint > 0) continue;
-      const operatorKey = "unassigned";
-      out.push({
-        ...row,
-        displayRowKey: productionScheduleDisplayRowKey(row.id, operatorKey),
-        displayOperatorKey: operatorKey,
+      out.push(toProductionScheduleDisplayRow(row, {
+        operatorKey: "unassigned",
         displayOperator: null,
         displayWorkDate: row.work_date || null,
-      });
+      }));
       continue;
     }
-    const groups = new Map();
-    ops.forEach((op, index) => {
-      const identity = productionScheduleOperatorIdentity(op) || `unknown:${index}`;
-      const bucket = groups.get(identity) || [];
-      bucket.push(op);
-      groups.set(identity, bucket);
-    });
-    const ranked = [...groups.entries()].map(([operatorKey, splits]) => {
+    const ranked = ops.map((op, index) => {
+      const operatorKey = productionScheduleOperatorIdentity(op) || `unknown:${index}`;
+      const assignmentKey = productionScheduleAssignmentKey(op, index);
+      const splits = [op];
       const displayWorkDate = groupedOperatorWorkDate(row, splits);
       const displayOperator = buildGroupedDisplayOperator(splits);
       const name = String(displayOperator.operator_name || "");
       return {
         operatorKey,
-        splits,
+        assignmentKey,
         displayOperator,
         displayWorkDate,
-        sort: `${displayWorkDate || "9999-12-31"}\0${name}\0${operatorKey}`,
+        sort: `${displayWorkDate || "9999-12-31"}\0${name}\0${operatorKey}\0${assignmentKey}`,
       };
     });
     ranked.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
     for (const item of ranked) {
-      out.push({
-        ...row,
-        displayRowKey: productionScheduleDisplayRowKey(row.id, item.operatorKey),
-        displayOperatorKey: item.operatorKey,
+      out.push(toProductionScheduleDisplayRow(row, {
+        operatorKey: item.operatorKey,
         displayOperator: item.displayOperator,
         displayWorkDate: item.displayWorkDate,
-        work_date: item.displayWorkDate || row.work_date || null,
-        operator_work_dates: item.displayWorkDate
-          ? [{ split_id: item.operatorKey, operator_name: item.displayOperator.operator_name, work_date: item.displayWorkDate }]
-          : [],
-      });
+        assignmentKey: item.assignmentKey,
+      }));
     }
   }
   return out;

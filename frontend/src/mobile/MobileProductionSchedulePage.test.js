@@ -232,12 +232,12 @@ describe("MobileProductionSchedulePage", () => {
     expect(container.querySelector('[data-testid="mobile-schedule-sj-PO-1001"]')).toBeFalsy();
     const opCells = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .prod-op-line')];
     expect(opCells.map((el) => el.querySelector(".prod-op-name").textContent)).toEqual(["Budi", "Sari"]);
-    expect(opCells.map((el) => el.querySelector(".prod-op-qty").textContent)).toEqual(["10.000 pcs", "500 pcs"]);
+    expect(opCells.every((el) => !el.querySelector(".prod-op-qty"))).toBe(true);
     expect(container.querySelector('[data-testid="mobile-schedule-row-PO-1002"]').textContent).toContain("Belum ditugaskan");
     expect(container.querySelector('[data-testid="mobile-schedule-qty-line-PO-1001-0"]')).toBeFalsy();
     expect(container.querySelectorAll('[data-testid="mobile-schedule-item-PO-1001"]').length).toBeGreaterThan(0);
-    expect(container.querySelectorAll(".mop-ops-item-qty").length).toBe(0);
-    expect(container.querySelector('[data-testid^="mobile-schedule-item-line-PO-1001"]').textContent.trim()).toBe("Cup 16oz");
+    expect([...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"] .mop-ops-item-qty')].map((el) => el.textContent)).toEqual(["10.000", "500"]);
+    expect(container.querySelector('[data-testid^="mobile-schedule-item-line-PO-1001"] .mop-ops-item-name').textContent.trim()).toBe("Cup 16oz");
     expect(container.textContent).toContain("Cup 16oz");
     expect(container.textContent).toContain("25/08/26");
     expect(container.textContent).not.toContain("2026-08-25");
@@ -272,7 +272,7 @@ describe("MobileProductionSchedulePage", () => {
     expect(api.productionExport).not.toHaveBeenCalled();
   });
 
-  test("one operator assignment is one row with operator qty and item name only", async () => {
+  test("one operator assignment is one row with operator name only and item-line qty", async () => {
     api.productionDashboard.mockResolvedValue({
       rows: [{
         id: "po-one",
@@ -300,12 +300,11 @@ describe("MobileProductionSchedulePage", () => {
     const rows = container.querySelectorAll('[data-testid="mobile-schedule-row-PO-001"]');
     expect(rows).toHaveLength(1);
     expect(rows[0].querySelector(".prod-op-name").textContent).toBe("Budi");
-    expect(rows[0].querySelector(".prod-op-qty").textContent).toBe("5.000 pcs");
+    expect(rows[0].querySelector(".prod-op-qty")).toBeFalsy();
     expect(rows[0].querySelector(".mop-ops-qty-total")).toBeFalsy();
     const itemCell = rows[0].querySelector('[data-testid="mobile-schedule-item-PO-001"]');
     expect(itemCell.textContent).toContain("Cup 16oz");
-    expect(itemCell.querySelector(".mop-ops-item-qty")).toBeFalsy();
-    expect(itemCell.textContent).not.toContain("5.000");
+    expect(itemCell.querySelector(".mop-ops-item-qty").textContent).toBe("5.000");
   });
 
   test("one PO with two or three operators splits into one row per assignment", async () => {
@@ -330,16 +329,16 @@ describe("MobileProductionSchedulePage", () => {
     const rows = [...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-001"]')];
     expect(rows).toHaveLength(3);
     expect(rows.map((row) => row.querySelector(".prod-op-name").textContent)).toEqual(["Budi", "Andi", "Cici"]);
-    expect(rows.map((row) => row.querySelector(".prod-op-qty").textContent)).toEqual(["5.000 pcs", "7.000 pcs", "3.000 pcs"]);
+    expect(rows.every((row) => !row.querySelector(".prod-op-qty"))).toBe(true);
     rows.forEach((row) => {
       expect(row.querySelector(".mop-ops-customer").textContent).toBe("Customer A");
       expect(row.querySelector(".mop-ops-po").textContent).toBe("PO-001");
       expect(row.querySelector(".mop-ops-qty-total")).toBeFalsy();
       const itemCell = row.querySelector('[data-testid="mobile-schedule-item-PO-001"]');
       expect(itemCell.textContent).toContain("Cup 16oz");
-      expect(itemCell.querySelector(".mop-ops-item-qty")).toBeFalsy();
-      expect(itemCell.textContent).not.toMatch(/5\.000|7\.000|3\.000/);
+      expect(itemCell.querySelector(".mop-ops-item-qty")).toBeTruthy();
     });
+    expect([...container.querySelectorAll('[data-testid="mobile-schedule-row-PO-001"] .mop-ops-item-qty')].map((el) => el.textContent)).toEqual(["5.000", "7.000", "3.000"]);
     expect(container.querySelector('[data-testid="mobile-schedule-thead"]').textContent).toContain("Status per Role");
   });
 
@@ -1109,11 +1108,14 @@ describe("MobileProductionSchedulePage", () => {
       }],
     });
     await renderPage();
+    expect(container.querySelectorAll('[data-testid="mobile-schedule-row-PO-1001"]')).toHaveLength(3);
     expect(container.textContent).toContain("Cup A");
     expect(container.textContent).toContain("Lid B");
     expect(container.textContent).toContain("Cup C");
+    expect([...container.querySelectorAll(".mop-ops-item-qty")].map((el) => el.textContent)).toEqual(["1.000", "2.000", "3.000"]);
     expect(container.textContent).not.toMatch(/\+1 item/);
     expect(container.textContent).not.toMatch(/item lainnya/);
+    expect(container.textContent).not.toContain("6.000");
   });
 
   test("today customer cells stay unpainted and the table wrapper can scroll horizontally", async () => {
