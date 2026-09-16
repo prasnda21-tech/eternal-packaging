@@ -392,14 +392,17 @@ describe("Loading confirm helpers", () => {
     expect(lines[0].available).toBe(600);
   });
 
-  test("legacy loading_info reduces frontend remaining like backend shortfall", () => {
+  test("legacy loading_info on unique SJ is selected-SJ loaded", () => {
     const lines = loadingPoLines({
       line_items: [{ name: "14 oz Inject Datar Frosted Klir", quantity: 1000, production_process: "print", line_id: "LA" }],
       packing_info: { lines: [{ line_idx: 0, line_id: "LA", packed_qty: 1000 }] },
-      surat_jalan_files: [{ id: "sj1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+      surat_jalan_files: [{ id: "sj1", sj_number: "SJ-1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
+      shipments: [{ id: "sj1", number: "SJ-1", lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }] }],
       loading_info: { lines: [{ line_idx: 0, loaded_qty: 1000 }] },
     }, "sj1");
     expect(lines[0].packed).toBe(1000);
+    expect(lines[0].loaded).toBe(1000);
+    expect(lines[0].loaded_all).toBe(1000);
     expect(lines[0].available).toBe(0);
   });
 
@@ -795,5 +798,37 @@ describe("Loading confirm helpers", () => {
     const draft = validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines);
     expect(draft.ok).toBe(false);
     expect(String(draft.error || "")).toMatch(/Sisa fisik tidak mencukupi/);
+  });
+
+  test("SJ/2026/09/10/000020 legacy 2000 becomes selected-SJ loaded", () => {
+    const shipId = "ship-2026-09-10-000020";
+    const sjNumber = "SJ/2026/09/10/000020";
+    const order = {
+      line_items: [{ name: "Cup 12 oz", quantity: 2000, production_process: "print", line_id: "L0" }],
+      packing_info: { lines: [{ line_idx: 0, line_id: "L0", packed_qty: 2000 }] },
+      shipments: [{
+        id: shipId,
+        number: sjNumber,
+        sales_delivery_id: shipId,
+        total_qty: 2000,
+        lines: [{ line_idx: 0, line_id: "L0", qty: 2000 }],
+      }],
+      surat_jalan_files: [{
+        id: "file-000020",
+        shipment_id: shipId,
+        sj_number: sjNumber,
+        total_qty: 2000,
+        lines: [{ line_idx: 0, line_id: "L0", qty: 2000 }],
+      }],
+      loading_info: { lines: [{ line_idx: 0, loaded_qty: 2000 }] },
+    };
+    const byId = loadingPoLines(order, shipId);
+    const byNumber = loadingPoLines(order, sjNumber);
+    expect(byId[0].loaded_all).toBe(2000);
+    expect(byId[0].loaded).toBe(2000);
+    expect(byId[0].available).toBe(0);
+    expect(byNumber[0].loaded).toBe(2000);
+    expect(loadingVerificationStatus(order, shipId).code).toBe("loading_complete");
+    expect(loadingVerificationStatus(order, sjNumber).code).toBe("loading_complete");
   });
 });

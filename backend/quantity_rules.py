@@ -1206,24 +1206,199 @@ def sj_qty_for_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
     return 0
 
 
-def loaded_qty_for_sj_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
-    """Cumulative confirmed loaded qty for this exact Surat Jalan and line."""
+def confirmation_identity_keys(conf: Optional[dict]) -> set:
+    """Ids/numbers stored on a Loading confirmation (legacy records may omit some)."""
+    keys = set()
+    if not isinstance(conf, dict):
+        return keys
+    for k in ("surat_jalan_id", "shipment_id", "sales_delivery_id", "sj_number", "number", "file_id"):
+        v = str(conf.get(k) or "").strip()
+        if v:
+            keys.add(v)
+    return keys
+
+
+def canonical_sj_identity_keys(order: dict, surat_jalan_id: Optional[str]) -> set:
+    """Exact SJ identity aliases: shipment id, sales_delivery_id, number, linked file."""
     want = str(surat_jalan_id or "").strip()
-    entry = find_sj_file(order, surat_jalan_id)
-    target_ids = {want}
-    if entry:
-        for k in ("id", "number", "shipment_id", "sales_delivery_id", "sj_number"):
-            v = str(entry.get(k) or "").strip()
-            if v:
-                target_ids.add(v)
-    total = 0
+    keys = {want} if want else set()
+    if want:
+        sh = find_shipment(order, want)
+        if sh:
+            keys |= shipment_identity_keys(order, sh)
+        entry = find_sj_file(order, want)
+        if isinstance(entry, dict):
+            for k in ("id", "file_id", "shipment_id", "sales_delivery_id", "sj_number", "number"):
+                v = str(entry.get(k) or "").strip()
+                if v:
+                    keys.add(v)
+            linked = find_shipment(
+                order,
+                str(entry.get("shipment_id") or entry.get("sales_delivery_id") or entry.get("id") or ""),
+            )
+            if linked:
+                keys |= shipment_identity_keys(order, linked)
+    return {k for k in keys if k}
+
+
+def live_sj_identity_groups(order: dict) -> list:
+    """Cluster live shipments + files into unique Surat Jalan identity groups."""
+    groups: list = []
+
+    def _absorb(new_keys: set) -> None:
+        if not new_keys:
+            return
+        acc = set(new_keys)
+        kept = []
+        for g in groups:
+            if g & acc:
+                acc |= g
+            else:
+                kept.append(g)
+        kept.append(acc)
+        groups[:] = kept
+
+    for sh in shipments_stored(order):
+        _absorb(shipment_identity_keys(order, sh))
+    files = order.get("surat_jalan_files")
+    if isinstance(files, list):
+        for entry in files:
+            if not isinstance(entry, dict) or entry.get("is_deleted"):
+                continue
+            fkeys = set()
+            for k in ("id", "file_id", "shipment_id", "sales_delivery_id", "sj_number", "number"):
+                v = str(entry.get(k) or "").strip()
+                if v:
+                    fkeys.add(v)
+            _absorb(fkeys)
+    return groups
+
+
+def _sj_required_vector(order: dict, surat_jalan_id: str) -> dict:
+    vec: dict = {}
+    for ln in sj_lines_stored(order, surat_jalan_id) or []:
+        if not isinstance(ln, dict):
+            continue
+        idx, _err = match_po_line_idx(order, ln)
+        if idx is None:
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            if idx < 0:
+                continue
+        qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        if qty <= 0:
+            continue
+        vec[int(idx)] = vec.get(int(idx), 0) + qty
+    if vec:
+        return vec
+    entry = find_sj_file(order, surat_jalan_id) or find_shipment(order, surat_jalan_id) or {}
+    if not isinstance(entry, dict):
+        return {}
+    total = max(0, _safe_int(entry.get("total_qty") or entry.get("qty") or 0))
+    return {0: total} if total > 0 else {}
+
+
+def _legacy_evidence_vector(order: dict) -> dict:
+    vec: dict = {}
+    for i in range(_line_count(order)):
+        qty = _legacy_loaded_qty_for_line(order, i)
+        if qty > 0:
+            vec[i] = qty
+    return vec
+
+
+def _qty_vectors_equal(left: dict, right: dict) -> bool:
+    if not left or not right:
+        return False
+    keys = set(left) | set(right)
+    return all(int(left.get(k) or 0) == int(right.get(k) or 0) for k in keys)
+
+
+def _identity_group_rep(order: dict, group: set) -> str:
+    for key in group:
+        if find_shipment(order, key):
+            return key
+    for key in group:
+        if find_sj_file(order, key):
+            return key
+    return next(iter(group), "")
+
+
+def unattributed_loading_belongs_to_sj(order: dict, surat_jalan_id: str, evidence: Optional[dict] = None) -> bool:
+    """Audit untagged/legacy Loading: attribute only when this SJ uniquely owns it.
+
+    Unique live SJ → belongs. Multiple SJ → only when the evidence vector exactly
+    matches one SJ's required lines (e.g. 2.000 on SJ/2026/09/10/000020).
+    """
+    keys = canonical_sj_identity_keys(order, surat_jalan_id)
+    if not keys:
+        return False
+    groups = live_sj_identity_groups(order)
+    overlapping = [g for g in groups if g & keys]
+    if not overlapping:
+        return False
+    if len(groups) == 1:
+        return True
+    vec = evidence if isinstance(evidence, dict) else _legacy_evidence_vector(order)
+    if not vec:
+        return False
+    matches = []
+    for group in groups:
+        req = _sj_required_vector(order, _identity_group_rep(order, group))
+        if _qty_vectors_equal(vec, req):
+            matches.append(group)
+    return len(matches) == 1 and bool(matches[0] & keys)
+
+
+def loaded_qty_for_sj_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
+    """Cumulative confirmed loaded qty for this exact Surat Jalan and line.
+
+    Identity-matched confirmations always count. Untagged confirmations and
+    historical loading_info count only after audit proves unique ownership.
+    Physical totals stay on qty_loaded_for_line — this function never invents qty.
+    """
+    want = str(surat_jalan_id or "").strip()
+    keys = canonical_sj_identity_keys(order, want)
+    want_idx = int(line_idx)
+    tagged = 0
+    untagged = 0
     for conf in loading_confirmations_stored(order):
-        conf_sj = str(conf.get("surat_jalan_id") or "").strip()
-        if conf_sj in target_ids:
-            for ln in conf.get("lines") or []:
-                if isinstance(ln, dict) and _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
-                    total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-    return total
+        line_qty = 0
+        for ln in conf.get("lines") or []:
+            if isinstance(ln, dict) and _safe_int(ln.get("line_idx"), default=-1) == want_idx:
+                line_qty += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        if line_qty <= 0:
+            continue
+        conf_keys = confirmation_identity_keys(conf)
+        if conf_keys & keys:
+            tagged += line_qty
+        elif not conf_keys:
+            untagged += line_qty
+    total = tagged
+    if untagged and unattributed_loading_belongs_to_sj(order, want, _untagged_evidence_vector(order)):
+        total += untagged
+    if total > 0 or loading_confirmations_stored(order):
+        return total
+    legacy = _legacy_loaded_qty_for_line(order, want_idx)
+    if legacy > 0 and unattributed_loading_belongs_to_sj(order, want):
+        need = sj_qty_for_line(order, want, want_idx)
+        return min(legacy, need) if need > 0 else legacy
+    return 0
+
+
+def _untagged_evidence_vector(order: dict) -> dict:
+    vec: dict = {}
+    for conf in loading_confirmations_stored(order):
+        if confirmation_identity_keys(conf):
+            continue
+        for ln in conf.get("lines") or []:
+            if not isinstance(ln, dict):
+                continue
+            idx = _safe_int(ln.get("line_idx"), default=-1)
+            qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+            if idx < 0 or qty <= 0:
+                continue
+            vec[idx] = vec.get(idx, 0) + qty
+    return vec
 
 
 def available_for_sj_loading_line(order: dict, surat_jalan_id: str, line_idx: int) -> int:
@@ -1460,6 +1635,16 @@ def apply_loading_confirmation(
     """Append-only SJ-linked Loading confirmation. Does not rewrite loading_info."""
     actor = actor or {}
     entry = find_sj_file(order, surat_jalan_id) or {}
+    shipment = find_shipment(order, str(surat_jalan_id or "").strip())
+    canon_id = ""
+    sj_number = ""
+    if isinstance(shipment, dict):
+        canon_id = str(shipment.get("id") or shipment.get("sales_delivery_id") or "").strip()
+        sj_number = str(shipment.get("number") or shipment.get("sj_number") or "").strip()
+    if not canon_id:
+        canon_id = str(entry.get("shipment_id") or entry.get("sales_delivery_id") or entry.get("id") or "").strip()
+    if not sj_number:
+        sj_number = str(entry.get("sj_number") or entry.get("number") or "").strip()
     normalized = []
     for u in lines:
         idx, _err = match_po_line_idx(order, u)
@@ -1476,7 +1661,9 @@ def apply_loading_confirmation(
     record = {
         "id": confirmation_id or "",
         "surat_jalan_id": str(surat_jalan_id).strip(),
-        "surat_jalan_name": entry.get("name") or "Surat Jalan",
+        "shipment_id": canon_id or str(surat_jalan_id).strip(),
+        "sj_number": sj_number,
+        "surat_jalan_name": entry.get("name") or (sj_number and f"Surat Jalan {sj_number}") or "Surat Jalan",
         "lines": normalized,
         "confirmed_by": actor.get("email"),
         "confirmed_by_name": actor.get("name") or actor.get("email"),
@@ -2417,7 +2604,18 @@ def loading_verification_status(order: dict, surat_jalan_id: Optional[str] = Non
             "sj_changed": True,
         }
 
-    if delivery_batch_photo_readiness(order).get("allowed"):
+    selected_shipment = find_shipment(order, sid)
+    if selected_shipment is None:
+        file_entry = find_sj_file(order, sid) or {}
+        if file_entry:
+            selected_shipment = {
+                "id": file_entry.get("shipment_id") or file_entry.get("id") or sid,
+                "sales_delivery_id": file_entry.get("sales_delivery_id") or file_entry.get("shipment_id") or sid,
+                "number": file_entry.get("sj_number") or file_entry.get("number") or "",
+                "lines": file_entry.get("lines") or [],
+                "total_qty": file_entry.get("total_qty") or file_entry.get("qty") or 0,
+            }
+    if delivery_batch_photo_readiness(order, selected_shipment).get("allowed"):
         return {
             "code": LOADING_STATUS_COMPLETE,
             "label": "Loading Selesai",
@@ -2677,20 +2875,25 @@ def loaded_qty_for_delivery_batch(order: dict, shipment: Optional[dict] = None) 
                 continue
             total += loaded_qty_for_sj_line(order, sid, idx)
         return total
-    # No line breakdown: sum confirmations linked to this SJ id/number
-    target_ids = {sid}
-    for k in ("id", "number", "sales_delivery_id"):
-        v = str(sh.get(k) or "").strip()
-        if v:
-            target_ids.add(v)
+    # No line breakdown: sum confirmations linked to this SJ identity
+    target_ids = canonical_sj_identity_keys(order, sid)
     total = 0
+    untagged_total = 0
     for conf in loading_confirmations_stored(order):
-        if str(conf.get("surat_jalan_id") or "").strip() in target_ids:
-            total += confirmation_qty_total(conf)
-    if total > 0:
+        conf_keys = confirmation_identity_keys(conf)
+        qty = confirmation_qty_total(conf)
+        if conf_keys & target_ids:
+            total += qty
+        elif not conf_keys:
+            untagged_total += qty
+    if untagged_total and unattributed_loading_belongs_to_sj(order, sid, _untagged_evidence_vector(order)):
+        total += untagged_total
+    if total > 0 or loading_confirmations_stored(order):
         return total
-    # Legacy loading_info only when this is the sole / latest shipment context
-    return qty_loaded(order) if len(shipments_stored(order)) <= 1 else 0
+    # Legacy loading_info after unique-ownership audit (single SJ or exact composition)
+    if unattributed_loading_belongs_to_sj(order, sid):
+        return qty_loaded(order)
+    return 0
 
 
 def _delivery_batch_resolved_lines(order: dict, shipment: dict) -> list:
