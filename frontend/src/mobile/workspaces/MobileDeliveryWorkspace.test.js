@@ -332,7 +332,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(deliverySrc).not.toMatch(/role\s*===\s*["']driver["']/);
     expect(deliverySrc).toMatch(/uploadDeliveryProof\(order\.id/);
     expect(deliverySrc).toMatch(/data-testid="mobile-pengiriman-sj-select"/);
-    expect(deliverySrc).toMatch(/shipment_id: selectedShipmentKey/);
+    expect(deliverySrc).toMatch(/shipment_id: activeShipment\.id/);
     expect(loadingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(packingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(loadingSrc).not.toMatch(/mobile-delivery-gallery-input/);
@@ -470,7 +470,53 @@ describe("PWA Pengiriman gallery picker", () => {
     act(() => container.querySelector('[data-testid="mobile-sig-cancel"]').click());
     act(() => container.querySelector('[data-testid="mobile-delivery-recipient-sign-action"]').click());
     expect(container.querySelector('[data-testid="mobile-signature-modal"] h2').textContent).toBe("Tanda Tangan Penerima");
-    expect(container.querySelector('[data-testid="mobile-recipient-name"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-recipient-name-modal"]')).toBeTruthy();
+  });
+
+  test("Nama Penerima is visible on the confirmation screen and gates Konfirmasi Terkirim", async () => {
+    const signed = {
+      ...baseOrder,
+      delivery_proofs: [
+        { id: "p1", shipment_id: "s1", storage_path: "a.jpg" },
+        { id: "p2", shipment_id: "s1", storage_path: "b.jpg" },
+      ],
+      delivery_recipient_signature: {
+        id: "r1",
+        signature_storage_path: "r.png",
+        recipient_signed_at: "t",
+        recipient_name: "",
+      },
+      delivery_driver_signature: {
+        id: "d1",
+        signature_storage_path: "d.png",
+        driver_signed_at: "t",
+      },
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={signed} canEdit onUpdated={() => {}} />);
+    });
+    const name = container.querySelector('[data-testid="mobile-recipient-name"]');
+    expect(name).toBeTruthy();
+    expect(container.textContent).toContain("Nama Penerima");
+    expect(name.value).toBe("");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]').textContent).toMatch(/Nama penerima wajib/);
+
+    const named = {
+      ...signed,
+      delivery_recipient_signature: {
+        id: "r2",
+        signature_storage_path: "r.png",
+        recipient_signed_at: "t",
+        recipient_name: "Budi Penerima",
+      },
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={named} canEdit onUpdated={() => {}} />);
+    });
+    expect(container.querySelector('[data-testid="mobile-recipient-name"]').value).toBe("Budi Penerima");
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(false);
+    expect(container.querySelector('[data-testid="mobile-confirm-block-reason"]')).toBeFalsy();
   });
 
   test("Foto Bukti reuses existing camera/gallery action", () => {
