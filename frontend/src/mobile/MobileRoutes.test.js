@@ -153,11 +153,11 @@ describe("mobile route wiring", () => {
     expect(ordersPage).toMatch(/if \(!cancelled\) setLoading\(false\)/);
   });
 
-  test("schedule page uses production dashboard once and cannot stay loading after error", () => {
+  test("schedule page uses dashboard for the list and fetches detail only after opening a row", () => {
     expect(schedulePage).toMatch(/api\.productionDashboard/);
     expect(schedulePage).toMatch(/mobileProductionDashboardParams/);
     expect(mobileSchedule).toMatch(/view: "summary"/);
-    expect(schedulePage).not.toMatch(/api\.getOrder\(/);
+    expect(schedulePage).toMatch(/withTimeout\(api\.getOrder\(row\.id\), MOBILE_LOAD_TIMEOUT_MS\)/);
     expect(schedulePage).toMatch(/formatApiError/);
     expect(schedulePage).toMatch(/Coba Lagi/);
     expect(schedulePage).toMatch(/Belum ada jadwal produksi\./);
@@ -214,4 +214,3 @@ describe("mobile route wiring", () => {
     expect(postLoginPath("/dashboard")).toBe("/");
   });
 });
-
