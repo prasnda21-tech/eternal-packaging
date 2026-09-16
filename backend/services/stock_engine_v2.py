@@ -646,13 +646,21 @@ async def apply_stock_opname(
 
 
 async def ensure_v2_physical_settings(db) -> dict:
-    """Ensure physical stock engine is ON with GR in / sales delivery out for V2."""
+    """Normalize V2 triggers without overriding an explicit OFF setting.
+
+    The toggle is the authority boundary. Startup may repair an enabled V2
+    configuration, but it must never silently enable the engine or write while
+    the stored/default setting is OFF.
+    """
     from services.physical_stock_settings import (
         SETTINGS_KEY,
         get_physical_stock_settings,
         sanitize_settings,
     )
     current = await get_physical_stock_settings(db)
+    if not bool(current.get("enabled")):
+        return current
+
     desired = {
         **current,
         "enabled": True,
