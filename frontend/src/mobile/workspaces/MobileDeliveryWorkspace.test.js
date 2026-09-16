@@ -332,7 +332,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(deliverySrc).not.toMatch(/role\s*===\s*["']driver["']/);
     expect(deliverySrc).toMatch(/uploadDeliveryProof\(order\.id/);
     expect(deliverySrc).toMatch(/data-testid="mobile-pengiriman-sj-select"/);
-    expect(deliverySrc).toMatch(/shipment_id: activeShipment/);
+    expect(deliverySrc).toMatch(/shipment_id: selectedShipmentKey/);
     expect(loadingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(packingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(loadingSrc).not.toMatch(/mobile-delivery-gallery-input/);
@@ -555,5 +555,250 @@ describe("PWA Pengiriman gallery picker", () => {
     });
     expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).toBe("Terkirim");
     expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+  });
+
+  const multiSjPhotoOrder = (overrides = {}) => ({
+    id: "order-demo-multisj-photo",
+    po_number: "DEMO-MULTISJ-PHOTO-PO",
+    customer: "PT Multi SJ Photo",
+    address: "Jl. Preview Multi SJ",
+    delivery_status: "Belum Terkirim",
+    terkirim_confirmed: false,
+    eligible_delivery_qty: 2400,
+    line_items: [
+      { name: "Cup A", quantity: 1000, line_id: "LA", production_process: "print" },
+      { name: "Cup B", quantity: 800, line_id: "LB", production_process: "print" },
+      { name: "Lid C", quantity: 600, line_id: "LC", production_process: "non_print" },
+    ],
+    packing_info: {
+      qty_packed: 1800,
+      lines: [{ line_idx: 0, packed_qty: 1000 }, { line_idx: 1, packed_qty: 800 }],
+    },
+    shipments: [
+      {
+        id: "demo-multisj-photo-001",
+        number: "DEMO-MULTISJ-PHOTO-001",
+        delivery_date: "2026-09-16",
+        lines: [{ line_idx: 0, line_id: "LA", name: "Cup A", qty: 1000 }],
+        total_qty: 1000,
+      },
+      {
+        id: "demo-multisj-photo-002",
+        number: "DEMO-MULTISJ-PHOTO-002",
+        delivery_date: "2026-09-16",
+        lines: [{ line_idx: 1, line_id: "LB", name: "Cup B", qty: 800 }],
+        total_qty: 800,
+      },
+      {
+        id: "demo-multisj-photo-003",
+        number: "DEMO-MULTISJ-PHOTO-003",
+        delivery_date: "2026-09-16",
+        lines: [{ line_idx: 2, line_id: "LC", name: "Lid C", qty: 600 }],
+        total_qty: 600,
+      },
+    ],
+    loading_confirmations: [
+      { id: "c1", surat_jalan_id: "demo-multisj-photo-001", lines: [{ line_idx: 0, qty: 1000 }] },
+      { id: "c2", surat_jalan_id: "demo-multisj-photo-002", lines: [{ line_idx: 1, qty: 800 }] },
+      { id: "c3", surat_jalan_id: "demo-multisj-photo-003", lines: [{ line_idx: 2, qty: 600 }] },
+    ],
+    delivery_proofs: [],
+    ...overrides,
+  });
+
+  test("SJ 001/002/003 can each upload after the previous SJ and keep proofs isolated", async () => {
+    const order = multiSjPhotoOrder();
+    const onUpdated = jest.fn();
+    api.uploadDeliveryProof.mockImplementation((id, file, _note, _progress, shipmentId) => {
+      const proof = {
+        id: `p-${shipmentId}-${file.name}`,
+        shipment_id: shipmentId,
+        storage_path: `${shipmentId}/${file.name}`,
+      };
+      const latest = onUpdated.mock.calls.length
+        ? onUpdated.mock.calls[onUpdated.mock.calls.length - 1][0]
+        : order;
+      return Promise.resolve({
+        order: { ...latest, delivery_proofs: [...(latest.delivery_proofs || []), proof] },
+      });
+    });
+
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={onUpdated} shipmentId="demo-multisj-photo-001" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-001");
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+    await act(async () => {
+      setInputFile(container.querySelector('[data-testid="mobile-delivery-gallery-input"]'), jpegFile("sj-001.png"));
+    });
+    await flush();
+    expect(api.uploadDeliveryProof.mock.calls[0][4]).toBe("demo-multisj-photo-001");
+
+    const after001 = {
+      ...order,
+      delivery_proofs: [{ id: "p-001", shipment_id: "demo-multisj-photo-001", storage_path: "001.png" }],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={after001} canEdit onUpdated={onUpdated} shipmentId="demo-multisj-photo-002" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-002");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).not.toContain("DEMO-MULTISJ-PHOTO-001");
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-001"]')).toBeFalsy();
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+    await act(async () => {
+      setInputFile(container.querySelector('[data-testid="mobile-delivery-gallery-input"]'), jpegFile("sj-002.png"));
+    });
+    await flush();
+    expect(api.uploadDeliveryProof.mock.calls[1][4]).toBe("demo-multisj-photo-002");
+
+    const after002 = {
+      ...after001,
+      delivery_proofs: [
+        { id: "p-001", shipment_id: "demo-multisj-photo-001", storage_path: "001.png" },
+        { id: "p-002", shipment_id: "demo-multisj-photo-002", storage_path: "002.png" },
+      ],
+    };
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={after002} canEdit onUpdated={onUpdated} shipmentId="demo-multisj-photo-003" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-003");
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-001"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-002"]')).toBeFalsy();
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+    await act(async () => {
+      setInputFile(container.querySelector('[data-testid="mobile-delivery-gallery-input"]'), jpegFile("sj-003.png"));
+    });
+    await flush();
+    expect(api.uploadDeliveryProof.mock.calls[2][4]).toBe("demo-multisj-photo-003");
+  });
+
+  test("delivered SJ 001 does not disable upload on SJ 002 or SJ 003 even if PO is Terkirim", () => {
+    const order = multiSjPhotoOrder({
+      delivery_status: "Terkirim",
+      terkirim_confirmed: true,
+      qty_delivered: 1000,
+      shipments: [
+        {
+          id: "demo-multisj-photo-001",
+          number: "DEMO-MULTISJ-PHOTO-001",
+          delivery_date: "2026-09-16",
+          delivered_at: "t1",
+          delivery_status: "Terkirim",
+          lines: [{ line_idx: 0, line_id: "LA", name: "Cup A", qty: 1000 }],
+          total_qty: 1000,
+        },
+        {
+          id: "demo-multisj-photo-002",
+          number: "DEMO-MULTISJ-PHOTO-002",
+          delivery_date: "2026-09-16",
+          lines: [{ line_idx: 1, line_id: "LB", name: "Cup B", qty: 800 }],
+          total_qty: 800,
+        },
+        {
+          id: "demo-multisj-photo-003",
+          number: "DEMO-MULTISJ-PHOTO-003",
+          delivery_date: "2026-09-16",
+          lines: [{ line_idx: 2, line_id: "LC", name: "Lid C", qty: 600 }],
+          total_qty: 600,
+        },
+      ],
+      delivery_proofs: [
+        { id: "p-001a", shipment_id: "demo-multisj-photo-001", storage_path: "001a.png" },
+        { id: "p-001b", shipment_id: "demo-multisj-photo-001", storage_path: "001b.png" },
+      ],
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-002" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-002");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).not.toBe("Terkirim");
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-001a"]')).toBeFalsy();
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-gallery-input"]')).toBeTruthy();
+
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-003" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-003");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-status"]').textContent).not.toBe("Terkirim");
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+  });
+
+  test("untagged legacy proof does not appear as sibling SJ proof or disable upload", () => {
+    const order = multiSjPhotoOrder({
+      delivery_proofs: [{ id: "legacy-untagged", storage_path: "legacy.png" }],
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-002" />);
+    });
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-legacy-untagged"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-003" />);
+    });
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-legacy-untagged"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeTruthy();
+  });
+
+  test("switching 001 → 002 → 003 changes exact selected shipment with no stale proof", () => {
+    const order = multiSjPhotoOrder({
+      delivery_proofs: [
+        { id: "p-001", shipment_id: "demo-multisj-photo-001", storage_path: "001.png" },
+        { id: "p-002", shipment_id: "demo-multisj-photo-002", storage_path: "002.png" },
+        { id: "p-003", shipment_id: "demo-multisj-photo-003", storage_path: "003.png" },
+      ],
+    });
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-001" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("demo-multisj-photo-001");
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-001"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-002"]')).toBeFalsy();
+
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-002" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("demo-multisj-photo-002");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-002");
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-001"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-002"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-003"]')).toBeFalsy();
+
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="demo-multisj-photo-003" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("demo-multisj-photo-003");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]').textContent).toContain("DEMO-MULTISJ-PHOTO-003");
+    openPhoto();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-001"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-002"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-delivery-proof-p-003"]')).toBeTruthy();
+  });
+
+  test("stale and unknown shipment ids fail closed with no first-SJ fallback", () => {
+    const order = multiSjPhotoOrder();
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="stale-sj-old" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("");
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Surat Jalan tidak dapat ditentukan/);
+    expect(container.querySelector('[data-testid="mobile-add-photo"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="mobile-confirm-delivered"]').disabled).toBe(true);
+
+    act(() => {
+      root.render(<MobileDeliveryWorkspace order={order} canEdit onUpdated={() => {}} shipmentId="unknown-sj" />);
+    });
+    expect(container.querySelector('[data-testid="mobile-pengiriman-sj-select"]').value).toBe("");
+    expect(container.querySelector('[data-testid="mobile-pengiriman-selected-sj-number"]')?.textContent || "").not.toContain("DEMO-MULTISJ-PHOTO-001");
+    expect(container.querySelector('[data-testid="mobile-delivery-error"]').textContent).toMatch(/Surat Jalan tidak dapat ditentukan/);
   });
 });

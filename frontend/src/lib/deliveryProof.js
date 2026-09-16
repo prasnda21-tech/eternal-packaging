@@ -293,7 +293,16 @@ export function proofsForShipment(order, shipment) {
   const keys = shipmentIdentityKeys(order, shipment);
   const tagged = all.filter((p) => keys.has(String(p.shipment_id || "").trim()));
   if (tagged.length) return tagged;
+  // Multi-SJ: never assign untagged/legacy proofs to an arbitrary sibling.
+  if (_shipments(order).length > 1) return [];
   return all.filter((p) => !String(p.shipment_id || "").trim());
+}
+
+/** Upload/sign/confirm lock. Multi-SJ uses exact shipment evidence, not PO aggregates. */
+export function isPengirimanMutationLocked(order, shipment) {
+  if (isShipmentDelivered(order, shipment)) return true;
+  if (_shipments(order).length > 1) return false;
+  return order?.delivery_status === "Terkirim" || !!order?.terkirim_confirmed;
 }
 
 export function selectedPengirimanShipmentId(order, preferredId = "") {

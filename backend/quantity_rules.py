@@ -2541,8 +2541,24 @@ def valid_delivery_proofs_for_shipment(order: dict, shipment: Optional[dict] = N
     ]
     if tagged:
         return tagged
+    ships = [sh for sh in shipments_stored(order) if isinstance(sh, dict)]
+    if len(ships) > 1:
+        # Multi-SJ: never assign untagged/legacy proofs to an arbitrary sibling.
+        return []
     untagged = [p for p in all_proofs if not str(p.get("shipment_id") or "").strip()]
     return untagged
+
+
+def delivery_proofs_for_upload_limit(order: dict, shipment: Optional[dict] = None) -> list:
+    """5-photo cap grain: exact SJ when multiple shipments exist, else PO."""
+    ships = [sh for sh in shipments_stored(order) if isinstance(sh, dict)]
+    if shipment is not None and len(ships) > 1:
+        keys = shipment_identity_keys(order, shipment)
+        return [
+            p for p in valid_delivery_proofs(order)
+            if str(p.get("shipment_id") or "").strip() in keys
+        ]
+    return valid_delivery_proofs(order)
 
 
 def qty_delivered_for_shipment(order: dict, shipment: Optional[dict]) -> int:

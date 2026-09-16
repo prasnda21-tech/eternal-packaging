@@ -47,6 +47,24 @@ export function scheduleRowSjNumber(row) {
   return first;
 }
 
+/** Desktop PO detail href. Preserve exact row shipment_id; never invent one. */
+export function desktopDeliveryPoHref(orderId, shipmentId) {
+  const id = String(orderId || "").trim();
+  if (!id) return "";
+  const sid = String(shipmentId || "").trim();
+  const base = `/po/${encodeURIComponent(id)}`;
+  return sid ? `${base}?shipment=${encodeURIComponent(sid)}` : base;
+}
+
+/** Desktop Kerjakan Pengiriman href. Preserve exact row shipment_id; never invent one. */
+export function desktopDeliveryKerjaHref(orderId, shipmentId) {
+  const id = String(orderId || "").trim();
+  if (!id) return "";
+  const sid = String(shipmentId || "").trim();
+  const base = `/po/${encodeURIComponent(id)}/kerja?divisi=terkirim`;
+  return sid ? `${base}&shipment=${encodeURIComponent(sid)}` : base;
+}
+
 function sjCellTestId(row) {
   const po = row?.order_number || "row";
   return row?.shipment_id ? `ds-sj-${po}-${row.shipment_id}` : `ds-sj-${po}`;
@@ -417,7 +435,12 @@ export default function DeliverySchedulePage() {
                   <td className="mono">{formatDate(r.effective_delivery_date, { dateOnly: true })}</td>
                   <td className="mono">
                     {r.id ? (
-                      <Link to={`/po/${r.id}`} state={listNavState} onClick={() => onOpenPo(r.id)}>
+                      <Link
+                        to={desktopDeliveryPoHref(r.id, r.shipment_id)}
+                        state={listNavState}
+                        onClick={() => onOpenPo(r.id)}
+                        data-testid={r.shipment_id ? `ds-po-link-${r.order_number}-${r.shipment_id}` : `ds-po-link-${r.order_number}`}
+                      >
                         {r.order_number}
                       </Link>
                     ) : (r.order_number || "-")}
@@ -462,9 +485,10 @@ export default function DeliverySchedulePage() {
                     {r.id && (
                       <Link
                         className="ghost sm"
-                        to={`/po/${r.id}/kerja?divisi=terkirim`}
+                        to={desktopDeliveryKerjaHref(r.id, r.shipment_id)}
                         state={listNavState}
                         onClick={() => onOpenPo(r.id)}
+                        data-testid={r.shipment_id ? `ds-kerja-link-${r.order_number}-${r.shipment_id}` : `ds-kerja-link-${r.order_number}`}
                       >
                         Kerjakan
                       </Link>

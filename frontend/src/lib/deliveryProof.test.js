@@ -23,11 +23,64 @@ import {
   activeDeliveryBatch,
   findDeliveryShipment,
   isShipmentDelivered,
+  isPengirimanMutationLocked,
   pengirimanSjOptions,
   pengirimanSjDisplayLabel,
   proofsForShipment,
   selectedPengirimanShipmentId,
 } from "./deliveryProof";
+
+function demoMultiSjPhotoOrder(overrides = {}) {
+  const sj1 = {
+    id: "demo-multisj-photo-001",
+    number: "DEMO-MULTISJ-PHOTO-001",
+    delivery_date: "2026-09-16",
+    lines: [{ line_idx: 0, line_id: "LA", name: "Cup A", qty: 1000 }],
+    total_qty: 1000,
+  };
+  const sj2 = {
+    id: "demo-multisj-photo-002",
+    number: "DEMO-MULTISJ-PHOTO-002",
+    delivery_date: "2026-09-16",
+    lines: [{ line_idx: 1, line_id: "LB", name: "Cup B", qty: 800 }],
+    total_qty: 800,
+  };
+  const sj3 = {
+    id: "demo-multisj-photo-003",
+    number: "DEMO-MULTISJ-PHOTO-003",
+    delivery_date: "2026-09-16",
+    lines: [{ line_idx: 2, line_id: "LC", name: "Lid C", qty: 600 }],
+    total_qty: 600,
+  };
+  return {
+    id: "order-demo-multisj-photo",
+    po_number: "DEMO-MULTISJ-PHOTO-PO",
+    customer: "PT Multi SJ Photo",
+    delivery_status: "Belum Terkirim",
+    terkirim_confirmed: false,
+    line_items: [
+      { name: "Cup A", quantity: 1000, line_id: "LA", production_process: "print" },
+      { name: "Cup B", quantity: 800, line_id: "LB", production_process: "print" },
+      { name: "Lid C", quantity: 600, line_id: "LC", production_process: "non_print" },
+    ],
+    packing_info: {
+      qty_packed: 1800,
+      lines: [
+        { line_idx: 0, packed_qty: 1000 },
+        { line_idx: 1, packed_qty: 800 },
+      ],
+    },
+    shipments: [sj1, sj2, sj3],
+    loading_confirmations: [
+      { id: "c1", surat_jalan_id: "demo-multisj-photo-001", lines: [{ line_idx: 0, qty: 1000 }] },
+      { id: "c2", surat_jalan_id: "demo-multisj-photo-002", lines: [{ line_idx: 1, qty: 800 }] },
+      { id: "c3", surat_jalan_id: "demo-multisj-photo-003", lines: [{ line_idx: 2, qty: 600 }] },
+    ],
+    delivery_proofs: [],
+    delivery_confirmations: [],
+    ...overrides,
+  };
+}
 
 describe("deliveryProof helpers", () => {
   test("confirmable count includes ready files", () => {
@@ -357,6 +410,95 @@ describe("deliveryProof helpers", () => {
     expect(r1.lines.map((l) => l.lineIdx)).toEqual([0]);
     expect(r2.allowed).toBe(false);
     expect(r2.lines.map((l) => l.lineIdx)).toEqual([1]);
+  });
+
+  test("3-SJ tagged proofs stay isolated by shipment_id", () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        { id: "p001a", shipment_id: "demo-multisj-photo-001" },
+        { id: "p001b", shipment_id: "demo-multisj-photo-001" },
+        { id: "p002a", shipment_id: "demo-multisj-photo-002" },
+        { id: "p003a", shipment_id: "demo-multisj-photo-003" },
+      ],
+    });
+    const [sj1, sj2, sj3] = order.shipments;
+    expect(proofsForShipment(order, sj1).map((p) => p.id)).toEqual(["p001a", "p001b"]);
+    expect(proofsForShipment(order, sj2).map((p) => p.id)).toEqual(["p002a"]);
+    expect(proofsForShipment(order, sj3).map((p) => p.id)).toEqual(["p003a"]);
+    expect(proofsForShipment(order, sj2).some((p) => p.id.startsWith("p001"))).toBe(false);
+    expect(proofsForShipment(order, sj3).some((p) => p.id.startsWith("p001") || p.id.startsWith("p002"))).toBe(false);
+  });
+
+  test("untagged legacy proof is not assigned to an arbitrary sibling SJ", () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        { id: "legacy-untagged" },
+        { id: "p001", shipment_id: "demo-multisj-photo-001" },
+      ],
+    });
+    const [sj1, sj2, sj3] = order.shipments;
+    expect(proofsForShipment(order, sj1).map((p) => p.id)).toEqual(["p001"]);
+    expect(proofsForShipment(order, sj2)).toEqual([]);
+    expect(proofsForShipment(order, sj3)).toEqual([]);
+    const onlyUntagged = demoMultiSjPhotoOrder({
+      delivery_proofs: [{ id: "legacy-untagged" }],
+    });
+    expect(proofsForShipment(onlyUntagged, onlyUntagged.shipments[0])).toEqual([]);
+    expect(proofsForShipment(onlyUntagged, onlyUntagged.shipments[1])).toEqual([]);
+    expect(proofsForShipment(onlyUntagged, onlyUntagged.shipments[2])).toEqual([]);
+  });
+
+  test("single-SJ still reads untagged historical proofs", () => {
+    const sj = { id: "s1", number: "SJ-1", lines: [{ line_idx: 0, qty: 10 }], total_qty: 10 };
+    const order = { shipments: [sj], delivery_proofs: [{ id: "legacy" }] };
+    expect(proofsForShipment(order, sj)).toEqual([{ id: "legacy" }]);
+  });
+
+  test("PO-level Terkirim does not lock sibling SJ mutation", () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_status: "Terkirim",
+      terkirim_confirmed: true,
+      shipments: [
+        {
+          id: "demo-multisj-photo-001",
+          number: "DEMO-MULTISJ-PHOTO-001",
+          delivered_at: "t1",
+          delivery_status: "Terkirim",
+          lines: [{ line_idx: 0, line_id: "LA", qty: 1000 }],
+          total_qty: 1000,
+        },
+        {
+          id: "demo-multisj-photo-002",
+          number: "DEMO-MULTISJ-PHOTO-002",
+          lines: [{ line_idx: 1, line_id: "LB", qty: 800 }],
+          total_qty: 800,
+        },
+        {
+          id: "demo-multisj-photo-003",
+          number: "DEMO-MULTISJ-PHOTO-003",
+          lines: [{ line_idx: 2, line_id: "LC", qty: 600 }],
+          total_qty: 600,
+        },
+      ],
+    });
+    expect(isPengirimanMutationLocked(order, order.shipments[0])).toBe(true);
+    expect(isPengirimanMutationLocked(order, order.shipments[1])).toBe(false);
+    expect(isPengirimanMutationLocked(order, order.shipments[2])).toBe(false);
+    expect(isShipmentDelivered(order, order.shipments[1])).toBe(false);
+    expect(isShipmentDelivered(order, order.shipments[2])).toBe(false);
+  });
+
+  test("switching selected shipment keeps exact identity with no first-SJ fallback", () => {
+    const order = demoMultiSjPhotoOrder();
+    expect(selectedPengirimanShipmentId(order, "demo-multisj-photo-001")).toBe("demo-multisj-photo-001");
+    expect(selectedPengirimanShipmentId(order, "demo-multisj-photo-002")).toBe("demo-multisj-photo-002");
+    expect(selectedPengirimanShipmentId(order, "demo-multisj-photo-003")).toBe("demo-multisj-photo-003");
+    expect(selectedPengirimanShipmentId(order, "")).toBe("");
+    expect(selectedPengirimanShipmentId(order, "stale-sj-old")).toBe("");
+    expect(selectedPengirimanShipmentId(order, "unknown-sj")).toBe("");
+    expect(findDeliveryShipment(order, "stale-sj-old")).toBeNull();
+    expect(findDeliveryShipment(order, "unknown-sj")).toBeNull();
+    expect(findDeliveryShipment(order, "")).toBeNull();
   });
 
   test("legacy single-item shipment without SJ lines remains supported", () => {
