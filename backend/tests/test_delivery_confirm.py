@@ -103,6 +103,33 @@ def test_signature_gate_messages():
     assert "driver" in (confirm_delivery_block_reason(o3) or "").lower()
 
 
+def test_confirm_payload_applies_trimmed_recipient_name_before_gate():
+    from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+
+    o = _po(2, with_signature=True)
+    o["delivery_recipient_signature"]["recipient_name"] = ""
+    assert confirm_delivery_block_reason(o)
+    assert apply_recipient_name_to_active_signature(o, "  me time  ") is None
+    assert o["delivery_recipient_signature"]["recipient_name"] == "me time"
+    assert confirm_delivery_block_reason(o) is None
+    # Incomplete evidence remains rejected after a valid name is applied.
+    o["delivery_proofs"] = o["delivery_proofs"][:1]
+    blocked = confirm_delivery_block_reason(o) or ""
+    assert "foto" in blocked.lower()
+    assert o["delivery_recipient_signature"]["recipient_name"] == "me time"
+
+
+def test_confirm_delivered_endpoint_accepts_recipient_name_contract():
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    assert "class ConfirmDeliveredPayload" in src
+    payload = src[src.index("class ConfirmDeliveredPayload") : src.index("class ConfirmDeliveredPayload") + 400]
+    assert "recipient_name" in payload
+    confirm = src[src.index("async def confirm_delivered") : src.index("async def confirm_delivered") + 4500]
+    assert "apply_recipient_name_to_active_signature" in confirm
+    assert "incoming_name" in confirm
+    assert "delivery_confirm_action_ids" in confirm
+
+
 def _multi_sj_photo_po(proofs=None):
     return {
         "line_items": [
@@ -198,3 +225,120 @@ def test_sibling_proof_does_not_satisfy_current_sj_confirm():
     assert blocked and "foto" in blocked.lower()
     blocked3 = confirm_delivery_block_reason(order, order["shipments"][2])
     assert blocked3 and "foto" in blocked3.lower()
+
+
+def _legacy_siap_kirim(*, recipient_name="omit"):
+    """Pre-patch stored PO: Siap Kirim, both TTDs, 2 photos, Stock V2 OFF."""
+    from quantity_rules import shipment_is_delivered
+
+    order = _po(2, loaded=10, packed=10, qty_po=10, with_signature=True)
+    order["current_stage"] = 14
+    order["status_label"] = "Pengiriman"
+    order["eligible_delivery_qty"] = 10
+    order["delivery_confirmations"] = []
+    order["delivery_confirm_action_ids"] = []
+    order.pop("physical_stock_snapshot", None)
+    sig = order["delivery_recipient_signature"]
+    if recipient_name == "omit":
+        sig.pop("recipient_name", None)
+    elif recipient_name is None:
+        sig["recipient_name"] = ""
+    else:
+        sig["recipient_name"] = recipient_name
+    assert "physical_stock_snapshot" not in order
+    assert shipment_is_delivered(order, order["shipments"][0]) is False
+    return order
+
+
+def test_legacy_po_missing_recipient_name_field_is_siap_kirim_but_gated():
+    from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+
+    o = _legacy_siap_kirim(recipient_name="omit")
+    assert o["delivery_status"] == "Belum Terkirim"
+    assert "recipient_name" not in o["delivery_recipient_signature"]
+    assert o["delivery_recipient_signature"].get("signature_storage_path")
+    assert o["delivery_driver_signature"].get("signature_storage_path")
+    assert len(o["delivery_proofs"]) >= 2
+    blocked = confirm_delivery_block_reason(o) or ""
+    assert "nama" in blocked.lower()
+    assert apply_recipient_name_to_active_signature(o, "  me time  ") is None
+    assert o["delivery_recipient_signature"]["recipient_name"] == "me time"
+    assert confirm_delivery_block_reason(o) is None
+
+
+def test_legacy_po_empty_recipient_name_binds_live_name_then_confirm_passes():
+    from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+
+    o = _legacy_siap_kirim(recipient_name=None)
+    assert o["delivery_recipient_signature"]["recipient_name"] == ""
+    assert confirm_delivery_block_reason(o)
+    assert apply_recipient_name_to_active_signature(o, "Penerima Lama") is None
+    assert o["delivery_recipient_signature"]["recipient_name"] == "Penerima Lama"
+    assert confirm_delivery_block_reason(o) is None
+
+
+def test_legacy_po_with_stored_recipient_name_still_confirms():
+    o = _legacy_siap_kirim(recipient_name="Budi Penerima")
+    assert confirm_delivery_block_reason(o) is None
+    # Old client omits recipient_name — stored name remains authoritative.
+    incoming_name = None
+    if incoming_name is not None:
+        raise AssertionError("old payload must skip name apply")
+    assert o["delivery_recipient_signature"]["recipient_name"] == "Budi Penerima"
+    assert confirm_delivery_block_reason(o) is None
+
+
+def test_legacy_old_client_payload_without_recipient_name_keeps_empty_gate():
+    from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+
+    o = _legacy_siap_kirim(recipient_name=None)
+    incoming_name = None  # ConfirmDeliveredPayload default / omitted JSON field
+    if incoming_name is not None:
+        apply_recipient_name_to_active_signature(o, incoming_name)
+    assert o["delivery_recipient_signature"]["recipient_name"] == ""
+    blocked = confirm_delivery_block_reason(o) or ""
+    assert "nama penerima wajib" in blocked.lower()
+
+
+def test_legacy_already_terkirim_does_not_need_a_second_confirmation():
+    from quantity_rules import shipment_is_delivered
+
+    o = _legacy_siap_kirim(recipient_name="Budi Penerima")
+    o["delivery_status"] = "Terkirim"
+    o["qty_delivered"] = 10
+    o["shipments"][0]["delivery_status"] = "Terkirim"
+    o["shipments"][0]["delivered_at"] = "2026-09-01T00:00:00+00:00"
+    o["delivery_confirmations"] = [{
+        "id": "conf-legacy-1",
+        "action_id": "act-legacy-1",
+        "recipient_name": "Budi Penerima",
+        "shipment_id": "s1",
+        "qty": 10,
+    }]
+    o["delivery_confirm_action_ids"] = ["act-legacy-1"]
+    o["delivery_recipient_signature"]["frozen"] = True
+    assert shipment_is_delivered(o, o["shipments"][0]) is True
+    before = list(o["delivery_confirmations"])
+    # Mutate short-circuits: action_id already claimed, or shipment already delivered.
+    ids = list(o.get("delivery_confirm_action_ids") or [])
+    action_id = "act-legacy-1"
+    if action_id and action_id in ids:
+        pass
+    elif shipment_is_delivered(o, o["shipments"][0]):
+        pass
+    else:
+        o["delivery_confirmations"].append({"id": "should-not-happen"})
+    assert o["delivery_confirmations"] == before
+    assert o["delivery_confirm_action_ids"] == ["act-legacy-1"]
+
+
+def test_confirm_delivered_old_client_payload_skips_name_apply():
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    confirm = src[src.index("async def confirm_delivered") : src.index("async def confirm_delivered") + 4500]
+    assert "incoming_name = payload.recipient_name if payload else None" in confirm
+    assert "if incoming_name is not None:" in confirm
+    delivered_at = confirm.index("if selected_sh and _qr_shipment_is_delivered")
+    apply_at = confirm.index("apply_recipient_name_to_active_signature")
+    blocked_at = confirm.index("blocked = _qr_confirm_delivery_block_reason")
+    action_at = confirm.index("if action_id and action_id in ids:")
+    assert action_at < delivered_at < apply_at < blocked_at

@@ -261,6 +261,24 @@ def has_valid_active_driver_signature(order: dict) -> bool:
     return bool(path and fid)
 
 
+def apply_recipient_name_to_active_signature(order: dict, raw: Any) -> Optional[str]:
+    """Bind the latest trimmed recipient name onto the active POD signature.
+
+    Returns a validation error string, or None when the name is valid and applied
+    (or when there is no active signature — the signature gate owns that error).
+    Does not create a signature and does not accept a blank name.
+    """
+    name_err = validate_recipient_name(raw)
+    if name_err:
+        return name_err
+    sig = get_active_signature(order)
+    if not isinstance(sig, dict):
+        return None
+    sig["recipient_name"] = normalize_recipient_name(raw)
+    order["delivery_recipient_signature"] = sig
+    return None
+
+
 def signature_confirm_block_reason(order: dict) -> Optional[str]:
     """Extra gates after the existing 2-photo rule. Legacy delivered docs are not blocked here."""
     n = valid_delivery_proof_count(order)

@@ -5574,6 +5574,7 @@ async def mark_delivered(
 class ConfirmDeliveredPayload(BaseModel):
     action_id: Optional[str] = None
     shipment_id: Optional[str] = None
+    recipient_name: Optional[str] = None
 
 
 @api_router.post("/orders/{order_id}/confirm-delivered")
@@ -5620,6 +5621,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             raise HTTPException(400, resolve_err)
         if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
             return
+        incoming_name = payload.recipient_name if payload else None
+        if incoming_name is not None:
+            from services.delivery_pod_signature import apply_recipient_name_to_active_signature
+            name_err = apply_recipient_name_to_active_signature(order, incoming_name)
+            if name_err:
+                raise HTTPException(400, name_err)
         blocked = _qr_confirm_delivery_block_reason(order, selected_sh)
         if blocked:
             raise HTTPException(400, blocked)
