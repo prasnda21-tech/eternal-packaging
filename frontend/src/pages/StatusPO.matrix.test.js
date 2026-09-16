@@ -146,10 +146,25 @@ describe("Status PO workflow matrix UI", () => {
       window.dispatchEvent(new MouseEvent("mousemove", { clientX: 40, bubbles: true }));
       window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     });
-    const stored = JSON.parse(window.localStorage.getItem("status-po-col-widths-v1"));
-    expect(stored.po).toBeGreaterThanOrEqual(175);
+    const stored = JSON.parse(window.localStorage.getItem("status-po-col-widths-v2"));
+    expect(stored.po).toBeGreaterThanOrEqual(132);
     const cols = container.querySelectorAll("colgroup col");
     expect(cols.length).toBeGreaterThan(18);
+  });
+
+  test("legend stays compact with existing meanings", async () => {
+    await act(async () => { root.render(<StatusPO />); });
+    await flush();
+    const legend = container.querySelector('[data-testid="status-po-legend"]').textContent;
+    expect(legend).toContain("Selesai");
+    expect(legend).toContain("Sedang Berjalan");
+    expect(legend).toContain("Belum Dimulai");
+    expect(legend).toContain("Tertahan / Perlu Perhatian");
+    expect(legend).toContain("Tidak dapat ditentukan");
+    expect(legend).toContain("Dibatalkan");
+    expect(legend).not.toContain("hijau centang");
+    expect(container.querySelector('[data-testid="status-po-view-label"]')).toBeNull();
+    expect(container.querySelector(".spo-heading-accent")).toBeNull();
   });
 
   test("row selection still works beside the matrix", async () => {
