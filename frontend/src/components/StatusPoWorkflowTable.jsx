@@ -22,9 +22,9 @@ import {
 } from "../lib/statusPoWorkflow";
 
 function WorkflowMark({ state, color }) {
-  if (state === "done") {
+  if (state === "completed" || state === "done") {
     return (
-      <span className="spo-mark" data-state="done" title="Selesai">
+      <span className="spo-mark" data-state="completed" title="Selesai">
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="8" cy="8" r="7" fill="#22A447" />
           <path d="M5 8.2l2 2.1 4.2-4.4" fill="none" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
@@ -32,9 +32,9 @@ function WorkflowMark({ state, color }) {
       </span>
     );
   }
-  if (state === "current") {
+  if (state === "active" || state === "current") {
     return (
-      <span className="spo-mark" data-state="current" title="Sedang berjalan">
+      <span className="spo-mark" data-state="active" title="Sedang berjalan">
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="8" cy="8" r="6.2" fill="none" stroke={color} strokeWidth="2" />
           <circle cx="8" cy="8" r="2.4" fill={color} />
@@ -58,7 +58,17 @@ function WorkflowMark({ state, color }) {
       <span className="spo-mark" data-state="cancelled" title="Dibatalkan">
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="8" cy="8" r="7" fill="#C0392B" />
-          <path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+          <path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+    );
+  }
+  if (state === "unknown") {
+    return (
+      <span className="spo-mark" data-state="unknown" title="Tidak dapat ditentukan">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.2" fill="none" stroke="#9AA8B5" strokeWidth="1.6" />
+          <text x="8" y="11.2" textAnchor="middle" fontSize="9" fontWeight="700" fill="#9AA8B5">?</text>
         </svg>
       </span>
     );
@@ -143,14 +153,14 @@ export default function StatusPoWorkflowTable({
   const tableMin = useMemo(() => {
     const keys = [
       ...(canSelect ? ["check"] : []),
-      "po", "date", "customer", "status",
+      "po", "date", "customer", "items", "status",
       ...STATUS_PO_WORKFLOW_STAGES.map((s) => s.key),
       "progress", "action",
     ];
     return keys.reduce((sum, k) => sum + (widths[k] || STATUS_PO_DEFAULT_WIDTHS[k] || 60), 0);
   }, [widths, canSelect]);
 
-  const dataSpan = (canSelect ? 1 : 0) + 4;
+  const dataSpan = (canSelect ? 1 : 0) + 5;
   const colCount = dataSpan + STATUS_PO_WORKFLOW_STAGES.length + 2;
 
   const stickyStyle = (key, extra = {}) => {
@@ -169,6 +179,7 @@ export default function StatusPoWorkflowTable({
         <col style={{ width: widths.po }} />
         <col style={{ width: widths.date }} />
         <col style={{ width: widths.customer }} />
+        <col style={{ width: widths.items }} />
         <col style={{ width: widths.status }} />
         {STATUS_PO_WORKFLOW_STAGES.map((s) => (
           <col key={s.key} style={{ width: widths[s.key] }} />
@@ -220,6 +231,14 @@ export default function StatusPoWorkflowTable({
           >
             Pelanggan
             <ResizeHandle colKey="customer" onStart={onResizeStart} />
+          </th>
+          <th
+            className={`spo-th-id spo-sticky${narrow ? " spo-unstick-narrow" : ""}`}
+            style={stickyStyle("items")}
+            data-testid="status-po-th-items"
+          >
+            Item Line
+            <ResizeHandle colKey="items" onStart={onResizeStart} />
           </th>
           <th
             className={`spo-th-id spo-sticky spo-sticky-last${narrow ? " spo-unstick-narrow" : ""}`}
@@ -297,14 +316,27 @@ export default function StatusPoWorkflowTable({
                 {r.customer || "-"}
               </td>
               <td
+                className={`spo-items spo-sticky${narrow ? " spo-unstick-narrow" : ""}`}
+                style={stickyStyle("items")}
+                data-testid={`status-po-items-${r.po_number}`}
+              >
+                {(r.item_lines || []).length ? (
+                  <div className="spo-item-lines">
+                    {(r.item_lines || []).map((name) => (
+                      <div key={name} className="spo-item-line">{name}</div>
+                    ))}
+                  </div>
+                ) : "-"}
+              </td>
+              <td
                 className={`spo-sticky spo-sticky-last${narrow ? " spo-unstick-narrow" : ""}`}
                 style={stickyStyle("status")}
                 data-testid={`status-po-status-${r.po_number}`}
               >
                 <span className={`spo-badge spo-badge-${tone}`}>{r.status || "-"}</span>
               </td>
-              {STATUS_PO_WORKFLOW_STAGES.map((s, idx) => {
-                const state = workflowCellState(r, idx);
+              {STATUS_PO_WORKFLOW_STAGES.map((s) => {
+                const state = workflowCellState(r, s.key);
                 return (
                   <td
                     key={s.key}

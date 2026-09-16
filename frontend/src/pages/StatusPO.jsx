@@ -314,6 +314,7 @@ export default function StatusPO() {
         <span className="spo-legend-item">garis abu = Belum Dimulai</span>
         <span className="spo-legend-item">oranye ! = Tertahan / Perlu Perhatian</span>
         <span className="spo-legend-item">merah X = Dibatalkan</span>
+        <span className="spo-legend-item">tanda tanya = Tidak dapat ditentukan</span>
       </div>
       <p className="spo-help" data-testid="status-po-scroll-hint">
         Geser tabel ke kanan untuk melihat seluruh tahapan workflow.

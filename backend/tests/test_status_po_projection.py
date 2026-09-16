@@ -54,12 +54,13 @@ def apply_status_po_projection(order: dict) -> dict:
         "payment_approved_at", "payment_bypassed_at",
         "delivered_at", "qty_delivered", "qty_packed", "delivery_status",
         "current_stage", "total_quantity", "quantity", "packing_required_total",
+        "requires_printing",
         "cancelled", "work_date", "hold", "priority", "status_label",
         "design_status", "design_bypassed", "payment_status", "payment_bypassed",
         "sample_approved", "packing_status", "packing_status_semantic",
         "surat_jalan_created", "surat_jalan_status_semantic",
         "delivery_note_number", "delivery_note_created_at",
-        "loading_completed", "loading_completed_at",
+        "loading_completed", "loading_completed_at", "loading_qty_status",
         "terkirim_confirmed", "print_status", "print_completed_qty",
     ))
     shaped["delivery_proofs"] = [
@@ -68,7 +69,7 @@ def apply_status_po_projection(order: dict) -> dict:
         if isinstance(p, dict)
     ]
     shaped["line_items"] = [
-        _pick(li, ("quantity", "production_process"))
+        _pick(li, ("name", "item_name", "quantity", "production_process"))
         for li in (src.get("line_items") or [])
         if isinstance(li, dict)
     ]
@@ -116,6 +117,11 @@ def apply_status_po_projection(order: dict) -> dict:
                 if isinstance(ev, dict)
             ]
         }
+    shaped["loading_confirmations"] = [
+        _pick(c, ("surat_jalan_id",))
+        for c in (src.get("loading_confirmations") or [])
+        if isinstance(c, dict)
+    ]
     return shaped
 
 
@@ -254,6 +260,8 @@ def test_projection_keeps_required_fields_and_excludes_file_bytes():
         "packing_info.lines.packed_qty",
         "customer_approval.status",
         "operator_splits.quantity",
+        "line_items.name",
+        "requires_printing",
     ):
         assert key in src
     assert '"design_files": 1' not in src

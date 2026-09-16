@@ -242,6 +242,24 @@
 }
 .status-po-page .spo-mark svg{display:block}
 
+.status-po-page .spo-item-lines{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  line-height:1.25;
+}
+.status-po-page .spo-item-line{
+  font:12px/1.25 "IBM Plex Sans",sans-serif;
+  color:var(--spo-ink);
+  white-space:normal;
+}
+.status-po-page .spo-table tbody td.spo-items{
+  height:auto;
+  min-height:44px;
+  vertical-align:top;
+  padding-top:8px;
+  padding-bottom:8px;
+}
 .status-po-page .spo-progress{
   display:flex;
   align-items:center;

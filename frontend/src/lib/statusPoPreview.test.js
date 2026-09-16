@@ -20,11 +20,15 @@ describe("Status PO isolated preview rows", () => {
     const rows = buildStatusPoMatrixPreviewRows();
     expect(rows.map((r) => r.po_number)).toEqual([
       "PO-PACK", "PO-CETAK", "PO-LOAD", "PO-JADWAL", "PO-DESIGN",
-      "PO-PAY", "PO-SCREEN", "PO-SAMPLE", "PO-CANCEL", "PO-KIRIM",
+      "PO-PAY", "PO-SCREEN", "PO-SAMPLE", "PO-CANCEL", "PO-KIRIM", "PO-GAP",
     ]);
+    expect(rows[0].item_lines).toEqual(["Cup 16oz", "Lid 98 mm", "Add On Warna"]);
+    expect(rows[10].workflow.design).toBe("pending");
+    expect(rows[10].workflow.packing).toBe("active");
+    expect(rows[10].workflow.kirim).toBe("unknown");
     expect(rows.map((r) => r.status)).toEqual([
       "Packing", "Cetak berjalan", "Loading", "Penjadwalan", "Design",
-      "Payment", "Screener", "Konfirmasi Sample", "Cancelled", "Terkirim",
+      "Payment", "Screener", "Konfirmasi Sample", "Cancelled", "Terkirim", "Packing",
     ]);
   });
 });

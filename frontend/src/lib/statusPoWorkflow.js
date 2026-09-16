@@ -1,7 +1,6 @@
 /**
  * Display-only Status PO workflow matrix.
- * Maps existing lean status-po row fields (status, cancelled, hold, current_stage)
- * onto sequential cells. Does not change workflow progression.
+ * Cells render explicit `row.workflow[stage]` from the Status PO payload.
  */
 
 export const STATUS_PO_COL_STORAGE_KEY = "status-po-col-widths-v1";
@@ -26,13 +25,14 @@ export const STATUS_PO_WORKFLOW_STAGES = [
 
 export const STATUS_PO_WORKFLOW_HEADERS = STATUS_PO_WORKFLOW_STAGES.map((s) => s.header);
 
-export const STATUS_PO_IDENTITY_COLUMNS = ["No PO", "Tanggal", "Pelanggan", "Status Saat Ini"];
+export const STATUS_PO_IDENTITY_COLUMNS = ["No PO", "Tanggal", "Pelanggan", "Item Line", "Status Saat Ini"];
 
 export const STATUS_PO_DEFAULT_WIDTHS = {
   check: 40,
   po: 175,
   date: 88,
-  customer: 168,
+  customer: 150,
+  items: 150,
   status: 132,
   order: 60,
   design: 60,
@@ -58,6 +58,7 @@ export const STATUS_PO_MIN_WIDTHS = {
   po: 175,
   date: 88,
   customer: 150,
+  items: 120,
   status: 120,
   order: 60,
   design: 60,
@@ -128,42 +129,48 @@ export function workflowStageIndex(row) {
   return 0;
 }
 
-export function workflowCellState(row, stageIndex) {
+export function workflowCellState(row, stageKey) {
   const cancelled = Boolean(row?.cancelled) || normalizeStatusLabel(row?.status) === "cancelled";
   if (cancelled) return "cancelled";
-  const hold = Boolean(row?.hold) || normalizeStatusLabel(row?.status) === "hold";
-  const idx = workflowStageIndex(row);
-  if (idx >= 15) return "done";
-  if (stageIndex < idx) return "done";
-  if (stageIndex === idx) return hold ? "hold" : "current";
-  return "pending";
+  const key = typeof stageKey === "number"
+    ? STATUS_PO_WORKFLOW_STAGES[stageKey]?.key
+    : stageKey;
+  const raw = row?.workflow?.[key];
+  if (raw === "completed") return "completed";
+  if (raw === "active") return "active";
+  if (raw === "pending") return "pending";
+  if (raw === "hold") return "hold";
+  if (raw === "cancelled") return "cancelled";
+  return "unknown";
 }
 
 export function workflowCellTitle(state) {
-  if (state === "done") return "Selesai";
-  if (state === "current") return "Sedang berjalan";
+  if (state === "completed" || state === "done") return "Selesai";
+  if (state === "active" || state === "current") return "Sedang berjalan";
   if (state === "pending") return "Belum dimulai";
   if (state === "hold") return "Tertahan";
   if (state === "cancelled") return "Dibatalkan";
-  return "";
+  return "Tidak dapat ditentukan";
 }
 
 export function workflowProgressPercent(row) {
-  if (Boolean(row?.cancelled) || normalizeStatusLabel(row?.status) === "cancelled") {
-    const idx = Number(row?.current_stage);
-    const n = Number.isFinite(idx) ? Math.max(0, Math.min(15, idx)) : 0;
-    return Math.round((n / STATUS_PO_WORKFLOW_STAGES.length) * 100);
-  }
-  const idx = workflowStageIndex(row);
-  if (idx >= STATUS_PO_WORKFLOW_STAGES.length) return 100;
-  return Math.round((idx / STATUS_PO_WORKFLOW_STAGES.length) * 100);
+  const wf = row?.workflow;
+  if (!wf || typeof wf !== "object") return 0;
+  const keys = STATUS_PO_WORKFLOW_STAGES.map((s) => s.key);
+  const done = keys.filter((k) => wf[k] === "completed").length;
+  return Math.round((done / keys.length) * 100);
 }
 
 export function workflowProgressColor(row) {
   if (Boolean(row?.cancelled) || normalizeStatusLabel(row?.status) === "cancelled") return "#C0392B";
   if (Boolean(row?.hold) || normalizeStatusLabel(row?.status) === "hold") return "#D89A00";
-  const idx = Math.min(workflowStageIndex(row), STATUS_PO_WORKFLOW_STAGES.length - 1);
-  return STATUS_PO_WORKFLOW_STAGES[idx]?.color || "#1F4B7A";
+  const wf = row?.workflow || {};
+  const activeKey = STATUS_PO_WORKFLOW_STAGES.find((s) => wf[s.key] === "active" || wf[s.key] === "hold")?.key;
+  if (activeKey) {
+    return STATUS_PO_WORKFLOW_STAGES.find((s) => s.key === activeKey)?.color || "#1F4B7A";
+  }
+  const lastDone = [...STATUS_PO_WORKFLOW_STAGES].reverse().find((s) => wf[s.key] === "completed");
+  return lastDone?.color || "#1F4B7A";
 }
 
 export function statusBadgeTone(status) {
@@ -214,15 +221,17 @@ export function stickyOffsets(widths, { hasCheck, narrow } = {}) {
   const po = check;
   const date = po + (w.po || 175);
   const customer = date + (w.date || 88);
-  const status = customer + (w.customer || 168);
+  const items = customer + (w.customer || 150);
+  const status = items + (w.items || 150);
   if (narrow) {
     return {
       check: 0,
       po,
       date: null,
       customer: po + (w.po || 175),
+      items: null,
       status: null,
     };
   }
-  return { check: 0, po, date, customer, status };
+  return { check: 0, po, date, customer, items, status };
 }
