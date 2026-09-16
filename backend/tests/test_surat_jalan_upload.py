@@ -117,14 +117,18 @@ def test_sj_file_activates_loading_task():
 
 
 def test_loading_requires_linked_sj_and_positive_qty():
-    o = _po(surat_jalan_files=[{"id": "f1", "name": "sj.pdf"}])
+    o = _po(
+        surat_jalan_files=[{"id": "f1", "name": "sj.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}],
+        shipments=[{"id": "f1", "number": "SJ-1"}],
+    )
     assert validate_loading_confirmation(o, "missing", [{"line_idx": 0, "qty": 10}])
     assert validate_loading_confirmation(o, "f1", [])
     assert validate_loading_confirmation(o, "f1", [{"line_idx": 0, "qty": 0}])
     assert validate_loading_confirmation(o, "f1", [{"line_idx": 0, "qty": 100}])
     packed = _po(
         packing_info={"qty_packed": 1000, "lines": [{"line_idx": 0, "packed_qty": 1000}]},
-        surat_jalan_files=[{"id": "f1", "name": "sj.pdf"}],
+        surat_jalan_files=[{"id": "f1", "name": "sj.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}],
+        shipments=[{"id": "f1", "number": "SJ-1"}],
     )
     assert validate_loading_confirmation(packed, "f1", [{"line_idx": 0, "qty": 100}]) is None
 
@@ -132,7 +136,8 @@ def test_loading_requires_linked_sj_and_positive_qty():
 def test_loading_cumulative_and_over_confirm():
     o = _po(
         packing_info={"qty_packed": 1000, "lines": [{"line_idx": 0, "packed_qty": 1000}]},
-        surat_jalan_files=[{"id": "f1", "name": "a.pdf"}, {"id": "f2", "name": "b.pdf"}],
+        surat_jalan_files=[{"id": "f1", "name": "a.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}, {"id": "f2", "name": "b.pdf", "shipment_id": "f2", "sj_number": "SJ-2"}],
+        shipments=[{"id": "f1", "number": "SJ-1"}, {"id": "f2", "number": "SJ-2"}],
     )
     apply_loading_confirmation(o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 400}], actor={"email": "a@x.com", "name": "A"}, confirmation_id="c1", confirmed_at="t1")
     apply_loading_confirmation(o, surat_jalan_id="f2", lines=[{"line_idx": 0, "qty": 300}], actor={"email": "a@x.com", "name": "A"}, confirmation_id="c2", confirmed_at="t2")
@@ -147,7 +152,8 @@ def test_loading_cumulative_and_over_confirm():
 def test_delivery_bounded_by_confirmed_loading():
     o = _po(
         packing_info={"qty_packed": 1000, "lines": [{"line_idx": 0, "packed_qty": 1000}]},
-        surat_jalan_files=[{"id": "f1", "name": "sj.pdf"}],
+        surat_jalan_files=[{"id": "f1", "name": "sj.pdf", "shipment_id": "f1", "sj_number": "SJ-1"}],
+        shipments=[{"id": "f1", "number": "SJ-1"}],
     )
     apply_loading_confirmation(o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 400}], actor={"email": "d@x.com"}, confirmation_id="c1")
     assert eligible_delivery_qty(o) == 400
