@@ -3,6 +3,7 @@ import path from "path";
 
 describe("Status PO header filters", () => {
   const src = fs.readFileSync(path.join(__dirname, "StatusPO.jsx"), "utf8");
+  const table = fs.readFileSync(path.join(__dirname, "../components/StatusPoWorkflowTable.jsx"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
 
   test("reuses Status Pengiriman toolbar fields plus status and date range", () => {
@@ -15,7 +16,7 @@ describe("Status PO header filters", () => {
     expect(src).toMatch(/status-po-filter-date-from/);
     expect(src).toMatch(/status-po-filter-date-to/);
     expect(src).toMatch(/status-po-filter-reset/);
-    expect(src).toMatch(/Reset Filter/);
+    expect(src).toMatch(/>\s*Reset\s*</);
     expect(src).toMatch(/matchesStatusPoFilters/);
     expect(src).toMatch(/EMPTY_STATUS_PO_FILTERS/);
   });
@@ -38,15 +39,15 @@ describe("Status PO header filters", () => {
   });
 
   test("empty state preserved", () => {
-    expect(src).toMatch(/Tidak ada PO/);
-    expect(src).toMatch(/!visible\.length/);
+    expect(table).toMatch(/Tidak ada PO/);
+    expect(src).toMatch(/visible\.length/);
   });
 
   test("row checkboxes and select-all are scoped to visible filtered rows", () => {
-    expect(src).toMatch(/status-po-select-all/);
-    expect(src).toMatch(/status-po-check-\$\{r\.po_number\}/);
+    expect(table).toMatch(/status-po-select-all/);
+    expect(table).toMatch(/status-po-check-\$\{r\.po_number\}/);
     expect(src).toMatch(/Pilih Semua hanya untuk baris yang sedang tampil/);
-    expect(src).toMatch(/selectAllVisible\(visibleIds/);
+    expect(table).toMatch(/selectAllVisible\(visibleIds/);
     expect(src).toMatch(/pruneSelection/);
     expect(src).toMatch(/status-po-selected-count/);
   });

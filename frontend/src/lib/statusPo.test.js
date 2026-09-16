@@ -2,7 +2,7 @@ import { deliveredPercentLabel, effectivePoStatus, matchesStatusPoFilters, STATU
 
 describe("Status PO", () => {
   test("columns exact", () => {
-    expect(STATUS_PO_COLUMNS).toEqual(["No PO", "Tanggal", "Pelanggan", "Status", "Status Terkirim"]);
+    expect(STATUS_PO_COLUMNS).toEqual(["No PO", "Tanggal", "Pelanggan", "Status Saat Ini", "Progress", "Aksi"]);
   });
 
   test("partial delivery 50% remains 50%", () => {

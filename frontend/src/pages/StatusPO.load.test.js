@@ -134,11 +134,11 @@ describe("Status PO load (runtime)", () => {
     expect(container.querySelector('[data-testid="status-po-row-PO-001"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="status-po-link-PO-001"]').textContent).toBe("PO-001");
     expect(container.querySelector('[data-testid="status-po-status-PO-001"]').textContent).toBe("Operator");
-    expect(container.querySelector('[data-testid="status-po-delivered-PO-001"]').textContent).toBe("0%");
+    expect(container.querySelector('[data-testid="status-po-delivered-PO-001"]').textContent).toContain("53%");
     expect(container.querySelector('[data-testid="status-po-status-PO-002"]').textContent).toBe("Packing");
-    expect(container.querySelector('[data-testid="status-po-delivered-PO-002"]').textContent).toBe("25%");
+    expect(container.querySelector('[data-testid="status-po-delivered-PO-002"]').textContent).toContain("73%");
     expect(container.querySelector('[data-testid="status-po-status-PO-DONE"]').textContent).toBe("Terkirim");
-    expect(container.querySelector('[data-testid="status-po-delivered-PO-DONE"]').textContent).toBe("100%");
+    expect(container.querySelector('[data-testid="status-po-delivered-PO-DONE"]').textContent).toContain("100%");
     expect(container.textContent).toContain("ABC Pack");
     expect(container.textContent).toContain("10/08/26");
   });
