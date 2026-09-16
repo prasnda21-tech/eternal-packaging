@@ -3,7 +3,6 @@ import { XCircle } from "lucide-react";
 import { formatDate, formatDisplayDate } from "../lib/constants";
 import {
   formatIdQty,
-  formatOperatorAssignedQty,
   OPERATOR_UNASSIGNED_LABEL,
   operatorPrintableItems,
 } from "../lib/productionScheduleQty";
@@ -116,18 +115,24 @@ function TotalQtyCell({ qtyProg }) {
 function ItemCell({ row, variant }) {
   const items = operatorPrintableItems(row.displayOperator?.splits || []);
   if (!items.length) return <span className="muted small">—</span>;
-  return items.map((item) => (
-    <div
-      key={item.key}
-      className={`prod-schedule-item-line${variant === "mobile" ? " mop-ops-item-line" : ""}`}
-      title={item.name}
-      data-testid={variant === "desktop"
-        ? `prod-item-line-${row.po_number}-${item.key}`
-        : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
-    >
-      <span className="mop-ops-item-name">{item.name}</span>
-    </div>
-  ));
+  return items.map((item) => {
+    const qtyPresent = item.quantity !== undefined && item.quantity !== null && item.quantity !== "";
+    return (
+      <div
+        key={item.key}
+        className="prod-schedule-item-line mop-ops-item-line"
+        title={item.name}
+        data-testid={variant === "desktop"
+          ? `prod-item-line-${row.po_number}-${item.key}`
+          : `mobile-schedule-item-line-${row.po_number}-${item.key}`}
+      >
+        <span className="mop-ops-item-name">{item.name}</span>
+        {qtyPresent ? (
+          <span className="mop-ops-item-qty">{formatIdQty(item.quantity)}</span>
+        ) : null}
+      </div>
+    );
+  });
 }
 
 function ScreenSizeCell({ row, variant }) {
@@ -152,11 +157,9 @@ function operatorCellTestId(row, variant, suffix = "") {
 }
 
 function OperatorAssignmentBlock({ op, testid }) {
-  const qtyText = formatOperatorAssignedQty(op?.quantity);
   return (
     <div className="prod-op-line" data-testid={testid}>
       <span className="prod-op-name">{op?.operator_name || OPERATOR_UNASSIGNED_LABEL}</span>
-      {qtyText ? <span className="prod-op-qty muted small mono">{qtyText}</span> : null}
     </div>
   );
 }
