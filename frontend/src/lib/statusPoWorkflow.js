@@ -3,7 +3,7 @@
  * Cells render explicit `row.workflow[stage]` from the Status PO payload.
  */
 
-export const STATUS_PO_COL_STORAGE_KEY = "status-po-col-widths-v1";
+export const STATUS_PO_COL_STORAGE_KEY = "status-po-col-widths-v2";
 
 export const STATUS_PO_WORKFLOW_STAGES = [
   { key: "order", header: "Order", full: "Order", color: "#1F4B7A" },
@@ -29,11 +29,11 @@ export const STATUS_PO_IDENTITY_COLUMNS = ["No PO", "Tanggal", "Pelanggan", "Ite
 
 export const STATUS_PO_DEFAULT_WIDTHS = {
   check: 40,
-  po: 175,
-  date: 88,
-  customer: 150,
-  items: 150,
-  status: 132,
+  po: 148,
+  date: 82,
+  customer: 128,
+  items: 196,
+  status: 128,
   order: 60,
   design: 60,
   appr_design: 76,
@@ -55,11 +55,11 @@ export const STATUS_PO_DEFAULT_WIDTHS = {
 
 export const STATUS_PO_MIN_WIDTHS = {
   check: 36,
-  po: 175,
-  date: 88,
-  customer: 150,
-  items: 120,
-  status: 120,
+  po: 132,
+  date: 76,
+  customer: 112,
+  items: 160,
+  status: 118,
   order: 60,
   design: 60,
   appr_design: 60,
@@ -217,18 +217,19 @@ export function writeStoredColWidths(widths) {
 
 export function stickyOffsets(widths, { hasCheck, narrow } = {}) {
   const w = widths || STATUS_PO_DEFAULT_WIDTHS;
-  const check = hasCheck ? (w.check || 40) : 0;
+  const d = STATUS_PO_DEFAULT_WIDTHS;
+  const check = hasCheck ? (w.check || d.check) : 0;
   const po = check;
-  const date = po + (w.po || 175);
-  const customer = date + (w.date || 88);
-  const items = customer + (w.customer || 150);
-  const status = items + (w.items || 150);
+  const date = po + (w.po || d.po);
+  const customer = date + (w.date || d.date);
+  const items = customer + (w.customer || d.customer);
+  const status = items + (w.items || d.items);
   if (narrow) {
     return {
       check: 0,
       po,
       date: null,
-      customer: po + (w.po || 175),
+      customer: po + (w.po || d.po),
       items: null,
       status: null,
     };
