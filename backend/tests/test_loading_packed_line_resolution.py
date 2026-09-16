@@ -13,8 +13,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from quantity_rules import (
+    apply_loading_confirmation,
     available_for_sj_loading_line,
     build_sj_loading_lines,
+    delivery_batch_photo_readiness,
     loaded_qty_for_sj_line,
     loading_verification_status,
     match_po_line_idx,
@@ -22,6 +24,7 @@ from quantity_rules import (
     packing_line_breakdown,
     packing_shortfall_for_sj_match,
     qty_confirmed_loading_for_line,
+    qty_loaded,
     qty_loaded_for_line,
     qty_packed,
     sj_qty_for_line,
@@ -502,7 +505,8 @@ def test_loaded_400_of_packed_1000_leaves_remaining_600():
     assert packing_shortfall_for_sj_match(o, SJ_ID) is None
 
 
-def test_legacy_loading_info_still_blocks_physical_remaining():
+def test_legacy_loading_info_on_unique_sj_is_already_loaded():
+    """Historical loading_info on the only SJ is selected-SJ loaded, not a leftover block."""
     o = _po(sj_a=1000, sj_b=0)
     o["line_items"] = [o["line_items"][0]]
     o["packing_info"] = {"qty_packed": 1000, "lines": [{"line_idx": 0, "line_id": "LA", "packed_qty": 1000}]}
@@ -510,10 +514,15 @@ def test_legacy_loading_info_still_blocks_physical_remaining():
     o["shipments"][0]["lines"] = [{"line_idx": 0, "line_id": "LA", "qty": 1000}]
     o["loading_info"] = {"lines": [{"line_idx": 0, "loaded_qty": 1000}]}
     assert packed_qty_for_line(o, 0) == 1000
+    assert qty_loaded_for_line(o, 0) == 1000
+    assert loaded_qty_for_sj_line(o, SJ_ID, 0) == 1000
     assert available_for_sj_loading_line(o, SJ_ID, 0) == 0
-    msg = packing_shortfall_for_sj_match(o, SJ_ID)
-    assert msg and "sudah pernah dikonfirmasi Loading" in msg
-    assert "Packing belum mencukupi" not in msg
+    assert packing_shortfall_for_sj_match(o, SJ_ID) is None
+    st = loading_verification_status(o, SJ_ID)
+    assert st.get("code") == "loading_complete"
+    ready = delivery_batch_photo_readiness(o, o["shipments"][0])
+    assert ready.get("allowed") is True
+    assert ready.get("loaded_total") == 1000
 
 
 # ---------------------------------------------------------------------------
@@ -750,16 +759,16 @@ def test_live_other_sj_load_still_reduces_physical():
     assert "Packing belum mencukupi" not in msg
 
 
-def test_blank_surat_jalan_id_confirmation_still_reduces_physical():
+def test_blank_surat_jalan_id_confirmation_attributes_to_unique_sj():
     o = _oranje_production(extra_confs=[{
         "id": "legacy-blank",
         "surat_jalan_id": "",
         "lines": [{"line_idx": 0, "qty": 1000}],
     }])
     assert qty_loaded_for_line(o, 0) == 1000
+    assert loaded_qty_for_sj_line(o, ORANJE_SJ, 0) == 1000
     assert available_for_sj_loading_line(o, ORANJE_SJ, 0) == 0
-    msg = packing_shortfall_for_sj_match(o, ORANJE_SJ)
-    assert msg and "sudah pernah dikonfirmasi Loading" in msg
+    assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
 
 
 def test_oranje_cancelled_historical_loading_does_not_reduce_physical():
@@ -837,3 +846,163 @@ def test_non_print_packed_zero_is_not_packing_shortage():
     assert packing_shortfall_for_sj_match(o, ORANJE_SJ) is None
     st = loading_verification_status(o, ORANJE_SJ)
     assert st.get("code") != "packing_insufficient"
+
+
+SJ_SEP10_NUMBER = "SJ/2026/09/10/000020"
+SJ_SEP10_ID = "ship-2026-09-10-000020"
+
+
+def _sj_sep10_legacy_2000(*, extra_shipments=None, extra_files=None, extra_confs=None, loading_info=True):
+    shipments = [{
+        "id": SJ_SEP10_ID,
+        "sales_delivery_id": SJ_SEP10_ID,
+        "number": SJ_SEP10_NUMBER,
+        "total_qty": 2000,
+        "lines": [{"line_idx": 0, "line_id": "L0", "qty": 2000, "name": "Cup 12 oz"}],
+    }]
+    files = [{
+        "id": "file-2026-09-10-000020",
+        "shipment_id": SJ_SEP10_ID,
+        "sj_number": SJ_SEP10_NUMBER,
+        "name": f"Surat Jalan {SJ_SEP10_NUMBER}.pdf",
+        "storage_path": "/sj/000020.pdf",
+        "uploaded_at": "2026-09-10T08:00:00Z",
+        "total_qty": 2000,
+        "lines": [{"line_idx": 0, "line_id": "L0", "qty": 2000, "name": "Cup 12 oz"}],
+    }]
+    if extra_shipments:
+        shipments.extend(extra_shipments)
+    if extra_files:
+        files.extend(extra_files)
+    return {
+        "id": "po-2026-09-10-000020",
+        "po_number": "PO/2026/09/10/000020",
+        "line_items": [{
+            "name": "Cup 12 oz",
+            "quantity": 2000,
+            "production_process": "print",
+            "line_id": "L0",
+            "accurate_item_id": "cup-12",
+        }],
+        "packing_info": {"qty_packed": 2000, "lines": [{"line_idx": 0, "line_id": "L0", "packed_qty": 2000}]},
+        "shipments": shipments,
+        "surat_jalan_files": files,
+        "loading_confirmations": list(extra_confs or []),
+        "loading_info": {"lines": [{"line_idx": 0, "loaded_qty": 2000}]} if loading_info else {"lines": []},
+        "loading_snapshots": [],
+        "loading_discrepancies": [],
+        "delivery_proofs": [{"id": "p1"}, {"id": "p2"}],
+        "delivery_recipient_signature": {
+            "id": "sig",
+            "recipient_name": "Budi Penerima",
+            "signature_storage_path": "sig.png",
+            "recipient_signed_at": "t",
+            "frozen": False,
+        },
+        "delivery_driver_signature": {
+            "id": "dsig",
+            "driver_signature_storage_path": "dsig.png",
+            "driver_signed_at": "t",
+            "frozen": False,
+        },
+    }
+
+
+def test_legacy_2000_on_sj_2026_09_10_000020_is_already_loaded():
+    o = _sj_sep10_legacy_2000()
+    assert qty_loaded(o) == 2000
+    assert qty_loaded_for_line(o, 0) == 2000
+    assert loaded_qty_for_sj_line(o, SJ_SEP10_ID, 0) == 2000
+    assert loaded_qty_for_sj_line(o, SJ_SEP10_NUMBER, 0) == 2000
+    assert available_for_sj_loading_line(o, SJ_SEP10_ID, 0) == 0
+    st = loading_verification_status(o, SJ_SEP10_ID)
+    assert st.get("code") == "loading_complete"
+    ready = delivery_batch_photo_readiness(o, o["shipments"][0])
+    assert ready.get("allowed") is True
+    assert ready.get("loaded_total") == 2000
+    assert ready.get("required_total") == 2000
+
+
+def test_legacy_2000_does_not_double_count_physical():
+    o = _sj_sep10_legacy_2000()
+    assert qty_loaded(o) == 2000
+    o2 = _sj_sep10_legacy_2000(extra_confs=[{
+        "id": "c-live",
+        "surat_jalan_id": SJ_SEP10_ID,
+        "shipment_id": SJ_SEP10_ID,
+        "sj_number": SJ_SEP10_NUMBER,
+        "lines": [{"line_idx": 0, "qty": 2000}],
+    }], loading_info=True)
+    # confirmations + loading_info still sum for physical (pre-existing parallel stores)
+    # selected-SJ uses identity-matched confirmation only — no extra 2000 from loading_info
+    assert loaded_qty_for_sj_line(o2, SJ_SEP10_ID, 0) == 2000
+
+
+def test_legacy_2000_uniquely_matches_selected_sj_among_siblings():
+    o = _sj_sep10_legacy_2000(extra_shipments=[{
+        "id": "ship-other",
+        "number": "SJ/2026/09/10/000021",
+        "sales_delivery_id": "ship-other",
+        "total_qty": 5000,
+        "lines": [{"line_idx": 0, "line_id": "L0", "qty": 5000}],
+    }], extra_files=[{
+        "id": "file-other",
+        "shipment_id": "ship-other",
+        "sj_number": "SJ/2026/09/10/000021",
+        "total_qty": 5000,
+        "lines": [{"line_idx": 0, "line_id": "L0", "qty": 5000}],
+    }])
+    assert loaded_qty_for_sj_line(o, SJ_SEP10_ID, 0) == 2000
+    assert loaded_qty_for_sj_line(o, "ship-other", 0) == 0
+    assert loading_verification_status(o, SJ_SEP10_ID).get("code") == "loading_complete"
+    assert delivery_batch_photo_readiness(o, o["shipments"][0]).get("allowed") is True
+    assert delivery_batch_photo_readiness(o, o["shipments"][1]).get("allowed") is False
+
+
+def test_ambiguous_legacy_2000_is_not_attributed_to_either_sj():
+    o = _sj_sep10_legacy_2000(extra_shipments=[{
+        "id": "ship-twin",
+        "number": "SJ/2026/09/10/000021",
+        "sales_delivery_id": "ship-twin",
+        "total_qty": 2000,
+        "lines": [{"line_idx": 0, "line_id": "L0", "qty": 2000}],
+    }], extra_files=[{
+        "id": "file-twin",
+        "shipment_id": "ship-twin",
+        "sj_number": "SJ/2026/09/10/000021",
+        "total_qty": 2000,
+        "lines": [{"line_idx": 0, "line_id": "L0", "qty": 2000}],
+    }])
+    assert qty_loaded_for_line(o, 0) == 2000
+    assert loaded_qty_for_sj_line(o, SJ_SEP10_ID, 0) == 0
+    assert loaded_qty_for_sj_line(o, "ship-twin", 0) == 0
+
+
+def test_confirmation_sj_number_matches_selected_shipment_id():
+    o = _sj_sep10_legacy_2000(loading_info=False, extra_confs=[{
+        "id": "c-num",
+        "surat_jalan_id": SJ_SEP10_NUMBER,
+        "lines": [{"line_idx": 0, "qty": 2000}],
+    }])
+    assert loaded_qty_for_sj_line(o, SJ_SEP10_ID, 0) == 2000
+    assert loaded_qty_for_sj_line(o, "file-2026-09-10-000020", 0) == 2000
+    assert qty_loaded_for_line(o, 0) == 2000
+    assert loading_verification_status(o, SJ_SEP10_ID).get("code") == "loading_complete"
+
+
+def test_new_confirmation_stores_canonical_shipment_identity():
+    o = _sj_sep10_legacy_2000(loading_info=False)
+    rec = apply_loading_confirmation(
+        o,
+        surat_jalan_id=SJ_SEP10_NUMBER,
+        lines=[{"line_idx": 0, "qty": 2000}],
+        actor={"email": "loader@x", "name": "Loader"},
+        confirmation_id="c-new",
+        confirmed_at="t",
+        action_id="a1",
+    )
+    assert rec.get("surat_jalan_id") == SJ_SEP10_NUMBER
+    assert rec.get("shipment_id") == SJ_SEP10_ID
+    assert rec.get("sj_number") == SJ_SEP10_NUMBER
+    assert loaded_qty_for_sj_line(o, SJ_SEP10_ID, 0) == 2000
+    assert qty_loaded_for_line(o, 0) == 2000

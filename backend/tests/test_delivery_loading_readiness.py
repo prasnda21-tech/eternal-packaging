@@ -396,3 +396,66 @@ def test_confirm_independently_revalidates_loading_vs_sj():
     stale["loading_confirmations"] = []
     assert apply_delivery_from_proof_evidence(stale) is None
     assert confirm_delivery_block_reason(stale)
+
+
+def test_legacy_loading_info_makes_selected_sj_ready_for_pengiriman():
+    """SJ/2026/09/10/000020: historical 2.000 Loading unlocks Delivery without rewriting physical qty."""
+    from quantity_rules import (
+        apply_delivery_from_proof_evidence as apply_ev,
+        confirm_delivery_block_reason,
+        loaded_qty_for_sj_line,
+        loading_verification_status,
+        qty_loaded,
+    )
+    shipment_id = "ship-2026-09-10-000020"
+    sj_number = "SJ/2026/09/10/000020"
+    o = {
+        "id": "po-sep10",
+        "po_number": "PO/2026/09/10/000020",
+        "line_items": [{"name": "Cup", "quantity": 2000, "production_process": "print", "line_id": "L0"}],
+        "packing_info": {"qty_packed": 2000, "lines": [{"line_idx": 0, "line_id": "L0", "packed_qty": 2000}]},
+        "shipments": [{
+            "id": shipment_id,
+            "number": sj_number,
+            "sales_delivery_id": shipment_id,
+            "lines": [{"line_idx": 0, "line_id": "L0", "qty": 2000}],
+            "total_qty": 2000,
+        }],
+        "surat_jalan_files": [{
+            "id": "file-000020",
+            "shipment_id": shipment_id,
+            "sj_number": sj_number,
+            "storage_path": "/sj/000020.pdf",
+            "uploaded_at": "2026-09-10T08:00:00Z",
+            "lines": [{"line_idx": 0, "line_id": "L0", "qty": 2000}],
+            "total_qty": 2000,
+        }],
+        "loading_confirmations": [],
+        "loading_info": {"lines": [{"line_idx": 0, "loaded_qty": 2000}]},
+        "qty_delivered": 0,
+        "delivery_proofs": [{"id": "p1"}, {"id": "p2"}],
+        "delivery_recipient_signature": {
+            "id": "sig",
+            "recipient_name": "Budi Penerima",
+            "signature_storage_path": "sig.png",
+            "recipient_signed_at": "t",
+            "frozen": False,
+        },
+        "delivery_driver_signature": {
+            "id": "dsig",
+            "driver_signature_storage_path": "dsig.png",
+            "driver_signed_at": "t",
+            "frozen": False,
+        },
+    }
+    assert qty_loaded(o) == 2000
+    assert loaded_qty_for_sj_line(o, shipment_id, 0) == 2000
+    assert loaded_qty_for_sj_line(o, sj_number, 0) == 2000
+    r = delivery_batch_photo_readiness(o, o["shipments"][0])
+    assert r["delivery_ready"] is True
+    assert r["loaded_total"] == 2000
+    assert loading_verification_status(o, shipment_id).get("code") == "loading_complete"
+    assert confirm_delivery_block_reason(o, o["shipments"][0]) is None
+    ev = apply_ev(o, o["shipments"][0])
+    assert ev is not None
+    assert ev["qty_delivered"] == 2000

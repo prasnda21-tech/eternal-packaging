@@ -117,6 +117,87 @@ export function selectedSjIdentitySet(order, selectedSjId = null) {
   return ids;
 }
 
+function confirmationIdentityKeys(conf) {
+  return [
+    conf?.surat_jalan_id,
+    conf?.shipment_id,
+    conf?.sales_delivery_id,
+    conf?.sj_number,
+    conf?.number,
+    conf?.file_id,
+  ].map((v) => String(v || "").trim()).filter(Boolean);
+}
+
+function absorbIdentityGroup(groups, newKeys) {
+  if (!newKeys.length) return groups;
+  const acc = new Set(newKeys);
+  const kept = [];
+  for (const group of groups) {
+    const overlap = [...group].some((k) => acc.has(k));
+    if (overlap) group.forEach((k) => acc.add(k));
+    else kept.push(group);
+  }
+  kept.push(acc);
+  return kept;
+}
+
+function liveSjIdentityGroups(order) {
+  let groups = [];
+  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
+  const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
+  for (const sh of shipments) {
+    groups = absorbIdentityGroup(groups, sjIdentityKeys(sh));
+  }
+  for (const f of files) {
+    if (f?.is_deleted) continue;
+    groups = absorbIdentityGroup(groups, sjIdentityKeys(f));
+  }
+  return groups;
+}
+
+function sjRequiredVector(order, selectedSjId) {
+  const { lineSource, matchingSj } = selectedSjLineSource(order, selectedSjId);
+  const vec = {};
+  const sourceLines = Array.isArray(lineSource?.lines) ? lineSource.lines : [];
+  if (sourceLines.length) {
+    for (const ln of sourceLines) {
+      const resolved = resolveLoadingPoLineIdx(order, ln);
+      const qty = Number(ln?.qty ?? ln?.quantity ?? 0) || 0;
+      if (resolved == null || qty <= 0) continue;
+      vec[resolved] = (vec[resolved] || 0) + qty;
+    }
+    return vec;
+  }
+  const total = Number(matchingSj?.total_qty ?? matchingSj?.qty ?? 0) || 0;
+  return total > 0 ? { 0: total } : {};
+}
+
+function qtyVectorsEqual(left, right) {
+  const keys = new Set([...Object.keys(left || {}), ...Object.keys(right || {})]);
+  if (!keys.size) return false;
+  for (const k of keys) {
+    if (Number(left?.[k] || 0) !== Number(right?.[k] || 0)) return false;
+  }
+  return Object.values(left || {}).some((n) => Number(n) > 0)
+    && Object.values(right || {}).some((n) => Number(n) > 0);
+}
+
+function unattributedLoadingBelongsToSelected(order, targetIds, evidence) {
+  if (!targetIds || !targetIds.size) return false;
+  const groups = liveSjIdentityGroups(order);
+  const overlapping = groups.filter((g) => [...g].some((k) => targetIds.has(k)));
+  if (!overlapping.length) return false;
+  if (groups.length === 1) return true;
+  if (!evidence || !Object.values(evidence).some((n) => Number(n) > 0)) return false;
+  const matches = [];
+  for (const group of groups) {
+    const rep = [...group].find((k) => targetIds.has(k)) || [...group][0];
+    const req = sjRequiredVector(order, rep);
+    if (qtyVectorsEqual(evidence, req)) matches.push(group);
+  }
+  return matches.length === 1 && [...matches[0]].some((k) => targetIds.has(k));
+}
+
 function selectedSjLineSource(order, selectedSjId = null) {
   const targetSjId = String(selectedSjId || "").trim();
   const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
@@ -193,16 +274,48 @@ export function loadingPoLines(order, selectedSjId = null) {
 
     let loadedForSj = 0;
     let totalLoadedLine = legacyLoadedForLine(order, idx);
+    let untaggedForSj = 0;
+    const untaggedEvidence = {};
+    let hasAnyConfirmation = false;
     for (const conf of confirmations) {
-      const confSj = String(conf.surat_jalan_id || "").trim();
+      hasAnyConfirmation = true;
+      const confKeys = confirmationIdentityKeys(conf);
+      const matchesSelected = confKeys.some((k) => targetIds.has(k));
+      const untagged = confKeys.length === 0;
       for (const ln of conf.lines || []) {
         const confIdx = explicitLineIdx(ln?.line_idx);
         if (confIdx === idx) {
           const qty = Number(ln.qty ?? ln.quantity ?? 0) || 0;
           totalLoadedLine += qty;
-          if (targetIds.has(confSj)) {
+          if (matchesSelected) {
             loadedForSj += qty;
+          } else if (untagged) {
+            untaggedForSj += qty;
           }
+        }
+        if (untagged) {
+          const evidenceIdx = explicitLineIdx(ln?.line_idx);
+          const qty = Number(ln.qty ?? ln.quantity ?? 0) || 0;
+          if (evidenceIdx != null && qty > 0) {
+            untaggedEvidence[evidenceIdx] = (untaggedEvidence[evidenceIdx] || 0) + qty;
+          }
+        }
+      }
+    }
+    if (untaggedForSj && unattributedLoadingBelongsToSelected(order, targetIds, untaggedEvidence)) {
+      loadedForSj += untaggedForSj;
+    }
+    if (!hasAnyConfirmation && loadedForSj <= 0) {
+      const legacy = legacyLoadedForLine(order, idx);
+      if (legacy > 0) {
+        const evidence = {};
+        const lisCount = lis.length;
+        for (let i = 0; i < lisCount; i += 1) {
+          const q = legacyLoadedForLine(order, i);
+          if (q > 0) evidence[i] = q;
+        }
+        if (unattributedLoadingBelongsToSelected(order, targetIds, evidence)) {
+          loadedForSj = sjLineQty > 0 ? Math.min(legacy, sjLineQty) : legacy;
         }
       }
     }

@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
+    canonical_sj_identity_keys,
+    confirmation_identity_keys,
     delivery_batch_identity,
     delivery_batch_qty,
     eligible_delivery_qty,
@@ -396,8 +398,11 @@ def _confirmation_for_shipment(order: dict, shipment: Optional[dict]) -> bool:
     keys = _shipment_identity_keys(shipment)
     if not keys:
         return False
+    sid = delivery_batch_identity(shipment)
+    if sid:
+        keys |= canonical_sj_identity_keys(order, sid)
     for conf in loading_confirmations_stored(order):
-        if str(conf.get("surat_jalan_id") or "").strip() in keys:
+        if confirmation_identity_keys(conf) & keys:
             return True
     return False
 
