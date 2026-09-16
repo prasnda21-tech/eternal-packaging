@@ -1,10 +1,16 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import api from "../lib/api";
+import { clearAllMobileTaskListRetention } from "../lib/mobileTaskListRetention";
+import { clearMobileOpsSessionForUser } from "../lib/mobileOpsSession";
 import { wibDateKey } from "../lib/suratJalan";
 import MobileTasksPage from "./MobileTasksPage";
 
 const mockHasPerm = jest.fn(() => false);
+const mockAuthState = {
+  user: { id: "u-driver", name: "Budi", email: "budi@x.com", role: "operator" },
+};
+const defaultAuthUser = () => ({ id: "u-driver", name: "Budi", email: "budi@x.com", role: "operator" });
 const mockNavigate = jest.fn();
 const mockTasksRouter = {
   search: "",
@@ -26,7 +32,7 @@ jest.mock("react-router-dom", () => ({
 
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
-    user: { id: "u-driver", name: "Budi", email: "budi@x.com", role: "operator" },
+    get user() { return mockAuthState.user; },
     hasPerm: (perm) => mockHasPerm(perm),
   }),
 }));
@@ -73,6 +79,8 @@ describe("MobileTasksPage sorting", () => {
     mockTasksRouter.setParams.mockClear();
     api.divisionTasks.mockReset();
     api.getOrder.mockReset();
+    mockAuthState.user = defaultAuthUser();
+    clearAllMobileTaskListRetention();
   });
 
   afterEach(() => {
@@ -246,6 +254,8 @@ describe("MobileTasksPage summary filters", () => {
     mockTasksRouter.setParams.mockClear();
     api.divisionTasks.mockReset();
     api.getOrder.mockReset();
+    mockAuthState.user = defaultAuthUser();
+    clearAllMobileTaskListRetention();
     api.divisionTasks.mockResolvedValue({ tasks: fixtureTasks() });
   });
 
@@ -344,3 +354,365 @@ describe("MobileTasksPage summary filters", () => {
       || container.querySelector('[data-testid="mobile-workspace-select-input"]')?.value).toMatch(/Pengiriman|delivery/i);
   });
 });
+
+describe("MobileTasksPage remount retention", () => {
+  let container;
+  let root;
+  const today = wibDateKey(new Date());
+
+  const task = (id, extra = {}) => ({
+    task_id: id,
+    order_id: id.toLowerCase(),
+    order_number: `PO-${id}`,
+    work_date: today,
+    item: "Cup",
+    target_qty: 1,
+    completed_qty: 0,
+    status: "belum",
+    status_label: "Belum Mulai",
+    ...extra,
+  });
+
+  const deferred = () => {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockHasPerm.mockReset();
+    mockNavigate.mockReset();
+    mockHasPerm.mockImplementation((p) => ["delivery.update", "packing.update"].includes(p));
+    mockTasksRouter.search = "ws=delivery";
+    mockTasksRouter.setParams.mockClear();
+    api.divisionTasks.mockReset();
+    api.getOrder.mockReset();
+    mockAuthState.user = defaultAuthUser();
+    clearAllMobileTaskListRetention();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    clearAllMobileTaskListRetention();
+  });
+
+  test("first list load still fetches and shows rows after the request completes", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledTimes(1);
+    expect(api.divisionTasks).toHaveBeenCalledWith("terkirim", "mine");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    expect(container.textContent).not.toContain("Memuat tugas...");
+  });
+
+  test("same user + workspace remount keeps known rows visible while refresh is in flight", async () => {
+    const first = { tasks: [task("DEL-1")] };
+    const second = deferred();
+    let calls = 0;
+    api.divisionTasks.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(first);
+      return second.promise;
+    });
+
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    act(() => root.unmount());
+
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    expect(container.textContent).not.toContain("Memuat tugas...");
+    expect(api.divisionTasks).toHaveBeenCalledTimes(2);
+
+    await act(async () => { second.resolve({ tasks: [task("DEL-1"), task("DEL-2")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1", "mobile-task-DEL-2"]);
+    expect(container.textContent).not.toContain("Memuat tugas...");
+  });
+
+  test("workspace switch does not keep the previous division's rows as valid", async () => {
+    const packingPayload = { tasks: [task("PACK-1")] };
+    const deliveryPending = deferred();
+    api.divisionTasks.mockImplementation((division) => {
+      if (division === "packing") return Promise.resolve(packingPayload);
+      return deliveryPending.promise;
+    });
+
+    mockTasksRouter.search = "ws=packing";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-PACK-1"]);
+
+    mockTasksRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).toContain("Memuat tugas...");
+    expect(container.textContent).not.toContain("PO-PACK-1");
+
+    await act(async () => { deliveryPending.resolve({ tasks: [task("DEL-1")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    expect(container.textContent).not.toContain("PO-PACK-1");
+  });
+
+  test("user switch does not show the prior user's rows", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-A")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-A"]);
+    act(() => root.unmount());
+
+    mockAuthState.user = { id: "u-other", name: "Citra", email: "citra@x.com", role: "operator" };
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).toContain("Memuat tugas...");
+    expect(container.textContent).not.toContain("PO-DEL-A");
+    expect(api.divisionTasks).toHaveBeenCalledTimes(2);
+
+    await act(async () => { pending.resolve({ tasks: [task("DEL-B")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-B"]);
+    expect(container.textContent).not.toContain("PO-DEL-A");
+  });
+
+  test("logout clears retained rows so the next mount starts empty", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    act(() => root.unmount());
+    clearMobileOpsSessionForUser("u-driver");
+
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).toContain("Memuat tugas...");
+    await act(async () => { pending.resolve({ tasks: [task("DEL-1")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+  });
+
+  test("HTTP 401 clears every retained list; remount does not restore rows", async () => {
+    api.divisionTasks.mockImplementation((division) => {
+      if (division === "packing") return Promise.resolve({ tasks: [task("PACK-1")] });
+      return Promise.resolve({ tasks: [task("DEL-1")] });
+    });
+    mockTasksRouter.search = "ws=packing";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    mockTasksRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    act(() => root.unmount());
+
+    api.divisionTasks.mockRejectedValue({
+      response: { status: 401, data: { detail: "Sesi berakhir. Silakan login ulang." } },
+    });
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(container.textContent).toContain("Sesi berakhir");
+    expect(visibleTaskIds(container)).toEqual([]);
+
+    mockTasksRouter.search = "ws=packing";
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).not.toContain("PO-PACK-1");
+    expect(container.textContent).toContain("Memuat tugas...");
+    await act(async () => { pending.resolve({ tasks: [task("PACK-2")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-PACK-2"]);
+  });
+
+  test("HTTP 403 drops only the failed list and is not treated as 401", async () => {
+    api.divisionTasks.mockImplementation((division) => {
+      if (division === "packing") return Promise.resolve({ tasks: [task("PACK-1")] });
+      return Promise.resolve({ tasks: [task("DEL-1")] });
+    });
+    mockTasksRouter.search = "ws=packing";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    mockTasksRouter.search = "ws=delivery";
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    act(() => root.unmount());
+
+    api.divisionTasks.mockRejectedValue({
+      response: { status: 403, data: { detail: "Permission 'delivery.update' diperlukan" } },
+    });
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(container.textContent).toContain("Permission 'delivery.update' diperlukan");
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).not.toContain("Sesi berakhir");
+
+    mockTasksRouter.search = "ws=packing";
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-PACK-1"]);
+    expect(container.textContent).not.toContain("Memuat tugas...");
+    await act(async () => { pending.resolve({ tasks: [task("PACK-1")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-PACK-1"]);
+  });
+
+  test("fetch failure wipes the current list and does not keep stale rows as valid", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    act(() => root.unmount());
+
+    api.divisionTasks.mockRejectedValue({ message: "Network Error" });
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(container.textContent).toContain("Gagal memuat tugas.");
+    expect(visibleTaskIds(container)).toEqual([]);
+
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).toContain("Memuat tugas...");
+    await act(async () => { pending.resolve({ tasks: [task("DEL-9")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-9"]);
+  });
+
+  test("remount + successful refresh keeps count, classification, and order parity", async () => {
+    const fixture = {
+      tasks: [
+        task("TODAY-DONE", { completed_qty: 1, status: "selesai", status_label: "Selesai" }),
+        task("TODAY-WAIT"),
+        task("OLD-WAIT", { work_date: "2020-01-10" }),
+      ],
+    };
+    api.divisionTasks.mockResolvedValue(fixture);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    const countText = (id) => container.querySelector(`[data-testid="mobile-task-filter-${id}"] strong`).textContent;
+    expect(countText("hariIni")).toBe("2");
+    expect(countText("aktif")).toBe("2");
+    expect(countText("menunggu")).toBe("2");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-TODAY-DONE", "mobile-task-TODAY-WAIT"]);
+    act(() => root.unmount());
+
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(api.divisionTasks).toHaveBeenCalledTimes(2);
+    expect(countText("hariIni")).toBe("2");
+    expect(countText("aktif")).toBe("2");
+    expect(countText("proses")).toBe("0");
+    expect(countText("menunggu")).toBe("2");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-TODAY-DONE", "mobile-task-TODAY-WAIT"]);
+  });
+
+  test("local permission loss does not hydrate retained delivery rows", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    act(() => root.unmount());
+
+    mockHasPerm.mockImplementation((p) => p === "packing.update");
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).not.toContain("PO-DEL-1");
+    await act(async () => { pending.resolve({ tasks: [task("PACK-9")] }); });
+    await flush();
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-PACK-9"]);
+    expect(container.textContent).not.toContain("PO-DEL-1");
+  });
+
+  test("local auth loss does not hydrate retained rows", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    act(() => root.unmount());
+
+    mockAuthState.user = null;
+    mockHasPerm.mockImplementation(() => false);
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual([]);
+    expect(container.textContent).not.toContain("PO-DEL-1");
+    expect(container.textContent).toContain("Tidak ada workspace operasional untuk akun ini.");
+    expect(api.divisionTasks).toHaveBeenCalledTimes(1);
+  });
+
+  test("403 in-flight still shows last-good rows only while client still has the workspace perm", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    act(() => root.unmount());
+
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    expect(container.textContent).not.toContain("Memuat tugas...");
+
+    await act(async () => {
+      pending.reject({
+        response: { status: 403, data: { detail: "Permission 'delivery.update' diperlukan" } },
+      });
+    });
+    await flush();
+    expect(container.textContent).toContain("Permission 'delivery.update' diperlukan");
+    expect(visibleTaskIds(container)).toEqual([]);
+  });
+
+  test("401 in-flight still shows last-good rows only while client user is still present", async () => {
+    api.divisionTasks.mockResolvedValue({ tasks: [task("DEL-1")] });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    act(() => root.unmount());
+
+    const pending = deferred();
+    api.divisionTasks.mockImplementation(() => pending.promise);
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-DEL-1"]);
+    expect(container.textContent).not.toContain("Memuat tugas...");
+
+    await act(async () => {
+      pending.reject({
+        response: { status: 401, data: { detail: "Sesi berakhir. Silakan login ulang." } },
+      });
+    });
+    await flush();
+    expect(container.textContent).toContain("Sesi berakhir");
+    expect(visibleTaskIds(container)).toEqual([]);
+  });
+});
+
+

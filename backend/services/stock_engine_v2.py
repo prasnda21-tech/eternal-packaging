@@ -449,7 +449,17 @@ async def validate_sales_order_availability(
 
     For revise, exclude_order_id removes that order's current outstanding from the
     denominator so the revision is compared against free stock + its own prior reservation.
+
+    V2 availability is authoritative only while physical_stock.enabled is true.
+    While OFF, this gate is a no-op so missing product_stock_state cannot reject
+    legitimate Accurate / new sales orders.
     """
+    from services.physical_stock_settings import get_physical_stock_settings
+
+    settings = await get_physical_stock_settings(db)
+    if not bool(settings.get("enabled")):
+        return
+
     # Build baseline outstanding excluding this order
     masters = await db.master_items.find({}, {"_id": 0, "id": 1, "accurate_item_id": 1}).to_list(10000)
     orders = await db.orders.find(
@@ -636,13 +646,21 @@ async def apply_stock_opname(
 
 
 async def ensure_v2_physical_settings(db) -> dict:
-    """Ensure physical stock engine is ON with GR in / sales delivery out for V2."""
+    """Normalize V2 triggers without overriding an explicit OFF setting.
+
+    The toggle is the authority boundary. Startup may repair an enabled V2
+    configuration, but it must never silently enable the engine or write while
+    the stored/default setting is OFF.
+    """
     from services.physical_stock_settings import (
         SETTINGS_KEY,
         get_physical_stock_settings,
         sanitize_settings,
     )
     current = await get_physical_stock_settings(db)
+    if not bool(current.get("enabled")):
+        return current
+
     desired = {
         **current,
         "enabled": True,

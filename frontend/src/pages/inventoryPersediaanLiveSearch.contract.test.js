@@ -42,6 +42,15 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
+  test("Stock Saat Ini formula copy follows stock_engine toggle", () => {
+    expect(stock).toMatch(/stock_engine === "v2"/);
+    expect(stock).toMatch(/MAX\(Fisik/);
+    expect(stock).toMatch(/Qty Saat Ini \+ Pembelian Barang/);
+    expect(stock).toMatch(/data-testid="stock-formula"/);
+    expect(stock).toMatch(/stock-manual-/);
+    expect(stock).toMatch(/stock-physical-/);
+  });
+
   test("Stock Saat Ini clears rows while query pending and remains read-only", () => {
     expect(stock).toMatch(/useDebouncedLiveSearch/);
     expect(stock).toMatch(/loadSeq/);

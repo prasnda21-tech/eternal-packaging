@@ -11,6 +11,14 @@ import {
   taskSummaryFromList,
 } from "../lib/mobileTaskSummary";
 import { mobileLoadingScheduleHref, permittedMobileWorkspaces } from "../lib/mobileWorkspaces";
+import {
+  clearAllMobileTaskListRetention,
+  deleteMobileTaskListRetention,
+  isAuthSessionExpiredError,
+  mobileTaskListRetentionKey,
+  readMobileTaskListRetention,
+  writeMobileTaskListRetention,
+} from "../lib/mobileTaskListRetention";
 import MobileTopBar from "./MobileTopBar";
 import MobileTaskCard from "./components/MobileTaskCard";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
@@ -21,7 +29,6 @@ export default function MobileTasksPage() {
   const workspaces = permittedMobileWorkspaces(hasPerm);
   const [params, setParams] = useSearchParams();
   const requestedWs = params.get("ws") || "";
-  const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [summaryFilter, setSummaryFilter] = useState(DEFAULT_TASK_SUMMARY_FILTER);
@@ -30,6 +37,36 @@ export default function MobileTasksPage() {
     if (!workspaces.length) return null;
     return workspaces.find((w) => w.id === requestedWs) || workspaces[0];
   }, [workspaces, requestedWs]);
+
+  const listAuthorized = Boolean(
+    user
+    && selected
+    && selected.id !== "loading"
+    && selected.division
+    && selected.permission
+    && hasPerm(selected.permission),
+  );
+  const listIdentity = listAuthorized
+    ? mobileTaskListRetentionKey(user, selected.division, "mine", selected.permission)
+    : "";
+  const retentionArgs = listAuthorized
+    ? {
+      user,
+      division: selected.division,
+      scope: "mine",
+      permission: selected.permission,
+      hasPerm,
+    }
+    : null;
+  const [data, setData] = useState(() => (
+    retentionArgs ? readMobileTaskListRetention(retentionArgs) : null
+  ));
+  const [retainedIdentity, setRetainedIdentity] = useState(listIdentity);
+
+  if (retainedIdentity !== listIdentity) {
+    setRetainedIdentity(listIdentity);
+    setData(retentionArgs ? readMobileTaskListRetention(retentionArgs) : null);
+  }
 
   // Keep Pengiriman / workspace selection in the URL so browser Back restores it.
   useEffect(() => {
@@ -64,7 +101,25 @@ export default function MobileTasksPage() {
     try {
       const d = await api.divisionTasks(division, "mine");
       setData(d);
+      writeMobileTaskListRetention({
+        user,
+        division,
+        scope: "mine",
+        permission: selected?.division === division ? selected.permission : "",
+        hasPerm,
+        payload: d,
+      });
     } catch (e) {
+      if (isAuthSessionExpiredError(e)) {
+        clearAllMobileTaskListRetention();
+      } else {
+        deleteMobileTaskListRetention({
+          user,
+          division,
+          scope: "mine",
+          permission: selected?.division === division ? selected.permission : "",
+        });
+      }
       setErr(e.response?.data?.detail || "Gagal memuat tugas.");
       setData({ tasks: [] });
     } finally {
@@ -76,7 +131,7 @@ export default function MobileTasksPage() {
     if (selected?.id === "loading") return;
     if (selected?.division) load(selected.division);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id, selected?.division]);
+  }, [selected?.id, selected?.division, user?.id]);
 
   const tasks = useMemo(
     () => (Array.isArray(data?.tasks) ? data.tasks : []),
@@ -134,3 +189,4 @@ export default function MobileTasksPage() {
     </>
   );
 }
+

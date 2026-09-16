@@ -48,8 +48,8 @@ def now_iso() -> str:
 
 
 def default_settings() -> Dict[str, Any]:
-    # Default remains OFF (main safety). Stock Engine V2 turns this ON via
-    # ensure_v2_physical_settings() on app startup — not via silent default.
+    # Default remains OFF (main safety). Startup normalization must preserve
+    # this authority boundary until an authorized user explicitly enables it.
     return {
         "key": SETTINGS_KEY,
         "enabled": False,

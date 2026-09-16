@@ -199,9 +199,11 @@ class _FakeColl:
 
     async def find_one(self, query, *a, **k):
         for d in self.docs:
-            mid = d.get("master_item_id") or d.get("id")
             if not isinstance(query, dict):
                 continue
+            if query.get("key") and d.get("key") == query.get("key"):
+                return dict(d)
+            mid = d.get("master_item_id") or d.get("id")
             if query.get("id") == mid or query.get("master_item_id") == mid:
                 return dict(d)
             for clause in query.get("$or") or []:
@@ -248,7 +250,12 @@ class _FakeDB:
             "base_uom": "PCS",
         }])
         self.stock_movements = _FakeColl([])
-        self.app_settings = _FakeColl([])
+        self.app_settings = _FakeColl([{
+            "key": "physical_stock",
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "sales_delivery",
+        }])
 
     def __getitem__(self, name):
         return getattr(self, name)
@@ -273,6 +280,40 @@ async def test_validate_so_allows_within_available():
         db,
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
     )
+
+
+@pytest.mark.anyio
+async def test_validate_so_off_does_not_block_when_v2_state_missing():
+    """A. OFF + missing V2 state + qty>0 must not fail on V2 availability."""
+    db = _FakeDB()
+    db.app_settings.docs = [{
+        "key": "physical_stock",
+        "enabled": False,
+        "stock_in_trigger": "goods_receipt",
+        "stock_out_trigger": "loading_confirmation",
+    }]
+    db.product_stock_state.docs = []
+    await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 9999}],
+    )
+    assert db.app_settings.updates == []
+    assert db.product_stock_state.inserts == []
+    assert db.stock_movements.inserts == []
+
+
+@pytest.mark.anyio
+async def test_validate_so_on_missing_state_rejects():
+    """B. ON + no initialized V2 state => reject."""
+    db = _FakeDB()
+    db.product_stock_state.docs = []
+    with pytest.raises(HTTPException) as ei:
+        await validate_sales_order_availability(
+            db,
+            [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 1}],
+        )
+    assert ei.value.status_code == 400
+    assert ei.value.detail == STOCK_INSUFFICIENT_MSG
 
 
 @pytest.mark.anyio
