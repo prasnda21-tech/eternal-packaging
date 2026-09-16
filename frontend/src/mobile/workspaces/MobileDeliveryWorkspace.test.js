@@ -332,7 +332,7 @@ describe("PWA Pengiriman gallery picker", () => {
     expect(deliverySrc).not.toMatch(/role\s*===\s*["']driver["']/);
     expect(deliverySrc).toMatch(/uploadDeliveryProof\(order\.id/);
     expect(deliverySrc).toMatch(/data-testid="mobile-pengiriman-sj-select"/);
-    expect(deliverySrc).toMatch(/shipment_id: selectedShipmentKey/);
+    expect(deliverySrc).toMatch(/shipment_id: activeShipment\.id/);
     expect(loadingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(packingSrc).not.toMatch(/Pilih dari Galeri/);
     expect(loadingSrc).not.toMatch(/mobile-delivery-gallery-input/);

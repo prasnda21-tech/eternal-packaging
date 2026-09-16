@@ -311,7 +311,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         if (localSig.driver) {
           latest = applyPreviewDeliveryMutation(latest, "driver-sig");
         }
-        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: selectedShipmentKey });
+        latest = applyPreviewDeliveryMutation(latest, "confirm", { shipmentId: activeShipment.id });
         onUpdated(latest);
         setLocalSig({ recipient: null, driver: null });
         onRequestClose?.();
@@ -322,7 +322,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
         const res = await api.uploadDeliveryRecipientSignature(latest.id, {
           recipientName: name,
           signatureDataUrl: localSig.recipient,
-          shipmentId: selectedShipmentKey,
+          shipmentId: activeShipment.id,
         });
         latest = res.order;
         onUpdated(latest);
@@ -330,14 +330,14 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       if (localSig.driver) {
         const res = await api.uploadDeliveryDriverSignature(latest.id, {
           signatureDataUrl: localSig.driver,
-          shipmentId: selectedShipmentKey,
+          shipmentId: activeShipment.id,
         });
         latest = res.order;
         onUpdated(latest);
       }
       const res = await api.confirmDelivered(order.id, {
         action_id: newActionId(),
-        shipment_id: selectedShipmentKey,
+        shipment_id: activeShipment.id,
       });
       onUpdated(res.order);
       setLocalSig({ recipient: null, driver: null });
