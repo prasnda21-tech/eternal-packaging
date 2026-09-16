@@ -125,6 +125,9 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
     // Permission enforcement
     expect(productDetailSrc).toMatch(/canEditOpeningBalance = hasPerm\("current_stock\.update"\) \|\| hasPerm\("permissions\.manage"\)/);
     expect(productDetailSrc).toMatch(/canCorrectOpening = String\(user\?\.role \|\| ""\)\.toLowerCase\(\) === "holding_team"/);
+    expect(productDetailSrc).not.toMatch(/Fauzan Ghani/);
+    expect(productDetailSrc).not.toMatch(/canCorrectOpening[^\n]*(email|name)/);
+    expect(productDetailSrc).toMatch(/\{canCorrectOpening && \(/);
     expect(productDetailSrc).toMatch(/btn-correct-opening/);
     expect(productDetailSrc).toMatch(/correct-opening-modal/);
     expect(productDetailSrc).toMatch(/Koreksi Saldo Awal/);
