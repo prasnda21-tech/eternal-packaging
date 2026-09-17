@@ -44,7 +44,8 @@ describe("Persediaan live search inventory scope", () => {
 
   test("Stock Saat Ini formula copy follows stock_engine toggle", () => {
     expect(stock).toMatch(/stock_engine === "v2"/);
-    expect(stock).toMatch(/MAX\(Stock Fisik/);
+    expect(stock).toMatch(/Stock Saat Ini = Stock Fisik − Qty Pesanan/);
+    expect(stock).toMatch(/Nilai negatif menunjukkan kekurangan stock/);
     expect(stock).toMatch(/Qty Pesanan/);
     expect(stock).not.toMatch(/Outstanding/);
     expect(stock).toMatch(/Qty Saat Ini \+ Pembelian Barang/);
@@ -64,6 +65,8 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/canEditPhysical.*can_correct_physical_stock/);
     expect(stock).toMatch(/api\.currentStockUpdate/);
     expect(stock).toMatch(/stock-physical-inline-input/);
+    expect(stock).toMatch(/fmtQty\(it\.stock_current\)/);
+    expect(stock).toMatch(/Number\(it\.stock_current\) < 0/);
     expect(stock).toMatch(/e\.key === "Enter"/);
     expect(stock).toMatch(/e\.key === "Escape"/);
     expect(stock).toMatch(/Koreksi manual Stock Fisik dari Stock Saat Ini/);

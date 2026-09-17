@@ -10,7 +10,7 @@ FINAL FORMULA:
   Outstanding SO = Qty SO aktif − Qty sudah dikirim
   Belum Dicetak  = MAX(Outstanding SO − Sudah Dicetak, 0)
   Sudah Dicetak  = dari production progress (printed bucket)
-  Stock Saat Ini / Available = MAX(Fisik − Outstanding SO, 0)
+  Stock Saat Ini = Fisik − Qty Pesanan
 
 Rules:
   - Cetak TIDAK memotong Available lagi (hanya memindah Belum Dicetak → Sudah Dicetak)
@@ -80,6 +80,14 @@ def compute_available(physical_qty: Any, outstanding_so_qty: Any, printed_qty: A
     if avail == int(avail):
         return float(int(avail))
     return avail
+
+
+def compute_stock_current(physical_qty: Any, outstanding_so_qty: Any) -> float:
+    """Stock Saat Ini read value; negative shortages remain visible."""
+    current = qty_num(physical_qty) - qty_num(outstanding_so_qty)
+    if current == int(current):
+        return float(int(current))
+    return current
 
 
 def compute_stock_polos(physical_qty: Any, printed_qty: Any) -> float:
@@ -276,6 +284,7 @@ def build_stock_rows_v2(
         printed = phys["printed_qty"]
         belum = compute_belum_dicetak(outstanding, printed)
         polos = compute_stock_polos(phys["physical_qty"], printed)
+        stock_current = compute_stock_current(phys["physical_qty"], outstanding)
         available = compute_available(phys["physical_qty"], outstanding)
         correction = (state or {}).get("last_opening_correction") or {}
         changed_by = correction.get("changed_by") or correction.get("corrected_by") or {}
@@ -304,7 +313,7 @@ def build_stock_rows_v2(
             "stock_polos_qty": polos,
             "outstanding_so_qty": outstanding,
             "allocated_qty": outstanding,
-            "stock_current": available,
+            "stock_current": stock_current,
             "available_qty": available,
             # Legacy keys kept for consumers that still read stock_current only
             "qty_po": outstanding,  # semantic shift: now outstanding SO, not full PO qty
@@ -329,7 +338,7 @@ def build_stock_rows_v2(
                 if isinstance((state or {}).get("initialized_by"), dict)
                 else None
             ),
-            "formula": "available = max(physical - outstanding_so, 0); belum = max(outstanding_so - printed, 0)",
+            "formula": "stock_current = physical - outstanding_so; belum = max(outstanding_so - printed, 0)",
             "stock_engine": "v2",
         })
     return rows
@@ -445,7 +454,7 @@ def filter_sort_page_v2(
         "page_size": page_size,
         "page_count": max(1, (total + page_size - 1) // page_size) if total else 1,
         "purchase_source": "GOODS_RECEIPT",
-        "formula": "Stock Saat Ini = MAX(Fisik − Outstanding SO, 0)",
+        "formula": "Stock Saat Ini = Stock Fisik − Qty Pesanan",
         "stock_engine": "v2",
         "manual_purchase_removed": True,
     }
