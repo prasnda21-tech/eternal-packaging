@@ -14,7 +14,7 @@ import {
   loadingPoLines,
   sjFilesForLoading,
   selectedLoadingSjOrNull,
-  nextSelectedLoadingSjId,
+  nextActionableLoadingSjId,
   canDeleteLoadingConfirmation,
   loadingVerificationStatus,
   sjLinesForDiscrepancy,
@@ -42,7 +42,7 @@ function hasLegacyLoading(order) {
 export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const { user, hasPerm } = useAuth();
   const files = sjFilesForLoading(order);
-  const [sjId, setSjId] = useState(files[0]?.id || "");
+  const [sjId, setSjId] = useState(() => nextActionableLoadingSjId(order, ""));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [mode, setMode] = useState("actions");
@@ -58,9 +58,9 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
 
   const fileIdsKey = files.map((f) => f.id).join("|");
   useEffect(() => {
-    const next = nextSelectedLoadingSjId(files, sjId);
-    if (!sjId && next) setSjId(next);
-  }, [fileIdsKey, sjId, files]);
+    const next = nextActionableLoadingSjId(order, sjId);
+    if (next !== sjId) setSjId(next);
+  }, [fileIdsKey, sjId, files, order]);
 
   const activeSj = selectedLoadingSjOrNull(files, sjId);
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
@@ -220,6 +220,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
           <label data-testid="loading-sj-select-wrap">
             <span>Surat Jalan</span>
             <select value={activeSj?.id || ""} onChange={(e) => setSjId(e.target.value)} data-testid="loading-sj-select">
+              {files.length > 1 ? <option value="">Pilih Surat Jalan</option> : null}
               {files.map((f) => (
                 <option key={f.id} value={f.id}>{f.sj_number || f.name}</option>
               ))}

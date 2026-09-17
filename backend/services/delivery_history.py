@@ -180,6 +180,16 @@ def append_confirmation(
     display_driver = _text(lc.get("driver_name")) or _text((user or {}).get("name"))
     driver_id = actor_id if role == "driver" else None
     items = _items_for_shipment(order, shipment, qty_increment)
+    sh = shipment if isinstance(shipment, dict) else None
+    sid = _text(shipment_id) or _text((sh or {}).get("id")) or _latest_shipment_id(order)
+    rec_sig = order.get("delivery_recipient_signature") or {}
+    drv_sig = order.get("delivery_driver_signature") or {}
+    sig_sid = str(rec_sig.get("shipment_id") or "").strip()
+    if sig_sid and sid and sig_sid != sid:
+        rec_name = None
+    else:
+        rec_name = _text(rec_sig.get("recipient_name"))
+    proof_ids = _new_proof_ids(order)
     rec = {
         "id": str(uuid.uuid4()),
         "action_id": _text(action_id),
@@ -189,10 +199,20 @@ def append_confirmation(
         "driver_id": driver_id,
         "driver_name": display_driver,
         "vehicle_plate": _text(lc.get("vehicle_plate")),
-        "shipment_id": _text(shipment_id) or _text((shipment or {}).get("id")) or _latest_shipment_id(order),
+        "shipment_id": sid,
+        "sj_number": _text((sh or {}).get("number") or (sh or {}).get("sj_number")),
         "qty": int(qty_increment),
         "items": items,
-        "proof_ids": _new_proof_ids(order),
+        "proof_ids": proof_ids,
+        "photo_count": len(proof_ids),
+        "has_driver_signature": bool(
+            _text(drv_sig.get("driver_signature_storage_path") or drv_sig.get("signature_storage_path"))
+        ),
+        "has_recipient_signature": bool(
+            _text(rec_sig.get("signature_storage_path") or rec_sig.get("signature_file_id"))
+        ),
+        "recipient_name": rec_name,
+        "confirmed_by": _text((user or {}).get("email")),
     }
     order.setdefault("delivery_confirmations", []).append(rec)
     return rec

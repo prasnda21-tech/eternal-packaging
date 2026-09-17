@@ -728,6 +728,20 @@ def build_loading_tasks(order: dict) -> List[dict]:
         row["action_label"] = "Konfirmasi Loading"
     row["status_label"] = _status_label(row["status"])
     row["sj_file_count"] = _sj_file_count(order)
+    from services.sj_integrity import loaded_qty_for_shipment
+    from quantity_rules import active_shipments_stored, canonical_shipment_id, shipment_qty_total
+
+    leftover = []
+    for sh in active_shipments_stored(order):
+        need = shipment_qty_total(sh)
+        got = loaded_qty_for_shipment(order, sh)
+        if need > 0 and got < need:
+            leftover.append(canonical_shipment_id(sh))
+    if len(leftover) == 1:
+        row["shipment_id"] = leftover[0]
+        row["actionable_sj_count"] = 1
+    else:
+        row["actionable_sj_count"] = len(leftover)
     return [row]
 
 
@@ -782,6 +796,11 @@ def build_delivery_tasks(order: dict) -> List[dict]:
         row["required_input_type"] = "upload_foto"
         row["action_label"] = "Upload Foto"
     row["status_label"] = _status_label(row["status"])
+    from services.sj_integrity import order_integrity_summary
+    leftover = (order_integrity_summary(order).get("actionable_delivery") or [])
+    row["actionable_sj_count"] = len(leftover)
+    if len(leftover) == 1:
+        row["shipment_id"] = leftover[0]
     return [row]
 
 

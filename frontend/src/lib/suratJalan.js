@@ -54,6 +54,11 @@ export function sjHistory(order) {
       lines: Array.isArray(f.lines) ? f.lines : [],
       has_item_qty: Array.isArray(f.lines) && f.lines.some((l) => Number(l.qty || l.quantity) > 0),
       has_file: true,
+      status: f.status || null,
+      cancelled: f.cancelled || false,
+      active: f.active,
+      supersedes_shipment_id: f.supersedes_shipment_id || null,
+      superseded_by_shipment_id: f.superseded_by_shipment_id || null,
       legacy_incomplete: !(Array.isArray(f.lines) && f.lines.some((l) => Number(l.qty || l.quantity) > 0)),
     }));
   }

@@ -1,3 +1,5 @@
+import { actionablePengirimanOptions, shipmentIsInactive } from "./sjIntegrity";
+
 export const MAX_PHOTOS = 5;
 export const MIN_DELIVERY_PROOFS = 2;
 export const DELIVERY_PROOF_ACCEPT = "image/*";
@@ -210,8 +212,13 @@ function _safeInt(v, fallback = 0) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function _shipments(order) {
-  return Array.isArray(order?.shipments) ? order.shipments.filter((s) => s && typeof s === "object") : [];
+function isInactiveShipment(sh) {
+  return shipmentIsInactive(sh);
+}
+
+function _shipments(order, { includeInactive = false } = {}) {
+  const list = Array.isArray(order?.shipments) ? order.shipments.filter((s) => s && typeof s === "object") : [];
+  return includeInactive ? list : list.filter((s) => !isInactiveShipment(s));
 }
 
 function _lineName(order, lineIdx) {
@@ -235,16 +242,28 @@ export function activeDeliveryBatch(order) {
 export function shipmentIdentityKeys(order, shipment) {
   const keys = new Set();
   if (!shipment || typeof shipment !== "object") return keys;
-  ["id", "sales_delivery_id", "number", "accurate_shipment_id", "sj_number"].forEach((k) => {
+  const canonical = String(shipment.id || "").trim();
+  if (canonical) keys.add(canonical);
+  ["sales_delivery_id", "accurate_shipment_id"].forEach((k) => {
     const v = String(shipment[k] || "").trim();
     if (v) keys.add(v);
   });
+  const number = String(shipment.number || shipment.sj_number || "").trim();
+  if (number) {
+    const owners = _shipments(order, { includeInactive: true }).filter((sh) => (
+      String(sh.number || "").trim() === number || String(sh.sj_number || "").trim() === number
+    ));
+    if (owners.length <= 1) keys.add(number);
+  }
   const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
   for (const f of files) {
-    const fKeys = [f?.id, f?.file_id, f?.shipment_id, f?.sj_number, f?.number, f?.sales_delivery_id]
-      .map((v) => String(v || "").trim())
-      .filter(Boolean);
-    if (fKeys.some((k) => keys.has(k))) fKeys.forEach((k) => keys.add(k));
+    const fileSid = String(f?.shipment_id || f?.id || "").trim();
+    if (canonical && fileSid === canonical) {
+      [f?.id, f?.file_id, f?.shipment_id].forEach((v) => {
+        const t = String(v || "").trim();
+        if (t) keys.add(t);
+      });
+    }
   }
   return keys;
 }
@@ -318,6 +337,20 @@ export function proofsForShipment(order, shipment) {
   return all.filter((p) => !String(p.shipment_id || "").trim());
 }
 
+/** Signatures/recipient name belong to one shipment_id. Never reuse a sibling SJ POD. */
+export function signatureForShipment(sig, order, shipment) {
+  if (!sig || typeof sig !== "object") return null;
+  const sid = String(sig.shipment_id || "").trim();
+  const canonical = deliveryBatchIdentity(shipment);
+  if (sid) {
+    if (!shipment) return null;
+    const keys = shipmentIdentityKeys(order, shipment);
+    return keys.has(sid) ? sig : null;
+  }
+  if (_shipments(order).length > 1) return null;
+  return sig;
+}
+
 /** Upload/sign/confirm lock. Multi-SJ uses exact shipment evidence, not PO aggregates. */
 export function isPengirimanMutationLocked(order, shipment) {
   if (isShipmentDelivered(order, shipment)) return true;
@@ -332,6 +365,8 @@ export function selectedPengirimanShipmentId(order, preferredId = "") {
     const hit = options.find((o) => o.id === want || shipmentIdentityKeys(order, o.shipment).has(want));
     return hit?.id || "";
   }
+  const actionable = actionablePengirimanOptions(options);
+  if (actionable.length === 1) return actionable[0].id || "";
   if (options.length === 1) return options[0].id || "";
   return "";
 }

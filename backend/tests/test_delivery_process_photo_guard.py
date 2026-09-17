@@ -185,9 +185,11 @@ def test_confirm_loaded3000_delivered2000_accepted_loading_unchanged():
     assert validate_delivery_qty(2000, o) is None
     o["qty_delivered"] = 2000
     loaded_before = qty_loaded(o)
+    sj_before = qty_shipped(o)
     result = reconcile_sj_quantities_to_loaded_delivery(o)
-    assert result["returned_qty"] == 1000
-    assert qty_shipped(o) == 2000
+    assert result.get("frozen") is True
+    assert result["returned_qty"] == 0
+    assert qty_shipped(o) == sj_before == 3000
     assert qty_loaded(o) == loaded_before == 3000
     assert qty_packed(o) == 3000
 
@@ -195,12 +197,14 @@ def test_confirm_loaded3000_delivered2000_accepted_loading_unchanged():
 def test_reconcile_sj_3000_delivered_2000_idempotent():
     o = _order(po_qty=10000, packed=3000, loaded=2000, sj_qty=3000, delivered=2000)
     pdf_path = o["surat_jalan_files"][0]["storage_path"]
+    sj_before = qty_shipped(o)
     result = reconcile_sj_quantities_to_loaded_delivery(o)
-    assert result["returned_qty"] == 1000
+    assert result["returned_qty"] == 0
+    assert result.get("frozen") is True
     assert o["surat_jalan_files"][0]["storage_path"] == pdf_path
     result2 = reconcile_sj_quantities_to_loaded_delivery(o)
     assert result2["returned_qty"] == 0
-    assert qty_shipped(o) == 2000
+    assert qty_shipped(o) == sj_before == 3000
 
 
 def test_reconcile_does_not_increase_sj_above_allocation():
@@ -216,9 +220,10 @@ def test_reconcile_multi_line_exact_identity():
         {"name": "Cup A", "po_qty": 5000, "packed": 1500, "sj": 1500, "loaded": 500, "line_id": "B"},
     ], delivered=2000)
     result = reconcile_sj_quantities_to_loaded_delivery(o)
-    assert result["returned_qty"] == 1000
+    assert result["returned_qty"] == 0
+    assert result.get("frozen") is True
     assert o["shipments"][0]["lines"][0]["qty"] == 1500
-    assert o["shipments"][0]["lines"][1]["qty"] == 500
+    assert o["shipments"][0]["lines"][1]["qty"] == 1500
     assert o["line_items"][0]["line_id"] == "A"
     assert o["line_items"][1]["line_id"] == "B"
 

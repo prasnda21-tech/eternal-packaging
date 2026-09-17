@@ -1,4 +1,5 @@
 import { poLineLabel, parseSjQty } from "./suratJalan";
+import { shipmentIsInactive } from "./sjIntegrity";
 
 export const LOADING_UPDATE_PERM = "loading.update";
 
@@ -99,21 +100,40 @@ function sjIdentityKeys(row) {
   ].map((v) => String(v || "").trim()).filter(Boolean);
 }
 
-/** Aliases for the selected dropdown SJ (file id, shipment id, SJ number). */
+export function isInactiveSjRecord(row) {
+  return shipmentIsInactive(row);
+}
+
+/** Aliases for the selected dropdown SJ. Canonical shipment_id first; never cross-bind siblings. */
 export function selectedSjIdentitySet(order, selectedSjId = null) {
   const targetSjId = String(selectedSjId || "").trim();
   const ids = new Set(targetSjId ? [targetSjId] : []);
   const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
   const sjFiles = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
-  const matchingFile = sjFiles.find((f) => sjIdentityKeys(f).includes(targetSjId)) || null;
-  const matchingShipment = shipments.find((s) => {
-    const keys = sjIdentityKeys(s);
-    if (keys.includes(targetSjId)) return true;
-    return matchingFile ? sjIdentityKeys(matchingFile).some((k) => keys.includes(k)) : false;
-  }) || null;
-  for (const row of [matchingFile, matchingShipment]) {
-    sjIdentityKeys(row).forEach((k) => ids.add(k));
+  const exactShip = shipments.find((s) => String(s?.id || "").trim() === targetSjId) || null;
+  if (exactShip) {
+    sjIdentityKeys(exactShip).forEach((k) => ids.add(k));
+    const ownFile = sjFiles.find((f) => (
+      String(f?.shipment_id || "").trim() === String(exactShip.id || "").trim()
+      || String(f?.id || "").trim() === String(exactShip.id || "").trim()
+    ));
+    if (ownFile) sjIdentityKeys(ownFile).forEach((k) => ids.add(k));
+    return ids;
   }
+  const exactFile = sjFiles.find((f) => (
+    String(f?.id || "").trim() === targetSjId || String(f?.shipment_id || "").trim() === targetSjId
+  )) || null;
+  if (exactFile) {
+    sjIdentityKeys(exactFile).forEach((k) => ids.add(k));
+    const ownShip = shipments.find((s) => String(s?.id || "").trim() === String(exactFile.shipment_id || exactFile.id || "").trim());
+    if (ownShip) sjIdentityKeys(ownShip).forEach((k) => ids.add(k));
+    return ids;
+  }
+  const aliasShips = shipments.filter((s) => sjIdentityKeys(s).includes(targetSjId));
+  const aliasFiles = sjFiles.filter((f) => sjIdentityKeys(f).includes(targetSjId));
+  if (aliasShips.length + aliasFiles.length !== 1) return ids;
+  const row = aliasShips[0] || aliasFiles[0];
+  sjIdentityKeys(row).forEach((k) => ids.add(k));
   return ids;
 }
 
@@ -235,9 +255,15 @@ export function loadingPoLines(order, selectedSjId = null) {
 export function sjFilesForLoading(order) {
   const list = [];
   const seen = new Set();
+  const shipments = Array.isArray(order?.shipments) ? order.shipments : [];
 
   const files = Array.isArray(order?.surat_jalan_files) ? order.surat_jalan_files : [];
   for (const f of files) {
+    if (isInactiveSjRecord(f)) continue;
+    const linked = shipments.find((s) => (
+      String(s?.id || "").trim() === String(f?.shipment_id || f?.id || "").trim()
+    ));
+    if (linked && isInactiveSjRecord(linked)) continue;
     const id = f?.id || f?.file_id;
     if (id && !seen.has(String(id))) {
       seen.add(String(id));
@@ -259,6 +285,24 @@ export function sjFilesForLoading(order) {
   }
 
   return list;
+}
+
+export function actionableLoadingSjFiles(order) {
+  const files = sjFilesForLoading(order);
+  return files.filter((f) => {
+    const lines = loadingPoLines(order, f.id);
+    return lines.some((ln) => Number(ln.available || 0) > 0);
+  });
+}
+
+export function nextActionableLoadingSjId(order, sjId) {
+  const files = sjFilesForLoading(order);
+  const id = String(sjId || "").trim();
+  if (id && files.some((f) => String(f.id) === id)) return id;
+  const actionable = actionableLoadingSjFiles(order);
+  if (actionable.length === 1) return String(actionable[0].id);
+  if (files.length === 1) return String(files[0].id);
+  return "";
 }
 
 /** Exact selected Loading SJ. Never falls back to files[0] / first sibling. */

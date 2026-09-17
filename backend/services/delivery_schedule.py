@@ -267,9 +267,10 @@ def dated_schedule_shipments(order: dict) -> List[dict]:
     raw = order.get("shipments")
     if not isinstance(raw, list):
         return []
+    from quantity_rules import shipment_is_active
     out = []
     for sh in raw:
-        if isinstance(sh, dict) and shipment_delivery_date(sh):
+        if isinstance(sh, dict) and shipment_delivery_date(sh) and shipment_is_active(sh):
             out.append(sh)
     return out
 

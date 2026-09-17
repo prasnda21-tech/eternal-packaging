@@ -70,7 +70,7 @@ describe("Surat Jalan card upload + preview", () => {
 
   test("FILE TERSIMPAN badge uses live sjHistory files, not shipment ghosts", () => {
     expect(src).toMatch(/const files = sjHistory\(order\)/);
-    expect(src).toMatch(/const created = files\.length > 0/);
+    expect(src).toMatch(/const created = files\.some/);
     expect(src).toMatch(/File tersimpan/);
     expect(src).not.toMatch(/const created = !!order\.surat_jalan_created/);
   });

@@ -42,8 +42,8 @@ export default function SuratJalanPanel({
   const uploading = busyProp || busy;
   const files = sjHistory(order);
   // FILE TERSIMPAN = live/active SJ file only (same evidence Loading uses).
-  // Do not use bare surat_jalan_created from shipment ghosts / deleted history.
-  const created = files.length > 0;
+  // History still lists superseded/cancelled SJ for audit.
+  const created = files.some((f) => f && f.active !== false && String(f.status || "").toLowerCase() !== "superseded" && String(f.status || "").toLowerCase() !== "cancelled");
   const sjOrderId = order?.id;
   const sjStoredDate = order?.delivery_note_created_at;
 
@@ -217,9 +217,14 @@ export default function SuratJalanPanel({
               const fileId = f.file_id || f.id;
               return (
                 <li key={fileId || f.name} data-testid={`surat-jalan-file-${fileId || f.name}`} className="sj-file-card">
-                  <strong>{f.name}</strong>
+                  <strong>{f.sj_number || f.name}</strong>
                   {f.source === "SYSTEM_GENERATED" && (
                     <span className="muted small" data-testid={`sj-generated-badge-${fileId}`}>Dibuat Sistem</span>
+                  )}
+                  {(f.active === false || ["superseded", "cancelled", "deleted"].includes(String(f.status || "").toLowerCase())) && (
+                    <span className="muted small" data-testid={`sj-history-status-${fileId}`}>
+                      {String(f.status || "superseded").toLowerCase() === "cancelled" ? "Dibatalkan (arsip)" : "Superseded (arsip)"}
+                    </span>
                   )}
                   {(f.uploaded_by_name || f.uploaded_by) && (
                     <span className="muted small">{f.uploaded_by_name || f.uploaded_by}</span>

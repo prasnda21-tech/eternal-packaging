@@ -19,7 +19,9 @@ import {
   isShipmentDelivered,
   isPengirimanMutationLocked,
   pengirimanSjOptions,
+  pengirimanSjDisplayLabel,
   proofsForShipment,
+  signatureForShipment,
   selectedPengirimanShipmentId,
   deliveryBatchIdentity,
 } from "../lib/deliveryProof";
@@ -157,8 +159,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const proofs = ((sjOptions.length > 1 && !shipmentResolved) || unmatchedRequested)
     ? []
     : proofsForShipment(order, activeShipment);
-  const orderSig = order.delivery_recipient_signature;
-  const driverSig = order.delivery_driver_signature;
+  const orderSig = signatureForShipment(order.delivery_recipient_signature, order, activeShipment);
+  const driverSig = signatureForShipment(order.delivery_driver_signature, order, activeShipment);
   const driverDisplayName = authoritativeDriverDisplayName(order, user);
   const history = deliveryHistoryEntries(order);
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
@@ -520,7 +522,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
               )}
               {sjOptions.map((opt) => (
                 <option key={opt.id} value={opt.id}>
-                  {opt.number} · {opt.id}{opt.date ? ` · ${opt.date}` : ""}{opt.delivered ? " · Terkirim" : ""}
+                  {pengirimanSjDisplayLabel(opt, { includeDelivered: true })}
                 </option>
               ))}
             </select>
@@ -542,9 +544,12 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
               <div data-testid="pengiriman-selected-sj-number">
                 <strong>Surat Jalan:</strong> {activeSjOption.number}
               </div>
-              <div data-testid="pengiriman-selected-sj-id" className="muted small">
-                Batch: {activeSjOption.id}
-                {activeSjOption.date ? ` · ${activeSjOption.date}` : ""}
+              <div
+                data-testid="pengiriman-selected-sj-id"
+                data-shipment-id={activeSjOption.id}
+                className="muted small"
+              >
+                {activeSjOption.date ? `Tanggal: ${activeSjOption.date}` : ""}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
                 <div>
