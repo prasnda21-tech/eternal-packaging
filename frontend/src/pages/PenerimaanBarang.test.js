@@ -168,4 +168,13 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/setPoReceipts\(\(current\)/);
     expect(pageSrc).toMatch(/disabled=\{receipt\.can_cancel === false\}/);
   });
+
+  test("history exposes cancel for ERP manual receipts but never Accurate history", () => {
+    expect(pageSrc).toMatch(/canCancel=\{canReceivePo && row\.kind === "manual"\}/);
+    expect(pageSrc).toMatch(/btn-batalkan-manual-receipt-/);
+    expect(pageSrc).toMatch(/api\.cancelManualPurchaseReceipt/);
+    expect(pageSrc).toMatch(/isManual && canCancel && !cancelled/);
+    expect(pageSrc).toMatch(/cancelled \? "DIBATALKAN"/);
+    expect(apiSrc).toMatch(/cancelManualPurchaseReceipt: \(id, reason\)/);
+  });
 });
