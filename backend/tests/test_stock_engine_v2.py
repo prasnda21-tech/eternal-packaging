@@ -12,6 +12,7 @@ from services.stock_engine_v2 import (
     apply_stock_opname,
     build_stock_rows_v2,
     compute_available,
+    compute_stock_current,
     physical_from_state,
     validate_sales_order_availability,
 )
@@ -37,6 +38,24 @@ def test_compute_available_core_examples():
     # Never Fisik - Outstanding - Belum - Sudah (triple count)
     assert compute_available(1000, 300, 100) != 1000 - 300 - 200 - 100
     assert compute_available(100, 30, 20) != 100 - 30 - 20
+
+
+def test_stock_current_read_model_preserves_negative_shortage():
+    assert compute_stock_current(0, 15000) == -15000
+
+    rows = build_stock_rows_v2(
+        [{"id": "m397", "item_code": "100397", "item_name": "Item", "unit": "PCS"}],
+        state_by_master={},
+        outstanding_bucket={"m:m397": 15000.0},
+        outstanding_alias={"m:m397": "m:m397"},
+    )
+    row = rows[0]
+    assert row["physical_qty"] == 0
+    assert row["outstanding_so_qty"] == 15000
+    assert row["unprinted_qty"] == 15000
+    assert row["printed_qty"] == 0
+    assert row["stock_current"] == -15000
+    assert row["available_qty"] == 0
 
 
 def test_outstanding_so_ordered_minus_shipped():

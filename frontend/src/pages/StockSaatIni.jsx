@@ -159,7 +159,7 @@ export default function StockSaatIni() {
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
           <p className="subhead" data-testid="stock-formula">
             {data?.stock_engine === "v2"
-              ? "Stock Saat Ini = MAX(Stock Fisik − Qty Pesanan, 0). Belum Dicetak = MAX(Qty Pesanan − Sudah Dicetak, 0). Sudah Dicetak hanya informasi dan tidak memotong stock dua kali."
+              ? "Stock Saat Ini = Stock Fisik − Qty Pesanan. Nilai negatif menunjukkan kekurangan stock. Belum Dicetak = MAX(Qty Pesanan − Sudah Dicetak, 0). Sudah Dicetak hanya informasi dan tidak memotong stock dua kali."
               : "(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator"}
           </p>
         </div>
