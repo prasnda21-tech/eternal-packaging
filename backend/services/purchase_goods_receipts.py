@@ -94,7 +94,7 @@ async def _stock_reversal_plan(db, receipt_id: str) -> Dict[str, Any]:
             {"_id": 0},
         )
         if not state or not state.get("initialized") or state.get("status") != "INITIALIZED":
-            unsafe_reason = f"Stock V2 item '{mid}' belum initialized."
+            unsafe_reason = f"Stok V2 item '{mid}' belum initialized."
             break
         pending = state.get("pending_event")
         if pending:
@@ -190,8 +190,6 @@ async def cancel_purchase_goods_receipt(
 
         if is_cancelled(doc):
             return await get_purchase_goods_receipt(db, doc["id"])
-        if not reason:
-            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
 
         inv_count = await _active_invoice_count_for_receipt(db, doc["id"])
         if inv_count > 0:
@@ -200,6 +198,8 @@ async def cancel_purchase_goods_receipt(
                 "Penerimaan tidak dapat dihapus karena sudah memiliki faktur. "
                 "Batalkan faktur terkait terlebih dahulu.",
             )
+        if not reason:
+            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
 
         plan = await _stock_reversal_plan(db, doc["id"])
         if plan.get("blocked"):
