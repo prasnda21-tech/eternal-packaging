@@ -1,10 +1,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
 
-global.IS_REACT_ACT_ENVIRONMENT = true;
-
+jest.mock("react-router-dom", () => ({\n  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,\n}), { virtual: true });\n\nglobal.IS_REACT_ACT_ENVIRONMENT = true;\n
 describe("SalesPwaDocumentSheet", () => {
   test("uses internal /sales viewer routes and never opens raw API in a new tab", () => {
     const container = document.createElement("div");
