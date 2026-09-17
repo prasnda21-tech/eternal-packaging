@@ -14,6 +14,7 @@ existing production_process.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -166,16 +167,18 @@ async def collect_stock_identity_hits(db, order_id: str, line_idx: int) -> List[
     if not order_id:
         return []
     idx = int(line_idx)
-    mov = await db.stock_movements.find_one(
-        {"order_id": order_id, "line_idx": idx},
-        {"_id": 1, "id": 1},
+    mov, pending = await asyncio.gather(
+        db.stock_movements.find_one(
+            {"order_id": order_id, "line_idx": idx},
+            {"_id": 1, "id": 1},
+        ),
+        db.product_stock_state.find_one(
+            {"pending_event.order_id": order_id, "pending_event.line_idx": idx},
+            {"_id": 1},
+        ),
     )
     if mov:
         return ["stock_movement"]
-    pending = await db.product_stock_state.find_one(
-        {"pending_event.order_id": order_id, "pending_event.line_idx": idx},
-        {"_id": 1},
-    )
     if pending:
         return ["stock_claim"]
     return []
@@ -196,8 +199,10 @@ def message_for_downstream(sources: List[str]) -> str:
 async def gather_downstream_sources(db, order: dict, line_idx: int) -> List[str]:
     order_id = str(order.get("id") or "")
     embedded = collect_order_embedded_downstream_hits(order, line_idx)
-    sj = await collect_sales_delivery_hits(db, order_id, line_idx)
-    stock = await collect_stock_identity_hits(db, order_id, line_idx)
+    sj, stock = await asyncio.gather(
+        collect_sales_delivery_hits(db, order_id, line_idx),
+        collect_stock_identity_hits(db, order_id, line_idx),
+    )
     # Preserve priority order for messaging
     out: List[str] = []
     for src in embedded + sj + stock:
@@ -288,10 +293,15 @@ async def evaluate_line_product_replacement(
 
 async def evaluate_all_line_product_replacements(db, order: dict) -> List[Dict[str, Any]]:
     lis = order.get("line_items") or []
-    results = []
-    for i in range(len(lis)):
-        results.append(await evaluate_line_product_replacement(db, order, i))
-    return results
+    if not lis:
+        return []
+    # Read-only eligibility checks are independent per exact line. Running
+    # them concurrently preserves result order while avoiding an N-line
+    # database waterfall on every PO detail load (web and operational PWA).
+    return list(await asyncio.gather(*(
+        evaluate_line_product_replacement(db, order, i)
+        for i in range(len(lis))
+    )))
 
 
 async def resolve_replacement_master(
