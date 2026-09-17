@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -47,6 +47,7 @@ export default function MobileOrderDetailPage() {
   const [loading, setLoading] = useState(!retainedOrder);
   const [refreshing, setRefreshing] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
+  const loadRequestRef = useRef(0);
 
   const commitOrder = (nextOrder) => {
     setOrder(nextOrder);
@@ -61,6 +62,7 @@ export default function MobileOrderDetailPage() {
   };
 
   const load = async ({ background } = {}) => {
+    const requestId = ++loadRequestRef.current;
     const previewOrder = getPwaDeliveryTaskPreviewOrder(
       id,
       typeof window !== "undefined" ? window.location.search : "",
@@ -85,12 +87,16 @@ export default function MobileOrderDetailPage() {
     setErr("");
     try {
       const d = await api.getOrder(id);
-      commitOrder(d.order || d);
+      if (requestId === loadRequestRef.current) commitOrder(d.order || d);
     } catch (e) {
-      setErr(e.response?.data?.detail || "Gagal memuat PO.");
+      if (requestId === loadRequestRef.current) {
+        setErr(e.response?.data?.detail || "Gagal memuat PO.");
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
