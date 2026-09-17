@@ -39,6 +39,15 @@ function Field({ label, children }) {
   );
 }
 
+function followupTone(value) {
+  const status = String(value || "").toLowerCase();
+  if (status.includes("terlambat") || status.includes("risiko")) return "danger";
+  if (status.includes("jatuh tempo")) return "urgent";
+  if (status.includes("follow-up") || status.includes("follow up")) return "success";
+  if (status.includes("tidak aktif")) return "muted";
+  return "neutral";
+}
+
 export default function PrediksiOrder() {
   const { hasPerm } = useAuth();
   const canImport = hasPerm("reports.order_prediction.import");
@@ -106,12 +115,13 @@ export default function PrediksiOrder() {
   return (
     <div className="ship-status-page prediksi-order-page" data-testid="prediksi-order-page">
       <div className="ship-status-chrome">
-        <header className="ship-status-heading page-heading">
-          <h1>Prediksi Order Customer</h1>
-          <p className="muted small">Analisis otomatis berdasarkan histori Order Masuk.</p>
-          <p className="muted small" data-testid="prediksi-disclaimer">
-            Prediksi bersifat estimasi berdasarkan pola histori order.
-          </p>
+        <header className="ship-status-heading page-heading prediksi-heading">
+          <div className="prediksi-heading-copy">
+            <h1>Prediksi Order Customer</h1>
+            <p className="muted small" data-testid="prediksi-disclaimer">
+              Estimasi follow-up berdasarkan pola histori order.
+            </p>
+          </div>
           {canImport && (
             <button type="button" className="primary" onClick={() => setImportOpen(true)} data-testid="prediksi-import-button">
               <Upload size={14} /> Impor Histori Order
@@ -127,12 +137,13 @@ export default function PrediksiOrder() {
           <Kpi label="Tidak Aktif" value={summary.tidak_aktif} testid="prediksi-kpi-inactive" active={filters.status === "tidak_aktif"} onClick={() => clickKpi("tidak_aktif")} />
         </section>
 
-        <div className="prediksi-tabs" data-testid="prediksi-tabs">
-          <button type="button" className={tab === "analisis" ? "is-active" : ""} onClick={() => setTab("analisis")} data-testid="prediksi-tab-analisis">Analisis</button>
-          <button type="button" className={tab === "orders" ? "is-active" : ""} onClick={() => setTab("orders")} data-testid="prediksi-tab-orders">Data Order</button>
-        </div>
+        <div className="prediksi-controls-row">
+          <div className="prediksi-tabs" data-testid="prediksi-tabs">
+            <button type="button" className={tab === "analisis" ? "is-active" : ""} onClick={() => setTab("analisis")} data-testid="prediksi-tab-analisis">Analisis</button>
+            <button type="button" className={tab === "orders" ? "is-active" : ""} onClick={() => setTab("orders")} data-testid="prediksi-tab-orders">Data Order</button>
+          </div>
 
-        <div className="ship-status-toolbar" data-testid="prediksi-filter-bar">
+          <div className="ship-status-toolbar" data-testid="prediksi-filter-bar">
           <label className="ship-filter-field">
             <span>Customer / Outlet</span>
             <input
@@ -173,35 +184,28 @@ export default function PrediksiOrder() {
           <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="prediksi-refresh" disabled={busy}>
             <RefreshCw size={14} className={busy ? "spin" : ""} />
           </button>
-          <button type="button" className="ship-reset-btn" onClick={() => setFilters(EMPTY_PREDIKSI_FILTERS)} data-testid="prediksi-filter-reset">
-            Reset Filter
-          </button>
+            <button type="button" className="ship-reset-btn" onClick={() => setFilters(EMPTY_PREDIKSI_FILTERS)} data-testid="prediksi-filter-reset">
+              Reset
+            </button>
+          </div>
         </div>
         {err && <div className="error" data-testid="prediksi-error">{err}</div>}
       </div>
 
       {tab === "analisis" ? (
-        <div className="ship-status-grid" data-testid="prediksi-table">
+        <div className="ship-status-grid prediksi-compact-table" data-testid="prediksi-table">
           <table className="ship-table">
             <thead>
               <tr>
-                <th>Customer</th>
-                <th>Outlet</th>
-                <th className="num">Total Order</th>
+                <th>Customer / Outlet</th>
+                <th>Sales</th>
                 <th>Order Terakhir</th>
-                <th className="num">Hari Sejak Order</th>
-                <th className="num">Median Jarak</th>
-                <th>Pola Order</th>
-                <th>Prediksi Awal</th>
                 <th>Prediksi Order</th>
-                <th>Prediksi Akhir</th>
-                <th>Mulai Follow-up</th>
-                <th>Status Follow-up</th>
-                <th>Kestabilan</th>
-                <th>Tingkat Keyakinan</th>
-                <th className="num">Order 90 Hari</th>
-                <th>Omzet 90 Hari</th>
-                <th>Rekomendasi</th>
+                <th>Status</th>
+                <th>Pola</th>
+                <th>Keyakinan</th>
+                <th className="num">Total</th>
+                <th>Aksi</th>
               </tr>
             </thead>
             <tbody>
@@ -212,32 +216,35 @@ export default function PrediksiOrder() {
                   data-testid={`prediksi-row-${r.customer_key}`}
                   onClick={() => openDetail(r)}
                 >
-                  <td className="ship-cust" title={r.customer || undefined}>{r.customer || "-"}</td>
-                  <td
-                    title={r.outlet || ""}
-                    style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                  >
-                    {r.outlet || "-"}
+                  <td className="prediksi-customer-cell" title={[r.customer, r.outlet].filter(Boolean).join(" · ") || undefined}>
+                    <strong>{r.customer || "-"}</strong>
+                    <span>{r.outlet || "-"}</span>
                   </td>
-                  <td className="num mono">{r.total_orders}</td>
+                  <td>{r.sales || "-"}</td>
                   <td className="mono">{formatDisplayDate(r.last_order_date)}</td>
-                  <td className="num mono">{dashValue(r.days_since_order)}</td>
-                  <td className="num mono">{formatStat(r.median_gap)}</td>
-                  <td>{r.pattern || "-"}</td>
-                  <td className="mono">{formatDisplayDate(r.prediction_start)}</td>
                   <td className="mono">{formatDisplayDate(r.prediction_mid)}</td>
-                  <td className="mono">{formatDisplayDate(r.prediction_end)}</td>
-                  <td className="mono">{formatDisplayDate(r.followup_start)}</td>
-                  <td data-testid={`prediksi-status-${r.customer_key}`}>{r.followup_status}</td>
-                  <td>{r.stability}</td>
-                  <td>{r.confidence}</td>
-                  <td className="num mono">{dashValue(r.orders_90d)}</td>
-                  <td className="mono" data-testid={`prediksi-omzet90-${r.customer_key}`}>{dashOmzet(r.omzet_90d)}</td>
-                  <td>{r.recommendation || "-"}</td>
+                  <td data-testid={`prediksi-status-${r.customer_key}`}>
+                    <span className={`prediksi-status-pill is-${followupTone(r.followup_status)}`}>{r.followup_status || "-"}</span>
+                  </td>
+                  <td>{r.pattern || "-"}</td>
+                  <td><span className="prediksi-confidence">{r.confidence || "-"}</span></td>
+                  <td className="num mono">{r.total_orders}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="prediksi-detail-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openDetail(r);
+                      }}
+                    >
+                      Detail
+                    </button>
+                  </td>
                 </tr>
               ))}
               {!rows.length && (
-                <tr><td colSpan={17} className="muted">Tidak ada customer/outlet pada Order Masuk yang valid.</td></tr>
+                <tr><td colSpan={9} className="muted">Tidak ada customer/outlet pada Order Masuk yang valid.</td></tr>
               )}
             </tbody>
           </table>
