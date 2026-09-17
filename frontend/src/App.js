@@ -74,6 +74,7 @@ const AppShell = lazy(() => import("./components/AppShell"));
 const RouteOptimizerLayout = lazy(() => import("./mobile/RouteOptimizerLayout"));
 const MobileOrdersPage = lazy(() => import("./mobile/MobileOrdersPage"));
 const MobileOrderDetailPage = lazy(() => import("./mobile/MobileOrderDetailPage"));
+const MobileSuratJalanViewerPage = lazy(() => import("./mobile/MobileSuratJalanViewerPage"));
 const MobileProductionSchedulePage = lazy(() => import("./mobile/MobileProductionSchedulePage"));
 const MobileDeliverySchedulePage = lazy(() => import("./mobile/MobileDeliverySchedulePage"));
 const MobileDeliveryRouteReviewPage = lazy(() => import("./mobile/MobileDeliveryRouteReviewPage"));
@@ -220,6 +221,7 @@ export default function App() {
             <Route path="/m/tasks" element={<MobileTasksPage />} />
             <Route path="/m/orders" element={<MobileOrdersPage />} />
             <Route path="/m/orders/:id" element={<MobileOrderDetailPage />} />
+            <Route path="/m/orders/:id/surat-jalan/:fileId" element={<MobileSuratJalanViewerPage />} />
             <Route path="/m/schedule" element={<MobileProductionSchedulePage />} />
             <Route path="/m/delivery-schedule" element={<MobileDeliverySchedulePage />} />
             <Route path="/m/delivery-schedule/review-optimasi" element={<MobileDeliveryRouteReviewPage />} />

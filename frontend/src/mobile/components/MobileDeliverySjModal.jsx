@@ -2,7 +2,7 @@ import { FileText } from "lucide-react";
 import { getCanonicalCustomerName } from "../../lib/canonicalCustomer";
 import { pengirimanSjDisplayLabel, shipmentIdentityKeys } from "../../lib/deliveryProof";
 import { deliveryAddressFromOrder } from "../../lib/mobileWorkspaces";
-import { suratJalanFileUrl } from "../../lib/suratJalan";
+import { mobileSuratJalanViewerHref } from "../../lib/suratJalan";
 import MobileTaskModal from "./MobileTaskModal";
 
 function formatKirimDate(raw) {
@@ -60,7 +60,7 @@ export default function MobileDeliverySjModal({
   const lines = sjDetailLines(order, shipment);
   const fileId = sjViewFileId(order, shipment);
   const viewHref = fileId && order?.id && !order?.preview
-    ? suratJalanFileUrl(order.id, fileId)
+    ? mobileSuratJalanViewerHref(order.id, fileId, "delivery")
     : "";
   const date = formatKirimDate(shipment?.delivery_date || sjOption?.date || order?.tanggal_pengiriman);
 
@@ -117,8 +117,6 @@ export default function MobileDeliverySjModal({
         <a
           className="mop-btn-primary mop-sj-detail-print"
           href={viewHref}
-          target="_blank"
-          rel="noreferrer"
           data-testid="mobile-sj-view-print"
         >
           Lihat / Cetak Surat Jalan

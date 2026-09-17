@@ -18,7 +18,7 @@ import {
   LOADING_CONFIRM_MATCH_PERM,
   LOADING_REPORT_DISCREPANCY_PERM,
 } from "../../lib/loadingConfirm";
-import { SJ_VIEW_FILE_PERM, suratJalanFileUrl } from "../../lib/suratJalan";
+import { SJ_VIEW_FILE_PERM, mobileSuratJalanViewerHref } from "../../lib/suratJalan";
 import { loadingAvailability, loadingSkipsPacking, matchLoadingSjFile } from "../../lib/mobileWorkspaces";
 import { useAuth } from "../../lib/auth";
 
@@ -199,9 +199,7 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
         <a
           className="mop-btn-ghost"
           style={{ display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}
-          href={suratJalanFileUrl(order.id, activeSj.id)}
-          target="_blank"
-          rel="noreferrer"
+          href={mobileSuratJalanViewerHref(order.id, activeSj.id, "loading")}
         >
           Buka Surat Jalan
         </a>

@@ -173,6 +173,24 @@ export function suratJalanFileUrl(orderId, fileId, { download = false } = {}) {
   return download ? `${base}?download=1` : base;
 }
 
+export function safeMobileDocumentReturn(raw) {
+  const value = String(raw || "").trim();
+  if (!value.startsWith("/m/") || value.startsWith("//")) return "";
+  return value;
+}
+
+export function mobileSuratJalanViewerHref(orderId, fileId, workspace, locationLike) {
+  if (!orderId || !fileId) return "";
+  const role = workspace === "delivery" ? "delivery" : "loading";
+  const params = new URLSearchParams({ ws: role });
+  const source = locationLike || (typeof window !== "undefined" ? window.location : null);
+  const current = source ? `${source.pathname || ""}${source.search || ""}` : "";
+  if (current.startsWith("/m/") && !current.startsWith("//")) {
+    params.set("return_to", current);
+  }
+  return `/m/orders/${encodeURIComponent(orderId)}/surat-jalan/${encodeURIComponent(fileId)}?${params.toString()}`;
+}
+
 export async function fetchSuratJalanBlob(orderId, fileId, { download = false, filename = "" } = {}) {
   const url = suratJalanFileUrl(orderId, fileId, { download });
   const resp = await fetch(url, { credentials: "include" });
