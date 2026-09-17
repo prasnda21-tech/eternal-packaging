@@ -167,7 +167,6 @@ from services.purchase_receipts import (
     COLLECTION as RECEIPT_COLLECTION,
     PURCHASE_SOURCE_ACCURATE as STOCK_PURCHASE_ACCURATE,
     SYNC_META_COLLECTION as RECEIPT_SYNC_META_COLLECTION,
-    cancel_manual_purchase_receipt,
     create_manual_purchase_receipt,
     filter_public_receipts,
     last_success_at as receipt_last_success_at,
@@ -9693,9 +9692,10 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
 
 
 class LineProductReplacePayload(BaseModel):
-    """Exact catalog identity only — never product name."""
+    """Atomic order-line edit: canonical catalog identity and/or quantity."""
     master_item_id: Optional[str] = None
     accurate_item_id: Optional[str] = None
+    quantity: Optional[int] = None
     # Optional explicit process — if provided must match source line class.
     production_process: Optional[str] = None
 
@@ -9707,10 +9707,10 @@ async def replace_sales_order_line_product(
     payload: LineProductReplacePayload,
     user=Depends(current_user),
 ):
-    """Replace product identity on an exact order line (safe Path 1 lock).
+    """Edit product identity and/or quantity on one exact order line.
 
     Permission: po.edit (not production.route.edit).
-    Preserves line_idx; does not rewrite SJ/loading/delivery/stock history.
+    Preserves line_idx; never rewrites SJ/loading/delivery/stock history.
     """
     await _require_perm(user, "po.edit")
 
@@ -9743,6 +9743,15 @@ async def replace_sales_order_line_product(
     source_process = line_production_process(source_li)
     reject_cross_type_explicit(source_process, payload.production_process)
 
+    target_requested = bool(
+        (payload.master_item_id or "").strip()
+        or (payload.accurate_item_id or "").strip()
+    )
+    if payload.quantity is not None and payload.quantity <= 0:
+        raise HTTPException(400, "Qty baru harus lebih dari 0.")
+    if not target_requested and payload.quantity is None:
+        raise HTTPException(400, "Pilih barang pengganti atau ubah qty.")
+
     guard = await evaluate_line_product_replacement(db, order, line_idx)
     if not guard["allowed"]:
         raise HTTPException(
@@ -9756,35 +9765,40 @@ async def replace_sales_order_line_product(
             },
         )
 
-    master = await resolve_replacement_master(
-        db,
-        master_item_id=payload.master_item_id,
-        accurate_item_id=payload.accurate_item_id,
-    )
-    master_proc = (master.get("production_process") or "").strip().lower()
-    if master_proc in ("print", "non_print") and master_proc != source_process:
-        raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
+    mapped = None
+    if target_requested:
+        master = await resolve_replacement_master(
+            db,
+            master_item_id=payload.master_item_id,
+            accurate_item_id=payload.accurate_item_id,
+        )
+        master_proc = (master.get("production_process") or "").strip().lower()
+        if master_proc in ("print", "non_print") and master_proc != source_process:
+            raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
 
-    mapped = map_master_to_line_fields(master)
-    if not mapped.get("name"):
-        raise HTTPException(400, "Produk target tidak memiliki nama yang valid.")
-    if not mapped.get("accurate_item_id") and not mapped.get("master_item_id"):
-        raise HTTPException(400, "Produk target tidak memiliki identitas kanonis.")
+        mapped = map_master_to_line_fields(master)
+        if not mapped.get("name"):
+            raise HTTPException(400, "Produk target tidak memiliki nama yang valid.")
+        if not mapped.get("accurate_item_id") and not mapped.get("master_item_id"):
+            raise HTTPException(400, "Produk target tidak memiliki identitas kanonis.")
 
     before = current_product_snapshot(source_li)
-    same_aid = (
+    same_aid = bool(target_requested and (
         before.get("accurate_item_id")
         and mapped.get("accurate_item_id")
         and str(before["accurate_item_id"]) == str(mapped["accurate_item_id"])
-    )
-    same_mid = (
+    ))
+    same_mid = bool(target_requested and (
         before.get("master_item_id")
         and mapped.get("master_item_id")
         and str(before["master_item_id"]) == str(mapped["master_item_id"])
         and not mapped.get("accurate_item_id")
         and not before.get("accurate_item_id")
-    )
-    if same_aid or same_mid:
+    ))
+    product_changed = target_requested and not (same_aid or same_mid)
+    current_qty = int(source_li.get("quantity") or 0)
+    quantity_changed = payload.quantity is not None and payload.quantity != current_qty
+    if not product_changed and not quantity_changed:
         raise HTTPException(400, {"code": REASON_SAME_PRODUCT, "message": MSG_SAME})
 
     # Final race re-check immediately before persist
@@ -9807,24 +9821,28 @@ async def replace_sales_order_line_product(
     if line_idx >= len(fresh_lis) or not isinstance(fresh_lis[line_idx], dict):
         raise HTTPException(400, "Line item tidak ditemukan.")
 
-    mutated = apply_product_fields_to_line(fresh_lis[line_idx], mapped)
-    for keep in ("quantity", "production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
+    fresh_line = fresh_lis[line_idx]
+    mutated = apply_product_fields_to_line(fresh_line, mapped) if product_changed else dict(fresh_line)
+    for keep in ("production_process", "color", "notes", "id", "line_id", "accurate_line_id", "color_source"):
         if keep in fresh_lis[line_idx]:
             mutated[keep] = fresh_lis[line_idx].get(keep)
+    mutated["quantity"] = payload.quantity if payload.quantity is not None else fresh_line.get("quantity")
     if line_production_process(mutated) != source_process:
         raise HTTPException(400, {"code": REASON_CROSS_TYPE, "message": MSG_CROSS_TYPE})
 
     fresh_lis[line_idx] = mutated
     fresh["line_items"] = fresh_lis
-    await _persist_order(fresh)
+    fresh["total_quantity"] = sum(int((line or {}).get("quantity") or 0) for line in fresh_lis)
+    fresh["_expected_updated_at"] = fresh.get("updated_at")
+    await _persist_order(fresh, require_lock=True)
     after = current_product_snapshot(mutated)
     await _audit_po(
         fresh,
-        "sales_order.line_product.replace",
+        "sales_order.line_item.update",
         user,
-        before={"line_idx": line_idx, "product": before},
-        after={"line_idx": line_idx, "product": after},
-        note=f"Ganti barang line_idx={line_idx}",
+        before={"line_idx": line_idx, "product": before, "quantity": current_qty},
+        after={"line_idx": line_idx, "product": after, "quantity": mutated["quantity"]},
+        note=f"Ubah item PO line_idx={line_idx}",
     )
 
     eligibility = await evaluate_all_line_product_replacements(db, fresh)
@@ -9835,8 +9853,12 @@ async def replace_sales_order_line_product(
         "line": mutated,
         "before": before,
         "after": after,
+        "before_quantity": current_qty,
+        "after_quantity": mutated["quantity"],
         "eligibility": eligibility[line_idx] if line_idx < len(eligibility) else None,
-        "message": "Barang berhasil diganti",
+        "message": "Barang dan qty berhasil diperbarui" if product_changed and quantity_changed else (
+            "Barang berhasil diganti" if product_changed else "Qty berhasil diperbarui"
+        ),
     }
 
 
@@ -11449,25 +11471,6 @@ async def purchase_receipts_create(
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     doc = await create_manual_purchase_receipt(db, data or {}, user)
     return {"receipt": public_receipt(doc), "message": "Penerimaan Barang berhasil dibuat"}
-
-
-class PurchaseReceiptCancelPayload(BaseModel):
-    reason: str = ""
-
-
-@api_router.post("/purchase-receipts/{receipt_id}/cancel")
-async def purchase_receipts_cancel(
-    receipt_id: str,
-    payload: PurchaseReceiptCancelPayload,
-    user=Depends(require_perm("purchase_receipts.receive")),
-):
-    doc = await cancel_manual_purchase_receipt(
-        db,
-        receipt_id,
-        user,
-        reason=payload.reason,
-    )
-    return {"receipt": public_receipt(doc), "message": "Penerimaan Barang dibatalkan"}
 
 
 @api_router.get("/purchase-receipts/export")
