@@ -33,9 +33,11 @@ from services.physical_stock_engine import (
     precheck_goods_receipt_lines,
 )
 from services.stock_ledger import (
+    MOVEMENT_KOREKSI,
     MOVEMENT_PENERIMAAN,
     MOVEMENT_REVERSAL_PENERIMAAN,
     MOVEMENT_STOK_MASUK,
+    record_stock_movement,
     safe_float,
 )
 
@@ -75,10 +77,30 @@ async def _stock_reversal_plan(db, receipt_id: str) -> Dict[str, Any]:
         for m in reversals
         if m.get("reversal_of_movement_id")
     }
-    pending_originals = [
+    unreversed_originals = [
         m for m in originals
         if str(m.get("id") or m.get("event_key") or "") not in reversed_ids
     ]
+    pending_originals: List[dict] = []
+    superseded_originals: List[dict] = []
+    for movement in unreversed_originals:
+        barrier = await db.stock_movements.find_one(
+            {
+                "master_item_id": movement.get("master_item_id"),
+                "created_at": {"$gt": movement.get("created_at")},
+                "movement_type": MOVEMENT_KOREKSI,
+                "reference_type": {
+                    "$in": ["stock_opname", "opening_balance_correction"],
+                },
+                "status": {"$nin": ["VOID", "CANCELLED"]},
+            },
+            {"_id": 0, "id": 1, "event_key": 1, "created_at": 1, "reference_type": 1},
+            sort=[("created_at", 1)],
+        )
+        if barrier:
+            superseded_originals.append({**movement, "_absolute_barrier": barrier})
+        else:
+            pending_originals.append(movement)
 
     required: Dict[str, float] = {}
     for movement in pending_originals:
@@ -113,6 +135,7 @@ async def _stock_reversal_plan(db, receipt_id: str) -> Dict[str, Any]:
         "movement_count": len(originals),
         "reversal_count": len(reversals),
         "pending_originals": pending_originals,
+        "superseded_originals": superseded_originals,
         "blocked": bool(unsafe_reason),
         "block_reason": unsafe_reason,
     }
@@ -125,7 +148,9 @@ async def _stock_dependency_for_receipt(db, receipt_id: str) -> Dict[str, Any]:
         "reversal_count": plan["reversal_count"],
         "blocked": plan["blocked"],
         "block_reason": plan["block_reason"],
-        "requires_reversal": bool(plan["pending_originals"]),
+        "requires_reversal": bool(
+            plan["pending_originals"] or plan["superseded_originals"]
+        ),
     }
 
 
@@ -209,6 +234,61 @@ async def cancel_purchase_goods_receipt(
             )
 
         reversal_ids: List[str] = []
+        for movement in plan.get("superseded_originals") or []:
+            original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
+            mid = str(movement.get("master_item_id") or "").strip()
+            if not original_id or not mid:
+                continue
+            reversal_id = f"stock_reverse:goods_receipt:{doc['id']}:{original_id}"
+            state = await db.product_stock_state.find_one(
+                {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+                {"_id": 0},
+            )
+            current_total = safe_float((state or {}).get("total_qty"))
+            barrier = movement.get("_absolute_barrier") or {}
+            reversed_movement = await record_stock_movement(
+                db,
+                movement_type=MOVEMENT_REVERSAL_PENERIMAAN,
+                master_item_id=mid,
+                accurate_item_id=movement.get("accurate_item_id"),
+                transaction_qty=0,
+                transaction_uom=movement.get("base_uom") or movement.get("transaction_uom"),
+                source_entity="GUDANG_UTAMA",
+                destination_entity=doc.get("supplier") or "SUPPLIER",
+                reference_number=doc.get("receipt_number") or "",
+                reference_type="goods_receipt_reversal",
+                reference_id=doc["id"],
+                description=(
+                    f"Pembatalan Penerimaan Barang tanpa perubahan stock "
+                    f"(superseded oleh adjustment absolut): {reason}"
+                ),
+                order_id=doc.get("purchase_order_id"),
+                line_idx=movement.get("line_idx"),
+                line_id=movement.get("line_id"),
+                delta_unprinted=0,
+                delta_printed=0,
+                event_key=reversal_id,
+                movement_id=reversal_id,
+                balance_before=current_total,
+                balance_after=current_total,
+                unprinted_before=safe_float((state or {}).get("unprinted_qty")),
+                unprinted_after=safe_float((state or {}).get("unprinted_qty")),
+                printed_before=safe_float((state or {}).get("printed_qty")),
+                printed_after=safe_float((state or {}).get("printed_qty")),
+                change_metadata={
+                    "goods_receipt_id": doc["id"],
+                    "reversal_of_movement_id": original_id,
+                    "cancel_reason": reason,
+                    "effective_delta": 0,
+                    "superseded_by_absolute_adjustment": True,
+                    "superseded_by_movement_id": (
+                        barrier.get("id") or barrier.get("event_key")
+                    ),
+                },
+                user=user,
+            )
+            reversal_ids.append(str(reversed_movement.get("id") or reversal_id))
+
         for movement in plan.get("pending_originals") or []:
             original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
             mid = str(movement.get("master_item_id") or "").strip()
@@ -236,6 +316,8 @@ async def cancel_purchase_goods_receipt(
                     "goods_receipt_id": doc["id"],
                     "reversal_of_movement_id": original_id,
                     "cancel_reason": reason,
+                    "effective_delta": -qty,
+                    "superseded_by_absolute_adjustment": False,
                 },
                 user=user,
             )

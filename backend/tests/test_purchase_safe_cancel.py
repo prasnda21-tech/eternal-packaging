@@ -612,6 +612,172 @@ async def test_gr_stock_cancel_appends_one_idempotent_reversal():
 
 
 @pytest.mark.anyio
+async def test_gr_cancel_after_absolute_adjustment_is_audit_only():
+    async with await client_ctx() as c:
+        po_id = gr_id = mid = None
+        try:
+            await server.db.app_settings.update_one(
+                {"key": "physical_stock"},
+                {"$set": {
+                    "key": "physical_stock",
+                    "enabled": True,
+                    "stock_in_trigger": "goods_receipt",
+                    "stock_out_trigger": "sales_delivery",
+                }},
+                upsert=True,
+            )
+            po = await make_direct_po(c, qty=10, unit_price=500)
+            po_id = po["id"]
+            mid = po["lines"][0]["master_item_id"]
+            await server.db.master_items.insert_one({
+                "id": mid, "item_code": "ABS-1", "item_name": "Absolute", "unit": "pcs",
+            })
+            await server.db.product_stock_state.insert_one({
+                "_id": mid,
+                "master_item_id": mid,
+                "base_uom": "PCS",
+                "initialized": True,
+                "status": "INITIALIZED",
+                "total_qty": 10,
+                "unprinted_qty": 7,
+                "printed_qty": 3,
+                "version": 1,
+                "pending_event": None,
+            })
+            gr = (await c.post("/api/purchase-goods-receipts", json={
+                "purchase_order_id": po_id,
+                "lines": [{
+                    "purchase_order_line_id": po["lines"][0]["line_id"],
+                    "received_qty": 4,
+                }],
+                "idempotency_key": f"gr-absolute-{uuid.uuid4()}",
+            })).json()["receipt"]
+            gr_id = gr["id"]
+            original = await server.db.stock_movements.find_one({
+                "reference_type": "goods_receipt", "reference_id": gr_id,
+            })
+            await server.db.stock_movements.insert_one({
+                "_id": f"stock_opname:{mid}:barrier",
+                "id": f"stock_opname:{mid}:barrier",
+                "event_key": f"stock_opname:{mid}:barrier",
+                "master_item_id": mid,
+                "movement_type": "KOREKSI",
+                "reference_type": "stock_opname",
+                "reference_id": f"stock_opname:{mid}:barrier",
+                "created_at": "2099-01-01T00:00:00+00:00",
+                "delta": 6,
+                "balance_before": 14,
+                "balance_after": 20,
+            })
+            await server.db.product_stock_state.update_one(
+                {"master_item_id": mid},
+                {"$set": {"total_qty": 20}},
+            )
+
+            cancelled = await c.post(
+                f"/api/purchase-goods-receipts/{gr_id}/cancel",
+                json={"reason": "UAT superseded receipt"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            state = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert state["total_qty"] == 20
+            assert state["unprinted_qty"] == 11
+            assert state["printed_qty"] == 3
+            reversal = await server.db.stock_movements.find_one({
+                "movement_type": "REVERSAL_PENERIMAAN",
+                "goods_receipt_id": gr_id,
+            })
+            assert reversal["delta"] == 0
+            assert reversal["effective_delta"] == 0
+            assert reversal["superseded_by_absolute_adjustment"] is True
+            assert reversal["reversal_of_movement_id"] == original["id"]
+
+            retry = await c.post(f"/api/purchase-goods-receipts/{gr_id}/cancel", json={})
+            assert retry.status_code == 200
+            assert await server.db.stock_movements.count_documents({
+                "movement_type": "REVERSAL_PENERIMAAN",
+                "goods_receipt_id": gr_id,
+            }) == 1
+        finally:
+            if gr_id:
+                await server.db.stock_movements.delete_many({
+                    "$or": [{"reference_id": gr_id}, {"goods_receipt_id": gr_id}]
+                })
+                await server.db.purchase_goods_receipts.delete_many({"id": gr_id})
+            if mid:
+                await server.db.stock_movements.delete_many({"master_item_id": mid})
+                await server.db.product_stock_state.delete_many({"master_item_id": mid})
+                await server.db.master_items.delete_many({"id": mid})
+            if po_id:
+                await server.db.purchase_orders.delete_many({"id": po_id})
+            app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_manual_receipt_cancel_is_soft_idempotent_and_accurate_is_blocked():
+    manual_id = accurate_id = None
+    async with await client_ctx() as c:
+        try:
+            created = await c.post("/api/purchase-receipts", json={
+                "supplier": "Manual Supplier",
+                "receipt_date": "2026-09-17",
+                "lines": [{
+                    "master_item_id": f"manual-{uuid.uuid4().hex[:8]}",
+                    "item_code": "MAN-1",
+                    "item_name": "Manual Item",
+                    "unit": "PCS",
+                    "received_qty": 4,
+                }],
+                "idempotency_key": f"manual-receipt-{uuid.uuid4()}",
+            })
+            assert created.status_code == 200, created.text
+            manual = created.json()["receipt"]
+            manual_id = manual["accurate_receipt_id"]
+            before_movements = await server.db.stock_movements.count_documents({})
+
+            cancelled = await c.post(
+                f"/api/purchase-receipts/{manual_id}/cancel",
+                json={"reason": "UAT manual cancel"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            body = cancelled.json()["receipt"]
+            assert body["status"] == "CANCELLED"
+            assert body["cancelled"] is True
+            assert body["cancel_reason"] == "UAT manual cancel"
+            assert body.get("cancelled_at")
+            assert body.get("cancelled_by", {}).get("email") == "admin@example.com"
+            assert await server.db.stock_movements.count_documents({}) == before_movements
+
+            retry = await c.post(f"/api/purchase-receipts/{manual_id}/cancel", json={})
+            assert retry.status_code == 200
+            assert await server.db.stock_movements.count_documents({}) == before_movements
+
+            accurate_id = f"accurate-{uuid.uuid4()}"
+            await server.db.accurate_purchase_receipts.insert_one({
+                "accurate_receipt_id": accurate_id,
+                "receipt_number": "ACC-HISTORY",
+                "source": "accurate",
+                "valid": True,
+                "lines": [],
+            })
+            blocked = await c.post(
+                f"/api/purchase-receipts/{accurate_id}/cancel",
+                json={"reason": "tidak boleh"},
+            )
+            assert blocked.status_code == 409
+        finally:
+            if manual_id:
+                await server.db.accurate_purchase_receipts.delete_many({
+                    "accurate_receipt_id": manual_id,
+                })
+            if accurate_id:
+                await server.db.accurate_purchase_receipts.delete_many({
+                    "accurate_receipt_id": accurate_id,
+                })
+            app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
 async def test_m_gr_cancel_blocked_when_active_invoice_exists():
     async with await client_ctx() as c:
         try:
