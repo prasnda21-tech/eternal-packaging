@@ -407,6 +407,12 @@ async def test_k_gr_cancel_recalculates_po_received_qty_no_stock_double():
             assert po_mid["lines"][0]["remaining_receivable_qty"] == 6
             assert po_mid["receiving_status"] == "SEBAGIAN DITERIMA"
 
+            missing_reason = await c.post(
+                f"/api/purchase-goods-receipts/{gr['id']}/cancel", json={}
+            )
+            assert missing_reason.status_code == 400
+            assert "alasan" in str(missing_reason.json()["detail"]).lower()
+
             mov_before = await server.db.stock_movements.count_documents({
                 "reference_type": "goods_receipt", "reference_id": gr["id"],
             })
@@ -441,7 +447,7 @@ async def test_k_gr_cancel_recalculates_po_received_qty_no_stock_double():
 
 
 @pytest.mark.anyio
-async def test_l_gr_cancel_blocked_when_stock_movements_exist():
+async def test_l_gr_cancel_blocked_when_stock_reversal_is_unsafe():
     async with await client_ctx() as c:
         gr_id = None
         try:
@@ -459,8 +465,9 @@ async def test_l_gr_cancel_blocked_when_stock_movements_exist():
                 "reference_type": "goods_receipt",
                 "reference_id": gr["id"],
                 "master_item_id": po["lines"][0]["master_item_id"],
-                "qty": 2,
-                "movement_type": "IN",
+                "delta": 2,
+                "base_qty": 2,
+                "movement_type": "PENERIMAAN",
             })
 
             blocked = await c.post(f"/api/purchase-goods-receipts/{gr['id']}/cancel", json={"reason": "coba"})
@@ -478,6 +485,119 @@ async def test_l_gr_cancel_blocked_when_stock_movements_exist():
         finally:
             if gr_id:
                 await server.db.stock_movements.delete_many({"reference_id": gr_id})
+            app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_gr_stock_cancel_appends_one_idempotent_reversal():
+    from services.stock_ledger import MOVEMENT_PENERIMAAN, MOVEMENT_REVERSAL_PENERIMAAN
+
+    async with await client_ctx() as c:
+        po_id = gr_id = mid = None
+        try:
+            await server.db.app_settings.update_one(
+                {"key": "physical_stock"},
+                {"$set": {
+                    "key": "physical_stock",
+                    "enabled": True,
+                    "stock_in_trigger": "goods_receipt",
+                    "stock_out_trigger": "sales_delivery",
+                }},
+                upsert=True,
+            )
+            po = await make_direct_po(c, qty=10, unit_price=500)
+            po_id = po["id"]
+            mid = po["lines"][0]["master_item_id"]
+            await server.db.master_items.insert_one({
+                "id": mid,
+                "item_code": po["lines"][0]["item_code"],
+                "item_name": po["lines"][0]["item_name"],
+                "unit": "pcs",
+            })
+            await server.db.product_stock_state.insert_one({
+                "_id": mid,
+                "master_item_id": mid,
+                "base_uom": "PCS",
+                "initialized": True,
+                "status": "INITIALIZED",
+                "total_qty": 10,
+                "unprinted_qty": 7,
+                "printed_qty": 3,
+                "version": 1,
+                "pending_event": None,
+            })
+
+            lid = po["lines"][0]["line_id"]
+            gr_res = await c.post("/api/purchase-goods-receipts", json={
+                "purchase_order_id": po_id,
+                "lines": [{"purchase_order_line_id": lid, "received_qty": 4}],
+                "idempotency_key": f"gr-reverse-{uuid.uuid4()}",
+            })
+            assert gr_res.status_code == 200, gr_res.text
+            gr = gr_res.json()["receipt"]
+            gr_id = gr["id"]
+
+            after_receipt = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert after_receipt["total_qty"] == 14
+            assert after_receipt["unprinted_qty"] == 11
+            assert after_receipt["printed_qty"] == 3
+
+            cancel = await c.post(
+                f"/api/purchase-goods-receipts/{gr_id}/cancel",
+                json={"reason": "Qty penerimaan salah"},
+            )
+            assert cancel.status_code == 200, cancel.text
+            cancelled = cancel.json()["receipt"]
+            assert cancelled["cancelled"] is True
+            assert cancelled["status"] == "CANCELLED"
+            assert cancelled["cancel_reason"] == "Qty penerimaan salah"
+            assert cancelled.get("cancelled_by", {}).get("email") == "admin@example.com"
+            assert cancelled.get("cancelled_at")
+            assert cancelled.get("reversal_movement_id")
+
+            after_cancel = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert after_cancel["total_qty"] == 10
+            assert after_cancel["unprinted_qty"] == 7
+            assert after_cancel["printed_qty"] == 3
+
+            movements = await server.db.stock_movements.find({
+                "$or": [
+                    {"reference_type": "goods_receipt", "reference_id": gr_id},
+                    {"goods_receipt_id": gr_id},
+                ]
+            }, {"_id": 0}).to_list(None)
+            original = [m for m in movements if m.get("movement_type") == MOVEMENT_PENERIMAAN]
+            reversals = [m for m in movements if m.get("movement_type") == MOVEMENT_REVERSAL_PENERIMAAN]
+            assert len(original) == 1
+            assert len(reversals) == 1
+            assert reversals[0]["transaction_qty"] == -4
+            assert reversals[0]["delta"] == -4
+            assert reversals[0]["reversal_of_movement_id"] == original[0]["id"]
+            assert reversals[0]["goods_receipt_id"] == gr_id
+            assert reversals[0]["cancel_reason"] == "Qty penerimaan salah"
+
+            retry = await c.post(f"/api/purchase-goods-receipts/{gr_id}/cancel", json={})
+            assert retry.status_code == 200, retry.text
+            final_state = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert final_state["total_qty"] == 10
+            assert await server.db.stock_movements.count_documents({
+                "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+                "goods_receipt_id": gr_id,
+            }) == 1
+        finally:
+            if gr_id:
+                await server.db.stock_movements.delete_many({
+                    "$or": [
+                        {"reference_id": gr_id},
+                        {"goods_receipt_id": gr_id},
+                    ]
+                })
+                await server.db.purchase_goods_receipts.delete_many({"id": gr_id})
+            if mid:
+                await server.db.product_stock_state.delete_many({"master_item_id": mid})
+                await server.db.master_items.delete_many({"id": mid})
+            if po_id:
+                await server.db.purchase_orders.delete_many({"id": po_id})
             app.dependency_overrides.pop(current_user, None)
 
 

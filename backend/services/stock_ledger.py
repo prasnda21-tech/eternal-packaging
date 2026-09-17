@@ -35,6 +35,8 @@ MOVEMENT_STATUS_CETAK = "STATUS_CETAK"
 MOVEMENT_PEMAKAIAN_CETAK = "PEMAKAIAN_CETAK"  # Backward-compatible alias
 MOVEMENT_PENGIRIMAN = "PENGIRIMAN"
 MOVEMENT_KOREKSI = "KOREKSI"
+MOVEMENT_REVERSAL_PENERIMAAN = "REVERSAL_PENERIMAAN"
+MOVEMENT_PEMBATALAN_PENERIMAAN = "PEMBATALAN_PENERIMAAN"
 MOVEMENT_SALDO_AWAL = "SALDO_AWAL"
 MOVEMENT_OPENING_BALANCE = "SALDO_AWAL"
 
@@ -45,6 +47,8 @@ VALID_MOVEMENT_TYPES = frozenset({
     MOVEMENT_PEMAKAIAN_CETAK,
     MOVEMENT_PENGIRIMAN,
     MOVEMENT_KOREKSI,
+    MOVEMENT_REVERSAL_PENERIMAAN,
+    MOVEMENT_PEMBATALAN_PENERIMAAN,
     MOVEMENT_SALDO_AWAL,
     "OPENING_BALANCE",
 })
@@ -214,6 +218,12 @@ async def record_stock_movement(
             d_unprinted = abs(base_qty)
             d_printed = 0.0
             delta = abs(base_qty)
+            bal_before = await get_latest_balance(db, mid, aid)
+            bal_after = safe_float(bal_before + delta) if bal_before is not None else None
+        elif m_type in (MOVEMENT_REVERSAL_PENERIMAAN, MOVEMENT_PEMBATALAN_PENERIMAAN):
+            d_unprinted = -abs(base_qty)
+            d_printed = 0.0
+            delta = -abs(base_qty)
             bal_before = await get_latest_balance(db, mid, aid)
             bal_after = safe_float(bal_before + delta) if bal_before is not None else None
         elif m_type in (MOVEMENT_STATUS_CETAK, MOVEMENT_PEMAKAIAN_CETAK):

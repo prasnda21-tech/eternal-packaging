@@ -50,6 +50,7 @@ from services.product_unit_conversion import (
 )
 from services.stock_ledger import (
     MOVEMENT_PENERIMAAN,
+    MOVEMENT_REVERSAL_PENERIMAAN,
     MOVEMENT_STATUS_CETAK,
     MOVEMENT_PENGIRIMAN,
     MOVEMENT_KOREKSI,
@@ -358,6 +359,7 @@ async def claim_durable_stock_event(
     action_id: Optional[str] = None,
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
+    change_metadata: Optional[Dict[str, Any]] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -414,6 +416,10 @@ async def claim_durable_stock_event(
     if m_type in (MOVEMENT_PENERIMAAN, "STOK_MASUK"):
         delta_total = abs(base_qty)
         delta_unprinted = abs(base_qty)
+        delta_printed = 0.0
+    elif m_type == MOVEMENT_REVERSAL_PENERIMAAN:
+        delta_total = -abs(base_qty)
+        delta_unprinted = -abs(base_qty)
         delta_printed = 0.0
     elif m_type in (MOVEMENT_STATUS_CETAK, "PEMAKAIAN_CETAK"):
         delta_total = 0.0
@@ -532,6 +538,7 @@ async def claim_durable_stock_event(
         "action_id": action_id or "",
         "is_print": is_p,
         "production_process": production_process,
+        "change_metadata": dict(change_metadata or {}),
         "accurate_item_id": aid,
         "claimed_at": stamp,
         "started_at": stamp,
@@ -715,6 +722,7 @@ async def finalize_durable_stock_event(
         printed_after=pending.get("printed_after", 0.0),
         source_event_type=pending.get("reference_type", ""),
         source_event_id=ev_id,
+        change_metadata=pending.get("change_metadata"),
     )
 
     await db[STATE_COLLECTION].update_one(
@@ -744,6 +752,7 @@ async def execute_durable_stock_event(
     action_id: Optional[str] = None,
     is_print: Optional[bool] = None,
     production_process: Optional[str] = None,
+    change_metadata: Optional[Dict[str, Any]] = None,
     user: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -767,6 +776,7 @@ async def execute_durable_stock_event(
         action_id=action_id,
         is_print=is_print,
         production_process=production_process,
+        change_metadata=change_metadata,
         user=user,
         now=now,
     )
