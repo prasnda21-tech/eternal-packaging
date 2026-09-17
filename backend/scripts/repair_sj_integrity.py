@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.sj_integrity import apply_repair_ops, cas_token
+from quantity_rules import canonical_shipment_id, shipment_is_active, shipments_stored
 from services.sj_integrity_audit import (
     SEVERITY_SAFE_AUTO_REPAIR,
     audit_order,
@@ -108,7 +109,11 @@ def _production_plan_error(args, plans) -> str:
         return "Production plan contains no operations."
     if len(operations) != len(plans):
         return "Production requires exactly one operation per reviewed PO."
-    unexpected = sorted({str(op.get("op") or "") for op in operations if str(op.get("op") or "") not in allowed})
+    unexpected = sorted({
+        str(op.get("op") or "")
+        for op in operations
+        if str(op.get("op") or "") not in allowed
+    })
     if unexpected:
         return f"Production plan contains disallowed operations: {unexpected}."
     invalid_targets = [
@@ -126,6 +131,59 @@ def _production_plan_error(args, plans) -> str:
     if len(target_keys) != len(operations):
         return "Production plan contains duplicate stamp targets."
     return ""
+
+
+def _production_order_state_error(orders, plans) -> str:
+    """Validate every targeted row before the first production write."""
+    by_id = {str(order.get("id") or ""): order for order in orders}
+    for plan in plans:
+        po_id = str(plan.get("po_id") or "")
+        order = by_id.get(po_id)
+        if order is None:
+            return f"Production PO {po_id} is missing from the reviewed snapshot."
+        if order.get("updated_at") is None:
+            return f"Production PO {po_id} has no updated_at CAS field."
+        op = (plan.get("ops") or [None])[0]
+        if not isinstance(op, dict):
+            return f"Production PO {po_id} has an invalid operation."
+        record_id = str(op.get("record_id") or "")
+        shipment_id = str(op.get("shipment_id") or "")
+        rows = [
+            row for row in order.get("loading_confirmations") or []
+            if isinstance(row, dict) and str(row.get("id") or "") == record_id
+        ]
+        if len(rows) != 1:
+            return f"Production PO {po_id} must have exactly one target Loading row."
+        if str(rows[0].get("shipment_id") or "").strip():
+            return f"Production PO {po_id} target Loading row is already bound."
+        active_ids = {
+            canonical_shipment_id(shipment)
+            for shipment in shipments_stored(order)
+            if shipment_is_active(shipment)
+        }
+        if shipment_id not in active_ids:
+            return f"Production PO {po_id} target shipment is not active."
+    return ""
+
+
+def _apply_production_stamp(db, *, po_id, updated_at, op, actor):
+    """Atomically stamp one reviewed Loading row without rewriting other arrays."""
+    repaired_at = _now()
+    return db.orders.update_one(
+        {
+            "id": po_id,
+            "updated_at": updated_at,
+            "loading_confirmations": {"$elemMatch": {
+                "id": op["record_id"],
+                "shipment_id": {"$in": [None, ""]},
+            }},
+        },
+        {"$set": {
+            "loading_confirmations.$.shipment_id": op["shipment_id"],
+            "sj_integrity_repaired_at": repaired_at,
+            "sj_integrity_repaired_by": actor,
+        }},
+    )
 
 
 def main(argv=None) -> int:
@@ -188,8 +246,13 @@ def main(argv=None) -> int:
         orders = [o for o in orders if str(o.get("id") or "") in wanted]
 
     report, plans = plan_orders(orders)
-    if args.apply and not args.fixture_json and args.db_name == PRODUCTION_DB_NAME:
+    production_apply = bool(
+        args.apply and not args.fixture_json and args.db_name == PRODUCTION_DB_NAME
+    )
+    if production_apply:
         error = _production_plan_error(args, plans)
+        if not error:
+            error = _production_order_state_error(orders, plans)
         if error:
             print(json.dumps({
                 "ok": False,
@@ -230,6 +293,22 @@ def main(argv=None) -> int:
         backup = backup_root / f"{po_id}-{plan['cas_token'][:12]}.json"
         backup.write_text(json.dumps(order, indent=2, default=str), encoding="utf-8")
         original_updated_at = order.get("updated_at")
+        if production_apply:
+            op = plan["ops"][0]
+            res = _apply_production_stamp(
+                db,
+                po_id=po_id,
+                updated_at=original_updated_at,
+                op=op,
+                actor=args.actor,
+            )
+            if res.matched_count == 0 or res.modified_count != 1:
+                result["failed"].append({"po_id": po_id, "error": "cas_write_mismatch"})
+                continue
+            result["applied"].append({"po_id": po_id, "backup": str(backup), "ops": plan["ops"]})
+            result["wrote"] = True
+            result["read_only"] = False
+            continue
         try:
             apply_repair_ops(order, plan["ops"], actor={"email": args.actor}, now=_now())
         except Exception as exc:
