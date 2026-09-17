@@ -23,7 +23,15 @@ from services.sj_integrity_audit import (
     plan_safe_auto_repair,
 )
 from quantity_rules import delivery_batch_photo_readiness
-from scripts.repair_sj_integrity import main as repair_main, plan_orders
+from scripts.repair_sj_integrity import (
+    PRODUCTION_CONFIRMATION,
+    _apply_production_stamp,
+    _production_argument_error,
+    _production_order_state_error,
+    _production_plan_error,
+    main as repair_main,
+    plan_orders,
+)
 from tests.test_sj_integrity_audit import (
     _ambiguous_po,
     _consistent_po,
@@ -139,12 +147,132 @@ def test_cas_mismatch_skips_po(tmp_path):
     _ = NUMANI_PO_ID
 
 
-def test_apply_refuses_local_empty_db_before_write(capsys):
+def test_production_apply_requires_explicit_authorization_before_write(capsys):
     rc = repair_main(["--apply", "--mongo-url", "mongodb://127.0.0.1:27017", "--db-name", "eternal_packaging"])
     assert rc == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["wrote"] is False
-    assert "LOCAL EMPTY DB" in payload["error"]
+    assert "--allow-production" in payload["error"]
+
+
+def test_production_argument_guard_requires_phrase_ids_count_ops_and_backup(tmp_path):
+    class Args:
+        allow_production = True
+        confirm = PRODUCTION_CONFIRMATION
+        po_id = ["po-safe"]
+        expected_plan_count = 1
+        allowed_op = ["stamp_shipment_id"]
+        backup_dir = "/var/backups/eternal-packaging/sj-integrity/test"
+
+    args = Args()
+    assert _production_argument_error(args) == ""
+    args.confirm = "WRONG"
+    assert "--confirm" in _production_argument_error(args)
+    args.confirm = PRODUCTION_CONFIRMATION
+    args.allowed_op = ["supersede"]
+    assert "permits only" in _production_argument_error(args)
+    args.allowed_op = ["stamp_shipment_id"]
+    args.backup_dir = str(tmp_path)
+    assert "backup directory" in _production_argument_error(args)
+
+
+def test_production_plan_guard_is_exact_and_op_allowlisted():
+    class Args:
+        po_id = ["po-safe"]
+        expected_plan_count = 1
+        allowed_op = ["stamp_shipment_id"]
+
+    valid = [{
+        "po_id": "po-safe",
+        "ops": [{
+            "op": "stamp_shipment_id",
+            "collection": "loading_confirmations",
+            "record_id": "loading-safe",
+            "shipment_id": "sj-safe",
+        }],
+    }]
+    assert _production_plan_error(Args(), valid) == ""
+    assert "PO ids differ" in _production_plan_error(
+        Args(), [{"po_id": "po-other", "ops": valid[0]["ops"]}],
+    )
+    assert "disallowed" in _production_plan_error(
+        Args(), [{"po_id": "po-safe", "ops": [{"op": "restore_qty"}]}],
+    )
+    assert "loading_confirmations" in _production_plan_error(
+        Args(), [{"po_id": "po-safe", "ops": [{
+            "op": "stamp_shipment_id",
+            "collection": "delivery_confirmations",
+            "record_id": "delivery-safe",
+            "shipment_id": "sj-safe",
+        }]}],
+    )
+
+
+def test_production_order_state_guard_requires_blank_unique_loading_target_and_active_sj():
+    order = _consistent_po()
+    order["updated_at"] = "2026-09-17T00:00:00Z"
+    order["loading_confirmations"][0]["shipment_id"] = ""
+    plan = [{
+        "po_id": order["id"],
+        "ops": [{
+            "op": "stamp_shipment_id",
+            "collection": "loading_confirmations",
+            "record_id": "l1",
+            "shipment_id": "sj-ok",
+        }],
+    }]
+    assert _production_order_state_error([order], plan) == ""
+
+    order["loading_confirmations"][0]["shipment_id"] = "other-sj"
+    assert "already bound" in _production_order_state_error([order], plan)
+    order["loading_confirmations"][0]["shipment_id"] = ""
+    plan[0]["ops"][0]["shipment_id"] = "missing-sj"
+    assert "not active" in _production_order_state_error([order], plan)
+    plan[0]["ops"][0]["shipment_id"] = "sj-ok"
+    order.pop("updated_at")
+    assert "updated_at" in _production_order_state_error([order], plan)
+
+
+def test_production_stamp_updates_only_target_binding_and_repair_metadata():
+    class Result:
+        matched_count = 1
+        modified_count = 1
+
+    class Orders:
+        def __init__(self):
+            self.selector = None
+            self.update = None
+
+        def update_one(self, selector, update):
+            self.selector = selector
+            self.update = update
+            return Result()
+
+    class DB:
+        orders = Orders()
+
+    db = DB()
+    result = _apply_production_stamp(
+        db,
+        po_id="po-safe",
+        updated_at="2026-09-17T00:00:00Z",
+        op={
+            "record_id": "loading-safe",
+            "shipment_id": "sj-safe",
+        },
+        actor="audit-safe",
+    )
+
+    assert result.matched_count == 1
+    assert db.orders.selector["id"] == "po-safe"
+    assert db.orders.selector["updated_at"] == "2026-09-17T00:00:00Z"
+    changed = set(db.orders.update["$set"])
+    assert changed == {
+        "loading_confirmations.$.shipment_id",
+        "sj_integrity_repaired_at",
+        "sj_integrity_repaired_by",
+    }
+    assert db.orders.update["$set"]["loading_confirmations.$.shipment_id"] == "sj-safe"
 
 
 def test_apply_requires_explicit_db_name(capsys):

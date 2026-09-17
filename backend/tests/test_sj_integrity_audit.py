@@ -1,4 +1,4 @@
-"""Global read-only SJ auditor: 4 severity classes, JSON/CSV, no writes."""
+"""Global read-only SJ auditor: five severity classes, JSON/CSV, no writes."""
 from __future__ import annotations
 
 import copy
@@ -20,6 +20,7 @@ from services.sj_integrity import (
 from services.sj_integrity_audit import (
     SEVERITY_CONSISTENT,
     SEVERITY_CRITICAL_BLOCKER,
+    SEVERITY_LEGACY_SNAPSHOT_DRIFT,
     SEVERITY_NEEDS_MANUAL_REVIEW,
     SEVERITY_SAFE_AUTO_REPAIR,
     audit_order,
@@ -247,6 +248,40 @@ def test_critical_blocker_over_delivery_and_loading():
     assert report["safe_repair_ops"] == []
 
 
+def test_balanced_historical_snapshot_drift_is_not_critical_or_repaired():
+    order = _consistent_po()
+    order["shipments"][0]["lines"][0]["qty"] = 2000
+    order["shipments"][0]["total_qty"] = 2000
+    order["line_items"][0]["quantity"] = 3000
+    order["total_quantity"] = 3000
+    order["loading_confirmations"][0]["lines"][0]["qty"] = 2000
+    order["loading_confirmations"][0]["qty_sj_snapshot"] = 1000
+    order["delivery_confirmations"] = [{
+        "id": "legacy-delivery",
+        "shipment_id": "sj-ok",
+        "qty": 2000,
+    }]
+    order["qty_delivered"] = 2000
+
+    report = audit_order(order)
+
+    assert report["severity"] == SEVERITY_LEGACY_SNAPSHOT_DRIFT
+    assert {row["reason_code"] for row in report["findings"]} == {
+        "LEGACY_SNAPSHOT_DRIFT",
+    }
+    assert report["safe_repair_ops"] == []
+
+
+def test_unbalanced_snapshot_excess_remains_critical():
+    order = _critical_po()
+    report = audit_order(order)
+    assert report["severity"] == SEVERITY_CRITICAL_BLOCKER
+    assert any(
+        row["reason_code"] == "LOADING_EXCEEDS_SNAPSHOT"
+        for row in report["findings"]
+    )
+
+
 def test_auditor_does_not_write_database_or_mutate_input(tmp_path):
     fixtures = [
         _consistent_po(),
@@ -308,6 +343,7 @@ def test_audit_orders_counts_and_deterministic():
     b = audit_orders(copy.deepcopy(fixtures))
     assert report_to_json(a) == report_to_json(b)
     assert a["counts"][SEVERITY_CONSISTENT] >= 2
+    assert a["counts"][SEVERITY_LEGACY_SNAPSHOT_DRIFT] == 0
     assert a["counts"][SEVERITY_SAFE_AUTO_REPAIR] >= 2
     assert a["counts"][SEVERITY_NEEDS_MANUAL_REVIEW] >= 1
     assert a["counts"][SEVERITY_CRITICAL_BLOCKER] >= 1
