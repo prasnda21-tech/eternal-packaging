@@ -299,6 +299,8 @@ export const api = {
   purchaseReceipts: (params = {}) => client.get(`/purchase-receipts`, { params }).then((r) => r.data),
   purchaseReceiptsSync: () => client.post(`/purchase-receipts/sync`).then((r) => r.data),
   createPurchaseReceipt: (payload) => client.post(`/purchase-receipts`, payload).then((r) => r.data),
+  cancelManualPurchaseReceipt: (id, reason) =>
+    client.post(`/purchase-receipts/${encodeURIComponent(id)}/cancel`, { reason }).then((r) => r.data),
   purchaseReceiptsExport: (params = {}) =>
     client.get(`/purchase-receipts/export`, { params, responseType: "blob" }).then((r) => r.data),
   listPurchaseRequests: (params = {}) => client.get(`/purchase-requests`, { params }).then((r) => r.data),

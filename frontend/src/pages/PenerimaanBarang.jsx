@@ -48,6 +48,7 @@ export default function PenerimaanBarang() {
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
+  const [cancelReason, setCancelReason] = useState("");
   const queryPoId = searchParams.get("purchase_order_id") || "";
   const openCreateFromQuery = searchParams.get("action") === "create";
   const openReceiveFromQuery = searchParams.get("action") === "receive" || Boolean(queryPoId);
@@ -123,7 +124,7 @@ export default function PenerimaanBarang() {
   const refreshSideData = useCallback(async () => {
     try {
       const [gr, eligible] = await Promise.all([
-        api.listPurchaseGoodsReceipts({}),
+        api.listPurchaseGoodsReceipts({ include_cancelled: true }),
         (canCreate || canReceivePo)
           ? api.listPurchaseOrders({ eligible_for_receipt: true })
           : Promise.resolve({ orders: [] }),
@@ -240,8 +241,20 @@ export default function PenerimaanBarang() {
     setPoDetailLoading(true);
     setPoErr("");
     try {
-      const res = await api.getPurchaseOrder(poId);
+      const [res, receiptRes] = await Promise.all([
+        api.getPurchaseOrder(poId),
+        api.listPurchaseGoodsReceipts({
+          purchase_order_id: poId,
+          include_cancelled: true,
+        }),
+      ]);
       setPoDetail(res.order);
+      setPoReceipts((current) => [
+        ...current.filter(
+          (receipt) => String(receipt.purchase_order_id || "") !== String(poId),
+        ),
+        ...(receiptRes.receipts || []),
+      ]);
     } catch (ex) {
       setPoErr(errDetail(ex));
     } finally {
@@ -436,7 +449,7 @@ export default function PenerimaanBarang() {
       po_number: r.po_number || "—",
       line_count: (r.lines || []).length,
       total_qty: (r.lines || []).reduce((s, l) => s + Number(l.received_qty || 0), 0),
-      status: r.status || (r.cancelled ? "DIBATALKAN" : "TERCATAT"),
+      status: r.status || (r.cancelled ? "CANCELLED" : "ACTIVE"),
       last_synced_at: null,
       raw: r,
     }));
@@ -447,23 +460,47 @@ export default function PenerimaanBarang() {
     merged.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
     return merged;
   }, [data?.items, poReceipts, sourceFilter]);
+  const poDetailReceipts = useMemo(
+    () => (poReceipts || []).filter(
+      (receipt) => String(receipt.purchase_order_id || "") === String(poDetail?.id || ""),
+    ),
+    [poDetail?.id, poReceipts],
+  );
 
 
   const openCancelReceipt = (receipt) => {
     setCancelErr("");
+    setCancelReason("");
     setCancelTarget(receipt);
   };
 
   const confirmCancelReceipt = async () => {
     if (!cancelTarget || cancelBusy) return;
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setCancelErr("Alasan pembatalan wajib diisi.");
+      return;
+    }
     setCancelBusy(true);
     setCancelErr("");
     try {
-      await api.cancelPurchaseGoodsReceipt(cancelTarget.id);
-      setOk(`Penerimaan ${cancelTarget.receipt_number || ""} dihapus dari daftar aktif.`);
+      const cancelledPoId = cancelTarget.purchase_order_id;
+      if (String(cancelTarget.source || "").toLowerCase() === "manual") {
+        await api.cancelManualPurchaseReceipt(
+          cancelTarget.accurate_receipt_id || cancelTarget.id,
+          reason,
+        );
+      } else {
+        await api.cancelPurchaseGoodsReceipt(cancelTarget.id, reason);
+      }
+      setOk(`Penerimaan ${cancelTarget.receipt_number || ""} berhasil dibatalkan.`);
       setCancelTarget(null);
+      setCancelReason("");
       setOpenId(null);
       await refreshSideData();
+      if (cancelledPoId && String(poDetail?.id || "") === String(cancelledPoId)) {
+        await openPoReceivingDetail(cancelledPoId);
+      }
       if (mainTab === "history") await loadHistory();
       if (mainTab === "receive-po") await loadPoOrders();
     } catch (ex) {
@@ -778,6 +815,41 @@ export default function PenerimaanBarang() {
                       </tbody>
                     </table>
                   </div>
+                  <div className="purchase-receipt-list" data-testid="penerimaan-po-receipts">
+                    <h3 className="purchase-form-title">Penerimaan Barang</h3>
+                    {poDetailReceipts.length === 0 ? (
+                      <p className="muted small">Belum ada Penerimaan Barang untuk PO ini.</p>
+                    ) : poDetailReceipts.map((receipt) => {
+                      const cancelled = receipt.cancelled === true || receipt.status === "CANCELLED";
+                      return (
+                        <div
+                          className="purchase-receipt-summary"
+                          key={receipt.id}
+                          data-testid={`po-detail-receipt-${receipt.id}`}
+                        >
+                          <div>
+                            <span className="mono">{receipt.receipt_number || receipt.id}</span>
+                            <span className={`purchase-status-badge ${cancelled ? "pill-cancel" : "pill-ok"}`}>
+                              {cancelled ? "DIBATALKAN" : "ACTIVE"}
+                            </span>
+                          </div>
+                          <span className="muted small">{receipt.receipt_date || "—"}</span>
+                          {canReceivePo && !cancelled && (
+                            <button
+                              type="button"
+                              className="ghost danger"
+                              data-testid={`btn-batalkan-po-receipt-${receipt.id}`}
+                              disabled={receipt.can_cancel === false}
+                              title={receipt.can_cancel === false ? (receipt.cancel_block_reason || "") : undefined}
+                              onClick={() => openCancelReceipt(receipt)}
+                            >
+                              Batalkan Penerimaan
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                   <div className="purchase-detail-actions">
                     <button type="button" className="ghost" onClick={() => setPoDetail(null)} data-testid="btn-back-po-list">
                       Kembali ke daftar
@@ -970,7 +1042,7 @@ export default function PenerimaanBarang() {
                             open={open}
                             onToggle={() => setOpenId(open ? null : row.key)}
                             canCreateInvoice={canCreateInvoice}
-                            canCancel={canCreate}
+                            canCancel={canReceivePo}
                             onCancel={openCancelReceipt}
                           />
                         );
@@ -983,6 +1055,8 @@ export default function PenerimaanBarang() {
                           it={it}
                           open={open}
                           onToggle={() => setOpenId(open ? null : it.accurate_receipt_id)}
+                          canCancel={canReceivePo && row.kind === "manual"}
+                          onCancel={openCancelReceipt}
                         />
                       );
                     })}
@@ -1097,19 +1171,30 @@ export default function PenerimaanBarang() {
 
       <PurchaseCancelModal
         open={Boolean(cancelTarget)}
-        title="Hapus Penerimaan Barang?"
-        body="Dokumen akan dikeluarkan dari daftar aktif. Qty PO dan stok tetap konsisten; riwayat pembatalan tersimpan."
+        title="Batalkan Penerimaan Barang?"
+        body="Dokumen tidak dihapus. Jika stock sudah bertambah, sistem akan membuat movement reversal agar stock kembali konsisten."
         busy={cancelBusy}
         error={cancelErr}
-        onCancel={() => !cancelBusy && setCancelTarget(null)}
+        reason={cancelReason}
+        onReasonChange={setCancelReason}
+        requireReason
+        confirmLabel="Batalkan"
+        busyLabel="Membatalkan…"
+        onCancel={() => {
+          if (!cancelBusy) {
+            setCancelTarget(null);
+            setCancelReason("");
+          }
+        }}
         onConfirm={confirmCancelReceipt}
       />
     </div>
   );
 }
 
-function FragmentRow({ it, open, onToggle }) {
+function FragmentRow({ it, open, onToggle, canCancel, onCancel }) {
   const isManual = String(it.source || "") === "manual";
+  const cancelled = it.cancelled === true || it.status === "CANCELLED";
   const badge = receiptSourceBadge(isManual ? "manual" : "accurate");
   const supplier = it.supplier || "—";
   const po = it.po_number ? String(it.po_number) : "";
@@ -1128,7 +1213,9 @@ function FragmentRow({ it, open, onToggle }) {
         <td className="cell-clip" title={supplierPo}>{supplierPo}</td>
         <td className="num mono">{fmtQty(it.total_qty)}</td>
         <td className="cell-status">
-          <span className="purchase-status-badge">{it.valid ? (it.status || "VALID") : (it.status || "INVALID")}</span>
+          <span className="purchase-status-badge">
+            {cancelled ? "DIBATALKAN" : (it.valid ? (it.status || "ACTIVE") : (it.status || "INVALID"))}
+          </span>
         </td>
       </tr>
       {open && (
@@ -1169,6 +1256,18 @@ function FragmentRow({ it, open, onToggle }) {
               testId={`receipt-documents-${it.accurate_receipt_id || it.id || "acc"}`}
             />
             <PurchaseActivityHistory doc={it} testId={`receipt-activity-${it.accurate_receipt_id || it.id || "acc"}`} />
+            {isManual && canCancel && !cancelled && (
+              <div className="purchase-detail-actions">
+                <button
+                  type="button"
+                  className="ghost danger"
+                  data-testid={`btn-batalkan-manual-receipt-${it.accurate_receipt_id}`}
+                  onClick={(e) => { e.stopPropagation(); onCancel?.(it); }}
+                >
+                  Batalkan Penerimaan
+                </button>
+              </div>
+            )}
           </td>
         </tr>
       )}
@@ -1232,12 +1331,12 @@ function PoHistoryRow({ row, badge, supplierPo, open, onToggle, canCreateInvoice
                 <button
                   type="button"
                   className="ghost danger"
-                  data-testid={`btn-hapus-receipt-${row.raw.id}`}
+                  data-testid={`btn-batalkan-receipt-${row.raw.id}`}
                   disabled={row.raw.can_cancel === false}
                   title={row.raw.can_cancel === false ? (row.raw.cancel_block_reason || "") : undefined}
                   onClick={(e) => { e.stopPropagation(); onCancel?.(row.raw); }}
                 >
-                  Hapus
+                  Batalkan
                 </button>
               )}
               {canCreateInvoice && (

@@ -8,6 +8,11 @@ export default function PurchaseCancelModal({
   body = "Dokumen akan dikeluarkan dari daftar aktif. Riwayat pembatalan tetap tersimpan.",
   busy = false,
   error = "",
+  reason = "",
+  onReasonChange,
+  requireReason = false,
+  confirmLabel = "Hapus",
+  busyLabel = "Menghapus…",
   onCancel,
   onConfirm,
 }) {
@@ -34,6 +39,20 @@ export default function PurchaseCancelModal({
             <p className="error" data-testid="purchase-cancel-error" style={{ marginBottom: 0 }}>{error}</p>
           </div>
         ) : null}
+        {requireReason ? (
+          <div className="purchase-modal-body">
+            <label htmlFor="purchase-cancel-reason" className="label">Alasan pembatalan</label>
+            <textarea
+              id="purchase-cancel-reason"
+              value={reason}
+              onChange={(e) => onReasonChange?.(e.target.value)}
+              disabled={busy}
+              placeholder="Contoh: jumlah penerimaan salah"
+              rows={3}
+              data-testid="purchase-cancel-reason"
+            />
+          </div>
+        ) : null}
         <div className="purchase-modal-actions">
           <button type="button" className="ghost" onClick={onCancel} disabled={busy} data-testid="purchase-cancel-batal">
             Batal
@@ -41,11 +60,11 @@ export default function PurchaseCancelModal({
           <button
             type="button"
             className="primary danger"
-            disabled={busy}
+            disabled={busy || (requireReason && !String(reason || "").trim())}
             data-testid="purchase-cancel-confirm"
             onClick={() => onConfirm?.()}
           >
-            {busy ? "Menghapus…" : "Hapus"}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </div>

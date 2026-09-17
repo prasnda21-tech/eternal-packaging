@@ -141,4 +141,40 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/Terima Sekarang/);
     expect(pageSrc).not.toMatch(/Qty Diterima Sekarang/);
   });
+
+  test("safe cancel requires a reason and uses reversal messaging", () => {
+    expect(pageSrc).toMatch(/btn-batalkan-receipt-/);
+    expect(pageSrc).toMatch(/>\s*Batalkan\s*</);
+    expect(pageSrc).toMatch(/Alasan pembatalan wajib diisi/);
+    expect(pageSrc).toMatch(/api\.cancelPurchaseGoodsReceipt\(cancelTarget\.id, reason\)/);
+    expect(pageSrc).toMatch(/requireReason/);
+    expect(pageSrc).toMatch(/movement reversal/);
+    expect(apiSrc).toMatch(/cancelPurchaseGoodsReceipt: \(id, reason = ""\)/);
+  });
+
+  test("PO detail shows cancel on the receipt, not the parent PO", () => {
+    expect(pageSrc).toMatch(/include_cancelled: true/);
+    expect(pageSrc).toMatch(/data-testid="penerimaan-po-receipts"/);
+    expect(pageSrc).toMatch(/btn-batalkan-po-receipt-/);
+    expect(pageSrc).toMatch(/Batalkan Penerimaan/);
+    expect(pageSrc).toMatch(/openCancelReceipt\(receipt\)/);
+    expect(pageSrc).toMatch(/cancelled \? "DIBATALKAN" : "ACTIVE"/);
+    expect(pageSrc).toMatch(/canReceivePo && !cancelled/);
+    expect(pageSrc).not.toMatch(/cancelPurchaseOrder\(poDetail/);
+  });
+
+  test("PO detail refreshes receipt cancel eligibility before rendering action", () => {
+    expect(pageSrc).toMatch(/api\.listPurchaseGoodsReceipts\(\{\s*purchase_order_id: poId,\s*include_cancelled: true/);
+    expect(pageSrc).toMatch(/setPoReceipts\(\(current\)/);
+    expect(pageSrc).toMatch(/disabled=\{receipt\.can_cancel === false\}/);
+  });
+
+  test("history exposes cancel for ERP manual receipts but never Accurate history", () => {
+    expect(pageSrc).toMatch(/canCancel=\{canReceivePo && row\.kind === "manual"\}/);
+    expect(pageSrc).toMatch(/btn-batalkan-manual-receipt-/);
+    expect(pageSrc).toMatch(/api\.cancelManualPurchaseReceipt/);
+    expect(pageSrc).toMatch(/isManual && canCancel && !cancelled/);
+    expect(pageSrc).toMatch(/cancelled \? "DIBATALKAN"/);
+    expect(apiSrc).toMatch(/cancelManualPurchaseReceipt: \(id, reason\)/);
+  });
 });
