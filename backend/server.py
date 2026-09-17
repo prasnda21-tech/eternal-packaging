@@ -10614,6 +10614,44 @@ async def master_item_opening_balance_correction_post(
     return res
 
 
+@api_router.post("/master-items/{item_id}/opening-balance/void")
+async def master_item_opening_balance_void_post(
+    item_id: str,
+    user=Depends(current_user),
+):
+    """Void an unused mistaken SALDO_AWAL without deleting its audit record."""
+    from services.product_stock_state import (
+        OPENING_VOID_REASON,
+        require_physical_stock_correction_access,
+        void_opening_balance,
+    )
+
+    app_env = os.environ.get("APP_ENV")
+    mongo_url = os.environ.get("MONGO_URL")
+    require_physical_stock_correction_access(user, app_env, mongo_url)
+    result = await void_opening_balance(
+        db,
+        item_id,
+        user=user,
+        app_env=app_env,
+        mongo_url=mongo_url,
+    )
+    await _write_audit(
+        "opening_balance.void",
+        user,
+        target_email=f"item:{item_id}",
+        before=result.get("old_qty"),
+        after={
+            "state": result.get("stock_state"),
+            "movement_id": (result.get("movement") or {}).get("id"),
+            "movement_status": (result.get("movement") or {}).get("status"),
+            "idempotent": result.get("idempotent"),
+        },
+        note=OPENING_VOID_REASON,
+    )
+    return result
+
+
 @api_router.get("/master-items/{item_id}/mutations")
 async def master_item_mutations_get(
     item_id: str,

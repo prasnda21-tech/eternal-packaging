@@ -42,6 +42,7 @@ def _stock_row(
     unprinted: float,
     printed: float,
     outstanding: float,
+    initialized: bool = True,
 ) -> dict:
     available = max(physical - outstanding, 0)
     return {
@@ -55,6 +56,7 @@ def _stock_row(
         "outstanding_so_qty": outstanding,
         "stock_current": available,
         "available_qty": available,
+        "initialized": initialized,
     }
 
 
@@ -276,6 +278,31 @@ def test_preview_unchanged_when_same_physical():
     assert preview["ok_count"] == 0
     assert preview["can_process"] is False
     assert preview["rows"][0]["status"] == "UNCHANGED"
+
+
+def test_preview_zero_count_for_uninitialized_item_creates_opening():
+    catalog = [
+        _stock_row(
+            code="SKU-NEW",
+            name="Not Initialized",
+            mid="m-new",
+            physical=0,
+            unprinted=0,
+            printed=0,
+            outstanding=0,
+            initialized=False,
+        )
+    ]
+    raw = _xlsx_bytes(
+        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
+        [["SKU-NEW", "Not Initialized", "PCS", 0, 0]],
+    )
+    preview = build_opname_import_preview(raw, "first.xlsx", stock_rows=catalog)
+
+    assert preview["ok_count"] == 1
+    assert preview["can_process"] is True
+    assert preview["rows"][0]["can_apply"] is True
+    assert preview["rows"][0]["opname_action"] == "SALDO_AWAL"
 
 
 def test_preview_no_available_double_count():

@@ -31,7 +31,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 
-from services.product_stock_state import COLLECTION as STATE_COLLECTION, get_product_stock_state
+from services.product_stock_state import (
+    COLLECTION as STATE_COLLECTION,
+    get_product_stock_state,
+    initialize_opening_balance,
+)
 from services.stock_ledger import (
     MOVEMENT_KOREKSI,
     record_stock_movement,
@@ -258,6 +262,11 @@ def build_stock_rows_v2(
         if not mid and not aid:
             continue
         state = state_by_master.get(mid) or (state_by_master.get(f"a:{aid}") if aid else None)
+        initialized = bool(
+            state
+            and state.get("initialized") is True
+            and state.get("status") == "INITIALIZED"
+        )
         phys = physical_from_state(state)
         outstanding = _get(outstanding_bucket, outstanding_alias, {
             "master_item_id": mid,
@@ -283,6 +292,7 @@ def build_stock_rows_v2(
             "item_code": it.get("item_code") or "",
             "item_name": it.get("item_name") or "",
             "unit": it.get("unit") or "",
+            "initialized": initialized,
             # V2 columns
             "physical_qty": phys["physical_qty"],
             # Belum Dicetak (SO breakdown) — NOT the raw physical unprinted bucket
@@ -548,14 +558,23 @@ async def apply_stock_opname(
     user: Optional[dict] = None,
     client_request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Set physical buckets to counted opname values via a single KOREKSI movement.
+    """Apply an opname as SALDO_AWAL for uninitialized items, otherwise KOREKSI.
 
-    Does not erase history — appends adjustment movement and updates product_stock_state.
+    Does not erase history. The first physical count establishes exactly one
+    official opening balance; later counts append adjustments.
     Outstanding SO is unchanged (recomputed on read).
     """
     mid = str(master_item_id or "").strip()
     if not mid:
         raise HTTPException(400, "master_item_id wajib diisi")
+
+    try:
+        new_unp = float(counted_unprinted_qty)
+        new_pri = float(counted_printed_qty)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, "Qty opname harus angka") from e
+    if new_unp < 0 or new_pri < 0 or math.isnan(new_unp) or math.isnan(new_pri):
+        raise HTTPException(400, "Qty opname tidak boleh negatif")
 
     request_id = str(client_request_id or "").strip() or str(uuid.uuid4())
     event_id = f"stock_opname:{mid}:{request_id}"
@@ -567,22 +586,61 @@ async def apply_stock_opname(
         return {
             "unchanged": False,
             "idempotent": True,
+            "opname_action": "KOREKSI",
             "stock_state": await get_product_stock_state(db, mid),
             "movement": existing,
             "message": "Stock Opname sudah tercatat",
         }
 
     state = await get_product_stock_state(db, mid)
-    if not state or not (state.get("initialized") or state.get("status") == "INITIALIZED"):
-        raise HTTPException(400, "Saldo awal stok fisik produk belum ditetapkan")
-
-    try:
-        new_unp = float(counted_unprinted_qty)
-        new_pri = float(counted_printed_qty)
-    except (TypeError, ValueError) as e:
-        raise HTTPException(400, "Qty opname harus angka") from e
-    if new_unp < 0 or new_pri < 0 or math.isnan(new_unp) or math.isnan(new_pri):
-        raise HTTPException(400, "Qty opname tidak boleh negatif")
+    initialized = bool(
+        state
+        and state.get("initialized") is True
+        and state.get("status") == "INITIALIZED"
+    )
+    if (
+        initialized
+        and state.get("initialization_source") == "STOCK_OPNAME"
+        and state.get("initialization_request_id") == request_id
+    ):
+        opening_id = str(state.get("opening_movement_id") or "")
+        opening = await db.stock_movements.find_one(
+            {"$or": [{"event_key": opening_id}, {"id": opening_id}, {"_id": opening_id}]},
+            {"_id": 0},
+        )
+        return {
+            "unchanged": False,
+            "idempotent": True,
+            "opname_action": "SALDO_AWAL",
+            "stock_state": state,
+            "movement": opening,
+            "message": "Stock Opname pertama sudah menetapkan SALDO_AWAL",
+        }
+    if not initialized:
+        opening = await initialize_opening_balance(
+            db,
+            mid,
+            {
+                "unprinted_qty": new_unp,
+                "printed_qty": new_pri,
+                "total_qty": new_unp + new_pri,
+                "initialization_source": "STOCK_OPNAME",
+                "client_request_id": request_id,
+                "note": note or "Saldo awal resmi dari Stock Opname pertama",
+            },
+            user=user,
+        )
+        return {
+            "unchanged": False,
+            "idempotent": False,
+            "opname_action": "SALDO_AWAL",
+            "stock_state": opening.get("stock_state"),
+            "movement": opening.get("movement"),
+            "delta_unprinted": new_unp,
+            "delta_printed": new_pri,
+            "delta_total": new_unp + new_pri,
+            "message": "Stock Opname pertama berhasil menetapkan SALDO_AWAL",
+        }
 
     old_unp = qty_num(state.get("unprinted_qty"))
     old_pri = qty_num(state.get("printed_qty"))
@@ -595,6 +653,7 @@ async def apply_stock_opname(
     if abs(d_unp) < 1e-9 and abs(d_pri) < 1e-9:
         return {
             "unchanged": True,
+            "opname_action": "KOREKSI",
             "stock_state": state,
             "movement": None,
             "message": "Tidak ada selisih opname",
@@ -684,6 +743,7 @@ async def apply_stock_opname(
 
     return {
         "unchanged": False,
+        "opname_action": "KOREKSI",
         "stock_state": updated,
         "movement": movement,
         "delta_unprinted": d_unp,

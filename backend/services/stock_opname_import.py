@@ -112,6 +112,7 @@ def filter_active_stock_rows(stock_rows: Iterable[dict], masters: Iterable[dict]
                 "outstanding_so_qty": 0.0,
                 "stock_current": 0.0,
                 "available_qty": 0.0,
+                "initialized": False,
                 "is_active": True,
             }
         else:
@@ -264,6 +265,8 @@ def build_opname_import_preview(
             "unprinted_qty_new": None,
             "outstanding_so_qty": None,
             "available_new": None,
+            "initialized": False,
+            "opname_action": None,
             "status": "OK",
             "message": "",
             "can_apply": False,
@@ -301,6 +304,7 @@ def build_opname_import_preview(
         printed = qty_num(stock.get("printed_qty"))
         unprinted_sys = qty_num(stock.get("unprinted_qty"))
         outstanding = qty_num(stock.get("outstanding_so_qty"))
+        initialized = bool(stock.get("initialized"))
         master_name = stock.get("item_name") or ""
 
         base.update({
@@ -313,6 +317,8 @@ def build_opname_import_preview(
             "printed_qty": printed,
             "unprinted_qty_system": unprinted_sys,
             "outstanding_so_qty": outstanding,
+            "initialized": initialized,
+            "opname_action": "KOREKSI" if initialized else "SALDO_AWAL",
         })
         if name_file and master_name and name_file.strip().lower() != master_name.strip().lower():
             base["message"] = "Nama file diabaikan — memakai nama master sistem"
@@ -347,7 +353,7 @@ def build_opname_import_preview(
             preview_rows.append(base)
             continue
 
-        if abs(selisih) < 1e-9 and abs(new_unprinted - unprinted_sys) < 1e-9:
+        if initialized and abs(selisih) < 1e-9 and abs(new_unprinted - unprinted_sys) < 1e-9:
             base["status"] = "UNCHANGED"
             base["message"] = "Tidak ada selisih"
             base["can_apply"] = False
@@ -497,6 +503,7 @@ async def apply_opname_import_batch(
                 "physical_opname": physical_new,
                 "available_new": row.get("available_new"),
                 "unchanged": bool(result.get("unchanged")),
+                "opname_action": result.get("opname_action"),
                 "message": result.get("message"),
             })
         except HTTPException as e:
