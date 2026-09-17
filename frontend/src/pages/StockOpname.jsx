@@ -130,10 +130,9 @@ export default function StockOpname() {
           <h1>Stock Opname</h1>
           <p className="subhead">
             Export template berisi seluruh item aktif Master Barang/Jasa
-            (KODE | NAMA | SATUAN | STOCK SISTEM | STOCK FISIK HASIL OPNAME).
-            Isi hanya kolom fisik opname; matching WAJIB by KODE/SKU.
-            Available = MAX(Fisik − Outstanding SO, 0). Belum Dicetak = MAX(Outstanding − Sudah Dicetak, 0).
-            Cetak tidak memotong Available dua kali.
+            (KODE | NAMA BARANG | STOCK SAAT INI SISTEM | STOCK SAAT INI HASIL OPNAME).
+            Isi hanya kolom STOCK SAAT INI HASIL OPNAME; matching WAJIB berdasarkan KODE/SKU.
+            Opname hanya mengoreksi Stock Saat Ini dan tidak mengubah bucket transaksi.
           </p>
         </div>
         <div className="stock-heading-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -210,26 +209,28 @@ export default function StockOpname() {
               <thead>
                 <tr>
                   <th>Kode</th>
-                  <th>Nama Barang</th>
-                  <th className="num">Stock Sistem</th>
-                  <th className="num">Stock Fisik Hasil Opname</th>
+                  <th>Nama</th>
+                  <th className="num">Stock Saat Ini Sistem</th>
+                  <th className="num">Stock Saat Ini Hasil Opname</th>
                   <th className="num">Selisih</th>
+                  <th className="cell-status">Aksi</th>
                   <th className="cell-status">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {previewRows.length === 0 && (
                   <tr className="purchase-empty-row">
-                    <td colSpan={6} className="muted small">Tidak ada baris di file.</td>
+                    <td colSpan={7} className="muted small">Tidak ada baris di file.</td>
                   </tr>
                 )}
                 {previewRows.map((r, idx) => (
                   <tr key={`${r.item_code}-${r.row_number || idx}`}>
                     <td className="mono cell-clip">{r.item_code || "—"}</td>
                     <td className="cell-clip" title={r.item_name}>{r.item_name || "—"}</td>
-                    <td className="num mono">{r.physical_system == null ? "—" : fmtQty(r.physical_system)}</td>
-                    <td className="num mono">{r.physical_opname == null ? "—" : fmtQty(r.physical_opname)}</td>
+                    <td className="num mono">{r.stock_current_system == null ? "—" : fmtQty(r.stock_current_system)}</td>
+                    <td className="num mono">{r.stock_current_opname == null ? "—" : fmtQty(r.stock_current_opname)}</td>
                     <td className="num mono">{r.selisih == null ? "—" : `${r.selisih > 0 ? "+" : ""}${fmtQty(r.selisih)}`}</td>
+                    <td className="cell-status"><span className="pill xs pill-muted">{r.opname_action || "—"}</span></td>
                     <td className="cell-status">
                       <span className={statusClass(r.status)} title={r.message || ""}>
                         {r.status || "—"}
@@ -283,9 +284,6 @@ export default function StockOpname() {
                 <col className="col-code" />
                 <col className="col-name" />
                 <col className="col-qty" />
-                <col className="col-qty" />
-                <col className="col-qty" />
-                <col className="col-qty" />
                 <col className="col-avail" />
                 <col className="col-date" />
               </colgroup>
@@ -293,33 +291,27 @@ export default function StockOpname() {
                 <tr>
                   <th>Kode</th>
                   <th>Nama Barang</th>
-                  <th className="num">Fisik</th>
-                  <th className="num">Belum Dicetak</th>
-                  <th className="num">Sudah Dicetak</th>
-                  <th className="num">Outstanding SO</th>
-                  <th className="cell-status th-wrap">Available</th>
+                  <th>Satuan</th>
+                  <th className="cell-status th-wrap">Stock Saat Ini Sistem</th>
                   <th className="nowrap">Terakhir Opname</th>
                 </tr>
               </thead>
               <tbody>
                 {loading && (
                   <tr className="purchase-empty-row">
-                    <td colSpan={8} className="muted small">Memuat…</td>
+                    <td colSpan={5} className="muted small">Memuat…</td>
                   </tr>
                 )}
                 {!loading && items.length === 0 && (
                   <tr className="purchase-empty-row">
-                    <td colSpan={8} className="muted small">Tidak ada item.</td>
+                    <td colSpan={5} className="muted small">Tidak ada item.</td>
                   </tr>
                 )}
                 {!loading && items.map((it) => (
                     <tr key={it.master_item_id || it.accurate_item_id} data-testid={`stock-opname-row-${it.master_item_id}`}>
                       <td className="mono cell-clip">{it.item_code || "—"}</td>
                       <td className="cell-clip" title={it.item_name}>{it.item_name || "—"}</td>
-                      <td className="num mono">{fmtQty(it.physical_qty)}</td>
-                      <td className="num mono">{fmtQty(it.unprinted_qty)}</td>
-                      <td className="num mono">{fmtQty(it.printed_qty)}</td>
-                      <td className="num mono">{fmtQty(it.outstanding_so_qty)}</td>
+                      <td>{it.unit || "—"}</td>
                       <td className="cell-status mono">{fmtQty(it.stock_current)}</td>
                       <td className="nowrap muted small">{formatDate(it.last_opname_at)}</td>
                     </tr>

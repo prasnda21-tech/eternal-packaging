@@ -144,6 +144,7 @@ from services.current_stock_import import (
 from services.stock_engine_v2 import (
     STOCK_INSUFFICIENT_MSG,
     apply_stock_opname,
+    available_for_item,
     build_current_stock_rows,
     ensure_v2_physical_settings,
     filter_sort_page_v2,
@@ -10974,8 +10975,7 @@ async def current_stock_update(
 
 class StockOpnamePayload(BaseModel):
     master_item_id: str
-    counted_unprinted_qty: Any
-    counted_printed_qty: Any
+    target_stock_current_qty: Any
     note: Optional[str] = ""
     client_request_id: Optional[str] = None
 
@@ -10991,11 +10991,13 @@ async def stock_opname_apply(
         os.environ.get("APP_ENV"),
         os.environ.get("MONGO_URL"),
     )
+    stock_row = await available_for_item(db, master_item_id=payload.master_item_id)
     result = await apply_stock_opname(
         db,
         master_item_id=payload.master_item_id,
-        counted_unprinted_qty=payload.counted_unprinted_qty,
-        counted_printed_qty=payload.counted_printed_qty,
+        target_stock_current_qty=payload.target_stock_current_qty,
+        outstanding_so_qty=stock_row.get("outstanding_so_qty"),
+        current_printed_qty=stock_row.get("printed_qty"),
         note=payload.note or "",
         user=user,
         client_request_id=payload.client_request_id,
@@ -11007,8 +11009,7 @@ async def stock_opname_apply(
         before=None,
         after={
             "master_item_id": payload.master_item_id,
-            "counted_unprinted_qty": payload.counted_unprinted_qty,
-            "counted_printed_qty": payload.counted_printed_qty,
+            "target_stock_current_qty": payload.target_stock_current_qty,
             "delta_total": result.get("delta_total"),
         },
         note=payload.note or "Stock Opname",

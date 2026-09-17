@@ -87,14 +87,14 @@ def test_export_template_columns_only():
     wb = load_workbook(BytesIO(content))
     ws = wb.active
     headers = [c.value for c in ws[1]]
-    assert headers == ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"]
+    assert headers == ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"]
     assert ws.max_row == 1 + len(rows)
     # Counted column empty for user fill
-    assert ws.cell(row=2, column=5).value is None
+    assert ws.cell(row=2, column=4).value is None
     assert ws.cell(row=2, column=1).value == "SKU-001"
     assert ws.protection.sheet is True
-    assert ws.cell(row=2, column=4).protection.locked is True
-    assert ws.cell(row=2, column=5).protection.locked is False
+    assert ws.cell(row=2, column=3).protection.locked is True
+    assert ws.cell(row=2, column=4).protection.locked is False
 
 
 def test_apply_rows_are_revalidated_against_live_catalog():
@@ -103,8 +103,8 @@ def test_apply_rows_are_revalidated_against_live_catalog():
         "item_code": "SKU-001",
         "item_name": "Tampered",
         "master_item_id": "forged-master",
-        "physical_system": 99999,
-        "physical_opname": 120,
+        "stock_current_system": 99999,
+        "stock_current_opname": 120,
         "can_apply": True,
     }]
     validated = revalidate_opname_apply_rows(
@@ -114,14 +114,14 @@ def test_apply_rows_are_revalidated_against_live_catalog():
     )
     assert validated[0]["master_item_id"] == "m1"
     assert validated[0]["item_name"] == "Item 1"
-    assert validated[0]["physical_system"] == 101
+    assert validated[0]["stock_current_system"] == 101
     assert validated[0]["client_request_id"] == "batch-1:sku-001"
 
 
-def test_preview_10_items_ok_and_available_formula():
+def test_preview_10_items_uses_target_stock_current_formula():
     catalog = _catalog_10()
-    data_rows = [[r["item_code"], r["item_name"], r.get("unit") or "PCS", r["physical_qty"], r["physical_qty"] + 5] for r in catalog]
-    raw = _xlsx_bytes(["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"], data_rows)
+    data_rows = [[r["item_code"], r["item_name"], r["stock_current"], r["stock_current"] + 5] for r in catalog]
+    raw = _xlsx_bytes(["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"], data_rows)
     preview = build_opname_import_preview(raw, "opname.xlsx", stock_rows=catalog)
 
     assert preview["total_rows"] == 10
@@ -133,23 +133,17 @@ def test_preview_10_items_ok_and_available_formula():
     for row, src in zip(preview["rows"], catalog):
         assert row["status"] == "OK"
         assert row["can_apply"] is True
-        phys_new = src["physical_qty"] + 5
-        assert row["physical_opname"] == phys_new
-        expected = max(phys_new - src["outstanding_so_qty"], 0)
-        assert row["available_new"] == expected
-        assert row["unprinted_qty_new"] == phys_new - src["printed_qty"]
+        target_current = src["stock_current"] + 5
+        assert row["stock_current_opname"] == target_current
+        assert row["target_physical_qty"] == target_current + src["outstanding_so_qty"]
         assert row["printed_qty"] == src["printed_qty"]
-        # Available must not double-count printed + outstanding when both bind
-        if src["outstanding_so_qty"] > 0 and src["printed_qty"] > 0 and src["outstanding_so_qty"] != src["printed_qty"]:
-            assert expected != phys_new - src["outstanding_so_qty"] - src["printed_qty"]
-        assert row["available_new"] == max(row["physical_opname"] - row["outstanding_so_qty"], 0)
 
 
 def test_preview_invalid_sku():
     catalog = _catalog_10()
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
-        [["NOPE-999", "Ghost", "PCS", 0, 10]],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
+        [["NOPE-999", "Ghost", 0, 10]],
     )
     preview = build_opname_import_preview(raw, "bad.xlsx", stock_rows=catalog)
     assert preview["block_count"] == 1
@@ -161,10 +155,10 @@ def test_preview_invalid_sku():
 def test_preview_duplicate_sku():
     catalog = _catalog_10()
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
         [
-            ["SKU-001", "A", "PCS", 0, 110],
-            ["SKU-001", "A again", "PCS", 0, 120],
+            ["SKU-001", "A", 101, 110],
+            ["SKU-001", "A again", 101, 120],
         ],
     )
     preview = build_opname_import_preview(raw, "dup.xlsx", stock_rows=catalog)
@@ -178,11 +172,11 @@ def test_preview_duplicate_sku():
 def test_preview_empty_and_negative_qty():
     catalog = _catalog_10()
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
         [
-            ["SKU-001", "A", "PCS", 0, ""],
-            ["SKU-002", "B", "PCS", 0, -5],
-            ["SKU-003", "C", "PCS", 0, "abc"],
+            ["SKU-001", "A", 101, ""],
+            ["SKU-002", "B", 102, -5],
+            ["SKU-003", "C", 93, "abc"],
         ],
     )
     preview = build_opname_import_preview(raw, "qty.xlsx", stock_rows=catalog)
@@ -196,7 +190,7 @@ def test_preview_empty_and_negative_qty():
 def test_preview_accepts_legacy_hasil_hitung_header():
     catalog = _catalog_10()[:1]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "STOCK FISIK HASIL HITUNG"],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI HASIL HITUNG"],
         [["SKU-001", "Item 1", catalog[0]["physical_qty"] + 1]],
     )
     preview = build_opname_import_preview(raw, "legacy.xlsx", stock_rows=catalog)
@@ -218,8 +212,8 @@ def test_preview_block_when_printed_gt_physical():
         )
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
-        [["SKU-P", "Printed Heavy", "PCS", 100, 50]],  # 50 < printed 80
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
+        [["SKU-P", "Printed Heavy", 95, 50]],  # target physical 55 < printed 80
     )
     preview = build_opname_import_preview(raw, "block.xlsx", stock_rows=catalog)
     assert preview["block_count"] == 1
@@ -228,7 +222,7 @@ def test_preview_block_when_printed_gt_physical():
     row = preview["rows"][0]
     assert row["status"] == "BLOCK"
     assert row["can_apply"] is False
-    assert row["unprinted_qty_new"] == 50 - 80
+    assert row["target_physical_qty"] == 55
 
 
 def test_preview_outstanding_so_and_partial_delivery_style():
@@ -245,16 +239,15 @@ def test_preview_outstanding_so_and_partial_delivery_style():
         )
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
-        [["SKU-SO", "With SO", "PCS", 100, 90]],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
+        [["SKU-SO", "With SO", 75, 65]],
     )
     preview = build_opname_import_preview(raw, "so.xlsx", stock_rows=catalog)
     row = preview["rows"][0]
     assert row["status"] == "OK"
     assert row["outstanding_so_qty"] == 25
-    assert row["physical_opname"] == 90
-    assert row["available_new"] == 65  # max(90 - outstanding 25, 0)
-    assert row["unprinted_qty_new"] == 60  # 90 - printed 30
+    assert row["stock_current_opname"] == 65
+    assert row["target_physical_qty"] == 90  # target available 65 + Qty Pesanan 25
 
 
 def test_preview_unchanged_when_same_physical():
@@ -270,8 +263,8 @@ def test_preview_unchanged_when_same_physical():
         )
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
-        [["SKU-U", "Same", "PCS", 100, 100]],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
+        [["SKU-U", "Same", 100, 100]],
     )
     preview = build_opname_import_preview(raw, "same.xlsx", stock_rows=catalog)
     assert preview["unchanged_count"] == 1
@@ -294,8 +287,8 @@ def test_preview_zero_count_for_uninitialized_item_creates_opening():
         )
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
-        [["SKU-NEW", "Not Initialized", "PCS", 0, 0]],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
+        [["SKU-NEW", "Not Initialized", 0, 0]],
     )
     preview = build_opname_import_preview(raw, "first.xlsx", stock_rows=catalog)
 
@@ -305,8 +298,7 @@ def test_preview_zero_count_for_uninitialized_item_creates_opening():
     assert preview["rows"][0]["opname_action"] == "SALDO_AWAL"
 
 
-def test_preview_no_available_double_count():
-    """available_new = max(physical_new - max(outstanding, printed), 0) — no printed+SO raw subtract."""
+def test_preview_target_physical_adds_qty_pesanan_once():
     catalog = [
         _stock_row(
             code="SKU-D",
@@ -319,23 +311,20 @@ def test_preview_no_available_double_count():
         )
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA", "FISIK"],
-        [["SKU-D", "Double", 180]],
+        ["KODE", "NAMA", "STOCK SAAT INI HASIL OPNAME"],
+        [["SKU-D", "Double", 140]],
     )
     preview = build_opname_import_preview(raw, "d.xlsx", stock_rows=catalog)
     row = preview["rows"][0]
-    assert row["available_new"] == 140  # max(180 - outstanding 40, 0)
-    # Not (180 - 40 - 50)=90 double-count, and not old physical-outstanding=140
-    assert row["available_new"] != 90  # would be 180-40-50 double-count
-    assert row["available_new"] != 130
-    assert abs(row["available_new"] - max(row["physical_opname"] - row["outstanding_so_qty"], 0)) < 1e-9
+    assert row["stock_current_opname"] == 140
+    assert row["target_physical_qty"] == 180
 
 
 @pytest.mark.anyio
 async def test_apply_batch_calls_v2_opname_and_audits():
     catalog = _catalog_10()[:3]
-    data_rows = [[r["item_code"], r["item_name"], r.get("unit") or "PCS", r["physical_qty"], r["physical_qty"] + 2] for r in catalog]
-    raw = _xlsx_bytes(["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"], data_rows)
+    data_rows = [[r["item_code"], r["item_name"], r["stock_current"], r["stock_current"] + 2] for r in catalog]
+    raw = _xlsx_bytes(["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"], data_rows)
     preview = build_opname_import_preview(raw, "batch.xlsx", stock_rows=catalog)
 
     db = MagicMock()
@@ -369,9 +358,9 @@ async def test_apply_batch_calls_v2_opname_and_audits():
     assert result["failure_count"] == 0
     assert len(calls) == 3
     for call, src in zip(calls, catalog):
-        phys_new = src["physical_qty"] + 2
-        assert call["counted_printed_qty"] == src["printed_qty"]
-        assert call["counted_unprinted_qty"] == phys_new - src["printed_qty"]
+        assert call["target_stock_current_qty"] == src["stock_current"] + 2
+        assert call["outstanding_so_qty"] == src["outstanding_so_qty"]
+        assert call["current_printed_qty"] == src["printed_qty"]
         assert call["master_item_id"] == src["master_item_id"]
 
     batches.insert_one.assert_awaited_once()
@@ -391,11 +380,11 @@ async def test_apply_skips_block_and_error_rows():
         _stock_row(code="BLK", name="Blk", mid="m2", physical=100, unprinted=20, printed=80, outstanding=0),
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
         [
-            ["OK1", "Ok", "PCS", 100, 110],
-            ["BLK", "Blk", "PCS", 100, 50],  # block
-            ["GHOST", "Nope", "PCS", 0, 1],  # error
+            ["OK1", "Ok", 100, 110],
+            ["BLK", "Blk", 100, 50],  # block: physical target 50 < printed 80
+            ["GHOST", "Nope", 0, 1],  # error
         ],
     )
     preview = build_opname_import_preview(raw, "mix.xlsx", stock_rows=catalog)
@@ -442,17 +431,16 @@ def test_missing_required_columns_raises():
     assert ei.value.status_code == 400
 
 
-def test_export_includes_satuan_and_stock_sistem():
+def test_export_includes_stock_saat_ini_system_and_empty_target():
     rows = _catalog_10()
     content = build_opname_template_xlsx(rows)
     wb = load_workbook(BytesIO(content))
     ws = wb.active
     assert [c.value for c in ws[1]] == [
-        "KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME",
+        "KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME",
     ]
-    assert ws.cell(row=2, column=3).value == "PCS"
-    assert ws.cell(row=2, column=4).value == rows[0]["physical_qty"]
-    assert ws.cell(row=2, column=5).value is None
+    assert ws.cell(row=2, column=3).value == rows[0]["stock_current"]
+    assert ws.cell(row=2, column=4).value is None
 
 
 def test_filter_active_masters_only():
@@ -477,10 +465,10 @@ def test_preview_uses_master_name_not_file_name():
         _stock_row(code="SKU-001", name="Nama Master Resmi", mid="m1", physical=100, unprinted=80, printed=20, outstanding=0),
     ]
     raw = _xlsx_bytes(
-        ["KODE", "NAMA BARANG", "SATUAN", "STOCK SISTEM", "STOCK FISIK HASIL OPNAME"],
-        [["SKU-001", "Nama Salah di Excel", "PCS", 100, 110]],
+        ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
+        [["SKU-001", "Nama Salah di Excel", 100, 110]],
     )
     preview = build_opname_import_preview(raw, "name.xlsx", stock_rows=catalog)
     assert preview["ok_count"] == 1
     assert preview["rows"][0]["item_name"] == "Nama Master Resmi"
-    assert preview["rows"][0]["available_new"] == max(110 - 0, 0)
+    assert preview["rows"][0]["stock_current_opname"] == 110

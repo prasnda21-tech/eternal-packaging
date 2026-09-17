@@ -552,29 +552,34 @@ async def apply_stock_opname(
     db,
     *,
     master_item_id: str,
-    counted_unprinted_qty: Any,
-    counted_printed_qty: Any,
+    target_stock_current_qty: Any,
+    outstanding_so_qty: Any,
+    current_printed_qty: Any,
     note: str = "",
     user: Optional[dict] = None,
     client_request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Apply an opname as SALDO_AWAL for uninitialized items, otherwise KOREKSI.
+    """Apply a target Stock Saat Ini as SALDO_AWAL or KOREKSI.
 
     Does not erase history. The first physical count establishes exactly one
     official opening balance; later counts append adjustments.
-    Outstanding SO is unchanged (recomputed on read).
+    Transaction-derived order and print buckets are not changed. The physical
+    target is target Stock Saat Ini + current Qty Pesanan.
     """
     mid = str(master_item_id or "").strip()
     if not mid:
         raise HTTPException(400, "master_item_id wajib diisi")
 
     try:
-        new_unp = float(counted_unprinted_qty)
-        new_pri = float(counted_printed_qty)
+        target_current = float(target_stock_current_qty)
+        outstanding = float(outstanding_so_qty)
+        current_printed = float(current_printed_qty)
     except (TypeError, ValueError) as e:
         raise HTTPException(400, "Qty opname harus angka") from e
-    if new_unp < 0 or new_pri < 0 or math.isnan(new_unp) or math.isnan(new_pri):
+    values = (target_current, outstanding, current_printed)
+    if any(v < 0 or math.isnan(v) or math.isinf(v) for v in values):
         raise HTTPException(400, "Qty opname tidak boleh negatif")
+    target_physical = target_current + outstanding
 
     request_id = str(client_request_id or "").strip() or str(uuid.uuid4())
     event_id = f"stock_opname:{mid}:{request_id}"
@@ -598,6 +603,14 @@ async def apply_stock_opname(
         and state.get("initialized") is True
         and state.get("status") == "INITIALIZED"
     )
+    # Never let opname alter the initialized production print bucket.
+    new_pri = qty_num(state.get("printed_qty")) if initialized else current_printed
+    new_unp = target_physical - new_pri
+    if new_unp < -1e-9:
+        raise HTTPException(
+            400,
+            "Data transaksi tidak konsisten: target Stock Fisik lebih kecil dari Sudah Dicetak",
+        )
     if (
         initialized
         and state.get("initialization_source") == "STOCK_OPNAME"
@@ -645,7 +658,7 @@ async def apply_stock_opname(
     old_unp = qty_num(state.get("unprinted_qty"))
     old_pri = qty_num(state.get("printed_qty"))
     old_tot = qty_num(state.get("total_qty"))
-    new_tot = new_unp + new_pri
+    new_tot = target_physical
     d_unp = new_unp - old_unp
     d_pri = new_pri - old_pri
     d_tot = new_tot - old_tot
@@ -685,7 +698,7 @@ async def apply_stock_opname(
         reference_number=f"OPN-{stamp[:10]}",
         reference_type="stock_opname",
         reference_id=event_id,
-        description=note or f"Stock Opname: Belum={new_unp}, Sudah={new_pri}",
+        description=note or f"Stock Opname: target Stock Saat Ini={target_current}",
         delta_unprinted=d_unp,
         delta_printed=d_pri,
         event_key=event_id,
@@ -706,6 +719,8 @@ async def apply_stock_opname(
             "changed_at": stamp,
             "change_note": note,
             "client_request_id": request_id,
+            "target_stock_current_qty": target_current,
+            "qty_pesanan": outstanding,
         },
     )
 

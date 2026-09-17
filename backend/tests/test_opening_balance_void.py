@@ -194,8 +194,9 @@ async def test_first_opname_initializes_once_then_is_idempotent(test_db):
     first = await apply_stock_opname(
         test_db,
         master_item_id=mid,
-        counted_unprinted_qty=25,
-        counted_printed_qty=0,
+        target_stock_current_qty=25,
+        outstanding_so_qty=0,
+        current_printed_qty=0,
         note="Opname pertama",
         user=HOLDING,
         client_request_id="first-count",
@@ -203,8 +204,9 @@ async def test_first_opname_initializes_once_then_is_idempotent(test_db):
     retry = await apply_stock_opname(
         test_db,
         master_item_id=mid,
-        counted_unprinted_qty=25,
-        counted_printed_qty=0,
+        target_stock_current_qty=25,
+        outstanding_so_qty=0,
+        current_printed_qty=0,
         note="Opname pertama",
         user=HOLDING,
         client_request_id="first-count",

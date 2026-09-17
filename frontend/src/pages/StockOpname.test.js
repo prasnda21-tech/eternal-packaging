@@ -16,10 +16,11 @@ describe("Stock Opname XLSX workflow", () => {
   test("preview shows the required columns and sends the idempotency key", () => {
     for (const label of [
       "Kode",
-      "Nama Barang",
-      "Stock Sistem",
-      "Stock Fisik Hasil Opname",
+      "Nama",
+      "Stock Saat Ini Sistem",
+      "Stock Saat Ini Hasil Opname",
       "Selisih",
+      "Aksi",
       "Status",
     ]) {
       expect(src).toMatch(new RegExp(`<th[^>]*>${label}</th>`));
