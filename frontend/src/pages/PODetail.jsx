@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, List, MapPin, MessageSquare, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -24,7 +24,14 @@ import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components
 import { terkirimQtySummary } from "../lib/deliveryHistory";
 import { aksiPoSalesDeliveryState } from "../lib/aksiPoSalesDelivery";
 import useAutoRefresh from "../lib/useAutoRefresh";
-import { scrollToPoDetailStageIndex } from "../lib/poDetailStageNav";
+import {
+  accordionIndexForFocus,
+  clampWorkflowStageIndex,
+  deskPanelOwnsStage,
+  parsePoDetailStageParam,
+  poDetailStagePanelTitle,
+  syncPoDetailStageQuery,
+} from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
 import { enrichWorkspaceTab } from "../lib/workspaceTabEnrichment";
 import AppendQtyEntries from "../components/AppendQtyEntries";
@@ -40,6 +47,8 @@ import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
 import LineProductReplaceControl from "../components/LineProductReplaceControl";
 import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
 import PoStageSection from "../components/poDetail/PoStageSection";
+import PoSummaryDrawer from "../components/poDetail/PoSummaryDrawer";
+import PoStagePickerSheet from "../components/poDetail/PoStagePickerSheet";
 import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poDetail/PoStageAccordionContext";
 
 function PengirimanDeliveryProofPanel({ order, onUpdated }) {
@@ -82,6 +91,10 @@ export default function PODetail() {
   const [locRow, setLocRow] = useState(null);
   const [editInfoOpen, setEditInfoOpen] = useState(false);
   const [dangerActionsOpen, setDangerActionsOpen] = useState(false);
+  const [selectedWorkflowStage, setSelectedWorkflowStage] = useState(null);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [stageSheetOpen, setStageSheetOpen] = useState(false);
+  const selectedForOrderRef = useRef(null);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -127,6 +140,39 @@ export default function PODetail() {
     setScreenerDraft("");
     setScreenerNotes(order?.screener_info?.notes || "");
   }, [order?.id, order?.screener_info?.updated_at]);
+
+  // Display-only stage workspace. Refresh must not reset the viewed stage.
+  useEffect(() => {
+    if (!order?.id) return;
+    const switched = selectedForOrderRef.current !== order.id;
+    if (switched) selectedForOrderRef.current = order.id;
+    setSelectedWorkflowStage((prev) => {
+      if (!switched && prev != null) return prev;
+      const search = location.search || (typeof window !== "undefined" ? window.location.search : "");
+      const fromQuery = parsePoDetailStageParam(search);
+      if (fromQuery != null) return fromQuery;
+      return clampWorkflowStageIndex(order.current_stage, 0);
+    });
+  }, [order?.id, order?.current_stage, location.search]);
+
+  useEffect(() => {
+    const onPop = () => {
+      const fromQuery = parsePoDetailStageParam(typeof window !== "undefined" ? window.location.search : "");
+      if (fromQuery != null) setSelectedWorkflowStage(fromQuery);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Canonicalize ?stage= on first load / refresh without adding history.
+  useEffect(() => {
+    if (selectedWorkflowStage == null) return;
+    if (typeof window === "undefined") return;
+    const current = parsePoDetailStageParam(window.location.search);
+    if (current !== selectedWorkflowStage) {
+      syncPoDetailStageQuery(selectedWorkflowStage, { push: false });
+    }
+  }, [order?.id, selectedWorkflowStage]);
 
   // Start with route id (parallel to getOrder) — do not wait for order payload.
   // Payment stamps still trigger refetch after order hydrate / payment changes.
@@ -349,6 +395,17 @@ export default function PODetail() {
   // Canonical remain lives in order.sales_delivery_summary (via aksiPoSalesDeliveryState).
   const salesDeliveryTotalRemaining = (order.sales_delivery_summary || {}).total_remaining;
   const terkirimSummary = terkirimQtySummary(order);
+  const actualStage = clampWorkflowStageIndex(order.current_stage, 0);
+  const viewedStage = selectedWorkflowStage == null ? actualStage : clampWorkflowStageIndex(selectedWorkflowStage, actualStage);
+  const viewingOtherStage = viewedStage !== actualStage;
+  const accordionOpenIndex = accordionIndexForFocus(viewedStage);
+  const selectWorkflowStage = (idx) => {
+    const next = clampWorkflowStageIndex(idx, actualStage);
+    setSelectedWorkflowStage(next);
+    setStageSheetOpen(false);
+    syncPoDetailStageQuery(next, { push: true });
+  };
+  const lineItemCount = order.item_count ?? (order.line_items || []).length;
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -458,8 +515,13 @@ export default function PODetail() {
   };
 
   return (
-    <div className="po-detail po-detail-industrial" data-testid="po-detail-page">
-      <div className="detail-header">
+    <div
+      className="po-detail po-detail-industrial po-detail-stage-workspace"
+      data-testid="po-detail-page"
+      data-actual-stage={actualStage}
+      data-viewed-stage={viewedStage}
+    >
+      <div className="detail-header po-stage-ws-header">
         <div className="po-hero-title-row">
           <div className="po-hero-identity">
             <h1 className="po-hero-customer" data-testid="detail-customer-name">
@@ -489,6 +551,15 @@ export default function PODetail() {
             </button>
             <button
               type="button"
+              className="ghost sm"
+              data-testid="btn-po-summary"
+              aria-expanded={summaryOpen}
+              onClick={() => setSummaryOpen(true)}
+            >
+              <List size={14} /> Ringkasan PO
+            </button>
+            <button
+              type="button"
               className="ghost sm po-hero-back"
               onClick={() => {
                 const target = resolvePoBackTarget({
@@ -502,13 +573,16 @@ export default function PODetail() {
               }}
               data-testid="back-button"
             >
-              <ArrowLeft size={16} /> Kembali
+              <ArrowLeft size={16} /> Kembali ke Daftar PO
             </button>
           </div>
         </div>
         <div className="po-hero-toolbar" data-testid="po-hero-toolbar">
           <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
             {order.priority === "urgent" ? "URGENT" : "NORMAL"}
+          </span>
+          <span className="pill sm" data-testid="header-order-kind">
+            {order.requires_printing === false ? "Non-Cetak" : "Cetak"}
           </span>
           {canRepeatOrder && !order.cancelled && (
             <Link
@@ -535,8 +609,14 @@ export default function PODetail() {
               {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
             </button>
           )}
-          <span className="po-hero-sedang">
-            Tahap: <strong data-testid="detail-stage">{STAGES[order.current_stage]}</strong>
+          <span className="po-hero-sedang" data-testid="po-actual-stage-label">
+            Tahap aktif saat ini: <strong data-testid="detail-stage">{actualStage + 1}. {STAGES[actualStage]}</strong>
+          </span>
+          <span className="po-hero-qty" data-testid="po-header-total-qty">
+            Qty: <strong>{(order.total_quantity ?? 0).toLocaleString("id-ID")}</strong>
+          </span>
+          <span className="po-hero-lines" data-testid="po-header-line-count">
+            Line: <strong>{lineItemCount}</strong>
           </span>
           <span className="po-hero-ship-date" data-testid="header-tanggal-pengiriman">
             Tanggal Pengiriman:{" "}
@@ -561,18 +641,51 @@ export default function PODetail() {
         </div>
       </div>
 
+      <div className="po-mobile-stage-chrome" data-testid="po-mobile-stage-chrome">
+        <div>
+          <p className="po-mobile-stage-kicker">Tahap {viewedStage + 1} dari 15</p>
+          <strong data-testid="po-mobile-stage-name">{STAGES[viewedStage]}</strong>
+        </div>
+        <button
+          type="button"
+          className="ghost sm"
+          data-testid="btn-open-stage-sheet"
+          onClick={() => setStageSheetOpen(true)}
+        >
+          Semua tahap
+        </button>
+      </div>
+
       <div className="po-stage-bar-sticky" data-testid="po-stage-bar-sticky">
         <div className="po-stage-bar-block">
           <StageBar
             stage={order.current_stage}
             order={order}
             showLabels
-            onStageClick={(idx) => scrollToPoDetailStageIndex(idx)}
+            viewedStage={viewedStage}
+            onStageClick={selectWorkflowStage}
           />
         </div>
       </div>
 
-      <section className="po-kpi-strip" data-testid="po-kpi-strip">
+      <section className="po-stage-ws-chrome" data-testid="po-stage-panel">
+        <header className="po-stage-ws-chrome-head">
+          <div>
+            <span className="po-stage-ws-kicker">Workspace tahap</span>
+            <h2 data-testid="po-viewed-stage-title">{poDetailStagePanelTitle(viewedStage)}</h2>
+          </div>
+          {viewingOtherStage && (
+            <button
+              type="button"
+              className="ghost sm"
+              data-testid="btn-back-to-active-stage"
+              onClick={() => selectWorkflowStage(actualStage)}
+            >
+              Kembali ke Tahap Aktif
+            </button>
+          )}
+        </header>
+      <section className="po-kpi-strip" data-testid="po-kpi-strip" hidden={viewedStage !== 0}>
         <MetricRow columns={5}>
           <MetricCell label="Total PO" value={order.total_quantity} testid="kpi-total-po" />
           <MetricCell className="kpi-accent-target" label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
@@ -598,6 +711,9 @@ export default function PODetail() {
 
       <PoDetailFocusPanel
         order={order}
+        viewedStage={viewedStage}
+        actualStage={actualStage}
+        onGotoStage={selectWorkflowStage}
         primaryAction={
           canProcessSalesDelivery ? (
             <Link
@@ -646,10 +762,10 @@ export default function PODetail() {
         </div>
       )}
 
-      <div className="po-workflow" data-testid="po-workflow">
-      <PoStageAccordionProvider>
+      <div className="po-workflow po-stage-ws-stack" data-testid="po-workflow">
+      <PoStageAccordionProvider openStageIndex={accordionOpenIndex} onToggleStage={selectWorkflowStage}>
       {/* 01 Order Masuk */}
-      <div id="po-stage-order-masuk" data-testid="workflow-slot-0" data-workflow-stage="0">
+      <div id="po-stage-order-masuk" data-testid="workflow-slot-0" data-workflow-stage="0" className={deskPanelOwnsStage("0", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("0", viewedStage)}>
       <div className="po-meta-aksi-row" data-testid="po-meta-aksi-row">
       {/* Order Info */}
       <section className="panel po-info-panel" data-testid="detail-info">
@@ -998,7 +1114,7 @@ export default function PODetail() {
       <div className="workflow-group" data-testid="workflow-group-2">
         <p className="workflow-group-label">A · DESIGN &amp; PAYMENT</p>
       {/* 02 Design */}
-      <div id="po-stage-design" data-testid="workflow-slot-1" data-workflow-stage="1">
+      <div id="po-stage-design" data-testid="workflow-slot-1" data-workflow-stage="1" className={deskPanelOwnsStage("1", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("1", viewedStage)}>
       <PoStageSection stageIndex={1} order={order} title="File Design" hasError={!!err}>
       <AttachmentsPanel
         order={order}
@@ -1015,7 +1131,7 @@ export default function PODetail() {
       </div>
 
       {/* 03 Approval Design + Customer Approval (visual pair only) */}
-      <div id="po-stage-approval-design" data-testid="workflow-slot-2" data-workflow-stage="2">
+      <div id="po-stage-approval-design" data-testid="workflow-slot-2" data-workflow-stage="2" className={deskPanelOwnsStage("2", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("2", viewedStage)}>
       <PoStageSection stageIndex={2} order={order} title="Approval Design">
       <section className="panel po-pair-card po-phase-design" data-testid="approval-design-panel">
         <header className="panel-head">
@@ -1060,7 +1176,7 @@ export default function PODetail() {
       </div>
 
       {/* 04–05 Payment + Approval Payment (visual pair only) */}
-      <section id="po-stage-payment" className="panel payment-panel po-pair-card po-phase-payment" data-testid="payment-approval-pair">
+      <section id="po-stage-payment" className={"panel payment-panel po-pair-card po-phase-payment" + (deskPanelOwnsStage("payment", viewedStage) ? " is-desk-viewed" : "")} data-testid="payment-approval-pair" hidden={!deskPanelOwnsStage("payment", viewedStage)}>
         <PoStageSection stageIndex={3} order={order} title="Payment &amp; Approval" hasError={!!payUploadErr || !!salesReceiptsErr}>
         <header className="panel-head">
           <h3>Payment &amp; Approval</h3>
@@ -1070,7 +1186,7 @@ export default function PODetail() {
           <PaymentStatusBadge order={order} />
         </header>
         <div className="po-pair-grid">
-        <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3">
+        <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3" hidden={viewedStage !== 3}>
         <div data-testid="payment-panel">
         <h4 className="po-pair-col-title">Bukti Payment</h4>
         <div className="payment-body">
@@ -1159,7 +1275,7 @@ export default function PODetail() {
         </div>
         </div>
 
-      <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4">
+      <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4" hidden={viewedStage !== 4}>
       <div data-testid="approval-payment-panel">
         <h4 className="po-pair-col-title">Approval Payment</h4>
         <div className="workflow-stage-actions" data-testid="approval-payment-actions">
@@ -1204,7 +1320,7 @@ export default function PODetail() {
       {/* 06 Penjadwalan + Pembagian Jadwal (visual pair only) */}
       <div className="workflow-group" data-testid="workflow-group-prep">
         <p className="workflow-group-label">B · PERSIAPAN PRODUKSI</p>
-      <div id="po-stage-penjadwalan" data-testid="workflow-slot-5" data-workflow-stage="5">
+      <div id="po-stage-penjadwalan" data-testid="workflow-slot-5" data-workflow-stage="5" className={deskPanelOwnsStage("5", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("5", viewedStage)}>
       <PoStageSection stageIndex={5} order={order} title="Penjadwalan">
       <section className="panel qty-ops-panel po-pair-card po-phase-scheduling" data-testid="penjadwalan-panel">
         <QtyOpsHead icon={CalendarClock} title="Penjadwalan">
@@ -1226,7 +1342,7 @@ export default function PODetail() {
       </div>
 
       {/* 07 Screener */}
-      <div id="po-stage-screener" data-testid="workflow-slot-6" data-workflow-stage="6">
+      <div id="po-stage-screener" data-testid="workflow-slot-6" data-workflow-stage="6" className={deskPanelOwnsStage("6", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("6", viewedStage)}>
       <PoStageSection
         stageIndex={6}
         order={order}
@@ -1277,7 +1393,7 @@ export default function PODetail() {
       </div>
 
       {/* 08 Persiapan Helper */}
-      <div id="po-stage-persiapan-helper" data-testid="workflow-slot-7" data-workflow-stage="7">
+      <div id="po-stage-persiapan-helper" data-testid="workflow-slot-7" data-workflow-stage="7" className={deskPanelOwnsStage("7", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("7", viewedStage)}>
       <PoStageSection stageIndex={7} order={order} title="Persiapan Helper">
       <HelperPrepPanel order={order} canEdit={canHelperPrep} onUpdated={setOrder} />
       </PoStageSection>
@@ -1285,9 +1401,10 @@ export default function PODetail() {
 
       </div>
 
-      <div className="workflow-group" data-testid="workflow-group-5">
+      <div className={"workflow-group" + (deskPanelOwnsStage("sample", viewedStage) ? " is-desk-viewed" : "")} data-testid="workflow-group-5" hidden={!deskPanelOwnsStage("sample", viewedStage)}>
         <p className="workflow-group-label">C · PRODUKSI</p>
       {/* A–B Cetak Sample + Approval (visual pair only) */}
+      <div data-testid="desk-panel-sample">
       <PoStageSection stageIndex={8} order={order} title="Cetak Sample &amp; Approval">
       <section className="panel po-pair-card po-phase-sample" data-testid="cetak-sample-pair">
         <header className="panel-head qty-ops-head">
@@ -1316,7 +1433,7 @@ export default function PODetail() {
           </div>
         </header>
         <div className="po-pair-grid">
-        <div id="po-stage-operator" className="po-pair-col" data-testid="workflow-slot-8" data-workflow-stage="8">
+        <div id="po-stage-operator" className="po-pair-col" data-testid="workflow-slot-8" data-workflow-stage="8" hidden={viewedStage !== 8}>
       <AttachmentsPanel
         order={order}
         user={user}
@@ -1325,7 +1442,7 @@ export default function PODetail() {
       />
         </div>
 
-      <div id="po-stage-konfirmasi-sample" className="po-pair-col" data-testid="workflow-slot-9" data-workflow-stage="9">
+      <div id="po-stage-konfirmasi-sample" className="po-pair-col" data-testid="workflow-slot-9" data-workflow-stage="9" hidden={viewedStage !== 9}>
       <div className="qty-ops-panel" data-testid="approval-sample-panel">
         <h4 className="po-pair-col-title">Approval Cetak Sample</h4>
         <div className="qty-ops-body">
@@ -1355,21 +1472,22 @@ export default function PODetail() {
         </div>
       </section>
       </PoStageSection>
+      </div>
+      </div>
 
       {/* C Operator / Qty Selesai Cetak */}
-      <div id="po-stage-cetak" data-testid="workflow-slot-10" data-workflow-stage="10">
+      <div id="po-stage-cetak" data-testid="workflow-slot-10" data-workflow-stage="10" className={deskPanelOwnsStage("10", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("10", viewedStage)}>
       <PoStageSection stageIndex={10} order={order} title="Qty Selesai Cetak">
       <div data-testid="cetak-panel">
       <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="progress" />
       </div>
       </PoStageSection>
       </div>
-      </div>
 
       <div className="workflow-group" data-testid="workflow-group-fulfillment">
         <p className="workflow-group-label">D · QC DAN PENGIRIMAN</p>
       {/* 12 Packing */}
-      <div id="po-stage-packing" data-testid="workflow-slot-11" data-workflow-stage="11">
+      <div id="po-stage-packing" data-testid="workflow-slot-11" data-workflow-stage="11" className={deskPanelOwnsStage("11", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("11", viewedStage)}>
       <PoStageSection stageIndex={11} order={order} title="Packing">
       <PackingPanel
         order={order}
@@ -1385,7 +1503,7 @@ export default function PODetail() {
       </div>
 
       {/* 13 Surat Jalan */}
-      <div id="po-stage-surat-jalan" data-testid="workflow-slot-12" data-workflow-stage="12">
+      <div id="po-stage-surat-jalan" data-testid="workflow-slot-12" data-workflow-stage="12" className={deskPanelOwnsStage("12", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("12", viewedStage)}>
       <PoStageSection stageIndex={12} order={order} title="Surat Jalan">
       <SuratJalanPanel
         order={order}
@@ -1405,7 +1523,7 @@ export default function PODetail() {
       </div>
 
       {/* 14 Loading */}
-      <div id="po-stage-loading" data-testid="workflow-slot-13" data-workflow-stage="13">
+      <div id="po-stage-loading" data-testid="workflow-slot-13" data-workflow-stage="13" className={deskPanelOwnsStage("13", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("13", viewedStage)}>
       <PoStageSection stageIndex={13} order={order} title="Loading">
       <LoadingPanel
         order={order}
@@ -1421,7 +1539,7 @@ export default function PODetail() {
       </div>
 
       {/* 15 Bukti Kirim then Terkirim */}
-      <div id="po-stage-pengiriman" data-testid="workflow-slot-14" data-workflow-stage="14">
+      <div id="po-stage-pengiriman" data-testid="workflow-slot-14" data-workflow-stage="14" className={deskPanelOwnsStage("14", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("14", viewedStage)}>
       <PoStageSection stageIndex={14} order={order} title="Bukti Kirim &amp; Terkirim">
       <PengirimanDeliveryProofPanel order={order} onUpdated={setOrder} />
       <section className="panel" data-testid="terkirim-panel">
@@ -1446,8 +1564,10 @@ export default function PODetail() {
       </div>
       </PoStageAccordionProvider>
       </div>
+      </section>
 
-      {/* Notes */}
+      {/* Notes — Order Masuk workspace */}
+      <div hidden={!deskPanelOwnsStage("0", viewedStage)}>
       <section className={`panel po-notes-panel${!order.notes && !note ? " is-empty" : ""}`} data-testid="notes-panel">
         <header className="panel-head"><h3>Catatan Produksi</h3></header>
         {order.notes && <pre className="notes-view">{order.notes}</pre>}
@@ -1470,6 +1590,23 @@ export default function PODetail() {
       </section>
 
       <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen={false} />
+      </div>
+
+      <PoSummaryDrawer
+        open={summaryOpen}
+        order={order}
+        actualStage={actualStage}
+        viewedStage={viewedStage}
+        onClose={() => setSummaryOpen(false)}
+      />
+      <PoStagePickerSheet
+        open={stageSheetOpen}
+        order={order}
+        actualStage={actualStage}
+        viewedStage={viewedStage}
+        onSelect={selectWorkflowStage}
+        onClose={() => setStageSheetOpen(false)}
+      />
 
       <ConfirmActionModal
         open={!!actionConfirm}

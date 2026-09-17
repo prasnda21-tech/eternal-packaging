@@ -35,8 +35,9 @@ describe("PO Detail compact header + sticky StageFlow", () => {
     expect(card).not.toMatch(/onStageClick/);
   });
 
-  test("stage click scrolls by semantic name and does not open drawer or call API", () => {
-    expect(detail).toMatch(/scrollToPoDetailStageIndex/);
+  test("stage click selects a display-only workspace and does not open a stage drawer or call API", () => {
+    expect(detail).toMatch(/selectWorkflowStage/);
+    expect(detail).toMatch(/syncPoDetailStageQuery/);
     expect(detail).not.toMatch(/setStageDrawer/);
     expect(detail).not.toMatch(/StageDetailDrawer/);
     expect(nav).not.toMatch(/api\./);
