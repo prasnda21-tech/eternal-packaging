@@ -1,0 +1,25 @@
+{
+  "name": "Eternal Packaging Sales",
+  "short_name": "Sales Eternal",
+  "description": "PWA Sales read-only — PO Saya dan Prediksi Order",
+  "start_url": "/sales",
+  "scope": "/sales",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f7",
+  "theme_color": "#0b1f2a",
+  "icons": [
+    {
+      "src": "/eternal-favicon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/eternal-favicon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

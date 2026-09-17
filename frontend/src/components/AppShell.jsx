@@ -92,6 +92,7 @@ const TILE_ICONS = {
   "sales-activity": Contact,
   "route-optimizer": Route,
   "accurate-creators": Users,
+  "sales-user-mapping": Users,
   audit: ScrollText,
 };
 

@@ -44,6 +44,9 @@ PERMISSION_CATALOG = [
     ("Aktivitas Penjualan", "sales.activity.activate_migration", "Aktifkan automation data migrasi"),
     ("Pengaturan", "settings.sales_activity.view", "Lihat pengaturan Sales Activity & Ownership"),
     ("Pengaturan", "settings.sales_activity.manage", "Ubah pengaturan Sales Activity & Ownership"),
+    ("Pengaturan", "settings.sales_user_mapping.view", "Lihat mapping Sales Accurate"),
+    ("Pengaturan", "settings.sales_user_mapping.manage", "Kelola mapping Sales Accurate"),
+    ("Penjualan", "sales.pwa.view", "Buka PWA Sales read-only"),
     ("Optimasi Rute", "route_optimizer.view", "Lihat Optimasi Rute"),
     ("Optimasi Rute", "route_optimizer.create", "Buat Rute Optimasi"),
     ("Optimasi Rute", "route_optimizer.edit_own", "Ubah rute Optimasi sendiri"),
@@ -664,6 +667,11 @@ ROLE_DEFAULT_PERMISSIONS = {
         "buffer_stock.manage",
         "reports.order_prediction.view", "reports.order_prediction.import",
     ],
+    "sales_eternal": [
+        # PWA Sales is a dedicated read-only surface. Global po.view (and other
+        # operational view keys) open unscoped /api/orders, files, SJ, invoices.
+        "sales.pwa.view",
+    ],
 }
 
 # Builtin roles get derived nav.* defaults so first-load matches current sidebar.
@@ -685,6 +693,7 @@ ROLE_LABELS = {
     "operator": "Operator",
     "driver": "Driver",
     "crm": "CRM",
+    "sales_eternal": "Sales Eternal",
 }
 
 # Stage index → permission required to advance from that stage.

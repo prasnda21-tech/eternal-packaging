@@ -908,6 +908,7 @@ export const SETTINGS_TAB_IDS = [
   "sales-activity",
   "route-optimizer",
   "accurate-creators",
+  "sales-user-mapping",
   "audit",
 ];
 
@@ -937,6 +938,7 @@ export const SETTINGS_TILE_TONES = {
   "sales-activity": "green",
   "route-optimizer": "blue",
   "accurate-creators": "purple",
+  "sales-user-mapping": "teal",
   audit: "orange",
 };
 
@@ -964,6 +966,7 @@ export const SETTINGS_TILE_LABELS = {
   "sales-activity": "Sales Activity & Ownership",
   "route-optimizer": "Optimasi Rute",
   "accurate-creators": "Pembuat PO Accurate",
+  "sales-user-mapping": "Mapping Sales Accurate",
   audit: "Audit Log",
 };
 
@@ -1024,6 +1027,9 @@ export function settingsNavVisible(hasPerm) {
   const accurateCreators = employees
     || canSeeNav(hasPerm, "accurate.import")
     || canSeeNav(hasPerm, "permissions.manage");
+  const salesUserMapping = canSeeNav(hasPerm, "settings.sales_user_mapping.view")
+    || canSeeNav(hasPerm, "settings.sales_user_mapping.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
   const audit = canSeeNav(hasPerm, "audit.view");
   const children = {
     employees: Boolean(parentGranted && employees),
@@ -1045,6 +1051,7 @@ export function settingsNavVisible(hasPerm) {
     "sales-activity": Boolean(parentGranted && salesActivity),
     "route-optimizer": Boolean(parentGranted && routeOptimizer),
     "accurate-creators": Boolean(parentGranted && accurateCreators),
+    "sales-user-mapping": Boolean(parentGranted && salesUserMapping),
     audit: Boolean(parentGranted && audit),
   };
   return {

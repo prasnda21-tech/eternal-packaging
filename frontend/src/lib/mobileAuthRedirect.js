@@ -6,6 +6,7 @@ export function isSafeMobileNextPath(path) {
   if (value.startsWith("//") || value.includes("://")) return false;
   if (value.includes("\\")) return false;
   if (value.startsWith("/m")) return true;
+  if (value === "/sales" || value.startsWith("/sales/")) return true;
   // Keep installed-PWA users on the shared in-app Optimasi Rute editor after re-auth.
   if (value === "/optimasi-rute" || value.startsWith("/optimasi-rute/")) return true;
   return false;

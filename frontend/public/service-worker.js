@@ -3,7 +3,7 @@
    No offline mutation queue. Installability only — not offline ERP. */
 
 const SHELL_CACHE = "eternal-pwa-shell-v1";
-const SHELL_ASSETS = ["/manifest.json", "/eternal-favicon.png"];
+const SHELL_ASSETS = ["/manifest.json", "/sales-manifest.json", "/eternal-favicon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

@@ -137,6 +137,7 @@ ORDER_PREDICTION_PROJECTION = {
     "outlet": 1,
     "delivery_outlet_id": 1,
     "sales": 1,
+    "sales_user_id": 1,
     "sales_user": 1,
     "seller": 1,
     "notes": 1,
