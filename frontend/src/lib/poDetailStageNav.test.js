@@ -1,9 +1,13 @@
 import { STAGES } from "./constants";
 import {
   PO_DETAIL_STAGE_SECTION_IDS,
+  deskPanelOwnsStage,
+  parsePoDetailStageParam,
   poDetailStageSectionId,
+  poDetailStageSlug,
   scrollToPoDetailStage,
   scrollToPoDetailStageIndex,
+  syncPoDetailStageQuery,
 } from "./poDetailStageNav";
 
 describe("PO Detail stage navigation", () => {
@@ -34,5 +38,40 @@ describe("PO Detail stage navigation", () => {
     expect(scrollToPoDetailStageIndex(11)).toBe(true);
     expect(getElementById).toHaveBeenCalledWith("po-stage-packing");
     getElementById.mockRestore();
+  });
+
+  test("parses ?stage= slugs, focus aliases, and numeric indexes", () => {
+    expect(parsePoDetailStageParam("?stage=order-masuk")).toBe(0);
+    expect(parsePoDetailStageParam("?stage=approval-design")).toBe(2);
+    expect(parsePoDetailStageParam("?stage=packing")).toBe(11);
+    expect(parsePoDetailStageParam("?stage=surat-jalan")).toBe(12);
+    expect(parsePoDetailStageParam("?stage=loading")).toBe(13);
+    expect(parsePoDetailStageParam("?stage=pengiriman")).toBe(14);
+    expect(parsePoDetailStageParam("?focus=5")).toBe(5);
+    expect(parsePoDetailStageParam("?stage=nope")).toBe(null);
+    expect(poDetailStageSlug(11)).toBe("packing");
+  });
+
+  test("combined panels own adjacent canonical stages without sharing others", () => {
+    expect(deskPanelOwnsStage("payment", 3)).toBe(true);
+    expect(deskPanelOwnsStage("payment", 4)).toBe(true);
+    expect(deskPanelOwnsStage("payment", 5)).toBe(false);
+    expect(deskPanelOwnsStage("sample", 8)).toBe(true);
+    expect(deskPanelOwnsStage("sample", 9)).toBe(true);
+    expect(deskPanelOwnsStage("11", 11)).toBe(true);
+    expect(deskPanelOwnsStage("11", 12)).toBe(false);
+  });
+
+  test("syncPoDetailStageQuery writes stage without API calls", () => {
+    const push = jest.spyOn(window.history, "pushState");
+    const replace = jest.spyOn(window.history, "replaceState");
+    syncPoDetailStageQuery(11, { push: true });
+    expect(push).toHaveBeenCalled();
+    expect(String(push.mock.calls[0][2])).toMatch(/stage=packing/);
+    syncPoDetailStageQuery(0, { push: false });
+    expect(replace).toHaveBeenCalled();
+    expect(String(replace.mock.calls[0][2])).toMatch(/stage=order-masuk/);
+    push.mockRestore();
+    replace.mockRestore();
   });
 });

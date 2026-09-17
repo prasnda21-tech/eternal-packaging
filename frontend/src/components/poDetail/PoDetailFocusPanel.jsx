@@ -1,14 +1,24 @@
 import { ArrowRight } from "lucide-react";
-import { scrollToPoDetailStageIndex } from "../../lib/poDetailStageNav";
 import { resolveOperationalFocus } from "../../lib/poDetailPresentation";
 
 /**
  * Compact operational focus — presentation only.
- * Surfaces existing stage/hold info; jumps to the real action controls via scroll.
+ * Jumps to the actual stage workspace without mutation.
  */
-export default function PoDetailFocusPanel({ order, primaryAction = null }) {
+export default function PoDetailFocusPanel({
+  order,
+  primaryAction = null,
+  onGotoStage,
+  viewedStage = null,
+  actualStage = null,
+}) {
   const focus = resolveOperationalFocus(order);
   if (!focus) return null;
+  const actualIndex = actualStage == null || Number.isNaN(Number(actualStage))
+    ? Number(focus.stageIndex)
+    : Number(actualStage);
+  const viewingOther =
+    viewedStage != null && Number(viewedStage) !== actualIndex;
 
   return (
     <section
@@ -17,7 +27,7 @@ export default function PoDetailFocusPanel({ order, primaryAction = null }) {
       aria-label="Fokus Saat Ini"
     >
       <div className="po-focus-head">
-        <span className="po-focus-kicker">Fokus Saat Ini</span>
+        <span className="po-focus-kicker">Tahap aktif saat ini</span>
         <strong className="po-focus-title" data-testid="po-focus-title">
           {focus.title}
         </strong>
@@ -34,14 +44,16 @@ export default function PoDetailFocusPanel({ order, primaryAction = null }) {
       )}
       <div className="po-focus-actions">
         {primaryAction}
-        <button
-          type="button"
-          className="ghost sm"
-          data-testid="po-focus-goto-stage"
-          onClick={() => scrollToPoDetailStageIndex(focus.stageIndex)}
-        >
-          Ke tahap {focus.stageName} <ArrowRight size={14} />
-        </button>
+        {viewingOther && typeof onGotoStage === "function" && (
+          <button
+            type="button"
+            className="ghost sm"
+            data-testid="po-focus-goto-stage"
+            onClick={() => onGotoStage(actualIndex)}
+          >
+            Kembali ke Tahap Aktif <ArrowRight size={14} />
+          </button>
+        )}
       </div>
     </section>
   );

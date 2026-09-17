@@ -19,8 +19,108 @@ export const PO_DETAIL_STAGE_SECTION_IDS = {
   Pengiriman: "po-stage-pengiriman",
 };
 
+/** Display-only URL slugs (`?stage=`). Never sent to the backend. */
+export const PO_DETAIL_STAGE_SLUGS = {
+  "order-masuk": 0,
+  design: 1,
+  "approval-design": 2,
+  payment: 3,
+  "approval-payment": 4,
+  penjadwalan: 5,
+  screener: 6,
+  "persiapan-helper": 7,
+  operator: 8,
+  "konfirmasi-sample": 9,
+  cetak: 10,
+  packing: 11,
+  "surat-jalan": 12,
+  loading: 13,
+  pengiriman: 14,
+};
+
+export const PO_DETAIL_STAGE_SLUG_BY_INDEX = [
+  "order-masuk",
+  "design",
+  "approval-design",
+  "payment",
+  "approval-payment",
+  "penjadwalan",
+  "screener",
+  "persiapan-helper",
+  "operator",
+  "konfirmasi-sample",
+  "cetak",
+  "packing",
+  "surat-jalan",
+  "loading",
+  "pengiriman",
+];
+
 export function poDetailStageSectionId(stageName) {
   return PO_DETAIL_STAGE_SECTION_IDS[stageName] || null;
+}
+
+export function clampWorkflowStageIndex(idx, fallback = 0) {
+  const n = Number(idx);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(STAGES.length - 1, Math.max(0, Math.trunc(n)));
+}
+
+export function poDetailStageSlug(index) {
+  return PO_DETAIL_STAGE_SLUG_BY_INDEX[clampWorkflowStageIndex(index, 0)] || "order-masuk";
+}
+
+export function parsePoDetailStageParam(search) {
+  const rawSearch = String(search || "");
+  const q = new URLSearchParams(rawSearch.startsWith("?") ? rawSearch.slice(1) : rawSearch);
+  const raw = q.get("stage") || q.get("focus");
+  if (raw == null || raw === "") return null;
+  if (/^\d+$/.test(String(raw))) return clampWorkflowStageIndex(raw, 0);
+  const slug = String(raw).toLowerCase().replace(/_/g, "-");
+  if (Object.prototype.hasOwnProperty.call(PO_DETAIL_STAGE_SLUGS, slug)) {
+    return PO_DETAIL_STAGE_SLUGS[slug];
+  }
+  return null;
+}
+
+export function accordionIndexForFocus(stageIndex) {
+  const i = clampWorkflowStageIndex(stageIndex, 0);
+  if (i === 4) return 3;
+  if (i === 9) return 8;
+  return i;
+}
+
+export function deskPanelOwnsStage(stageToken, viewedStage) {
+  const viewed = Number(viewedStage);
+  const token = String(stageToken);
+  if (token === "3" || token === "4" || token === "payment") return viewed === 3 || viewed === 4;
+  if (token === "8" || token === "9" || token === "sample") return viewed === 8 || viewed === 9;
+  return viewed === Number(token);
+}
+
+export function poDetailStagePanelTitle(stageIndex) {
+  const i = clampWorkflowStageIndex(stageIndex, 0);
+  return `Workspace ${i + 1} — ${STAGES[i]}`;
+}
+
+/**
+ * Display-only URL sync. Uses history so Back/Forward restore the viewed stage.
+ * Does not touch React Router (custom MemoryRouter mocks omit search).
+ */
+export function syncPoDetailStageQuery(stageIndex, { push = true } = {}) {
+  if (typeof window === "undefined" || !window.history) return;
+  const slug = poDetailStageSlug(stageIndex);
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("stage", slug);
+    url.searchParams.delete("focus");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const state = { ...(window.history.state || {}), poStage: slug };
+    if (push) window.history.pushState(state, "", next);
+    else window.history.replaceState(state, "", next);
+  } catch {
+    /* ignore malformed location in tests */
+  }
 }
 
 export function scrollToPoDetailStage(stageName, { behavior = "smooth" } = {}) {

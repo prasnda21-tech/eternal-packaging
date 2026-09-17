@@ -59,12 +59,13 @@ describe("Detail PO industrial information architecture", () => {
     expect(admin.indexOf("rollback-button")).toBeGreaterThan(admin.indexOf("po-actions-danger-body"));
   });
 
-  test("focus panel is presentational and reuses scroll navigation", () => {
+  test("focus panel is presentational and jumps by display-only stage selection", () => {
     expect(detail).toMatch(/PoDetailFocusPanel/);
-    expect(focus).toMatch(/Fokus Saat Ini/);
+    expect(focus).toMatch(/Tahap aktif saat ini/);
     expect(focus).toMatch(/resolveOperationalFocus/);
-    expect(focus).toMatch(/scrollToPoDetailStageIndex/);
+    expect(focus).toMatch(/onGotoStage/);
     expect(focus).not.toMatch(/api\./);
+    expect(focus).not.toMatch(/current_stage/);
     expect(presentation).toMatch(/resolveStageState/);
     expect(presentation).not.toMatch(/api\./);
   });
