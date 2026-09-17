@@ -1,6 +1,7 @@
 """Focused tests: safe imported line product replacement (Path 1)."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import uuid
@@ -17,6 +18,7 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 
 from server import app, current_user  # noqa: E402
 import server as server_mod  # noqa: E402
+import services.line_product_replacement as replacement_mod  # noqa: E402
 from services.line_product_replacement import (  # noqa: E402
     REASON_CROSS_TYPE,
     REASON_DOWNSTREAM,
@@ -677,3 +679,30 @@ async def test_stock_claim_locks_line():
     app.dependency_overrides.pop(current_user, None)
     assert res.status_code == 409
     await db().stock_movements.delete_many({"order_id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_all_line_eligibility_checks_run_concurrently_and_keep_order(monkeypatch):
+    active = 0
+    peak = 0
+
+    async def fake_evaluate(_db, _order, line_idx):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return {"line_idx": line_idx}
+
+    monkeypatch.setattr(
+        replacement_mod,
+        "evaluate_line_product_replacement",
+        fake_evaluate,
+    )
+    result = await replacement_mod.evaluate_all_line_product_replacements(
+        object(),
+        {"line_items": [{}, {}, {}]},
+    )
+
+    assert peak == 3
+    assert [row["line_idx"] for row in result] == [0, 1, 2]
