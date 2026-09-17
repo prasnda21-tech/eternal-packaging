@@ -9,6 +9,9 @@ import {
   nextActionableLoadingSjId,
   loadingVerificationStatus,
   sjLinesForDiscrepancy,
+  selectedSjDisplayLines,
+  totalSelectedSjQty,
+  sharedSjDisplayUnit,
   discrepancyDiff,
   validateDiscrepancySelection,
   loadingDiscrepancies,
@@ -16,13 +19,15 @@ import {
   LOADING_REPORT_DISCREPANCY_PERM,
 } from "../../lib/loadingConfirm";
 import { SJ_VIEW_FILE_PERM, suratJalanFileUrl } from "../../lib/suratJalan";
-import { loadingAvailability, loadingSkipsPacking, matchLoadingSjFile, mobileWorkStatus } from "../../lib/mobileWorkspaces";
+import { loadingAvailability, loadingSkipsPacking, matchLoadingSjFile } from "../../lib/mobileWorkspaces";
 import { useAuth } from "../../lib/auth";
-import MobileMetricStrip from "../components/MobileMetricStrip";
-import MobileStatusBadge from "../components/MobileStatusBadge";
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("id-ID");
+}
+
+function fmtQtyUnit(qty, unit) {
+  return `${fmt(qty)} ${unit || "pcs"}`;
 }
 
 export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, shipmentId }) {
@@ -32,12 +37,16 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
   const hinted = String(shipmentId || params.get("shipment") || "").trim();
   const resolvedId = hinted || nextActionableLoadingSjId(order, "");
   const activeSj = matchLoadingSjFile(sjFiles, resolvedId);
+  const selectedSjKey = String(activeSj?.shipment_id || activeSj?.id || "").trim();
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
+  const displayLines = useMemo(
+    () => selectedSjDisplayLines(order, selectedSjKey || activeSj?.id),
+    [order, selectedSjKey, activeSj?.id],
+  );
+  const totalQtySj = totalSelectedSjQty(displayLines);
   const avail = loadingAvailability(order, poLines, sjFiles);
   const skipPacking = loadingSkipsPacking(poLines);
-  const statusTarget = avail.packed > 0 ? avail.packed : (avail.loaded + avail.remaining);
-  const status = mobileWorkStatus(avail.loaded, statusTarget);
   const verification = loadingVerificationStatus(order, activeSj?.id);
   const openDisc = loadingDiscrepancies(order);
 
@@ -52,6 +61,8 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
   const [err, setErr] = useState("");
 
   const isComplete = String(verification?.code || "").includes("complete");
+  const verifyLabel = isComplete ? "Selesai" : "Belum";
+  const loadingLabel = isComplete ? "Loading Selesai" : "Belum";
 
   const toggleMark = (lineIdx) => {
     setSelected((prev) => {
@@ -120,7 +131,6 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
   return (
     <section data-testid="mobile-ws-loading" className="mop-ws-role mop-ws-role--loading">
       <div className="mop-ws-header"><h2>LOADING</h2></div>
-      <p className="mop-card-meta" data-testid="mobile-loading-subtitle">Verifikasi Kesesuaian SJ</p>
       {sjFiles.length > 1 && !activeSj && (
         <label data-testid="mobile-loading-sj-picker" className="mop-card-meta" style={{ display: "grid", gap: 6, marginBottom: 10 }}>
           <span>Pilih Surat Jalan</span>
@@ -141,15 +151,41 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
           </select>
         </label>
       )}
-      <MobileStatusBadge status={status} />
-      <div className="mop-card-meta" data-testid="mobile-loading-verification">
-        {verification?.label || "Menunggu Verifikasi"}
+      <div className="mop-loading-status" data-testid="mobile-loading-status-panel">
+        <div data-testid="mobile-loading-verification">
+          <span>Verifikasi Kesesuaian SJ</span>
+          <strong data-testid="mobile-loading-verify-value">{verifyLabel}</strong>
+        </div>
+        <div data-testid="mobile-loading-status">
+          <span>Status Loading</span>
+          <strong data-testid="mobile-loading-status-value">{loadingLabel}</strong>
+        </div>
       </div>
-      <MobileMetricStrip items={[
-        { label: "Packed Qty", value: avail.packed.toLocaleString("id-ID") },
-        { label: "Loaded Qty", value: avail.loaded.toLocaleString("id-ID") },
-        { label: "Remaining Qty", value: avail.remaining.toLocaleString("id-ID") },
-      ]} />
+      {activeSj ? (
+        <div className="mop-sj-lines" data-testid="mobile-loading-sj-lines">
+          <h3>Barang Sesuai Surat Jalan</h3>
+          <table className="mop-sj-lines-table">
+            <thead>
+              <tr>
+                <th>Item Line</th>
+                <th>Qty SJ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayLines.map((ln, i) => (
+                <tr key={ln.key} data-testid={`mobile-loading-sj-line-${i}`}>
+                  <td data-testid={`mobile-loading-sj-line-name-${i}`}>{ln.name}</td>
+                  <td data-testid={`mobile-loading-sj-line-qty-${i}`}>{fmtQtyUnit(ln.qty_sj, ln.unit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="mop-sj-lines-total" data-testid="mobile-loading-sj-total">
+            <span>Total Qty SJ</span>
+            <strong>{fmtQtyUnit(totalQtySj, sharedSjDisplayUnit(displayLines))}</strong>
+          </div>
+        </div>
+      ) : null}
       {avail.blocked && <div className="mop-error">{avail.reason}</div>}
       {!avail.blocked && skipPacking && Number(avail.packed || 0) === 0 && (
         <div className="mop-card-meta" data-testid="mobile-loading-nonprint-note">
