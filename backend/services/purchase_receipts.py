@@ -20,8 +20,10 @@ from services.current_stock import qty_num
 from services.purchase_common import (
     PREFIX_GOODS_RECEIPT,
     actor_snapshot,
+    cancellation_fields,
     stamp_create,
     get_named_lock,
+    is_cancelled,
     next_dated_seq,
     now_iso as purchase_now_iso,
     parse_qty,
@@ -296,7 +298,9 @@ def public_receipt(rec: dict, masters_by_aid: Optional[Dict[str, dict]] = None) 
             "received_qty": qty_num(li.get("received_qty")),
         })
     status = rec.get("approval_status") or ""
-    if not status:
+    if not is_accurate_receipt_source(rec):
+        status = "CANCELLED" if is_cancelled(rec) else "ACTIVE"
+    elif not status:
         status = "VALID" if rec.get("valid") is not False else "INVALID"
     source = rec.get("source") or RECEIPT_SOURCE_ACCURATE
     last_synced = rec.get("last_synced_at") if is_accurate_receipt_source(rec) else None
@@ -323,6 +327,8 @@ def public_receipt(rec: dict, masters_by_aid: Optional[Dict[str, dict]] = None) 
         "cancelled_at": rec.get("cancelled_at"),
         "cancelled_by": rec.get("cancelled_by"),
         "cancel_reason": rec.get("cancel_reason") or "",
+        "reversal_movement_id": rec.get("reversal_movement_id"),
+        "reversal_movement_ids": rec.get("reversal_movement_ids") or [],
         "lines": lines,
     }
 
@@ -505,3 +511,65 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
         await db[COLLECTION].insert_one(dict(doc))
         doc.pop("_id", None)
         return doc
+
+
+async def cancel_manual_purchase_receipt(
+    db,
+    receipt_id: str,
+    user: dict,
+    *,
+    reason: str = "",
+) -> dict:
+    """Soft-cancel one ERP manual receipt; Accurate history is immutable."""
+    rid = str(receipt_id or "").strip()
+    why = str(reason or "").strip()
+    async with get_named_lock("purchase_receipt_manual"):
+        doc = await db[COLLECTION].find_one(
+            {
+                "$or": [
+                    {"accurate_receipt_id": rid},
+                    {"receipt_number": rid},
+                ]
+            },
+            {"_id": 0},
+        )
+        if not doc:
+            raise HTTPException(404, f"Penerimaan Barang '{rid}' tidak ditemukan.")
+        if is_accurate_receipt_source(doc):
+            raise HTTPException(409, "Riwayat Penerimaan Accurate tidak dapat dibatalkan dari ERP.")
+        if is_cancelled(doc):
+            return doc
+        if not why:
+            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
+
+        linked_gr = None
+        goods_receipt_id = str(doc.get("goods_receipt_id") or "").strip()
+        if goods_receipt_id:
+            from services.purchase_goods_receipts import cancel_purchase_goods_receipt
+
+            linked_gr = await cancel_purchase_goods_receipt(
+                db,
+                goods_receipt_id,
+                user,
+                reason=why,
+            )
+
+        fields = cancellation_fields(user, why)
+        fields.update({
+            "status": "CANCELLED",
+            "valid": False,
+            "reversal_movement_id": (linked_gr or {}).get("reversal_movement_id"),
+            "reversal_movement_ids": (linked_gr or {}).get("reversal_movement_ids") or [],
+        })
+        await db[COLLECTION].update_one(
+            {
+                "accurate_receipt_id": doc["accurate_receipt_id"],
+                "cancelled": {"$ne": True},
+                "source": RECEIPT_SOURCE_MANUAL,
+            },
+            {"$set": fields},
+        )
+        return await db[COLLECTION].find_one(
+            {"accurate_receipt_id": doc["accurate_receipt_id"]},
+            {"_id": 0},
+        )

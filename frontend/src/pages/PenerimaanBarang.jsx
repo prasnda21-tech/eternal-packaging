@@ -485,7 +485,14 @@ export default function PenerimaanBarang() {
     setCancelErr("");
     try {
       const cancelledPoId = cancelTarget.purchase_order_id;
-      await api.cancelPurchaseGoodsReceipt(cancelTarget.id, reason);
+      if (String(cancelTarget.source || "").toLowerCase() === "manual") {
+        await api.cancelManualPurchaseReceipt(
+          cancelTarget.accurate_receipt_id || cancelTarget.id,
+          reason,
+        );
+      } else {
+        await api.cancelPurchaseGoodsReceipt(cancelTarget.id, reason);
+      }
       setOk(`Penerimaan ${cancelTarget.receipt_number || ""} berhasil dibatalkan.`);
       setCancelTarget(null);
       setCancelReason("");
@@ -1048,6 +1055,8 @@ export default function PenerimaanBarang() {
                           it={it}
                           open={open}
                           onToggle={() => setOpenId(open ? null : it.accurate_receipt_id)}
+                          canCancel={canReceivePo && row.kind === "manual"}
+                          onCancel={openCancelReceipt}
                         />
                       );
                     })}
@@ -1183,8 +1192,9 @@ export default function PenerimaanBarang() {
   );
 }
 
-function FragmentRow({ it, open, onToggle }) {
+function FragmentRow({ it, open, onToggle, canCancel, onCancel }) {
   const isManual = String(it.source || "") === "manual";
+  const cancelled = it.cancelled === true || it.status === "CANCELLED";
   const badge = receiptSourceBadge(isManual ? "manual" : "accurate");
   const supplier = it.supplier || "—";
   const po = it.po_number ? String(it.po_number) : "";
@@ -1203,7 +1213,9 @@ function FragmentRow({ it, open, onToggle }) {
         <td className="cell-clip" title={supplierPo}>{supplierPo}</td>
         <td className="num mono">{fmtQty(it.total_qty)}</td>
         <td className="cell-status">
-          <span className="purchase-status-badge">{it.valid ? (it.status || "VALID") : (it.status || "INVALID")}</span>
+          <span className="purchase-status-badge">
+            {cancelled ? "DIBATALKAN" : (it.valid ? (it.status || "ACTIVE") : (it.status || "INVALID"))}
+          </span>
         </td>
       </tr>
       {open && (
@@ -1244,6 +1256,18 @@ function FragmentRow({ it, open, onToggle }) {
               testId={`receipt-documents-${it.accurate_receipt_id || it.id || "acc"}`}
             />
             <PurchaseActivityHistory doc={it} testId={`receipt-activity-${it.accurate_receipt_id || it.id || "acc"}`} />
+            {isManual && canCancel && !cancelled && (
+              <div className="purchase-detail-actions">
+                <button
+                  type="button"
+                  className="ghost danger"
+                  data-testid={`btn-batalkan-manual-receipt-${it.accurate_receipt_id}`}
+                  onClick={(e) => { e.stopPropagation(); onCancel?.(it); }}
+                >
+                  Batalkan Penerimaan
+                </button>
+              </div>
+            )}
           </td>
         </tr>
       )}

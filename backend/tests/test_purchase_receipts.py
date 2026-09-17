@@ -531,7 +531,7 @@ def test_manual_create_authorized_fields_and_identity():
     pub = public_receipt(doc)
     assert pub["source"] == "manual"
     assert pub["last_synced_at"] is None
-    assert pub["status"] == "VALID"
+    assert pub["status"] == "ACTIVE"
     assert pub["lines"][0]["item_name"] == "Paper cup 12oz"
 
 
