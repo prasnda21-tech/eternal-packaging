@@ -162,4 +162,10 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/canReceivePo && !cancelled/);
     expect(pageSrc).not.toMatch(/cancelPurchaseOrder\(poDetail/);
   });
+
+  test("PO detail refreshes receipt cancel eligibility before rendering action", () => {
+    expect(pageSrc).toMatch(/api\.listPurchaseGoodsReceipts\(\{\s*purchase_order_id: poId,\s*include_cancelled: true/);
+    expect(pageSrc).toMatch(/setPoReceipts\(\(current\)/);
+    expect(pageSrc).toMatch(/disabled=\{receipt\.can_cancel === false\}/);
+  });
 });
