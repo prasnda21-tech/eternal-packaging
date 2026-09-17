@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, Download, FileText } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fetchSuratJalanBlob } from "../lib/suratJalan";
+import { fetchSuratJalanBlob, safeMobileDocumentReturn } from "../lib/suratJalan";
 import SalesPwaPdfViewer from "../sales/SalesPwaPdfViewer";
-
-function safeMobileReturn(raw) {
-  const value = String(raw || "").trim();
-  if (!value.startsWith("/m/") || value.startsWith("//")) return "";
-  return value;
-}
 
 export default function MobileSuratJalanViewerPage() {
   const { id, fileId } = useParams();
@@ -16,7 +10,7 @@ export default function MobileSuratJalanViewerPage() {
   const navigate = useNavigate();
   const directGuard = useRef(false);
   const workspace = params.get("ws") === "delivery" ? "delivery" : "loading";
-  const requestedReturn = safeMobileReturn(params.get("return_to"));
+  const requestedReturn = safeMobileDocumentReturn(params.get("return_to"));
   const fallback = `/m/orders/${encodeURIComponent(id)}?ws=${workspace}`;
   const returnTarget = requestedReturn || fallback;
   const [viewer, setViewer] = useState({ loading: true, blob: null, url: "", error: "" });
@@ -107,4 +101,3 @@ export default function MobileSuratJalanViewerPage() {
   );
 }
 
-export { safeMobileReturn };
