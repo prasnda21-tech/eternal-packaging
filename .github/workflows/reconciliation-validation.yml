@@ -43,7 +43,7 @@ jobs:
           python -m pytest -q
           tests/test_stock_engine_v2.py
           tests/test_stock_v2_off_state_compat.py
-          tests/test_line_product_replacement.py::test_all_line_eligibility_checks_run_concurrently_and_keep_order
+          tests/test_line_product_replacement_concurrency.py
 
   frontend-focused:
     name: Frontend tests and build
