@@ -3990,6 +3990,12 @@ html:has(.ship-status-page) #root{
   text-overflow:ellipsis;
   white-space:nowrap;
 }
+.ship-status-page .ship-table td.ship-cust{
+  max-width:26rem;
+}
+.ship-status-page .ship-table td.ship-td-sj{
+  white-space:nowrap;
+}
 .ship-table tbody td:has(.ghost.sm),
 .ship-table tbody td:has(a.ghost.sm){
   white-space:nowrap;

@@ -723,3 +723,112 @@ describe("DeliverySchedulePage desktop exact-SJ hrefs", () => {
   });
 });
 
+describe("DeliverySchedulePage table without Driver column", () => {
+  const scheduleSource = fs.readFileSync(
+    path.join(__dirname, "DeliverySchedulePage.jsx"),
+    "utf8",
+  );
+  let container;
+  let root;
+
+  const setupDom = () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  };
+
+  const renderSchedule = async ({ canOptimize = true, rows = sampleRows } = {}) => {
+    const allowed = new Set([
+      "schedule.view",
+      "route_optimizer.create",
+      "route_optimizer.optimize",
+      "delivery.location.manage",
+    ]);
+    mockHasPerm.mockImplementation((permission) => (
+      canOptimize ? allowed.has(permission) : permission === "schedule.view"
+    ));
+    mockDeliverySchedule.mockResolvedValue({ rows });
+    await act(async () => {
+      root.render(<DeliverySchedulePage />);
+    });
+  };
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    mockHasPerm.mockReset();
+    mockDeliverySchedule.mockReset();
+    mockNavigate.mockReset();
+    setupDom();
+  });
+
+  afterEach(() => {
+    if (root) act(() => root.unmount());
+    if (container?.isConnected) container.remove();
+    sessionStorage.clear();
+  });
+
+  test("static: table header and row no longer render the Driver column", () => {
+    expect(scheduleSource).not.toMatch(/data-testid="ds-sort-driver"/);
+    expect(scheduleSource).not.toMatch(/<td>{r\.driver_name \|\| "—"}<\/td>/);
+    expect(scheduleSource).toMatch(/data-testid="ds-adv-driver"/);
+    expect(scheduleSource).toMatch(/const colCount = canOptimize \? 10 : 9/);
+  });
+
+  test("Status Lokasi is followed directly by Terkirim", async () => {
+    await renderSchedule();
+    const headers = Array.from(container.querySelectorAll("thead th"));
+    const labels = headers.map((header) => header.textContent.trim());
+    expect(labels).not.toContain("Driver");
+    expect(labels.indexOf("Terkirim")).toBe(labels.indexOf("Status Lokasi") + 1);
+    expect(headers).toHaveLength(10);
+  });
+
+  test("user without route optimization sees nine headers and no Driver", async () => {
+    await renderSchedule({ canOptimize: false });
+    const headers = Array.from(container.querySelectorAll("thead th"));
+    expect(headers).toHaveLength(9);
+    expect(headers.map((header) => header.textContent.trim())).not.toContain("Driver");
+    expect(container.querySelector('[data-testid="ds-select-all"]')).toBeNull();
+  });
+
+  test("authorized row has ten cells and does not render driver name", async () => {
+    await renderSchedule();
+    const row = container.querySelector('[data-testid="ds-row-PO-100"]');
+    expect(row).toBeTruthy();
+    expect(row.querySelectorAll("td")).toHaveLength(10);
+    expect(row.textContent).not.toContain("Budi");
+    expect(row.querySelector('[data-testid="ds-terkirim-PO-100"]')).toBeTruthy();
+    expect(row.querySelector('[data-testid="ds-dapat-PO-100"]')).toBeTruthy();
+  });
+
+  test("row without route optimization has exactly nine cells", async () => {
+    await renderSchedule({ canOptimize: false });
+    const row = container.querySelector('[data-testid="ds-row-PO-100"]');
+    expect(row).toBeTruthy();
+    expect(row.querySelectorAll("td")).toHaveLength(9);
+    expect(row.textContent).not.toContain("Budi");
+  });
+
+  test("empty-state colSpan matches both permission variants", async () => {
+    await renderSchedule({ rows: [] });
+    expect(container.querySelector("tbody td.empty-state").colSpan).toBe(10);
+
+    act(() => root.unmount());
+    container.remove();
+    setupDom();
+    await renderSchedule({ canOptimize: false, rows: [] });
+    expect(container.querySelector("tbody td.empty-state").colSpan).toBe(9);
+  });
+
+  test("driver filter data and existing row actions remain available", async () => {
+    await renderSchedule();
+    const filterButton = container.querySelector('[data-testid="ds-filter-btn"]');
+    await act(async () => {
+      filterButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-adv-driver"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-kerja-link-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-atur-lokasi-PO-100"]')).toBeTruthy();
+  });
+});
+

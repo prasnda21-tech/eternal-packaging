@@ -257,7 +257,7 @@ export default function DeliverySchedulePage() {
     navigate(desktopScheduleReviewHref(ids));
   };
 
-  const colCount = canOptimize ? 13 : 12;
+  const colCount = canOptimize ? 10 : 9;
 
   return (
     <div className="ship-status-page" data-testid="delivery-schedule-page">
@@ -383,13 +383,6 @@ export default function DeliverySchedulePage() {
                 thTestid="ds-col-status-lokasi"
               />
               <SortableTh
-                label="Driver"
-                sortKey={DELIVERY_SORT_KEYS.driver}
-                sort={sort}
-                onCycle={onHeaderSort}
-                testid="ds-sort-driver"
-              />
-              <SortableTh
                 label="Terkirim"
                 sortKey={DELIVERY_SORT_KEYS.shipped}
                 sort={sort}
@@ -452,7 +445,6 @@ export default function DeliverySchedulePage() {
                       {locationStatus}
                     </span>
                   </td>
-                  <td>{r.driver_name || "—"}</td>
                   <td>
                     <ProgressCell
                       pct={r.percent_delivered_display ?? r.percent_delivered}
@@ -469,7 +461,7 @@ export default function DeliverySchedulePage() {
                       title={`Dicetak operator ${r.qty_printed_operator ?? 0} / ${r.print_qty_total ?? 0}`}
                     />
                   </td>
-                  <td>
+                  <td className="ship-td-sj">
                     <span className="mono" data-testid={sjCellTestId(r)}>
                       {scheduleRowSjNumber(r) || "—"}
                     </span>
