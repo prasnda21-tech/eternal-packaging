@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { Check, RefreshCw, X } from "lucide-react";
 import api from "../lib/api";
 import MasterItemSearchSelect, { formatMasterItemLabel } from "./MasterItemSearchSelect";
 
@@ -59,7 +59,31 @@ export function formatReplaceApiError(err) {
   const d = err?.response?.data?.detail;
   if (typeof d === "string") return d;
   if (d && typeof d === "object") return d.message || d.code || JSON.stringify(d);
-  return err?.message || "Gagal mengganti barang";
+  return err?.message || "Gagal mengubah item PO";
+}
+
+export function parsePositiveQty(value) {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const qty = Number(raw);
+  return Number.isSafeInteger(qty) && qty > 0 ? qty : null;
+}
+
+export function isSameCanonicalProduct(line, target) {
+  if (!target) return true;
+  const lineMasterId = line?.master_item_id || line?.product_id || line?.item_id || null;
+  const targetMasterId = target?.id || target?.master_item_id || null;
+  const lineAccurateId = line?.accurate_item_id || null;
+  const targetAccurateId = target?.accurate_item_id || null;
+  if (lineMasterId && targetMasterId) return String(lineMasterId) === String(targetMasterId);
+  if (lineAccurateId && targetAccurateId) return String(lineAccurateId) === String(targetAccurateId);
+  return false;
+}
+
+export function hasLineItemChanges(line, target, qtyValue) {
+  const qty = parsePositiveQty(qtyValue);
+  const currentQty = Number(line?.quantity || 0);
+  return !isSameCanonicalProduct(line, target) || (qty !== null && qty !== currentQty);
 }
 
 export default function LineProductReplaceControl({
@@ -70,6 +94,7 @@ export default function LineProductReplaceControl({
 }) {
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(null);
+  const [quantity, setQuantity] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
@@ -82,6 +107,7 @@ export default function LineProductReplaceControl({
   const openEditor = () => {
     setErr("");
     setTarget(null);
+    setQuantity(String(li.quantity || ""));
     setOpen(true);
   };
 
@@ -89,14 +115,24 @@ export default function LineProductReplaceControl({
     if (saving) return;
     setOpen(false);
     setTarget(null);
+    setQuantity("");
     setErr("");
   };
 
   const save = async () => {
-    if (saving || !target) return;
-    const mid = target.id || target.master_item_id || null;
-    const aid = target.accurate_item_id || null;
-    if (!mid && !aid) {
+    if (saving) return;
+    const qty = parsePositiveQty(quantity);
+    if (qty === null) {
+      setErr("Qty baru wajib berupa angka bulat lebih dari 0.");
+      return;
+    }
+    if (!hasLineItemChanges(li, target, quantity)) {
+      setErr("Belum ada perubahan barang atau qty.");
+      return;
+    }
+    const mid = target?.id || target?.master_item_id || null;
+    const aid = target?.accurate_item_id || null;
+    if (target && !mid && !aid) {
       setErr("Pilih produk dengan identitas kanonis.");
       return;
     }
@@ -104,12 +140,13 @@ export default function LineProductReplaceControl({
     setErr("");
     try {
       const res = await api.replaceSalesOrderLineProduct(order.id, lineIdx, {
-        master_item_id: mid,
-        accurate_item_id: aid,
+        ...(target ? { master_item_id: mid, accurate_item_id: aid } : {}),
+        quantity: qty,
       });
       if (res?.order && onUpdated) onUpdated(res.order);
       setOpen(false);
       setTarget(null);
+      setQuantity("");
     } catch (e) {
       setErr(formatReplaceApiError(e));
     } finally {
@@ -126,7 +163,7 @@ export default function LineProductReplaceControl({
           onClick={openEditor}
           data-testid={`ganti-barang-btn-${lineIdx}`}
         >
-          <RefreshCw size={13} /> Ganti Barang
+          <RefreshCw size={13} /> Ubah Item
         </button>
       ) : (
         <span
@@ -140,45 +177,80 @@ export default function LineProductReplaceControl({
 
       {open && (
         <div className="modal" data-testid={`ganti-barang-modal-${lineIdx}`} role="dialog">
-          <div className="modal-inner" style={{ maxWidth: 480 }}>
+          <div className="modal-inner line-item-edit-modal">
             <header className="modal-head">
-              <h3>Ganti Barang</h3>
+              <div>
+                <h3>Ubah Item PO</h3>
+                <p className="muted small">Ganti barang dan qty dalam satu perubahan.</p>
+              </div>
               <button type="button" className="ghost sm" onClick={closeEditor} disabled={saving} aria-label="Tutup">
                 <X size={16} />
               </button>
             </header>
-            <div style={{ padding: "16px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
-              <div data-testid={`ganti-barang-current-${lineIdx}`}>
-                <div className="muted small">Barang Saat Ini</div>
-                <strong>{li.name || "—"}</strong>
-                {li.item_code ? <div className="mono small">{li.item_code}</div> : null}
+            <div className="line-item-edit-body">
+              <div className="line-item-edit-current" data-testid={`ganti-barang-current-${lineIdx}`}>
+                <div className="line-item-edit-section-label">Saat Ini</div>
+                <div className="line-item-edit-current-grid">
+                  <div>
+                    <span className="muted small">Barang</span>
+                    <strong>{li.name || "—"}</strong>
+                    {li.item_code ? <span className="mono small">{li.item_code}</span> : null}
+                  </div>
+                  <div>
+                    <span className="muted small">Qty</span>
+                    <strong>{Number(li.quantity || 0).toLocaleString("id-ID")} {li.unit || "pcs"}</strong>
+                  </div>
+                </div>
               </div>
 
               <div data-testid={`ganti-barang-search-${lineIdx}`}>
-                <div className="muted small" style={{ marginBottom: 6 }}>Cari Barang Pengganti</div>
+                <label className="line-item-edit-label">Barang Pengganti <span>(opsional)</span></label>
                 <MasterItemSearchSelect
                   value={target}
                   onChange={setTarget}
                   disabled={saving}
                   status="active"
-                  placeholder="Cari barang…"
+                  placeholder="Cari nama atau kode barang…"
                   emptyLabel="Produk tidak ditemukan"
                   testId={`ganti-barang-picker-${lineIdx}`}
                 />
               </div>
 
-              {target && (
-                <div data-testid={`ganti-barang-target-${lineIdx}`}>
-                  <div className="muted small">Ganti Menjadi</div>
-                  <strong>{formatMasterItemLabel(target)}</strong>
+              <label className="line-item-edit-field">
+                <span className="line-item-edit-label">Qty Baru</span>
+                <div className="line-item-edit-qty-wrap">
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputMode="numeric"
+                    value={quantity}
+                    onChange={(event) => { setQuantity(event.target.value); setErr(""); }}
+                    disabled={saving}
+                    data-testid={`ganti-barang-qty-${lineIdx}`}
+                  />
+                  <span>{target?.unit || li.unit || "pcs"}</span>
                 </div>
-              )}
+              </label>
+
+              <div className="line-item-edit-preview" data-testid={`ganti-barang-target-${lineIdx}`}>
+                <div className="line-item-edit-section-label">Setelah Disimpan</div>
+                <div className="line-item-edit-preview-row">
+                  <div>
+                    <strong>{target ? formatMasterItemLabel(target) : (li.name || "—")}</strong>
+                    <span>{parsePositiveQty(quantity)?.toLocaleString("id-ID") || "—"} {target?.unit || li.unit || "pcs"}</span>
+                  </div>
+                  <Check size={18} aria-hidden="true" />
+                </div>
+              </div>
+
+              <p className="line-item-edit-note">Perubahan hanya berlaku pada item PO ini. Tahap produksi tetap sama.</p>
 
               {err && (
                 <p className="error small" data-testid={`ganti-barang-error-${lineIdx}`}>{err}</p>
               )}
             </div>
-            <footer style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 22px", borderTop: "1px solid var(--line)" }}>
+            <footer className="line-item-edit-footer">
               <button type="button" className="ghost" onClick={closeEditor} disabled={saving}>
                 Batal
               </button>
@@ -186,10 +258,10 @@ export default function LineProductReplaceControl({
                 type="button"
                 className="primary"
                 onClick={save}
-                disabled={saving || !target}
+                disabled={saving || parsePositiveQty(quantity) === null || !hasLineItemChanges(li, target, quantity)}
                 data-testid={`ganti-barang-save-${lineIdx}`}
               >
-                {saving ? "Menyimpan…" : "Simpan Perubahan"}
+                {saving ? "Menyimpan…" : "Simpan Item & Qty"}
               </button>
             </footer>
           </div>
