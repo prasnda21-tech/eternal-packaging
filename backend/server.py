@@ -11448,7 +11448,7 @@ async def purchase_receipts_create(
 
 
 class PurchaseReceiptCancelPayload(BaseModel):
-    reason: str
+    reason: str = ""
 
 
 @api_router.post("/purchase-receipts/{receipt_id}/cancel")
