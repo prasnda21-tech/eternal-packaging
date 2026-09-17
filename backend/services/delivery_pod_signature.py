@@ -15,8 +15,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from quantity_rules import (
     MIN_DELIVERY_PROOFS,
-    valid_delivery_proof_count,
+    canonical_shipment_id,
+    shipment_is_active,
     valid_delivery_proofs,
+    valid_delivery_proofs_for_shipment,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,9 +243,21 @@ def get_frozen_driver_signatures(order: dict) -> List[dict]:
     return out
 
 
-def has_valid_active_signature(order: dict) -> bool:
+def _signature_matches_shipment(sig: Optional[dict], shipment: Optional[dict]) -> bool:
+    if not isinstance(sig, dict):
+        return False
+    if not isinstance(shipment, dict):
+        return True
+    expected = _text(shipment.get("id"))
+    actual = _text(sig.get("shipment_id"))
+    return bool(expected and actual == expected)
+
+
+def has_valid_active_signature(order: dict, shipment: Optional[dict] = None) -> bool:
     sig = get_active_signature(order)
     if not sig:
+        return False
+    if not _signature_matches_shipment(sig, shipment):
         return False
     if not normalize_recipient_name(sig.get("recipient_name")):
         return False
@@ -252,9 +266,11 @@ def has_valid_active_signature(order: dict) -> bool:
     return bool(path and fid)
 
 
-def has_valid_active_driver_signature(order: dict) -> bool:
+def has_valid_active_driver_signature(order: dict, shipment: Optional[dict] = None) -> bool:
     sig = get_active_driver_signature(order)
     if not sig:
+        return False
+    if not _signature_matches_shipment(sig, shipment):
         return False
     path = _text(sig.get("signature_storage_path") or sig.get("driver_signature_storage_path"))
     fid = _text(sig.get("signature_file_id") or sig.get("driver_signature_file_id") or sig.get("id"))
@@ -279,19 +295,21 @@ def apply_recipient_name_to_active_signature(order: dict, raw: Any) -> Optional[
     return None
 
 
-def signature_confirm_block_reason(order: dict) -> Optional[str]:
+def signature_confirm_block_reason(order: dict, shipment: Optional[dict] = None) -> Optional[str]:
     """Extra gates after the existing 2-photo rule. Legacy delivered docs are not blocked here."""
-    n = valid_delivery_proof_count(order)
+    n = len(valid_delivery_proofs_for_shipment(order, shipment))
     if n < MIN_DELIVERY_PROOFS:
         return None  # photo gate owns this message
-    if not get_active_signature(order):
+    sig = get_active_signature(order)
+    driver_sig = get_active_driver_signature(order)
+    if not sig or not _signature_matches_shipment(sig, shipment):
         return "Tanda tangan penerima wajib sebelum Konfirmasi Terkirim."
-    name_err = validate_recipient_name((get_active_signature(order) or {}).get("recipient_name"))
+    name_err = validate_recipient_name(sig.get("recipient_name"))
     if name_err:
         return name_err
-    if not has_valid_active_signature(order):
+    if not has_valid_active_signature(order, shipment):
         return "Tanda tangan penerima wajib sebelum Konfirmasi Terkirim."
-    if not has_valid_active_driver_signature(order):
+    if not driver_sig or not has_valid_active_driver_signature(order, shipment):
         return "Tanda tangan driver/pengirim wajib sebelum Konfirmasi Terkirim."
     return None
 
@@ -342,6 +360,56 @@ def resolve_shipment_and_sj(order: dict) -> Tuple[Optional[str], Optional[str]]:
         if files and files[-1].get("id"):
             sj_id = str(files[-1].get("id"))
     return sid, sj_id
+
+
+def resolve_requested_signature_identity(
+    order: dict,
+    *,
+    shipment_id: Optional[str] = None,
+    sj_file_id: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve and validate the exact active SJ identity for a new signature.
+
+    Client-provided UUIDs are never trusted blindly.  The selected shipment
+    must be active on this order and the SJ file must belong to that same
+    shipment, preventing a signature from being attached across sibling SJs.
+    """
+    from services.surat_jalan_files import find_generated_sj_file, file_entries
+
+    fallback_sid, _fallback_file_id = resolve_shipment_and_sj(order)
+    requested_sid = _text(shipment_id) or fallback_sid
+    if not requested_sid:
+        return None, None, "Surat Jalan aktif wajib dipilih sebelum tanda tangan."
+
+    matches = [
+        sh for sh in order.get("shipments") or []
+        if isinstance(sh, dict)
+        and shipment_is_active(sh)
+        and canonical_shipment_id(sh) == requested_sid
+    ]
+    if len(matches) != 1:
+        return None, None, "Surat Jalan tidak valid atau sudah tidak aktif."
+
+    generated = find_generated_sj_file(order, requested_sid)
+    candidates = []
+    if isinstance(generated, dict) and generated.get("id"):
+        candidates.append(generated)
+    for row in file_entries(order):
+        if (
+            isinstance(row, dict)
+            and str(row.get("shipment_id") or "") == requested_sid
+            and row.get("id")
+            and not any(str(item.get("id")) == str(row.get("id")) for item in candidates)
+        ):
+            candidates.append(row)
+    if len(candidates) != 1:
+        return None, None, "File Surat Jalan kanonis tidak ditemukan."
+
+    canonical_file_id = str(candidates[0]["id"])
+    requested_file_id = _text(sj_file_id)
+    if requested_file_id and requested_file_id != canonical_file_id:
+        return None, None, "File Surat Jalan tidak sesuai dengan SJ yang dipilih."
+    return requested_sid, canonical_file_id, None
 
 
 def build_signature_record(

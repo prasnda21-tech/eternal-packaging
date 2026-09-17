@@ -246,6 +246,23 @@ def _safe_legacy_loading_allocation(order: dict) -> List[dict]:
     return allocations
 
 
+def _exact_loading_shipment(order: dict, confirmation: dict) -> Optional[dict]:
+    """Resolve an unbound Loading row only from its immutable SJ identity.
+
+    Historical rows may predate ``shipment_id`` while already carrying the
+    canonical ``surat_jalan_id``.  That is deterministic even on a multi-SJ PO;
+    names, positions, quantities, and FIFO order are intentionally ignored.
+    """
+    source_id = str(confirmation.get("surat_jalan_id") or "").strip()
+    if not source_id:
+        return None
+    matches = [
+        sh for sh in shipments_stored(order)
+        if shipment_is_active(sh) and canonical_shipment_id(sh) == source_id
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def audit_order(order: dict) -> dict:
     """Pure function. Does not mutate `order`."""
     findings: List[dict] = []
@@ -453,13 +470,19 @@ def audit_order(order: dict) -> dict:
             continue
         if not str(conf.get("shipment_id") or "").strip():
             ships = [sh for sh in shipments_stored(order) if shipment_is_active(sh)]
-            sev = SEVERITY_SAFE_AUTO_REPAIR if len(ships) == 1 else SEVERITY_NEEDS_MANUAL_REVIEW
+            exact = _exact_loading_shipment(order, conf)
+            target = exact or (ships[0] if len(ships) == 1 else None)
+            sev = SEVERITY_SAFE_AUTO_REPAIR if target is not None else SEVERITY_NEEDS_MANUAL_REVIEW
             findings.append(_finding(
-                order, shipment=ships[0] if len(ships) == 1 else None,
+                order, shipment=target,
                 reason="Loading confirmation tanpa shipment_id.",
                 reason_code="LOADING_MISSING_SHIPMENT_ID",
                 severity=sev,
-                recommendation="Stamp shipment_id hanya jika PO punya satu SJ aktif. Jangan menebak lintas SJ.",
+                recommendation=(
+                    "Stamp shipment_id dari surat_jalan_id kanonis yang cocok tepat satu."
+                    if exact is not None else
+                    "Stamp shipment_id hanya jika PO punya satu SJ aktif. Jangan menebak lintas SJ."
+                ),
                 loaded_qty=_safe_int(conf.get("qty_sj_snapshot")),
             ))
 
@@ -587,17 +610,25 @@ def plan_safe_auto_repair(order: dict, findings: Optional[List[dict]] = None) ->
                     "reason": "Discrepancy terbuka akibat struktur duplikat; tidak hard-delete.",
                 })
     ships = [sh for sh in shipments_stored(order) if shipment_is_active(sh)]
+    for conf in order.get("loading_confirmations") or []:
+        if not isinstance(conf, dict) or str(conf.get("shipment_id") or "").strip() or conf.get("cancelled"):
+            continue
+        exact = _exact_loading_shipment(order, conf)
+        target = exact or (ships[0] if len(ships) == 1 else None)
+        if target is not None:
+            ops.append({
+                "op": "stamp_shipment_id",
+                "collection": "loading_confirmations",
+                "record_id": conf.get("id"),
+                "shipment_id": canonical_shipment_id(target),
+                "reason": (
+                    "surat_jalan_id cocok tepat satu shipment aktif — stamp shipment_id kanonis."
+                    if exact is not None else
+                    "PO satu SJ aktif — stamp shipment_id kanonis."
+                ),
+            })
     if len(ships) == 1:
         sid = canonical_shipment_id(ships[0])
-        for conf in order.get("loading_confirmations") or []:
-            if isinstance(conf, dict) and not str(conf.get("shipment_id") or "").strip() and not conf.get("cancelled"):
-                ops.append({
-                    "op": "stamp_shipment_id",
-                    "collection": "loading_confirmations",
-                    "record_id": conf.get("id"),
-                    "shipment_id": sid,
-                    "reason": "PO satu SJ aktif — stamp shipment_id kanonis.",
-                })
         for rec in order.get("delivery_confirmations") or []:
             if isinstance(rec, dict) and not str(rec.get("shipment_id") or "").strip():
                 ops.append({

@@ -16,6 +16,7 @@ from quantity_rules import (
     qty_delivered,
     qty_loaded_for_line,
     valid_delivery_proofs,
+    valid_delivery_proofs_for_shipment,
 )
 
 
@@ -111,10 +112,10 @@ def _item_label(items: List[dict], fallback_qty: int) -> Optional[str]:
     return None
 
 
-def _new_proof_ids(order: dict) -> List[str]:
+def _new_proof_ids(order: dict, shipment: Optional[dict] = None) -> List[str]:
     used = _used_proof_ids(order)
     out = []
-    for p in valid_delivery_proofs(order):
+    for p in valid_delivery_proofs_for_shipment(order, shipment):
         pid = str(p.get("id") or "").strip()
         if pid and pid not in used:
             out.append(pid)
@@ -185,11 +186,14 @@ def append_confirmation(
     rec_sig = order.get("delivery_recipient_signature") or {}
     drv_sig = order.get("delivery_driver_signature") or {}
     sig_sid = str(rec_sig.get("shipment_id") or "").strip()
-    if sig_sid and sid and sig_sid != sid:
+    drv_sid = str(drv_sig.get("shipment_id") or "").strip()
+    rec_sig_matches = not sid or sig_sid == sid
+    drv_sig_matches = not sid or drv_sid == sid
+    if not rec_sig_matches:
         rec_name = None
     else:
         rec_name = _text(rec_sig.get("recipient_name"))
-    proof_ids = _new_proof_ids(order)
+    proof_ids = _new_proof_ids(order, sh)
     rec = {
         "id": str(uuid.uuid4()),
         "action_id": _text(action_id),
@@ -206,9 +210,11 @@ def append_confirmation(
         "proof_ids": proof_ids,
         "photo_count": len(proof_ids),
         "has_driver_signature": bool(
+            drv_sig_matches and
             _text(drv_sig.get("driver_signature_storage_path") or drv_sig.get("signature_storage_path"))
         ),
         "has_recipient_signature": bool(
+            rec_sig_matches and
             _text(rec_sig.get("signature_storage_path") or rec_sig.get("signature_file_id"))
         ),
         "recipient_name": rec_name,

@@ -5899,7 +5899,7 @@ async def upload_delivery_recipient_signature(
         decode_data_url_png,
         get_active_signature,
         normalize_recipient_name,
-        resolve_shipment_and_sj,
+        resolve_requested_signature_identity,
         storage_key_for_signature,
         validate_recipient_name,
         validate_signature_bytes,
@@ -5930,11 +5930,13 @@ async def upload_delivery_recipient_signature(
     else:
         raise HTTPException(400, "File atau signature_data_url wajib.")
 
-    sid, sj_id = resolve_shipment_and_sj(order)
-    if shipment_id:
-        sid = str(shipment_id).strip() or sid
-    if sj_file_id:
-        sj_id = str(sj_file_id).strip() or sj_id
+    sid, sj_id, identity_err = resolve_requested_signature_identity(
+        order,
+        shipment_id=shipment_id,
+        sj_file_id=sj_file_id,
+    )
+    if identity_err:
+        raise HTTPException(400, identity_err)
 
     file_id = str(uuid.uuid4())
     ext = "png" if media == "image/png" else ("jpg" if media in ("image/jpeg", "image/jpg") else "png")
@@ -6041,7 +6043,7 @@ async def upload_delivery_driver_signature(
         clear_active_driver_signature,
         decode_data_url_png,
         get_active_driver_signature,
-        resolve_shipment_and_sj,
+        resolve_requested_signature_identity,
         storage_key_for_driver_signature,
         validate_signature_bytes,
         now_iso as sig_now,
@@ -6066,11 +6068,13 @@ async def upload_delivery_driver_signature(
     else:
         raise HTTPException(400, "File atau signature_data_url wajib.")
 
-    sid, sj_id = resolve_shipment_and_sj(order)
-    if shipment_id:
-        sid = str(shipment_id).strip() or sid
-    if sj_file_id:
-        sj_id = str(sj_file_id).strip() or sj_id
+    sid, sj_id, identity_err = resolve_requested_signature_identity(
+        order,
+        shipment_id=shipment_id,
+        sj_file_id=sj_file_id,
+    )
+    if identity_err:
+        raise HTTPException(400, identity_err)
 
     file_id = str(uuid.uuid4())
     ext = "png" if media == "image/png" else ("jpg" if media in ("image/jpeg", "image/jpg") else "png")
