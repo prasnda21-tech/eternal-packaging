@@ -84,6 +84,7 @@ const MobileChatRoomPage = lazy(() => import("./mobile/MobileChatRoomPage"));
 const SalesPwaLayout = lazy(() => import("./sales/SalesPwaLayout"));
 const SalesPwaOrdersPage = lazy(() => import("./sales/SalesPwaOrdersPage"));
 const SalesPwaOrderDetailPage = lazy(() => import("./sales/SalesPwaOrderDetailPage"));
+const SalesPwaDocumentViewerPage = lazy(() => import("./sales/SalesPwaDocumentViewerPage"));
 const SalesPwaCustomersPage = lazy(() => import("./sales/SalesPwaCustomersPage"));
 const SalesPwaPredictionsPage = lazy(() => import("./sales/SalesPwaPredictionsPage"));
 const SalesPwaProfilePage = lazy(() => import("./sales/SalesPwaProfilePage"));
@@ -230,6 +231,7 @@ export default function App() {
           <Route element={<Protected><SalesPwaGate><SalesPwaLayout /></SalesPwaGate></Protected>}>
             <Route path="/sales" element={<SalesPwaOrdersPage />} />
             <Route path="/sales/po/:id" element={<SalesPwaOrderDetailPage />} />
+            <Route path="/sales/po/:id/dokumen/:kind/:documentId" element={<SalesPwaDocumentViewerPage />} />
             <Route path="/sales/pelanggan" element={<SalesPwaCustomersPage />} />
             <Route path="/sales/prediksi" element={<SalesPwaPredictionsPage />} />
             <Route path="/sales/prediksi/:customerKey" element={<SalesPwaPredictionsPage />} />
