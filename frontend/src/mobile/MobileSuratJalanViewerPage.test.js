@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { mobileSuratJalanViewerHref } from "../lib/suratJalan";
-import { safeMobileReturn } from "./MobileSuratJalanViewerPage";
+import { mobileSuratJalanViewerHref, safeMobileDocumentReturn } from "../lib/suratJalan";
 
 test("Loading and Pengiriman use the internal SJ route without target blank", () => {
   const loading = fs.readFileSync(path.join(__dirname, "workspaces/MobileLoadingWorkspace.jsx"), "utf8");
@@ -19,9 +18,9 @@ test("viewer href preserves exact operational return URL", () => {
   })).toBe(
     "/m/orders/po%201/surat-jalan/sj%2F2?ws=delivery&return_to=%2Fm%2Fdelivery-schedule%3Fws%3Ddelivery%26shipment_id%3Dsj-2",
   );
-  expect(safeMobileReturn("/m/orders/po-1?ws=loading")).toBe("/m/orders/po-1?ws=loading");
-  expect(safeMobileReturn("https://evil.example/")).toBe("");
-  expect(safeMobileReturn("//evil.example/")).toBe("");
+  expect(safeMobileDocumentReturn("/m/orders/po-1?ws=loading")).toBe("/m/orders/po-1?ws=loading");
+  expect(safeMobileDocumentReturn("https://evil.example/")).toBe("");
+  expect(safeMobileDocumentReturn("//evil.example/")).toBe("");
 });
 
 test("operational viewer fetches the authorized SJ blob and renders PDF.js internally", () => {
