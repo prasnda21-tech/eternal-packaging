@@ -43,6 +43,7 @@ jobs:
           python -m pytest -q
           tests/test_stock_engine_v2.py
           tests/test_stock_v2_off_state_compat.py
+          tests/test_line_product_replacement_concurrency.py
 
   frontend-focused:
     name: Frontend tests and build
@@ -72,6 +73,7 @@ jobs:
           src/mobile/MobileRoutes.test.js
           src/lib/mobileOpsSession.test.js
           src/lib/mobileTaskListRetention.test.js
+          src/lib/poDetailRetention.test.js
           src/mobile/MobileTasksPage.test.js
           src/pages/HoPDashboard.test.js
           src/pages/inventoryPersediaanLiveSearch.contract.test.js

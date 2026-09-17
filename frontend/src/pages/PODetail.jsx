@@ -44,6 +44,7 @@ import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
 import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
+import { readPoDetailRetention, writePoDetailRetention } from "../lib/poDetailRetention";
 import LineProductReplaceControl from "../components/LineProductReplaceControl";
 import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
 import PoStageSection from "../components/poDetail/PoStageSection";
@@ -61,8 +62,9 @@ export default function PODetail() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, hasPerm } = useAuth();
-  const [order, setOrder] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const retainedOrder = readPoDetailRetention({ user, orderId: id, hasPerm });
+  const [order, setOrder] = useState(retainedOrder);
+  const [loading, setLoading] = useState(!retainedOrder);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
@@ -96,6 +98,18 @@ export default function PODetail() {
   const [stageSheetOpen, setStageSheetOpen] = useState(false);
   const selectedForOrderRef = useRef(null);
 
+  const commitOrder = (nextOrder) => {
+    setOrder(nextOrder);
+    if (nextOrder?.id) {
+      writePoDetailRetention({
+        user,
+        orderId: nextOrder.id,
+        hasPerm,
+        order: nextOrder,
+      });
+    }
+  };
+
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(""), 2500);
@@ -111,15 +125,33 @@ export default function PODetail() {
   }, [id, location.state]);
 
   useEffect(() => {
-    api.getOrder(id).then((d) => setOrder(d.order)).catch((e) => {
+    let cancelled = false;
+    const retained = readPoDetailRetention({ user, orderId: id, hasPerm });
+    if (retained) {
+      commitOrder(retained);
+      setLoading(false);
+    } else {
+      commitOrder(null);
+      setLoading(true);
+    }
+    setErr("");
+    api.getOrder(id).then((d) => {
+      if (!cancelled && d?.order) commitOrder(d.order);
+    }).catch((e) => {
+      if (cancelled) return;
       // Workflow 06-12 bugfix: never setErr(object) — React akan crash render
       // dan menyebabkan halaman blank. Backend bisa return detail berupa object.
       const d = e.response?.data?.detail;
       if (typeof d === "string") setErr(d);
       else if (d && typeof d === "object") setErr(d.message || JSON.stringify(d));
       else setErr("Gagal memuat PO");
-    }).finally(() => setLoading(false));
-  }, [id]);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+    // hasPerm is stable for the current AuthProvider principal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, user?.id, user?.email, user?.sub]);
 
   // Enrich the EXISTING dynamic PO tab label in place after order load.
   // Do NOT navigate/replace — that previously raced the workspace tab lifecycle
@@ -225,7 +257,7 @@ export default function PODetail() {
   // kalau server-side timestamp berubah — draft belum-di-save tetap aman.
   const { lastUpdated: poLastUpdated, isPolling: poIsPolling, refreshNow: refreshPO } = useAutoRefresh(
     () => api.getOrder(id),
-    { intervalMs: 30_000, enabled: !!order, onData: (d) => { if (d?.order) setOrder(d.order); } }
+    { intervalMs: 30_000, enabled: !!order, onData: (d) => { if (d?.order) commitOrder(d.order); } }
   );
 
   if (!hasPerm("po.view")) {
@@ -251,7 +283,7 @@ export default function PODetail() {
     setErr("");
     try {
       const res = await fn();
-      setOrder(res.order);
+      commitOrder(res.order);
       if (msg) showToast(msg);
     } catch (e) {
       const d = e.response?.data?.detail;
@@ -304,10 +336,10 @@ export default function PODetail() {
         r.readAsDataURL(file);
       });
       const result = await api.addAttachment(order.id, { kind: "payment", name: file.name, data_url: dataUrl });
-      if (result?.order) setOrder(result.order);
+      if (result?.order) commitOrder(result.order);
       else {
         const d = await api.getOrder(order.id);
-        setOrder(d.order);
+        commitOrder(d.order);
       }
       setToast(`Bukti pembayaran "${file.name}" diupload`);
       setTimeout(() => setToast(""), 2400);
@@ -341,12 +373,12 @@ export default function PODetail() {
           notes: actionConfirm.notes,
           action_id: actionConfirm.actionId,
         });
-        setOrder(res.order);
+        commitOrder(res.order);
         setScreenerDraft("");
         showToast("Info Screener disimpan");
       } else if (actionConfirm.kind === "sample-approve") {
         const res = await api.approveSample(order.id, true, note);
-        setOrder(res.order);
+        commitOrder(res.order);
         showToast("Sampel di-approve");
       }
       setActionConfirm(null);
@@ -1495,7 +1527,7 @@ export default function PODetail() {
         busy={busy}
         onSaveQty={async (lines, notes) => {
           const res = await api.savePackingInfo(order.id, lines, notes);
-          setOrder(res.order);
+          commitOrder(res.order);
           showToast("Qty Packing disimpan");
         }}
       />
@@ -1514,7 +1546,7 @@ export default function PODetail() {
         busy={busy}
         onUpdated={(next, action) => {
           if (next) {
-            setOrder(next);
+            commitOrder(next);
             showToast(action === "delete" ? "File Surat Jalan dihapus" : "Surat Jalan diupload");
           }
         }}
@@ -1530,7 +1562,7 @@ export default function PODetail() {
         canManage={canLoadingUpdate}
         onUpdated={(next) => {
           if (next) {
-            setOrder(next);
+            commitOrder(next);
             showToast("Loading dikonfirmasi");
           }
         }}
@@ -1713,7 +1745,7 @@ export default function PODetail() {
         onClose={() => setEditInfoOpen(false)}
         onSaved={(updated) => {
           if (updated && typeof updated === "object") {
-            setOrder((prev) => ({ ...(prev || {}), ...updated }));
+            commitOrder({ ...(order || {}), ...updated });
           }
           refreshPO();
           showToast("Informasi PO diperbarui");
