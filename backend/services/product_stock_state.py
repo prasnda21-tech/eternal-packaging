@@ -160,6 +160,7 @@ async def initialize_opening_balance(
         was_newly_created = False
         was_reinitializing = False
         opening_generation = 1
+        previous_opening_generation = 1
         # Step A: Check or atomically create state document in INITIALIZING status
         existing_state = await db[COLLECTION].find_one(
             {"$or": [{"_id": mid}, {"master_item_id": mid}]}
@@ -178,9 +179,10 @@ async def initialize_opening_balance(
                 if existing_state.get("pending_event"):
                     raise HTTPException(409, "Ada mutasi stok yang sedang berjalan untuk item ini")
                 try:
-                    opening_generation = int(existing_state.get("opening_generation") or 1) + 1
+                    previous_opening_generation = int(existing_state.get("opening_generation") or 1)
                 except (TypeError, ValueError):
-                    opening_generation = 2
+                    previous_opening_generation = 1
+                opening_generation = previous_opening_generation + 1
                 query = {"$or": [{"_id": mid}, {"master_item_id": mid}]}
                 query.update({
                     "status": STATUS_UNINITIALIZED,
@@ -355,6 +357,7 @@ async def initialize_opening_balance(
                                 "initialized_at": None,
                                 "initialized_by": None,
                                 "opening_movement_id": None,
+                                "opening_generation": previous_opening_generation,
                             }
                         },
                     )
@@ -385,6 +388,26 @@ async def initialize_opening_balance(
             if was_newly_created:
                 try:
                     await db[COLLECTION].delete_one({"_id": mid, "status": STATUS_INITIALIZING})
+                except Exception:
+                    pass
+            elif was_reinitializing:
+                try:
+                    await db[COLLECTION].update_one(
+                        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+                        {
+                            "$set": {
+                                "status": STATUS_UNINITIALIZED,
+                                "initialized": False,
+                                "total_qty": 0,
+                                "unprinted_qty": 0,
+                                "printed_qty": 0,
+                                "initialized_at": None,
+                                "initialized_by": None,
+                                "opening_movement_id": None,
+                                "opening_generation": previous_opening_generation,
+                            }
+                        },
+                    )
                 except Exception:
                     pass
             if comp_error:
@@ -599,20 +622,35 @@ async def void_opening_balance(
             "movement_type": opening.get("movement_type"),
             "voided_at": None,
         })
-        voided = await db.stock_movements.update_one(
-            void_query,
-            {
-                "$set": {
-                    "status": "VOID",
-                    "voided_at": stamp,
-                    "voided_by": actor,
-                    "void_reason": OPENING_VOID_REASON,
-                }
-            },
-        )
+        try:
+            voided = await db.stock_movements.update_one(
+                void_query,
+                {
+                    "$set": {
+                        "status": "VOID",
+                        "voided_at": stamp,
+                        "voided_by": actor,
+                        "void_reason": OPENING_VOID_REASON,
+                    }
+                },
+            )
+        except Exception as ex:
+            release_query = _item_state_filter(mid)
+            release_query["pending_event"] = pending
+            await db[COLLECTION].update_one(
+                release_query,
+                {"$set": {"pending_event": None}},
+            )
+            raise HTTPException(500, "Gagal membatalkan movement SALDO_AWAL") from ex
         if not getattr(voided, "matched_count", 0):
             latest_opening = await db.stock_movements.find_one(opening_query)
             if not _movement_is_void(latest_opening):
+                release_query = _item_state_filter(mid)
+                release_query["pending_event"] = pending
+                await db[COLLECTION].update_one(
+                    release_query,
+                    {"$set": {"pending_event": None}},
+                )
                 raise HTTPException(409, "Rollback ditolak karena movement SALDO_AWAL berubah")
             opening = latest_opening
         else:
@@ -622,6 +660,10 @@ async def void_opening_balance(
         next_version = int(raw_state.get("version") or 0) + 1
     except (TypeError, ValueError):
         next_version = 1
+    try:
+        opening_generation = int(raw_state.get("opening_generation") or 1)
+    except (TypeError, ValueError):
+        opening_generation = 1
     finalize_query = _item_state_filter(mid)
     finalize_query["pending_event"] = pending
     finalized = await db[COLLECTION].update_one(
@@ -640,6 +682,7 @@ async def void_opening_balance(
                 "updated_at": stamp,
                 "pending_event": None,
                 "version": next_version,
+                "opening_generation": opening_generation,
                 "last_initialization_void": {
                     "movement_id": opening_id,
                     "voided_at": stamp,

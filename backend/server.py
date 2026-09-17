@@ -11021,7 +11021,7 @@ async def stock_opname_items(
     q: str = "",
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     payload = filter_sort_page_v2(rows, q=q, page=1, page_size=200)
     payload["can_apply_stock_opname"] = _current_stock_correction_allowed(user)
     return payload
@@ -11031,7 +11031,7 @@ async def stock_opname_items(
 async def stock_opname_export_template(
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     content = build_opname_template_xlsx(catalog)
@@ -11057,7 +11057,7 @@ async def stock_opname_import_preview(
     data = await file.read()
     if not data:
         raise HTTPException(400, "File kosong")
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     preview = build_opname_import_preview(
@@ -11086,7 +11086,7 @@ async def stock_opname_import_apply(
         os.environ.get("APP_ENV"),
         os.environ.get("MONGO_URL"),
     )
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     validated_rows = revalidate_opname_apply_rows(
