@@ -1,9 +1,64 @@
 import fs from "fs";
 import path from "path";
-import { resolveStageState } from "./stageState";
+import { resolveOperationalStage, resolveStageState } from "./stageState";
 import { resolveApprovalDesignChip } from "./designEvidence";
 
 describe("SJ / Loading / Terkirim chips", () => {
+  test("operational stage advances legacy PO from SJ to Loading without mutating qty", () => {
+    const order = {
+      current_stage: 12,
+      surat_jalan_created: true,
+      surat_jalan_status_semantic: "partial",
+      loading_qty_status: "pending",
+      eligible_delivery_qty: 0,
+    };
+    expect(resolveOperationalStage(order, order.current_stage)).toBe(13);
+    expect(order.current_stage).toBe(12);
+    expect(order.loading_qty_status).toBe("pending");
+  });
+
+  test("operational stage advances fully loaded legacy PO to Pengiriman", () => {
+    const order = {
+      current_stage: 12,
+      surat_jalan_created: true,
+      surat_jalan_status_semantic: "completed",
+      loading_qty_status: "completed",
+      loading_completed: true,
+      eligible_delivery_qty: 2000,
+      delivery_status: "Belum Terkirim",
+      qty_delivered: 0,
+    };
+    expect(resolveOperationalStage(order, order.current_stage)).toBe(14);
+  });
+
+  test("completed Loading alone opens Pengiriman for old PO payloads", () => {
+    const order = {
+      current_stage: 12,
+      surat_jalan_created: true,
+      loading_qty_status: "completed",
+      loading_completed: true,
+      delivery_status: "Belum Terkirim",
+    };
+    expect(resolveStageState(14, order, 12)).toEqual({
+      state: "current",
+      label: "Menunggu bukti pengiriman",
+    });
+    expect(resolveOperationalStage(order, 12)).toBe(14);
+  });
+
+  test("hold and cancelled PO keep persisted stage marker", () => {
+    const evidence = {
+      current_stage: 12,
+      surat_jalan_created: true,
+      loading_completed: true,
+      loading_qty_status: "completed",
+      eligible_delivery_qty: 2000,
+    };
+    expect(resolveOperationalStage({ ...evidence, hold: true }, 12)).toBe(12);
+    expect(resolveOperationalStage({ ...evidence, cancelled: true }, 12)).toBe(12);
+  });
+
+
   test("SJ uses shipment evidence, not a done-from-stage index", () => {
     const sj = resolveStageState(12, {
       surat_jalan_created: true,
