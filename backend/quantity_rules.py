@@ -851,7 +851,7 @@ def confirm_delivery_block_reason(order: dict, shipment: Optional[dict] = None) 
         from services.delivery_pod_signature import signature_confirm_block_reason
     except ImportError:
         return "Tanda tangan penerima wajib sebelum Konfirmasi Terkirim."
-    sig_blocked = signature_confirm_block_reason(order)
+    sig_blocked = signature_confirm_block_reason(order, shipment)
     if sig_blocked:
         return sig_blocked
     # Authoritative Loading-vs-SJ gate when this PO uses the Loading workflow.

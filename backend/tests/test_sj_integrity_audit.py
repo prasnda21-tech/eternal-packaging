@@ -239,6 +239,41 @@ def test_ambiguous_not_auto_repaired():
     assert man_report["safe_repair_ops"] == []
 
 
+def test_multi_sj_loading_exact_surat_jalan_id_is_safe_to_stamp():
+    order = _manual_missing_shipment_id_po()
+    confirmation = order["loading_confirmations"][0]
+    confirmation["surat_jalan_id"] = "sj-ok-2"
+
+    report = audit_order(order)
+
+    assert report["severity"] == SEVERITY_SAFE_AUTO_REPAIR
+    missing = [
+        row for row in report["findings"]
+        if row["reason_code"] == "LOADING_MISSING_SHIPMENT_ID"
+    ]
+    assert len(missing) == 1
+    assert missing[0]["shipment_id"] == "sj-ok-2"
+    assert any(
+        op["op"] == "stamp_shipment_id"
+        and op["record_id"] == confirmation["id"]
+        and op["shipment_id"] == "sj-ok-2"
+        for op in report["safe_repair_ops"]
+    )
+
+
+def test_multi_sj_loading_without_exact_identity_stays_manual():
+    order = _manual_missing_shipment_id_po()
+    order["loading_confirmations"][0]["surat_jalan_id"] = "unknown-sj"
+
+    report = audit_order(order)
+
+    assert report["severity"] == SEVERITY_NEEDS_MANUAL_REVIEW
+    assert not any(
+        op.get("op") == "stamp_shipment_id"
+        for op in report["safe_repair_ops"]
+    )
+
+
 def test_critical_blocker_over_delivery_and_loading():
     o = _critical_po()
     report = audit_order(o)
