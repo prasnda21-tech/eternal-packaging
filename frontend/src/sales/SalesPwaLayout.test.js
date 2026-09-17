@@ -9,6 +9,7 @@ describe("sales PWA wiring", () => {
   test("sales namespace is outside AppShell and operational /m", () => {
     expect(app).toMatch(/path="\/sales"/);
     expect(app).toMatch(/path="\/sales\/po\/:id"/);
+    expect(app).toMatch(/path="\/sales\/po\/:id\/dokumen\/:kind\/:documentId"/);
     expect(app).toMatch(/path="\/sales\/pelanggan"/);
     expect(app).toMatch(/path="\/sales\/prediksi"/);
     expect(app).toMatch(/path="\/sales\/prediksi\/:customerKey"/);
