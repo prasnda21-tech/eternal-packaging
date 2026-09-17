@@ -1745,7 +1745,7 @@ export default function PODetail() {
         onClose={() => setEditInfoOpen(false)}
         onSaved={(updated) => {
           if (updated && typeof updated === "object") {
-            commitOrder((prev) => ({ ...(prev || {}), ...updated }));
+            commitOrder({ ...(order || {}), ...updated });
           }
           refreshPO();
           showToast("Informasi PO diperbarui");
