@@ -96,45 +96,46 @@ describe("Status PO workflow matrix UI", () => {
     container.remove();
   });
 
-  test("renders two-level headers in workflow order", async () => {
+  test("renders compact operational headers and 15-stage progress", async () => {
     await act(async () => { root.render(<StatusPO />); });
     await flush();
-    expect(container.querySelector('[data-testid="status-po-group-header"]').textContent).toContain("DATA PO");
-    expect(container.querySelector('[data-testid="status-po-group-workflow"]').textContent).toContain("PROGRESS WORKFLOW");
-    expect(container.querySelector('[data-testid="status-po-group-summary"]').textContent).toContain("RINGKASAN");
     expect(container.querySelector('[data-testid="status-po-th-status"]').textContent).toContain("Status Saat Ini");
-    const headers = STATUS_PO_WORKFLOW_STAGES.map((s) => (
-      container.querySelector(`[data-testid="status-po-th-wf-${s.key}"]`).textContent.trim()
-    ));
-    expect(headers).toEqual(STATUS_PO_WORKFLOW_STAGES.map((s) => s.header));
+    expect(container.querySelector('[data-testid="status-po-th-progress"]').textContent).toContain("Progress (15 Tahap)");
+    expect(container.querySelector('[data-testid="status-po-th-items"]').textContent).toContain("Item / Produk");
+    expect(container.querySelector('[data-testid="status-po-th-age"]').textContent).toContain("Umur");
+    expect(container.querySelector('[data-testid="status-po-subtitle"]').textContent).toContain("Pantau status pesanan dari semua cabang secara real-time");
+    expect(container.querySelector('[data-testid="status-po-heading-count"]').textContent).toContain("3 PO");
+    expect(container.querySelectorAll('[data-testid="status-po-progress-PO-PACK"] .spo-seg')).toHaveLength(STATUS_PO_WORKFLOW_STAGES.length);
+    expect(STATUS_PO_WORKFLOW_STAGES).toHaveLength(15);
   });
 
-  test("current badge, complete check, active ring, pending dash, cancelled x, progress", async () => {
+  test("current strip, complete/active/pending/cancelled segments, progress", async () => {
     await act(async () => { root.render(<StatusPO />); });
     await flush();
-    expect(container.querySelector('[data-testid="status-po-status-PO-PACK"] .spo-badge').textContent).toBe("Packing");
+    expect(container.querySelector('[data-testid="status-po-status-PO-PACK"] .spo-status-strip').textContent).toContain("Packing");
     expect(container.querySelector('[data-testid="status-po-wf-PO-PACK-cetak"]').getAttribute("data-state")).toBe("completed");
     expect(container.querySelector('[data-testid="status-po-wf-PO-PACK-packing"]').getAttribute("data-state")).toBe("active");
     expect(container.querySelector('[data-testid="status-po-wf-PO-PACK-design"]').getAttribute("data-state")).toBe("pending");
     expect(container.querySelector('[data-testid="status-po-wf-PO-PACK-kirim"]').getAttribute("data-state")).toBe("pending");
     expect(container.querySelector('[data-testid="status-po-wf-PO-CXL-order"]').getAttribute("data-state")).toBe("cancelled");
-    expect(container.querySelector('[data-testid="status-po-progress-PO-DONE"]').textContent).toContain("100%");
+    expect(container.querySelector('[data-testid="status-po-pct-PO-DONE"]').textContent).toContain("100%");
     const items = container.querySelector('[data-testid="status-po-items-PO-PACK"]');
     expect(items.textContent).toContain("Cup 16oz");
-    expect(items.textContent).toContain("Lid 98 mm");
-    expect(items.textContent).toContain("Add On Warna");
+    expect(items.textContent).toContain("+2 lainnya");
+    expect(items.getAttribute("title")).toContain("Lid 98 mm");
+    expect(items.getAttribute("title")).toContain("Add On Warna");
     expect(items.textContent).not.toContain("1000");
     expect(items.textContent).not.toContain("qty");
     expect(container.querySelectorAll('[data-testid="status-po-row-PO-PACK"]')).toHaveLength(1);
   });
 
-  test("horizontal matrix structure stays a single wide table", async () => {
+  test("compact table stays a single full-width table", async () => {
     await act(async () => { root.render(<StatusPO />); });
     await flush();
     const table = container.querySelector('[data-testid="status-po-matrix"]');
     expect(table).toBeTruthy();
-    expect(table.querySelectorAll("thead tr")).toHaveLength(2);
-    expect(Number.parseInt(table.style.minWidth, 10)).toBeGreaterThan(1100);
+    expect(table.querySelectorAll("thead tr")).toHaveLength(1);
+    expect(Number.parseInt(table.style.minWidth, 10)).toBeGreaterThan(900);
   });
 
   test("resizing a header keeps min width and aligned colgroup", async () => {
@@ -146,10 +147,10 @@ describe("Status PO workflow matrix UI", () => {
       window.dispatchEvent(new MouseEvent("mousemove", { clientX: 40, bubbles: true }));
       window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     });
-    const stored = JSON.parse(window.localStorage.getItem("status-po-col-widths-v2"));
+    const stored = JSON.parse(window.localStorage.getItem("status-po-col-widths-v3"));
     expect(stored.po).toBeGreaterThanOrEqual(132);
     const cols = container.querySelectorAll("colgroup col");
-    expect(cols.length).toBeGreaterThan(18);
+    expect(cols.length).toBe(10);
   });
 
   test("legend stays compact with existing meanings", async () => {
@@ -157,12 +158,10 @@ describe("Status PO workflow matrix UI", () => {
     await flush();
     const legend = container.querySelector('[data-testid="status-po-legend"]').textContent;
     expect(legend).toContain("Selesai");
-    expect(legend).toContain("Sedang Berjalan");
+    expect(legend).toContain("Tahap Aktif");
+    expect(legend).toContain("Dalam Proses");
     expect(legend).toContain("Belum Dimulai");
-    expect(legend).toContain("Tertahan / Perlu Perhatian");
-    expect(legend).toContain("Tidak dapat ditentukan");
-    expect(legend).toContain("Dibatalkan");
-    expect(legend).not.toContain("hijau centang");
+    expect(legend).toContain("Tertahan / Bermasalah");
     expect(container.querySelector('[data-testid="status-po-view-label"]')).toBeNull();
     expect(container.querySelector(".spo-heading-accent")).toBeNull();
   });

@@ -17,6 +17,7 @@ from services.status_po import (  # noqa: E402
     build_status_po,
     effective_workflow_status,
     filter_orders_for_view,
+    item_line_names,
     status_po_row,
 )
 
@@ -69,7 +70,7 @@ def apply_status_po_projection(order: dict) -> dict:
         if isinstance(p, dict)
     ]
     shaped["line_items"] = [
-        _pick(li, ("name", "item_name", "quantity", "production_process"))
+        _pick(li, ("name", "item_name", "product_name", "quantity", "production_process"))
         for li in (src.get("line_items") or [])
         if isinstance(li, dict)
     ]
@@ -297,6 +298,20 @@ def test_lean_projection_same_visible_status_po_values(order):
     assert _visible(lean) == _visible(full)
     assert lean["percent_delivered"] == full["percent_delivered"]
     assert effective_workflow_status(apply_status_po_projection(order)) == effective_workflow_status(order)
+
+
+def test_projection_keeps_line_item_names_for_status_po_rows():
+    order = _order_packing(line_items=[{
+        "name": "Cup 16oz",
+        "item_name": "Cup 16oz",
+        "product_name": "Cup 16oz Printed",
+        "quantity": 100,
+        "production_process": "print",
+    }])
+    lean = apply_status_po_projection(order)
+    assert item_line_names(order) == ["Cup 16oz"]
+    assert item_line_names(lean) == ["Cup 16oz"]
+    assert status_po_row(lean)["item_lines"] == ["Cup 16oz"]
 
 
 def test_lean_build_same_record_count_and_filters():

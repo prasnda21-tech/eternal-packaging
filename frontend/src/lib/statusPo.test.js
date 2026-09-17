@@ -1,8 +1,18 @@
-import { deliveredPercentLabel, effectivePoStatus, matchesStatusPoFilters, STATUS_PO_COLUMNS, statusPoFilterOptions } from "./statusPo";
+import { deliveredPercentLabel, effectivePoStatus, formatPoAgeLabel, formatStatusPoDate, formatStatusPoUpdated, itemLineSummary, matchesStatusPoFilters, parseStatusPoDateInput, STATUS_PO_COLUMNS, statusPoFilterOptions } from "./statusPo";
 
 describe("Status PO", () => {
   test("columns exact", () => {
-    expect(STATUS_PO_COLUMNS).toEqual(["No PO", "Tanggal", "Pelanggan", "Item Line", "Status Saat Ini", "Progress", "Aksi"]);
+    expect(STATUS_PO_COLUMNS).toEqual([
+      "No PO",
+      "Tanggal PO",
+      "Pelanggan",
+      "Item / Produk",
+      "Status Saat Ini",
+      "Umur",
+      "Progress (15 Tahap)",
+      "%",
+      "Aksi",
+    ]);
   });
 
   test("partial delivery 50% remains 50%", () => {
@@ -38,6 +48,15 @@ describe("Status PO header filters", () => {
     expect(matchesStatusPoFilters(a, { po: "001" })).toBe(true);
   });
 
+  test("A2. Combined search matches customer or item using existing po filter", () => {
+    expect(matchesStatusPoFilters(a, { po: "ABC Pack" })).toBe(true);
+    expect(matchesStatusPoFilters(b, { po: "ABC Pack" })).toBe(false);
+    expect(matchesStatusPoFilters(
+      { ...a, item_lines: ["Plastik PE"] },
+      { po: "plastik" },
+    )).toBe(true);
+  });
+
   test("B. Customer partial match only", () => {
     expect(matchesStatusPoFilters(a, { customer: "ABC" })).toBe(true);
     expect(matchesStatusPoFilters(c, { customer: "ABC" })).toBe(true);
@@ -71,5 +90,35 @@ describe("Status PO header filters", () => {
   test("I. Empty result is false not throw", () => {
     expect(matchesStatusPoFilters(a, { po: "NOPE" })).toBe(false);
     expect(matchesStatusPoFilters({}, { po: "x" })).toBe(false);
+  });
+});
+
+describe("Status PO display helpers", () => {
+  test("age is calendar days from order_date without new thresholds", () => {
+    expect(formatPoAgeLabel("2026-09-10", new Date("2026-09-17T05:00:00+07:00"))).toBe("7 hari");
+    expect(formatPoAgeLabel("2026-09-17", new Date("2026-09-17T05:00:00+07:00"))).toBe("0 hari");
+    expect(formatPoAgeLabel("", new Date("2026-09-17T05:00:00+07:00"))).toBe("—");
+  });
+
+  test("updated label uses real timestamp parts", () => {
+    expect(formatStatusPoUpdated(new Date("2026-09-17T02:12:00+07:00"))).toBe("17 Sep 2026 · 02:12");
+  });
+
+  test("order date displays Indonesia dd/mm/yyyy", () => {
+    expect(formatStatusPoDate("2026-08-10")).toBe("10/08/2026");
+    expect(formatStatusPoDate("2026-09-17T06:00:00+00:00")).toBe("17/09/2026");
+    expect(parseStatusPoDateInput("10/08/2026")).toBe("2026-08-10");
+    expect(parseStatusPoDateInput("2026-08-10")).toBe("2026-08-10");
+    expect(parseStatusPoDateInput("")).toBe("");
+    expect(parseStatusPoDateInput("13/13/2026")).toBe(null);
+  });
+
+  test("item summary keeps real names and +N lainnya", () => {
+    expect(itemLineSummary([])).toEqual({ text: "-", title: undefined });
+    expect(itemLineSummary(["Cup 16oz"])).toEqual({ text: "Cup 16oz", title: "Cup 16oz" });
+    expect(itemLineSummary(["Cup 16oz", "Lid 98 mm", "Add On Warna"])).toEqual({
+      text: "Cup 16oz +2 lainnya",
+      title: "Cup 16oz · Lid 98 mm · Add On Warna",
+    });
   });
 });

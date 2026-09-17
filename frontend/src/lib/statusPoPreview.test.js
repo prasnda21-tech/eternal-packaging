@@ -7,11 +7,11 @@ describe("Status PO isolated preview rows", () => {
     process.env.NODE_ENV = original;
   });
 
-  test("preview host is development localhost:3003 or query flag", () => {
+  test("preview host is development query flag only", () => {
     process.env.NODE_ENV = "development";
     expect(isStatusPoMatrixPreviewEnabled("previewStatusPoMatrix=1")).toBe(true);
-    expect(isStatusPoMatrixPreviewEnabled("", { location: { hostname: "localhost", port: "3003", search: "" } })).toBe(true);
-    expect(isStatusPoMatrixPreviewEnabled("", { location: { hostname: "127.0.0.1", port: "3003", search: "" } })).toBe(true);
+    expect(isStatusPoMatrixPreviewEnabled("", { location: { hostname: "localhost", port: "3003", search: "" } })).toBe(false);
+    expect(isStatusPoMatrixPreviewEnabled("", { location: { hostname: "127.0.0.1", port: "3003", search: "" } })).toBe(false);
     process.env.NODE_ENV = "production";
     expect(isStatusPoMatrixPreviewEnabled("previewStatusPoMatrix=1")).toBe(false);
   });
