@@ -173,6 +173,12 @@ export function suratJalanFileUrl(orderId, fileId, { download = false } = {}) {
   return download ? `${base}?download=1` : base;
 }
 
+export function safeMobileDocumentReturn(raw) {
+  const value = String(raw || "").trim();
+  if (!value.startsWith("/m/") || value.startsWith("//")) return "";
+  return value;
+}
+
 export function mobileSuratJalanViewerHref(orderId, fileId, workspace, locationLike) {
   if (!orderId || !fileId) return "";
   const role = workspace === "delivery" ? "delivery" : "loading";
