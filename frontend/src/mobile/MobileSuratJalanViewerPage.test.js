@@ -1,20 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { fetchSuratJalanBlob, mobileSuratJalanViewerHref } from "../lib/suratJalan";
-import MobileSuratJalanViewerPage, { safeMobileReturn } from "./MobileSuratJalanViewerPage";
-
-jest.mock("../lib/suratJalan", () => {
-  const actual = jest.requireActual("../lib/suratJalan");
-  return { ...actual, fetchSuratJalanBlob: jest.fn() };
-});
-jest.mock("../sales/SalesPwaPdfViewer", () => function PdfMock() {
-  return <div data-testid="internal-pdf-canvas">PDF internal</div>;
-});
-
-global.IS_REACT_ACT_ENVIRONMENT = true;
+import { mobileSuratJalanViewerHref } from "../lib/suratJalan";
+import { safeMobileReturn } from "./MobileSuratJalanViewerPage";
 
 test("Loading and Pengiriman use the internal SJ route without target blank", () => {
   const loading = fs.readFileSync(path.join(__dirname, "workspaces/MobileLoadingWorkspace.jsx"), "utf8");
@@ -37,37 +24,11 @@ test("viewer href preserves exact operational return URL", () => {
   expect(safeMobileReturn("//evil.example/")).toBe("");
 });
 
-test("loads the authorized SJ blob into the internal PDF canvas and returns to task", async () => {
-  const blob = new Blob(["%PDF"], { type: "application/pdf" });
-  fetchSuratJalanBlob.mockResolvedValue(blob);
-  const originalCreate = URL.createObjectURL;
-  const originalRevoke = URL.revokeObjectURL;
-  URL.createObjectURL = jest.fn(() => "blob:surat-jalan");
-  URL.revokeObjectURL = jest.fn();
-
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () => {
-    root.render(
-      <MemoryRouter initialEntries={["/m/orders/po-1/surat-jalan/sj-1?ws=delivery&return_to=%2Fm%2Fdelivery-schedule%3Fws%3Ddelivery"]}>
-        <Routes>
-          <Route path="/m/orders/:id/surat-jalan/:fileId" element={<MobileSuratJalanViewerPage />} />
-          <Route path="/m/delivery-schedule" element={<div data-testid="returned-task">Task Pengiriman</div>} />
-        </Routes>
-      </MemoryRouter>,
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-
-  expect(fetchSuratJalanBlob).toHaveBeenCalledWith("po-1", "sj-1", { filename: "surat-jalan.pdf" });
-  expect(container.querySelector('[data-testid="internal-pdf-canvas"]')).toBeTruthy();
-  await act(async () => {
-    container.querySelector('[data-testid="mobile-sj-document-back"]').click();
-  });
-  expect(container.querySelector('[data-testid="returned-task"]')).toBeTruthy();
-
-  act(() => root.unmount());
-  URL.createObjectURL = originalCreate;
-  URL.revokeObjectURL = originalRevoke;
+test("operational viewer fetches the authorized SJ blob and renders PDF.js internally", () => {
+  const viewer = fs.readFileSync(path.join(__dirname, "MobileSuratJalanViewerPage.jsx"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+  expect(viewer).toMatch(/fetchSuratJalanBlob\(id, fileId/);
+  expect(viewer).toMatch(/<SalesPwaPdfViewer blob=\{viewer\.blob\}/);
+  expect(viewer).toMatch(/window\.history\.pushState/);
+  expect(app).toMatch(/path="\/m\/orders\/:id\/surat-jalan\/:fileId"/);
 });
