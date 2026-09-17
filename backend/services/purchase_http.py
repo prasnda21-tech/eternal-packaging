@@ -153,10 +153,16 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
     async def list_po_goods_receipts_endpoint(
         q: Optional[str] = None,
         purchase_order_id: Optional[str] = None,
+        include_cancelled: bool = False,
         user=Depends(current_user),
     ):
         await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view")
-        rows = await list_purchase_goods_receipts(get_db(), q=q, purchase_order_id=purchase_order_id)
+        rows = await list_purchase_goods_receipts(
+            get_db(),
+            q=q,
+            purchase_order_id=purchase_order_id,
+            include_cancelled=include_cancelled,
+        )
         return {"receipts": rows, "count": len(rows)}
 
     @api_router.get("/purchase-goods-receipts/from-po/{po_id}/preview")

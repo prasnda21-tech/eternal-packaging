@@ -395,6 +395,7 @@ async def list_purchase_goods_receipts(
     db,
     q: Optional[str] = None,
     purchase_order_id: Optional[str] = None,
+    include_cancelled: bool = False,
 ) -> List[dict]:
     filters: Dict[str, Any] = {}
     if purchase_order_id:
@@ -406,7 +407,8 @@ async def list_purchase_goods_receipts(
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"supplier": {"$regex": needle, "$options": "i"}},
         ]
-    rows = await db[COLLECTION].find(with_active_filter(filters), {"_id": 0}).sort("created_at", -1).to_list(1000)
+    query = filters if include_cancelled else with_active_filter(filters)
+    rows = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return [await enrich_goods_receipt(db, r) for r in rows]
 
 
