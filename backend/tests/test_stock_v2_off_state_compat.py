@@ -196,12 +196,12 @@ def test_legacy_formula_authority_unchanged():
     assert row["manual_current_qty"] == 10000
 
 
-def test_stock_saat_ini_off_uses_legacy_not_v2_zero():
-    """E. OFF + missing V2 + legacy positive => legacy qty, not V2 zero."""
+def test_stock_saat_ini_off_uses_legacy_not_v2_shortage():
+    """E. OFF uses legacy; V2 missing physical exposes its order shortage."""
     legacy = _legacy_row()
     v2_missing = _v2_row_missing_state()
     assert v2_missing["physical_qty"] == 0
-    assert v2_missing["stock_current"] == 0
+    assert v2_missing["stock_current"] == -20
     assert legacy["stock_current"] == 9980
     assert legacy["stock_current"] != v2_missing["stock_current"]
 
@@ -220,7 +220,7 @@ def test_toggle_transition_same_fixture_off_legacy_on_v2():
     off = _legacy_row()["stock_current"]
     on = _v2_row_missing_state()["stock_current"]
     assert off == 9980
-    assert on == 0
+    assert on == -20
     assert off != on
     on_init = _v2_row_initialized()["stock_current"]
     assert on_init == 70
