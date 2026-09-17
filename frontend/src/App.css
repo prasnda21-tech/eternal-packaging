@@ -3990,6 +3990,12 @@ html:has(.ship-status-page) #root{
   text-overflow:ellipsis;
   white-space:nowrap;
 }
+.ship-status-page .ship-table td.ship-cust{
+  max-width:26rem;
+}
+.ship-status-page .ship-table td.ship-td-sj{
+  white-space:nowrap;
+}
 .ship-table tbody td:has(.ghost.sm),
 .ship-table tbody td:has(a.ghost.sm){
   white-space:nowrap;
@@ -5463,6 +5469,106 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 
 
+/* Prediksi Order compact operations layout */
+.prediksi-order-page .prediksi-heading{
+  flex-direction:row;align-items:center;justify-content:space-between;gap:12px;
+  margin:0 0 6px;padding:0;
+}
+.prediksi-order-page .prediksi-heading-copy{min-width:0}
+.prediksi-order-page .prediksi-heading-copy p{margin:2px 0 0}
+.prediksi-order-page .ship-status-heading.page-heading > .primary{
+  margin:0;align-self:center;min-height:32px;padding:0 12px;white-space:nowrap;
+}
+.prediksi-order-page .prediksi-kpi{
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:0 0 6px;
+}
+.prediksi-order-page .prediksi-kpi .kpi-card{
+  min-height:48px;padding:6px 10px;display:flex;flex-direction:row;align-items:center;
+  justify-content:space-between;gap:8px;border-radius:4px;box-shadow:none;
+}
+.prediksi-order-page .prediksi-kpi .kpi-head{min-width:0}
+.prediksi-order-page .prediksi-kpi .kpi-head span{
+  display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.prediksi-order-page .prediksi-kpi .kpi-card strong{font-size:20px;line-height:1}
+.prediksi-order-page .prediksi-kpi .kpi-card-clickable:hover{
+  transform:none;box-shadow:inset 0 0 0 1px var(--ink,#0F172A);
+}
+.prediksi-order-page .prediksi-kpi .kpi-card-active{
+  transform:none;box-shadow:inset 0 0 0 2px var(--ink,#0F172A);
+}
+.prediksi-order-page .prediksi-controls-row{
+  display:flex;align-items:flex-end;gap:8px;margin:0 0 6px;
+}
+.prediksi-order-page .prediksi-controls-row .prediksi-tabs{
+  flex:0 0 auto;margin:0;padding-bottom:1px;
+}
+.prediksi-order-page .prediksi-controls-row .ship-status-toolbar{
+  flex:1 1 auto;min-width:0;margin:0;flex-wrap:nowrap;
+}
+.prediksi-order-page .prediksi-controls-row .ship-filter-field{min-width:104px;flex:1 1 112px}
+.prediksi-order-page .prediksi-controls-row .ship-filter-field:first-child{flex:1.8 1 210px}
+.prediksi-order-page .prediksi-controls-row .ship-filter-field input,
+.prediksi-order-page .prediksi-controls-row .ship-filter-field select{
+  width:100%;min-width:0;
+}
+.prediksi-order-page .prediksi-compact-table{
+  max-height:calc(100vh - 292px);min-height:320px;overflow:auto;
+}
+.prediksi-order-page .prediksi-compact-table .ship-table{
+  width:100%;min-width:980px;table-layout:fixed;
+}
+.prediksi-order-page .prediksi-compact-table .ship-table th{
+  position:sticky;top:0;z-index:2;
+}
+.prediksi-order-page .prediksi-compact-table .ship-table th,
+.prediksi-order-page .prediksi-compact-table .ship-table td{
+  padding:5px 8px;height:36px;line-height:1.2;vertical-align:middle;
+}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(1){width:21%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(2){width:10%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(3),
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(4){width:11%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(5){width:15%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(6){width:10%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(7){width:10%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(8){width:6%}
+.prediksi-order-page .prediksi-compact-table .ship-table th:nth-child(9){width:6%}
+.prediksi-order-page .prediksi-customer-cell{
+  min-width:0;white-space:normal!important;
+}
+.prediksi-order-page .prediksi-customer-cell strong,
+.prediksi-order-page .prediksi-customer-cell span{
+  display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.prediksi-order-page .prediksi-customer-cell strong{font-weight:700}
+.prediksi-order-page .prediksi-customer-cell span{margin-top:2px;color:var(--soft,#64748B);font-size:11px}
+.prediksi-order-page .prediksi-status-pill,
+.prediksi-order-page .prediksi-confidence{
+  display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border-radius:999px;
+  background:var(--bg-soft,#F1F5F9);color:var(--ink,#0F172A);font-size:11px;white-space:nowrap;
+}
+.prediksi-order-page .prediksi-status-pill.is-success{background:#DCFCE7;color:#166534}
+.prediksi-order-page .prediksi-status-pill.is-urgent{background:#FEF3C7;color:#92400E}
+.prediksi-order-page .prediksi-status-pill.is-danger{background:#FEE2E2;color:#991B1B}
+.prediksi-order-page .prediksi-status-pill.is-muted{background:#E2E8F0;color:#475569}
+.prediksi-order-page .prediksi-detail-button{
+  min-height:26px;padding:0 8px;border:1px solid var(--ship-border,#CBD5E1);border-radius:4px;
+  background:var(--surface,#fff);color:var(--ink,#0F172A);font:inherit;font-size:11px;cursor:pointer;
+}
+.prediksi-order-page .prediksi-detail-button:hover{border-color:var(--ink,#0F172A)}
+@media(max-width:1180px){
+  .prediksi-order-page .prediksi-controls-row{align-items:stretch;flex-direction:column}
+  .prediksi-order-page .prediksi-controls-row .ship-status-toolbar{width:100%;flex-wrap:wrap}
+  .prediksi-order-page .prediksi-compact-table{max-height:calc(100vh - 352px)}
+}
+@media(max-width:760px){
+  .prediksi-order-page .prediksi-heading{align-items:flex-start;flex-direction:column}
+  .prediksi-order-page .prediksi-heading .primary{align-self:flex-start}
+  .prediksi-order-page .prediksi-kpi{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .prediksi-order-page .prediksi-controls-row .ship-filter-field{min-width:calc(50% - 4px)}
+  .prediksi-order-page .prediksi-compact-table{max-height:none;min-height:0}
+}
 /* Atomic PO line item editor */
 .line-item-edit-modal{display:flex;flex-direction:column;width:min(620px,calc(100vw - 32px));max-width:620px;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow:hidden}
 .line-item-edit-modal .modal-head{flex:0 0 auto;align-items:flex-start;padding:18px 22px}
