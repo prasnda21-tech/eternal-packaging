@@ -11,8 +11,14 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from quantity_rules import (
     _safe_int,
+    _legacy_loaded_qty_for_line,
+    _line_accurate_item_id,
+    _po_line_identity_keys,
+    active_shipments_stored,
     canonical_shipment_id,
+    find_sj_file,
     loading_confirmations_stored,
+    match_po_line_idx,
     qty_delivered,
     qty_loaded,
     shipment_is_active,
@@ -150,6 +156,92 @@ def _safe_duplicate_extra(order: dict) -> Optional[dict]:
     if covered + extra_qty == po and covered > 0 and len(shrinks) == 1:
         return info
     return None
+
+
+def _safe_legacy_loading_allocation(order: dict) -> List[dict]:
+    """Plan exact per-SJ attribution only when legacy totals have one solution.
+
+    This does not change historical Loading totals. It creates a read bridge that
+    lets Delivery prove each current SJ against those already-confirmed totals.
+    """
+    if order.get("legacy_loading_allocations"):
+        return []
+    ships = active_shipments_stored(order)
+    if len(ships) < 2 or loading_confirmations_stored(order):
+        return []
+    po = po_qty_total(order)
+    if po <= 0 or sum(shipment_qty_total(sh) for sh in ships) != po:
+        return []
+    if any(len(sids) > 1 for sids in alias_occupancy(order).values()):
+        return []
+    for rec in order.get("delivery_confirmations") or []:
+        if isinstance(rec, dict) and not str(rec.get("shipment_id") or "").strip():
+            return []
+
+    # Legacy totals alone cannot prove how Loading was divided. Auto-attribute
+    # only the deterministic partial-delivery shape: every completed sibling is
+    # delivered for exactly its SJ qty and one exact leftover SJ remains.
+    pending = []
+    delivered_total = 0
+    for sh in ships:
+        delivered = delivered_qty_for_shipment_records(order, sh)
+        sj_qty = shipment_qty_total(sh)
+        if delivered <= 0:
+            pending.append(sh)
+            continue
+        if delivered != sj_qty:
+            return []
+        delivered_total += delivered
+    if len(pending) != 1:
+        return []
+    if shipment_qty_total(pending[0]) != max(0, po - delivered_total):
+        return []
+
+    per_line_sj: Dict[int, int] = {}
+    allocations = []
+    for sh in ships:
+        sid = canonical_shipment_id(sh)
+        if not sid or not find_sj_file(order, sid):
+            return []
+        normalized = []
+        for row in sh.get("lines") or []:
+            if not isinstance(row, dict):
+                return []
+            idx, err = match_po_line_idx(order, row)
+            qty = max(0, _safe_int(row.get("qty") if row.get("qty") is not None else row.get("quantity")))
+            if err or idx is None or qty <= 0:
+                return []
+            per_line_sj[idx] = per_line_sj.get(idx, 0) + qty
+            line_keys = _po_line_identity_keys((order.get("line_items") or [])[idx])
+            normalized.append({
+                "line_idx": idx,
+                "line_id": line_keys[0] if line_keys else None,
+                "accurate_item_id": _line_accurate_item_id(order, idx),
+                "qty": qty,
+            })
+        if not normalized:
+            return []
+        delivered = delivered_qty_for_shipment_records(order, sh)
+        if delivered > sum(row["qty"] for row in normalized):
+            return []
+        allocations.append({
+            "shipment_id": sid,
+            "surat_jalan_id": sid,
+            "sj_number": sh.get("number") or sh.get("sj_number"),
+            "lines": normalized,
+            "source": "legacy_loading_deterministic_allocation",
+            "status": "complete",
+        })
+
+    if not per_line_sj:
+        return []
+    for idx, allocated in per_line_sj.items():
+        if _legacy_loaded_qty_for_line(order, idx) != allocated:
+            return []
+    legacy_total = sum(_legacy_loaded_qty_for_line(order, idx) for idx in per_line_sj)
+    if legacy_total != po:
+        return []
+    return allocations
 
 
 def audit_order(order: dict) -> dict:
@@ -301,6 +393,28 @@ def audit_order(order: dict) -> dict:
             delivered_qty=delivered,
         ))
 
+    legacy_loaded = sum(
+        _legacy_loaded_qty_for_line(order, idx)
+        for idx, _line in enumerate(order.get("line_items") or [])
+    )
+    if legacy_loaded > 0 and len(active_shipments_stored(order)) > 1 and not order.get("legacy_loading_allocations"):
+        safe_allocations = _safe_legacy_loading_allocation(order)
+        findings.append(_finding(
+            order,
+            reason="Loading lama belum terikat ke masing-masing Surat Jalan.",
+            reason_code="LEGACY_LOADING_UNSCOPED_MULTI_SJ",
+            severity=(SEVERITY_SAFE_AUTO_REPAIR if safe_allocations else SEVERITY_NEEDS_MANUAL_REVIEW),
+            recommendation=(
+                "Tambahkan atribusi read-bridge per SJ dari total Loading lama yang deterministik."
+                if safe_allocations else
+                "Atribusi per SJ tidak unik; review dokumen dan bukti Loading secara manual."
+            ),
+            current_qty=active_qty,
+            snapshot_qty=po,
+            loaded_qty=legacy_loaded,
+            delivered_qty=delivered,
+        ))
+
     for conf in order.get("loading_confirmations") or []:
         if not isinstance(conf, dict) or conf.get("cancelled") or conf.get("deleted"):
             continue
@@ -396,6 +510,13 @@ def audit_order(order: dict) -> dict:
 def plan_safe_auto_repair(order: dict, findings: Optional[List[dict]] = None) -> List[dict]:
     """Only deterministic ops. Ambiguous cases return empty (stay NEEDS_MANUAL_REVIEW)."""
     ops: List[dict] = []
+    legacy_allocations = _safe_legacy_loading_allocation(order)
+    if legacy_allocations:
+        ops.append({
+            "op": "allocate_legacy_loading",
+            "allocations": legacy_allocations,
+            "reason": "Atribusi exact-SJ dari total Loading lama yang sama persis dengan seluruh alokasi SJ aktif.",
+        })
     extra = _safe_duplicate_extra(order)
     if extra is not None:
         restore_id = extra.get("_restore_target")

@@ -321,6 +321,63 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     unmount();
   });
 
+  test("history photos load without selecting a sibling SJ", async () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("history-a", "demo-multisj-photo-001"),
+        proof("history-b", "demo-multisj-photo-002"),
+      ],
+      delivery_history: [
+        { id: "h1", qty: 1000, proof_ids: ["history-a"] },
+        { id: "h2", qty: 800, proof_ids: ["history-b"] },
+      ],
+    });
+    setSearch("");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    expect(container.querySelector('[data-testid="pengiriman-sj-select"]').value).toBe("");
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="delivery-history-photo-0-history-a"] img')).toBeTruthy();
+    expect(container.querySelector('[data-testid="delivery-history-photo-1-history-b"] img')).toBeTruthy();
+    unmount();
+  });
+
+  test("failed history photo stops spinning and reports unavailable", async () => {
+    global.fetch = jest.fn(() => Promise.resolve({ ok: false }));
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [proof("history-failed", "demo-multisj-photo-001")],
+      delivery_history: [{ id: "h1", qty: 1000, proof_ids: ["history-failed"] }],
+    });
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    const button = container.querySelector('[data-testid="delivery-history-photo-0-history-failed"]');
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toMatch(/Foto tidak tersedia/i);
+    expect(button.querySelector(".spin")).toBeFalsy();
+    unmount();
+  });
+
+  test("history proof id without file metadata reports unavailable instead of spinning forever", async () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [],
+      delivery_history: [{ id: "h1", qty: 1000, proof_ids: ["history-missing"] }],
+    });
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    const button = container.querySelector('[data-testid="delivery-history-photo-0-history-missing"]');
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toMatch(/Foto tidak tersedia/i);
+    expect(button.querySelector(".spin")).toBeFalsy();
+    unmount();
+  });
+
   test("delivered SJ 001 / PO Terkirim does not disable upload on SJ 002 or SJ 003", () => {
     const order = demoMultiSjPhotoOrder({
       delivery_status: "Terkirim",

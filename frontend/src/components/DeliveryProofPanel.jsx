@@ -95,6 +95,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const [proofBlobs, setProofBlobs] = useState({});
+  const [proofLoadErrors, setProofLoadErrors] = useState({});
   const [confirmUpload, setConfirmUpload] = useState(null);
   const [confirmDeliver, setConfirmDeliver] = useState(null);
   const [confirming, setConfirming] = useState(false);
@@ -124,6 +125,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     Object.values(blobCacheRef.current).forEach((u) => { if (u) URL.revokeObjectURL(u); });
     blobCacheRef.current = {};
     setProofBlobs({});
+    setProofLoadErrors({});
     setUploading(false);
     setErr("");
     setConfirmUpload(null);
@@ -163,6 +165,36 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const driverSig = signatureForShipment(order.delivery_driver_signature, order, activeShipment);
   const driverDisplayName = authoritativeDriverDisplayName(order, user);
   const history = deliveryHistoryEntries(order);
+  const historyProofIds = [...new Set(history.flatMap((row) => (
+    (row.proof_ids && row.proof_ids.length)
+      ? row.proof_ids
+      : (row.photos || []).map((proof) => proof?.id).filter(Boolean)
+  )))];
+  const proofLoadCandidates = (() => {
+    const inventory = new Map();
+    for (const proof of order.delivery_proofs || []) {
+      if (proof?.id) inventory.set(proof.id, proof);
+    }
+    const wanted = new Map();
+    for (const proof of proofs) {
+      if (proof?.id) wanted.set(proof.id, proof);
+    }
+    for (const row of history) {
+      for (const proof of row.photos || []) {
+        if (proof?.id) wanted.set(proof.id, proof);
+      }
+      for (const proofId of row.proof_ids || []) {
+        const proof = inventory.get(proofId);
+        if (proof?.id) wanted.set(proof.id, proof);
+      }
+    }
+    return [...wanted.values()].filter((proof) => proof?.id && proof?.storage_path);
+  })();
+  const proofLoadKey = proofLoadCandidates
+    .map((proof) => `${proof.id}:${proof.storage_path}`)
+    .sort()
+    .concat(historyProofIds.map((proofId) => `${proofId}:history`))
+    .join("|");
   const remainingSlots = Math.max(0, MAX_PHOTOS - proofs.length);
   const photoLimitHint = sjOptions.length > 1
     ? `Maksimal ${MAX_PHOTOS} foto untuk Surat Jalan ini`
@@ -197,22 +229,34 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     let cancelled = false;
     (async () => {
       const next = { ...blobCacheRef.current };
-      for (const p of proofs) {
+      const loadableIds = new Set(proofLoadCandidates.map((proof) => proof.id));
+      const failures = Object.fromEntries(
+        historyProofIds.filter((proofId) => !loadableIds.has(proofId)).map((proofId) => [proofId, true])
+      );
+      for (const p of proofLoadCandidates) {
         if (next[p.id]) continue;
         try {
           const resp = await fetch(fileUrl(p.storage_path), { credentials: "include" });
-          if (!resp.ok) continue;
+          if (!resp.ok) {
+            failures[p.id] = true;
+            continue;
+          }
           const blob = await resp.blob();
           if (cancelled) return;
           next[p.id] = URL.createObjectURL(blob);
           blobCacheRef.current = next;
-        } catch { /* ignore */ }
+        } catch {
+          failures[p.id] = true;
+        }
       }
-      if (!cancelled) setProofBlobs({ ...blobCacheRef.current });
+      if (!cancelled) {
+        setProofBlobs({ ...blobCacheRef.current });
+        setProofLoadErrors(failures);
+      }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, proofs.length, selectionKey]);
+  }, [isOpen, proofLoadKey, selectionKey]);
 
   // Cleanup blob URLs
   useEffect(() => () => {
@@ -620,11 +664,14 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
                     <button
                       type="button"
                       key={pid}
-                      onClick={() => setPreviewId(pid)}
+                      onClick={() => { if (proofBlobs[pid]) setPreviewId(pid); }}
+                      disabled={Boolean(proofLoadErrors[pid])}
                       data-testid={`delivery-history-photo-${i}-${pid}`}
                     >
                       {proofBlobs[pid] ? (
                         <img src={proofBlobs[pid]} alt="Bukti foto pengiriman" />
+                      ) : proofLoadErrors[pid] ? (
+                        <span className="delivery-history-proof-state">Foto tidak tersedia</span>
                       ) : (
                         <span className="proof-loading"><Loader2 size={14} className="spin" /></span>
                       )}
@@ -646,6 +693,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             <figure key={p.id} className="proof-card" data-testid={`proof-${p.id}`}>
               {proofBlobs[p.id] ? (
                 <img src={proofBlobs[p.id]} alt={p.original_filename} loading="lazy" />
+              ) : proofLoadErrors[p.id] ? (
+                <div className="proof-loading proof-unavailable">Foto tidak tersedia</div>
               ) : (
                 <div className="proof-loading"><Loader2 size={16} className="spin" /></div>
               )}

@@ -1090,6 +1090,18 @@ def loading_confirmations_stored(order: dict) -> list:
     return out
 
 
+def legacy_loading_allocations_stored(order: dict) -> list:
+    """Audited per-SJ attribution of immutable legacy Loading totals."""
+    raw = order.get("legacy_loading_allocations")
+    if not isinstance(raw, list):
+        return []
+    return [
+        row for row in raw
+        if isinstance(row, dict)
+        and row.get("status") not in ("cancelled", "superseded", "deleted")
+    ]
+
+
 def loading_confirmations_all(order: dict) -> list:
     """All Loading confirmations including cancelled (audit / history)."""
     raw = order.get("loading_confirmations")
@@ -1333,8 +1345,26 @@ def loaded_qty_for_sj_line(order: dict, surat_jalan_id: str, line_idx: int) -> i
         conf_sj = str(conf.get("shipment_id") or conf.get("surat_jalan_id") or "").strip()
         if conf_sj in target_ids:
             for ln in conf.get("lines") or []:
-                if isinstance(ln, dict) and _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
+                if not isinstance(ln, dict):
+                    continue
+                resolved, _err = match_po_line_idx(order, ln)
+                if resolved is None:
+                    continue
+                if int(resolved) == int(line_idx):
                     total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+    for allocation in legacy_loading_allocations_stored(order):
+        allocation_sj = str(
+            allocation.get("shipment_id") or allocation.get("surat_jalan_id") or ""
+        ).strip()
+        if allocation_sj not in target_ids:
+            continue
+        for ln in allocation.get("lines") or []:
+            if not isinstance(ln, dict):
+                continue
+            resolved, _err = match_po_line_idx(order, ln)
+            if resolved is None or int(resolved) != int(line_idx):
+                continue
+            total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
     return total
 
 
@@ -1353,7 +1383,8 @@ def qty_confirmed_loading_for_line(order: dict, line_idx: int) -> int:
         for ln in conf.get("lines") or []:
             if not isinstance(ln, dict):
                 continue
-            if _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
+            resolved, _err = match_po_line_idx(order, ln)
+            if resolved is not None and int(resolved) == int(line_idx):
                 total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
     return total
 
@@ -1582,6 +1613,21 @@ def resolve_loading_write_sj_identity(order: dict, surat_jalan_id: str):
         "shipment_id": canonical,
         "sj_number": sj_number,
     }, None
+
+
+def loading_sj_identity_keys(order: dict, surat_jalan_id: str) -> set:
+    """All read aliases for one uniquely resolved active SJ."""
+    want = str(surat_jalan_id or "").strip()
+    identity, err = resolve_loading_write_sj_identity(order, want)
+    keys = {want} if want else set()
+    if err or not identity:
+        return keys
+    keys.update(v for v in identity.values() if v)
+    sh = find_shipment(order, identity["shipment_id"])
+    keys.update(_loading_write_identity_keys(sh, _LOADING_WRITE_SHIP_KEYS))
+    entry = find_sj_file(order, identity["shipment_id"])
+    keys.update(_loading_write_identity_keys(entry, _LOADING_WRITE_FILE_KEYS))
+    return keys
 
 
 def validate_loading_confirmation(order: dict, surat_jalan_id: str, lines: list) -> Optional[str]:
@@ -1924,6 +1970,14 @@ def _line_accurate_item_id(order: dict, line_idx: int) -> Optional[str]:
     return None
 
 
+def _line_id(order: dict, line_idx: int) -> Optional[str]:
+    lis = order.get("line_items") or []
+    if 0 <= int(line_idx) < len(lis):
+        keys = _po_line_identity_keys(lis[int(line_idx)])
+        return keys[0] if keys else None
+    return None
+
+
 def normalize_shipment_line_updates(updates: list, order: dict) -> list:
     rows = []
     for u in updates:
@@ -1936,6 +1990,7 @@ def normalize_shipment_line_updates(updates: list, order: dict) -> list:
         rows.append({
             "line_idx": idx,
             "qty": qty,
+            "line_id": str(u.get("line_id") or _line_id(order, idx) or "") or None,
             "accurate_item_id": str(u.get("accurate_item_id") or _line_accurate_item_id(order, idx) or "") or None,
             "packed_qty": packed,
             "mismatch": qty > physical,
@@ -2379,6 +2434,7 @@ def build_sj_loading_lines(order: dict, surat_jalan_id: str) -> list:
                 "line_idx": idx,
                 "qty": rem,
                 "name": _line_name(order, idx),
+                "line_id": _line_id(order, idx),
                 "accurate_item_id": _line_accurate_item_id(order, idx),
                 "is_print": bool(0 <= idx < len(lis) and is_print_line(lis[idx])),
             })
@@ -2393,6 +2449,7 @@ def build_sj_loading_lines(order: dict, surat_jalan_id: str) -> list:
             "line_idx": 0,
             "qty": rem,
             "name": _line_name(order, 0),
+            "line_id": _line_id(order, 0),
             "accurate_item_id": _line_accurate_item_id(order, 0),
             "is_print": bool(_line_count(order) and is_print_line((order.get("line_items") or [ {}])[0])),
         })
@@ -2429,16 +2486,18 @@ def validate_loading_match_confirmation(order: dict, surat_jalan_id: str) -> Opt
     Fingerprint mismatch (SJ changed) allows re-verify even when remaining qty is 0.
     """
     sid = str(surat_jalan_id or "").strip()
-    _identity, identity_err = resolve_loading_write_sj_identity(order, sid)
+    identity, identity_err = resolve_loading_write_sj_identity(order, sid)
     if identity_err:
         return identity_err
+    selected_ids = loading_sj_identity_keys(order, sid)
+    canonical_sid = identity["shipment_id"]
     if not find_sj_file(order, sid):
         return "Surat Jalan tidak ditemukan. Loading harus terhubung ke file Surat Jalan."
-    fp = sj_fingerprint(order, sid)
+    fp = sj_fingerprint(order, canonical_sid)
     snaps = [
         s for s in (order.get("loading_snapshots") or [])
         if isinstance(s, dict)
-        and str(s.get("surat_jalan_id") or "").strip() == sid
+        and str(s.get("shipment_id") or s.get("surat_jalan_id") or "").strip() in selected_ids
         and s.get("status") not in ("cancelled", "superseded", "deleted")
     ]
     fingerprint_ok = bool(snaps and fp and str(snaps[-1].get("sj_fingerprint") or "") == fp)
@@ -2446,9 +2505,9 @@ def validate_loading_match_confirmation(order: dict, surat_jalan_id: str) -> Opt
         d for d in (order.get("loading_discrepancies") or [])
         if isinstance(d, dict)
         and d.get("status") in ("open", "held", None, "")
-        and str(d.get("surat_jalan_id") or "").strip() == sid
+        and str(d.get("shipment_id") or d.get("surat_jalan_id") or "").strip() in selected_ids
     ]
-    lines = build_sj_loading_lines(order, sid)
+    lines = build_sj_loading_lines(order, canonical_sid)
     if not lines:
         if fingerprint_ok and not open_disc:
             return None  # idempotent complete
@@ -2456,11 +2515,19 @@ def validate_loading_match_confirmation(order: dict, surat_jalan_id: str) -> Opt
         if open_disc or (snaps and not fingerprint_ok):
             return None
         return "Tidak ada qty Surat Jalan yang tersisa untuk diverifikasi."
-    short = packing_shortfall_for_sj_match(order, sid)
+    short = packing_shortfall_for_sj_match(order, canonical_sid)
     if short:
         return short
-    payload = [{"line_idx": ln["line_idx"], "qty": ln["qty"]} for ln in lines]
-    return validate_loading_confirmation(order, sid, payload)
+    payload = [
+        {
+            "line_idx": ln["line_idx"],
+            "line_id": ln.get("line_id"),
+            "accurate_item_id": ln.get("accurate_item_id"),
+            "qty": ln["qty"],
+        }
+        for ln in lines
+    ]
+    return validate_loading_confirmation(order, canonical_sid, payload)
 
 
 def apply_loading_match_confirmation(
@@ -2483,9 +2550,17 @@ def apply_loading_match_confirmation(
         raise ValueError(identity_err)
     actor = actor or {}
     gen = build_sj_loading_lines(order, sid)
-    fp = sj_fingerprint(order, sid)
+    fp = sj_fingerprint(order, identity["shipment_id"])
     if gen:
-        payload = [{"line_idx": ln["line_idx"], "qty": ln["qty"]} for ln in gen]
+        payload = [
+            {
+                "line_idx": ln["line_idx"],
+                "line_id": ln.get("line_id"),
+                "accurate_item_id": ln.get("accurate_item_id"),
+                "qty": ln["qty"],
+            }
+            for ln in gen
+        ]
         record = apply_loading_confirmation(
             order,
             surat_jalan_id=sid,
@@ -2511,14 +2586,15 @@ def apply_loading_match_confirmation(
             for ln in stored:
                 if not isinstance(ln, dict):
                     continue
-                idx = _safe_int(ln.get("line_idx"), default=-1)
+                idx, _err = match_po_line_idx(order, ln)
                 qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-                if idx < 0 or qty <= 0:
+                if idx is None or idx < 0 or qty <= 0:
                     continue
                 snap_lines.append({
                     "line_idx": idx,
                     "qty": qty,
                     "name": _line_name(order, idx),
+                    "line_id": _line_id(order, idx),
                     "accurate_item_id": _line_accurate_item_id(order, idx),
                 })
         rec_id = confirmation_id or str(__import__("uuid").uuid4())
@@ -2537,11 +2613,11 @@ def apply_loading_match_confirmation(
             "snapshot_only": True,
         }
     # Supersede prior snapshots for this exact SJ (requested id and canonical UUID).
-    selected_ids = {sid, identity["surat_jalan_id"]}
+    selected_ids = loading_sj_identity_keys(order, sid)
     for s in order.get("loading_snapshots") or []:
         if (
             isinstance(s, dict)
-            and str(s.get("surat_jalan_id") or "").strip() in selected_ids
+            and str(s.get("shipment_id") or s.get("surat_jalan_id") or "").strip() in selected_ids
             and s.get("status") == "complete"
         ):
             s["status"] = "superseded"
@@ -2563,7 +2639,7 @@ def apply_loading_match_confirmation(
     for d in order.get("loading_discrepancies") or []:
         if not isinstance(d, dict):
             continue
-        if str(d.get("surat_jalan_id") or "").strip() != sid:
+        if str(d.get("shipment_id") or d.get("surat_jalan_id") or "").strip() not in selected_ids:
             continue
         if d.get("status") in ("open", "held", None, ""):
             d["status"] = "resolved"
@@ -2645,6 +2721,9 @@ def apply_loading_discrepancy(
 ) -> dict:
     """Persist qty mismatch report. Does NOT complete Loading / unlock Delivery."""
     sid = str(surat_jalan_id or "").strip()
+    identity, identity_err = resolve_loading_write_sj_identity(order, sid)
+    if identity_err:
+        raise ValueError(identity_err)
     actor = actor or {}
     lines_out = []
     for row in mismatches:
@@ -2660,6 +2739,7 @@ def apply_loading_discrepancy(
         lines_out.append({
             "line_idx": idx,
             "name": _line_name(order, idx),
+            "line_id": _line_id(order, idx),
             "accurate_item_id": _line_accurate_item_id(order, idx),
             "is_print": bool(0 <= idx < len(order.get("line_items") or []) and is_print_line((order.get("line_items") or [])[idx])),
             "qty_sj": sj_qty,
@@ -2669,7 +2749,9 @@ def apply_loading_discrepancy(
         })
     rec = {
         "id": discrepancy_id or "",
-        "surat_jalan_id": sid,
+        "surat_jalan_id": identity["surat_jalan_id"],
+        "shipment_id": identity["shipment_id"],
+        "sj_number": identity["sj_number"],
         "sj_fingerprint": sj_fingerprint(order, sid),
         "lines": lines_out,
         "note": (note or "").strip() or None,
@@ -2693,63 +2775,70 @@ def loading_verification_status(order: dict, surat_jalan_id: Optional[str] = Non
         sid = delivery_batch_identity(sh) if sh else ""
         if not sid and ships:
             sid = delivery_batch_identity(ships[-1])
+    selected_ids = loading_sj_identity_keys(order, sid)
+    identity, identity_err = resolve_loading_write_sj_identity(order, sid)
+    canonical_sid = identity["shipment_id"] if identity and not identity_err else sid
     open_disc = [
         d for d in (order.get("loading_discrepancies") or [])
         if isinstance(d, dict)
         and d.get("status") in ("open", "held", None, "")
-        and (not sid or str(d.get("surat_jalan_id") or "").strip() == sid)
+        and (
+            not sid
+            or str(d.get("shipment_id") or d.get("surat_jalan_id") or "").strip() in selected_ids
+        )
     ]
     if open_disc:
         return {
             "code": LOADING_STATUS_HELD_MISMATCH,
             "label": "Tertahan — Qty Tidak Sesuai SJ",
-            "surat_jalan_id": sid,
+            "surat_jalan_id": canonical_sid,
             "discrepancies": open_disc,
         }
-    if not sid or not find_sj_file(order, sid):
+    if not sid or identity_err or not find_sj_file(order, canonical_sid):
         return {"code": LOADING_STATUS_WAITING, "label": "Menunggu Verifikasi", "surat_jalan_id": sid or ""}
 
     snaps = [
         s for s in (order.get("loading_snapshots") or [])
         if isinstance(s, dict)
-        and str(s.get("surat_jalan_id") or "").strip() == sid
+        and str(s.get("shipment_id") or s.get("surat_jalan_id") or "").strip() in selected_ids
         and s.get("status") not in ("cancelled", "superseded", "deleted")
     ]
-    fp = sj_fingerprint(order, sid)
+    fp = sj_fingerprint(order, canonical_sid)
     if snaps and fp and not any(str(s.get("sj_fingerprint") or "") == fp for s in snaps):
         return {
             "code": LOADING_STATUS_WAITING,
             "label": "Menunggu Verifikasi",
-            "surat_jalan_id": sid,
+            "surat_jalan_id": canonical_sid,
             "reason": "Surat Jalan berubah — verifikasi ulang diperlukan.",
             "sj_changed": True,
         }
 
-    if delivery_batch_photo_readiness(order).get("allowed"):
+    selected = find_shipment(order, canonical_sid)
+    if delivery_batch_photo_readiness(order, selected).get("allowed"):
         return {
             "code": LOADING_STATUS_COMPLETE,
             "label": "Loading Selesai",
-            "surat_jalan_id": sid,
+            "surat_jalan_id": canonical_sid,
         }
-    short = packing_shortfall_for_sj_match(order, sid)
+    short = packing_shortfall_for_sj_match(order, canonical_sid)
     if short:
         if is_packing_shortfall_reason(short):
             return {
                 "code": LOADING_STATUS_PACKING_SHORT,
                 "label": "Packing Belum Mencukupi",
-                "surat_jalan_id": sid,
+                "surat_jalan_id": canonical_sid,
                 "reason": short,
             }
         return {
             "code": LOADING_STATUS_PRIOR_LOADED,
             "label": "Qty Sudah Dikonfirmasi Loading",
-            "surat_jalan_id": sid,
+            "surat_jalan_id": canonical_sid,
             "reason": short,
         }
     return {
         "code": LOADING_STATUS_READY,
         "label": "Siap Diverifikasi",
-        "surat_jalan_id": sid,
+        "surat_jalan_id": canonical_sid,
     }
 
 

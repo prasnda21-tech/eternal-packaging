@@ -4167,8 +4167,12 @@ html:has(.ship-status-page) #root{
 .delivery-history-dl dt{font:10px 'IBM Plex Mono';letter-spacing:.06em;text-transform:uppercase;color:var(--soft)}
 .delivery-history-dl dd{margin:0;font-weight:600}
 .delivery-history-photos{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.delivery-history-photos button{padding:0;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.delivery-history-photos button{width:58px;height:58px;padding:0;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer;overflow:hidden}
+.delivery-history-photos button:disabled{cursor:not-allowed;background:var(--muted)}
 .delivery-history-photos img{display:block;width:56px;height:56px;object-fit:cover;border-radius:4px}
+.delivery-history-photos .proof-loading{width:56px;height:56px}
+.delivery-history-proof-state{display:grid;place-items:center;width:56px;height:56px;padding:4px;color:var(--soft);font-size:9px;line-height:1.2;text-align:center}
+.proof-unavailable{padding:8px;text-align:center;font-size:12px}
 .reschedule-field{display:flex;flex-direction:column;gap:4px;margin:8px 0;font-size:13px}
 .reschedule-field textarea,.reschedule-field input[type="date"]{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font:inherit}
 
