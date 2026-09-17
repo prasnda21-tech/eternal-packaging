@@ -48,6 +48,7 @@ export default function PenerimaanBarang() {
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
+  const [cancelReason, setCancelReason] = useState("");
   const queryPoId = searchParams.get("purchase_order_id") || "";
   const openCreateFromQuery = searchParams.get("action") === "create";
   const openReceiveFromQuery = searchParams.get("action") === "receive" || Boolean(queryPoId);
@@ -436,7 +437,7 @@ export default function PenerimaanBarang() {
       po_number: r.po_number || "—",
       line_count: (r.lines || []).length,
       total_qty: (r.lines || []).reduce((s, l) => s + Number(l.received_qty || 0), 0),
-      status: r.status || (r.cancelled ? "DIBATALKAN" : "TERCATAT"),
+      status: r.status || (r.cancelled ? "CANCELLED" : "ACTIVE"),
       last_synced_at: null,
       raw: r,
     }));
@@ -451,17 +452,24 @@ export default function PenerimaanBarang() {
 
   const openCancelReceipt = (receipt) => {
     setCancelErr("");
+    setCancelReason("");
     setCancelTarget(receipt);
   };
 
   const confirmCancelReceipt = async () => {
     if (!cancelTarget || cancelBusy) return;
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setCancelErr("Alasan pembatalan wajib diisi.");
+      return;
+    }
     setCancelBusy(true);
     setCancelErr("");
     try {
-      await api.cancelPurchaseGoodsReceipt(cancelTarget.id);
-      setOk(`Penerimaan ${cancelTarget.receipt_number || ""} dihapus dari daftar aktif.`);
+      await api.cancelPurchaseGoodsReceipt(cancelTarget.id, reason);
+      setOk(`Penerimaan ${cancelTarget.receipt_number || ""} berhasil dibatalkan.`);
       setCancelTarget(null);
+      setCancelReason("");
       setOpenId(null);
       await refreshSideData();
       if (mainTab === "history") await loadHistory();
@@ -1097,11 +1105,21 @@ export default function PenerimaanBarang() {
 
       <PurchaseCancelModal
         open={Boolean(cancelTarget)}
-        title="Hapus Penerimaan Barang?"
-        body="Dokumen akan dikeluarkan dari daftar aktif. Qty PO dan stok tetap konsisten; riwayat pembatalan tersimpan."
+        title="Batalkan Penerimaan Barang?"
+        body="Dokumen tidak dihapus. Jika stock sudah bertambah, sistem akan membuat movement reversal agar stock kembali konsisten."
         busy={cancelBusy}
         error={cancelErr}
-        onCancel={() => !cancelBusy && setCancelTarget(null)}
+        reason={cancelReason}
+        onReasonChange={setCancelReason}
+        requireReason
+        confirmLabel="Batalkan"
+        busyLabel="Membatalkan…"
+        onCancel={() => {
+          if (!cancelBusy) {
+            setCancelTarget(null);
+            setCancelReason("");
+          }
+        }}
         onConfirm={confirmCancelReceipt}
       />
     </div>
@@ -1232,12 +1250,12 @@ function PoHistoryRow({ row, badge, supplierPo, open, onToggle, canCreateInvoice
                 <button
                   type="button"
                   className="ghost danger"
-                  data-testid={`btn-hapus-receipt-${row.raw.id}`}
+                  data-testid={`btn-batalkan-receipt-${row.raw.id}`}
                   disabled={row.raw.can_cancel === false}
                   title={row.raw.can_cancel === false ? (row.raw.cancel_block_reason || "") : undefined}
                   onClick={(e) => { e.stopPropagation(); onCancel?.(row.raw); }}
                 >
-                  Hapus
+                  Batalkan
                 </button>
               )}
               {canCreateInvoice && (

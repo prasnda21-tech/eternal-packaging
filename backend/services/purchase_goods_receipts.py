@@ -28,8 +28,15 @@ from services.purchase_common import (
 )
 from services.purchase_orders import get_purchase_order
 from services.physical_stock_engine import (
+    execute_durable_stock_event,
     handle_goods_receipt_created,
     precheck_goods_receipt_lines,
+)
+from services.stock_ledger import (
+    MOVEMENT_PENERIMAAN,
+    MOVEMENT_REVERSAL_PENERIMAAN,
+    MOVEMENT_STOK_MASUK,
+    safe_float,
 )
 
 COLLECTION = "purchase_goods_receipts"
@@ -50,33 +57,75 @@ async def _active_invoice_count_for_receipt(db, receipt_id: str) -> int:
     )
 
 
-async def _stock_dependency_for_receipt(db, receipt_id: str) -> Dict[str, Any]:
-    """Detect stock impact that cannot be safely reversed yet.
-
-    Soft-cancel must never invent reverse stock_movements. If durable stock events
-    already exist for this receipt, cancel is blocked so PO qty / stock stay consistent.
-    """
+async def _stock_reversal_plan(db, receipt_id: str) -> Dict[str, Any]:
+    """Return unreversed receipt movements and validate a safe physical reversal."""
     rid = str(receipt_id)
-    mov_count = await db.stock_movements.count_documents({
+    originals = await db.stock_movements.find({
         "reference_type": "goods_receipt",
         "reference_id": rid,
-    })
-    pending = await db.master_items.find_one(
-        {
-            "pending_event.reference_type": "goods_receipt",
-            "pending_event.reference_id": rid,
-        },
-        {"_id": 1, "pending_event.event_id": 1},
-    )
-    if not pending:
-        pending = await db.master_items.find_one(
-            {"pending_event.event_id": {"$regex": f"^stock_in:goods_receipt:{rid}:"}},
-            {"_id": 1, "pending_event.event_id": 1},
+        "movement_type": {"$in": [MOVEMENT_PENERIMAAN, MOVEMENT_STOK_MASUK]},
+        "status": {"$nin": ["VOID", "CANCELLED"]},
+    }, {"_id": 0}).to_list(None)
+    reversals = await db.stock_movements.find({
+        "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+        "goods_receipt_id": rid,
+    }, {"_id": 0}).to_list(None)
+    reversed_ids = {
+        str(m.get("reversal_of_movement_id") or "")
+        for m in reversals
+        if m.get("reversal_of_movement_id")
+    }
+    pending_originals = [
+        m for m in originals
+        if str(m.get("id") or m.get("event_key") or "") not in reversed_ids
+    ]
+
+    required: Dict[str, float] = {}
+    for movement in pending_originals:
+        mid = str(movement.get("master_item_id") or "").strip()
+        qty = abs(safe_float(movement.get("delta", movement.get("base_qty", 0))))
+        if mid and qty > 0:
+            required[mid] = safe_float(required.get(mid, 0)) + qty
+
+    unsafe_reason = ""
+    for mid, qty in required.items():
+        state = await db.product_stock_state.find_one(
+            {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+            {"_id": 0},
         )
+        if not state or not state.get("initialized") or state.get("status") != "INITIALIZED":
+            unsafe_reason = f"Stock V2 item '{mid}' belum initialized."
+            break
+        pending = state.get("pending_event")
+        if pending:
+            unsafe_reason = f"Ada mutasi stock lain yang sedang berjalan untuk item '{mid}'."
+            break
+        total = safe_float(state.get("total_qty"))
+        unprinted = safe_float(state.get("unprinted_qty"))
+        if total + 1e-9 < qty or unprinted + 1e-9 < qty:
+            unsafe_reason = (
+                f"Stock fisik belum dicetak item '{mid}' tidak cukup untuk reversal "
+                f"(dibutuhkan {qty:g}, tersedia {min(total, unprinted):g})."
+            )
+            break
+
     return {
-        "movement_count": int(mov_count or 0),
-        "has_pending": bool(pending),
-        "blocked": bool(mov_count) or bool(pending),
+        "movement_count": len(originals),
+        "reversal_count": len(reversals),
+        "pending_originals": pending_originals,
+        "blocked": bool(unsafe_reason),
+        "block_reason": unsafe_reason,
+    }
+
+
+async def _stock_dependency_for_receipt(db, receipt_id: str) -> Dict[str, Any]:
+    plan = await _stock_reversal_plan(db, receipt_id)
+    return {
+        "movement_count": plan["movement_count"],
+        "reversal_count": plan["reversal_count"],
+        "blocked": plan["blocked"],
+        "block_reason": plan["block_reason"],
+        "requires_reversal": bool(plan["pending_originals"]),
     }
 
 
@@ -84,14 +133,14 @@ async def enrich_goods_receipt(db, doc: dict) -> dict:
     out = dict(doc)
     rid = str(out.get("id") or "")
     if is_cancelled(out):
-        out["status"] = "DIBATALKAN"
+        out["status"] = "CANCELLED"
         out["can_cancel"] = False
         out["cancel_block_reason"] = "Penerimaan sudah dibatalkan."
         return out
 
     inv_count = await _active_invoice_count_for_receipt(db, rid) if rid else 0
     stock = await _stock_dependency_for_receipt(db, rid) if rid else {"blocked": False}
-    out["status"] = "TERCATAT"
+    out["status"] = "ACTIVE"
     if inv_count > 0:
         out["can_cancel"] = False
         out["cancel_block_reason"] = (
@@ -100,12 +149,7 @@ async def enrich_goods_receipt(db, doc: dict) -> dict:
         )
     elif stock.get("blocked"):
         out["can_cancel"] = False
-        out["cancel_block_reason"] = (
-            "Penerimaan tidak dapat dihapus karena sudah memengaruhi stok fisik "
-            f"({int(stock.get('movement_count') or 0)} stock_movements"
-            f"{', ada pending event' if stock.get('has_pending') else ''}). "
-            "Reversal stok belum aman — batalkan dependency stok terlebih dahulu."
-        )
+        out["cancel_block_reason"] = stock.get("block_reason") or "Reversal stock belum aman."
     else:
         out["can_cancel"] = True
         out["cancel_block_reason"] = ""
@@ -132,8 +176,8 @@ async def cancel_purchase_goods_receipt(
     """Soft-cancel PO-linked goods receipt.
 
     - Never hard-deletes
-    - Blocks when active invoices or irreversible stock_movements exist
-    - Never posts reverse / double stock movements
+    - Blocks when active invoices or unsafe downstream stock use exists
+    - Appends an idempotent reversal for every posted receipt movement
     """
     reason = str(reason or "").strip()
 
@@ -146,6 +190,8 @@ async def cancel_purchase_goods_receipt(
 
         if is_cancelled(doc):
             return await get_purchase_goods_receipt(db, doc["id"])
+        if not reason:
+            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
 
         inv_count = await _active_invoice_count_for_receipt(db, doc["id"])
         if inv_count > 0:
@@ -155,18 +201,64 @@ async def cancel_purchase_goods_receipt(
                 "Batalkan faktur terkait terlebih dahulu.",
             )
 
-        stock = await _stock_dependency_for_receipt(db, doc["id"])
-        if stock.get("blocked"):
+        plan = await _stock_reversal_plan(db, doc["id"])
+        if plan.get("blocked"):
             raise HTTPException(
                 409,
-                "Penerimaan tidak dapat dihapus karena sudah memengaruhi stok fisik "
-                f"({int(stock.get('movement_count') or 0)} stock_movements"
-                f"{', ada pending event' if stock.get('has_pending') else ''}). "
-                "Reversal stok belum aman — batalkan dependency stok terlebih dahulu.",
+                plan.get("block_reason") or "Reversal stock Penerimaan Barang tidak aman.",
             )
 
+        reversal_ids: List[str] = []
+        for movement in plan.get("pending_originals") or []:
+            original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
+            mid = str(movement.get("master_item_id") or "").strip()
+            qty = abs(safe_float(movement.get("delta", movement.get("base_qty", 0))))
+            if not original_id or not mid or qty <= 0:
+                continue
+            reversal_id = f"stock_reverse:goods_receipt:{doc['id']}:{original_id}"
+            reversed_movement = await execute_durable_stock_event(
+                db,
+                event_id=reversal_id,
+                master_item_id=mid,
+                movement_type=MOVEMENT_REVERSAL_PENERIMAAN,
+                transaction_qty=-qty,
+                transaction_uom=movement.get("base_uom") or movement.get("transaction_uom"),
+                source_entity="GUDANG_UTAMA",
+                destination_entity=doc.get("supplier") or "SUPPLIER",
+                reference_number=doc.get("receipt_number") or "",
+                reference_type="goods_receipt_reversal",
+                reference_id=doc["id"],
+                description=f"Pembatalan Penerimaan Barang: {reason}",
+                order_id=doc.get("purchase_order_id"),
+                line_idx=movement.get("line_idx"),
+                line_id=movement.get("line_id"),
+                change_metadata={
+                    "goods_receipt_id": doc["id"],
+                    "reversal_of_movement_id": original_id,
+                    "cancel_reason": reason,
+                },
+                user=user,
+            )
+            reversal_ids.append(str(reversed_movement.get("id") or reversal_id))
+
+        # Include reversals completed by an earlier retry/crash recovery.
+        existing_reversals = await db.stock_movements.find({
+            "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+            "goods_receipt_id": doc["id"],
+        }, {"_id": 0, "id": 1}).to_list(None)
+        reversal_ids = list(dict.fromkeys(
+            reversal_ids + [str(m.get("id") or "") for m in existing_reversals if m.get("id")]
+        ))
         fields = cancellation_fields(user, reason)
-        await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
+        fields.update({
+            "status": "CANCELLED",
+            "reversal_movement_id": reversal_ids[0] if reversal_ids else None,
+            "reversal_movement_ids": reversal_ids,
+        })
+        await db[COLLECTION].update_one(
+            {"id": doc["id"], "cancelled": {"$ne": True}},
+            {"$set": fields},
+        )
         return await get_purchase_goods_receipt(db, doc["id"])
 
 

@@ -118,7 +118,7 @@ describe("Pembelian workflow UI", () => {
     expect(penerimaan).not.toMatch(/purchase-table-recv-po[\s\S]{0,400}<th>Item<\/th>/);
     expect(penerimaan).toMatch(/cancelPurchaseGoodsReceipt/);
     expect(penerimaan).toMatch(/btn-buat-faktur-receipt/);
-    expect(penerimaan).toMatch(/btn-hapus-receipt/);
+    expect(penerimaan).toMatch(/btn-batalkan-receipt/);
     expect(penerimaan).toMatch(/PurchaseCancelModal/);
     expect(apiSrc).toMatch(/cancelPurchaseGoodsReceipt/);
     expect(cancelModal).not.toMatch(/Alasan penghapusan/);
