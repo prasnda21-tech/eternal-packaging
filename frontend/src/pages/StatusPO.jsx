@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { RefreshCw, Trash2, XCircle } from "lucide-react";
+import { CalendarDays, RefreshCw, Search, Trash2, XCircle } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import StatusPoWorkflowTable from "../components/StatusPoWorkflowTable";
+/* Shared ops-list tokens: ship-table ship-check ship-cust is-selected empty-state */
 import "./StatusPO.css";
 import {
   headerCheckState,
@@ -14,7 +15,10 @@ import {
 } from "../lib/rowSelection";
 import {
   EMPTY_STATUS_PO_FILTERS,
+  formatStatusPoDate,
+  formatStatusPoUpdated,
   matchesStatusPoFilters,
+  parseStatusPoDateInput,
   statusPoFilterOptions,
 } from "../lib/statusPo";
 import { isStatusPoMatrixPreviewEnabled, buildStatusPoMatrixPreviewRows } from "../lib/statusPoPreview";
@@ -23,6 +27,36 @@ import {
   storageUserKey,
   writeListUiState,
 } from "../lib/poListReturn";
+
+function StatusPoDateInput({ value, onChange, ariaLabel, testId }) {
+  const [text, setText] = useState(() => (value ? formatStatusPoDate(value) : ""));
+  useEffect(() => {
+    setText(value ? formatStatusPoDate(value) : "");
+  }, [value]);
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      placeholder="dd/mm/yyyy"
+      autoComplete="off"
+      spellCheck={false}
+      value={text === "-" ? "" : text}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setText(raw);
+        if (!raw.trim()) {
+          onChange("");
+          return;
+        }
+        const iso = parseStatusPoDateInput(raw);
+        if (iso) onChange(iso);
+      }}
+      onBlur={() => setText(value ? formatStatusPoDate(value) : "")}
+      aria-label={ariaLabel}
+      data-testid={testId}
+    />
+  );
+}
 
 export default function StatusPO() {
   const { user, hasPerm } = useAuth();
@@ -43,6 +77,8 @@ export default function StatusPO() {
   const [bulkConfirm, setBulkConfirm] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState("");
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [density, setDensity] = useState("rapat");
   const inFlight = useRef(false);
   const loadInFlight = useRef(false);
   const headerRef = useRef(null);
@@ -59,10 +95,12 @@ export default function StatusPO() {
     try {
       if (isStatusPoMatrixPreviewEnabled(location.search)) {
         setRows(buildStatusPoMatrixPreviewRows());
+        setUpdatedAt(new Date());
         return;
       }
       const d = await api.statusPo(view ? { view } : {});
       setRows(d.rows || []);
+      setUpdatedAt(new Date());
     } catch (e) {
       const det = e.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Status PO"));
@@ -164,85 +202,120 @@ export default function StatusPO() {
   };
 
   const title = deliveryTodayPage ? "Pengiriman Hari Ini" : "Status PO";
+  const updatedLabel = formatStatusPoUpdated(updatedAt);
 
   return (
-    <div className="ship-status-page status-po-page" data-testid="status-po-page">
+    <div className="ship-status-page status-po-page" data-testid="status-po-page" data-density={density}>
       <div className="ship-status-chrome">
         <header className="ship-status-heading spo-heading">
-          <h1>{title}</h1>
-          {!deliveryTodayPage && (
-            <p className="spo-sub" data-testid="status-po-subtitle">
-              Pantau progress setiap PO dari order masuk hingga pengiriman.
-            </p>
-          )}
+          <div className="spo-heading-copy">
+            <div className="spo-heading-title-row">
+              <h1>{title}</h1>
+              {!deliveryTodayPage && (
+                <span className="spo-po-count" data-testid="status-po-heading-count">
+                  {visible.length} PO
+                </span>
+              )}
+            </div>
+            {!deliveryTodayPage && (
+              <p className="spo-sub" data-testid="status-po-subtitle">
+                Pantau status pesanan dari semua cabang secara real-time
+              </p>
+            )}
+          </div>
+          <p className="spo-updated muted small" data-testid="status-po-updated">
+            {updatedLabel ? `Diperbarui ${updatedLabel}` : (busy ? "Memuat…" : "\u00a0")}
+          </p>
         </header>
         <div className="ship-status-toolbar" data-testid="status-po-filter-bar">
-          <label className="ship-filter-field spo-filter-po">
-            <span>No PO</span>
-            <input
-              type="text"
-              value={filters.po}
-              onChange={(e) => setFilter("po", e.target.value)}
-              placeholder="Cari No PO"
-              data-testid="status-po-filter-po"
-            />
+          <label className="ship-filter-field spo-filter-search">
+            <span className="spo-sr-only">Cari</span>
+            <span className="spo-search-wrap">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="search"
+                value={filters.po}
+                onChange={(e) => setFilter("po", e.target.value)}
+                placeholder="Cari No PO, pelanggan, atau produk..."
+                aria-label="Cari No PO, pelanggan, atau produk"
+                data-testid="status-po-filter-po"
+              />
+            </span>
           </label>
           <label className="ship-filter-field spo-filter-customer">
-            <span>Customer</span>
+            <span className="spo-sr-only">Pelanggan</span>
             <input
               type="text"
               value={filters.customer}
               onChange={(e) => setFilter("customer", e.target.value)}
-              placeholder="Cari customer"
+              placeholder="Pelanggan"
+              aria-label="Pelanggan"
               data-testid="status-po-filter-customer"
             />
           </label>
           <label className="ship-filter-field spo-filter-status">
-            <span>Status</span>
+            <span className="spo-sr-only">Status</span>
             <select
               value={filters.status}
               onChange={(e) => setFilter("status", e.target.value)}
               aria-label="Status"
               data-testid="status-po-filter-status"
             >
-              <option value="">Semua</option>
+              <option value="">Semua Status</option>
               {statusOptions.map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
           </label>
-          <label className="ship-filter-field spo-filter-date">
-            <span>Tanggal Mulai</span>
-            <input
-              type="date"
-              value={filters.dateFrom}
-              onChange={(e) => setFilter("dateFrom", e.target.value)}
-              data-testid="status-po-filter-date-from"
-            />
-          </label>
-          <label className="ship-filter-field spo-filter-date">
-            <span>Tanggal Akhir</span>
-            <input
-              type="date"
-              value={filters.dateTo}
-              onChange={(e) => setFilter("dateTo", e.target.value)}
-              data-testid="status-po-filter-date-to"
-            />
-          </label>
-          <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" data-testid="status-po-refresh" disabled={busy}>
-            <RefreshCw size={14} className={busy ? "spin" : ""} />
-          </button>
+          <div className="spo-date-range" data-testid="status-po-date-range" lang="id">
+            <CalendarDays size={15} aria-hidden="true" />
+            <label className="ship-filter-field spo-filter-date">
+              <span className="spo-sr-only">Tanggal Mulai</span>
+              <StatusPoDateInput
+                value={filters.dateFrom}
+                onChange={(next) => setFilter("dateFrom", next)}
+                ariaLabel="Tanggal mulai"
+                testId="status-po-filter-date-from"
+              />
+            </label>
+            <span className="spo-date-sep" aria-hidden="true">–</span>
+            <label className="ship-filter-field spo-filter-date">
+              <span className="spo-sr-only">Tanggal Akhir</span>
+              <StatusPoDateInput
+                value={filters.dateTo}
+                onChange={(next) => setFilter("dateTo", next)}
+                ariaLabel="Tanggal akhir"
+                testId="status-po-filter-date-to"
+              />
+            </label>
+          </div>
           <button
             type="button"
             className="ship-reset-btn"
             onClick={() => setFilters(EMPTY_STATUS_PO_FILTERS)}
             data-testid="status-po-filter-reset"
           >
+            <RefreshCw size={14} aria-hidden="true" />
             Reset
           </button>
+          <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" aria-label="Muat ulang" data-testid="status-po-refresh" disabled={busy}>
+            <RefreshCw size={14} className={busy ? "spin" : ""} aria-hidden="true" />
+          </button>
+          <label className="ship-filter-field spo-filter-density">
+            <span className="spo-sr-only">Tampilan</span>
+            <select
+              value={density}
+              onChange={(e) => setDensity(e.target.value)}
+              aria-label="Tampilan kerapatan tabel"
+              data-testid="status-po-density"
+            >
+              <option value="rapat">Tampilan: Rapat</option>
+              <option value="longgar">Tampilan: Longgar</option>
+            </select>
+          </label>
         </div>
         {canSelect && (
-          <p className="muted small" data-testid="status-po-select-scope">
+          <p className="muted small spo-sr-only" data-testid="status-po-select-scope">
             Pilih Semua hanya untuk baris yang sedang tampil (filter aktif).
           </p>
         )}
@@ -292,6 +365,7 @@ export default function StatusPO() {
             headerRef={headerRef}
             user={user}
             location={location}
+            density={density}
           />
         ) : null}
         {busy && !visible.length ? (
@@ -299,20 +373,15 @@ export default function StatusPO() {
         ) : null}
       </div>
       <div className="spo-footer" data-testid="status-po-footer">
-        <span data-testid="status-po-count">Menampilkan {visible.length} dari {rows.length} data</span>
+        <span data-testid="status-po-count">Menampilkan {visible.length} dari {rows.length} PO</span>
+        <div className="spo-legend" data-testid="status-po-legend">
+          <span className="spo-legend-item"><span className="spo-legend-dot is-done" aria-hidden="true" /> Selesai</span>
+          <span className="spo-legend-item"><span className="spo-legend-dot is-active" aria-hidden="true" /> Tahap Aktif</span>
+          <span className="spo-legend-item"><span className="spo-legend-dot is-process" aria-hidden="true" /> Dalam Proses</span>
+          <span className="spo-legend-item"><span className="spo-legend-dot is-pending" aria-hidden="true" /> Belum Dimulai</span>
+          <span className="spo-legend-item"><span className="spo-legend-dot is-problem" aria-hidden="true" /> Tertahan / Bermasalah</span>
+        </div>
       </div>
-      <div className="spo-legend" data-testid="status-po-legend">
-        <span className="spo-legend-item"><span className="spo-legend-mark is-done" aria-hidden="true">✓</span> Selesai</span>
-        <span className="spo-legend-item"><span className="spo-legend-mark is-active" aria-hidden="true">◉</span> Sedang Berjalan</span>
-        <span className="spo-legend-item"><span className="spo-legend-mark is-pending" aria-hidden="true">—</span> Belum Dimulai</span>
-        <span className="spo-legend-item"><span className="spo-legend-mark is-hold" aria-hidden="true">!</span> Tertahan / Perlu Perhatian</span>
-        <span className="spo-legend-item"><span className="spo-legend-mark is-unknown" aria-hidden="true">?</span> Tidak dapat ditentukan</span>
-        <span className="spo-legend-item"><span className="spo-legend-mark is-cancel" aria-hidden="true">✕</span> Dibatalkan</span>
-      </div>
-      <p className="spo-help" data-testid="status-po-scroll-hint">
-        Geser tabel ke kanan untuk melihat seluruh tahapan workflow.
-        Lebar kolom dapat diubah dengan menarik garis header.
-      </p>
       <ConfirmActionModal
         open={!!bulkAction}
         title={bulkAction === "delete" ? "Hapus Permanen PO Terpilih" : "Batalkan PO Terpilih"}

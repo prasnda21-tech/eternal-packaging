@@ -10,11 +10,13 @@ describe("Status PO header filters", () => {
     expect(src).toMatch(/ship-status-toolbar/);
     expect(src).toMatch(/ship-filter-field/);
     expect(src).toMatch(/status-po-filter-bar/);
-    expect(src).toMatch(/status-po-filter-po/);
+    expect(src).toMatch(/Cari No PO, pelanggan, atau produk\.\.\./);
     expect(src).toMatch(/status-po-filter-customer/);
     expect(src).toMatch(/status-po-filter-status/);
     expect(src).toMatch(/status-po-filter-date-from/);
     expect(src).toMatch(/status-po-filter-date-to/);
+    expect(src).toMatch(/placeholder="dd\/mm\/yyyy"/);
+    expect(src).not.toMatch(/type="date"/);
     expect(src).toMatch(/status-po-filter-reset/);
     expect(src).toMatch(/>\s*Reset\s*</);
     expect(src).toMatch(/matchesStatusPoFilters/);

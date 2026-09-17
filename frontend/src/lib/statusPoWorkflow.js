@@ -3,7 +3,7 @@
  * Cells render explicit `row.workflow[stage]` from the Status PO payload.
  */
 
-export const STATUS_PO_COL_STORAGE_KEY = "status-po-col-widths-v2";
+export const STATUS_PO_COL_STORAGE_KEY = "status-po-col-widths-v3";
 
 export const STATUS_PO_WORKFLOW_STAGES = [
   { key: "order", header: "Order", full: "Order", color: "#1F4B7A" },
@@ -25,15 +25,20 @@ export const STATUS_PO_WORKFLOW_STAGES = [
 
 export const STATUS_PO_WORKFLOW_HEADERS = STATUS_PO_WORKFLOW_STAGES.map((s) => s.header);
 
-export const STATUS_PO_IDENTITY_COLUMNS = ["No PO", "Tanggal", "Pelanggan", "Item Line", "Status Saat Ini"];
+export const STATUS_PO_IDENTITY_COLUMNS = ["No PO", "Tanggal PO", "Pelanggan", "Item / Produk", "Status Saat Ini"];
+
+export const STATUS_PO_TABLE_KEYS = [
+  "check", "po", "date", "customer", "items", "status", "age", "progress", "pct", "action",
+];
 
 export const STATUS_PO_DEFAULT_WIDTHS = {
   check: 40,
-  po: 148,
-  date: 82,
-  customer: 128,
-  items: 196,
-  status: 128,
+  po: 168,
+  date: 92,
+  customer: 168,
+  items: 188,
+  status: 188,
+  age: 72,
   order: 60,
   design: 60,
   appr_design: 76,
@@ -49,8 +54,9 @@ export const STATUS_PO_DEFAULT_WIDTHS = {
   sj: 52,
   loading: 64,
   kirim: 56,
-  progress: 128,
-  action: 64,
+  progress: 214,
+  pct: 52,
+  action: 52,
 };
 
 export const STATUS_PO_MIN_WIDTHS = {
@@ -58,8 +64,9 @@ export const STATUS_PO_MIN_WIDTHS = {
   po: 132,
   date: 76,
   customer: 112,
-  items: 160,
-  status: 118,
+  items: 140,
+  status: 148,
+  age: 60,
   order: 60,
   design: 60,
   appr_design: 60,
@@ -75,8 +82,9 @@ export const STATUS_PO_MIN_WIDTHS = {
   sj: 60,
   loading: 60,
   kirim: 60,
-  progress: 120,
-  action: 60,
+  progress: 168,
+  pct: 44,
+  action: 44,
 };
 
 const STATUS_TO_INDEX = {
@@ -137,6 +145,7 @@ export function workflowCellState(row, stageKey) {
     : stageKey;
   const raw = row?.workflow?.[key];
   if (raw === "completed") return "completed";
+  if (raw === "skipped" || raw === "na" || raw === "not_applicable") return "skipped";
   if (raw === "active") return "active";
   if (raw === "pending") return "pending";
   if (raw === "hold") return "hold";
@@ -144,8 +153,32 @@ export function workflowCellState(row, stageKey) {
   return "unknown";
 }
 
+const DONE_CELL_STATES = new Set(["completed", "skipped", "na", "not_applicable"]);
+
+/** 0-based canonical stage from the same workflow evidence as the 15 boxes. 15 = all done. */
+export function workflowCanonicalStageIndex(row) {
+  if (row?.cancelled || normalizeStatusLabel(row?.status) === "cancelled") return 0;
+  const wf = row?.workflow;
+  const keys = STATUS_PO_WORKFLOW_STAGES.map((s) => s.key);
+  if (wf && typeof wf === "object") {
+    const holdIdx = keys.findIndex((k) => wf[k] === "hold");
+    if (holdIdx >= 0) return holdIdx;
+    const allDone = keys.length > 0 && keys.every((k) => DONE_CELL_STATES.has(wf[k]));
+    if (allDone) return 15;
+    const activeIdx = keys.findIndex((k) => wf[k] === "active");
+    if (activeIdx >= 0) return activeIdx;
+    let lastDone = -1;
+    keys.forEach((k, i) => {
+      if (DONE_CELL_STATES.has(wf[k])) lastDone = i;
+    });
+    if (lastDone >= 0) return lastDone;
+  }
+  return workflowStageIndex(row);
+}
+
 export function workflowCellTitle(state) {
   if (state === "completed" || state === "done") return "Selesai";
+  if (state === "skipped") return "Tidak berlaku";
   if (state === "active" || state === "current") return "Sedang berjalan";
   if (state === "pending") return "Belum dimulai";
   if (state === "hold") return "Tertahan";
@@ -157,19 +190,20 @@ export function workflowProgressPercent(row) {
   const wf = row?.workflow;
   if (!wf || typeof wf !== "object") return 0;
   const keys = STATUS_PO_WORKFLOW_STAGES.map((s) => s.key);
-  const done = keys.filter((k) => wf[k] === "completed").length;
+  const done = keys.filter((k) => DONE_CELL_STATES.has(wf[k])).length;
   return Math.round((done / keys.length) * 100);
 }
 
 export function workflowProgressColor(row) {
   if (Boolean(row?.cancelled) || normalizeStatusLabel(row?.status) === "cancelled") return "#C0392B";
-  if (Boolean(row?.hold) || normalizeStatusLabel(row?.status) === "hold") return "#D89A00";
+  if (Boolean(row?.hold) || normalizeStatusLabel(row?.status) === "hold") return "#F44747";
   const wf = row?.workflow || {};
   const activeKey = STATUS_PO_WORKFLOW_STAGES.find((s) => wf[s.key] === "active" || wf[s.key] === "hold")?.key;
   if (activeKey) {
+    if (wf[activeKey] === "hold") return "#F44747";
     return STATUS_PO_WORKFLOW_STAGES.find((s) => s.key === activeKey)?.color || "#1F4B7A";
   }
-  const lastDone = [...STATUS_PO_WORKFLOW_STAGES].reverse().find((s) => wf[s.key] === "completed");
+  const lastDone = [...STATUS_PO_WORKFLOW_STAGES].reverse().find((s) => DONE_CELL_STATES.has(wf[s.key]));
   return lastDone?.color || "#1F4B7A";
 }
 
@@ -181,6 +215,47 @@ export function statusBadgeTone(status) {
   if (idx === undefined) return "neutral";
   if (idx >= 15 || idx === 14) return "kirim";
   return STATUS_PO_WORKFLOW_STAGES[Math.min(idx, 14)]?.key || "neutral";
+}
+
+/** 1-based stage number from the same workflow evidence as boxes and percent. */
+export function statusStageDisplayNumber(row) {
+  const idx = workflowCanonicalStageIndex(row);
+  if (!Number.isFinite(idx) || idx < 0) return 1;
+  if (idx >= 15) return 15;
+  return idx + 1;
+}
+
+/**
+ * Compact status-strip color from existing row flags/labels.
+ * Does not invent new workflow meaning.
+ */
+export function statusStripTone(row) {
+  const label = normalizeStatusLabel(row?.status);
+  if (Boolean(row?.cancelled) || label === "cancelled") return "problem";
+  if (Boolean(row?.hold) || label === "hold") return "problem";
+  const wf = row?.workflow;
+  const keys = STATUS_PO_WORKFLOW_STAGES.map((s) => s.key);
+  if (wf && typeof wf === "object" && keys.every((k) => DONE_CELL_STATES.has(wf[k]))) return "done";
+  if (label === "terkirim") return "done";
+  if (
+    label === "penjadwalan"
+    || label.includes("berjalan")
+    || label === "parsial terkirim"
+    || label === "sj parsial"
+  ) return "process";
+  const idx = workflowCanonicalStageIndex(row);
+  if (idx >= 15) return "done";
+  if (idx <= 0) return "pending";
+  return "active";
+}
+
+/** Map explicit workflow cell state to a 15-segment color token. */
+export function progressSegmentTone(state) {
+  if (state === "completed" || state === "done" || state === "skipped") return "done";
+  if (state === "active" || state === "current") return "active";
+  if (state === "hold") return "problem";
+  if (state === "cancelled") return "problem";
+  return "pending";
 }
 
 export function clampColWidth(key, width) {
@@ -222,8 +297,6 @@ export function stickyOffsets(widths, { hasCheck, narrow } = {}) {
   const po = check;
   const date = po + (w.po || d.po);
   const customer = date + (w.date || d.date);
-  const items = customer + (w.customer || d.customer);
-  const status = items + (w.items || d.items);
   if (narrow) {
     return {
       check: 0,
@@ -232,7 +305,22 @@ export function stickyOffsets(widths, { hasCheck, narrow } = {}) {
       customer: po + (w.po || d.po),
       items: null,
       status: null,
+      age: null,
+      progress: null,
+      pct: null,
+      action: null,
     };
   }
-  return { check: 0, po, date, customer, items, status };
+  return {
+    check: 0,
+    po,
+    date,
+    customer,
+    items: null,
+    status: null,
+    age: null,
+    progress: null,
+    pct: null,
+    action: null,
+  };
 }
