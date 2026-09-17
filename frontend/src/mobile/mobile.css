@@ -2114,6 +2114,132 @@
   font-weight: 800;
 }
 
+.mop-loading-status {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+}
+
+.mop-loading-status > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mop-loading-status span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.mop-loading-status strong {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0b1f2a;
+  text-align: right;
+}
+
+.mop-sj-lines {
+  margin: 0 0 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.mop-sj-lines h3 {
+  margin: 0;
+  padding: 10px 12px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0f766e;
+}
+
+.mop-sj-lines-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.mop-sj-lines-table th,
+.mop-sj-lines-table td {
+  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  vertical-align: top;
+}
+
+.mop-sj-lines-table th {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #64748b;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.mop-sj-lines-table th:first-child,
+.mop-sj-lines-table td:first-child {
+  width: 68%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mop-sj-lines-table th:last-child,
+.mop-sj-lines-table td:last-child {
+  width: 32%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mop-sj-lines-table tbody tr + tr td {
+  border-top: 1px solid #f1f5f9;
+}
+
+.mop-sj-lines-table td:first-child {
+  font-weight: 700;
+  color: #0b1f2a;
+}
+
+.mop-sj-lines-table td:last-child {
+  font-weight: 800;
+  color: #0f766e;
+}
+
+.mop-sj-lines-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.mop-sj-lines-total span {
+  font-size: 12px;
+  font-weight: 800;
+  color: #334155;
+}
+
+.mop-sj-lines-total strong {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .mop-delivery-task {
   min-width: 0;
 }

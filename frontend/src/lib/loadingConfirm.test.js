@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME } from "./loadingConfirm";
 import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
 
@@ -860,5 +860,205 @@ describe("Loading confirm helpers", () => {
       ],
     };
     expect(nextActionableLoadingSjId(two, "")).toBe("");
+  });
+});
+
+describe("selected SJ display lines for Loading popup", () => {
+  const ITEM = "22 oz Datar 8 gr Berlian";
+  const sj1Id = "c992dfa4-8c67-496c-87e7-bf7eb22a0ea6";
+  const sj2Id = "ee1e3067-33f2-4623-8796-161c76db6690";
+  const sj3Id = "26c9e4f0-8616-4c06-ab68-c11c4bbca3c5";
+
+  function numaniOrder() {
+    return {
+      customer: "ES TEH NUMANI",
+      po_number: "PO-NUMANI",
+      total_quantity: 5000,
+      line_items: [{ name: ITEM, quantity: 5000, line_id: "L0", production_process: "print" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 5000 }] },
+      shipments: [
+        { id: sj1Id, number: "SJ/2026/09/12/000002", lines: [{ line_idx: 0, line_id: "L0", name: ITEM, qty: 1000, unit: "pcs" }], total_qty: 1000 },
+        { id: sj2Id, number: "SJ/2026/09/12/000002_2", lines: [{ line_idx: 0, line_id: "L0", name: ITEM, qty: 4000, unit: "pcs" }], total_qty: 4000 },
+        {
+          id: sj3Id,
+          number: "SJ/2026/09/12/000002_3",
+          status: "superseded",
+          cancelled: true,
+          superseded_by_shipment_id: sj2Id,
+          lines: [{ line_idx: 0, line_id: "L0", name: ITEM, qty: 1000 }],
+        },
+      ],
+      surat_jalan_files: [
+        { id: sj1Id, shipment_id: sj1Id, sj_number: "SJ/2026/09/12/000002", name: "1.pdf", lines: [{ line_idx: 0, line_id: "L0", name: ITEM, qty: 1000 }] },
+        { id: sj2Id, shipment_id: sj2Id, sj_number: "SJ/2026/09/12/000002_2", name: "2.pdf", lines: [{ line_idx: 0, line_id: "L0", name: ITEM, qty: 4000 }] },
+        { id: sj3Id, shipment_id: sj3Id, sj_number: "SJ/2026/09/12/000002_3", name: "3.pdf", status: "superseded", cancelled: true, lines: [{ line_idx: 0, qty: 1000 }] },
+      ],
+      loading_confirmations: [
+        { id: "c2", surat_jalan_id: sj2Id, lines: [{ line_idx: 0, qty: 4000 }] },
+      ],
+    };
+  }
+
+  test("1. one SJ one item uses selected SJ qty only", () => {
+    const order = {
+      line_items: [{ name: "Cup", quantity: 2000, line_id: "L0" }],
+      shipments: [{ id: "sh-1", number: "SJ-1", lines: [{ line_idx: 0, line_id: "L0", name: "Cup", qty: 2000 }] }],
+      surat_jalan_files: [{ id: "sj-1", shipment_id: "sh-1", sj_number: "SJ-1", lines: [{ line_idx: 0, qty: 2000 }] }],
+    };
+    const lines = selectedSjDisplayLines(order, "sh-1");
+    expect(lines).toHaveLength(1);
+    expect(lines[0].name).toBe("Cup");
+    expect(lines[0].qty_sj).toBe(2000);
+    expect(totalSelectedSjQty(lines)).toBe(2000);
+  });
+
+  test("2. one SJ several items as separate rows", () => {
+    const order = {
+      line_items: [
+        { name: "Cup", quantity: 1000, line_id: "L0" },
+        { name: "Lid", quantity: 500, line_id: "L1" },
+      ],
+      shipments: [{
+        id: "sh-1",
+        lines: [
+          { line_idx: 0, line_id: "L0", name: "Cup", qty: 1000 },
+          { line_idx: 1, line_id: "L1", name: "Lid", qty: 500 },
+        ],
+      }],
+      surat_jalan_files: [{ id: "sj-1", shipment_id: "sh-1", lines: [{ line_idx: 0, qty: 1000 }, { line_idx: 1, qty: 500 }] }],
+    };
+    const lines = selectedSjDisplayLines(order, "sh-1");
+    expect(lines.map((l) => [l.name, l.qty_sj])).toEqual([["Cup", 1000], ["Lid", 500]]);
+    expect(totalSelectedSjQty(lines)).toBe(1500);
+  });
+
+  test("3-6. one PO two SJ isolates selected qty and never uses PO total", () => {
+    const order = {
+      line_items: [
+        { name: "Cup", quantity: 3000, line_id: "L0" },
+        { name: "Lid", quantity: 2000, line_id: "L1" },
+      ],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 3000 }, { line_idx: 1, packed_qty: 2000 }] },
+      shipments: [
+        { id: "sh-1", lines: [{ line_idx: 0, line_id: "L0", name: "Cup", qty: 1000 }] },
+        { id: "sh-2", lines: [{ line_idx: 1, line_id: "L1", name: "Lid", qty: 2000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-1", shipment_id: "sh-1", sj_number: "SJ1", lines: [{ line_idx: 0, qty: 1000 }] },
+        { id: "sj-2", shipment_id: "sh-2", sj_number: "SJ2", lines: [{ line_idx: 1, qty: 2000 }] },
+      ],
+    };
+    const sj1 = selectedSjDisplayLines(order, "sh-1");
+    const sj2 = selectedSjDisplayLines(order, "sh-2");
+    expect(sj1.map((l) => [l.name, l.qty_sj])).toEqual([["Cup", 1000]]);
+    expect(sj2.map((l) => [l.name, l.qty_sj])).toEqual([["Lid", 2000]]);
+    expect(totalSelectedSjQty(sj1)).toBe(1000);
+    expect(totalSelectedSjQty(sj2)).toBe(2000);
+    expect(totalSelectedSjQty(sj1)).not.toBe(5000);
+    expect(totalSelectedSjQty(sj2)).not.toBe(5000);
+  });
+
+  test("4. same item different qty stays isolated per SJ", () => {
+    const order = numaniOrder();
+    const sj1 = selectedSjDisplayLines(order, sj1Id);
+    const sj2 = selectedSjDisplayLines(order, sj2Id);
+    expect(sj1).toHaveLength(1);
+    expect(sj2).toHaveLength(1);
+    expect(sj1[0].name).toBe(ITEM);
+    expect(sj2[0].name).toBe(ITEM);
+    expect(sj1[0].qty_sj).toBe(1000);
+    expect(sj2[0].qty_sj).toBe(4000);
+  });
+
+  test("MATCHA IN: Qty SJ is 2000 even when loaded history is 4000", () => {
+    const order = {
+      line_items: [{ name: "MATCHA IN", quantity: 4000, line_id: "L0" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 4000 }] },
+      shipment_lines: [{ line_idx: 0, packed: 4000, loaded: 4000, remaining_loading: 0, qty_po: 4000 }],
+      shipments: [{ id: "sh-sel", number: "SJ-MATCHA", lines: [{ line_idx: 0, line_id: "L0", name: "MATCHA IN", qty: 2000 }] }],
+      surat_jalan_files: [{ id: "sj-sel", shipment_id: "sh-sel", sj_number: "SJ-MATCHA", lines: [{ line_idx: 0, qty: 2000 }] }],
+      loading_confirmations: [
+        { id: "c-old", surat_jalan_id: "other", lines: [{ line_idx: 0, qty: 4000 }] },
+      ],
+    };
+    const lines = selectedSjDisplayLines(order, "sh-sel");
+    expect(lines[0].qty_sj).toBe(2000);
+    expect(totalSelectedSjQty(lines)).toBe(2000);
+    expect(lines[0].qty_sj).not.toBe(4000);
+    expect(lines[0].qty_sj).not.toBe(0);
+  });
+
+  test("7. total sums selected SJ lines only", () => {
+    const order = {
+      line_items: [{ name: "A", quantity: 10, line_id: "A" }, { name: "B", quantity: 20, line_id: "B" }],
+      shipments: [{
+        id: "sh-1",
+        lines: [
+          { line_idx: 0, line_id: "A", name: "A", qty: 3 },
+          { line_idx: 1, line_id: "B", name: "B", qty: 7 },
+        ],
+      }],
+      surat_jalan_files: [{ id: "f1", shipment_id: "sh-1", lines: [{ qty: 3 }, { qty: 7 }] }],
+    };
+    expect(totalSelectedSjQty(selectedSjDisplayLines(order, "sh-1"))).toBe(10);
+  });
+
+  test("9-12. name from SJ line, exact line_id, valid line_idx, else unavailable", () => {
+    expect(resolveSelectedSjItemName({}, { name: "From SJ" })).toBe("From SJ");
+    expect(resolveSelectedSjItemName({}, { description: "Desc SJ" })).toBe("Desc SJ");
+    expect(resolveSelectedSjItemName({}, { item_name: "Item SJ" })).toBe("Item SJ");
+    const byId = {
+      line_items: [
+        { name: "Wrong", line_id: "X" },
+        { name: "Exact Line", line_id: "L-OK" },
+      ],
+    };
+    expect(resolveSelectedSjItemName(byId, { line_id: "L-OK", line_idx: 0 })).toBe("Exact Line");
+    const byIdx = { line_items: [{ name: "PO Cup" }, { name: "PO Lid" }] };
+    expect(resolveSelectedSjItemName(byIdx, { line_idx: 1 })).toBe("PO Lid");
+    expect(resolveSelectedSjItemName(byIdx, { line_idx: 99 })).toBe(SJ_LINE_UNAVAILABLE_NAME);
+    expect(resolveSelectedSjItemName(byIdx, { line_idx: -1 })).toBe(SJ_LINE_UNAVAILABLE_NAME);
+    expect(resolveSelectedSjItemName({ line_items: [] }, { qty: 10 })).toBe(SJ_LINE_UNAVAILABLE_NAME);
+    expect(resolveSelectedSjItemName({ line_items: [{ name: "" }] }, { line_idx: 0 })).toBe(SJ_LINE_UNAVAILABLE_NAME);
+    const ambiguous = {
+      line_items: [
+        { name: "First", line_id: "DUP" },
+        { name: "Second", line_id: "DUP" },
+      ],
+    };
+    expect(resolveSelectedSjItemName(ambiguous, { line_id: "DUP" })).toBe(SJ_LINE_UNAVAILABLE_NAME);
+    expect(resolveSelectedSjItemName(ambiguous, { line_id: "DUP", line_idx: 1 })).toBe("Second");
+  });
+
+  test("14. superseded SJ is not an operational loading choice", () => {
+    const order = numaniOrder();
+    expect(sjFilesForLoading(order).map((f) => f.shipment_id)).toEqual([sj1Id, sj2Id]);
+    expect(sjFilesForLoading(order).some((f) => f.shipment_id === sj3Id)).toBe(false);
+  });
+
+  test("ES TEH NUMANI SJ1=1000 SJ2=4000 SJ3 excluded and never 5000", () => {
+    const order = numaniOrder();
+    const sj1 = selectedSjDisplayLines(order, sj1Id);
+    const sj2 = selectedSjDisplayLines(order, sj2Id);
+    expect(sj1[0].name).toBe(ITEM);
+    expect(sj2[0].name).toBe(ITEM);
+    expect(sj1[0].qty_sj).toBe(1000);
+    expect(sj2[0].qty_sj).toBe(4000);
+    expect(totalSelectedSjQty(sj1)).not.toBe(5000);
+    expect(totalSelectedSjQty(sj2)).not.toBe(5000);
+    expect(canonicalSjLineQty({ qty: 1000, quantity: 9999 })).toBe(1000);
+  });
+
+  test("20. legacy PO without complete line names does not throw", () => {
+    const order = {
+      line_items: [{ quantity: 1000 }],
+      surat_jalan_files: [{ id: "old", shipment_id: "old", lines: [{ qty: 250 }] }],
+    };
+    expect(() => selectedSjDisplayLines(order, "old")).not.toThrow();
+    const lines = selectedSjDisplayLines(order, "old");
+    expect(lines[0].name).toBe(SJ_LINE_UNAVAILABLE_NAME);
+    expect(lines[0].qty_sj).toBe(250);
+    expect(selectedSjDisplayLines({ line_items: [] }, "")).toEqual([]);
+    expect(selectedSjDisplayLines(null, "x")).toEqual([]);
   });
 });

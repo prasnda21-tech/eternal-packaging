@@ -561,6 +561,117 @@ export function sjLinesForDiscrepancy(order, selectedSjId = null) {
     }));
 }
 
+export const SJ_LINE_UNAVAILABLE_NAME = "Item tidak tersedia";
+
+/** Canonical selected-SJ line qty. Never packed/loaded/remaining/PO/FIFO/other SJ. */
+export function canonicalSjLineQty(ln) {
+  const n = Number(ln?.qty ?? ln?.quantity);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function storedSjLineName(ln) {
+  for (const key of ["name", "description", "item_name"]) {
+    const text = String(ln?.[key] || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function poLineNameAt(lis, idx) {
+  if (idx == null || idx < 0 || idx >= lis.length) return "";
+  return String(lis[idx]?.name || "").trim();
+}
+
+function poLineUnitAt(lis, idx) {
+  if (idx == null || idx < 0 || idx >= lis.length) return "";
+  return String(lis[idx]?.unit || lis[idx]?.uom || "").trim();
+}
+
+/** Exact name for a selected SJ line. No fuzzy match and no order-index guess. */
+export function resolveSelectedSjItemName(order, ln) {
+  const stored = storedSjLineName(ln);
+  if (stored) return stored;
+  const lis = Array.isArray(order?.line_items) ? order.line_items : [];
+  const lid = String(ln?.line_id || "").trim();
+  if (lid) {
+    const matches = [];
+    lis.forEach((li, i) => {
+      if (String(li?.line_id || li?.id || "").trim() === lid) matches.push(i);
+    });
+    if (matches.length === 1) {
+      const name = poLineNameAt(lis, matches[0]);
+      if (name) return name;
+    } else if (matches.length > 1) {
+      const explicit = explicitLineIdx(ln?.line_idx);
+      if (explicit != null && matches.includes(explicit)) {
+        const name = poLineNameAt(lis, explicit);
+        if (name) return name;
+      }
+      return SJ_LINE_UNAVAILABLE_NAME;
+    }
+  }
+  const explicit = explicitLineIdx(ln?.line_idx);
+  if (explicit != null && explicit >= 0 && explicit < lis.length) {
+    const name = poLineNameAt(lis, explicit);
+    if (name) return name;
+  }
+  return SJ_LINE_UNAVAILABLE_NAME;
+}
+
+function resolveSelectedSjUnit(order, ln) {
+  const fromLine = String(ln?.unit || ln?.uom || "").trim();
+  if (fromLine) return fromLine;
+  const lis = Array.isArray(order?.line_items) ? order.line_items : [];
+  const lid = String(ln?.line_id || "").trim();
+  if (lid) {
+    const matches = [];
+    lis.forEach((li, i) => {
+      if (String(li?.line_id || li?.id || "").trim() === lid) matches.push(i);
+    });
+    if (matches.length === 1) {
+      const unit = poLineUnitAt(lis, matches[0]);
+      if (unit) return unit;
+    }
+  }
+  const explicit = explicitLineIdx(ln?.line_idx);
+  const unit = poLineUnitAt(lis, explicit);
+  if (unit) return unit;
+  return "pcs";
+}
+
+/**
+ * Read-only Item Line + Qty SJ for the selected shipment.
+ * Source: selected SJ → lines. Does not mix siblings, Packing, or Loading history.
+ */
+export function selectedSjDisplayLines(order, selectedSjId = null) {
+  const targetSjId = String(selectedSjId || "").trim();
+  if (!targetSjId) return [];
+  const { lineSource } = selectedSjLineSource(order, targetSjId);
+  const sourceLines = Array.isArray(lineSource?.lines) ? lineSource.lines : [];
+  return sourceLines.map((ln, i) => ({
+    key: `sj-line-${i}`,
+    line_idx: explicitLineIdx(ln?.line_idx),
+    line_id: String(ln?.line_id || "").trim(),
+    name: resolveSelectedSjItemName(order, ln),
+    qty_sj: canonicalSjLineQty(ln),
+    unit: resolveSelectedSjUnit(order, ln),
+  }));
+}
+
+export function totalSelectedSjQty(lines) {
+  return (Array.isArray(lines) ? lines : []).reduce((sum, ln) => {
+    const n = Number(ln?.qty_sj);
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
+}
+
+export function sharedSjDisplayUnit(lines) {
+  const units = (Array.isArray(lines) ? lines : []).map((ln) => String(ln?.unit || "pcs").trim() || "pcs");
+  if (!units.length) return "pcs";
+  const first = units[0];
+  return units.every((u) => u === first) ? first : "pcs";
+}
+
 export function discrepancyDiff(qtySj, actualQty) {
   const sj = Number(qtySj);
   const actual = actualQty === "" || actualQty == null ? null : Number(actualQty);

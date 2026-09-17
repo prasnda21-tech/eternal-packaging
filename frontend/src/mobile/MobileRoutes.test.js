@@ -138,7 +138,10 @@ describe("mobile route wiring", () => {
     expect(screener).toMatch(/mop-metrics--2col/);
     expect(packing).toMatch(/label: "Sisa"/);
     expect(print).toMatch(/label: "Sisa"/);
-    expect(loading).toMatch(/Remaining Qty/);
+    expect(loading).toMatch(/Barang Sesuai Surat Jalan/);
+    expect(loading).not.toMatch(/Packed Qty/);
+    expect(loading).not.toMatch(/Loaded Qty/);
+    expect(loading).not.toMatch(/Remaining Qty/);
     expect(loading).toMatch(/Item non-cetak — Packing dilewati/);
     expect(loading).toMatch(/loadingAvailability/);
     expect(loading).toMatch(/avail\.blocked/);
