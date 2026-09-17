@@ -1,6 +1,5 @@
 /**
- * Isolated Status PO matrix preview rows.
- * localhost:3003 or ?previewStatusPoMatrix=1, development only. Never production DB.
+ * Isolated Status PO preview rows via ?previewStatusPoMatrix=1, development only.
  */
 
 export const STATUS_PO_MATRIX_PREVIEW_PARAM = "previewStatusPoMatrix";
@@ -23,10 +22,7 @@ export function isStatusPoMatrixPreviewEnabled(search, win = (typeof window !== 
   const normalized = raw.startsWith("?") ? raw.slice(1) : raw;
   const params = new URLSearchParams(normalized);
   if (params.get(STATUS_PO_MATRIX_PREVIEW_PARAM) === "1") return true;
-  if (!win || !win.location) return false;
-  const host = String(win.location.hostname || "");
-  const localPreviewHost = host === "localhost" || host === "127.0.0.1";
-  return localPreviewHost && String(win.location.port) === "3003";
+  return false;
 }
 
 export function buildStatusPoMatrixPreviewRows() {
