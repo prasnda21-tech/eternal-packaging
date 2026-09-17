@@ -7,6 +7,7 @@ import { formatDeadline } from "../lib/constants";
 import { poCardPresentation, selectMobileWorkspace } from "../lib/mobileWorkspaces";
 import { getPwaDeliveryTaskPreviewOrder } from "../lib/pwaDeliveryTaskPreview";
 import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
+import { readPoDetailRetention, writePoDetailRetention } from "../lib/poDetailRetention";
 import MobileTopBar from "./MobileTopBar";
 import MobileStageFlow from "./components/MobileStageFlow";
 import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
@@ -40,11 +41,24 @@ export default function MobileOrderDetailPage() {
   const selected = choice.selected;
   const fromTask = Boolean(location.state?.fromTask || requested);
   const canViewPoSummary = hasPerm("po.view");
-  const [order, setOrder] = useState(null);
+  const retainedOrder = readPoDetailRetention({ user, orderId: id, hasPerm });
+  const [order, setOrder] = useState(retainedOrder);
   const [err, setErr] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!retainedOrder);
   const [refreshing, setRefreshing] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
+
+  const commitOrder = (nextOrder) => {
+    setOrder(nextOrder);
+    if (nextOrder?.id) {
+      writePoDetailRetention({
+        user,
+        orderId: nextOrder.id,
+        hasPerm,
+        order: nextOrder,
+      });
+    }
+  };
 
   const load = async ({ background } = {}) => {
     const previewOrder = getPwaDeliveryTaskPreviewOrder(
@@ -59,12 +73,19 @@ export default function MobileOrderDetailPage() {
       setRefreshing(false);
       return;
     }
-    if (background && order) setRefreshing(true);
-    else setLoading(true);
+    const retained = readPoDetailRetention({ user, orderId: id, hasPerm });
+    if (retained) {
+      commitOrder(retained);
+      setLoading(false);
+    } else if (!background) {
+      setOrder(null);
+      setLoading(true);
+    }
+    if (background && (retained || order)) setRefreshing(true);
     setErr("");
     try {
       const d = await api.getOrder(id);
-      setOrder(d.order || d);
+      commitOrder(d.order || d);
     } catch (e) {
       setErr(e.response?.data?.detail || "Gagal memuat PO.");
     } finally {
@@ -84,7 +105,7 @@ export default function MobileOrderDetailPage() {
   }, [order?.id, selected?.id]);
 
   const onUpdated = (next) => {
-    if (next) setOrder(next);
+    if (next) commitOrder(next);
     else load({ background: true });
   };
 
