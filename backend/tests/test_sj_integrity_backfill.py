@@ -25,7 +25,9 @@ from services.sj_integrity_audit import (
 from quantity_rules import delivery_batch_photo_readiness
 from scripts.repair_sj_integrity import (
     PRODUCTION_CONFIRMATION,
+    _apply_production_stamp,
     _production_argument_error,
+    _production_order_state_error,
     _production_plan_error,
     main as repair_main,
     plan_orders,
@@ -204,6 +206,73 @@ def test_production_plan_guard_is_exact_and_op_allowlisted():
             "shipment_id": "sj-safe",
         }]}],
     )
+
+
+def test_production_order_state_guard_requires_blank_unique_loading_target_and_active_sj():
+    order = _consistent_po()
+    order["updated_at"] = "2026-09-17T00:00:00Z"
+    order["loading_confirmations"][0]["shipment_id"] = ""
+    plan = [{
+        "po_id": order["id"],
+        "ops": [{
+            "op": "stamp_shipment_id",
+            "collection": "loading_confirmations",
+            "record_id": "l1",
+            "shipment_id": "sj-ok",
+        }],
+    }]
+    assert _production_order_state_error([order], plan) == ""
+
+    order["loading_confirmations"][0]["shipment_id"] = "other-sj"
+    assert "already bound" in _production_order_state_error([order], plan)
+    order["loading_confirmations"][0]["shipment_id"] = ""
+    plan[0]["ops"][0]["shipment_id"] = "missing-sj"
+    assert "not active" in _production_order_state_error([order], plan)
+    plan[0]["ops"][0]["shipment_id"] = "sj-ok"
+    order.pop("updated_at")
+    assert "updated_at" in _production_order_state_error([order], plan)
+
+
+def test_production_stamp_updates_only_target_binding_and_repair_metadata():
+    class Result:
+        matched_count = 1
+        modified_count = 1
+
+    class Orders:
+        def __init__(self):
+            self.selector = None
+            self.update = None
+
+        def update_one(self, selector, update):
+            self.selector = selector
+            self.update = update
+            return Result()
+
+    class DB:
+        orders = Orders()
+
+    db = DB()
+    result = _apply_production_stamp(
+        db,
+        po_id="po-safe",
+        updated_at="2026-09-17T00:00:00Z",
+        op={
+            "record_id": "loading-safe",
+            "shipment_id": "sj-safe",
+        },
+        actor="audit-safe",
+    )
+
+    assert result.matched_count == 1
+    assert db.orders.selector["id"] == "po-safe"
+    assert db.orders.selector["updated_at"] == "2026-09-17T00:00:00Z"
+    changed = set(db.orders.update["$set"])
+    assert changed == {
+        "loading_confirmations.$.shipment_id",
+        "sj_integrity_repaired_at",
+        "sj_integrity_repaired_by",
+    }
+    assert db.orders.update["$set"]["loading_confirmations.$.shipment_id"] == "sj-safe"
 
 
 def test_apply_requires_explicit_db_name(capsys):
