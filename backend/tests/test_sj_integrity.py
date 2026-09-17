@@ -14,7 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from quantity_rules import (
     SHIPMENT_SOURCE_MANUAL,
     apply_loading_confirmation,
+    apply_loading_discrepancy,
+    apply_loading_match_confirmation,
     apply_shipment_record,
+    delivery_batch_photo_readiness,
+    loaded_qty_for_sj_line,
+    loading_verification_status,
     qty_loaded,
     qty_shipped,
     qty_shipped_for_line,
@@ -31,6 +36,7 @@ from services.sj_integrity import (
     build_numani_broken_order,
     build_numani_repaired_order,
     cas_token,
+    loaded_qty_for_shipment,
     order_integrity_summary,
 )
 from scripts.reconcile_es_teh_numani_sj import (
@@ -369,6 +375,87 @@ def test_invariants_apply_to_old_and_new_po_created_at():
                 o, number="SJ/1", lines=[{"line_idx": 0, "line_id": "L0", "qty": 4000}],
                 source=SHIPMENT_SOURCE_MANUAL, shipment_id="sj-1", created_at=created,
             )
+
+
+def test_loading_and_delivery_resolve_stale_line_idx_by_stable_line_id():
+    order = {
+        "id": "po-stable-lines",
+        "line_items": [
+            {"line_id": "LA", "accurate_item_id": "A", "name": "Cup A", "quantity": 10, "production_process": "print"},
+            {"line_id": "LB", "accurate_item_id": "B", "name": "Cup B", "quantity": 5, "production_process": "print"},
+        ],
+        "packing_info": {"qty_packed": 15, "lines": [
+            {"line_idx": 0, "line_id": "LA", "packed_qty": 10},
+            {"line_idx": 1, "line_id": "LB", "packed_qty": 5},
+        ]},
+        "shipments": [{
+            "id": "sj-b", "number": "SJ/B", "total_qty": 5,
+            "lines": [{"line_idx": 0, "line_id": "LB", "accurate_item_id": "B", "qty": 5}],
+        }],
+        "surat_jalan_files": [{
+            "id": "file-b", "shipment_id": "sj-b", "sj_number": "SJ/B", "total_qty": 5,
+            "lines": [{"line_idx": 0, "line_id": "LB", "accurate_item_id": "B", "qty": 5}],
+        }],
+        "loading_confirmations": [{
+            "id": "load-b", "shipment_id": "sj-b",
+            "lines": [{"line_idx": 0, "line_id": "LB", "accurate_item_id": "B", "qty": 5}],
+        }],
+    }
+    assert loaded_qty_for_sj_line(order, "sj-b", 0) == 0
+    assert loaded_qty_for_sj_line(order, "sj-b", 1) == 5
+    assert delivery_batch_photo_readiness(order, order["shipments"][0])["allowed"] is True
+
+
+def test_one_click_loading_persists_stable_line_identity_and_selected_sj_status():
+    order = _po_5000()
+    _attach_sj(order, "sj-1", "SJ/1", 1000)
+    _attach_sj(order, "sj-2", "SJ/2", 4000)
+    record = apply_loading_match_confirmation(
+        order,
+        surat_jalan_id="SJ/1",
+        actor={"email": "loading@test"},
+        confirmation_id="load-1",
+        confirmed_at="t",
+        action_id="action-1",
+    )
+    assert record["shipment_id"] == "sj-1"
+    assert record["lines"] == [{
+        "line_idx": 0,
+        "qty": 1000,
+        "name": "22 oz Datar 8 gr Berlian",
+        "line_id": "L0",
+        "accurate_item_id": "item-1",
+    }]
+    assert loading_verification_status(order, "SJ/1")["code"] == "loading_complete"
+    assert loading_verification_status(order, "SJ/2")["code"] != "loading_complete"
+
+
+def test_loading_discrepancy_stores_canonical_shipment_identity():
+    order = _po_5000()
+    _attach_sj(order, "sj-1", "SJ/1", 1000)
+    record = apply_loading_discrepancy(
+        order,
+        surat_jalan_id="SJ/1",
+        mismatches=[{"line_idx": 0, "actual_qty": 900}],
+        discrepancy_id="disc-1",
+    )
+    assert record["surat_jalan_id"] == "sj-1"
+    assert record["shipment_id"] == "sj-1"
+    assert record["sj_number"] == "SJ/1"
+    assert record["lines"][0]["line_id"] == "L0"
+
+
+def test_legacy_shipment_without_lines_keeps_scoped_loading_for_audit():
+    order = {
+        "line_items": [{"line_id": "L0", "quantity": 1000}],
+        "shipments": [{"id": "sj-legacy", "number": "SJ/LEGACY", "total_qty": 1000}],
+        "surat_jalan_files": [{"id": "f1", "shipment_id": "sj-legacy", "sj_number": "SJ/LEGACY"}],
+        "loading_confirmations": [{
+            "id": "load-legacy", "surat_jalan_id": "SJ/LEGACY",
+            "lines": [{"line_idx": 0, "qty": 1000}],
+        }],
+    }
+    assert loaded_qty_for_shipment(order, order["shipments"][0]) == 1000
 
 
 def test_get_derived_sj_integrity_is_not_persisted():

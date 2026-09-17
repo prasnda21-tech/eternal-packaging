@@ -15,7 +15,11 @@ from quantity_rules import (
     _safe_int,
     active_shipments_stored,
     canonical_shipment_id,
+    legacy_loading_allocations_stored,
+    loaded_qty_for_sj_line,
     loading_confirmations_stored,
+    loading_sj_identity_keys,
+    match_po_line_idx,
     packing_required_total,
     qty_delivered,
     qty_loaded,
@@ -48,6 +52,7 @@ CAS_FIELDS = (
     "shipments",
     "surat_jalan_files",
     "loading_confirmations",
+    "legacy_loading_allocations",
     "loading_snapshots",
     "loading_discrepancies",
     "delivery_confirmations",
@@ -181,12 +186,32 @@ def active_sj_qty(order: dict) -> int:
 def loaded_qty_for_shipment(order: dict, sh: dict) -> int:
     sid = canonical_shipment_id(sh)
     total = 0
-    for conf in loading_confirmations_stored(order):
-        conf_sid = str(conf.get("shipment_id") or conf.get("surat_jalan_id") or "").strip()
-        if conf_sid == sid:
-            for ln in conf.get("lines") or []:
-                if isinstance(ln, dict):
-                    total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+    seen_lines = set()
+    for ln in sh.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        line_idx, _err = match_po_line_idx(order, ln)
+        if line_idx is None or int(line_idx) in seen_lines:
+            continue
+        seen_lines.add(int(line_idx))
+        total += loaded_qty_for_sj_line(order, sid, int(line_idx))
+    if seen_lines:
+        return total
+
+    # Preserve legacy shipments without a line breakdown for audit purposes.
+    target_ids = loading_sj_identity_keys(order, sid)
+    for record in [
+        *loading_confirmations_stored(order),
+        *legacy_loading_allocations_stored(order),
+    ]:
+        record_sid = str(record.get("shipment_id") or record.get("surat_jalan_id") or "").strip()
+        if record_sid not in target_ids:
+            continue
+        total += sum(
+            max(0, _safe_int(row.get("qty") if row.get("qty") is not None else row.get("quantity")))
+            for row in (record.get("lines") or [])
+            if isinstance(row, dict)
+        )
     return total
 
 
@@ -466,6 +491,17 @@ def apply_repair_ops(
             for rec in order.get(field) or []:
                 if isinstance(rec, dict) and str(rec.get("id") or "") == target:
                     rec["shipment_id"] = sid
+        elif kind == "allocate_legacy_loading":
+            if order.get("legacy_loading_allocations"):
+                raise ValueError("Legacy Loading allocation sudah ada; CAS review ulang diperlukan.")
+            allocations = copy.deepcopy(op.get("allocations") or [])
+            if not allocations:
+                raise ValueError("Legacy Loading allocation kosong.")
+            for row in allocations:
+                row["allocated_at"] = now
+                row["allocated_by"] = actor.get("email")
+                row["reason"] = op.get("reason") or ""
+            order["legacy_loading_allocations"] = allocations
         else:
             raise ValueError(f"Operasi tidak dikenal: {kind}")
         applied.append(op)

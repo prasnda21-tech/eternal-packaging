@@ -229,6 +229,39 @@ function _lineName(order, lineIdx) {
   return `Line ${lineIdx}`;
 }
 
+function _poLineIdentityKeys(line) {
+  return [line?.line_id, line?.id]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function _matchPoLineIdx(order, row) {
+  if (!row || typeof row !== "object") return -1;
+  const lines = Array.isArray(order?.line_items) ? order.line_items : [];
+  const lineId = String(row.line_id || "").trim();
+  const accurateItemId = String(row.accurate_item_id || "").trim();
+  const explicit = _safeInt(row.line_idx, -1);
+
+  if (lineId) {
+    const matches = lines
+      .map((line, idx) => (_poLineIdentityKeys(line).includes(lineId) ? idx : -1))
+      .filter((idx) => idx >= 0);
+    if (matches.length === 1) return matches[0];
+    if (matches.includes(explicit)) return explicit;
+    return -1;
+  }
+  if (accurateItemId) {
+    const matches = lines
+      .map((line, idx) => (String(line?.accurate_item_id || "").trim() === accurateItemId ? idx : -1))
+      .filter((idx) => idx >= 0);
+    if (matches.includes(explicit)) return explicit;
+    if (matches.length === 1) return matches[0];
+    return -1;
+  }
+  if (!lines.length && explicit === 0) return 0;
+  return explicit >= 0 && explicit < lines.length ? explicit : -1;
+}
+
 function _isPrintLine(li) {
   const p = String(li?.production_process || "").trim().toLowerCase();
   return p !== "non_print";
@@ -408,7 +441,7 @@ function _shippedQtyForLine(order, lineIdx, excludeId = "") {
     const acc = String(sh.accurate_shipment_id || "");
     if (skip && (skip === sid || skip === acc || skip === String(sh.sales_delivery_id || ""))) continue;
     for (const it of sh.lines || []) {
-      if (_safeInt(it?.line_idx, -1) === Number(lineIdx)) {
+      if (_matchPoLineIdx(order, it) === Number(lineIdx)) {
         total += Math.max(0, _safeInt(it.qty ?? it.quantity));
       }
     }
@@ -421,15 +454,26 @@ function _loadedQtyForSjLine(order, suratJalanId, lineIdx) {
   if (!want) return 0;
   const targetIds = new Set([want]);
   for (const sh of _shipments(order)) {
-    const ids = [sh.id, sh.number, sh.sales_delivery_id].map((v) => String(v || "").trim()).filter(Boolean);
+    const ids = [...shipmentIdentityKeys(order, sh)];
     if (ids.includes(want)) ids.forEach((id) => targetIds.add(id));
   }
   let total = 0;
   for (const conf of order?.loading_confirmations || []) {
     if (conf?.cancelled || conf?.deleted) continue;
-    if (!targetIds.has(String(conf?.surat_jalan_id || "").trim())) continue;
+    const confirmationId = String(conf?.shipment_id || conf?.surat_jalan_id || "").trim();
+    if (!targetIds.has(confirmationId)) continue;
     for (const ln of conf.lines || []) {
-      if (_safeInt(ln?.line_idx, -1) === Number(lineIdx)) {
+      if (_matchPoLineIdx(order, ln) === Number(lineIdx)) {
+        total += Math.max(0, _safeInt(ln.qty ?? ln.quantity));
+      }
+    }
+  }
+  for (const allocation of order?.legacy_loading_allocations || []) {
+    if (!allocation || typeof allocation !== "object") continue;
+    const allocationId = String(allocation.shipment_id || allocation.surat_jalan_id || "").trim();
+    if (!targetIds.has(allocationId)) continue;
+    for (const ln of allocation.lines || []) {
+      if (_matchPoLineIdx(order, ln) === Number(lineIdx)) {
         total += Math.max(0, _safeInt(ln.qty ?? ln.quantity));
       }
     }
@@ -447,7 +491,7 @@ export function packedAvailableForDeliveryBatch(order, shipment = null) {
   let avail = 0;
   for (const ln of lines) {
     if (!ln || typeof ln !== "object") continue;
-    const idx = _safeInt(ln.line_idx, -1);
+    const idx = _matchPoLineIdx(order, ln);
     if (idx < 0) continue;
     const need = Math.max(0, _safeInt(ln.qty ?? ln.quantity));
     const lineAvail = Math.max(0, _packedQtyForLine(order, idx) - _shippedQtyForLine(order, idx, sid));
@@ -465,7 +509,7 @@ export function loadedQtyForDeliveryBatch(order, shipment = null) {
   if (lines.length) {
     return lines.reduce((sum, ln) => {
       if (!ln || typeof ln !== "object") return sum;
-      const idx = _safeInt(ln.line_idx, -1);
+      const idx = _matchPoLineIdx(order, ln);
       if (idx < 0) return sum;
       return sum + _loadedQtyForSjLine(order, sid, idx);
     }, 0);
@@ -479,7 +523,7 @@ export function loadedQtyForDeliveryBatch(order, shipment = null) {
   let total = 0;
   for (const conf of order?.loading_confirmations || []) {
     if (conf?.cancelled || conf?.deleted) continue;
-    if (!targetIds.has(String(conf?.surat_jalan_id || "").trim())) continue;
+    if (!targetIds.has(String(conf?.shipment_id || conf?.surat_jalan_id || "").trim())) continue;
     for (const ln of conf.lines || []) {
       total += Math.max(0, _safeInt(ln?.qty ?? ln?.quantity));
     }
@@ -528,7 +572,7 @@ export function deliveryBatchLineReadiness(order, shipment = null) {
     const out = [];
     for (const ln of lines) {
       if (!ln || typeof ln !== "object") continue;
-      const idx = _safeInt(ln.line_idx, -1);
+      const idx = _matchPoLineIdx(order, ln);
       if (idx < 0) continue;
       const required = Math.max(0, _safeInt(ln.qty ?? ln.quantity));
       if (required <= 0) continue;

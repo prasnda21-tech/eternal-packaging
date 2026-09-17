@@ -153,6 +153,7 @@ def main(argv=None) -> int:
                     "shipments": order.get("shipments"),
                     "surat_jalan_files": order.get("surat_jalan_files"),
                     "loading_confirmations": order.get("loading_confirmations"),
+                    "legacy_loading_allocations": order.get("legacy_loading_allocations"),
                     "delivery_confirmations": order.get("delivery_confirmations"),
                     "loading_discrepancies": order.get("loading_discrepancies"),
                     "sj_integrity_repaired_at": _now(),
@@ -171,3 +172,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

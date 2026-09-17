@@ -13,13 +13,16 @@ from services.sj_integrity import (
     apply_repair_ops,
     build_numani_broken_order,
     cas_token,
+    loaded_qty_for_shipment,
 )
 from services.sj_integrity_audit import (
+    SEVERITY_CONSISTENT,
     SEVERITY_NEEDS_MANUAL_REVIEW,
     SEVERITY_SAFE_AUTO_REPAIR,
     audit_order,
     plan_safe_auto_repair,
 )
+from quantity_rules import delivery_batch_photo_readiness
 from scripts.repair_sj_integrity import main as repair_main, plan_orders
 from tests.test_sj_integrity_audit import (
     _ambiguous_po,
@@ -150,3 +153,77 @@ def test_apply_requires_explicit_db_name(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["wrote"] is False
     assert "explicit --db-name" in payload["error"]
+
+
+def _special_lalap_legacy_loading_fixture():
+    quantities = [3000, 6000, 6000, 5000]
+    shipments = []
+    files = []
+    for index, qty in enumerate(quantities, start=1):
+        sid = f"special-sj-{index}"
+        number = "SJ/SPECIAL" if index == 1 else f"SJ/SPECIAL_{index}"
+        line = {"line_idx": 0, "line_id": "L0", "accurate_item_id": "item-special", "qty": qty}
+        shipments.append({"id": sid, "number": number, "lines": [line], "total_qty": qty})
+        files.append({"id": f"file-{index}", "shipment_id": sid, "sj_number": number, "lines": [line], "total_qty": qty})
+    return {
+        "id": "special-lalap-legacy",
+        "po_number": "PO/SPECIAL",
+        "customer": "SPECIAL LALAP",
+        "line_items": [{
+            "line_id": "L0", "accurate_item_id": "item-special",
+            "name": "22 oz Datar 8 gr Berlian", "quantity": 20000,
+            "production_process": "print",
+        }],
+        "total_quantity": 20000,
+        "packing_info": {"qty_packed": 20000, "lines": [{"line_idx": 0, "packed_qty": 20000}]},
+        "loading_info": {"qty_loaded": 20000, "lines": [{"line_idx": 0, "loaded_qty": 20000}]},
+        "shipments": shipments,
+        "surat_jalan_files": files,
+        "loading_confirmations": [],
+        "delivery_confirmations": [
+            {"id": "d1", "shipment_id": "special-sj-1", "qty": 3000},
+            {"id": "d2", "shipment_id": "special-sj-2", "qty": 6000},
+            {"id": "d3", "shipment_id": "special-sj-3", "qty": 6000},
+        ],
+        "qty_delivered": 15000,
+    }
+
+
+def test_legacy_multi_sj_loading_gets_deterministic_read_bridge_only():
+    order = _special_lalap_legacy_loading_fixture()
+    before = copy.deepcopy(order)
+    report = audit_order(order)
+    assert order == before
+    assert report["severity"] == SEVERITY_SAFE_AUTO_REPAIR
+    ops = plan_safe_auto_repair(order, report["findings"])
+    allocation_op = next(op for op in ops if op["op"] == "allocate_legacy_loading")
+    assert [row["shipment_id"] for row in allocation_op["allocations"]] == [
+        "special-sj-1", "special-sj-2", "special-sj-3", "special-sj-4",
+    ]
+    assert "legacy_loading_allocations" not in order
+
+    apply_repair_ops(order, ops, actor={"email": "audit@test"}, now="t")
+    assert order["loading_info"] == before["loading_info"]
+    assert order["delivery_confirmations"] == before["delivery_confirmations"]
+    assert [loaded_qty_for_shipment(order, sh) for sh in order["shipments"]] == [
+        3000, 6000, 6000, 5000,
+    ]
+    assert delivery_batch_photo_readiness(order, order["shipments"][3])["allowed"] is True
+    assert audit_order(order)["severity"] == SEVERITY_CONSISTENT
+
+
+def test_legacy_multi_sj_loading_ambiguous_total_is_never_auto_allocated():
+    order = _special_lalap_legacy_loading_fixture()
+    order["loading_info"]["lines"][0]["loaded_qty"] = 19000
+    report = audit_order(order)
+    assert report["severity"] == SEVERITY_NEEDS_MANUAL_REVIEW
+    assert not any(op["op"] == "allocate_legacy_loading" for op in plan_safe_auto_repair(order))
+
+
+def test_legacy_multi_sj_loading_without_unique_delivery_leftover_is_manual():
+    order = _special_lalap_legacy_loading_fixture()
+    order["delivery_confirmations"] = []
+    order["qty_delivered"] = 0
+    report = audit_order(order)
+    assert report["severity"] == SEVERITY_NEEDS_MANUAL_REVIEW
+    assert not any(op["op"] == "allocate_legacy_loading" for op in plan_safe_auto_repair(order))

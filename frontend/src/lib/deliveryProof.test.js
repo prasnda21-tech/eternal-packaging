@@ -17,6 +17,7 @@ import {
   canUploadDeliveryBatchPhoto,
   deliveryBatchPhotoBlockReason,
   deliveryBatchPhotoReadiness,
+  deliveryBatchLineReadiness,
   deliveryBatchPhotoBlockCode,
   REASON_LOADING_INCOMPLETE,
   REASON_LOADING_ITEM_MISMATCH,
@@ -449,6 +450,40 @@ describe("deliveryProof helpers", () => {
     expect(r2.lines.map((l) => l.lineIdx)).toEqual([1]);
   });
 
+  test("stable line_id and shipment_id win over stale line_idx and legacy alias fields", () => {
+    const shipment = {
+      id: "sj-b",
+      number: "SJ/B",
+      lines: [{ line_idx: 0, line_id: "LB", accurate_item_id: "B", qty: 5 }],
+      total_qty: 5,
+    };
+    const order = {
+      line_items: [
+        { name: "Cup A", quantity: 10, line_id: "LA", accurate_item_id: "A", production_process: "print" },
+        { name: "Cup B", quantity: 5, line_id: "LB", accurate_item_id: "B", production_process: "print" },
+      ],
+      packing_info: { qty_packed: 15, lines: [
+        { line_idx: 0, line_id: "LA", packed_qty: 10 },
+        { line_idx: 1, line_id: "LB", packed_qty: 5 },
+      ] },
+      shipments: [shipment],
+      loading_confirmations: [{
+        id: "load-b",
+        shipment_id: "sj-b",
+        lines: [{ line_idx: 0, line_id: "LB", accurate_item_id: "B", qty: 5 }],
+      }],
+    };
+    const readiness = deliveryBatchPhotoReadiness(order, shipment);
+    expect(readiness.allowed).toBe(true);
+    expect(readiness.lines).toEqual([expect.objectContaining({
+      lineIdx: 1,
+      name: "Cup B",
+      required: 5,
+      loaded: 5,
+      shortage: 0,
+    })]);
+  });
+
   test("3-SJ tagged proofs stay isolated by shipment_id", () => {
     const order = demoMultiSjPhotoOrder({
       delivery_proofs: [
@@ -549,6 +584,25 @@ describe("deliveryProof helpers", () => {
       }],
     };
     expect(canUploadDeliveryBatchPhoto(o)).toBe(true);
+  });
+
+  test("deterministic legacy Loading allocation unlocks only its exact SJ", () => {
+    const order = {
+      line_items: [{ line_id: "L0", accurate_item_id: "item-1", name: "Cup", quantity: 8000 }],
+      shipments: [
+        { id: "sj-1", number: "SJ-1", lines: [{ line_idx: 0, line_id: "L0", qty: 3000 }], total_qty: 3000 },
+        { id: "sj-2", number: "SJ-2", lines: [{ line_idx: 0, line_id: "L0", qty: 5000 }], total_qty: 5000 },
+      ],
+      legacy_loading_allocations: [{
+        shipment_id: "sj-2",
+        lines: [{ line_idx: 0, line_id: "L0", accurate_item_id: "item-1", qty: 5000 }],
+      }],
+    };
+    expect(deliveryBatchPhotoReadiness(order, order.shipments[0]).allowed).toBe(false);
+    expect(deliveryBatchPhotoReadiness(order, order.shipments[1]).allowed).toBe(true);
+    expect(deliveryBatchLineReadiness(order, order.shipments[1])).toEqual([
+      expect.objectContaining({ lineIdx: 0, required: 5000, loaded: 5000, shortage: 0 }),
+    ]);
   });
 
   test("superseded SJ is hidden from pengiriman options; leftover auto-selected", () => {
