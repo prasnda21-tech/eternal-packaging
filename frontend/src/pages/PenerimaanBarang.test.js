@@ -151,4 +151,15 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/movement reversal/);
     expect(apiSrc).toMatch(/cancelPurchaseGoodsReceipt: \(id, reason = ""\)/);
   });
+
+  test("PO detail shows cancel on the receipt, not the parent PO", () => {
+    expect(pageSrc).toMatch(/include_cancelled: true/);
+    expect(pageSrc).toMatch(/data-testid="penerimaan-po-receipts"/);
+    expect(pageSrc).toMatch(/btn-batalkan-po-receipt-/);
+    expect(pageSrc).toMatch(/Batalkan Penerimaan/);
+    expect(pageSrc).toMatch(/openCancelReceipt\(receipt\)/);
+    expect(pageSrc).toMatch(/cancelled \? "DIBATALKAN" : "ACTIVE"/);
+    expect(pageSrc).toMatch(/canReceivePo && !cancelled/);
+    expect(pageSrc).not.toMatch(/cancelPurchaseOrder\(poDetail/);
+  });
 });
