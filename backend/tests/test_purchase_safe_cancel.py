@@ -584,6 +584,16 @@ async def test_gr_stock_cancel_appends_one_idempotent_reversal():
                 "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
                 "goods_receipt_id": gr_id,
             }) == 1
+            history = await c.get(
+                "/api/purchase-goods-receipts",
+                params={"purchase_order_id": po_id, "include_cancelled": True},
+            )
+            assert history.status_code == 200
+            cancelled_history = next(
+                r for r in history.json()["receipts"] if r["id"] == gr_id
+            )
+            assert cancelled_history["status"] == "CANCELLED"
+            assert cancelled_history["can_cancel"] is False
         finally:
             if gr_id:
                 await server.db.stock_movements.delete_many({

@@ -945,6 +945,30 @@
   align-items: center;
 }
 
+.purchase-page .purchase-receipt-list {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line, #d7e0e4);
+}
+
+.purchase-page .purchase-receipt-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+}
+
+.purchase-page .purchase-receipt-summary > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
 .purchase-page .purchase-activity-history {
   margin-top: 14px;
   padding-top: 12px;
