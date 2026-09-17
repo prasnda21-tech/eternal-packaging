@@ -247,8 +247,14 @@ function _matchPoLineIdx(order, row) {
       .map((line, idx) => (_poLineIdentityKeys(line).includes(lineId) ? idx : -1))
       .filter((idx) => idx >= 0);
     if (matches.length === 1) return matches[0];
-    if (matches.includes(explicit)) return explicit;
-    return -1;
+    if (matches.length > 1) {
+      if (matches.includes(explicit)) return explicit;
+      return -1;
+    }
+    // Legacy rows can carry a retired line_id after a PO line was normalized.
+    // Match the backend resolver exactly: when that identity has no owner,
+    // continue to accurate_item_id / explicit line_idx. Never fall back when
+    // the line_id is ambiguous across multiple current PO lines.
   }
   if (accurateItemId) {
     const matches = lines
