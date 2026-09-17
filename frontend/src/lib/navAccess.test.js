@@ -159,6 +159,8 @@ describe("salesMenuItems", () => {
       "Penerimaan Penjualan",
       "Import PO",
       "Aktivitas Sales",
+      "Status PO",
+      "Prediksi Order",
     ]);
   });
 
@@ -181,6 +183,13 @@ describe("salesMenuItems", () => {
     expect(items).toEqual([
       { key: NAV_KEYS.salesActivity, label: "Aktivitas Sales", to: "/penjualan/aktivitas-sales", tone: "blue", testid: "top-nav-sales-activity" },
     ]);
+  });
+
+  test("shows moved report pages inside Penjualan with existing report permissions", () => {
+    const visible = salesNavVisible(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.orderPrediction));
+    expect(visible.parent).toBe(true);
+    expect(visible.statusPo).toBe(true);
+    expect(visible.orderPrediction).toBe(true);
   });
 
   test("does not invent Accurate-style sales menus", () => {
@@ -266,9 +275,9 @@ describe("reportsNavVisible", () => {
     expect(v.statusPo).toBe(false);
   });
 
-    test("shows parent for status po only", () => {
+    test("keeps status po authorization without opening Laporan", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.statusPo));
-    expect(v.parent).toBe(true);
+    expect(v.parent).toBe(false);
     expect(v.statusPo).toBe(true);
     expect(v.analytics).toBe(false);
     expect(v.shipmentStatus).toBe(false);
@@ -282,9 +291,9 @@ describe("reportsNavVisible", () => {
     expect(v.orderPrediction).toBe(false);
   });
 
-  test("shows parent for prediksi order only", () => {
+  test("keeps prediction authorization without opening Laporan", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.orderPrediction));
-    expect(v.parent).toBe(true);
+    expect(v.parent).toBe(false);
     expect(v.orderPrediction).toBe(true);
     expect(v.gajiOperator).toBe(false);
     expect(v.statusPo).toBe(false);
@@ -413,18 +422,20 @@ describe("inventoryMenuItems", () => {
 });
 
 describe("reportsMenuItems", () => {
-  test("shows authorized report children and hides the rest", () => {
-    const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.gajiOperator));
-    expect(items.map((item) => item.label)).toEqual(["Status PO", "Gaji Operator"]);
-    expect(reportsMenuItems(has(NAV_KEYS.reports))).toEqual([]);
+  test("keeps only report children that remain under Laporan", () => {
+    const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.gajiOperator, NAV_KEYS.orderPrediction));
+    expect(items.map((item) => item.label)).toEqual(["Gaji Operator"]);
+    expect(reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.orderPrediction))).toEqual([]);
   });
 
-  test("shows Prediksi Order when granted and hides it otherwise", () => {
-    const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.orderPrediction));
-    expect(items.map((item) => [item.label, item.to, item.testid])).toEqual([
-      ["Prediksi Order", "/laporan/prediksi-order", "top-nav-prediksi-order"],
+  test("moves Status PO and Prediksi Order to Penjualan without changing routes or keys", () => {
+    const items = salesMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.orderPrediction));
+    expect(items.map((item) => [item.key, item.label, item.to, item.testid])).toEqual([
+      [NAV_KEYS.statusPo, "Status PO", "/laporan/status-po", "top-nav-status-po"],
+      [NAV_KEYS.orderPrediction, "Prediksi Order", "/laporan/prediksi-order", "top-nav-prediksi-order"],
     ]);
-    expect(reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo)).map((item) => item.label)).not.toContain("Prediksi Order");
+    expect(NAV_KEYS.statusPo).toBe("nav.reports.status_po");
+    expect(NAV_KEYS.orderPrediction).toBe("nav.reports.order_prediction");
   });
 });
 

@@ -148,8 +148,9 @@ export default function AppShell() {
   );
   const workspaceTabsVisible = workspace.visible || workspaceTabs.length > 0;
   const settingsActive = location.pathname.startsWith("/settings");
-  const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan");
-  const reportsActive = location.pathname.startsWith("/laporan");
+  const salesReportActive = location.pathname === "/laporan/status-po" || location.pathname === "/laporan/prediksi-order";
+  const salesActive = location.pathname.startsWith("/admin/import") || location.pathname.startsWith("/penjualan") || salesReportActive;
+  const reportsActive = location.pathname.startsWith("/laporan") && !salesReportActive;
   const inventoryActive = location.pathname.startsWith("/persediaan");
   const purchasingActive = location.pathname.startsWith("/pembelian");
   const ledgerActive = location.pathname.startsWith("/buku-besar");

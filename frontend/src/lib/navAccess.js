@@ -97,6 +97,8 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesActivity, label: "Aktivitas Sales", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.orderPrediction, label: "Prediksi Order", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
   { key: NAV_KEYS.purchaseRequests, label: "Permintaan", parent: NAV_KEYS.purchasing },
   { key: NAV_KEYS.purchaseOrders, label: "Pesanan Pembelian", parent: NAV_KEYS.purchasing },
@@ -108,9 +110,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.currentStock, label: "Stock Saat Ini", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
   { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
-  { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
-  { key: NAV_KEYS.orderPrediction, label: "Prediksi Order", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.employeeAdmin, label: "Administrasi Karyawan", parent: null },
   { key: NAV_KEYS.employeeAdminMine, label: "Pengajuan Saya", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.employeeAdminCreate, label: "Buat Pengajuan", parent: NAV_KEYS.employeeAdmin },
@@ -156,8 +156,13 @@ export function salesNavVisible(hasPerm) {
   const salesReceipt = parent && (canSeeNav(hasPerm, NAV_KEYS.salesReceipt) || canSeeNav(hasPerm, "sales.receipt.view") || canSeeNav(hasPerm, "sales.receipt.create") || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
   const salesActivity = parent && (canSeeNav(hasPerm, NAV_KEYS.salesActivity) || canSeeNav(hasPerm, "sales.activity.view") || canSeeNav(hasPerm, "sales.activity.create") || canSeeNav(hasPerm, "sales.outlet.create"));
+  // Status PO and Prediksi Order remain authorized by their existing reports keys.
+  // Only their navigation grouping moves to Penjualan.
+  const reportsParent = canSeeNav(hasPerm, NAV_KEYS.reports);
+  const statusPo = reportsParent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
+  const orderPrediction = reportsParent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
   return {
-    parent: Boolean(salesCustomers || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity),
+    parent: Boolean(salesCustomers || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || statusPo || orderPrediction),
     salesCustomers: Boolean(salesCustomers),
     salesOrder: Boolean(salesOrder),
     salesDeliveryOrder: Boolean(salesDeliveryOrder),
@@ -165,6 +170,8 @@ export function salesNavVisible(hasPerm) {
     salesReceipt: Boolean(salesReceipt),
     importPo: Boolean(importPo),
     salesActivity: Boolean(salesActivity),
+    statusPo: Boolean(statusPo),
+    orderPrediction: Boolean(orderPrediction),
   };
 }
 
@@ -177,6 +184,9 @@ export const SALES_NAV_ROUTES = {
   [NAV_KEYS.salesReceipt]: "/penjualan/penerimaan-penjualan",
   [NAV_KEYS.importPo]: "/admin/import",
   [NAV_KEYS.salesActivity]: "/penjualan/aktivitas-sales",
+  // Keep legacy report URLs stable for bookmarks and direct links.
+  [NAV_KEYS.statusPo]: "/laporan/status-po",
+  [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
 };
 
 const SALES_VIS_FIELD = {
@@ -187,6 +197,8 @@ const SALES_VIS_FIELD = {
   [NAV_KEYS.salesReceipt]: "salesReceipt",
   [NAV_KEYS.importPo]: "importPo",
   [NAV_KEYS.salesActivity]: "salesActivity",
+  [NAV_KEYS.statusPo]: "statusPo",
+  [NAV_KEYS.orderPrediction]: "orderPrediction",
 };
 
 /** Stable tile tones keyed by existing nav.* — not randomized per render. */
@@ -198,6 +210,8 @@ export const SALES_TILE_TONES = {
   [NAV_KEYS.salesReceipt]: "emerald",
   [NAV_KEYS.importPo]: "green",
   [NAV_KEYS.salesActivity]: "blue",
+  [NAV_KEYS.statusPo]: "blue",
+  [NAV_KEYS.orderPrediction]: "green",
 };
 
 export const SALES_TILE_TESTIDS = {
@@ -208,6 +222,8 @@ export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.salesReceipt]: "top-nav-sales-receipt",
   [NAV_KEYS.importPo]: "top-nav-import",
   [NAV_KEYS.salesActivity]: "top-nav-sales-activity",
+  [NAV_KEYS.statusPo]: "top-nav-status-po",
+  [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
 };
 
 function menuItemsFromFallback(hasPerm, parentKey, visible, fieldMap, routes, tones, testids, extras = {}) {
@@ -408,7 +424,9 @@ export function reportsNavVisible(hasPerm) {
   const shipmentStatus = false;
   const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
   const orderPrediction = parent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
-  return { parent: !!(analytics || statusPo || gajiOperator || orderPrediction), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
+  // Status PO and Prediksi Order are still exposed for route/index decisions,
+  // but no longer make the Laporan sidebar group visible.
+  return { parent: !!(analytics || gajiOperator), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
 }
 
 export function purchasingNavVisible(hasPerm) {
