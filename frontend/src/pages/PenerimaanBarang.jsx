@@ -978,7 +978,7 @@ export default function PenerimaanBarang() {
                             open={open}
                             onToggle={() => setOpenId(open ? null : row.key)}
                             canCreateInvoice={canCreateInvoice}
-                            canCancel={canCreate}
+                            canCancel={canReceivePo}
                             onCancel={openCancelReceipt}
                           />
                         );
