@@ -99,12 +99,114 @@ async def _seed_order(**extra):
         "qty_delivered": 0,
         "delivery_status": "Belum Terkirim",
         "cancelled": False,
+        "updated_at": "2026-09-17T00:00:00+00:00",
         "line_items": extra.pop("line_items", []),
         **extra,
     }
     await db().orders.delete_many({"id": oid})
     await db().orders.insert_one(doc)
     return doc
+
+
+@pytest.mark.anyio
+async def test_quantity_only_change_recalculates_total_atomically():
+    master = await _seed_master("AID-QTY-1", "Cup Qty", "QTY-1")
+    order = await _seed_order(
+        total_quantity=125,
+        line_items=[
+            {
+                "name": master["item_name"],
+                "item_code": master["item_code"],
+                "quantity": 100,
+                "unit": "pcs",
+                "production_process": "print",
+                "accurate_item_id": master["accurate_item_id"],
+                "master_item_id": master["id"],
+            },
+            {"name": "Lid", "quantity": 25, "unit": "pcs", "production_process": "non_print"},
+        ],
+    )
+    app.dependency_overrides[current_user] = _admin
+    import httpx
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.patch(
+            f"/api/sales-orders/{order['id']}/lines/0/product",
+            json={"quantity": 120},
+        )
+    app.dependency_overrides.pop(current_user, None)
+    assert res.status_code == 200, res.text
+    assert res.json()["before_quantity"] == 100
+    assert res.json()["after_quantity"] == 120
+    fresh = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+    assert fresh["line_items"][0]["quantity"] == 120
+    assert fresh["line_items"][0]["accurate_item_id"] == "AID-QTY-1"
+    assert fresh["total_quantity"] == 145
+
+
+@pytest.mark.anyio
+async def test_product_and_quantity_change_are_persisted_together():
+    source = await _seed_master("AID-BOTH-1", "Cup Lama", "BOTH-1")
+    target = await _seed_master("AID-BOTH-2", "Cup Baru", "BOTH-2")
+    order = await _seed_order(
+        total_quantity=100,
+        line_items=[
+            {
+                "name": source["item_name"],
+                "item_code": source["item_code"],
+                "quantity": 100,
+                "unit": "pcs",
+                "production_process": "print",
+                "accurate_item_id": source["accurate_item_id"],
+                "master_item_id": source["id"],
+            }
+        ],
+    )
+    app.dependency_overrides[current_user] = _admin
+    import httpx
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.patch(
+            f"/api/sales-orders/{order['id']}/lines/0/product",
+            json={"master_item_id": target["id"], "quantity": 160},
+        )
+    app.dependency_overrides.pop(current_user, None)
+    assert res.status_code == 200, res.text
+    fresh = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+    assert fresh["line_items"][0]["accurate_item_id"] == "AID-BOTH-2"
+    assert fresh["line_items"][0]["quantity"] == 160
+    assert fresh["total_quantity"] == 160
+
+
+@pytest.mark.anyio
+async def test_invalid_quantity_is_rejected_without_mutation():
+    master = await _seed_master("AID-QTY-BAD", "Cup Tetap", "QTY-BAD")
+    order = await _seed_order(
+        total_quantity=75,
+        line_items=[
+            {
+                "name": master["item_name"],
+                "quantity": 75,
+                "unit": "pcs",
+                "production_process": "print",
+                "accurate_item_id": master["accurate_item_id"],
+                "master_item_id": master["id"],
+            }
+        ],
+    )
+    app.dependency_overrides[current_user] = _admin
+    import httpx
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.patch(
+            f"/api/sales-orders/{order['id']}/lines/0/product",
+            json={"quantity": 0},
+        )
+    app.dependency_overrides.pop(current_user, None)
+    assert res.status_code == 400
+    fresh = await db().orders.find_one({"id": order["id"]}, {"_id": 0})
+    assert fresh["line_items"][0]["quantity"] == 75
+    assert fresh["total_quantity"] == 75
 
 
 @pytest.mark.anyio
