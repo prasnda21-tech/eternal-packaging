@@ -10997,7 +10997,6 @@ async def stock_opname_apply(
         master_item_id=payload.master_item_id,
         target_stock_current_qty=payload.target_stock_current_qty,
         outstanding_so_qty=stock_row.get("outstanding_so_qty"),
-        current_printed_qty=stock_row.get("printed_qty"),
         note=payload.note or "",
         user=user,
         client_request_id=payload.client_request_id,

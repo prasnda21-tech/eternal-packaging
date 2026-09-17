@@ -230,8 +230,8 @@ def physical_from_state(state: Optional[dict]) -> Dict[str, float]:
     unp = qty_num(state.get("unprinted_qty"))
     pri = qty_num(state.get("printed_qty"))
     tot = qty_num(state.get("total_qty"))
-    if abs(tot - (unp + pri)) > 1e-6:
-        tot = unp + pri
+    # Stock Opname corrects authoritative physical total without rewriting
+    # transaction-derived production buckets.
     return {"physical_qty": tot, "unprinted_qty": unp, "printed_qty": pri}
 
 
@@ -554,7 +554,6 @@ async def apply_stock_opname(
     master_item_id: str,
     target_stock_current_qty: Any,
     outstanding_so_qty: Any,
-    current_printed_qty: Any,
     note: str = "",
     user: Optional[dict] = None,
     client_request_id: Optional[str] = None,
@@ -573,10 +572,9 @@ async def apply_stock_opname(
     try:
         target_current = float(target_stock_current_qty)
         outstanding = float(outstanding_so_qty)
-        current_printed = float(current_printed_qty)
     except (TypeError, ValueError) as e:
         raise HTTPException(400, "Qty opname harus angka") from e
-    values = (target_current, outstanding, current_printed)
+    values = (target_current, outstanding)
     if any(v < 0 or math.isnan(v) or math.isinf(v) for v in values):
         raise HTTPException(400, "Qty opname tidak boleh negatif")
     target_physical = target_current + outstanding
@@ -603,14 +601,10 @@ async def apply_stock_opname(
         and state.get("initialized") is True
         and state.get("status") == "INITIALIZED"
     )
-    # Never let opname alter the initialized production print bucket.
-    new_pri = qty_num(state.get("printed_qty")) if initialized else current_printed
-    new_unp = target_physical - new_pri
-    if new_unp < -1e-9:
-        raise HTTPException(
-            400,
-            "Data transaksi tidak konsisten: target Stock Fisik lebih kecil dari Sudah Dicetak",
-        )
+    # For an existing state, preserve both production buckets exactly. Opname
+    # corrects only authoritative total physical stock.
+    new_pri = qty_num(state.get("printed_qty")) if initialized else 0.0
+    new_unp = qty_num(state.get("unprinted_qty")) if initialized else target_physical
     if (
         initialized
         and state.get("initialization_source") == "STOCK_OPNAME"
@@ -659,11 +653,11 @@ async def apply_stock_opname(
     old_pri = qty_num(state.get("printed_qty"))
     old_tot = qty_num(state.get("total_qty"))
     new_tot = target_physical
-    d_unp = new_unp - old_unp
-    d_pri = new_pri - old_pri
+    d_unp = 0.0
+    d_pri = 0.0
     d_tot = new_tot - old_tot
 
-    if abs(d_unp) < 1e-9 and abs(d_pri) < 1e-9:
+    if abs(d_tot) < 1e-9:
         return {
             "unchanged": True,
             "opname_action": "KOREKSI",

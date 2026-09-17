@@ -324,7 +324,6 @@ def build_opname_import_preview(
 
         assert qty is not None
         target_physical = qty + outstanding
-        new_unprinted = target_physical - printed
         selisih = qty - stock_current_system
 
         base.update({
@@ -333,16 +332,6 @@ def build_opname_import_preview(
             "target_physical_qty": target_physical,
             "client_request_id": f"{batch_request_id}:{key}",
         })
-
-        if new_unprinted < -1e-9:
-            base["status"] = "BLOCK"
-            base["message"] = (
-                "Data transaksi tidak konsisten: target Stock Fisik "
-                f"({target_physical}) < Sudah Dicetak sistem ({printed})"
-            )
-            base["can_apply"] = False
-            preview_rows.append(base)
-            continue
 
         if initialized and abs(selisih) < 1e-9:
             base["status"] = "UNCHANGED"
@@ -470,7 +459,6 @@ async def apply_opname_import_batch(
                 master_item_id=mid,
                 target_stock_current_qty=row.get("stock_current_opname"),
                 outstanding_so_qty=row.get("outstanding_so_qty"),
-                current_printed_qty=row.get("printed_qty"),
                 note=note or f"Import Opname batch {batch_id[:8]} · {filename}",
                 user=user,
                 client_request_id=row.get("client_request_id"),

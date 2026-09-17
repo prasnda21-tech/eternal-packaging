@@ -198,8 +198,7 @@ def test_preview_accepts_legacy_hasil_hitung_header():
     assert preview["rows"][0]["status"] == "OK"
 
 
-def test_preview_block_when_printed_gt_physical():
-    """physical_new < current printed → BLOCK (inconsistent)."""
+def test_preview_zero_valid_without_changing_print_bucket():
     catalog = [
         _stock_row(
             code="SKU-P",
@@ -213,16 +212,17 @@ def test_preview_block_when_printed_gt_physical():
     ]
     raw = _xlsx_bytes(
         ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
-        [["SKU-P", "Printed Heavy", 95, 50]],  # target physical 55 < printed 80
+        [["SKU-P", "Printed Heavy", 95, 0]],
     )
     preview = build_opname_import_preview(raw, "block.xlsx", stock_rows=catalog)
-    assert preview["block_count"] == 1
-    assert preview["ok_count"] == 0
-    assert preview["can_process"] is False
+    assert preview["block_count"] == 0
+    assert preview["ok_count"] == 1
+    assert preview["can_process"] is True
     row = preview["rows"][0]
-    assert row["status"] == "BLOCK"
-    assert row["can_apply"] is False
-    assert row["target_physical_qty"] == 55
+    assert row["status"] == "OK"
+    assert row["stock_current_opname"] == 0
+    assert row["target_physical_qty"] == 5
+    assert row["printed_qty"] == 80
 
 
 def test_preview_outstanding_so_and_partial_delivery_style():
@@ -360,7 +360,6 @@ async def test_apply_batch_calls_v2_opname_and_audits():
     for call, src in zip(calls, catalog):
         assert call["target_stock_current_qty"] == src["stock_current"] + 2
         assert call["outstanding_so_qty"] == src["outstanding_so_qty"]
-        assert call["current_printed_qty"] == src["printed_qty"]
         assert call["master_item_id"] == src["master_item_id"]
 
     batches.insert_one.assert_awaited_once()
@@ -383,13 +382,13 @@ async def test_apply_skips_block_and_error_rows():
         ["KODE", "NAMA BARANG", "STOCK SAAT INI SISTEM", "STOCK SAAT INI HASIL OPNAME"],
         [
             ["OK1", "Ok", 100, 110],
-            ["BLK", "Blk", 100, 50],  # block: physical target 50 < printed 80
+            ["BLK", "Blk", 100, 50],
             ["GHOST", "Nope", 0, 1],  # error
         ],
     )
     preview = build_opname_import_preview(raw, "mix.xlsx", stock_rows=catalog)
-    assert preview["ok_count"] == 1
-    assert preview["block_count"] == 2
+    assert preview["ok_count"] == 2
+    assert preview["block_count"] == 1
     assert preview["error_count"] == 0
 
     db = MagicMock()
@@ -417,10 +416,10 @@ async def test_apply_skips_block_and_error_rows():
     finally:
         mod.apply_stock_opname = original
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["master_item_id"] == "m1"
-    assert result["success_count"] == 1
-    assert result["skipped_count"] == 2
+    assert result["success_count"] == 2
+    assert result["skipped_count"] == 1
 
 
 def test_missing_required_columns_raises():

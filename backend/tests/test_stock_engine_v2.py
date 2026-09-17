@@ -332,7 +332,6 @@ async def test_opname_target_current_updates_physical_and_keeps_transaction_buck
         master_item_id="m1",
         target_stock_current_qty=0,
         outstanding_so_qty=20,
-        current_printed_qty=50,  # stale/tampered input must not alter state bucket
         note="opname test",
         user={"email": "admin@test", "name": "Admin"},
     )
@@ -340,7 +339,7 @@ async def test_opname_target_current_updates_physical_and_keeps_transaction_buck
     assert result["opname_action"] == "KOREKSI"
     st = result["stock_state"]
     assert st["total_qty"] == 20
-    assert st["unprinted_qty"] == 20
+    assert st["unprinted_qty"] == 100
     assert st["printed_qty"] == 0
     assert len(db.stock_movements.inserts) == 1
     movement = db.stock_movements.inserts[0]
@@ -359,7 +358,7 @@ async def test_opname_target_current_updates_physical_and_keeps_transaction_buck
     assert rows[0]["physical_qty"] == 20
     assert rows[0]["stock_current"] == 0
     assert rows[0]["outstanding_so_qty"] == 20
-    assert rows[0]["unprinted_qty"] == 20
+    assert rows[0]["unprinted_qty"] == 20  # derived from order/print transactions
     assert rows[0]["printed_qty"] == 0
 
 
