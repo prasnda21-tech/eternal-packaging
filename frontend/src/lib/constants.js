@@ -27,6 +27,7 @@ export const ROLES = {
   operator: "Operator",
   driver: "Driver",
   crm: "CRM",
+  sales_eternal: "Sales Eternal",
 };
 
 // Who is allowed to advance from a stage index (matches backend STAGE_EDIT_ROLES)

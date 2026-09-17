@@ -3404,6 +3404,9 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
     imported_pos: List[str] = []
     updated_pos: List[str] = []
 
+    from services.sales_user_mapping import resolve_from_map, load_mapping_dict, apply_sales_user_id
+    mapping = await load_mapping_dict(db)
+
     for so in src_orders:
         po_number = so["po_number"]
         existing = await db.orders.find_one({"po_number": po_number})
@@ -3441,10 +3444,15 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
             "accurate_synced_at": now_iso(),
             "accurate_source": "mock" if not client.is_live else "live",
         }
+        uid, _status = resolve_from_map(mapping, so.get("sales"))
 
         if existing:
             # Only refresh sales-side fields. Preserve all workflow state.
             update = {k: v for k, v in sales_payload.items() if k in _SALES_FIELDS or k in ("updated_at", "accurate_synced_at", "accurate_source")}
+            # Derived ownership — never keep a previous users.id for an unmatched label.
+            update["sales_user_id"] = uid or None
+            update["sales_ownership_status"] = _status
+            update["sales_needs_verification"] = _status != "matched"
             await db.orders.update_one({"po_number": po_number}, {"$set": update})
             updated += 1
             updated_pos.append(po_number)
@@ -3479,6 +3487,9 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
                 "deadline": deadline,
                 **sales_payload,
             }
+            apply_sales_user_id(new, uid)
+            new["sales_ownership_status"] = _status
+            new["sales_needs_verification"] = _status != "matched"
             from services.physical_stock_engine import attach_order_stock_snapshot
             from services.stock_engine_v2 import validate_sales_order_availability
             await validate_sales_order_availability(db, new.get("line_items") or [])

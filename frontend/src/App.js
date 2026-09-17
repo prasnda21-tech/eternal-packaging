@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Protected as AuthProtected, PublicOnly as AuthPublicOnly } from "./components/AppBootScreen";
 import WorkspaceChunkFallback from "./components/WorkspaceChunkFallback";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -7,6 +7,7 @@ import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
+import { isSalesPwaRole } from "./lib/salesPwa";
 import "@/App.css";
 import "@/productionSheet.css";
 import "@/ui-system.css";
@@ -80,11 +81,33 @@ const MobileNotificationsPage = lazy(() => import("./mobile/MobileNotificationsP
 const MobileProfilePage = lazy(() => import("./mobile/MobileProfilePage"));
 const MobileChatPage = lazy(() => import("./mobile/MobileChatPage"));
 const MobileChatRoomPage = lazy(() => import("./mobile/MobileChatRoomPage"));
+const SalesPwaLayout = lazy(() => import("./sales/SalesPwaLayout"));
+const SalesPwaOrdersPage = lazy(() => import("./sales/SalesPwaOrdersPage"));
+const SalesPwaOrderDetailPage = lazy(() => import("./sales/SalesPwaOrderDetailPage"));
+const SalesPwaCustomersPage = lazy(() => import("./sales/SalesPwaCustomersPage"));
+const SalesPwaPredictionsPage = lazy(() => import("./sales/SalesPwaPredictionsPage"));
+const SalesPwaProfilePage = lazy(() => import("./sales/SalesPwaProfilePage"));
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage", "settings.sales_user_mapping.view", "settings.sales_user_mapping.manage"];
 const PHYSICAL_STOCK_SETTINGS_PERMS = ["current_stock.view", "current_stock.update", "permissions.manage"];
 const SETTINGS_HUB_PERMS = [...SETTINGS_PERMS, "current_stock.view", "current_stock.update"];
 const PhysicalStockSettingsRoute = Settings;
+
+function SalesEternalRedirect() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading || !user) return null;
+  if (!isSalesPwaRole(user)) return null;
+  if (location.pathname === "/login") return null;
+  if (location.pathname === "/sales" || location.pathname.startsWith("/sales/")) return null;
+  return <Navigate to="/sales" replace />;
+}
+
+function SalesPwaGate({ children }) {
+  const { user } = useAuth();
+  if (!isSalesPwaRole(user)) return <Navigate to="/" replace />;
+  return children;
+}
 
 function Protected(props) {
   return <AuthProtected {...props} />;
@@ -182,6 +205,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <SalesEternalRedirect />
         <Suspense fallback={<WorkspaceChunkFallback />}>
         <Routes>
           <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
@@ -202,6 +226,14 @@ export default function App() {
             <Route path="/m/chat" element={<MobileChatPage />} />
             <Route path="/m/chat/:roomId" element={<MobileChatRoomPage />} />
             <Route path="/m/profile" element={<MobileProfilePage />} />
+          </Route>
+          <Route element={<Protected><SalesPwaGate><SalesPwaLayout /></SalesPwaGate></Protected>}>
+            <Route path="/sales" element={<SalesPwaOrdersPage />} />
+            <Route path="/sales/po/:id" element={<SalesPwaOrderDetailPage />} />
+            <Route path="/sales/pelanggan" element={<SalesPwaCustomersPage />} />
+            <Route path="/sales/prediksi" element={<SalesPwaPredictionsPage />} />
+            <Route path="/sales/prediksi/:customerKey" element={<SalesPwaPredictionsPage />} />
+            <Route path="/sales/profil" element={<SalesPwaProfilePage />} />
           </Route>
           {/* Optimasi Rute: same paths for desktop + PWA; adaptive shell keeps standalone in-app. */}
           <Route element={<Protected><RouteOptimizerLayout /></Protected>}>

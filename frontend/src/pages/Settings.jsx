@@ -25,6 +25,7 @@ import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
 import SalesActivitySettings from "../components/SalesActivitySettings";
 import RouteOptimizerSettings from "../components/RouteOptimizerSettings";
+import SalesUserMappingSettings from "../components/SalesUserMappingSettings";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
@@ -37,6 +38,7 @@ const ROLE_LABELS = {
   operator: "Operator",
   driver: "Driver",
   crm: "CRM",
+  sales_eternal: "Sales Eternal",
 };
 const ROLE_KEYS = Object.keys(ROLE_LABELS);
 
@@ -2144,6 +2146,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "sales-activity", label: "Sales Activity & Ownership", description: "Aktivitas & ownership", Icon: ClipboardList, tone: "teal", testid: "settings-tab-sales-activity" },
   { id: "route-optimizer", label: "Optimasi Rute", description: "Pengaturan rute", Icon: Route, tone: "blue", testid: "settings-tab-route-optimizer" },
   { id: "accurate-creators", label: "Pembuat PO Accurate", description: "Mapping createdBy", Icon: Users, tone: "sky", testid: "settings-tab-accurate-creators" },
+  { id: "sales-user-mapping", label: "Mapping Sales Accurate", description: "Label Accurate → users.id", Icon: Users, tone: "teal", testid: "settings-tab-sales-user-mapping" },
   { id: "audit", label: "Audit Log", description: "Riwayat perubahan", Icon: ScrollText, tone: "slate", testid: "settings-tab-audit" },
 ];
 
@@ -2208,6 +2211,8 @@ export default function Settings() {
   const canEditWorkPanel = hasPerm("settings.work_panel.manage");
   const canViewAccurateCreators = canViewUsers || hasPerm("accurate.import") || hasPerm("permissions.manage");
   const canEditAccurateCreators = canManageUsers || hasPerm("accurate.import") || hasPerm("permissions.manage");
+  const canViewSalesUserMapping = hasPerm("settings.sales_user_mapping.view") || hasPerm("settings.sales_user_mapping.manage") || hasPerm("permissions.manage");
+  const canEditSalesUserMapping = hasPerm("settings.sales_user_mapping.manage") || hasPerm("permissions.manage");
   const canViewSidebarAccess = canManagePerms;
   const canViewWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm("reports.gaji_operator.view");
   const canEditWage = hasPerm("settings.operator_wage.manage");
@@ -2250,6 +2255,7 @@ export default function Settings() {
     "sales-activity": canViewSalesActivity,
     "route-optimizer": canViewRouteOptimizer,
     "accurate-creators": canViewAccurateCreators,
+    "sales-user-mapping": canViewSalesUserMapping,
     audit: canViewAudit,
   };
 
@@ -2384,6 +2390,9 @@ export default function Settings() {
         <HrPayrollSettings notify={notify} canEdit={canViewHrPayroll}/>
       )}
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
+      {tab === "sales-user-mapping" && canViewSalesUserMapping && (
+        <SalesUserMappingSettings notify={notify} canEdit={canEditSalesUserMapping}/>
+      )}
       {tab === "audit" && canViewAudit && <AuditTab/>}
       </div>
 

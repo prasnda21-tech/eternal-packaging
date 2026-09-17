@@ -35,6 +35,7 @@ describe("Settings category card navigation", () => {
       "sales-activity",
       "route-optimizer",
       "accurate-creators",
+      "sales-user-mapping",
       "audit",
     ];
     keys.forEach((id) => {

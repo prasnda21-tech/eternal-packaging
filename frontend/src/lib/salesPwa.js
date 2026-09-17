@@ -1,0 +1,60 @@
+export const SALES_PWA_ROLE = "sales_eternal";
+export const SALES_PWA_HOME = "/sales";
+
+export const SALES_PWA_NAV = [
+  { id: "orders", label: "PO Saya", to: "/sales" },
+  { id: "customers", label: "Pelanggan", to: "/sales/pelanggan" },
+  { id: "predictions", label: "Prediksi Order", to: "/sales/prediksi" },
+  { id: "profile", label: "Profil", to: "/sales/profil" },
+];
+
+export function isSalesPwaRole(user) {
+  return String(user?.role || "").trim() === SALES_PWA_ROLE;
+}
+
+export function isSafeSalesNextPath(path) {
+  if (typeof path !== "string") return false;
+  const value = path.trim();
+  if (value.startsWith("//") || value.includes("://") || value.includes("\\")) return false;
+  return value === "/sales" || value.startsWith("/sales/");
+}
+
+export function activeSalesPwaNav(pathname) {
+  const path = String(pathname || "");
+  if (path.startsWith("/sales/pelanggan")) return "customers";
+  if (path.startsWith("/sales/prediksi")) return "predictions";
+  if (path.startsWith("/sales/profil")) return "profile";
+  if (path.startsWith("/sales")) return "orders";
+  return "";
+}
+
+export function isValidSalesManifest(manifest) {
+  if (!manifest || typeof manifest !== "object") return false;
+  if (manifest.name !== "Eternal Packaging Sales") return false;
+  if (manifest.display !== "standalone") return false;
+  if (manifest.start_url !== "/sales") return false;
+  if (manifest.scope !== "/sales") return false;
+  if (!Array.isArray(manifest.icons) || !manifest.icons.length) return false;
+  return true;
+}
+
+export function salesHomeForUser(user, nextPath) {
+  if (!isSalesPwaRole(user)) return null;
+  return isSafeSalesNextPath(nextPath) ? nextPath : SALES_PWA_HOME;
+}
+
+export function formatSalesDate(iso) {
+  const text = String(iso || "").trim();
+  if (!text) return "—";
+  const day = text.slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!m) return text;
+  return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
+}
+
+export function documentTotal(order) {
+  const docs = order?.documents || {};
+  const n = Number(docs.total);
+  if (Number.isFinite(n)) return n;
+  return (Number(docs.po) || 0) + (Number(docs.sj) || 0) + (Number(docs.invoice) || 0) + (Number(docs.bukti_kirim) || 0);
+}

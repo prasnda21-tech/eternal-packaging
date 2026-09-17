@@ -721,6 +721,16 @@ export const api = {
     return client.post(`/chat/rooms/${encodeURIComponent(roomId)}/attachments`, form).then((r) => r.data);
   },
   chatAttachmentDownloadUrl: (attachmentId) => `${API}/chat/attachments/${encodeURIComponent(attachmentId)}/download`,
+
+  salesUserMapping: () => client.get("/settings/sales-user-mapping").then((r) => r.data),
+  updateSalesUserMapping: (payload) => client.put("/settings/sales-user-mapping", payload).then((r) => r.data),
+  salesPwaMe: () => client.get("/sales-pwa/me").then((r) => r.data),
+  salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),
+  salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
+  salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),
+  salesPwaCustomers: (params = {}) => client.get("/sales-pwa/customers", { params }).then((r) => r.data),
+  salesPwaPredictions: () => client.get("/sales-pwa/predictions").then((r) => r.data),
+  salesPwaPredictionDetail: (customerKey) => client.get(`/sales-pwa/predictions/${encodeURIComponent(customerKey)}`).then((r) => r.data),
 };
 
 export default api;

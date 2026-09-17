@@ -180,6 +180,19 @@ from services.purchase_receipts import (
 from services.purchase_http import register_purchase_routes
 from services.customer_pricing_http import register_customer_pricing_routes
 from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
+from services.sales_user_mapping_http import register_sales_user_mapping_routes
+from services.sales_pwa_http import register_sales_pwa_routes
+from services.sales_user_mapping import (
+    attach_sales_ownership,
+    attach_sales_ownership_admin_fields,
+    ensure_owned_po_id,
+    enforce_sales_eternal_surface,
+    is_sales_pwa_role,
+    reject_sales_pwa_bypass,
+    sales_owner_match,
+    session_user_id,
+    SURFACE_LOCK_DETAIL,
+)
 from services.payroll_accounting_http import register_payroll_accounting_routes
 from services.customer_pricing_public_http import register_public_customer_pricing_routes
 from services.employee_admin_http import register_employee_admin_routes
@@ -441,6 +454,7 @@ async def current_user(request: Request):
                 raise HTTPException(403, "Akun dinonaktifkan")
             payload["permissions_override"] = u.get("permissions_override") or {}
             payload["user_id"] = u.get("id")
+    enforce_sales_eternal_surface(request, payload)
     return payload
 
 
@@ -476,7 +490,8 @@ async def _inactive_role_slugs() -> set:
 
 def require_perm(*perms):
     """Dependency that ensures caller has ALL the given permission keys."""
-    async def checker(user=Depends(current_user)):
+    async def checker(request: Request, user=Depends(current_user)):
+        enforce_sales_eternal_surface(request, user)
         eff = await user_permissions(user)
         for p in perms:
             if p not in eff:
@@ -486,7 +501,8 @@ def require_perm(*perms):
 
 
 def require(*roles):
-    async def checker(user=Depends(current_user)):
+    async def checker(request: Request, user=Depends(current_user)):
+        enforce_sales_eternal_surface(request, user)
         if roles and user.get("role") not in roles and user.get("role") != "admin":
             raise HTTPException(403, "Aksi ini tidak tersedia untuk role Anda")
         return user
@@ -983,19 +999,21 @@ def _finalize_orders_summary_row(order: dict) -> dict:
     return order
 
 
-def _orders_list_match(st: str) -> dict:
+def _orders_list_match(st: str, extra: Optional[dict] = None) -> dict:
     """Same Mongo filter as default GET /orders. Status extras stay post-filter."""
     q: dict = {}
     if st == "cancelled":
         q["cancelled"] = True
     else:
         q["cancelled"] = {"$ne": True}
+    if extra:
+        q.update(extra)
     return q
 
 
-async def _list_orders_summary(st: str) -> dict:
+async def _list_orders_summary(st: str, extra: Optional[dict] = None) -> dict:
     """Mobile PO list: same status semantics, no file blobs, no stage_counts scan."""
-    q = _orders_list_match(st)
+    q = _orders_list_match(st, extra)
     raw = await db.orders.aggregate([
         {"$match": q},
         {"$sort": {"created_at": -1}},
@@ -1016,10 +1034,11 @@ async def _list_orders_summary(st: str) -> dict:
         o.pop("payment_status", None)
         o.pop("payment_bypassed", None)
         o.pop("cancelled", None)
+    extra = extra or {}
     counts = {
-        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}),
-        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}),
-        "cancelled": await db.orders.count_documents({"cancelled": True}),
+        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}, **extra}),
+        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}, **extra}),
+        "cancelled": await db.orders.count_documents({"cancelled": True, **extra}),
     }
     return {
         "orders": orders,
@@ -1051,18 +1070,21 @@ async def list_orders(
        with the same status filters, pending_queues, and stage_counts.
        Default (no view) keeps full documents + stage_counts for compatibility.
     """
+    reject_sales_pwa_bypass(user)
     q: dict = {}
     st = (status or "aktif").lower()
     view_norm = (view or "").strip().lower()
+    scope = sales_owner_match(user)
     if view_norm == "summary":
-        return await _list_orders_summary(st)
+        return await _list_orders_summary(st, extra=scope)
     if view_norm == "dashboard":
-        return await _list_orders_dashboard(st)
+        return await _list_orders_dashboard(st, extra=scope)
     if st == "cancelled":
         q["cancelled"] = True
     else:
         # Non-cancelled by default (Aktif/HOLD/Selesai/stage_view)
         q["cancelled"] = {"$ne": True}
+    q.update(scope)
     orders = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     _dd_settings = await _get_delivery_deadline_settings()
     for o in orders:
@@ -1618,17 +1640,18 @@ def _finalize_orders_dashboard_row(order: dict) -> dict:
     return _strip_sj_bytes(order)
 
 
-async def _orders_dashboard_tab_counts() -> dict:
+async def _orders_dashboard_tab_counts(extra: Optional[dict] = None) -> dict:
+    extra = extra or {}
     return {
-        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}),
-        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}),
-        "cancelled": await db.orders.count_documents({"cancelled": True}),
+        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}, **extra}),
+        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}, **extra}),
+        "cancelled": await db.orders.count_documents({"cancelled": True, **extra}),
     }
 
 
-async def _list_orders_dashboard(st: str) -> dict:
+async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
     """Desktop `/` Dashboard: same status + queue semantics, lean documents."""
-    q = _orders_list_match(st)
+    q = _orders_list_match(st, extra)
     raw = await db.orders.aggregate([
         {"$match": q},
         {"$sort": {"created_at": -1}},
@@ -1649,9 +1672,12 @@ async def _list_orders_dashboard(st: str) -> dict:
         orders = [o for o in orders if not o.get("hold") and o.get("current_stage", 0) < 14]
     elif st == "selesai":
         orders = [o for o in orders if o.get("current_stage", 0) >= 14]
-    counts = await _orders_dashboard_tab_counts()
+    counts = await _orders_dashboard_tab_counts(extra)
+    stage_match = {"cancelled": {"$ne": True}}
+    if extra:
+        stage_match.update(extra)
     stage_raw = await db.orders.aggregate([
-        {"$match": {"cancelled": {"$ne": True}}},
+        {"$match": stage_match},
         {"$limit": _ORDERS_DASHBOARD_STAGE_LIMIT},
         {"$project": _orders_dashboard_stage_projection()},
     ]).to_list(_ORDERS_DASHBOARD_STAGE_LIMIT)
@@ -1673,7 +1699,10 @@ async def _list_orders_dashboard(st: str) -> dict:
 
 @api_router.get("/orders/{order_id}")
 async def get_order(order_id: str, user=Depends(current_user)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    reject_sales_pwa_bypass(user)
+    query = {"id": order_id}
+    query.update(sales_owner_match(user))
+    order = await db.orders.find_one(query, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     if user.get("role") != "admin":
@@ -1823,11 +1852,13 @@ _DERIVED_ORDER_KEYS = (
     "effective_delivery_date", "delivery_schedule_status",
     "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
     "sj_integrity",
+    "sales_ownership_admin_label",
 )
 
 
 def _attach_quantity_snapshot(order: dict) -> None:
     """Derived qty fields (non-persisted) untuk UI + invariant checks."""
+    attach_sales_ownership_admin_fields(order)
     order["requires_printing"] = _requires_printing(order)
     order["print_qty_total"] = _print_qty_total(order)
     order["non_print_qty_total"] = _non_print_qty_total(order)
@@ -2187,6 +2218,7 @@ async def _audit_po(order: dict, action: str, actor: dict, before=None, after=No
 
 async def _require_perm(user: dict, perm: str):
     """Deny if the user lacks `perm` in their effective set (admin still passes)."""
+    reject_sales_pwa_bypass(user)
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -4596,6 +4628,7 @@ async def download_surat_jalan_file(
     Never returns a permanent public object-storage URL. Bytes are streamed
     through this authenticated proxy after the permission check.
     """
+    reject_sales_pwa_bypass(user)
     await _require_perm(user, _SJ_VIEW_FILE)
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
@@ -6133,6 +6166,7 @@ class DeliveryRescheduleSetDatePayload(BaseModel):
 
 
 async def _require_any_perm(user: dict, *perms: str):
+    reject_sales_pwa_bypass(user)
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -7353,9 +7387,11 @@ async def status_po_dashboard(
     user=Depends(require_perm("schedule.view")),
 ):
     """Laporan Status PO — one query, dashboard card subsets, shipment % reuse."""
+    reject_sales_pwa_bypass(user)
     q: dict = {}
     if not include_cancelled:
         q["cancelled"] = {"$ne": True}
+    q.update(sales_owner_match(user))
     orders = await db.orders.find(q, STATUS_PO_PROJECTION).sort("deadline", 1).to_list(1000)
     _dd_settings = await _get_delivery_deadline_settings()
     for o in orders:
@@ -8393,6 +8429,7 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
     from services.physical_stock_engine import attach_order_stock_snapshot
     await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
+    await attach_sales_ownership(db, new)
     await db.orders.insert_one(new)
     # If we have a source PDF uploaded during preview, record it in db.files
     # so the /api/files/{path} route (soft-delete aware) can serve it.
@@ -9073,6 +9110,7 @@ async def list_sales_customers_endpoint(
     view=unified: read-only union of master + live PO + prediction history.
     GET is zero-write in both modes.
     """
+    reject_sales_pwa_bypass(user)
     await _require_any_perm(
         user,
         "sales.customer.view",
@@ -9131,6 +9169,7 @@ async def get_sales_customer_endpoint(
     user=Depends(current_user),
 ):
     """Get single sales customer by id."""
+    reject_sales_pwa_bypass(user)
     await _require_any_perm(
         user,
         "sales.customer.view",
@@ -9460,6 +9499,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     from services.physical_stock_engine import attach_order_stock_snapshot
     await validate_sales_order_availability(db, new_order.get("line_items") or [])
     await attach_order_stock_snapshot(db, new_order)
+    await attach_sales_ownership(db, new_order)
 
     try:
         await db.orders.insert_one(new_order)
@@ -9610,6 +9650,40 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
         },
         note=note,
     )
+    return {"order": order}
+
+
+class OrderSalesUpdatePayload(BaseModel):
+    """Reassignment of Accurate sales label. Does not guess users.id."""
+    sales: Optional[str] = None
+
+
+@api_router.patch("/orders/{order_id}/sales")
+async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, user=Depends(current_user)):
+    """Update the display label `orders.sales` and re-resolve `sales_user_id`.
+
+    Unmatched labels explicitly clear sales_user_id. The label itself is kept
+    as submitted (including empty). Permission: po.edit or sales_order.create.
+    """
+    await _require_any_perm(user, "po.edit", "sales_order.create")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    before = {
+        "sales": order.get("sales"),
+        "sales_user_id": order.get("sales_user_id"),
+    }
+    new_label = (payload.sales or "").strip() or None
+    order["sales"] = new_label
+    await attach_sales_ownership(db, order)
+    add_timeline(order, order.get("current_stage") or 0, user, note="Edit Sales")
+    await _persist_order(order, persist_keys=("sales", "sales_user_id", "sales_ownership_status", "sales_needs_verification", "timeline"))
+    after = {
+        "sales": order.get("sales"),
+        "sales_user_id": order.get("sales_user_id"),
+    }
+    await _audit_po(order, "orders.sales.update", user, before=before, after=after, note="Edit / reassignment Sales")
     return {"order": order}
 
 
@@ -9815,9 +9889,11 @@ async def list_sales_orders(
     user=Depends(current_user),
 ):
     """List sales orders with search and status filtering for Pesanan Penjualan page."""
+    reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view")
     
     query: dict = {}
+    query.update(sales_owner_match(user))
     st = (status or "all").lower()
     if st == "cancelled":
         query["cancelled"] = True
@@ -9905,7 +9981,10 @@ async def list_sales_deliveries_endpoint(
     user=Depends(current_user),
 ):
     """List sales deliveries (Pengiriman Pesanan) with search and status filtering."""
+    reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
+    if po_id:
+        await ensure_owned_po_id(db, user, po_id)
     deliveries = await _list_sales_deliveries(db, q=q, po_id=po_id, status=status)
     return {"deliveries": deliveries, "count": len(deliveries)}
 
@@ -9914,6 +9993,7 @@ async def list_sales_deliveries_endpoint(
 async def get_po_delivery_summary_endpoint(po_id: str, user=Depends(current_user)):
     """Get delivery summary, remaining line item quantities, and past shipments for a PO."""
     await _require_any_perm(user, "sales.delivery.view", "sales.delivery.create", "sales_order.view", "sales_order.create", "po.view")
+    await ensure_owned_po_id(db, user, po_id)
     summary = await _get_po_delivery_summary(db, po_id)
     return summary
 
@@ -9937,6 +10017,7 @@ async def get_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales delivery including PO summary and shipment history."""
     await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
+    await ensure_owned_po_id(db, user, (detail or {}).get("po_id") or ((detail or {}).get("delivery") or {}).get("po_id"))
     return detail
 
 
@@ -9945,6 +10026,7 @@ async def get_sales_delivery_pdf_endpoint(id: str, user=Depends(current_user)):
     """Generate and return official PDF for Sales Delivery / Surat Jalan."""
     await _require_any_perm(user, "sales.delivery.print", "sales.delivery.view", "sales_order.view", "po.view")
     detail = await _get_sales_delivery_detail(db, id)
+    await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
     pdf_bytes = _generate_sales_delivery_pdf_bytes(detail["delivery"], detail.get("po_summary"))
     sj_num = str(detail["delivery"].get("sj_number", "SJ")).replace("/", "_").replace("\\", "_")
     filename = f"Pengiriman_Pesanan_{sj_num}.pdf"
@@ -9965,7 +10047,10 @@ async def list_sales_invoices_endpoint(
     user=Depends(current_user),
 ):
     """List sales invoices (Faktur Penjualan) with search and po_id filtering."""
+    reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
+    if po_id:
+        await ensure_owned_po_id(db, user, po_id)
     invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
 
@@ -9974,6 +10059,7 @@ async def list_sales_invoices_endpoint(
 async def get_po_invoice_preview_endpoint(po_id: str, user=Depends(current_user)):
     """Preview exact PO snapshot fields and line items for sales invoice creation."""
     await _require_any_perm(user, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "sales_order.create", "po.view")
+    await ensure_owned_po_id(db, user, po_id)
     preview = await _get_po_invoice_preview(db, po_id)
     return preview
 
@@ -9991,6 +10077,7 @@ async def get_sales_invoice_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales invoice."""
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     inv = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (inv or {}).get("po_id"))
     return {"invoice": inv}
 
 
@@ -10000,6 +10087,7 @@ async def get_sales_invoice_pdf_endpoint(id: str, user=Depends(current_user)):
     """Generate and return official PDF for Sales Invoice (Faktur Penjualan)."""
     await _require_any_perm(user, "sales.invoice.view", "sales_order.view", "po.view", "sales.delivery.view")
     detail = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
     pdf_bytes = generate_sales_invoice_pdf_bytes(detail)
     inv_num = str(detail.get("invoice_number", "INV")).replace("/", "_").replace("\\", "_")
     filename = f"Faktur_Penjualan_{inv_num}.pdf"
@@ -11415,6 +11503,21 @@ register_sales_accounting_settings_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_sales_user_mapping_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_sales_pwa_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    Depends=Depends,
+    obj_storage=obj_storage,
+    user_permissions=user_permissions,
+)
 register_payroll_accounting_routes(
     api_router,
     get_db=lambda: db,
@@ -11550,6 +11653,7 @@ async def accurate_sync(user=Depends(require("admin", "head_production"))):
 async def download_file(path: str, user=Depends(current_user)):
     """Serve a file from object storage. Requires auth. Path is the storage key
     as returned by put_object() (starts with the app-name prefix)."""
+    reject_sales_pwa_bypass(user)
     # Look up metadata to enforce content-type + soft-delete filter
     rec = await db.files.find_one({"storage_path": path, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not rec:
@@ -11562,6 +11666,13 @@ async def download_file(path: str, user=Depends(current_user)):
         raise HTTPException(403, "File HR & Payroll hanya dapat diakses lewat rute modul.")
     if rec.get("kind") == "sales_visit_photo":
         raise HTTPException(403, "Foto visit hanya dapat diakses lewat rute Sales Activity.")
+    if is_sales_pwa_role(user):
+        oid = str(rec.get("order_id") or rec.get("po_id") or "").strip()
+        if not oid:
+            raise HTTPException(404, "File tidak ditemukan")
+        owned = await db.orders.find_one({"id": oid, **sales_owner_match(user)}, {"_id": 0, "id": 1})
+        if not owned:
+            raise HTTPException(404, "File tidak ditemukan")
     try:
         data, ct = obj_storage.get_object(path)
     except FileNotFoundError:
@@ -12295,6 +12406,7 @@ class OperatorWageSettingsPayload(BaseModel):
 
 
 async def _require_gaji_view(user: dict):
+    reject_sales_pwa_bypass(user)
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -12303,6 +12415,7 @@ async def _require_gaji_view(user: dict):
 
 
 async def _require_order_prediction_view(user: dict):
+    reject_sales_pwa_bypass(user)
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -12311,6 +12424,7 @@ async def _require_order_prediction_view(user: dict):
 
 
 async def _require_order_prediction_import(user: dict):
+    reject_sales_pwa_bypass(user)
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -12318,10 +12432,22 @@ async def _require_order_prediction_import(user: dict):
         raise HTTPException(403, f"Permission '{ORDER_PREDICTION_IMPORT_PERM}' diperlukan")
 
 
-async def _load_prediction_history():
+async def _load_prediction_history(user: Optional[dict] = None):
+    q: dict = {"cancelled": {"$ne": True}}
+    if is_sales_pwa_role(user):
+        uid = session_user_id(user)
+        if not uid:
+            return []
+        q["sales_user_id"] = uid
     return await db[ORDER_PREDICTION_HISTORY_COLLECTION].find(
-        {"cancelled": {"$ne": True}}, {"_id": 0},
+        q, {"_id": 0},
     ).to_list(10000)
+
+
+async def _load_prediction_orders(user: Optional[dict] = None):
+    q: dict = {}
+    q.update(sales_owner_match(user))
+    return await db.orders.find(q, ORDER_PREDICTION_PROJECTION).to_list(5000)
 
 
 async def _load_prediction_masters():
@@ -12342,16 +12468,17 @@ async def order_prediction_report(
     user=Depends(current_user),
 ):
     await _require_order_prediction_view(user)
-    raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
-    supplemental = await _load_prediction_history()
+    raw = await _load_prediction_orders(user)
+    supplemental = await _load_prediction_history(user)
     masters = await _load_prediction_masters()
+    sales_filter = "" if is_sales_pwa_role(user) else (sales or "")
     data = build_order_prediction(
         raw,
         search=search or "",
         status=status or "",
         pattern=pattern or "",
         confidence=confidence or "",
-        sales=sales or "",
+        sales=sales_filter,
         skip=skip,
         limit=limit,
         supplemental=supplemental,
@@ -12438,8 +12565,8 @@ async def order_prediction_import_apply(
 @api_router.get("/reports/order-prediction/{customer_key}")
 async def order_prediction_detail(customer_key: str, user=Depends(current_user)):
     await _require_order_prediction_view(user)
-    raw = await db.orders.find({}, ORDER_PREDICTION_PROJECTION).to_list(5000)
-    supplemental = await _load_prediction_history()
+    raw = await _load_prediction_orders(user)
+    supplemental = await _load_prediction_history(user)
     masters = await _load_prediction_masters()
     data = build_order_prediction_detail(raw, customer_key, supplemental=supplemental, masters=masters)
     if not data:
@@ -12962,6 +13089,7 @@ async def seed():
     await db.users.create_index("employee_id", sparse=True)
     await db.orders.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.orders, "po_number")
+    await db.orders.create_index("sales_user_id", sparse=True)
     await db.orders.create_index("accurate_id", sparse=True)
     await db.orders.create_index(
         [("tracking_token", 1)],
