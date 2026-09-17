@@ -290,6 +290,12 @@ export function resolveStageState(idx, order, currentStage) {
     if (eligible > 0) {
       return { state: "current", label: "Menunggu bukti pengiriman" };
     }
+    // Stage kerja mengikuti bukti proses, bukan current_stage yang masih dipakai
+    // sebagian endpoint lama sebagai penanda PO selesai. Loading lengkap berarti
+    // pekerjaan berikutnya memang Pengiriman, meski belum ada barang terkirim.
+    if (loadingCompleted(order) || order?.loading_qty_status === "completed") {
+      return { state: "current", label: "Menunggu bukti pengiriman" };
+    }
     if (suratJalanCreated(order)) {
       return { state: "pending", label: "Menunggu konfirmasi Loading" };
     }
@@ -301,4 +307,29 @@ export function resolveStageState(idx, order, currentStage) {
   if (idx < currentStage) return { state: "done", label: "Selesai" };
   if (idx === currentStage) return { state: "current", label: "Berjalan" };
   return { state: "pending", label: "Menunggu" };
+}
+
+/**
+ * Presentation-only operational stage.
+ *
+ * `current_stage` remains the persisted compatibility field and must not be
+ * rewritten here: several legacy backend consumers still interpret stage 14 as
+ * fully delivered. The stage workspace instead follows the highest stage that
+ * semantic evidence says is currently actionable. This also works for legacy
+ * POs because it derives from their existing SJ/Loading/Delivery evidence.
+ */
+export function resolveOperationalStage(order, currentStage = order?.current_stage) {
+  const parsed = Number(currentStage);
+  const persisted = Number.isFinite(parsed)
+    ? Math.max(0, Math.min(STAGE_TERKIRIM, Math.trunc(parsed)))
+    : 0;
+
+  if (!order || order.cancelled || order.hold) return persisted;
+
+  let operational = persisted;
+  for (let idx = 0; idx <= STAGE_TERKIRIM; idx += 1) {
+    const { state } = resolveStageState(idx, order, persisted);
+    if (state === "current") operational = Math.max(operational, idx);
+  }
+  return operational;
 }
