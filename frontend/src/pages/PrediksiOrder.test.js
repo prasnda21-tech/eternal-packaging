@@ -9,11 +9,13 @@ describe("Prediksi Order page", () => {
   const api = fs.readFileSync(path.join(__dirname, "..", "lib", "api.js"), "utf8");
   const shell = fs.readFileSync(path.join(__dirname, "..", "components", "AppShell.jsx"), "utf8");
 
-  test("menu Prediksi Order is a Laporan child", () => {
+  test("menu Prediksi Order is grouped under Penjualan while its route and permission stay stable", () => {
     expect(NAV_KEYS.orderPrediction).toBe("nav.reports.order_prediction");
     expect(nav).toMatch(/Prediksi Order/);
+    expect(nav).toMatch(/parent: NAV_KEYS\.sales/);
     expect(nav).toMatch(/\/laporan\/prediksi-order/);
     expect(nav).toMatch(/top-nav-prediksi-order/);
+    expect(shell).toMatch(/salesReportActive/);
   });
 
   test("permission filtering uses nav key and view perm", () => {
@@ -40,6 +42,30 @@ describe("Prediksi Order page", () => {
     expect(src).toMatch(/textOverflow/);
     expect(src).toMatch(/prediksi-tab-orders/);
     expect(src).toMatch(/prediksi-refresh/);
+  });
+
+  test("compact analysis keeps nine operational columns and all detail evidence", () => {
+    expect(src).toMatch(/prediksi-compact-table/);
+    expect(src).toMatch(/Customer \/ Outlet/);
+    expect(src).toMatch(/Prediksi Order/);
+    expect(src).toMatch(/prediksi-detail-button/);
+    expect(src).toMatch(/colSpan=\{9\}/);
+    expect(src).toMatch(/prediksi-customer-cell/);
+    expect(src).toMatch(/followupTone/);
+    expect(src).toMatch(/analysis\.median_gap/);
+    expect(src).toMatch(/analysis\.prediction_start/);
+    expect(src).toMatch(/prediksi-detail-history/);
+  });
+
+  test("compact header and controls preserve import and every existing filter", () => {
+    expect(src).toMatch(/prediksi-heading-copy/);
+    expect(src).toMatch(/prediksi-controls-row/);
+    expect(src).toMatch(/prediksi-import-button/);
+    expect(src).toMatch(/prediksi-filter-search/);
+    expect(src).toMatch(/prediksi-filter-status/);
+    expect(src).toMatch(/prediksi-filter-pattern/);
+    expect(src).toMatch(/prediksi-filter-confidence/);
+    expect(src).toMatch(/prediksi-filter-sales/);
   });
 
   test("omzet displays dash and there is no manual data entry", () => {
