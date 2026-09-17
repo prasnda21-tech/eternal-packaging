@@ -241,8 +241,20 @@ export default function PenerimaanBarang() {
     setPoDetailLoading(true);
     setPoErr("");
     try {
-      const res = await api.getPurchaseOrder(poId);
+      const [res, receiptRes] = await Promise.all([
+        api.getPurchaseOrder(poId),
+        api.listPurchaseGoodsReceipts({
+          purchase_order_id: poId,
+          include_cancelled: true,
+        }),
+      ]);
       setPoDetail(res.order);
+      setPoReceipts((current) => [
+        ...current.filter(
+          (receipt) => String(receipt.purchase_order_id || "") !== String(poId),
+        ),
+        ...(receiptRes.receipts || []),
+      ]);
     } catch (ex) {
       setPoErr(errDetail(ex));
     } finally {
