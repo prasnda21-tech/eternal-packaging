@@ -317,7 +317,7 @@ async def test_validate_so_on_missing_state_rejects():
 
 
 @pytest.mark.anyio
-async def test_opname_updates_physical_keeps_outstanding(monkeypatch):
+async def test_opname_target_current_updates_physical_and_keeps_transaction_buckets(monkeypatch):
     db = _FakeDB()
 
     async def fake_record(db, **k):
@@ -330,17 +330,20 @@ async def test_opname_updates_physical_keeps_outstanding(monkeypatch):
     result = await apply_stock_opname(
         db,
         master_item_id="m1",
-        counted_unprinted_qty=40,
-        counted_printed_qty=50,
+        target_stock_current_qty=0,
+        outstanding_so_qty=20,
         note="opname test",
         user={"email": "admin@test", "name": "Admin"},
     )
     assert result["unchanged"] is False
+    assert result["opname_action"] == "KOREKSI"
     st = result["stock_state"]
-    assert st["total_qty"] == 90
-    assert st["unprinted_qty"] == 40
-    assert st["printed_qty"] == 50
+    assert st["total_qty"] == 20
+    assert st["unprinted_qty"] == 100
+    assert st["printed_qty"] == 0
     assert len(db.stock_movements.inserts) == 1
+    movement = db.stock_movements.inserts[0]
+    assert movement["delta_printed"] == 0
 
     out, alias = aggregate_outstanding_so(
         [{"id": "o1", "line_items": [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}]}],
@@ -352,8 +355,11 @@ async def test_opname_updates_physical_keeps_outstanding(monkeypatch):
         outstanding_bucket=out,
         outstanding_alias=alias,
     )
-    assert rows[0]["physical_qty"] == 90
-    assert rows[0]["stock_current"] == 70  # max(90 - outstanding 20, 0); printed ignored
+    assert rows[0]["physical_qty"] == 20
+    assert rows[0]["stock_current"] == 0
+    assert rows[0]["outstanding_so_qty"] == 20
+    assert rows[0]["unprinted_qty"] == 20  # derived from order/print transactions
+    assert rows[0]["printed_qty"] == 0
 
 
 def test_gr_cancel_guard_mentions_stock_movements():

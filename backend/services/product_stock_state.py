@@ -30,12 +30,15 @@ from services.stock_ledger import (
 COLLECTION = "product_stock_state"
 STATUS_INITIALIZING = "INITIALIZING"
 STATUS_INITIALIZED = "INITIALIZED"
+STATUS_UNINITIALIZED = "UNINITIALIZED"
 HOLDING_TEAM_ROLE = "holding_team"
 HOLDING_TEAM_ONLY_MSG = "Hanya HOLDING_TEAM yang dapat mengkoreksi saldo awal stok fisik"
 LOCAL_CORRECTION_ENVS = frozenset({"local", "development", "preview", "test"})
 LOCAL_MONGO_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 OPENING_CORRECTION_CONFLICT_MSG = "Ada mutasi stok yang sedang berjalan untuk item ini"
 OPENING_CORRECTION_SOURCE = "OPENING_BALANCE_CORRECTION"
+OPENING_VOID_REASON = "Pembatalan saldo awal salah input sebelum go-live"
+OPENING_VOID_SOURCE = "OPENING_BALANCE_VOID"
 
 _init_lock = asyncio.Lock()
 
@@ -137,6 +140,9 @@ async def initialize_opening_balance(
             )
     else:
         total_qty = unprinted_qty + printed_qty
+    initialization_source = str(payload.get("initialization_source") or "MANUAL").strip().upper()
+    initialization_request_id = str(payload.get("client_request_id") or "").strip() or None
+    opening_note = str(payload.get("note") or "").strip()
 
     # 4. Actor details
     actor = None
@@ -149,11 +155,12 @@ async def initialize_opening_balance(
         }
 
     stamp = now_iso()
-    op_mov_id = f"opening_balance:{mid}"
-    event_key = f"opening_balance:{mid}"
 
     async with _init_lock:
         was_newly_created = False
+        was_reinitializing = False
+        opening_generation = 1
+        previous_opening_generation = 1
         # Step A: Check or atomically create state document in INITIALIZING status
         existing_state = await db[COLLECTION].find_one(
             {"$or": [{"_id": mid}, {"master_item_id": mid}]}
@@ -163,6 +170,60 @@ async def initialize_opening_balance(
             # Already initialized?
             if existing_state.get("status") == STATUS_INITIALIZED or existing_state.get("initialized") is True:
                 raise HTTPException(409, "Saldo awal stok fisik sudah ditetapkan")
+
+            if (
+                existing_state.get("status") == STATUS_UNINITIALIZED
+                and existing_state.get("initialized") is False
+                and existing_state.get("voided_opening_movement_id")
+            ):
+                if existing_state.get("pending_event"):
+                    raise HTTPException(409, "Ada mutasi stok yang sedang berjalan untuk item ini")
+                try:
+                    previous_opening_generation = int(existing_state.get("opening_generation") or 1)
+                except (TypeError, ValueError):
+                    previous_opening_generation = 1
+                opening_generation = previous_opening_generation + 1
+                query = {"$or": [{"_id": mid}, {"master_item_id": mid}]}
+                query.update({
+                    "status": STATUS_UNINITIALIZED,
+                    "initialized": False,
+                    "pending_event": None,
+                    "opening_generation": existing_state.get("opening_generation", 1),
+                })
+                claimed = await db[COLLECTION].update_one(
+                    query,
+                    {
+                        "$set": {
+                            "accurate_item_id": aid,
+                            "base_uom": canonical_base_uom,
+                            "total_qty": total_qty,
+                            "unprinted_qty": unprinted_qty,
+                            "printed_qty": printed_qty,
+                            "status": STATUS_INITIALIZING,
+                            "initialized": False,
+                            "initialized_at": stamp,
+                            "initialized_by": actor,
+                            "initialization_source": initialization_source,
+                            "initialization_request_id": initialization_request_id,
+                            "updated_at": stamp,
+                            "opening_generation": opening_generation,
+                            "opening_movement_id": None,
+                        }
+                    },
+                )
+                if not getattr(claimed, "matched_count", 0):
+                    raise HTTPException(409, "Konflik konkurensi pada inisialisasi saldo awal")
+                existing_state = {
+                    **existing_state,
+                    "base_uom": canonical_base_uom,
+                    "total_qty": total_qty,
+                    "unprinted_qty": unprinted_qty,
+                    "printed_qty": printed_qty,
+                    "status": STATUS_INITIALIZING,
+                    "initialized": False,
+                    "opening_generation": opening_generation,
+                }
+                was_reinitializing = True
 
             # In INITIALIZING status: check if retry has matching payload
             if (
@@ -189,8 +250,11 @@ async def initialize_opening_balance(
                 "initialized": False,
                 "initialized_at": stamp,
                 "initialized_by": actor,
+                "initialization_source": initialization_source,
+                "initialization_request_id": initialization_request_id,
                 "updated_at": stamp,
                 "version": 1,
+                "opening_generation": opening_generation,
                 "opening_movement_id": None,
             }
             try:
@@ -216,6 +280,18 @@ async def initialize_opening_balance(
                         "Inisialisasi saldo awal sedang berlangsung dengan nilai berbeda atau saldo awal sudah ditetapkan",
                     )
 
+        if existing_state and not was_reinitializing:
+            try:
+                opening_generation = int(existing_state.get("opening_generation") or 1)
+            except (TypeError, ValueError):
+                opening_generation = 1
+        op_mov_id = (
+            f"opening_balance:{mid}"
+            if opening_generation == 1
+            else f"opening_balance:{mid}:v{opening_generation}"
+        )
+        event_key = op_mov_id
+
         # Step B: Ensure deterministic movement exists in stock_movements
         movement = await db.stock_movements.find_one(
             {"$or": [{"_id": op_mov_id}, {"id": op_mov_id}, {"event_key": event_key}]},
@@ -230,16 +306,30 @@ async def initialize_opening_balance(
                     accurate_item_id=aid,
                     transaction_qty=total_qty,
                     transaction_uom=canonical_base_uom,
-                    source_entity="SALDO_AWAL",
+                    source_entity=initialization_source,
                     destination_entity="GUDANG_UTAMA",
                     reference_number=f"SA-{master.get('item_code') or mid[:8]}",
-                    description=f"Saldo Awal Stok Fisik ({unprinted_qty} Belum Dicetak, {printed_qty} Sudah Dicetak)",
+                    reference_type=(
+                        "stock_opname"
+                        if initialization_source == "STOCK_OPNAME"
+                        else "opening_balance"
+                    ),
+                    description=opening_note or (
+                        f"Saldo Awal Stok Fisik ({unprinted_qty} Belum Dicetak, "
+                        f"{printed_qty} Sudah Dicetak)"
+                    ),
                     delta_unprinted=unprinted_qty,
                     delta_printed=printed_qty,
                     event_key=event_key,
                     user=actor,
                     now=stamp,
                     movement_id=op_mov_id,
+                    change_metadata={
+                        "changed_by": actor,
+                        "changed_at": stamp,
+                        "change_note": opening_note,
+                        "client_request_id": initialization_request_id,
+                    },
                 )
             except DuplicateKeyError:
                 movement = await db.stock_movements.find_one(
@@ -254,6 +344,23 @@ async def initialize_opening_balance(
                         await db[COLLECTION].delete_one({"_id": mid, "status": STATUS_INITIALIZING})
                     except Exception:
                         pass
+                elif was_reinitializing:
+                    await db[COLLECTION].update_one(
+                        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+                        {
+                            "$set": {
+                                "status": STATUS_UNINITIALIZED,
+                                "initialized": False,
+                                "total_qty": 0,
+                                "unprinted_qty": 0,
+                                "printed_qty": 0,
+                                "initialized_at": None,
+                                "initialized_by": None,
+                                "opening_movement_id": None,
+                                "opening_generation": previous_opening_generation,
+                            }
+                        },
+                    )
                 raise HTTPException(500, f"Gagal mencatat mutasi saldo awal di ledger: {str(ex)}") from ex
 
         # Step C: Atomically finalize state to INITIALIZED
@@ -263,6 +370,7 @@ async def initialize_opening_balance(
             "status": STATUS_INITIALIZED,
             "initialized": True,
             "opening_movement_id": mov_id,
+            "opening_generation": opening_generation,
             "updated_at": finalize_stamp,
         }
         try:
@@ -280,6 +388,26 @@ async def initialize_opening_balance(
             if was_newly_created:
                 try:
                     await db[COLLECTION].delete_one({"_id": mid, "status": STATUS_INITIALIZING})
+                except Exception:
+                    pass
+            elif was_reinitializing:
+                try:
+                    await db[COLLECTION].update_one(
+                        {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+                        {
+                            "$set": {
+                                "status": STATUS_UNINITIALIZED,
+                                "initialized": False,
+                                "total_qty": 0,
+                                "unprinted_qty": 0,
+                                "printed_qty": 0,
+                                "initialized_at": None,
+                                "initialized_by": None,
+                                "opening_movement_id": None,
+                                "opening_generation": previous_opening_generation,
+                            }
+                        },
+                    )
                 except Exception:
                     pass
             if comp_error:
@@ -339,6 +467,248 @@ def require_physical_stock_correction_access(
 ) -> None:
     if not can_correct_physical_stock(user, app_env, mongo_url):
         raise HTTPException(403, HOLDING_TEAM_ONLY_MSG)
+
+
+def _movement_is_void(movement: Optional[Dict[str, Any]]) -> bool:
+    return str((movement or {}).get("status") or "").strip().upper() in {"VOID", "CANCELLED"} or bool(
+        (movement or {}).get("voided_at")
+    )
+
+
+async def void_opening_balance(
+    db,
+    master_item_id: str,
+    user: Optional[Dict[str, Any]] = None,
+    *,
+    app_env: Optional[str] = None,
+    mongo_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Void a mistaken, unused opening balance and return the item to uninitialized.
+
+    The original SALDO_AWAL is retained with status=VOID. This is intentionally
+    stricter than a correction: the opening must be the item's only active V2
+    movement and the state must still exactly match that opening movement.
+    """
+    require_physical_stock_correction_access(user, app_env, mongo_url)
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "master_item_id wajib diisi")
+
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0})
+    if not master:
+        master = await db.master_items.find_one({"accurate_item_id": mid}, {"_id": 0})
+        if master:
+            mid = str(master.get("id") or "").strip()
+        else:
+            raise HTTPException(404, f"Produk dengan ID '{mid}' tidak ditemukan")
+
+    raw_state = await db[COLLECTION].find_one(_item_state_filter(mid))
+    if not raw_state:
+        raise HTTPException(409, "Saldo awal stok fisik belum pernah ditetapkan")
+
+    opening_id = str(
+        raw_state.get("opening_movement_id")
+        or raw_state.get("voided_opening_movement_id")
+        or ""
+    ).strip()
+    if not opening_id:
+        raise HTTPException(409, "State tidak memiliki referensi SALDO_AWAL yang dapat dibatalkan")
+
+    opening_query = {
+        "$or": [
+            {"_id": opening_id},
+            {"id": opening_id},
+            {"event_key": opening_id},
+        ]
+    }
+    opening = await db.stock_movements.find_one(opening_query)
+    if not opening or str(opening.get("movement_type") or "").upper() not in {
+        MOVEMENT_SALDO_AWAL,
+        "OPENING_BALANCE",
+    }:
+        raise HTTPException(409, "Movement SALDO_AWAL asli tidak ditemukan")
+
+    if (
+        raw_state.get("status") == STATUS_UNINITIALIZED
+        and raw_state.get("initialized") is False
+        and _movement_is_void(opening)
+    ):
+        return {
+            "idempotent": True,
+            "stock_state": await get_product_stock_state(db, mid),
+            "movement": {k: v for k, v in opening.items() if k != "_id"},
+            "message": "Saldo awal sudah dibatalkan",
+        }
+
+    pending = raw_state.get("pending_event")
+    recovering = (
+        isinstance(pending, dict)
+        and pending.get("source_event_type") == OPENING_VOID_SOURCE
+        and str(pending.get("opening_movement_id") or "") == opening_id
+        and _movement_is_void(opening)
+    )
+    if raw_state.get("pending_event") and not recovering:
+        raise HTTPException(409, "Ada mutasi stok yang sedang berjalan untuk item ini")
+    if not recovering and (
+        raw_state.get("status") != STATUS_INITIALIZED
+        or raw_state.get("initialized") is not True
+    ):
+        raise HTTPException(409, "Saldo awal stok fisik tidak dalam status INITIALIZED")
+
+    item_query = {
+        "$or": [
+            {"master_item_id": mid},
+            {"accurate_item_id": str(master.get("accurate_item_id") or "")},
+        ]
+    }
+    movements = await db.stock_movements.find(item_query).sort("created_at", 1).to_list(None)
+    active_movements = [m for m in movements if not _movement_is_void(m)]
+    if not recovering and (
+        len(active_movements) != 1
+        or str(active_movements[0].get("id") or active_movements[0].get("_id") or "") != opening_id
+    ):
+        raise HTTPException(
+            409,
+            "Rollback ditolak: ada movement V2 lain atau transaksi stock yang bergantung pada SALDO_AWAL",
+        )
+
+    expected_total = safe_float(opening.get("balance_after"), safe_float(opening.get("base_qty")))
+    expected_unprinted = safe_float(opening.get("delta_unprinted"))
+    expected_printed = safe_float(opening.get("delta_printed"))
+    if not recovering and not _qty_matches(
+        raw_state,
+        expected_unprinted,
+        expected_printed,
+        expected_total,
+    ):
+        raise HTTPException(
+            409,
+            "Rollback ditolak: state fisik tidak lagi sama dengan SALDO_AWAL asli",
+        )
+
+    actor = _actor_from_user(user)
+    stamp = now_iso()
+    if recovering:
+        actor = pending.get("actor") or actor
+        stamp = pending.get("voided_at") or stamp
+    else:
+        pending = {
+            "event_id": f"void_opening:{mid}:{opening_id}",
+            "source_event_type": OPENING_VOID_SOURCE,
+            "opening_movement_id": opening_id,
+            "actor": actor,
+            "voided_at": stamp,
+            "void_reason": OPENING_VOID_REASON,
+        }
+        claim_query = _item_state_filter(mid)
+        claim_query.update({
+            "status": STATUS_INITIALIZED,
+            "initialized": True,
+            "pending_event": None,
+            "opening_movement_id": opening_id,
+            "total_qty": raw_state.get("total_qty"),
+            "unprinted_qty": raw_state.get("unprinted_qty"),
+            "printed_qty": raw_state.get("printed_qty"),
+        })
+        claimed = await db[COLLECTION].update_one(
+            claim_query,
+            {"$set": {"pending_event": pending, "updated_at": stamp}},
+        )
+        if not getattr(claimed, "matched_count", 0):
+            raise HTTPException(409, "Rollback ditolak karena state berubah secara bersamaan")
+
+        void_query = dict(opening_query)
+        void_query.update({
+            "movement_type": opening.get("movement_type"),
+            "voided_at": None,
+        })
+        try:
+            voided = await db.stock_movements.update_one(
+                void_query,
+                {
+                    "$set": {
+                        "status": "VOID",
+                        "voided_at": stamp,
+                        "voided_by": actor,
+                        "void_reason": OPENING_VOID_REASON,
+                    }
+                },
+            )
+        except Exception as ex:
+            release_query = _item_state_filter(mid)
+            release_query["pending_event"] = pending
+            await db[COLLECTION].update_one(
+                release_query,
+                {"$set": {"pending_event": None}},
+            )
+            raise HTTPException(500, "Gagal membatalkan movement SALDO_AWAL") from ex
+        if not getattr(voided, "matched_count", 0):
+            latest_opening = await db.stock_movements.find_one(opening_query)
+            if not _movement_is_void(latest_opening):
+                release_query = _item_state_filter(mid)
+                release_query["pending_event"] = pending
+                await db[COLLECTION].update_one(
+                    release_query,
+                    {"$set": {"pending_event": None}},
+                )
+                raise HTTPException(409, "Rollback ditolak karena movement SALDO_AWAL berubah")
+            opening = latest_opening
+        else:
+            opening = await db.stock_movements.find_one(opening_query)
+
+    try:
+        next_version = int(raw_state.get("version") or 0) + 1
+    except (TypeError, ValueError):
+        next_version = 1
+    try:
+        opening_generation = int(raw_state.get("opening_generation") or 1)
+    except (TypeError, ValueError):
+        opening_generation = 1
+    finalize_query = _item_state_filter(mid)
+    finalize_query["pending_event"] = pending
+    finalized = await db[COLLECTION].update_one(
+        finalize_query,
+        {
+            "$set": {
+                "status": STATUS_UNINITIALIZED,
+                "initialized": False,
+                "total_qty": 0,
+                "unprinted_qty": 0,
+                "printed_qty": 0,
+                "opening_movement_id": None,
+                "voided_opening_movement_id": opening_id,
+                "initialized_at": None,
+                "initialized_by": None,
+                "updated_at": stamp,
+                "pending_event": None,
+                "version": next_version,
+                "opening_generation": opening_generation,
+                "last_initialization_void": {
+                    "movement_id": opening_id,
+                    "voided_at": stamp,
+                    "voided_by": actor,
+                    "void_reason": OPENING_VOID_REASON,
+                },
+            }
+        },
+    )
+    if not getattr(finalized, "matched_count", 0):
+        raise HTTPException(
+            500,
+            "SALDO_AWAL sudah berstatus VOID tetapi state belum berhasil direset; ulangi request yang sama",
+        )
+
+    return {
+        "idempotent": recovering,
+        "old_qty": _qty_fields(
+            raw_state.get("unprinted_qty"),
+            raw_state.get("printed_qty"),
+            raw_state.get("total_qty"),
+        ),
+        "stock_state": await get_product_stock_state(db, mid),
+        "movement": {k: v for k, v in (opening or {}).items() if k != "_id"},
+        "message": "Saldo awal salah input berhasil dibatalkan",
+    }
 
 
 def _opening_correction_conflict() -> HTTPException:

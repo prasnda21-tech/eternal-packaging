@@ -144,6 +144,7 @@ from services.current_stock_import import (
 from services.stock_engine_v2 import (
     STOCK_INSUFFICIENT_MSG,
     apply_stock_opname,
+    available_for_item,
     build_current_stock_rows,
     ensure_v2_physical_settings,
     filter_sort_page_v2,
@@ -10618,6 +10619,44 @@ async def master_item_opening_balance_correction_post(
     return res
 
 
+@api_router.post("/master-items/{item_id}/opening-balance/void")
+async def master_item_opening_balance_void_post(
+    item_id: str,
+    user=Depends(current_user),
+):
+    """Void an unused mistaken SALDO_AWAL without deleting its audit record."""
+    from services.product_stock_state import (
+        OPENING_VOID_REASON,
+        require_physical_stock_correction_access,
+        void_opening_balance,
+    )
+
+    app_env = os.environ.get("APP_ENV")
+    mongo_url = os.environ.get("MONGO_URL")
+    require_physical_stock_correction_access(user, app_env, mongo_url)
+    result = await void_opening_balance(
+        db,
+        item_id,
+        user=user,
+        app_env=app_env,
+        mongo_url=mongo_url,
+    )
+    await _write_audit(
+        "opening_balance.void",
+        user,
+        target_email=f"item:{item_id}",
+        before=result.get("old_qty"),
+        after={
+            "state": result.get("stock_state"),
+            "movement_id": (result.get("movement") or {}).get("id"),
+            "movement_status": (result.get("movement") or {}).get("status"),
+            "idempotent": result.get("idempotent"),
+        },
+        note=OPENING_VOID_REASON,
+    )
+    return result
+
+
 @api_router.get("/master-items/{item_id}/mutations")
 async def master_item_mutations_get(
     item_id: str,
@@ -10940,8 +10979,7 @@ async def current_stock_update(
 
 class StockOpnamePayload(BaseModel):
     master_item_id: str
-    counted_unprinted_qty: Any
-    counted_printed_qty: Any
+    target_stock_current_qty: Any
     note: Optional[str] = ""
     client_request_id: Optional[str] = None
 
@@ -10957,11 +10995,12 @@ async def stock_opname_apply(
         os.environ.get("APP_ENV"),
         os.environ.get("MONGO_URL"),
     )
+    stock_row = await available_for_item(db, master_item_id=payload.master_item_id)
     result = await apply_stock_opname(
         db,
         master_item_id=payload.master_item_id,
-        counted_unprinted_qty=payload.counted_unprinted_qty,
-        counted_printed_qty=payload.counted_printed_qty,
+        target_stock_current_qty=payload.target_stock_current_qty,
+        outstanding_so_qty=stock_row.get("outstanding_so_qty"),
         note=payload.note or "",
         user=user,
         client_request_id=payload.client_request_id,
@@ -10973,8 +11012,7 @@ async def stock_opname_apply(
         before=None,
         after={
             "master_item_id": payload.master_item_id,
-            "counted_unprinted_qty": payload.counted_unprinted_qty,
-            "counted_printed_qty": payload.counted_printed_qty,
+            "target_stock_current_qty": payload.target_stock_current_qty,
             "delta_total": result.get("delta_total"),
         },
         note=payload.note or "Stock Opname",
@@ -10987,7 +11025,7 @@ async def stock_opname_items(
     q: str = "",
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     payload = filter_sort_page_v2(rows, q=q, page=1, page_size=200)
     payload["can_apply_stock_opname"] = _current_stock_correction_allowed(user)
     return payload
@@ -10997,7 +11035,7 @@ async def stock_opname_items(
 async def stock_opname_export_template(
     user=Depends(require_perm("current_stock.view")),
 ):
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     content = build_opname_template_xlsx(catalog)
@@ -11023,7 +11061,7 @@ async def stock_opname_import_preview(
     data = await file.read()
     if not data:
         raise HTTPException(400, "File kosong")
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     preview = build_opname_import_preview(
@@ -11052,7 +11090,7 @@ async def stock_opname_import_apply(
         os.environ.get("APP_ENV"),
         os.environ.get("MONGO_URL"),
     )
-    rows, _source, _last = await _load_stock_context()
+    rows, _source, _last = await _load_v2_stock_context()
     masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
     catalog = filter_active_stock_rows(rows, masters)
     validated_rows = revalidate_opname_apply_rows(

@@ -44,7 +44,9 @@ describe("Persediaan live search inventory scope", () => {
 
   test("Stock Saat Ini formula copy follows stock_engine toggle", () => {
     expect(stock).toMatch(/stock_engine === "v2"/);
-    expect(stock).toMatch(/MAX\(Fisik/);
+    expect(stock).toMatch(/MAX\(Stock Fisik/);
+    expect(stock).toMatch(/Qty Pesanan/);
+    expect(stock).not.toMatch(/Outstanding/);
     expect(stock).toMatch(/Qty Saat Ini \+ Pembelian Barang/);
     expect(stock).toMatch(/data-testid="stock-formula"/);
     expect(stock).toMatch(/stock-manual-/);

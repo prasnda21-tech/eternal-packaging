@@ -80,9 +80,17 @@ async def get_latest_balance(db, master_item_id: str, accurate_item_id: Optional
     elif aid and mid:
         q = {"$or": [{"master_item_id": mid}, {"accurate_item_id": aid}]}
 
-    last = await db[COLLECTION].find(q, {"_id": 0}).sort("created_at", -1).limit(1).to_list(1)
-    if last and last[0].get("balance_after") is not None:
-        return safe_float(last[0].get("balance_after", 0))
+    rows = await db[COLLECTION].find(q, {"_id": 0}).sort("created_at", -1).to_list(None)
+    last = next(
+        (
+            row for row in rows
+            if str(row.get("status") or "").strip().upper() not in {"VOID", "CANCELLED"}
+            and not row.get("voided_at")
+        ),
+        None,
+    )
+    if last and last.get("balance_after") is not None:
+        return safe_float(last.get("balance_after", 0))
 
     return None
 

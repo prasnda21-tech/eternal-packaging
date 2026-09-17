@@ -1,9 +1,9 @@
 """Stock Opname Excel import/export for Stock Engine V2.
 
 Template columns:
-  KODE | NAMA BARANG | SATUAN | STOCK SISTEM | STOCK FISIK HASIL OPNAME
+  KODE | NAMA BARANG | STOCK SAAT INI SISTEM | STOCK SAAT INI HASIL OPNAME
 
-Matching: KODE/SKU only (nama/satuan/stock sistem = reference).
+Matching: KODE/SKU only (nama/stock sistem = reference).
 Does not create master items. Does not create a third stock engine —
 applies via apply_stock_opname.
 """
@@ -20,16 +20,15 @@ from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 from services.import_parser import ImportParseError, _read_rows
-from services.stock_engine_v2 import apply_stock_opname, compute_available, qty_num
+from services.stock_engine_v2 import apply_stock_opname, qty_num
 
 BATCH_COLLECTION = "stock_opname_batches"
 
 TEMPLATE_HEADERS = [
     "KODE",
     "NAMA BARANG",
-    "SATUAN",
-    "STOCK SISTEM",
-    "STOCK FISIK HASIL OPNAME",
+    "STOCK SAAT INI SISTEM",
+    "STOCK SAAT INI HASIL OPNAME",
 ]
 
 _HEADER_ALIASES = {
@@ -39,18 +38,14 @@ _HEADER_ALIASES = {
     "item_name": [
         "nama", "nama_barang", "nama_item", "item_name", "name", "namabarang",
     ],
-    "unit": [
-        "satuan", "unit", "uom", "satuan_barang",
-    ],
     "stock_system": [
-        "stock_sistem", "stok_sistem", "stock_system", "fisik_sistem",
-        "stock_fisik_sistem", "qty_sistem",
+        "stock_saat_ini_sistem", "stok_saat_ini_sistem",
+        "stock_sistem", "stok_sistem", "stock_system",
     ],
-    "physical_counted": [
-        "stock_fisik_hasil_opname", "fisik_hasil_opname", "hasil_opname",
-        "stock_fisik_hasil_hitung", "fisik_hasil_hitung", "fisik_opname",
-        "stock_fisik", "fisik", "qty_fisik", "physical_qty", "qty", "stock",
-        "hasil_hitung", "counted_qty", "opname_qty",
+    "stock_current_counted": [
+        "stock_saat_ini_hasil_opname", "stok_saat_ini_hasil_opname",
+        "hasil_opname", "stock_hasil_opname", "stok_hasil_opname",
+        "stock_saat_ini_hasil_hitung", "hasil_hitung", "counted_qty", "opname_qty",
     ],
 }
 
@@ -112,6 +107,7 @@ def filter_active_stock_rows(stock_rows: Iterable[dict], masters: Iterable[dict]
                 "outstanding_so_qty": 0.0,
                 "stock_current": 0.0,
                 "available_qty": 0.0,
+                "initialized": False,
                 "is_active": True,
             }
         else:
@@ -149,23 +145,21 @@ def build_opname_template_xlsx(stock_rows: Iterable[dict]) -> bytes:
         cell.alignment = Alignment(horizontal="left", vertical="center")
 
     for r in stock_rows:
-        phys = r.get("physical_qty")
-        if phys is None:
-            phys = r.get("stock_system")
+        stock_current = r.get("stock_current")
+        if stock_current is None:
+            stock_current = r.get("available_qty")
         ws.append([
             r.get("item_code") or "",
             r.get("item_name") or "",
-            r.get("unit") or "",
-            qty_num(phys) if phys is not None else 0,
-            None,  # user fills counted physical
+            qty_num(stock_current) if stock_current is not None else 0,
+            None,  # user fills target Stock Saat Ini
         ])
-        ws.cell(row=ws.max_row, column=5).protection = Protection(locked=False)
+        ws.cell(row=ws.max_row, column=4).protection = Protection(locked=False)
 
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["B"].width = 36
-    ws.column_dimensions["C"].width = 12
-    ws.column_dimensions["D"].width = 14
-    ws.column_dimensions["E"].width = 28
+    ws.column_dimensions["C"].width = 24
+    ws.column_dimensions["D"].width = 30
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
     ws.protection.sheet = True
@@ -215,7 +209,7 @@ def build_opname_import_preview(
 ) -> dict:
     """Parse XLSX and build preview rows — does not persist.
 
-    Matching is KODE/SKU only. Nama/satuan/stock sistem are reference.
+    Matching is KODE/SKU only. Nama/stock sistem are reference.
     Does not create master items outside catalog.
     """
     try:
@@ -226,12 +220,12 @@ def build_opname_import_preview(
     mapped = [_norm_header(h) for h in headers]
     if "item_code" not in mapped:
         raise HTTPException(400, "Kolom KODE wajib ada di file")
-    if "physical_counted" not in mapped:
-        raise HTTPException(400, "Kolom STOCK FISIK HASIL OPNAME wajib ada di file")
+    if "stock_current_counted" not in mapped:
+        raise HTTPException(400, "Kolom STOCK SAAT INI HASIL OPNAME wajib ada di file")
 
     code_idx = mapped.index("item_code")
     name_idx = mapped.index("item_name") if "item_name" in mapped else None
-    qty_idx = mapped.index("physical_counted")
+    qty_idx = mapped.index("stock_current_counted")
 
     by_code = _index_stock_by_code(stock_rows)
     seen_codes: Dict[str, Tuple[int, int]] = {}
@@ -256,14 +250,14 @@ def build_opname_import_preview(
             "item_name": name_file or "",
             "unit": None,
             "master_item_id": None,
-            "physical_system": None,
-            "physical_opname": None,
+            "stock_current_system": None,
+            "stock_current_opname": None,
             "selisih": None,
             "printed_qty": None,
-            "unprinted_qty_system": None,
-            "unprinted_qty_new": None,
             "outstanding_so_qty": None,
-            "available_new": None,
+            "target_physical_qty": None,
+            "initialized": False,
+            "opname_action": None,
             "status": "OK",
             "message": "",
             "can_apply": False,
@@ -297,10 +291,14 @@ def build_opname_import_preview(
 
         qty, qty_err = _parse_qty(raw_qty)
         mid = stock.get("master_item_id")
-        phys_sys = qty_num(stock.get("physical_qty"))
+        stock_current_system = qty_num(
+            stock.get("stock_current")
+            if stock.get("stock_current") is not None
+            else stock.get("available_qty")
+        )
         printed = qty_num(stock.get("printed_qty"))
-        unprinted_sys = qty_num(stock.get("unprinted_qty"))
         outstanding = qty_num(stock.get("outstanding_so_qty"))
+        initialized = bool(stock.get("initialized"))
         master_name = stock.get("item_name") or ""
 
         base.update({
@@ -309,10 +307,11 @@ def build_opname_import_preview(
             "item_name": master_name or name_file or "",
             "item_code": stock.get("item_code") or code,
             "unit": stock.get("unit") or "",
-            "physical_system": phys_sys,
+            "stock_current_system": stock_current_system,
             "printed_qty": printed,
-            "unprinted_qty_system": unprinted_sys,
             "outstanding_so_qty": outstanding,
+            "initialized": initialized,
+            "opname_action": "KOREKSI" if initialized else "SALDO_AWAL",
         })
         if name_file and master_name and name_file.strip().lower() != master_name.strip().lower():
             base["message"] = "Nama file diabaikan — memakai nama master sistem"
@@ -324,30 +323,17 @@ def build_opname_import_preview(
             continue
 
         assert qty is not None
-        new_unprinted = qty - printed
-        available_new = compute_available(qty, outstanding, printed)
-        belum_new = max(outstanding - printed, 0.0) if printed is not None else None
-        selisih = qty - phys_sys
+        target_physical = qty + outstanding
+        selisih = qty - stock_current_system
 
         base.update({
-            "physical_opname": qty,
+            "stock_current_opname": qty,
             "selisih": selisih,
-            "unprinted_qty_new": new_unprinted,
-            "available_new": available_new,
+            "target_physical_qty": target_physical,
             "client_request_id": f"{batch_request_id}:{key}",
         })
 
-        if new_unprinted < -1e-9:
-            base["status"] = "BLOCK"
-            base["message"] = (
-                "Data tidak konsisten: STOCK FISIK HASIL OPNAME "
-                f"({qty}) < SUDAH DICETAK sistem ({printed})"
-            )
-            base["can_apply"] = False
-            preview_rows.append(base)
-            continue
-
-        if abs(selisih) < 1e-9 and abs(new_unprinted - unprinted_sys) < 1e-9:
+        if initialized and abs(selisih) < 1e-9:
             base["status"] = "UNCHANGED"
             base["message"] = "Tidak ada selisih"
             base["can_apply"] = False
@@ -376,10 +362,7 @@ def build_opname_import_preview(
         "unchanged_count": unchanged_count,
         "can_process": ok_count > 0,
         "stock_engine": "v2",
-        "formula": (
-            "available_new = max(physical_new - outstanding_so, 0); "
-            "unprinted_new = physical_new - printed_qty"
-        ),
+        "formula": "target_physical = target_stock_saat_ini + qty_pesanan",
     }
 
 
@@ -403,9 +386,8 @@ def revalidate_opname_apply_rows(
         ws.append([
             row.get("item_code") or "",
             row.get("item_name") or "",
-            row.get("unit") or "",
-            row.get("physical_system"),
-            row.get("physical_opname"),
+            row.get("stock_current_system"),
+            row.get("stock_current_opname"),
         ])
     buf = BytesIO()
     wb.save(buf)
@@ -471,22 +453,12 @@ async def apply_opname_import_batch(
 
     for row in to_apply:
         mid = str(row.get("master_item_id") or "").strip()
-        physical_new = qty_num(row.get("physical_opname"))
-        printed = qty_num(row.get("printed_qty"))
-        new_unprinted = physical_new - printed
-        if new_unprinted < -1e-9:
-            failures.append({
-                "item_code": row.get("item_code"),
-                "master_item_id": mid,
-                "message": "Blocked: physical < printed",
-            })
-            continue
         try:
             result = await apply_stock_opname(
                 db,
                 master_item_id=mid,
-                counted_unprinted_qty=new_unprinted,
-                counted_printed_qty=printed,
+                target_stock_current_qty=row.get("stock_current_opname"),
+                outstanding_so_qty=row.get("outstanding_so_qty"),
                 note=note or f"Import Opname batch {batch_id[:8]} · {filename}",
                 user=user,
                 client_request_id=row.get("client_request_id"),
@@ -494,9 +466,10 @@ async def apply_opname_import_batch(
             successes.append({
                 "item_code": row.get("item_code"),
                 "master_item_id": mid,
-                "physical_opname": physical_new,
-                "available_new": row.get("available_new"),
+                "stock_current_opname": row.get("stock_current_opname"),
+                "target_physical_qty": row.get("target_physical_qty"),
                 "unchanged": bool(result.get("unchanged")),
+                "opname_action": result.get("opname_action"),
                 "message": result.get("message"),
             })
         except HTTPException as e:

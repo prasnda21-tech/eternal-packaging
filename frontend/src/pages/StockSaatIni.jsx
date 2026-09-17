@@ -159,7 +159,7 @@ export default function StockSaatIni() {
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
           <p className="subhead" data-testid="stock-formula">
             {data?.stock_engine === "v2"
-              ? "Stock Saat Ini = MAX(Fisik − Outstanding SO, 0). Belum Dicetak = MAX(Outstanding − Sudah Dicetak, 0). Cetak hanya pindah bucket — tidak memotong Available dua kali."
+              ? "Stock Saat Ini = MAX(Stock Fisik − Qty Pesanan, 0). Belum Dicetak = MAX(Qty Pesanan − Sudah Dicetak, 0). Sudah Dicetak hanya informasi dan tidak memotong stock dua kali."
               : "(Qty Saat Ini + Pembelian Barang) − Qty PO − Qty Cetak Operator"}
           </p>
         </div>
@@ -238,7 +238,7 @@ export default function StockSaatIni() {
                     <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("physical_qty")}>Stock Fisik</button>
                   </th>
                   <th className="col-fit num">
-                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan / Outstanding</button>
+                    <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("outstanding_so_qty")}>Qty Pesanan</button>
                   </th>
                   <th className="col-fit num">Belum Dicetak</th>
                   <th className="col-fit num">Sudah Dicetak</th>
