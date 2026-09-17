@@ -484,6 +484,80 @@ describe("deliveryProof helpers", () => {
     })]);
   });
 
+  test("legacy retired line_id falls back to deterministic line_idx for every SJ", () => {
+    const sj1 = {
+      id: "sj-legacy-1",
+      number: "SJ/LEGACY/1",
+      lines: [{ line_idx: 0, line_id: "retired-sj-line-1", qty: 2000 }],
+      total_qty: 2000,
+    };
+    const sj2 = {
+      id: "sj-legacy-2",
+      number: "SJ/LEGACY/2",
+      lines: [{ line_idx: 0, line_id: "retired-sj-line-2", qty: 1000 }],
+      total_qty: 1000,
+    };
+    const order = {
+      line_items: [{ line_id: "current-po-line", name: "Cup", quantity: 3000 }],
+      shipments: [sj1, sj2],
+      loading_confirmations: [
+        {
+          id: "load-legacy-1",
+          shipment_id: "sj-legacy-1",
+          lines: [{ line_idx: 0, line_id: "retired-loading-line-1", qty: 2000 }],
+        },
+        {
+          id: "load-legacy-2",
+          shipment_id: "sj-legacy-2",
+          lines: [{ line_idx: 0, line_id: "retired-loading-line-2", qty: 1000 }],
+        },
+      ],
+    };
+
+    expect(deliveryBatchPhotoReadiness(order, sj1)).toEqual(expect.objectContaining({
+      allowed: true,
+      loadedTotal: 2000,
+      requiredTotal: 2000,
+    }));
+    expect(deliveryBatchPhotoReadiness(order, sj2)).toEqual(expect.objectContaining({
+      allowed: true,
+      loadedTotal: 1000,
+      requiredTotal: 1000,
+    }));
+  });
+
+  test("legacy fallback stays isolated by shipment and ignores cancelled Loading", () => {
+    const shipment = {
+      id: "sj-open",
+      number: "SJ/OPEN",
+      lines: [{ line_idx: 0, line_id: "retired-sj-line", qty: 2000 }],
+      total_qty: 2000,
+    };
+    const order = {
+      line_items: [{ line_id: "current-po-line", name: "Cup", quantity: 2000 }],
+      shipments: [shipment],
+      loading_confirmations: [
+        {
+          id: "wrong-sj",
+          shipment_id: "sj-other",
+          lines: [{ line_idx: 0, line_id: "retired-loading-line", qty: 2000 }],
+        },
+        {
+          id: "cancelled-current-sj",
+          shipment_id: "sj-open",
+          cancelled: true,
+          lines: [{ line_idx: 0, line_id: "retired-loading-line", qty: 2000 }],
+        },
+      ],
+    };
+
+    expect(deliveryBatchPhotoReadiness(order, shipment)).toEqual(expect.objectContaining({
+      allowed: false,
+      loadedTotal: 0,
+      requiredTotal: 2000,
+    }));
+  });
+
   test("3-SJ tagged proofs stay isolated by shipment_id", () => {
     const order = demoMultiSjPhotoOrder({
       delivery_proofs: [
