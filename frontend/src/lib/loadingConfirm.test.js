@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet } from "./loadingConfirm";
 import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
 
@@ -811,5 +811,54 @@ describe("Loading confirm helpers", () => {
     const draft = validateLoadingDraftLines([{ line_idx: 0, qty: "1000" }], lines);
     expect(draft.ok).toBe(false);
     expect(String(draft.error || "")).toMatch(/Sisa fisik tidak mencukupi/);
+  });
+
+  test("superseded SJ is not a loading file or task", () => {
+    const order = {
+      line_items: [{ name: "Cup", quantity: 5000, production_process: "print" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 5000 }] },
+      shipments: [
+        { id: "sj-1", number: "SJ/1", lines: [{ line_idx: 0, qty: 1000 }] },
+        { id: "sj-2", number: "SJ/1_2", lines: [{ line_idx: 0, qty: 4000 }] },
+        { id: "sj-3", number: "SJ/1_3", status: "superseded", cancelled: true, superseded_by_shipment_id: "sj-2", lines: [{ line_idx: 0, qty: 1000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-1", shipment_id: "sj-1", sj_number: "SJ/1", name: "1.pdf" },
+        { id: "sj-2", shipment_id: "sj-2", sj_number: "SJ/1_2", name: "2.pdf" },
+        { id: "sj-3", shipment_id: "sj-3", sj_number: "SJ/1_3", name: "3.pdf", status: "superseded", cancelled: true },
+      ],
+      loading_confirmations: [
+        { id: "c1", surat_jalan_id: "sj-1", shipment_id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] },
+        { id: "c2", surat_jalan_id: "sj-2", shipment_id: "sj-2", lines: [{ line_idx: 0, qty: 4000 }] },
+      ],
+    };
+    expect(sjFilesForLoading(order).map((f) => f.id)).toEqual(["sj-1", "sj-2"]);
+    expect(nextActionableLoadingSjId(order, "")).toBe("");
+    const ids = selectedSjIdentitySet(order, "sj-1");
+    expect(ids.has("sj-1")).toBe(true);
+    expect(ids.has("sj-2")).toBe(false);
+    expect(ids.has("sj-3")).toBe(false);
+  });
+
+  test("one leftover loading SJ auto-opens; multiple shows picker", () => {
+    const one = {
+      line_items: [{ name: "Cup", quantity: 1000, production_process: "print" }],
+      packing_info: { lines: [{ line_idx: 0, packed_qty: 1000 }] },
+      shipments: [{ id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] }],
+      surat_jalan_files: [{ id: "sj-1", shipment_id: "sj-1", sj_number: "SJ/1" }],
+    };
+    expect(nextActionableLoadingSjId(one, "")).toBe("sj-1");
+    const two = {
+      ...one,
+      shipments: [
+        { id: "sj-1", lines: [{ line_idx: 0, qty: 1000 }] },
+        { id: "sj-2", lines: [{ line_idx: 0, qty: 4000 }] },
+      ],
+      surat_jalan_files: [
+        { id: "sj-1", shipment_id: "sj-1", sj_number: "SJ/1" },
+        { id: "sj-2", shipment_id: "sj-2", sj_number: "SJ/1_2" },
+      ],
+    };
+    expect(nextActionableLoadingSjId(two, "")).toBe("");
   });
 });

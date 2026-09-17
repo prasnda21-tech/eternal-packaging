@@ -14,6 +14,7 @@ from urllib.parse import quote
 from quantity_rules import (
     is_fully_delivered,
     qty_delivered,
+    shipment_is_active,
     shipments_stored,
     _safe_int,
 )
@@ -40,6 +41,11 @@ _PUBLIC_FILE_KEYS = (
     "legacy",
     "source",
     "source_type",
+    "status",
+    "active",
+    "cancelled",
+    "supersedes_shipment_id",
+    "superseded_by_shipment_id",
 )
 
 
@@ -157,6 +163,9 @@ def file_for_shipment(order: dict, shipment: dict) -> Optional[dict]:
 def shipment_is_schedule_ready(order: dict, shipment: dict) -> bool:
     """Valid active SJ: stored file + >= 1 valid item/qty row. Legacy incomplete is not ready."""
     if not isinstance(shipment, dict):
+        return False
+    from quantity_rules import shipment_is_active
+    if not shipment_is_active(shipment):
         return False
     f = file_for_shipment(order, shipment)
     if not f or not file_has_blob(f):
@@ -302,6 +311,10 @@ def history_entries(order: dict) -> List[dict]:
             "has_file": has_file,
             "legacy_incomplete": bool(has_file and not has_qty) or bool(has_qty and not has_file),
             "schedule_ready": shipment_is_schedule_ready(order, sh),
+            "status": str(sh.get("status") or "").strip() or None,
+            "supersedes_shipment_id": sh.get("supersedes_shipment_id"),
+            "superseded_by_shipment_id": sh.get("superseded_by_shipment_id"),
+            "active": shipment_is_active(sh),
         })
     for f in file_entries(order):
         fid = _safe_str(f.get("id"))

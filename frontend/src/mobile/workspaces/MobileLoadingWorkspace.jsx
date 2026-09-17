@@ -6,6 +6,7 @@ import { newActionId } from "../../lib/workflowEntries";
 import {
   loadingPoLines,
   sjFilesForLoading,
+  nextActionableLoadingSjId,
   loadingVerificationStatus,
   sjLinesForDiscrepancy,
   discrepancyDiff,
@@ -26,9 +27,11 @@ function fmt(n) {
 
 export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, shipmentId }) {
   const { hasPerm } = useAuth();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const sjFiles = sjFilesForLoading(order);
-  const activeSj = matchLoadingSjFile(sjFiles, shipmentId || params.get("shipment"));
+  const hinted = String(shipmentId || params.get("shipment") || "").trim();
+  const resolvedId = hinted || nextActionableLoadingSjId(order, "");
+  const activeSj = matchLoadingSjFile(sjFiles, resolvedId);
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const avail = loadingAvailability(order, poLines, sjFiles);
@@ -118,6 +121,26 @@ export default function MobileLoadingWorkspace({ order, canEdit, onUpdated, ship
     <section data-testid="mobile-ws-loading" className="mop-ws-role mop-ws-role--loading">
       <div className="mop-ws-header"><h2>LOADING</h2></div>
       <p className="mop-card-meta" data-testid="mobile-loading-subtitle">Verifikasi Kesesuaian SJ</p>
+      {sjFiles.length > 1 && !activeSj && (
+        <label data-testid="mobile-loading-sj-picker" className="mop-card-meta" style={{ display: "grid", gap: 6, marginBottom: 10 }}>
+          <span>Pilih Surat Jalan</span>
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              const next = new URLSearchParams(params);
+              const sid = String(e.target.value || "").trim();
+              if (sid) next.set("shipment", sid);
+              else next.delete("shipment");
+              setParams(next);
+            }}
+          >
+            <option value="">Pilih Surat Jalan</option>
+            {sjFiles.map((f) => (
+              <option key={f.id} value={f.shipment_id || f.id}>{f.sj_number || f.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <MobileStatusBadge status={status} />
       <div className="mop-card-meta" data-testid="mobile-loading-verification">
         {verification?.label || "Menunggu Verifikasi"}

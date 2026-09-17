@@ -376,6 +376,8 @@ describe("deliveryProof helpers", () => {
     expect(pengirimanSjOptions(order).every((o) => !String(o.label).includes(o.id) || o.label === o.number || o.label.startsWith(o.number))).toBe(true);
     expect(pengirimanSjDisplayLabel({ number: "SJ/2026/09/07/000031 3", id: "3ab43353-5705-476b-97fd-f3beb1b1314c" })).toBe("SJ/2026/09/07/000031 3");
     expect(pengirimanSjDisplayLabel({ number: "SJ/2026/09/07/000031 3", id: "3ab43353-5705-476b-97fd-f3beb1b1314c" })).not.toContain("3ab43353");
+    expect(pengirimanSjDisplayLabel({ number: "SJ/2026/09/12/000002", id: "c992dfa4-8c67-496c-87e7-bf7eb22a0ea6" })).toBe("SJ/2026/09/12/000002");
+    expect(pengirimanSjDisplayLabel({ number: "SJ/2026/09/12/000002", id: "c992dfa4-8c67-496c-87e7-bf7eb22a0ea6" })).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
     expect(activeDeliveryBatch(order).id).toBe("sj-2");
     expect(canUploadDeliveryBatchPhoto(order)).toBe(false);
     expect(canUploadDeliveryBatchPhoto(order, sj1)).toBe(true);
@@ -419,7 +421,8 @@ describe("deliveryProof helpers", () => {
     expect(selectedPengirimanShipmentId(order, "sj-1")).toBe("sj-1");
     expect(selectedPengirimanShipmentId(order, "sj-2")).toBe("sj-2");
     expect(selectedPengirimanShipmentId(order, "missing")).toBe("");
-    expect(selectedPengirimanShipmentId(order, "")).toBe("");
+    // One leftover SJ auto-opens; delivered sibling stays visible, not actionable.
+    expect(selectedPengirimanShipmentId(order, "")).toBe("sj-2");
     const single = { shipments: [open] };
     expect(selectedPengirimanShipmentId(single, "")).toBe("sj-2");
     expect(selectedPengirimanShipmentId(single, "missing")).toBe("");
@@ -546,5 +549,27 @@ describe("deliveryProof helpers", () => {
       }],
     };
     expect(canUploadDeliveryBatchPhoto(o)).toBe(true);
+  });
+
+  test("superseded SJ is hidden from pengiriman options; leftover auto-selected", () => {
+    const order = {
+      shipments: [
+        { id: "sj-1", number: "SJ1", lines: [{ line_idx: 0, qty: 1000 }], total_qty: 1000 },
+        { id: "sj-2", number: "SJ2", delivered_at: "t", delivery_status: "Terkirim", lines: [{ line_idx: 0, qty: 4000 }], total_qty: 4000 },
+        { id: "sj-3", number: "SJ3", status: "superseded", cancelled: true, superseded_by_shipment_id: "sj-2", lines: [{ line_idx: 0, qty: 1000 }], total_qty: 1000 },
+      ],
+      delivery_confirmations: [{ id: "d2", shipment_id: "sj-2", qty: 4000 }],
+      delivery_proofs: [
+        { id: "p1", shipment_id: "sj-2" },
+        { id: "p2", shipment_id: "sj-2" },
+      ],
+    };
+    const opts = pengirimanSjOptions(order);
+    expect(opts.map((o) => o.id)).toEqual(["sj-1", "sj-2"]);
+    expect(opts.find((o) => o.id === "sj-2").delivered).toBe(true);
+    expect(selectedPengirimanShipmentId(order, "")).toBe("sj-1");
+    expect(proofsForShipment(order, order.shipments[0])).toHaveLength(0);
+    expect(proofsForShipment(order, order.shipments[1])).toHaveLength(2);
+    expect(isPengirimanMutationLocked(order, order.shipments[1])).toBe(true);
   });
 });

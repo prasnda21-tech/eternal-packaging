@@ -230,8 +230,10 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     );
     const select = container.querySelector('[data-testid="pengiriman-sj-select"]');
     expect(select.value).toBe("demo-multisj-photo-002");
+    expect(container.querySelector('[data-testid="pengiriman-selected-sj-id"]').getAttribute("data-shipment-id"))
+      .toBe("demo-multisj-photo-002");
     expect(container.querySelector('[data-testid="pengiriman-selected-sj-id"]').textContent)
-      .toContain("demo-multisj-photo-002");
+      .not.toContain("demo-multisj-photo-002");
     expect(container.querySelector('[data-testid="pengiriman-selected-sj-number"]').textContent)
       .toContain("DEMO-MULTISJ-PHOTO-002");
     expect(container.querySelector('[data-testid="pengiriman-sj-required"]')).toBeFalsy();
@@ -245,8 +247,52 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     );
     expect(container.querySelector('[data-testid="pengiriman-sj-select"]').value)
       .toBe("demo-multisj-photo-003");
+    expect(container.querySelector('[data-testid="pengiriman-selected-sj-id"]').getAttribute("data-shipment-id"))
+      .toBe("demo-multisj-photo-003");
     expect(container.querySelector('[data-testid="pengiriman-selected-sj-id"]').textContent)
-      .toContain("demo-multisj-photo-003");
+      .not.toContain("demo-multisj-photo-003");
+    unmount();
+  });
+
+  test("operational dropdown and card hide shipment UUID while select value stays bound", () => {
+    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    const sj1Id = "c992dfa4-8c67-496c-87e7-bf7eb22a0ea6";
+    const sj2Id = "ee1e3067-33f2-4623-8796-161c76db6690";
+    const order = {
+      id: "258b4eac-d91a-4623-b206-d38c2c2e4d2f",
+      po_number: "PO/2026/09/12/000002",
+      customer: "ES TEH NUMANI",
+      delivery_status: "Sebagian Terkirim",
+      line_items: [{ name: "22 oz Datar 8 gr Berlian", quantity: 5000, line_id: "L0", production_process: "print" }],
+      shipments: [
+        { id: sj1Id, number: "SJ/2026/09/12/000002", delivery_date: "2026-09-16", lines: [{ line_idx: 0, line_id: "L0", name: "22 oz Datar 8 gr Berlian", qty: 1000 }], total_qty: 1000 },
+        { id: sj2Id, number: "SJ/2026/09/12/000002_2", delivery_date: "2026-09-16", delivered_at: "t", delivery_status: "Terkirim", lines: [{ line_idx: 0, line_id: "L0", name: "22 oz Datar 8 gr Berlian", qty: 4000 }], total_qty: 4000 },
+      ],
+      loading_confirmations: [
+        { id: "c1", surat_jalan_id: sj1Id, lines: [{ line_idx: 0, qty: 1000 }] },
+        { id: "c2", surat_jalan_id: sj2Id, lines: [{ line_idx: 0, qty: 4000 }] },
+      ],
+      delivery_confirmations: [{ id: "d2", shipment_id: sj2Id, qty: 4000 }],
+      delivery_proofs: [],
+    };
+    setSearch(`?shipment=${sj1Id}`);
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    const select = container.querySelector('[data-testid="pengiriman-sj-select"]');
+    expect(select.value).toBe(sj1Id);
+    const optionTexts = [...select.options].map((o) => o.textContent);
+    expect(optionTexts.some((t) => t.includes("SJ/2026/09/12/000002"))).toBe(true);
+    expect(optionTexts.every((t) => !UUID_RE.test(t))).toBe(true);
+    const card = container.querySelector('[data-testid="pengiriman-selected-sj-card"]');
+    expect(UUID_RE.test(card.textContent)).toBe(false);
+    expect(container.querySelector('[data-testid="pengiriman-selected-sj-number"]').textContent)
+      .toContain("SJ/2026/09/12/000002");
+    expect(container.querySelector('[data-testid="pengiriman-selected-sj-id"]').getAttribute("data-shipment-id"))
+      .toBe(sj1Id);
+    expect(container.querySelector('[data-testid="pengiriman-selected-sj-qty"]').textContent).toMatch(/1\.000/);
+    expect(container.querySelector('[data-testid="pengiriman-selected-ready-status"]').textContent)
+      .toMatch(/Siap dikirim/i);
     unmount();
   });
 

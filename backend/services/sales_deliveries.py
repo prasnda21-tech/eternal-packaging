@@ -374,6 +374,11 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
     # Fetch all existing sales deliveries for this exact PO sorted by shipment_index
     deliveries_cursor = db.sales_deliveries.find({"po_id": po_id, "is_cancelled": {"$ne": True}}, {"_id": 0}).sort("shipment_index", 1)
     existing_deliveries = await deliveries_cursor.to_list(1000)
+    existing_deliveries = [
+        d for d in existing_deliveries
+        if str((d or {}).get("status") or "").strip().lower() not in ("superseded", "cancelled", "deleted")
+        and not (d or {}).get("cancelled")
+    ]
 
     # Accumulate shipped quantities per line_idx / line_id
     shipped_by_line_idx: Dict[int, int] = {}

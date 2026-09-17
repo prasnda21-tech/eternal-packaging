@@ -297,6 +297,8 @@ from quantity_rules import (
     requires_printing as _qr_requires_printing,
     shipment_line_breakdown as _qr_shipment_line_breakdown,
     shipments_stored as _qr_shipments_stored,
+    shipment_is_active as _qr_shipment_is_active,
+    shipment_qty_frozen_reason as _qr_shipment_qty_frozen_reason,
     surat_jalan_status_semantic as _qr_surat_jalan_status_semantic,
     validate_delivery_qty as _qr_validate_delivery_qty,
     validate_helper_prepared_qty as _qr_validate_helper_prepared_qty,
@@ -1820,6 +1822,7 @@ _DERIVED_ORDER_KEYS = (
     "eligible_delivery_qty",
     "effective_delivery_date", "delivery_schedule_status",
     "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
+    "sj_integrity",
 )
 
 
@@ -1847,6 +1850,11 @@ def _attach_quantity_snapshot(order: dict) -> None:
     order["loading_qty_status"] = _qr_loading_status_semantic(order)
     order["loading_verification_status"] = _qr_loading_verification_status(order)
     order["eligible_delivery_qty"] = _qr_eligible_delivery_qty(order)
+    try:
+        from services.sj_integrity import order_integrity_summary
+        order["sj_integrity"] = order_integrity_summary(order)
+    except Exception:
+        order["sj_integrity"] = None
     attach_delivery_history(order)
     _attach_workflow_snapshot(order)
 
@@ -5298,7 +5306,8 @@ async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Dep
             or order.get("delivery_note_number")
             or derive_base_sj_number(str(order.get("po_number") or ""))
         )
-        existing = _qr_shipments_stored(order)
+        existing_all = _qr_shipments_stored(order)
+        existing = [sh for sh in existing_all if _qr_shipment_is_active(sh)]
         explicit_lines = _shipment_line_payload(payload.lines) if payload.lines else None
         creating_new = bool(explicit_lines) or not existing
         if creating_new:
@@ -5307,16 +5316,19 @@ async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Dep
             if err:
                 raise HTTPException(400, err)
             stamp = now_iso()
-            record = _qr_apply_shipment_record(
-                order,
-                number=number,
-                lines=updates,
-                source=_QR_SRC_MANUAL,
-                actor=user,
-                notes=payload.notes,
-                shipment_id=str(uuid.uuid4()),
-                created_at=stamp,
-            )
+            try:
+                record = _qr_apply_shipment_record(
+                    order,
+                    number=number,
+                    lines=updates,
+                    source=_QR_SRC_MANUAL,
+                    actor=user,
+                    notes=payload.notes,
+                    shipment_id=str(uuid.uuid4()),
+                    created_at=stamp,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
             if not record.get("id"):
                 record["id"] = str(uuid.uuid4())
                 order["shipments"][-1]["id"] = record["id"]
@@ -5324,6 +5336,11 @@ async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Dep
             add_timeline(order, 12, user, note=f"Surat Jalan dibuat: {number}")
         else:
             latest = existing[-1]
+            freeze_err = _qr_shipment_qty_frozen_reason(order, latest)
+            if freeze_err:
+                if str(latest.get("number") or "").strip() != str(number or "").strip() or payload.lines:
+                    raise HTTPException(400, freeze_err)
+                return
             latest["number"] = number
             if payload.notes:
                 latest["notes"] = payload.notes
@@ -5428,17 +5445,21 @@ async def import_surat_jalan(order_id: str, payload: ImportSuratJalanPayload, us
             if str(sh.get("accurate_shipment_id") or "") == acc_id:
                 existing = sh
                 break
-        record = _qr_apply_shipment_record(
-            order,
-            number=number or (existing or {}).get("number") or acc_id,
-            lines=lines,
-            source=_QR_SRC_ACCURATE,
-            actor=user,
-            accurate_shipment_id=acc_id,
-            notes=notes,
-            shipment_id=(existing or {}).get("id") or str(uuid.uuid4()),
-            created_at=stamp,
-        )
+        record = None
+        try:
+            record = _qr_apply_shipment_record(
+                order,
+                number=number or (existing or {}).get("number") or acc_id,
+                lines=lines,
+                source=_QR_SRC_ACCURATE,
+                actor=user,
+                accurate_shipment_id=acc_id,
+                notes=notes,
+                shipment_id=(existing or {}).get("id") or str(uuid.uuid4()),
+                created_at=stamp,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         if not record.get("id"):
             record["id"] = (existing or {}).get("id") or str(uuid.uuid4())
             for sh in order.get("shipments") or []:

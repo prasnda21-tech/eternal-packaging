@@ -71,6 +71,16 @@ describe("Surat Jalan item/qty helpers", () => {
     expect(hist.map((f) => f.id || f.file_id)).toEqual(["keep"]);
   });
 
+  test("history keeps superseded SJ status for audit trail", () => {
+    const hist = sjHistory({
+      surat_jalan_files: [
+        { id: "sj-3", name: "SJ3.pdf", status: "superseded", cancelled: true, shipment_id: "sj-3", sj_number: "SJ/1_3" },
+      ],
+    });
+    expect(hist[0].status).toBe("superseded");
+    expect(hist[0].cancelled).toBe(true);
+  });
+
   test("empty row helper", () => {
     expect(emptySjLine()).toEqual({ line_idx: "", qty: "" });
   });

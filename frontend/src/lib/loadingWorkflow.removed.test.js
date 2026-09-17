@@ -29,7 +29,7 @@ describe("Loading restored as SJ qty confirmation", () => {
     expect(panel).toMatch(/Lihat Surat Jalan|loading-sj-lihat/);
     expect(panel).toMatch(/loading-sj-number/);
     expect(panel).toMatch(/selectedLoadingSjOrNull/);
-    expect(panel).toMatch(/nextSelectedLoadingSjId/);
+    expect(panel).toMatch(/nextActionableLoadingSjId/);
     expect(panel).not.toMatch(/files\.find\(\(f\) => f\.id === sjId\) \|\| files\[0\]/);
     expect(panel).not.toMatch(/setSjId\(files\[0\]\?\.id \|\| ""\)/);
   });

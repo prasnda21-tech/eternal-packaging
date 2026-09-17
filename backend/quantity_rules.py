@@ -901,6 +901,21 @@ SHIPMENT_SOURCE_ACCURATE = "accurate"
 SJ_STATUS_PENDING = "pending"
 SJ_STATUS_PARTIAL = "partial"
 SJ_STATUS_COMPLETED = "completed"
+SJ_STATUS_CANCELLED = "cancelled"
+SJ_STATUS_SUPERSEDED = "superseded"
+INACTIVE_SJ_STATUSES = frozenset({SJ_STATUS_CANCELLED, SJ_STATUS_SUPERSEDED, "deleted"})
+
+MSG_SJ_FROZEN_LOADING = (
+    "Surat Jalan sudah memiliki konfirmasi Loading — qty dan line dibekukan. "
+    "Upload/reimport identik bersifat idempotent; konten berbeda ditolak."
+)
+MSG_SJ_FROZEN_DELIVERED = (
+    "Surat Jalan sudah Terkirim — qty, line, shipment_id, dan dokumen tidak dapat diubah."
+)
+MSG_SJ_ALLOCATION_EXCEEDED = (
+    "Jumlah qty Surat Jalan aktif ({active}) + pengajuan ({requested}) "
+    "melebihi qty PO ({po})."
+)
 
 
 def _line_count(order: dict) -> int:
@@ -935,8 +950,57 @@ def shipments_stored(order: dict) -> list:
     return list(raw) if isinstance(raw, list) else []
 
 
+def shipment_is_active(sh: Optional[dict]) -> bool:
+    """Active allocation SJ: not cancelled, superseded, or deleted."""
+    if not isinstance(sh, dict):
+        return False
+    if sh.get("cancelled") or sh.get("is_cancelled") or sh.get("deleted") or sh.get("is_deleted"):
+        return False
+    if sh.get("superseded") or str(sh.get("superseded_by_shipment_id") or "").strip():
+        return False
+    st = str(sh.get("status") or sh.get("sj_status") or "").strip().lower()
+    return st not in INACTIVE_SJ_STATUSES
+
+
+def active_shipments_stored(order: dict) -> list:
+    return [sh for sh in shipments_stored(order) if shipment_is_active(sh)]
+
+
+def canonical_shipment_id(sh: Optional[dict]) -> str:
+    if not isinstance(sh, dict):
+        return ""
+    return str(sh.get("id") or "").strip()
+
+
+def shipment_lines_fingerprint(lines) -> tuple:
+    rows = []
+    for ln in lines or []:
+        if not isinstance(ln, dict):
+            continue
+        idx = _safe_int(ln.get("line_idx"), default=-1)
+        qty = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        lid = str(ln.get("line_id") or "").strip()
+        aid = str(ln.get("accurate_item_id") or "").strip()
+        rows.append((idx, qty, lid, aid))
+    return tuple(sorted(rows))
+
+
+def shipment_qty_total(sh: Optional[dict]) -> int:
+    if not isinstance(sh, dict):
+        return 0
+    lines = sh.get("lines")
+    if isinstance(lines, list) and lines:
+        total = 0
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+        return total
+    return max(0, _safe_int(sh.get("total_qty") or sh.get("qty") or 0))
+
+
 def has_shipment_line_quantities(order: dict) -> bool:
-    for sh in shipments_stored(order):
+    for sh in active_shipments_stored(order):
         lines = sh.get("lines") or []
         if isinstance(lines, list) and any(_safe_int(it.get("qty") or it.get("quantity")) > 0 for it in lines):
             return True
@@ -946,10 +1010,11 @@ def has_shipment_line_quantities(order: dict) -> bool:
 def qty_shipped_for_line(order: dict, line_idx: int, *, exclude_shipment_id: Optional[str] = None) -> int:
     total = 0
     skip = str(exclude_shipment_id or "").strip()
-    for sh in shipments_stored(order):
+    for sh in active_shipments_stored(order):
         sid = str(sh.get("id") or "")
         acc = str(sh.get("accurate_shipment_id") or "")
-        if skip and skip in (sid, acc):
+        sales = str(sh.get("sales_delivery_id") or "")
+        if skip and skip in (sid, acc, sales):
             continue
         for it in sh.get("lines") or []:
             if _safe_int(it.get("line_idx"), default=-1) == int(line_idx):
@@ -964,12 +1029,18 @@ def qty_shipped(order: dict) -> int:
 def available_for_delivery_note_line(order: dict, line_idx: int, *, exclude_shipment_id: Optional[str] = None) -> int:
     """Sisa qty yang boleh dialokasi ke Surat Jalan per line.
 
-    Cetak: packed − shipped.
-    Non-cetak: PO qty − shipped (skip Packing — tidak invent packed_qty).
+    Cetak: packed − max(shipped aktif, loaded).
+    Non-cetak: PO qty − max(shipped aktif, loaded).
+    Qty yang sudah Loading/delivered tidak boleh dikonsumsi SJ baru.
     """
     physical = physical_qty_for_loading_line(order, line_idx)
     shipped = qty_shipped_for_line(order, line_idx, exclude_shipment_id=exclude_shipment_id)
-    return max(0, physical - shipped)
+    loaded = qty_loaded_for_line(order, line_idx)
+    skip = str(exclude_shipment_id or "").strip()
+    if skip:
+        loaded = max(0, loaded - loaded_qty_for_sj_line(order, skip, line_idx))
+    reserved = max(shipped, loaded)
+    return max(0, physical - reserved)
 
 
 def loading_lines_stored(order: dict) -> Optional[list]:
@@ -1048,15 +1119,31 @@ def confirmation_qty_total(conf: Optional[dict]) -> int:
 
 
 def delivered_qty_for_loading_confirmation(order: dict, confirmation_id: str) -> int:
-    """FIFO allocate persisted qty_delivered onto active Loading confirmations."""
+    """Delivered qty bound to this Loading confirmation's shipment_id.
+
+    Multi-SJ never uses PO-level FIFO — that steals delivery from a sibling SJ.
+    """
     want = str(confirmation_id or "").strip()
-    leftover = max(0, qty_delivered(order))
-    for conf in loading_confirmations_stored(order):
-        cap = confirmation_qty_total(conf)
-        allocated = min(cap, leftover)
-        leftover -= allocated
-        if str(conf.get("id") or "").strip() == want:
-            return allocated
+    conf = find_loading_confirmation(order, want, include_cancelled=False)
+    if not conf:
+        return 0
+    sid = str(conf.get("shipment_id") or conf.get("surat_jalan_id") or "").strip()
+    if not sid:
+        ships = active_shipments_stored(order)
+        if len(ships) == 1:
+            sid = canonical_shipment_id(ships[0])
+        else:
+            return 0
+    total = 0
+    recs = [r for r in (order.get("delivery_confirmations") or []) if isinstance(r, dict)]
+    if recs:
+        for rec in recs:
+            if str(rec.get("shipment_id") or "").strip() == sid:
+                total += max(0, _safe_int(rec.get("qty")))
+        return min(total, confirmation_qty_total(conf))
+    sh = find_shipment(order, sid)
+    if sh and shipment_is_delivered(order, sh):
+        return min(shipment_qty_total(sh), confirmation_qty_total(conf))
     return 0
 
 
@@ -1098,19 +1185,32 @@ def cancel_loading_confirmation(
 
 
 def find_sj_file(order: dict, file_id: str) -> Optional[dict]:
-    """Live Surat Jalan file only. Shipment leftovers after file delete are not a file."""
+    """Live Surat Jalan file only. Canonical id/shipment_id first; alias only if unique.
+
+    Filename is never an identity. sj_number is a read-compat alias and must not
+    resolve across more than one file.
+    """
     want = str(file_id or "").strip()
     if not want:
         return None
-    files = order.get("surat_jalan_files")
-    if isinstance(files, list):
-        for f in files:
-            if isinstance(f, dict) and (
-                str(f.get("id") or "").strip() == want
-                or str(f.get("shipment_id") or "").strip() == want
-                or str(f.get("sj_number") or "").strip() == want
-            ):
-                return f
+    files = [f for f in (order.get("surat_jalan_files") or []) if isinstance(f, dict)]
+    exact = [
+        f for f in files
+        if str(f.get("id") or "").strip() == want or str(f.get("shipment_id") or "").strip() == want
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        id_hits = [f for f in exact if str(f.get("id") or "").strip() == want]
+        if len(id_hits) == 1:
+            return id_hits[0]
+        return None
+    aliases = [
+        f for f in files
+        if str(f.get("sj_number") or "").strip() == want or str(f.get("number") or "").strip() == want
+    ]
+    if len(aliases) == 1:
+        return aliases[0]
     return None
 
 
@@ -1126,7 +1226,10 @@ def has_surat_jalan_file(order: dict) -> bool:
         for f in files:
             if not isinstance(f, dict):
                 continue
-            if f.get("is_deleted"):
+            if f.get("is_deleted") or f.get("cancelled") or f.get("superseded"):
+                continue
+            st = str(f.get("status") or "").strip().lower()
+            if st in INACTIVE_SJ_STATUSES:
                 continue
             if str(f.get("id") or "").strip() and (
                 str(f.get("data_url") or "").startswith("data:")
@@ -1210,15 +1313,24 @@ def loaded_qty_for_sj_line(order: dict, surat_jalan_id: str, line_idx: int) -> i
     """Cumulative confirmed loaded qty for this exact Surat Jalan and line."""
     want = str(surat_jalan_id or "").strip()
     entry = find_sj_file(order, surat_jalan_id)
-    target_ids = {want}
+    target_ids = {want} if want else set()
     if entry:
         for k in ("id", "number", "shipment_id", "sales_delivery_id", "sj_number"):
             v = str(entry.get(k) or "").strip()
             if v:
                 target_ids.add(v)
+    sh = find_shipment(order, want) if want else None
+    if isinstance(sh, dict):
+        sid = canonical_shipment_id(sh)
+        if sid:
+            target_ids.add(sid)
+        for k in ("id", "number", "sales_delivery_id", "sj_number", "accurate_shipment_id"):
+            v = str(sh.get(k) or "").strip()
+            if v:
+                target_ids.add(v)
     total = 0
     for conf in loading_confirmations_stored(order):
-        conf_sj = str(conf.get("surat_jalan_id") or "").strip()
+        conf_sj = str(conf.get("shipment_id") or conf.get("surat_jalan_id") or "").strip()
         if conf_sj in target_ids:
             for ln in conf.get("lines") or []:
                 if isinstance(ln, dict) and _safe_int(ln.get("line_idx"), default=-1) == int(line_idx):
@@ -1462,6 +1574,9 @@ def resolve_loading_write_sj_identity(order: dict, surat_jalan_id: str):
     if file_numbers and file_numbers != {sj_number}:
         return None, LOADING_WRITE_SJ_UNRESOLVED
 
+    if not shipment_is_active(shipment):
+        return None, "Surat Jalan ini sudah dibatalkan/di-supersede dan tidak dapat di-Loading."
+
     return {
         "surat_jalan_id": canonical,
         "shipment_id": canonical,
@@ -1558,13 +1673,24 @@ def apply_loading_confirmation(
     confirmed_at: Optional[str] = None,
     action_id: Optional[str] = None,
 ) -> dict:
-    """Append-only SJ-linked Loading confirmation. Does not rewrite loading_info."""
+    """Append-only SJ-linked Loading confirmation. Does not rewrite loading_info.
+
+    Same action_id is idempotent. Snapshot stores shipment_id, SJ number, line/item
+    identity, qty SJ at confirm, physical qty, time, and user.
+    """
     identity, identity_err = resolve_loading_write_sj_identity(order, surat_jalan_id)
     if identity_err:
         raise ValueError(identity_err)
     actor = actor or {}
+    aid = str(action_id or "").strip()
+    if aid:
+        for rec in loading_confirmations_all(order):
+            if str(rec.get("action_id") or "").strip() == aid:
+                return rec
     entry = find_sj_file(order, surat_jalan_id) or {}
     normalized = []
+    qty_sj_snapshot = 0
+    qty_physical_snapshot = 0
     for u in lines:
         idx, _err = match_po_line_idx(order, u)
         qty = _safe_int(u.get("qty") if u.get("qty") is not None else u.get("quantity"))
@@ -1572,11 +1698,16 @@ def apply_loading_confirmation(
             "line_idx": idx,
             "qty": qty,
             "name": _line_name(order, idx),
+            "line_id": str(u.get("line_id") or "").strip() or None,
         }
-        aid = str(u.get("accurate_item_id") or "").strip() or _line_accurate_item_id(order, idx)
-        if aid:
-            row["accurate_item_id"] = aid
+        aid_item = str(u.get("accurate_item_id") or "").strip() or _line_accurate_item_id(order, idx)
+        if aid_item:
+            row["accurate_item_id"] = aid_item
+        if row.get("line_id") is None:
+            row.pop("line_id", None)
         normalized.append(row)
+        qty_sj_snapshot += max(0, sj_qty_for_line(order, identity["shipment_id"], idx) or qty)
+        qty_physical_snapshot += max(0, physical_qty_for_loading_line(order, idx))
     record = {
         "id": confirmation_id or "",
         "surat_jalan_id": identity["surat_jalan_id"],
@@ -1584,12 +1715,28 @@ def apply_loading_confirmation(
         "sj_number": identity["sj_number"],
         "surat_jalan_name": entry.get("name") or "Surat Jalan",
         "lines": normalized,
+        "qty_sj_snapshot": qty_sj_snapshot,
+        "qty_physical_snapshot": qty_physical_snapshot,
         "confirmed_by": actor.get("email"),
         "confirmed_by_name": actor.get("name") or actor.get("email"),
         "confirmed_at": confirmed_at,
         "action_id": action_id,
     }
     order.setdefault("loading_confirmations", []).append(record)
+    from services.sj_integrity import build_loading_confirm_snapshot
+
+    snap = build_loading_confirm_snapshot(
+        order,
+        identity=identity,
+        lines=normalized,
+        actor=actor,
+        confirmed_at=confirmed_at,
+        action_id=action_id,
+        confirmation_id=record.get("id"),
+    )
+    snap["qty_sj_at_confirm"] = qty_sj_snapshot
+    snap["physical_qty"] = qty_physical_snapshot
+    order.setdefault("loading_snapshots", []).append(snap)
     return record
 
 
@@ -1694,7 +1841,7 @@ def validate_shipment_lines(
         physical = physical_qty_for_loading_line(order, idx)
         already = qty_shipped_for_line(order, idx, exclude_shipment_id=exclude_shipment_id)
         if source != SHIPMENT_SOURCE_ACCURATE:
-            avail = max(0, physical - already)
+            avail = available_for_delivery_note_line(order, idx, exclude_shipment_id=exclude_shipment_id)
             if qty > avail:
                 name = _line_name(order, idx)
                 lis = order.get("line_items") or []
@@ -1709,6 +1856,22 @@ def validate_shipment_lines(
                 )
     if total <= 0:
         return "Qty Surat Jalan tidak valid."
+    po_total = packing_required_total(order)
+    already_shipped = sum(
+        qty_shipped_for_line(order, i, exclude_shipment_id=exclude_shipment_id)
+        for i in range(_line_count(order))
+    )
+    already_loaded = qty_loaded(order)
+    skip = str(exclude_shipment_id or "").strip()
+    if skip:
+        already_loaded = max(0, already_loaded - sum(
+            loaded_qty_for_sj_line(order, skip, i) for i in range(_line_count(order))
+        ))
+    already_total = max(already_shipped, already_loaded)
+    if po_total > 0 and already_total + total > po_total:
+        return MSG_SJ_ALLOCATION_EXCEEDED.format(
+            active=already_total, requested=total, po=po_total,
+        )
     return None
 
 
@@ -1802,12 +1965,33 @@ def apply_shipment_record(
     shipment_id: Optional[str] = None,
     created_at: Optional[str] = None,
 ) -> dict:
-    """Append or update a shipment on the order (idempotent by accurate_shipment_id)."""
+    """Append or update a shipment on the order (idempotent by accurate_shipment_id).
+
+    After Loading, identical qty/line is idempotent; different content is rejected.
+    After Terkirim, qty/line/shipment_id/document are frozen.
+    """
     acc_id = str(accurate_shipment_id or "").strip() or None
     existing = find_shipment_by_accurate_id(order, acc_id) if acc_id else None
+    if existing is None and shipment_id:
+        existing = find_shipment(order, str(shipment_id).strip())
     exclude = str(existing.get("id") or acc_id) if existing else None
     normalized = normalize_shipment_line_updates(lines, order)
+    if existing:
+        freeze_err = shipment_qty_frozen_reason(order, existing)
+        old_fp = shipment_lines_fingerprint(existing.get("lines"))
+        new_fp = shipment_lines_fingerprint(normalized)
+        same_number = str(number or "").strip() == str(existing.get("number") or "").strip()
+        same_id = not shipment_id or str(shipment_id).strip() == str(existing.get("id") or "").strip()
+        if freeze_err:
+            if old_fp == new_fp and same_number and same_id:
+                return existing
+            raise ValueError(freeze_err)
     mismatches = shipment_line_mismatches(lines, order, exclude_shipment_id=exclude)
+    alloc_err = validate_shipment_lines(
+        normalized, order, source=source, exclude_shipment_id=exclude,
+    )
+    if alloc_err:
+        raise ValueError(alloc_err)
     actor = actor or {}
     record = {
         "id": (existing or {}).get("id") or shipment_id or "",
@@ -1824,6 +2008,9 @@ def apply_shipment_record(
         "updated_by": actor.get("email"),
         "updated_by_name": actor.get("name"),
         "updated_at": created_at,
+        "status": (existing or {}).get("status") or SJ_STATUS_PENDING,
+        "supersedes_shipment_id": (existing or {}).get("supersedes_shipment_id"),
+        "superseded_by_shipment_id": (existing or {}).get("superseded_by_shipment_id"),
     }
     shipments = shipments_stored(order)
     if existing:
@@ -2603,25 +2790,47 @@ def active_delivery_batch(order: dict) -> Optional[dict]:
 
 
 def shipment_identity_keys(order: dict, shipment: Optional[dict]) -> set:
-    """All live aliases for one shipment/SJ (id, sales_delivery_id, number, linked file)."""
+    """Canonical id plus unique aliases for one shipment. Never merge sibling SJ files.
+
+    Filename is not an identity. sj_number is attached only from this shipment
+    or from a file whose shipment_id/id equals the canonical id.
+    """
     keys = set()
     if not isinstance(shipment, dict):
         return keys
-    for key in ("id", "sales_delivery_id", "number", "accurate_shipment_id", "sj_number"):
-        val = str(shipment.get(key) or "").strip()
-        if val:
-            keys.add(val)
+    canonical = canonical_shipment_id(shipment)
+    if canonical:
+        keys.add(canonical)
+    sales = str(shipment.get("sales_delivery_id") or "").strip()
+    if sales:
+        keys.add(sales)
+    number = str(shipment.get("number") or shipment.get("sj_number") or "").strip()
+    if number:
+        owners = [
+            sh for sh in shipments_stored(order)
+            if isinstance(sh, dict) and (
+                str(sh.get("number") or "").strip() == number
+                or str(sh.get("sj_number") or "").strip() == number
+            )
+        ]
+        if len(owners) <= 1:
+            keys.add(number)
+    acc = str(shipment.get("accurate_shipment_id") or "").strip()
+    if acc:
+        keys.add(acc)
     files = order.get("surat_jalan_files") if isinstance(order.get("surat_jalan_files"), list) else []
     for entry in files:
         if not isinstance(entry, dict):
             continue
-        fkeys = set()
-        for key in ("id", "file_id", "shipment_id", "sj_number", "number", "sales_delivery_id"):
-            val = str(entry.get(key) or "").strip()
-            if val:
-                fkeys.add(val)
-        if keys & fkeys:
-            keys |= fkeys
+        file_canonical = str(entry.get("shipment_id") or entry.get("id") or "").strip()
+        if canonical and file_canonical == canonical:
+            for key in ("id", "file_id", "shipment_id"):
+                val = str(entry.get(key) or "").strip()
+                if val:
+                    keys.add(val)
+            file_number = str(entry.get("sj_number") or entry.get("number") or "").strip()
+            if file_number and file_number == number:
+                keys.add(file_number)
     return keys
 
 
@@ -2629,15 +2838,18 @@ def find_shipment(order: dict, shipment_id: Optional[str]) -> Optional[dict]:
     want = str(shipment_id or "").strip()
     if not want:
         return None
-    for sh in shipments_stored(order):
-        if want in shipment_identity_keys(order, sh):
-            return sh
+    exact = [sh for sh in shipments_stored(order) if canonical_shipment_id(sh) == want]
+    if len(exact) == 1:
+        return exact[0]
+    hits = [sh for sh in shipments_stored(order) if want in shipment_identity_keys(order, sh)]
+    if len(hits) == 1:
+        return hits[0]
     return None
 
 
 def resolve_delivery_shipment(order: dict, shipment_id: Optional[str] = None):
     """Resolve the SJ/batch being shipped. Error when multi-SJ and no explicit id."""
-    ships = [sh for sh in shipments_stored(order) if isinstance(sh, dict)]
+    ships = [sh for sh in active_shipments_stored(order) if isinstance(sh, dict)]
     want = str(shipment_id or "").strip()
     if want:
         found = find_shipment(order, want)
@@ -2704,6 +2916,28 @@ def shipment_is_delivered(order: dict, shipment: Optional[dict]) -> bool:
     if str(shipment.get("delivery_status") or "").strip() == "Terkirim" or shipment.get("delivered_at"):
         return True
     return qty_delivered_for_shipment(order, shipment) >= batch
+
+
+def shipment_has_loading_confirmation(order: dict, sh: Optional[dict]) -> bool:
+    sid = canonical_shipment_id(sh)
+    if not sid:
+        return False
+    for conf in loading_confirmations_stored(order):
+        conf_sid = str(conf.get("shipment_id") or conf.get("surat_jalan_id") or "").strip()
+        if conf_sid == sid:
+            return True
+    return False
+
+
+def shipment_qty_frozen_reason(order: dict, sh: Optional[dict]) -> Optional[str]:
+    """Why this SJ qty/line cannot change. None if still mutable."""
+    if not isinstance(sh, dict):
+        return None
+    if shipment_is_delivered(order, sh):
+        return MSG_SJ_FROZEN_DELIVERED
+    if shipment_has_loading_confirmation(order, sh):
+        return MSG_SJ_FROZEN_LOADING
+    return None
 
 
 def mark_shipment_delivered(shipment: Optional[dict], *, now: str, qty: int) -> None:
@@ -3006,147 +3240,50 @@ def _set_line_qty(ln: dict, qty: int) -> None:
 
 
 def _delivered_qty_by_sj_line(order: dict) -> dict:
-    """FIFO-allocate persisted qty_delivered onto loading confirmation lines → (sj_id, line_idx)."""
-    leftover = max(0, qty_delivered(order))
+    """Delivered qty per (canonical shipment_id, line_idx) from confirmation snapshots.
+
+    Never FIFO-allocate PO qty_delivered across sibling Loading confirmations.
+    """
     out: dict = {}
-    for conf in loading_confirmations_stored(order):
-        if leftover <= 0:
-            break
-        sj = str(conf.get("surat_jalan_id") or "").strip()
-        if not sj:
+    recs = [r for r in (order.get("delivery_confirmations") or []) if isinstance(r, dict)]
+    for rec in recs:
+        sid = str(rec.get("shipment_id") or "").strip()
+        if not sid:
             continue
-        conf_lines = [ln for ln in (conf.get("lines") or []) if isinstance(ln, dict)]
-        conf_cap = confirmation_qty_total(conf)
-        take = min(conf_cap, leftover)
-        leftover -= take
-        if take <= 0 or not conf_lines:
+        items = [it for it in (rec.get("items") or []) if isinstance(it, dict)]
+        if items:
+            for it in items:
+                idx = _safe_int(it.get("line_idx"), default=-1)
+                if idx < 0:
+                    continue
+                qty = max(0, _safe_int(it.get("qty") if it.get("qty") is not None else it.get("quantity")))
+                out[(sid, idx)] = out.get((sid, idx), 0) + qty
             continue
-        remaining_take = take
-        for ln in conf_lines:
-            if remaining_take <= 0:
-                break
-            idx = _safe_int(ln.get("line_idx"), default=-1)
-            if idx < 0:
-                continue
-            line_cap = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-            line_take = min(line_cap, remaining_take)
-            remaining_take -= line_take
-            key = (sj, idx)
-            out[key] = out.get(key, 0) + line_take
+        sh = find_shipment(order, sid)
+        rec_qty = max(0, _safe_int(rec.get("qty")))
+        if sh and rec_qty:
+            lines = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+            remaining = rec_qty
+            for ln in lines:
+                if remaining <= 0:
+                    break
+                if not isinstance(ln, dict):
+                    continue
+                idx = _safe_int(ln.get("line_idx"), default=-1)
+                cap = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
+                take = min(cap, remaining)
+                remaining -= take
+                if idx >= 0 and take:
+                    out[(sid, idx)] = out.get((sid, idx), 0) + take
+        elif rec_qty:
+            out[(sid, 0)] = out.get((sid, 0), 0) + rec_qty
     return out
 
 
 def reconcile_sj_quantities_to_loaded_delivery(order: dict) -> dict:
-    """Reduce current/effective SJ line qtys to actual delivered allocation per exact line.
+    """No-op: SJ qty/lines freeze after Loading and after Terkirim.
 
-    When confirm-delivered sets qty_delivered equal to total loaded (normal path),
-    this matches loaded-for-SJ. When delivered < loaded, SJ follows delivered;
-    Loading history is never silently reduced.
-
-    - Packing unchanged
-    - Loading unchanged (no silent unload)
-    - Historical PDF bytes untouched
-    - Remain returns via lower shipped/SJ allocation (idempotent)
-    - Never increases SJ qty
+    Remaining delivery is derived from active allocation minus delivered evidence.
+    Historical PDFs, Loading confirmations, photos, and signatures are never rewritten.
     """
-    returned_total = 0
-    touched_shipment_ids: List[str] = []
-    delivered_by = _delivered_qty_by_sj_line(order)
-    # If nothing delivered yet, do not mutate SJ (confirm path always delivers > 0 first)
-    if qty_delivered(order) <= 0 and not delivered_by:
-        return {"returned_qty": 0, "shipment_ids": []}
-
-    for sh in shipments_stored(order):
-        if not isinstance(sh, dict):
-            continue
-        sid = delivery_batch_identity(sh)
-        if not sid:
-            continue
-        lines = sh.get("lines")
-        if not isinstance(lines, list) or not lines:
-            continue
-        batch_loaded = loaded_qty_for_delivery_batch(order, sh)
-        if batch_loaded <= 0 and not any(
-            (sid == k[0] or str(sh.get("number") or "") == k[0]) for k in delivered_by.keys()
-        ):
-            continue
-
-        # Resolve delivered keys against possible SJ identity aliases
-        alias_ids = {sid}
-        for k in ("id", "number", "sales_delivery_id"):
-            v = str(sh.get(k) or "").strip()
-            if v:
-                alias_ids.add(v)
-
-        reduced = 0
-        for ln in lines:
-            if not isinstance(ln, dict):
-                continue
-            idx = _safe_int(ln.get("line_idx"), default=-1)
-            if idx < 0:
-                continue
-            sj_q = max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-            loaded_q = loaded_qty_for_sj_line(order, sid, idx)
-            delivered_q = 0
-            for alias in alias_ids:
-                delivered_q = max(delivered_q, delivered_by.get((alias, idx), 0))
-            # Actual operational SJ qty = min(SJ, delivered attribution).
-            # Never raise SJ; never invent from loaded when delivered is lower.
-            if delivered_q <= 0 and loaded_q <= 0:
-                continue
-            actual_q = min(sj_q, delivered_q if delivered_q > 0 else loaded_q)
-            # Cap by loaded as well — delivery cannot exceed loading physically
-            if loaded_q > 0:
-                actual_q = min(actual_q, loaded_q)
-            if actual_q < sj_q:
-                reduced += sj_q - actual_q
-                _set_line_qty(ln, actual_q)
-        new_total = 0
-        for ln in lines:
-            if isinstance(ln, dict):
-                new_total += max(0, _safe_int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")))
-        if reduced > 0:
-            sh["total_qty"] = new_total
-            if "qty" in sh:
-                sh["qty"] = new_total
-            returned_total += reduced
-            touched_shipment_ids.append(sid)
-            # Mirror operational qty onto surat_jalan_files metadata (not PDF bytes)
-            files = order.get("surat_jalan_files")
-            if isinstance(files, list):
-                for f in files:
-                    if not isinstance(f, dict):
-                        continue
-                    file_ids = {
-                        str(f.get("id") or "").strip(),
-                        str(f.get("shipment_id") or "").strip(),
-                        str(f.get("sales_delivery_id") or "").strip(),
-                        str(f.get("sj_number") or "").strip(),
-                        str(f.get("number") or "").strip(),
-                    }
-                    if sid not in file_ids and str(sh.get("number") or "").strip() not in file_ids:
-                        continue
-                    f_lines = f.get("lines")
-                    if isinstance(f_lines, list) and f_lines:
-                        by_idx = {
-                            _safe_int(ln.get("line_idx"), default=-1): ln
-                            for ln in lines
-                            if isinstance(ln, dict)
-                        }
-                        for fl in f_lines:
-                            if not isinstance(fl, dict):
-                                continue
-                            fidx = _safe_int(fl.get("line_idx"), default=-1)
-                            src = by_idx.get(fidx)
-                            if src is not None:
-                                _set_line_qty(
-                                    fl,
-                                    max(0, _safe_int(src.get("qty") if src.get("qty") is not None else src.get("quantity"))),
-                                )
-                        f["total_qty"] = new_total
-                        if "qty" in f:
-                            f["qty"] = new_total
-    return {
-        "returned_qty": returned_total,
-        "shipment_ids": touched_shipment_ids,
-    }
+    return {"returned_qty": 0, "shipment_ids": [], "frozen": True}

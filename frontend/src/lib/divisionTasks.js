@@ -25,10 +25,15 @@ export const DIVISION_TASK_PAGES = {
 
 export function taskWorkHref(task) {
   const href = workPanelPath(task.order_id, task.division);
+  const bits = [];
   if (task.division === "kepala_produksi" && task.line_idx != null && task.line_idx !== "") {
-    return `${href}&line=${encodeURIComponent(task.line_idx)}`;
+    bits.push(`line=${encodeURIComponent(task.line_idx)}`);
   }
-  return href;
+  if (task.shipment_id) {
+    bits.push(`shipment=${encodeURIComponent(task.shipment_id)}`);
+  }
+  if (!bits.length) return href;
+  return `${href}${href.includes("?") ? "&" : "?"}${bits.join("&")}`;
 }
 
 export function formatIdQty(n) {
