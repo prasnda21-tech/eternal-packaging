@@ -1,7 +1,7 @@
 import { FileText } from "lucide-react";
 import { Link } from "react-router-dom";
 
-function Row({ label, available, to, meta }) {
+function Row({ label, available, to, state, meta }) {
   return (
     <div className="spwa-doc-row">
       <div>
@@ -9,7 +9,7 @@ function Row({ label, available, to, meta }) {
         {meta ? <div className="spwa-muted" style={{ padding: 0 }}>{meta}</div> : null}
       </div>
       {available && to ? (
-        <Link to={to}>Buka</Link>
+        <Link to={to} state={state}>Buka</Link>
       ) : (
         <span className="spwa-muted" style={{ padding: 0 }}>Belum ada</span>
       )}
@@ -23,6 +23,7 @@ function viewerPath(orderId, kind, documentId) {
 
 export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
   if (!data) return null;
+  const viewerState = { salesDocumentFrom: `/sales/po/${encodeURIComponent(orderId)}` };
   return (
     <>
       <button type="button" className="spwa-sheet-backdrop" aria-label="Tutup" onClick={onClose} />
@@ -33,6 +34,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
           label="Purchase Order"
           available={data.po?.available}
           to={data.po?.available ? viewerPath(orderId, "po", "po") : null}
+          state={viewerState}
           meta={data.po?.filename}
         />
         {(data.sj || []).map((sj) => (
@@ -41,6 +43,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             label={`Surat Jalan ${sj.number || ""}`.trim()}
             available={sj.available}
             to={sj.available ? viewerPath(orderId, "sj", sj.id) : null}
+            state={viewerState}
             meta={sj.date}
           />
         ))}
@@ -50,6 +53,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             label={`Invoice ${inv.number || ""}`.trim()}
             available={inv.available}
             to={inv.available ? viewerPath(orderId, "invoice", inv.id) : null}
+            state={viewerState}
             meta={inv.date}
           />
         ))}
@@ -59,6 +63,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             label="Bukti kirim"
             available={Boolean(p.storage_path)}
             to={p.storage_path ? viewerPath(orderId, "proof", p.id) : null}
+            state={viewerState}
             meta={p.uploaded_at}
           />
         ))}

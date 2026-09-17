@@ -30,6 +30,7 @@ node_modules/
 **/node_modules/
 build/
 **/build/
+frontend/public/pdf.worker.min.mjs
 
 # ===== BACKUPS / ARCHIVES =====
 backup/

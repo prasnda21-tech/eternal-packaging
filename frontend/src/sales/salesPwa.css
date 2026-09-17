@@ -340,3 +340,54 @@
   text-align: center;
 }
 .spwa-viewer-state.is-error { color: #8f1f1f; }
+
+
+/* PDF.js keeps document rendering and Android Back inside the Sales PWA. */
+.spwa-viewer-head .spwa-back {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.spwa-viewer-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.spwa-pdf {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+.spwa-pdf-page {
+  position: relative;
+  max-width: 100%;
+  display: flex;
+  justify-content: center;
+  border: 1px solid #cad6dc;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(11, 31, 42, 0.08);
+  overflow: hidden;
+}
+.spwa-pdf-page canvas {
+  max-width: 100%;
+  height: auto !important;
+  display: block;
+  background: #fff;
+}
+.spwa-pdf-page > span {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  min-width: 24px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  color: #fff;
+  background: rgba(11, 31, 42, 0.72);
+  font-size: 9px;
+  text-align: center;
+}
