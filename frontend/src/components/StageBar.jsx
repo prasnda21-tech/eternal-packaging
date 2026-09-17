@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { STAGES } from "../lib/constants";
-import { resolveStageState } from "../lib/stageState";
+import { resolveOperationalStage, resolveStageState } from "../lib/stageState";
 import { getStagePresentation, stageBarClassForTone } from "../lib/poDetailPresentation";
 
 /**
@@ -17,6 +17,7 @@ export default function StageBar({
   viewedStage = null,
 }) {
   const rootRef = useRef(null);
+  const operationalStage = resolveOperationalStage(order, stage);
 
   useEffect(() => {
     if (!showLabels || !rootRef.current) return;
@@ -26,14 +27,14 @@ export default function StageBar({
     if (target && typeof target.scrollIntoView === "function") {
       target.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
     }
-  }, [stage, viewedStage, showLabels, order?.id]);
+  }, [operationalStage, viewedStage, showLabels, order?.id]);
 
   return (
     <div
       ref={rootRef}
       className={"stage-bar" + (showLabels ? " has-labels equal-stages" : "")}
       data-testid="order-stage-progress"
-      title={STAGES[stage]}
+      title={STAGES[operationalStage]}
     >
       {STAGES.map((s, i) => {
         const isFinal = stage >= STAGES.length - 1;
@@ -55,7 +56,7 @@ export default function StageBar({
         }
         const clickable = typeof onStageClick === "function";
         const isViewed = viewedStage != null && Number(viewedStage) === i;
-        const isActual = Number(stage) === i;
+        const isActual = Number(operationalStage) === i;
         const holdish = !!(order?.hold && isActual);
         const cancelled = !!(order?.cancelled && isActual);
         const stateLabel = holdish
