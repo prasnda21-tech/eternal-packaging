@@ -1,15 +1,15 @@
 import { FileText } from "lucide-react";
-import { publicApiUrl } from "../lib/api";
+import { Link } from "react-router-dom";
 
-function Row({ label, available, href, meta }) {
+function Row({ label, available, to, meta }) {
   return (
     <div className="spwa-doc-row">
       <div>
         <strong>{label}</strong>
         {meta ? <div className="spwa-muted" style={{ padding: 0 }}>{meta}</div> : null}
       </div>
-      {available && href ? (
-        <a href={href} target="_blank" rel="noreferrer">Buka</a>
+      {available && to ? (
+        <Link to={to}>Buka</Link>
       ) : (
         <span className="spwa-muted" style={{ padding: 0 }}>Belum ada</span>
       )}
@@ -17,9 +17,12 @@ function Row({ label, available, href, meta }) {
   );
 }
 
+function viewerPath(orderId, kind, documentId) {
+  return `/sales/po/${encodeURIComponent(orderId)}/dokumen/${encodeURIComponent(kind)}/${encodeURIComponent(documentId)}`;
+}
+
 export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
   if (!data) return null;
-  const base = `/api/sales-pwa/orders/${encodeURIComponent(orderId)}/files`;
   return (
     <>
       <button type="button" className="spwa-sheet-backdrop" aria-label="Tutup" onClick={onClose} />
@@ -29,7 +32,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
         <Row
           label="Purchase Order"
           available={data.po?.available}
-          href={data.po?.available ? publicApiUrl(`${base}/po`) : null}
+          to={data.po?.available ? viewerPath(orderId, "po", "po") : null}
           meta={data.po?.filename}
         />
         {(data.sj || []).map((sj) => (
@@ -37,7 +40,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             key={sj.id}
             label={`Surat Jalan ${sj.number || ""}`.trim()}
             available={sj.available}
-            href={sj.available ? publicApiUrl(`${base}/sj/${encodeURIComponent(sj.id)}`) : null}
+            to={sj.available ? viewerPath(orderId, "sj", sj.id) : null}
             meta={sj.date}
           />
         ))}
@@ -46,7 +49,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             key={inv.id}
             label={`Invoice ${inv.number || ""}`.trim()}
             available={inv.available}
-            href={inv.available ? publicApiUrl(`${base}/invoices/${encodeURIComponent(inv.id)}`) : null}
+            to={inv.available ? viewerPath(orderId, "invoice", inv.id) : null}
             meta={inv.date}
           />
         ))}
@@ -55,7 +58,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             key={p.id}
             label="Bukti kirim"
             available={Boolean(p.storage_path)}
-            href={p.storage_path ? publicApiUrl(`${base}/proofs/${encodeURIComponent(p.id)}`) : null}
+            to={p.storage_path ? viewerPath(orderId, "proof", p.id) : null}
             meta={p.uploaded_at}
           />
         ))}

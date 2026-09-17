@@ -248,3 +248,95 @@
   .spwa-table { font-size: 10.5px; }
   .spwa-cust { font-size: 11.5px; }
 }
+
+
+/* Keep authenticated PO documents inside the standalone Sales PWA. */
+.spwa-viewer {
+  min-height: 100dvh;
+  padding-bottom: 56px;
+  background: #edf2f4;
+}
+.spwa-viewer-head {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(72px, auto) 1fr minmax(72px, auto);
+  align-items: center;
+  gap: 8px;
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 10px 8px;
+  color: #fff;
+  background: #0b1f2a;
+  border-bottom: 1px solid #173946;
+}
+.spwa-viewer-head h1 {
+  margin: 1px 0 0;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.15;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spwa-viewer-head .spwa-kicker {
+  margin: 0;
+  color: #a9c0ca;
+  font-size: 9px;
+  text-align: center;
+  letter-spacing: 0.14em;
+}
+.spwa-viewer-head .spwa-back,
+.spwa-viewer-download {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  color: #fff;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 650;
+}
+.spwa-viewer-download {
+  padding: 0 8px;
+  border: 1px solid #53707c;
+  border-radius: 8px;
+  background: #173946;
+}
+.spwa-viewer-body {
+  box-sizing: border-box;
+  width: 100%;
+  height: calc(100dvh - 114px - env(safe-area-inset-top, 0px));
+  min-height: 360px;
+  padding: 8px;
+}
+.spwa-viewer-frame {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 1px solid #cad6dc;
+  border-radius: 8px;
+  background: #fff;
+}
+.spwa-viewer-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  border: 1px solid #cad6dc;
+  border-radius: 8px;
+  background: #fff;
+}
+.spwa-viewer-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #5b6b73;
+  font-size: 13px;
+  text-align: center;
+}
+.spwa-viewer-state.is-error { color: #8f1f1f; }

@@ -730,6 +730,23 @@ export const api = {
   salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),
   salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
   salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),
+  salesPwaDocumentFile: (id, kind, documentId) => {
+    const orderId = encodeURIComponent(id);
+    const docId = encodeURIComponent(documentId);
+    const paths = {
+      po: `/sales-pwa/orders/${orderId}/files/po`,
+      sj: `/sales-pwa/orders/${orderId}/files/sj/${docId}`,
+      invoice: `/sales-pwa/orders/${orderId}/files/invoices/${docId}`,
+      proof: `/sales-pwa/orders/${orderId}/files/proofs/${docId}`,
+    };
+    const path = paths[kind];
+    if (!path) return Promise.reject(new Error("Jenis dokumen tidak didukung"));
+    return client.get(path, { responseType: "blob" }).then((r) => ({
+      blob: r.data,
+      contentType: r.headers?.["content-type"] || r.data?.type || "",
+      disposition: r.headers?.["content-disposition"] || "",
+    }));
+  },
   salesPwaCustomers: (params = {}) => client.get("/sales-pwa/customers", { params }).then((r) => r.data),
   salesPwaPredictions: () => client.get("/sales-pwa/predictions").then((r) => r.data),
   salesPwaPredictionDetail: (customerKey) => client.get(`/sales-pwa/predictions/${encodeURIComponent(customerKey)}`).then((r) => r.data),
