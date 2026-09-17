@@ -41,15 +41,17 @@ from services.sj_integrity import (
 )
 
 SEVERITY_CONSISTENT = "CONSISTENT"
+SEVERITY_LEGACY_SNAPSHOT_DRIFT = "LEGACY_SNAPSHOT_DRIFT"
 SEVERITY_SAFE_AUTO_REPAIR = "SAFE_AUTO_REPAIR"
 SEVERITY_NEEDS_MANUAL_REVIEW = "NEEDS_MANUAL_REVIEW"
 SEVERITY_CRITICAL_BLOCKER = "CRITICAL_BLOCKER"
 
 _RANK = {
     SEVERITY_CONSISTENT: 0,
-    SEVERITY_SAFE_AUTO_REPAIR: 1,
-    SEVERITY_NEEDS_MANUAL_REVIEW: 2,
-    SEVERITY_CRITICAL_BLOCKER: 3,
+    SEVERITY_LEGACY_SNAPSHOT_DRIFT: 1,
+    SEVERITY_SAFE_AUTO_REPAIR: 2,
+    SEVERITY_NEEDS_MANUAL_REVIEW: 3,
+    SEVERITY_CRITICAL_BLOCKER: 4,
 }
 
 CSV_FIELDS = (
@@ -291,6 +293,37 @@ def audit_order(order: dict) -> dict:
         sh_loaded = loaded_qty_for_shipment(order, sh)
         sh_delivered = delivered_qty_for_shipment_records(order, sh)
         active = shipment_is_active(sh)
+
+        legacy_snapshot_drift = (
+            active
+            and extra is None
+            and po > 0
+            and active_qty <= po
+            and delivered <= po
+            and snap is not None
+            and cur > snap > 0
+            and sh_loaded == cur
+            and sh_delivered == cur
+        )
+        if legacy_snapshot_drift:
+            findings.append(_finding(
+                order, shipment=sh,
+                reason=(
+                    "Snapshot SJ historis lebih kecil, tetapi qty SJ aktif, "
+                    "Loading, dan delivery sudah sama persis."
+                ),
+                reason_code="LEGACY_SNAPSHOT_DRIFT",
+                severity=SEVERITY_LEGACY_SNAPSHOT_DRIFT,
+                recommendation=(
+                    "Pertahankan bukti historis; jangan ubah qty. Runtime baru "
+                    "harus tetap memblokir perubahan qty setelah Loading."
+                ),
+                current_qty=cur,
+                snapshot_qty=snap,
+                loaded_qty=sh_loaded,
+                delivered_qty=sh_delivered,
+            ))
+            continue
 
         if sh_loaded > 0 and snap is not None and sh_loaded > snap:
             findings.append(_finding(
@@ -628,6 +661,7 @@ def audit_orders(orders: Iterable[dict]) -> dict:
     rows = []
     counts = {
         SEVERITY_CONSISTENT: 0,
+        SEVERITY_LEGACY_SNAPSHOT_DRIFT: 0,
         SEVERITY_SAFE_AUTO_REPAIR: 0,
         SEVERITY_NEEDS_MANUAL_REVIEW: 0,
         SEVERITY_CRITICAL_BLOCKER: 0,
