@@ -4,7 +4,7 @@ import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDow
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
-import { getWorkflowReady } from "../lib/stageState";
+import { getWorkflowReady, resolveOperationalStage } from "../lib/stageState";
 import { isApprovalDesignComplete, isCustomerDesignApproved } from "../lib/designEvidence";
 import Timeline from "../components/Timeline";
 import OperatorSplitPanel from "../components/OperatorSplitPanel";
@@ -151,9 +151,9 @@ export default function PODetail() {
       const search = location.search || (typeof window !== "undefined" ? window.location.search : "");
       const fromQuery = parsePoDetailStageParam(search);
       if (fromQuery != null) return fromQuery;
-      return clampWorkflowStageIndex(order.current_stage, 0);
+      return clampWorkflowStageIndex(resolveOperationalStage(order, order.current_stage), 0);
     });
-  }, [order?.id, order?.current_stage, location.search]);
+  }, [order, location.search]);
 
   useEffect(() => {
     const onPop = () => {
@@ -395,7 +395,7 @@ export default function PODetail() {
   // Canonical remain lives in order.sales_delivery_summary (via aksiPoSalesDeliveryState).
   const salesDeliveryTotalRemaining = (order.sales_delivery_summary || {}).total_remaining;
   const terkirimSummary = terkirimQtySummary(order);
-  const actualStage = clampWorkflowStageIndex(order.current_stage, 0);
+  const actualStage = clampWorkflowStageIndex(resolveOperationalStage(order, order.current_stage), 0);
   const viewedStage = selectedWorkflowStage == null ? actualStage : clampWorkflowStageIndex(selectedWorkflowStage, actualStage);
   const viewingOtherStage = viewedStage !== actualStage;
   const accordionOpenIndex = accordionIndexForFocus(viewedStage);
@@ -659,7 +659,7 @@ export default function PODetail() {
       <div className="po-stage-bar-sticky" data-testid="po-stage-bar-sticky">
         <div className="po-stage-bar-block">
           <StageBar
-            stage={order.current_stage}
+            stage={actualStage}
             order={order}
             showLabels
             viewedStage={viewedStage}
