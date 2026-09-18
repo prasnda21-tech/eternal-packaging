@@ -10,7 +10,7 @@ const src = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
 describe("PODetail initial load sequencing (source)", () => {
   test("getOrder effect depends on route id", () => {
     expect(src).toMatch(/api\.getOrder\(id\)/);
-    expect(src).toMatch(/\.finally\(\(\)\s*=>\s*setLoading\(false\)\)/);
+    expect(src).toMatch(/if \(!cancelled\) setLoading\(false\)/);
   });
 
   test("listSalesReceipts starts with route id (parallel to getOrder)", () => {

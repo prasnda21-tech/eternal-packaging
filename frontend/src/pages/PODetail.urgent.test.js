@@ -3,10 +3,14 @@ import path from "path";
 
 describe("PODetail urgent + payment proof wiring", () => {
   const src = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
+  const commandBar = fs.readFileSync(
+    path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"),
+    "utf8"
+  );
 
   test("urgent control stays permission-gated and calls setUrgent", () => {
     expect(src).toMatch(/canManageUrgentPerm\(hasPerm\)/);
-    expect(src).toMatch(/toggle-urgent-button/);
+    expect(commandBar).toMatch(/toggle-urgent-button/);
     expect(src).toMatch(/api\.setUrgent\(order\.id, order\.priority !== "urgent"\)/);
     expect(src).not.toMatch(/require\("admin", "head_production"\)/);
   });

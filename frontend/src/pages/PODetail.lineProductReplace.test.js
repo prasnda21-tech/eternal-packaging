@@ -28,9 +28,9 @@ describe("Imported line Ganti Barang UI", () => {
 
   test("editable control shows Ganti Barang and current item", () => {
     expect(ctrl).toMatch(/Ganti Barang/);
-    expect(ctrl).toMatch(/Barang Saat Ini/);
-    expect(ctrl).toMatch(/Cari Barang Pengganti/);
-    expect(ctrl).toMatch(/Simpan Perubahan/);
+    expect(ctrl).toMatch(/Saat Ini/);
+    expect(ctrl).toMatch(/Barang Pengganti/);
+    expect(ctrl).toMatch(/Simpan Item & Qty/);
     expect(ctrl).toMatch(/ganti-barang-btn-/);
     expect(ctrl).toMatch(/ganti-barang-current-/);
     expect(ctrl).toMatch(/ganti-barang-save-/);
@@ -46,11 +46,11 @@ describe("Imported line Ganti Barang UI", () => {
   });
 
   test("explicit save only — open/search/select do not write", () => {
-    expect(ctrl).toMatch(/if \(saving \|\| !target\) return;/);
+    expect(ctrl).toMatch(/if \(saving\) return;/);
     expect(ctrl).toMatch(/api\.replaceSalesOrderLineProduct/);
-    // Opening editor clears target; save gated on target
     expect(ctrl).toMatch(/setTarget\(null\)/);
-    expect(ctrl).toMatch(/disabled=\{saving \|\| !target\}/);
+    expect(ctrl).toMatch(/hasLineItemChanges\(li, target, quantity\)/);
+    expect(ctrl).toMatch(/disabled=\{saving \|\| parsePositiveQty\(quantity\) === null \|\| !hasLineItemChanges\(li, target, quantity\)\}/);
   });
 
   test("locked UI shows reason, not active control", () => {

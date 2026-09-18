@@ -17,6 +17,10 @@ const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
 const nav = fs.readFileSync(path.join(__dirname, "../lib/poDetailStageNav.js"), "utf8");
 const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
 const bar = fs.readFileSync(path.join(__dirname, "../components/StageBar.jsx"), "utf8");
+const shell = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoDetailShell.jsx"), "utf8");
+const commandBar = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8");
+const workspace = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoStageWorkspace.jsx"), "utf8");
+const ui = detail + "\n" + commandBar + "\n" + workspace + "\n" + shell;
 
 function mount(ui) {
   const container = document.createElement("div");
@@ -45,12 +49,12 @@ const printActive = {
 
 describe("Detail PO stage-focused workspace", () => {
   test("default panel is the actual stage; viewed and actual stay distinct", () => {
-    expect(detail).toMatch(/clampWorkflowStageIndex\(order\.current_stage/);
-    expect(detail).toMatch(/data-actual-stage=\{actualStage\}/);
-    expect(detail).toMatch(/data-viewed-stage=\{viewedStage\}/);
-    expect(detail).toMatch(/po-actual-stage-label/);
-    expect(detail).toMatch(/po-viewed-stage-title/);
-    expect(detail).toMatch(/btn-back-to-active-stage/);
+    expect(detail).toMatch(/clampWorkflowStageIndex\(resolveOperationalStage\(order, order\.current_stage\)/);
+    expect(ui).toMatch(/data-actual-stage=\{actualStage\}/);
+    expect(ui).toMatch(/data-viewed-stage=\{viewedStage\}/);
+    expect(ui).toMatch(/po-actual-stage-label/);
+    expect(ui).toMatch(/po-viewed-stage-title/);
+    expect(ui).toMatch(/btn-back-to-active-stage/);
     expect(parsePoDetailStageParam("?stage=packing")).toBe(11);
     expect(poDetailStagePanelTitle(5)).toBe("Workspace 6 — Penjadwalan");
   });
@@ -65,10 +69,13 @@ describe("Detail PO stage-focused workspace", () => {
     expect(accordionIndexForFocus(4)).toBe(3);
   });
 
-  test("Order Masuk keeps Detail PO info and line items; other stages hide them", () => {
+  test("Order Masuk workspace is line items; drawers stay global across stages", () => {
     const slot0 = detail.slice(detail.indexOf("workflow-slot-0"), detail.indexOf("workflow-slot-1"));
-    expect(slot0).toMatch(/detail-info/);
     expect(slot0).toMatch(/line-items-panel/);
+    expect(slot0).not.toMatch(/detail-info/);
+    expect(detail).toMatch(/PoContextDrawer/);
+    expect(detail).toMatch(/PoGlobalCommandBar/);
+    expect(detail).toMatch(/PoContextRail/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("0"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("2"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("5"/);
@@ -100,7 +107,7 @@ describe("Detail PO stage-focused workspace", () => {
   });
 
   test("Ringkasan PO drawer does not change the viewed stage", () => {
-    expect(detail).toMatch(/btn-po-summary/);
+    expect(ui).toMatch(/btn-po-summary/);
     expect(detail).toMatch(/PoSummaryDrawer/);
     expect(detail).toMatch(/setSummaryOpen\(true\)/);
     const drawer = fs.readFileSync(
