@@ -31,7 +31,8 @@ const sample = {
     customer: `Pelanggan ${i + 1}`,
     status: i === 1 ? "HOLD" : "Packing",
     hold: i === 1,
-    tanggal_kirim: "2026-09-20",
+    order_date: "2026-09-18",
+    buffer_stock: i === 0,
     tanggal_kirim_overdue: false,
     progress_percent: 40,
     workflow: { packing: "active", order: "completed" },
@@ -57,7 +58,11 @@ describe("SalesPwaOrdersPage", () => {
     expect(container.querySelectorAll("tbody tr").length).toBe(8);
     expect(container.textContent).toContain("PELANGGAN / PO");
     expect(container.textContent).toContain("TAHAP");
-    expect(container.textContent).toContain("TANGGAL KIRIM");
+    expect(container.textContent).toContain("TANGGAL PO");
+    expect(container.textContent).toContain("BUFFER");
+    expect(container.querySelector('[aria-label="Filter pelanggan atau PO"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Filter tahap"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Filter buffer stock"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="sales-pwa-nav"]')).toBeNull();
     act(() => root.unmount());
     container.remove();

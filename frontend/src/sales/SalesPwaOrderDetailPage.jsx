@@ -30,7 +30,7 @@ export default function SalesPwaOrderDetailPage() {
   return (
     <>
       <header className="spwa-top">
-        <Link to="/sales" className="spwa-back"><ChevronLeft size={14} /> PO Saya</Link>
+        <Link to="/sales/po" className="spwa-back"><ChevronLeft size={14} /> PO Saya</Link>
         <p className="spwa-kicker">DETAIL PO</p>
         <h1>{order?.po_number || "PO"}</h1>
       </header>
@@ -43,7 +43,8 @@ export default function SalesPwaOrderDetailPage() {
               <h2>{order.customer}</h2>
               <dl className="spwa-kv">
                 <dt>Tahap</dt><dd>{order.status}</dd>
-                <dt>Tanggal Kirim</dt><dd className={order.tanggal_kirim_overdue ? "spwa-date is-overdue" : ""}>{formatSalesDate(order.tanggal_kirim)}</dd>
+                <dt>Tanggal PO</dt><dd>{formatSalesDate(order.order_date)}</dd>
+                <dt>Buffer</dt><dd>{order.buffer_stock ? "Ya — Buffer Stock" : "Tidak"}</dd>
                 <dt>Progress</dt><dd>{order.progress_percent}%</dd>
                 <dt>Sales</dt><dd>{order.sales || "Perlu verifikasi"}</dd>
                 <dt>Alamat</dt><dd>{order.address || "—"}</dd>

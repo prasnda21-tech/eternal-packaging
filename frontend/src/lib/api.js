@@ -727,6 +727,7 @@ export const api = {
   salesUserMapping: () => client.get("/settings/sales-user-mapping").then((r) => r.data),
   updateSalesUserMapping: (payload) => client.put("/settings/sales-user-mapping", payload).then((r) => r.data),
   salesPwaMe: () => client.get("/sales-pwa/me").then((r) => r.data),
+  salesPwaDashboard: (params = {}) => client.get("/sales-pwa/dashboard", { params }).then((r) => r.data),
   salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),
   salesPwaOrder: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}`).then((r) => r.data),
   salesPwaDocuments: (id) => client.get(`/sales-pwa/orders/${encodeURIComponent(id)}/documents`).then((r) => r.data),
@@ -750,6 +751,10 @@ export const api = {
   salesPwaCustomers: (params = {}) => client.get("/sales-pwa/customers", { params }).then((r) => r.data),
   salesPwaPredictions: () => client.get("/sales-pwa/predictions").then((r) => r.data),
   salesPwaPredictionDetail: (customerKey) => client.get(`/sales-pwa/predictions/${encodeURIComponent(customerKey)}`).then((r) => r.data),
+  salesPwaVisits: (params = {}) => client.get("/sales-pwa/visits", { params }).then((r) => r.data),
+  createSalesPwaVisit: (payload) => client.post("/sales-pwa/visits", payload).then((r) => r.data),
+  uploadSalesPwaVisitPhoto: (form) => client.post("/sales-pwa/visits/photos", form, { timeout: 60000 }).then((r) => r.data),
+  salesPwaVisitPhotoUrl: (photoId) => `${API}/sales-pwa/visits/photos/${encodeURIComponent(photoId)}/file`,
 };
 
 export default api;

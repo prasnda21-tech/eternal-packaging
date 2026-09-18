@@ -83,6 +83,7 @@ def _order(po, sales, sales_user_id, customer, **extra):
         "updated_at": now,
         "source_pdf": extra.get("source_pdf"),
         "delivery_proofs": extra.get("delivery_proofs") or [],
+        "buffer_stock": bool(extra.get("buffer_stock")),
     }
     return doc
 
@@ -223,9 +224,10 @@ async def test_create_and_reassign_use_explicit_mapping():
 
 
 @pytest.mark.anyio
-async def test_sales_eternal_role_defaults_are_read_only():
+async def test_sales_eternal_role_defaults_are_scoped_and_po_read_only():
     perms = set(ROLE_DEFAULT_PERMISSIONS["sales_eternal"])
     assert "sales.pwa.view" in perms
+    assert "sales.pwa.visit.create" in perms
     assert "po.view" not in perms
     assert "sales_order.view" not in perms
     assert "reports.order_prediction.view" not in perms
@@ -234,3 +236,110 @@ async def test_sales_eternal_role_defaults_are_read_only():
         "sales.invoice.create", "po.import.view", "accurate.import",
     ):
         assert write not in perms
+
+
+@pytest.mark.anyio
+async def test_dashboard_orders_and_visits_use_canonical_scoped_sources():
+    import server
+    db = server.db
+    await _seed_users(db)
+    suffix = uuid.uuid4().hex[:6]
+    ayub_po = _order(
+        f"PO-DASH-AYU-{suffix}",
+        ACCURATE_AYUB,
+        AYUB_ID,
+        "Dashboard Ayub",
+        order_date="2026-09-05",
+        buffer_stock=True,
+    )
+    euis_po = _order(
+        f"PO-DASH-EUI-{suffix}",
+        ACCURATE_EUIS,
+        EUIS_ID,
+        "Dashboard Euis",
+        order_date="2026-09-06",
+        buffer_stock=True,
+    )
+    await db.orders.insert_many([ayub_po, euis_po])
+    ayub_invoice_id = str(uuid.uuid4())
+    euis_invoice_id = str(uuid.uuid4())
+    draft_invoice_id = str(uuid.uuid4())
+    await db.sales_invoices.insert_many([
+        {
+            "id": ayub_invoice_id,
+            "po_id": ayub_po["id"],
+            "invoice_number": f"INV-AYU-{suffix}",
+            "invoice_date": "2026-09-10",
+            "grand_total": 1_000_000,
+            "financial_status": "finalized",
+        },
+        {
+            "id": euis_invoice_id,
+            "po_id": euis_po["id"],
+            "invoice_number": f"INV-EUI-{suffix}",
+            "invoice_date": "2026-09-10",
+            "grand_total": 9_000_000,
+            "financial_status": "finalized",
+        },
+        {
+            "id": draft_invoice_id,
+            "po_id": ayub_po["id"],
+            "invoice_number": f"INV-DRAFT-{suffix}",
+            "invoice_date": "2026-09-11",
+            "grand_total": 7_000_000,
+            "financial_status": "draft",
+        },
+    ])
+    await db.sales_receipts.insert_one({
+        "id": str(uuid.uuid4()),
+        "invoice_id": ayub_invoice_id,
+        "po_id": ayub_po["id"],
+        "amount": 250_000,
+    })
+    ayub_outlet_id = str(uuid.uuid4())
+    euis_outlet_id = str(uuid.uuid4())
+    await db.sales_outlets.insert_many([
+        {"id": ayub_outlet_id, "name": "Outlet Visit Ayub", "address": "Yogyakarta"},
+        {"id": euis_outlet_id, "name": "Outlet Visit Euis", "address": "Yogyakarta"},
+    ])
+    await db.sales_ownership.insert_many([
+        {"id": str(uuid.uuid4()), "outlet_id": ayub_outlet_id, "current_owner_id": AYUB_ID, "next_follow_up_at": "2026-09-20T09:00:00+07:00"},
+        {"id": str(uuid.uuid4()), "outlet_id": euis_outlet_id, "current_owner_id": EUIS_ID, "next_follow_up_at": "2026-09-21T09:00:00+07:00"},
+    ])
+
+    app.dependency_overrides[current_user] = lambda: _sales_user(AYUB_ID, "ayub.preview@eternal.com", ACCOUNT_AYUB)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get("/api/sales-pwa/orders", params={
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-30",
+            "buffer": "ya",
+            "sort": "order_date",
+        })
+        assert listed.status_code == 200, listed.text
+        rows = listed.json()["orders"]
+        assert any(row["po_number"] == ayub_po["po_number"] for row in rows)
+        assert all(row["po_number"] != euis_po["po_number"] for row in rows)
+        ayub_row = next(row for row in rows if row["po_number"] == ayub_po["po_number"])
+        assert ayub_row["order_date"] == "2026-09-05"
+        assert ayub_row["buffer_stock"] is True
+
+        dashboard = await client.get("/api/sales-pwa/dashboard", params={"month": "2026-09", "sales_user_id": EUIS_ID})
+        assert dashboard.status_code == 200, dashboard.text
+        metrics = dashboard.json()["metrics"]
+        assert metrics["revenue"] == 1_000_000
+        assert metrics["receivables"] == 750_000
+        assert metrics["buffer_po"] >= 1
+
+        visits = await client.get("/api/sales-pwa/visits", params={"month": "2026-09", "sales_user_id": EUIS_ID})
+        assert visits.status_code == 200, visits.text
+        names = [row["name"] for row in visits.json()["outlets"]]
+        assert "Outlet Visit Ayub" in names
+        assert "Outlet Visit Euis" not in names
+
+    app.dependency_overrides.pop(current_user, None)
+    await db.orders.delete_many({"id": {"$in": [ayub_po["id"], euis_po["id"]]}})
+    await db.sales_invoices.delete_many({"id": {"$in": [ayub_invoice_id, euis_invoice_id, draft_invoice_id]}})
+    await db.sales_receipts.delete_many({"invoice_id": ayub_invoice_id})
+    await db.sales_outlets.delete_many({"id": {"$in": [ayub_outlet_id, euis_outlet_id]}})
+    await db.sales_ownership.delete_many({"outlet_id": {"$in": [ayub_outlet_id, euis_outlet_id]}})

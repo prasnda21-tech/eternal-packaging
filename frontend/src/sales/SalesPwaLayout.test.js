@@ -8,6 +8,8 @@ describe("sales PWA wiring", () => {
 
   test("sales namespace is outside AppShell and operational /m", () => {
     expect(app).toMatch(/path="\/sales"/);
+    expect(app).toMatch(/path="\/sales\/po"/);
+    expect(app).toMatch(/path="\/sales\/visit"/);
     expect(app).toMatch(/path="\/sales\/po\/:id"/);
     expect(app).toMatch(/path="\/sales\/po\/:id\/dokumen\/:kind\/:documentId"/);
     expect(app).toMatch(/path="\/sales\/pelanggan"/);
@@ -22,9 +24,9 @@ describe("sales PWA wiring", () => {
     expect(salesIdx).toBeLessThan(shellIdx);
   });
 
-  test("bottom nav is the four mockup tabs", () => {
-    expect(SALES_PWA_NAV.map((i) => i.id)).toEqual(["orders", "customers", "predictions", "profile"]);
+  test("bottom nav keeps four compact primary actions", () => {
+    expect(SALES_PWA_NAV.map((i) => i.id)).toEqual(["dashboard", "orders", "visits", "more"]);
     expect(layout).toMatch(/sales-pwa-nav/);
-    expect(layout).not.toMatch(/Dokumen/);
+    expect(layout).toMatch(/sales-more-drawer/);
   });
 });
