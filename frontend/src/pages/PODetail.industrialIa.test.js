@@ -33,8 +33,8 @@ describe("Detail PO industrial information architecture", () => {
   );
 
   test("preserves primary actions and permissions wiring", () => {
-    expect(detail).toMatch(/data-testid="back-button"/);
-    expect(detail).toMatch(/data-testid="po-refresh-button"/);
+    expect(detail).not.toMatch(/data-testid="back-button"/);
+    expect(detail).not.toMatch(/data-testid="po-refresh-button"/);
     expect(detail).toMatch(/data-testid="toggle-urgent-button"/);
     expect(detail).toMatch(/data-testid="toggle-buffer-stock-button"/);
     expect(detail).toMatch(/data-testid="po-edit-info"/);
@@ -54,12 +54,13 @@ describe("Detail PO industrial information architecture", () => {
     expect(detail).toMatch(/delete-po-modal/);
   });
 
-  test("dangerous actions live in expandable secondary area", () => {
-    expect(detail).toMatch(/po-actions-danger-toggle/);
+  test("dangerous actions live in the Perencanaan danger group", () => {
+    expect(detail).not.toMatch(/po-actions-danger-toggle/);
     expect(detail).toMatch(/po-actions-danger-body/);
-    expect(detail).toMatch(/Aksi berbahaya/);
-    const admin = detail.slice(detail.indexOf("po-actions-admin"));
-    expect(admin.indexOf("rollback-button")).toBeGreaterThan(admin.indexOf("po-actions-danger-body"));
+    expect(detail).toMatch(/Aksi Berbahaya/);
+    const admin = detail.slice(detail.indexOf("po-actions-danger-body"));
+    expect(admin.indexOf("rollback-button")).toBeGreaterThan(-1);
+    expect(admin.indexOf("cancel-po-button")).toBeGreaterThan(admin.indexOf("po-actions-danger-body"));
   });
 
   test("focus panel is presentational and jumps by display-only stage selection", () => {
@@ -130,7 +131,8 @@ describe("Detail PO industrial information architecture", () => {
   });
 
   test("history defaults collapsed with accessible toggle", () => {
-    expect(detail).toMatch(/defaultOpen=\{false\}/);
+    expect(detail).toMatch(/<Timeline timeline=\{order\.timeline\}/);
+    expect((detail.match(/<Timeline /g) || []).length).toBe(1);
     expect(timeline).toMatch(/order-timeline-toggle/);
     expect(timeline).toMatch(/aria-expanded=\{open\}/);
     expect(timeline).toMatch(/hidden=\{!open\}/);

@@ -20,6 +20,7 @@ export function LineRouteControls({ productionProcess, idx, canEdit, busy, onSel
       <button
         type="button"
         className={getRouteButtonClass(productionProcess, "print")}
+        aria-pressed={String(productionProcess || "").toLowerCase() === "print"}
         onClick={() => onSelect(idx, "print")}
         disabled={!canEdit || busy}
         data-testid={`route-print-${idx}`}
@@ -29,6 +30,7 @@ export function LineRouteControls({ productionProcess, idx, canEdit, busy, onSel
       <button
         type="button"
         className={getRouteButtonClass(productionProcess, "non_print")}
+        aria-pressed={String(productionProcess || "").toLowerCase() === "non_print"}
         onClick={() => onSelect(idx, "non_print")}
         disabled={!canEdit || busy}
         data-testid={`route-nonprint-${idx}`}

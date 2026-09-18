@@ -339,7 +339,7 @@ export default function AppShell() {
   const uiModule = moduleFromPath(location.pathname);
 
   return (
-    <div className="app-shell" data-module={uiModule} data-ui-system="colorful">
+    <div className={"app-shell" + (poDetailActive ? " po-detail-route" : "")} data-module={uiModule} data-ui-system="colorful">
       <div className="app-sidebar-slot">
       <aside className="app-sidebar" ref={sidebarRef}>
         <Link to="/" className="brand" title="Eternal Packaging" data-testid="sidebar-brand" onClick={closeFlyout}>

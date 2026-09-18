@@ -7,7 +7,8 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
   const shellSrc = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
   const appSrc = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
-  const poDetailSrc = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
+  const poDetailSrc = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8")
+    + fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8");
 
   test("FakturPenjualan page contains list, search, table and create elements", () => {
     expect(pageSrc).toMatch(/faktur-penjualan-page/);
@@ -33,7 +34,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
 
   test("PODetail -> Faktur Penjualan passes exact po_id and bypasses redundant PO chooser", () => {
     expect(poDetailSrc).toMatch(/btn-buat-faktur-penjualan/);
-    expect(poDetailSrc).toMatch(/\/penjualan\/faktur-penjualan\?po_id=\$\{order\.id\}&action=create/);
+    expect(poDetailSrc).toMatch(/\/penjualan\/faktur-penjualan\?po_id=\$\{orderId\}&action=create/);
     expect(pageSrc).toMatch(/!queryPoId/);
     expect(pageSrc).toMatch(/queryPoId/);
     expect(pageSrc).toMatch(/loadPoPreview\(selectedPoId\)/);

@@ -9,16 +9,16 @@ describe("PO Detail compact header + sticky StageFlow", () => {
   const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
   const nav = fs.readFileSync(path.join(__dirname, "../lib/poDetailStageNav.js"), "utf8");
 
-  test("Back lives in the global command bar and is not a full-width first row", () => {
+  test("Back is not rendered on Detail PO and is not a full-width first row", () => {
     const commandBar = fs.readFileSync(
       path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"),
       "utf8"
     );
-    expect(commandBar).toMatch(/data-testid="back-button"/);
-    expect(commandBar).toMatch(/Kembali ke Daftar PO/);
-    expect(detail).toMatch(/resolvePoBackTarget/);
+    expect(commandBar).not.toMatch(/data-testid="back-button"/);
+    expect(commandBar).not.toMatch(/Kembali ke Daftar PO/);
+    expect(detail).not.toMatch(/resolvePoBackTarget/);
     expect(detail).not.toMatch(/navigate\(-1\)/);
-    expect((detail + commandBar).split("data-testid=\"back-button\"").length - 1).toBe(1);
+    expect((detail + commandBar).split("data-testid=\"back-button\"").length - 1).toBe(0);
   });
 
   test("Detail PO uses a dedicated sticky StageFlow wrapper", () => {
