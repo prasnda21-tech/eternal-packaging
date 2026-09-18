@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarClock, Info, Plus, Trash2, Users } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -12,6 +12,21 @@ import ConfirmActionModal from "./ConfirmActionModal";
 
 const isPrintLine = (li) => (li?.production_process || "print").toLowerCase() !== "non_print";
 
+const scheduleDraftFromOrder = (order) => (
+  (order?.operator_splits || []).map((s) => ({
+    operator_email: s.operator_email,
+    operator_name: s.operator_name,
+    quantity: s.quantity,
+    id: s.id,
+    stage: s.stage,
+    line_idx: s.line_idx ?? "",
+    work_date: s.work_date || "",
+    qty_completed: Number(s.qty_completed || 0),
+    qty_cancelled: Number(s.qty_cancelled || 0),
+    screen_size: lineItemScreenSize({ line_items: order?.line_items || [] }, s.line_idx) || s.screen_size || "",
+  }))
+);
+
 export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null, mode = "all", focusLineIdx = null }) {
   const { user, hasPerm } = useAuth();
   const [operators, setOperators] = useState([]);
@@ -20,6 +35,8 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   const [err, setErr] = useState("");
   const [qtyDrafts, setQtyDrafts] = useState({});
   const [confirm, setConfirm] = useState(null);
+  const scheduleDraftDirtyRef = useRef(false);
+  const hydratedScheduleKeyRef = useRef("");
 
   const requiresPrinting = order?.requires_printing !== false;
   const lineItems = order?.line_items || [];
@@ -41,22 +58,21 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     [order?.print_qty_total, printLines]
   );
 
+  const serverScheduleDraft = useMemo(
+    () => scheduleDraftFromOrder(order),
+    [order?.operator_splits, order?.line_items]
+  );
+  const serverScheduleKey = useMemo(
+    () => JSON.stringify(serverScheduleDraft),
+    [serverScheduleDraft]
+  );
+
   useEffect(() => {
-    setSplits(
-      (order.operator_splits || []).map((s) => ({
-        operator_email: s.operator_email,
-        operator_name: s.operator_name,
-        quantity: s.quantity,
-        id: s.id,
-        stage: s.stage,
-        line_idx: s.line_idx ?? "",
-        work_date: s.work_date || "",
-        qty_completed: Number(s.qty_completed || 0),
-        qty_cancelled: Number(s.qty_cancelled || 0),
-        screen_size: lineItemScreenSize({ line_items: order.line_items }, s.line_idx) || s.screen_size || "",
-      }))
-    );
-  }, [order.operator_splits, order.line_items]);
+    if (serverScheduleKey === hydratedScheduleKeyRef.current) return;
+    if (scheduleDraftDirtyRef.current && hydratedScheduleKeyRef.current) return;
+    setSplits(serverScheduleDraft);
+    hydratedScheduleKeyRef.current = serverScheduleKey;
+  }, [serverScheduleDraft, serverScheduleKey]);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -108,6 +124,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   }, [splits]);
 
   const addRow = () => {
+    scheduleDraftDirtyRef.current = true;
     const defaultLine = focusedIdx != null ? focusedIdx : (visiblePrintLines[0]?.idx ?? printLines[0]?.idx ?? "");
     const inherited = defaultLine === "" || defaultLine == null
       ? ""
@@ -118,6 +135,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   };
 
   const updateRow = (i, patch) => {
+    scheduleDraftDirtyRef.current = true;
     const next = [...splits];
     const merged = { ...next[i], ...patch };
     if (Object.prototype.hasOwnProperty.call(patch, "line_idx")) {
@@ -143,6 +161,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
   };
 
   const removeRow = (i) => {
+    scheduleDraftDirtyRef.current = true;
     const row = splits[i];
     const done = Number(row?.qty_completed || 0);
     if (row?.id && done > 0) {
@@ -208,6 +227,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         work_date: s.work_date ? s.work_date : null,
         screen_size: s.screen_size ? s.screen_size : null,
       })));
+      scheduleDraftDirtyRef.current = false;
       onUpdated(res.order);
     } catch (e) {
       const d = e.response?.data?.detail;
