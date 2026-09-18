@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, Info, List, MapPin, MessageSquare, MoreVertical, Paperclip, Pencil, Printer, RefreshCw, RotateCcw, ScanLine, Settings, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, List, MapPin, MessageSquare, RefreshCw, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -96,8 +96,6 @@ export default function PODetail() {
   const [selectedWorkflowStage, setSelectedWorkflowStage] = useState(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [stageSheetOpen, setStageSheetOpen] = useState(false);
-  const [utilityDrawer, setUtilityDrawer] = useState(null);
-  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const selectedForOrderRef = useRef(null);
 
   const commitOrder = (nextOrder) => {
@@ -440,41 +438,6 @@ export default function PODetail() {
     syncPoDetailStageQuery(next, { push: true });
   };
   const lineItemCount = order.item_count ?? (order.line_items || []).length;
-
-  const openLocationEditor = async () => {
-    const row = {
-      order_id: order.id,
-      customer: order.customer || order.customer_name || "",
-      outlet: order.outlet || "",
-      outlet_name: order.outlet || "",
-    };
-    try {
-      const d = await api.listDeliveryOutlets(row.customer);
-      const o = (d.outlets || [])[0];
-      if (o) {
-        row.outlet_id = o.id;
-        row.outlet_name = o.name || order.outlet || "";
-        row.lat = o.lat;
-        row.lng = o.lng;
-        row.place_id = o.place_id || o.google_place_id;
-        row.formatted_address = o.formatted_address;
-      }
-    } catch {
-      /* modal tetap dibuka; user dapat melengkapi lokasi secara manual */
-    }
-    setLocRow(row);
-  };
-
-  const backToPoList = () => {
-    const target = resolvePoBackTarget({
-      location,
-      userId: storageUserKey(user),
-      orderId: id,
-      mobileFallback: "/m/tasks",
-      webFallback: "/",
-    });
-    navigate(target);
-  };
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -614,6 +577,37 @@ export default function PODetail() {
               )}
             </div>
           </div>
+          <div className="po-hero-title-actions">
+            <button type="button" className="ghost sm po-hero-refresh" onClick={refreshPO} disabled={poIsPolling} data-testid="po-refresh-button">
+              <RefreshCw size={11} /> Refresh
+            </button>
+            <button
+              type="button"
+              className="ghost sm"
+              data-testid="btn-po-summary"
+              aria-expanded={summaryOpen}
+              onClick={() => setSummaryOpen(true)}
+            >
+              <List size={14} /> Ringkasan PO
+            </button>
+            <button
+              type="button"
+              className="ghost sm po-hero-back"
+              onClick={() => {
+                const target = resolvePoBackTarget({
+                  location,
+                  userId: storageUserKey(user),
+                  orderId: id,
+                  mobileFallback: "/m/tasks",
+                  webFallback: "/",
+                });
+                navigate(target);
+              }}
+              data-testid="back-button"
+            >
+              <ArrowLeft size={16} /> Kembali ke Daftar PO
+            </button>
+          </div>
         </div>
         <div className="po-hero-toolbar" data-testid="po-hero-toolbar">
           <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
@@ -622,10 +616,30 @@ export default function PODetail() {
           <span className="pill sm" data-testid="header-order-kind">
             {order.requires_printing === false ? "Non-Cetak" : "Cetak"}
           </span>
+          {canRepeatOrder && !order.cancelled && (
+            <Link
+              to={`/penjualan/pesanan-penjualan?repeat_order_id=${encodeURIComponent(order.id)}`}
+              className="ghost sm"
+              data-testid="btn-repeat-order-detail"
+              title="Buat pesanan baru dari PO ini"
+            >
+              Repeat Order
+            </Link>
+          )}
+          {canManageUrgent && (
+            <button type="button" className="ghost sm" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
+              <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
+            </button>
+          )}
           {order.buffer_stock && (
             <span className="pill sm" data-testid="buffer-stock-badge">
               BUFFER STOCK
             </span>
+          )}
+          {canManageBufferStock && (
+            <button type="button" className="ghost sm" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
+              {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
+            </button>
           )}
           <span className="po-hero-sedang" data-testid="po-actual-stage-label">
             Tahap aktif saat ini: <strong data-testid="detail-stage">{actualStage + 1}. {STAGES[actualStage]}</strong>
@@ -658,90 +672,6 @@ export default function PODetail() {
           </span>
         </div>
       </div>
-
-      {viewedStage === 0 && (
-        <nav className="po-command-bar" aria-label="Aksi utama PO" data-testid="po-command-bar">
-          <div className="po-command-group">
-            <span className="po-command-label">Informasi PO</span>
-            <div className="po-command-buttons">
-              {canEditPoInfo && !order.cancelled && (
-                <button type="button" className="ghost sm" data-testid="po-edit-info" onClick={() => setEditInfoOpen(true)}>
-                  <Pencil size={14} /> Edit Informasi
-                </button>
-              )}
-              {canSetLocation && (
-                <button type="button" className="ghost sm" data-testid="po-atur-lokasi" onClick={openLocationEditor}>
-                  <MapPin size={14} /> {order.outlet ? "Edit Lokasi" : "Atur Lokasi"}
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="po-command-group">
-            <span className="po-command-label">Perencanaan</span>
-            <div className="po-command-buttons">
-              {canRepeatOrder && !order.cancelled && (
-                <Link to={`/penjualan/pesanan-penjualan?repeat_order_id=${encodeURIComponent(order.id)}`} className="ghost sm" data-testid="btn-repeat-order-detail" title="Buat pesanan baru dari PO ini">
-                  <RotateCcw size={14} /> Repeat Order
-                </Link>
-              )}
-              {canManageUrgent && (
-                <button type="button" className="ghost sm" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
-                  <Zap size={14} /> {order.priority === "urgent" ? "Set Normal" : "Set Urgent"}
-                </button>
-              )}
-              {canManageBufferStock && (
-                <button type="button" className="ghost sm" onClick={toggleBufferStock} disabled={busy} data-testid="toggle-buffer-stock-button">
-                  {order.buffer_stock ? "Unset Buffer Stock" : "Buffer Stock"}
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="po-command-group">
-            <span className="po-command-label">Dokumen</span>
-            <div className="po-command-buttons">
-              <button type="button" className="ghost sm" data-testid="btn-print-po" onClick={() => window.print()}>
-                <Printer size={14} /> Cetak PO
-              </button>
-              <Link to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`} className="ghost sm" data-testid="btn-buat-faktur-penjualan">
-                <FileText size={14} /> Buat Faktur
-              </Link>
-            </div>
-          </div>
-          <div className="po-command-group po-command-more">
-            <span className="po-command-label">Lainnya</span>
-            <button type="button" className="ghost sm" aria-expanded={moreActionsOpen} data-testid="po-more-actions" onClick={() => setMoreActionsOpen((value) => !value)}>
-              <MoreVertical size={15} /> <ChevronDown size={13} />
-            </button>
-            {moreActionsOpen && (
-              <div className="po-command-menu" role="menu" data-testid="po-more-actions-menu">
-                <button type="button" role="menuitem" onClick={() => { setMoreActionsOpen(false); refreshPO(); }} disabled={poIsPolling}>
-                  <RefreshCw size={14} /> Refresh data
-                </button>
-                <button type="button" role="menuitem" onClick={() => { setMoreActionsOpen(false); setSummaryOpen(true); }}>
-                  <List size={14} /> Ringkasan PO
-                </button>
-                <button type="button" role="menuitem" data-testid="back-button" onClick={() => { setMoreActionsOpen(false); backToPoList(); }}>
-                  <ArrowLeft size={14} /> Kembali ke Daftar PO
-                </button>
-              </div>
-            )}
-          </div>
-        </nav>
-      )}
-
-      {viewedStage === 0 && (
-        <aside className="po-context-rail" aria-label="Panel detail PO" data-testid="po-context-rail">
-          <button type="button" className={utilityDrawer === "info" ? "is-active" : ""} aria-pressed={utilityDrawer === "info"} onClick={() => setUtilityDrawer((value) => value === "info" ? null : "info")}>
-            <Info size={21} /><span>Informasi<br />PO</span>
-          </button>
-          <button type="button" className={utilityDrawer === "operational" ? "is-active" : ""} aria-pressed={utilityDrawer === "operational"} onClick={() => setUtilityDrawer((value) => value === "operational" ? null : "operational")}>
-            <Settings size={21} /><span>Operasional</span>
-          </button>
-          <button type="button" className={utilityDrawer === "documents" ? "is-active" : ""} aria-pressed={utilityDrawer === "documents"} onClick={() => setUtilityDrawer((value) => value === "documents" ? null : "documents")}>
-            <Paperclip size={21} /><span>Dokumen &amp;<br />Pengecualian</span>
-          </button>
-        </aside>
-      )}
 
       <div className="po-mobile-stage-chrome" data-testid="po-mobile-stage-chrome">
         <div>
@@ -868,12 +798,21 @@ export default function PODetail() {
       <PoStageAccordionProvider openStageIndex={accordionOpenIndex} onToggleStage={selectWorkflowStage}>
       {/* 01 Order Masuk */}
       <div id="po-stage-order-masuk" data-testid="workflow-slot-0" data-workflow-stage="0" className={deskPanelOwnsStage("0", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("0", viewedStage)}>
-      <div className="po-meta-aksi-row po-command-drawers" data-testid="po-meta-aksi-row">
+      <div className="po-meta-aksi-row" data-testid="po-meta-aksi-row">
       {/* Order Info */}
-      <section className={`panel po-info-panel po-utility-drawer${utilityDrawer === "info" ? " is-open" : ""}`} data-testid="detail-info" aria-hidden={utilityDrawer !== "info"}>
+      <section className="panel po-info-panel" data-testid="detail-info">
         <header className="panel-head">
           <h3>Informasi PO</h3>
-          <button type="button" className="icon-button" aria-label="Tutup informasi PO" onClick={() => setUtilityDrawer(null)}><X size={18} /></button>
+          {canEditPoInfo && !order.cancelled && (
+            <button
+              type="button"
+              className="ghost sm"
+              data-testid="po-edit-info"
+              onClick={() => setEditInfoOpen(true)}
+            >
+              Edit Informasi
+            </button>
+          )}
         </header>
         <div className="po-info-grid">
         <div>
@@ -887,6 +826,38 @@ export default function PODetail() {
         <div>
           <span className="lbl">Outlet</span>
           <strong>{order.outlet || <span className="po-info-empty">—</span>}</strong>
+          {canSetLocation && (
+            <button
+              type="button"
+              className="ghost sm po-info-edit"
+              data-testid="po-atur-lokasi"
+              onClick={async () => {
+                const row = {
+                  order_id: order.id,
+                  customer: order.customer || order.customer_name || "",
+                  outlet: order.outlet || "",
+                  outlet_name: order.outlet || "",
+                };
+                try {
+                  const d = await api.listDeliveryOutlets(row.customer);
+                  const o = (d.outlets || [])[0];
+                  if (o) {
+                    row.outlet_id = o.id;
+                    row.outlet_name = o.name || order.outlet || "";
+                    row.lat = o.lat;
+                    row.lng = o.lng;
+                    row.place_id = o.place_id || o.google_place_id;
+                    row.formatted_address = o.formatted_address;
+                  }
+                } catch {
+                  /* modal still opens */
+                }
+                setLocRow(row);
+              }}
+            >
+              {order.outlet ? "Edit Lokasi" : "Atur Lokasi"}
+            </button>
+          )}
         </div>
         <div>
           <span className="lbl">Tanggal PO</span>
@@ -1004,10 +975,10 @@ export default function PODetail() {
         </div>
       </section>
 
-      <section className={`panel po-actions-panel po-utility-drawer${utilityDrawer === "operational" ? " is-open" : ""}`} data-testid="po-actions-panel" aria-hidden={utilityDrawer !== "operational"}>
+      <section className="panel po-actions-panel" data-testid="po-actions-panel">
         <header className="panel-head">
           <h3>Aksi PO</h3>
-          <button type="button" className="icon-button" aria-label="Tutup aksi PO" onClick={() => setUtilityDrawer(null)}><X size={18} /></button>
+          <span className="muted small">Operasional · dokumen · pengecualian</span>
         </header>
         <div className="po-actions-ops" data-testid="po-actions-ops">
           {canCopyTrackingLink && (
@@ -1036,6 +1007,16 @@ export default function PODetail() {
               <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
             </span>
           ) : null}
+        </div>
+        <div className="po-actions-admin-docs" data-testid="po-actions-admin-docs">
+          <span className="po-actions-group-label">Dokumen</span>
+          <Link
+            to={`/penjualan/faktur-penjualan?po_id=${order.id}&action=create`}
+            className="po-action-doc"
+            data-testid="btn-buat-faktur-penjualan"
+          >
+            <FileText size={16} /> BUAT FAKTUR
+          </Link>
         </div>
         {(canRollback || canCancel || canDelete) && (
           <div className="po-actions-admin">
@@ -1092,20 +1073,32 @@ export default function PODetail() {
           <table className="line-items-table" data-testid="line-items-table">
             <thead>
               <tr>
-                <th className="num">No</th>
                 <th>Item</th>
                 <th>Kode</th>
                 <th className="num">Qty</th>
                 <th>Warna</th>
                 <th>Cetak / Non-Cetak</th>
-                <th>Aksi Item</th>
+                <th>Status</th>
+                <th>Aksi</th>
               </tr>
             </thead>
             <tbody>
               {(order.line_items || []).map((li, i) => {
+                const process = String(li.production_process || "").toLowerCase();
+                const statusLabel =
+                  process === "non_print"
+                    ? "Non-Cetak"
+                    : process === "print"
+                      ? "Cetak"
+                      : "Belum diklasifikasi";
+                const statusTone =
+                  process === "non_print"
+                    ? "is-nonprint"
+                    : process === "print"
+                      ? "is-print"
+                      : "is-unset";
                 return (
                   <tr key={i} className="line-item-row" data-testid={`line-item-${i}`}>
-                    <td className="num li-row-number">{i + 1}</td>
                     <td className="li-name">
                       <strong>{li.name}</strong>
                       {li.notes ? <span className="li-notes">Catatan sablon: {li.notes}</span> : null}
@@ -1123,6 +1116,14 @@ export default function PODetail() {
                         canEdit={canEditRoute}
                         onUpdated={setOrder}
                       />
+                    </td>
+                    <td>
+                      <span
+                        className={`li-process ${statusTone}`}
+                        data-testid={`line-item-process-${i}`}
+                      >
+                        {statusLabel}
+                      </span>
                     </td>
                     <td className="li-actions">
                       <LineProductReplaceControl
@@ -1597,6 +1598,32 @@ export default function PODetail() {
       </div>
       </section>
 
+      {/* Notes — Order Masuk workspace */}
+      <div hidden={!deskPanelOwnsStage("0", viewedStage)}>
+      <section className={`panel po-notes-panel${!order.notes && !note ? " is-empty" : ""}`} data-testid="notes-panel">
+        <header className="panel-head"><h3>Catatan Produksi</h3></header>
+        {order.notes && <pre className="notes-view">{order.notes}</pre>}
+        {!order.notes && !note && <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>}
+        {!isCrm && (
+          <div className="note-add">
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Tambahkan catatan..."
+              rows={2}
+              data-testid="note-input"
+              className="manual-input"
+            />
+            <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
+              <MessageSquare size={14} /> Simpan catatan
+            </button>
+          </div>
+        )}
+      </section>
+
+      <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen={false} />
+      </div>
+
       <PoSummaryDrawer
         open={summaryOpen}
         order={order}
@@ -1604,49 +1631,6 @@ export default function PODetail() {
         viewedStage={viewedStage}
         onClose={() => setSummaryOpen(false)}
       />
-      {utilityDrawer && (
-        <button type="button" className="po-utility-scrim" aria-label="Tutup panel" onClick={() => setUtilityDrawer(null)} />
-      )}
-      {utilityDrawer === "documents" && (
-        <aside className="po-documents-drawer po-utility-drawer is-open" role="dialog" aria-modal="true" aria-labelledby="po-documents-title" data-testid="po-documents-drawer">
-          <header className="panel-head">
-            <div>
-              <span className="po-summary-kicker">Dokumen &amp; pengecualian</span>
-              <h3 id="po-documents-title">Berkas PO</h3>
-            </div>
-            <button type="button" className="icon-button" aria-label="Tutup dokumen PO" onClick={() => setUtilityDrawer(null)}><X size={18} /></button>
-          </header>
-          <div className="po-documents-drawer-body">
-            {order.source_pdf?.storage_path ? (
-              <a href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${order.source_pdf.storage_path}`} target="_blank" rel="noopener noreferrer" className="po-drawer-link" data-testid="drawer-source-pdf">
-                <FileText size={16} /> {order.source_pdf.original_filename || "Lihat PDF asli import"}
-              </a>
-            ) : (
-              <p className="muted small">Tidak ada PDF asli import pada PO ini.</p>
-            )}
-            <dl className="po-drawer-status-list">
-              <div><dt>Prioritas</dt><dd>{order.priority === "urgent" ? "Urgent" : "Normal"}</dd></div>
-              <div><dt>Buffer stock</dt><dd>{order.buffer_stock ? "Aktif" : "Tidak aktif"}</dd></div>
-              <div><dt>Status PO</dt><dd>{order.cancelled ? "Dibatalkan" : "Aktif"}</dd></div>
-            </dl>
-            <p className="muted small">Aksi pengecualian tersedia di drawer Operasional dan tetap mengikuti izin pengguna.</p>
-            <section className={`panel po-notes-panel${!order.notes && !note ? " is-empty" : ""}`} data-testid="notes-panel">
-              <header className="panel-head"><h3>Catatan Produksi</h3></header>
-              {order.notes && <pre className="notes-view">{order.notes}</pre>}
-              {!order.notes && !note && <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>}
-              {!isCrm && (
-                <div className="note-add">
-                  <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Tambahkan catatan..." rows={2} data-testid="note-input" className="manual-input" />
-                  <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
-                    <MessageSquare size={14} /> Simpan catatan
-                  </button>
-                </div>
-              )}
-            </section>
-            <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen={false} />
-          </div>
-        </aside>
-      )}
       <PoStagePickerSheet
         open={stageSheetOpen}
         order={order}
