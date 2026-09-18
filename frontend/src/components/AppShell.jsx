@@ -141,7 +141,6 @@ export default function AppShell() {
   const { user, hasPerm, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const poDetailActive = /^\/po\/[^/]+\/?$/.test(location.pathname);
   const workspace = useGlobalWorkspaceTabs();
   const workspaceTabs = useMemo(
     () => mergeWorkspaceTabsPreview(workspace.tabs, location.search),
@@ -701,7 +700,6 @@ export default function AppShell() {
           <div className="sync" data-testid="sync-status" title={health.checkedAt ? `Cek terakhir: ${health.checkedAt}` : undefined}>
             <span className="live-dot" style={healthDotStyle} /> {healthLabel}
           </div>
-          {poDetailActive && <FloatingNotificationBell docked />}
           <div className="profile">
             <div className="profile-meta">
               <strong className="profile-name">{user?.name || user?.email}</strong>
@@ -730,7 +728,7 @@ export default function AppShell() {
           </Suspense>
         </main>
       </div>
-      {!poDetailActive && <FloatingNotificationBell />}
+      <FloatingNotificationBell />
     </div>
   );
 }

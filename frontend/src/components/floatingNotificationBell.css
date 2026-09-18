@@ -8,14 +8,6 @@
   pointer-events: none;
 }
 
-.ep-web-notif-root.is-docked {
-  position: relative;
-  z-index: 70;
-  width: 34px;
-  height: 34px;
-  pointer-events: auto;
-}
-
 .ep-web-notif-bell {
   pointer-events: auto;
   position: absolute;
@@ -32,16 +24,6 @@
   touch-action: none;
   user-select: none;
   padding: 0;
-}
-
-.ep-web-notif-root.is-docked .ep-web-notif-bell {
-  position: static;
-  width: 34px !important;
-  height: 34px !important;
-  border-width: 1px;
-  border-radius: 4px;
-  box-shadow: none;
-  cursor: pointer;
 }
 
 .ep-web-notif-bell:hover {

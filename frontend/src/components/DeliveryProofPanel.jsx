@@ -538,7 +538,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   };
 
   return (
-    <section className="panel delivery-proof-panel" data-testid="delivery-proof-panel">
+    <section className="panel" data-testid="delivery-proof-panel">
       <header className="panel-head">
         <h3>Bukti Kirim</h3>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -551,7 +551,6 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
           </span>
         </div>
       </header>
-      <div className="delivery-proof-scroll">
 
       {sjOptions.length > 0 && (
         <div data-testid="pengiriman-sj-select-wrap" style={{ padding: "0 16px 10px" }}>
@@ -930,42 +929,39 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
             </div>
           )}
 
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+            {deliverButtonVisible && (
+              <button
+                type="button"
+                className="primary"
+                onClick={openDeliverConfirm}
+                disabled={!deliverEnabled || confirming || uploading || savingSig}
+                data-testid="confirm-delivered-button"
+              >
+                {confirming || savingSig ? "Memproses..." : "Konfirmasi Terkirim"}
+              </button>
+            )}
+            {canReschedule && order.delivery_status !== "Terkirim" && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setRescheduleOpen(true)}
+                disabled={confirming || uploading}
+                data-testid="reschedule-delivery-button"
+              >
+                Jadwalkan Ulang
+              </button>
+            )}
+          </div>
+          {deliverButtonVisible && deliverBlockReason && (
+            <p className="muted small" data-testid="confirm-delivered-hint">{deliverBlockReason}</p>
+          )}
           <p className="muted small" data-testid="proof-photo-limit-hint">
             Upload foto tidak menandai Terkirim. Minimal {MIN_DELIVERY_PROOFS} foto, lalu isi nama penerima + TTD penerima + TTD driver, kemudian Konfirmasi Terkirim.
             {" "}{photoLimitHint}. Foto dikompres otomatis (~1600px, ~1MB) sebelum dikirim ke storage.
             {remainingSlots > 0 ? ` Sisa slot: ${remainingSlots}.` : " Slot penuh — hapus foto untuk menambah."}
           </p>
         </div>
-      )}
-      </div>
-      {(deliverButtonVisible || (canReschedule && order.delivery_status !== "Terkirim")) && (
-        <footer className="delivery-stage-action-footer" data-testid="delivery-stage-action-footer">
-          {deliverButtonVisible && (
-            <button
-              type="button"
-              className="primary"
-              onClick={openDeliverConfirm}
-              disabled={!deliverEnabled || confirming || uploading || savingSig}
-              data-testid="confirm-delivered-button"
-            >
-              {confirming || savingSig ? "Memproses..." : "Konfirmasi Terkirim"}
-            </button>
-          )}
-          {canReschedule && order.delivery_status !== "Terkirim" && (
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => setRescheduleOpen(true)}
-              disabled={confirming || uploading}
-              data-testid="reschedule-delivery-button"
-            >
-              Jadwalkan Ulang
-            </button>
-          )}
-          {deliverButtonVisible && deliverBlockReason && (
-            <p className="muted small" data-testid="confirm-delivered-hint">{deliverBlockReason}</p>
-          )}
-        </footer>
       )}
       <ConfirmActionModal
         open={!!confirmUpload}

@@ -3,7 +3,6 @@ import path from "path";
 
 describe("PO Detail delivery cards", () => {
   const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
-  const commandBar = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8");
   const proof = fs.readFileSync(path.join(__dirname, "../components/DeliveryProofPanel.jsx"), "utf8");
   const qtyUi = fs.readFileSync(path.join(__dirname, "../components/qtyUi.jsx"), "utf8");
   const wage = fs.readFileSync(path.join(__dirname, "OperatorWageSettings.jsx"), "utf8");
@@ -21,8 +20,8 @@ describe("PO Detail delivery cards", () => {
   });
 
   test("Atur Lokasi is available on PO detail without create-schedule", () => {
-    expect(commandBar).toMatch(/Atur Lokasi|Edit Lokasi/);
-    expect(commandBar).toMatch(/po-atur-lokasi/);
+    expect(detail).toMatch(/Atur Lokasi|Edit Lokasi/);
+    expect(detail).toMatch(/po-atur-lokasi/);
     expect(detail).toMatch(/OutletLocationModal/);
     expect(detail).toMatch(/delivery.location.manage/);
   });
@@ -60,14 +59,6 @@ describe("PO Detail delivery cards", () => {
     expect(proof).toMatch(/delivery-history-photo/);
     expect(proof).toMatch(/confirm-delivered-button/);
     expect(proof).toMatch(/Upload foto tidak menandai Terkirim/);
-  });
-
-  test("Pengiriman decision actions stay in one fixed panel footer", () => {
-    expect(proof).toMatch(/data-testid="delivery-stage-action-footer"/);
-    expect(proof.split('data-testid="confirm-delivered-button"').length - 1).toBe(1);
-    expect(proof.split('data-testid="reschedule-delivery-button"').length - 1).toBe(1);
-    expect(css).toMatch(/\.delivery-proof-scroll\{[^}]*overflow:auto/);
-    expect(css).toMatch(/\.delivery-stage-action-footer\{[^}]*flex:0 0 auto/);
   });
 
   test("Driver/Terkirim actions use delivery.update not role name", () => {
@@ -134,11 +125,10 @@ describe("PO Detail delivery cards", () => {
     expect(stageState).toMatch(/Menunggu bukti pengiriman/);
   });
 
-  test("Aksi PO lives in the global operational drawer and shipping summary is gone", () => {
-    expect(detail).toMatch(/PoContextDrawer/);
-    expect(detail).toMatch(/testid="detail-info"/);
-    expect(detail).toMatch(/testid="po-actions-panel"/);
-    expect(detail.split("testid=\"po-actions-panel\"").length - 1).toBe(1);
+  test("Aksi PO sits above Line Item and shipping summary is gone", () => {
+    expect(detail.indexOf("detail-info")).toBeLessThan(detail.indexOf("po-actions-panel"));
+    expect(detail.indexOf("po-actions-panel")).toBeLessThan(detail.indexOf("line-items-panel"));
+    expect(detail.split("data-testid=\"po-actions-panel\"").length - 1).toBe(1);
     expect(detail).not.toMatch(/sales-delivery-summary-panel/);
     expect(detail).not.toMatch(/Pengiriman Pesanan \(Surat Jalan Penjualan\)/);
     expect(detail).not.toMatch(/kpi-delivery-total-order/);
@@ -148,7 +138,7 @@ describe("PO Detail delivery cards", () => {
     expect(detail.indexOf("workflow-slot-13")).toBeLessThan(detail.indexOf("workflow-slot-14"));
     expect(detail).toMatch(/copy-tracking-link/);
     expect(detail).toMatch(/btn-proses-pengiriman-pesanan/);
-    expect(commandBar).toMatch(/btn-buat-faktur-penjualan/);
+    expect(detail).toMatch(/btn-buat-faktur-penjualan/);
   });
 
   test("hero puts customer above No PO", () => {

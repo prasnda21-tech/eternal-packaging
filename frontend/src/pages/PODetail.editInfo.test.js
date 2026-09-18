@@ -38,18 +38,14 @@ function setInputValue(el, value) {
 }
 
 describe("Edit Informasi PO — Informasi PO card", () => {
-  const commandBar = fs.readFileSync(
-    path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"),
-    "utf8"
-  );
   test("card action Edit Informasi uses po.edit and does not replace Edit Lokasi", () => {
-    expect(commandBar).toMatch(/Edit Informasi/);
-    expect(commandBar).toMatch(/po-edit-info/);
+    expect(detail).toMatch(/Edit Informasi/);
+    expect(detail).toMatch(/po-edit-info/);
     expect(detail).toMatch(/canEditPoInfo/);
     expect(detail).toMatch(/hasPerm\("po\.edit"\)/);
     expect(detail).toMatch(/EditPoInfoModal/);
-    expect(commandBar).toMatch(/Atur Lokasi|Edit Lokasi/);
-    expect(commandBar).toMatch(/po-atur-lokasi/);
+    expect(detail).toMatch(/Atur Lokasi|Edit Lokasi/);
+    expect(detail).toMatch(/po-atur-lokasi/);
     expect(detail).toMatch(/OutletLocationModal/);
     expect(detail).toMatch(/delivery\.location\.manage/);
     expect(detail).toMatch(/data-testid="detail-address"/);
