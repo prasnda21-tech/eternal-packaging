@@ -895,6 +895,77 @@ async def handle_goods_receipt_created(
     return movements
 
 
+async def handle_manual_receipt_created(
+    db,
+    receipt: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Stock-In for standalone ERP MANUAL / Penerimaan Langsung receipts.
+
+    Uses live physical_stock settings (no PO snapshot). Idempotent via durable
+    event_id keyed by accurate_receipt_id + line_id. Does not replay Accurate.
+    """
+    settings = await get_physical_stock_settings(db)
+    if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
+        return []
+
+    rc_id = str(
+        receipt.get("accurate_receipt_id")
+        or receipt.get("id")
+        or ""
+    ).strip()
+    if not rc_id:
+        return []
+    rc_num = str(receipt.get("receipt_number") or "").strip()
+    supplier = str(receipt.get("supplier") or "SUPPLIER").strip() or "SUPPLIER"
+
+    movements: List[Dict[str, Any]] = []
+    for line in receipt.get("lines") or []:
+        mid = line.get("master_item_id")
+        if not mid:
+            continue
+        line_id = line.get("line_id") or line.get("accurate_line_id") or str(line.get("line_idx", 0))
+        event_id = f"stock_in:goods_receipt:{rc_id}:{line_id}"
+        qty = safe_float(line.get("received_qty", 0))
+        if qty <= 0:
+            continue
+
+        mov = await execute_durable_stock_event(
+            db,
+            event_id=event_id,
+            master_item_id=mid,
+            movement_type=MOVEMENT_PENERIMAAN,
+            transaction_qty=qty,
+            transaction_uom=line.get("unit"),
+            source_entity=supplier,
+            destination_entity="GUDANG_UTAMA",
+            reference_number=rc_num,
+            reference_type="goods_receipt",
+            reference_id=rc_id,
+            description=f"Penerimaan Langsung {rc_num}".strip(),
+            line_idx=line.get("line_idx"),
+            line_id=line.get("line_id") or line.get("accurate_line_id"),
+            user=user,
+        )
+        movements.append(mov)
+
+    return movements
+
+
+async def precheck_manual_receipt_lines(
+    db,
+    lines: List[Dict[str, Any]],
+) -> None:
+    """Fail-fast before persisting MANUAL receipt when Stock V2 goods_receipt is live."""
+    settings = await get_physical_stock_settings(db)
+    if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
+        return
+    for line in lines or []:
+        mid = line.get("master_item_id")
+        if mid:
+            await require_product_stock_initialized(db, mid)
+
+
 async def is_operator_cetak_physical_stock_active(
     db,
     order: Dict[str, Any],

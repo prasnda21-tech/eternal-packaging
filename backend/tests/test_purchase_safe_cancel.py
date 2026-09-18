@@ -718,6 +718,16 @@ async def test_manual_receipt_cancel_is_soft_idempotent_and_accurate_is_blocked(
     manual_id = accurate_id = None
     async with await client_ctx() as c:
         try:
+            await server.db.app_settings.update_one(
+                {"key": "physical_stock"},
+                {"$set": {
+                    "key": "physical_stock",
+                    "enabled": False,
+                    "stock_in_trigger": "goods_receipt",
+                    "stock_out_trigger": "sales_delivery",
+                }},
+                upsert=True,
+            )
             created = await c.post("/api/purchase-receipts", json={
                 "supplier": "Manual Supplier",
                 "receipt_date": "2026-09-17",
@@ -774,6 +784,129 @@ async def test_manual_receipt_cancel_is_soft_idempotent_and_accurate_is_blocked(
                 await server.db.accurate_purchase_receipts.delete_many({
                     "accurate_receipt_id": accurate_id,
                 })
+            app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_manual_receipt_stock_in_idempotent_and_cancel_reverses():
+    from services.stock_ledger import MOVEMENT_PENERIMAAN, MOVEMENT_REVERSAL_PENERIMAAN
+
+    manual_id = mid = None
+    async with await client_ctx() as c:
+        try:
+            await server.db.app_settings.update_one(
+                {"key": "physical_stock"},
+                {"$set": {
+                    "key": "physical_stock",
+                    "enabled": True,
+                    "stock_in_trigger": "goods_receipt",
+                    "stock_out_trigger": "sales_delivery",
+                }},
+                upsert=True,
+            )
+            mid = f"manual-stock-{uuid.uuid4().hex[:8]}"
+            await server.db.master_items.insert_one({
+                "id": mid,
+                "item_code": "100369",
+                "item_name": "Manual Stock SKU",
+                "unit": "PCS",
+            })
+            await server.db.product_stock_state.insert_one({
+                "_id": mid,
+                "master_item_id": mid,
+                "base_uom": "PCS",
+                "initialized": True,
+                "status": "INITIALIZED",
+                "total_qty": 0,
+                "unprinted_qty": 0,
+                "printed_qty": 0,
+                "version": 1,
+                "pending_event": None,
+            })
+
+            idem = f"manual-stock-{uuid.uuid4()}"
+            payload = {
+                "supplier": "Manual Stock Supplier",
+                "receipt_date": "2026-09-17",
+                "lines": [{
+                    "master_item_id": mid,
+                    "item_code": "100369",
+                    "item_name": "Manual Stock SKU",
+                    "unit": "PCS",
+                    "received_qty": 2,
+                }],
+                "idempotency_key": idem,
+            }
+            created = await c.post("/api/purchase-receipts", json=payload)
+            assert created.status_code == 200, created.text
+            manual = created.json()["receipt"]
+            manual_id = manual["accurate_receipt_id"]
+            assert manual.get("valid") is True
+            assert not manual.get("cancelled")
+
+            after = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert after["total_qty"] == 2
+            assert after["unprinted_qty"] == 2
+            assert after["printed_qty"] == 0
+            originals = await server.db.stock_movements.find({
+                "reference_type": "goods_receipt",
+                "reference_id": manual_id,
+                "movement_type": MOVEMENT_PENERIMAAN,
+            }, {"_id": 0}).to_list(None)
+            assert len(originals) == 1
+            assert originals[0]["transaction_qty"] == 2 or originals[0].get("delta") == 2
+
+            retry = await c.post("/api/purchase-receipts", json=payload)
+            assert retry.status_code == 200, retry.text
+            assert retry.json()["receipt"]["accurate_receipt_id"] == manual_id
+            after_retry = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert after_retry["total_qty"] == 2
+            assert await server.db.stock_movements.count_documents({
+                "reference_type": "goods_receipt",
+                "reference_id": manual_id,
+                "movement_type": MOVEMENT_PENERIMAAN,
+            }) == 1
+
+            cancelled = await c.post(
+                f"/api/purchase-receipts/{manual_id}/cancel",
+                json={"reason": "Qty salah"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            body = cancelled.json()["receipt"]
+            assert body["cancelled"] is True
+            assert body["status"] == "CANCELLED"
+
+            after_cancel = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert after_cancel["total_qty"] == 0
+            assert after_cancel["unprinted_qty"] == 0
+            assert after_cancel["printed_qty"] == 0
+            reversals = await server.db.stock_movements.find({
+                "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+                "goods_receipt_id": manual_id,
+            }, {"_id": 0}).to_list(None)
+            assert len(reversals) == 1
+            assert reversals[0]["delta"] == -2 or reversals[0]["transaction_qty"] == -2
+
+            cancel_retry = await c.post(f"/api/purchase-receipts/{manual_id}/cancel", json={})
+            assert cancel_retry.status_code == 200
+            assert await server.db.stock_movements.count_documents({
+                "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+                "goods_receipt_id": manual_id,
+            }) == 1
+            final_state = await server.db.product_stock_state.find_one({"master_item_id": mid})
+            assert final_state["total_qty"] == 0
+        finally:
+            if manual_id:
+                await server.db.stock_movements.delete_many({
+                    "$or": [{"reference_id": manual_id}, {"goods_receipt_id": manual_id}],
+                })
+                await server.db.accurate_purchase_receipts.delete_many({
+                    "accurate_receipt_id": manual_id,
+                })
+            if mid:
+                await server.db.stock_movements.delete_many({"master_item_id": mid})
+                await server.db.product_stock_state.delete_many({"master_item_id": mid})
+                await server.db.master_items.delete_many({"id": mid})
             app.dependency_overrides.pop(current_user, None)
 
 

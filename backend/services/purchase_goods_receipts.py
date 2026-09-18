@@ -192,6 +192,134 @@ async def get_purchase_goods_receipt(db, receipt_id: str) -> dict:
     return await enrich_goods_receipt(db, doc)
 
 
+async def apply_receipt_stock_reversals(
+    db,
+    receipt_key: str,
+    *,
+    receipt_number: str = "",
+    supplier: str = "SUPPLIER",
+    reason: str = "",
+    user: Optional[dict] = None,
+    order_id: Optional[str] = None,
+) -> List[str]:
+    """Append idempotent REVERSAL_PENERIMAAN for one receipt key (PO GR or MANUAL).
+
+    Honors absolute-adjustment barrier (stock_opname / opening_balance_correction):
+    superseded originals get audit-only reversal with effective_delta 0.
+    """
+    rid = str(receipt_key or "").strip()
+    if not rid:
+        return []
+    why = str(reason or "").strip()
+    plan = await _stock_reversal_plan(db, rid)
+    if plan.get("blocked"):
+        raise HTTPException(
+            409,
+            plan.get("block_reason") or "Reversal stock Penerimaan Barang tidak aman.",
+        )
+
+    supplier_name = str(supplier or "SUPPLIER").strip() or "SUPPLIER"
+    rc_num = str(receipt_number or "").strip()
+    reversal_ids: List[str] = []
+
+    for movement in plan.get("superseded_originals") or []:
+        original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
+        mid = str(movement.get("master_item_id") or "").strip()
+        if not original_id or not mid:
+            continue
+        reversal_id = f"stock_reverse:goods_receipt:{rid}:{original_id}"
+        state = await db.product_stock_state.find_one(
+            {"$or": [{"_id": mid}, {"master_item_id": mid}]},
+            {"_id": 0},
+        )
+        current_total = safe_float((state or {}).get("total_qty"))
+        barrier = movement.get("_absolute_barrier") or {}
+        reversed_movement = await record_stock_movement(
+            db,
+            movement_type=MOVEMENT_REVERSAL_PENERIMAAN,
+            master_item_id=mid,
+            accurate_item_id=movement.get("accurate_item_id"),
+            transaction_qty=0,
+            transaction_uom=movement.get("base_uom") or movement.get("transaction_uom"),
+            source_entity="GUDANG_UTAMA",
+            destination_entity=supplier_name,
+            reference_number=rc_num,
+            reference_type="goods_receipt_reversal",
+            reference_id=rid,
+            description=(
+                f"Pembatalan Penerimaan Barang tanpa perubahan stock "
+                f"(superseded oleh adjustment absolut): {why}"
+            ),
+            order_id=order_id,
+            line_idx=movement.get("line_idx"),
+            line_id=movement.get("line_id"),
+            delta_unprinted=0,
+            delta_printed=0,
+            event_key=reversal_id,
+            movement_id=reversal_id,
+            balance_before=current_total,
+            balance_after=current_total,
+            unprinted_before=safe_float((state or {}).get("unprinted_qty")),
+            unprinted_after=safe_float((state or {}).get("unprinted_qty")),
+            printed_before=safe_float((state or {}).get("printed_qty")),
+            printed_after=safe_float((state or {}).get("printed_qty")),
+            change_metadata={
+                "goods_receipt_id": rid,
+                "reversal_of_movement_id": original_id,
+                "cancel_reason": why,
+                "effective_delta": 0,
+                "superseded_by_absolute_adjustment": True,
+                "superseded_by_movement_id": (
+                    barrier.get("id") or barrier.get("event_key")
+                ),
+            },
+            user=user,
+        )
+        reversal_ids.append(str(reversed_movement.get("id") or reversal_id))
+
+    for movement in plan.get("pending_originals") or []:
+        original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
+        mid = str(movement.get("master_item_id") or "").strip()
+        qty = abs(safe_float(movement.get("delta", movement.get("base_qty", 0))))
+        if not original_id or not mid or qty <= 0:
+            continue
+        reversal_id = f"stock_reverse:goods_receipt:{rid}:{original_id}"
+        reversed_movement = await execute_durable_stock_event(
+            db,
+            event_id=reversal_id,
+            master_item_id=mid,
+            movement_type=MOVEMENT_REVERSAL_PENERIMAAN,
+            transaction_qty=-qty,
+            transaction_uom=movement.get("base_uom") or movement.get("transaction_uom"),
+            source_entity="GUDANG_UTAMA",
+            destination_entity=supplier_name,
+            reference_number=rc_num,
+            reference_type="goods_receipt_reversal",
+            reference_id=rid,
+            description=f"Pembatalan Penerimaan Barang: {why}",
+            order_id=order_id,
+            line_idx=movement.get("line_idx"),
+            line_id=movement.get("line_id"),
+            change_metadata={
+                "goods_receipt_id": rid,
+                "reversal_of_movement_id": original_id,
+                "cancel_reason": why,
+                "effective_delta": -qty,
+                "superseded_by_absolute_adjustment": False,
+            },
+            user=user,
+        )
+        reversal_ids.append(str(reversed_movement.get("id") or reversal_id))
+
+    existing_reversals = await db.stock_movements.find({
+        "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+        "goods_receipt_id": rid,
+    }, {"_id": 0, "id": 1}).to_list(None)
+    return list(dict.fromkeys(
+        reversal_ids + [str(m.get("id") or "") for m in existing_reversals if m.get("id")]
+    ))
+
+
 async def cancel_purchase_goods_receipt(
     db,
     receipt_id: str,
@@ -226,111 +354,15 @@ async def cancel_purchase_goods_receipt(
         if not reason:
             raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
 
-        plan = await _stock_reversal_plan(db, doc["id"])
-        if plan.get("blocked"):
-            raise HTTPException(
-                409,
-                plan.get("block_reason") or "Reversal stock Penerimaan Barang tidak aman.",
-            )
-
-        reversal_ids: List[str] = []
-        for movement in plan.get("superseded_originals") or []:
-            original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
-            mid = str(movement.get("master_item_id") or "").strip()
-            if not original_id or not mid:
-                continue
-            reversal_id = f"stock_reverse:goods_receipt:{doc['id']}:{original_id}"
-            state = await db.product_stock_state.find_one(
-                {"$or": [{"_id": mid}, {"master_item_id": mid}]},
-                {"_id": 0},
-            )
-            current_total = safe_float((state or {}).get("total_qty"))
-            barrier = movement.get("_absolute_barrier") or {}
-            reversed_movement = await record_stock_movement(
-                db,
-                movement_type=MOVEMENT_REVERSAL_PENERIMAAN,
-                master_item_id=mid,
-                accurate_item_id=movement.get("accurate_item_id"),
-                transaction_qty=0,
-                transaction_uom=movement.get("base_uom") or movement.get("transaction_uom"),
-                source_entity="GUDANG_UTAMA",
-                destination_entity=doc.get("supplier") or "SUPPLIER",
-                reference_number=doc.get("receipt_number") or "",
-                reference_type="goods_receipt_reversal",
-                reference_id=doc["id"],
-                description=(
-                    f"Pembatalan Penerimaan Barang tanpa perubahan stock "
-                    f"(superseded oleh adjustment absolut): {reason}"
-                ),
-                order_id=doc.get("purchase_order_id"),
-                line_idx=movement.get("line_idx"),
-                line_id=movement.get("line_id"),
-                delta_unprinted=0,
-                delta_printed=0,
-                event_key=reversal_id,
-                movement_id=reversal_id,
-                balance_before=current_total,
-                balance_after=current_total,
-                unprinted_before=safe_float((state or {}).get("unprinted_qty")),
-                unprinted_after=safe_float((state or {}).get("unprinted_qty")),
-                printed_before=safe_float((state or {}).get("printed_qty")),
-                printed_after=safe_float((state or {}).get("printed_qty")),
-                change_metadata={
-                    "goods_receipt_id": doc["id"],
-                    "reversal_of_movement_id": original_id,
-                    "cancel_reason": reason,
-                    "effective_delta": 0,
-                    "superseded_by_absolute_adjustment": True,
-                    "superseded_by_movement_id": (
-                        barrier.get("id") or barrier.get("event_key")
-                    ),
-                },
-                user=user,
-            )
-            reversal_ids.append(str(reversed_movement.get("id") or reversal_id))
-
-        for movement in plan.get("pending_originals") or []:
-            original_id = str(movement.get("id") or movement.get("event_key") or "").strip()
-            mid = str(movement.get("master_item_id") or "").strip()
-            qty = abs(safe_float(movement.get("delta", movement.get("base_qty", 0))))
-            if not original_id or not mid or qty <= 0:
-                continue
-            reversal_id = f"stock_reverse:goods_receipt:{doc['id']}:{original_id}"
-            reversed_movement = await execute_durable_stock_event(
-                db,
-                event_id=reversal_id,
-                master_item_id=mid,
-                movement_type=MOVEMENT_REVERSAL_PENERIMAAN,
-                transaction_qty=-qty,
-                transaction_uom=movement.get("base_uom") or movement.get("transaction_uom"),
-                source_entity="GUDANG_UTAMA",
-                destination_entity=doc.get("supplier") or "SUPPLIER",
-                reference_number=doc.get("receipt_number") or "",
-                reference_type="goods_receipt_reversal",
-                reference_id=doc["id"],
-                description=f"Pembatalan Penerimaan Barang: {reason}",
-                order_id=doc.get("purchase_order_id"),
-                line_idx=movement.get("line_idx"),
-                line_id=movement.get("line_id"),
-                change_metadata={
-                    "goods_receipt_id": doc["id"],
-                    "reversal_of_movement_id": original_id,
-                    "cancel_reason": reason,
-                    "effective_delta": -qty,
-                    "superseded_by_absolute_adjustment": False,
-                },
-                user=user,
-            )
-            reversal_ids.append(str(reversed_movement.get("id") or reversal_id))
-
-        # Include reversals completed by an earlier retry/crash recovery.
-        existing_reversals = await db.stock_movements.find({
-            "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
-            "goods_receipt_id": doc["id"],
-        }, {"_id": 0, "id": 1}).to_list(None)
-        reversal_ids = list(dict.fromkeys(
-            reversal_ids + [str(m.get("id") or "") for m in existing_reversals if m.get("id")]
-        ))
+        reversal_ids = await apply_receipt_stock_reversals(
+            db,
+            doc["id"],
+            receipt_number=doc.get("receipt_number") or "",
+            supplier=doc.get("supplier") or "SUPPLIER",
+            reason=reason,
+            user=user,
+            order_id=doc.get("purchase_order_id"),
+        )
         fields = cancellation_fields(user, reason)
         fields.update({
             "status": "CANCELLED",
