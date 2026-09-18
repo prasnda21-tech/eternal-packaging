@@ -46,7 +46,8 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.sales_activity.manage", "Ubah pengaturan Sales Activity & Ownership"),
     ("Pengaturan", "settings.sales_user_mapping.view", "Lihat mapping Sales Accurate"),
     ("Pengaturan", "settings.sales_user_mapping.manage", "Kelola mapping Sales Accurate"),
-    ("Penjualan", "sales.pwa.view", "Buka PWA Sales read-only"),
+    ("Penjualan", "sales.pwa.view", "Buka PWA Sales terisolasi"),
+    ("Penjualan", "sales.pwa.visit.create", "Catat visit milik sendiri dari PWA Sales"),
     ("Optimasi Rute", "route_optimizer.view", "Lihat Optimasi Rute"),
     ("Optimasi Rute", "route_optimizer.create", "Buat Rute Optimasi"),
     ("Optimasi Rute", "route_optimizer.edit_own", "Ubah rute Optimasi sendiri"),
@@ -668,9 +669,11 @@ ROLE_DEFAULT_PERMISSIONS = {
         "reports.order_prediction.view", "reports.order_prediction.import",
     ],
     "sales_eternal": [
-        # PWA Sales is a dedicated read-only surface. Global po.view (and other
-        # operational view keys) open unscoped /api/orders, files, SJ, invoices.
+        # PWA Sales is a dedicated scoped surface. PO/financial data remains
+        # read-only; the only mutation is recording a visit for an outlet owned
+        # by the authenticated sales user.
         "sales.pwa.view",
+        "sales.pwa.visit.create",
     ],
 }
 

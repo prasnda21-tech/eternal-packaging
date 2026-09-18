@@ -41,6 +41,12 @@ from services.sales_user_mapping import (
     sales_owner_match,
     session_user_id,
 )
+from services.sales_activity.constants import (
+    COL_ACTIVITIES,
+    COL_OUTLETS,
+    COL_OWNERSHIP,
+)
+from services.sales_invoices import FINANCIAL_FINALIZED
 
 WIB = timezone(timedelta(hours=7))
 
@@ -84,6 +90,7 @@ LIST_PROJECTION = {
     "cancelled": 1,
     "hold": 1,
     "priority": 1,
+    "buffer_stock": 1,
     "status_label": 1,
     "design_status": 1,
     "design_bypassed": 1,
@@ -233,6 +240,14 @@ def _date_in_range(day: Optional[str], date_from: str, date_to: str) -> bool:
     return True
 
 
+async def _cursor_rows(cursor) -> List[dict]:
+    """Materialize one already-scoped query without a silent row cap."""
+    rows: List[dict] = []
+    async for row in cursor:
+        rows.append(row)
+    return rows
+
+
 def _strip_file_bytes(files: Any) -> List[dict]:
     out = []
     for f in files or []:
@@ -314,8 +329,8 @@ async def _load_docs_for_pos(db, po_ids: List[str]) -> tuple:
 
 
 def _sort_value(row: dict, key: str) -> Any:
-    if key == "tanggal_kirim":
-        return row.get("tanggal_kirim") or ""
+    if key in ("order_date", "tanggal_po"):
+        return row.get("order_date") or ""
     if key == "customer":
         return _norm(row.get("customer"))
     if key == "progress":
@@ -340,6 +355,7 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
         "outlet": str(order.get("outlet") or "").strip() or None,
         "sales": order.get("sales"),
         "order_date": parse_calendar_date(order.get("order_date")) or str(order.get("order_date") or "")[:10] or None,
+        "buffer_stock": bool(order.get("buffer_stock")),
         "tanggal_kirim": kirim,
         "tanggal_kirim_source": order.get("tanggal_pengiriman_source"),
         "tanggal_kirim_overdue": overdue,
@@ -360,22 +376,32 @@ async def list_sales_pwa_orders(
     user: dict,
     *,
     q: str = "",
+    customer_q: str = "",
+    po_q: str = "",
+    stage: str = "",
+    buffer: str = "",
+    progress_min: Optional[int] = None,
+    progress_max: Optional[int] = None,
     status: str = "",
     date_from: str = "",
     date_to: str = "",
-    sort: str = "tanggal_kirim",
-    direction: str = "asc",
+    sort: str = "order_date",
+    direction: str = "desc",
     skip: int = 0,
     limit: int = 50,
 ) -> dict:
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
-    raw = await db.orders.find(match, LIST_PROJECTION).to_list(2000)
+    raw = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
     lead = await _lead_time_days(db)
     for o in raw:
         attach_tanggal_pengiriman_snapshot(o, lead)
 
     needle = _norm(q)
+    customer_needle = _norm(customer_q)
+    po_needle = _norm(po_q)
+    stage_needle = _norm(stage)
+    buffer_key = _norm(buffer)
     date_from = parse_calendar_date(date_from) or ""
     date_to = parse_calendar_date(date_to) or ""
     filtered = []
@@ -383,10 +409,29 @@ async def list_sales_pwa_orders(
         wf = status_po_workflow(o)
         if needle and needle not in _search_blob(o):
             continue
+        if customer_needle and customer_needle not in _norm(" ".join([
+            display_customer_name(o),
+            str(o.get("outlet") or ""),
+        ])):
+            continue
+        if po_needle and po_needle not in _norm(o.get("po_number")):
+            continue
         if not _matches_filter(o, status, wf):
             continue
-        kirim = o.get("tanggal_pengiriman")
-        if not _date_in_range(kirim, date_from, date_to):
+        stage_label = _current_stage_label(o, wf)
+        if stage_needle and stage_needle not in _norm(stage_label):
+            continue
+        if buffer_key in ("ya", "true", "1", "buffer") and not o.get("buffer_stock"):
+            continue
+        if buffer_key in ("tidak", "false", "0", "non-buffer") and o.get("buffer_stock"):
+            continue
+        order_day = parse_calendar_date(o.get("order_date")) or str(o.get("order_date") or "")[:10]
+        if not _date_in_range(order_day, date_from, date_to):
+            continue
+        progress = _workflow_progress(wf)
+        if progress_min is not None and progress < max(0, min(int(progress_min), 100)):
+            continue
+        if progress_max is not None and progress > max(0, min(int(progress_max), 100)):
             continue
         filtered.append(o)
 
@@ -397,7 +442,7 @@ async def list_sales_pwa_orders(
         for o in filtered
     ]
     reverse = str(direction or "asc").lower() == "desc"
-    sort_key = (sort or "tanggal_kirim").strip()
+    sort_key = (sort or "order_date").strip()
     rows.sort(key=lambda r: (_sort_value(r, sort_key), r.get("po_number") or ""), reverse=reverse)
 
     skip = max(0, int(skip or 0))
@@ -431,7 +476,311 @@ async def list_sales_pwa_orders(
         "counts": counts,
         "loaded_at": datetime.now(timezone.utc).isoformat(),
         "min_orders_prediction": MIN_ORDERS,
+        "source_count": len(raw),
+        "source_truncated": False,
     }
+
+
+def _month_key(value: str = "") -> str:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}", raw):
+        try:
+            date.fromisoformat(f"{raw}-01")
+            return raw
+        except ValueError:
+            pass
+    return wib_today().strftime("%Y-%m")
+
+
+def _next_month_key(month: str) -> str:
+    year, value = [int(part) for part in month.split("-")]
+    if value == 12:
+        return f"{year + 1:04d}-01"
+    return f"{year:04d}-{value + 1:02d}"
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def _sales_financial_summary(db, user: dict, month: str) -> dict:
+    """Invoice-authoritative metrics for POs owned by the authenticated sales user.
+
+    Revenue uses finalized invoice_date in the requested month. Receivables use
+    finalized invoices minus live sales_receipts. Draft/cancelled invoices never
+    contribute.
+    """
+    owned = await _cursor_rows(db.orders.find(
+        {"cancelled": {"$ne": True}, **sales_owner_match(user)},
+        {"_id": 0, "id": 1},
+    ))
+    po_ids = [str(row.get("id")) for row in owned if row.get("id")]
+    if not po_ids:
+        return {
+            "month": month,
+            "revenue": 0.0,
+            "receivables": 0.0,
+            "paid": 0.0,
+            "invoice_count": 0,
+            "receivable_invoice_count": 0,
+        }
+    invoices = await _cursor_rows(db.sales_invoices.find(
+        {
+            "po_id": {"$in": po_ids},
+            "financial_status": FINANCIAL_FINALIZED,
+            "is_cancelled": {"$ne": True},
+        },
+        {
+            "_id": 0,
+            "id": 1,
+            "po_id": 1,
+            "invoice_date": 1,
+            "grand_total": 1,
+        },
+    ))
+    inv_ids = [str(inv.get("id")) for inv in invoices if inv.get("id")]
+    receipts = []
+    if inv_ids:
+        receipts = await _cursor_rows(db.sales_receipts.find(
+            {"invoice_id": {"$in": inv_ids}},
+            {"_id": 0, "invoice_id": 1, "amount": 1},
+        ))
+    paid_by_invoice: Dict[str, float] = {}
+    for receipt in receipts:
+        iid = str(receipt.get("invoice_id") or "")
+        paid_by_invoice[iid] = paid_by_invoice.get(iid, 0.0) + _number(receipt.get("amount"))
+    revenue = 0.0
+    receivables = 0.0
+    paid = 0.0
+    receivable_count = 0
+    month_count = 0
+    for inv in invoices:
+        grand = _number(inv.get("grand_total"))
+        invoice_day = parse_calendar_date(inv.get("invoice_date")) or str(inv.get("invoice_date") or "")[:10]
+        if invoice_day.startswith(f"{month}-"):
+            revenue += grand
+            month_count += 1
+        inv_paid = min(max(paid_by_invoice.get(str(inv.get("id") or ""), 0.0), 0.0), grand)
+        paid += inv_paid
+        outstanding = max(grand - inv_paid, 0.0)
+        receivables += outstanding
+        if outstanding > 0:
+            receivable_count += 1
+    return {
+        "month": month,
+        "revenue": round(revenue, 2),
+        "receivables": round(receivables, 2),
+        "paid": round(paid, 2),
+        "invoice_count": month_count,
+        "receivable_invoice_count": receivable_count,
+    }
+
+
+async def _owned_visit_context(db, user: dict) -> tuple:
+    uid = session_user_id(user)
+    ownerships = await _cursor_rows(db[COL_OWNERSHIP].find(
+        {"current_owner_id": uid, "in_pool": {"$ne": True}},
+        {
+            "_id": 0,
+            "outlet_id": 1,
+            "current_owner_id": 1,
+            "customer_kind": 1,
+            "automation_status": 1,
+            "last_activity_at": 1,
+            "next_follow_up_at": 1,
+            "eligible_at": 1,
+            "warning_at": 1,
+        },
+    ))
+    outlet_ids = [str(row.get("outlet_id")) for row in ownerships if row.get("outlet_id")]
+    outlets = []
+    if outlet_ids:
+        outlets = await _cursor_rows(db[COL_OUTLETS].find(
+            {"id": {"$in": outlet_ids}},
+            {
+                "_id": 0,
+                "id": 1,
+                "name": 1,
+                "address": 1,
+                "pic_name": 1,
+                "whatsapp": 1,
+                "maps_url": 1,
+                "customer_kind": 1,
+            },
+        ))
+    return ownerships, outlets
+
+
+async def list_sales_pwa_visits(db, user: dict, *, month: str = "", q: str = "") -> dict:
+    require_sales_pwa(user)
+    month = _month_key(month)
+    from services.sales_activity.settings import activity_type_map, load_settings
+    settings = await load_settings(db)
+    visit_cfg = activity_type_map(settings).get("visit") or {}
+    uid = session_user_id(user)
+    ownerships, outlets = await _owned_visit_context(db, user)
+    own_by_outlet = {str(row.get("outlet_id")): row for row in ownerships}
+    outlet_by_id = {str(row.get("id")): row for row in outlets}
+    needle = _norm(q)
+    activities = await db[COL_ACTIVITIES].find(
+        {"sales_user_id": uid, "activity_type": "visit"},
+        {
+            "_id": 0,
+            "id": 1,
+            "outlet_id": 1,
+            "activity_at": 1,
+            "result": 1,
+            "next_action": 1,
+            "next_follow_up_at": 1,
+            "notes": 1,
+            "visit_photo_count": 1,
+            "has_visit_location": 1,
+        },
+    ).sort("activity_at", -1).to_list(1000)
+    visit_month_count = await db[COL_ACTIVITIES].count_documents({
+        "sales_user_id": uid,
+        "activity_type": "visit",
+        "activity_at": {
+            "$gte": f"{month}-01T00:00:00",
+            "$lt": f"{_next_month_key(month)}-01T00:00:00",
+        },
+    })
+    reminders = []
+    today = wib_today().isoformat()
+    for outlet_id, ownership in own_by_outlet.items():
+        outlet = outlet_by_id.get(outlet_id) or {}
+        follow = str(ownership.get("next_follow_up_at") or "")[:10] or None
+        if follow and follow.startswith(f"{month}-"):
+            reminders.append({
+                "id": f"followup:{outlet_id}:{follow}",
+                "outlet_id": outlet_id,
+                "outlet": outlet.get("name") or "Outlet",
+                "date": follow,
+                "at": ownership.get("next_follow_up_at"),
+                "kind": "follow_up",
+                "overdue": follow < today,
+            })
+    rows = []
+    for activity in activities:
+        outlet = outlet_by_id.get(str(activity.get("outlet_id"))) or {}
+        row = {
+            **activity,
+            "outlet": outlet.get("name") or "Outlet",
+            "address": outlet.get("address"),
+        }
+        if needle and needle not in _norm(" ".join([
+            row.get("outlet") or "",
+            row.get("result") or "",
+            row.get("next_action") or "",
+            row.get("notes") or "",
+        ])):
+            continue
+        rows.append(row)
+    outlet_rows = []
+    for outlet_id, ownership in own_by_outlet.items():
+        outlet = outlet_by_id.get(outlet_id) or {}
+        row = {
+            **outlet,
+            "ownership": ownership,
+        }
+        if needle and needle not in _norm(" ".join([
+            outlet.get("name") or "",
+            outlet.get("address") or "",
+            outlet.get("pic_name") or "",
+            outlet.get("whatsapp") or "",
+        ])):
+            continue
+        outlet_rows.append(row)
+    outlet_rows.sort(key=lambda row: (
+        str((row.get("ownership") or {}).get("next_follow_up_at") or "9999"),
+        _norm(row.get("name")),
+    ))
+    reminders.sort(key=lambda row: (row.get("date") or "", _norm(row.get("outlet"))))
+    return {
+        "month": month,
+        "outlets": outlet_rows,
+        "visits": rows,
+        "reminders": reminders,
+        "counts": {
+            "owned_outlets": len(ownerships),
+            "visit_month": visit_month_count,
+            "reminder_month": len(reminders),
+            "overdue": sum(1 for row in reminders if row.get("overdue")),
+        },
+        "visit_config": {
+            "photo_required": bool(visit_cfg.get("visit_photo_required") or visit_cfg.get("evidence_required")),
+            "next_follow_up_required": bool(visit_cfg.get("next_follow_up_required")),
+        },
+        "loaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def sales_pwa_dashboard(db, user: dict, *, month: str = "") -> dict:
+    require_sales_pwa(user)
+    month = _month_key(month)
+    match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
+    orders = await _cursor_rows(db.orders.find(
+        match,
+        {"_id": 0, "id": 1, "current_stage": 1, "terkirim_confirmed": 1, "buffer_stock": 1},
+    ))
+    visits = await list_sales_pwa_visits(db, user, month=month)
+    financial = await _sales_financial_summary(db, user, month)
+    active = sum(1 for row in orders if not row.get("terkirim_confirmed") and int(row.get("current_stage") or 0) < 14)
+    return {
+        "month": month,
+        "metrics": {
+            "revenue": financial["revenue"],
+            "receivables": financial["receivables"],
+            "paid": financial["paid"],
+            "invoice_count": financial["invoice_count"],
+            "receivable_invoice_count": financial["receivable_invoice_count"],
+            "active_po": active,
+            "buffer_po": sum(1 for row in orders if row.get("buffer_stock")),
+            "visit_month": visits["counts"]["visit_month"],
+            "visit_reminders": visits["counts"]["reminder_month"],
+            "visit_overdue": visits["counts"]["overdue"],
+        },
+        "upcoming_visits": visits["reminders"][:8],
+        "sources": {
+            "revenue": "sales_invoices.finalized / invoice_date",
+            "receivables": "sales_invoices.finalized - sales_receipts",
+            "orders": "orders.sales_user_id",
+            "visits": "sales_ownership.current_owner_id + sales_activities.sales_user_id",
+        },
+        "loaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def create_sales_pwa_visit(db, user: dict, payload: dict) -> dict:
+    """Record a visit only for an outlet currently owned by this session user."""
+    require_sales_pwa(user)
+    from services.sales_activity import activities as activity_svc
+    from services.sales_activity.constants import PERM_ACTIVITY_CREATE
+
+    clean = {
+        "outlet_id": str(payload.get("outlet_id") or "").strip(),
+        "activity_type": "visit",
+        "result": str(payload.get("result") or "").strip(),
+        "next_action": str(payload.get("next_action") or "").strip(),
+        "next_follow_up_at": payload.get("next_follow_up_at"),
+        "notes": str(payload.get("notes") or "").strip(),
+        "visit_photo_ids": [
+            str(value).strip()
+            for value in (payload.get("visit_photo_ids") or [])
+            if str(value or "").strip()
+        ],
+    }
+    # create_native_activity validates current_owner_id, in_pool, activity
+    # settings, required photo/location, and always writes session users.id.
+    return await activity_svc.create_native_activity(
+        db,
+        clean,
+        user,
+        {PERM_ACTIVITY_CREATE},
+    )
 
 
 def _line_public(li: dict, idx: int) -> dict:
@@ -538,7 +887,7 @@ async def get_sales_pwa_documents(db, user: dict, order_id: str) -> dict:
 async def list_sales_pwa_customers(db, user: dict, *, q: str = "") -> dict:
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
-    orders = await db.orders.find(match, LIST_PROJECTION).to_list(2000)
+    orders = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
     lead = await _lead_time_days(db)
     groups: Dict[str, dict] = {}
     for o in orders:

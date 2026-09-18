@@ -2,7 +2,13 @@ export const SALES_PWA_ROLE = "sales_eternal";
 export const SALES_PWA_HOME = "/sales";
 
 export const SALES_PWA_NAV = [
-  { id: "orders", label: "PO Saya", to: "/sales" },
+  { id: "dashboard", label: "Dashboard", to: "/sales" },
+  { id: "orders", label: "PO Saya", to: "/sales/po" },
+  { id: "visits", label: "Visit", to: "/sales/visit" },
+  { id: "more", label: "Lainnya", to: "#sales-more" },
+];
+
+export const SALES_PWA_MORE_NAV = [
   { id: "customers", label: "Pelanggan", to: "/sales/pelanggan" },
   { id: "predictions", label: "Prediksi Order", to: "/sales/prediksi" },
   { id: "profile", label: "Profil", to: "/sales/profil" },
@@ -21,10 +27,13 @@ export function isSafeSalesNextPath(path) {
 
 export function activeSalesPwaNav(pathname) {
   const path = String(pathname || "");
+  if (path === "/sales") return "dashboard";
+  if (path.startsWith("/sales/visit")) return "visits";
+  if (path === "/sales/po" || path.startsWith("/sales/po/")) return "orders";
   if (path.startsWith("/sales/pelanggan")) return "customers";
   if (path.startsWith("/sales/prediksi")) return "predictions";
   if (path.startsWith("/sales/profil")) return "profile";
-  if (path.startsWith("/sales")) return "orders";
+  if (path.startsWith("/sales")) return "dashboard";
   return "";
 }
 
@@ -57,4 +66,16 @@ export function documentTotal(order) {
   const n = Number(docs.total);
   if (Number.isFinite(n)) return n;
   return (Number(docs.po) || 0) + (Number(docs.sj) || 0) + (Number(docs.invoice) || 0) + (Number(docs.bukti_kirim) || 0);
+}
+
+export function formatSalesMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "Rp0";
+  return `Rp${new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 }).format(amount)}`;
+}
+
+export function currentSalesMonth(now = new Date()) {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
 }

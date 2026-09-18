@@ -83,7 +83,9 @@ const MobileProfilePage = lazy(() => import("./mobile/MobileProfilePage"));
 const MobileChatPage = lazy(() => import("./mobile/MobileChatPage"));
 const MobileChatRoomPage = lazy(() => import("./mobile/MobileChatRoomPage"));
 const SalesPwaLayout = lazy(() => import("./sales/SalesPwaLayout"));
+const SalesPwaDashboardPage = lazy(() => import("./sales/SalesPwaDashboardPage"));
 const SalesPwaOrdersPage = lazy(() => import("./sales/SalesPwaOrdersPage"));
+const SalesPwaVisitsPage = lazy(() => import("./sales/SalesPwaVisitsPage"));
 const SalesPwaOrderDetailPage = lazy(() => import("./sales/SalesPwaOrderDetailPage"));
 const SalesPwaDocumentViewerPage = lazy(() => import("./sales/SalesPwaDocumentViewerPage"));
 const SalesPwaCustomersPage = lazy(() => import("./sales/SalesPwaCustomersPage"));
@@ -231,10 +233,12 @@ export default function App() {
             <Route path="/m/profile" element={<MobileProfilePage />} />
           </Route>
           <Route element={<Protected><SalesPwaGate><SalesPwaLayout /></SalesPwaGate></Protected>}>
-            <Route path="/sales" element={<SalesPwaOrdersPage />} />
+            <Route path="/sales" element={<SalesPwaDashboardPage />} />
+            <Route path="/sales/po" element={<SalesPwaOrdersPage />} />
             <Route path="/sales/po/:id" element={<SalesPwaOrderDetailPage />} />
             <Route path="/sales/po/:id/dokumen/:kind/:documentId" element={<SalesPwaDocumentViewerPage />} />
             <Route path="/sales/pelanggan" element={<SalesPwaCustomersPage />} />
+            <Route path="/sales/visit" element={<SalesPwaVisitsPage />} />
             <Route path="/sales/prediksi" element={<SalesPwaPredictionsPage />} />
             <Route path="/sales/prediksi/:customerKey" element={<SalesPwaPredictionsPage />} />
             <Route path="/sales/profil" element={<SalesPwaProfilePage />} />
