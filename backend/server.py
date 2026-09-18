@@ -11699,12 +11699,17 @@ async def purchase_receipts_create(
 
 
 class PurchaseReceiptCancelPayload(BaseModel):
+<<<<<<< HEAD
     model_config = ConfigDict(extra="allow")
+=======
+    reason: str = ""
+>>>>>>> cacc7e7 (fix(purchasing): post Stock V2 PENERIMAAN for manual receipts)
 
 
 @api_router.post("/purchase-receipts/{receipt_id}/cancel")
 async def purchase_receipts_cancel(
     receipt_id: str,
+<<<<<<< HEAD
     payload: Optional[PurchaseReceiptCancelPayload] = None,
     user=Depends(require_perm("purchase_receipts.receive")),
 ):
@@ -11714,6 +11719,16 @@ async def purchase_receipts_cancel(
     )
     doc = await cancel_manual_purchase_receipt(
         db, receipt_id, user, reason=str((data or {}).get("reason") or "")
+=======
+    payload: PurchaseReceiptCancelPayload,
+    user=Depends(require_perm("purchase_receipts.receive")),
+):
+    doc = await cancel_manual_purchase_receipt(
+        db,
+        receipt_id,
+        user,
+        reason=payload.reason,
+>>>>>>> cacc7e7 (fix(purchasing): post Stock V2 PENERIMAAN for manual receipts)
     )
     return {"receipt": public_receipt(doc), "message": "Penerimaan Barang dibatalkan"}
 
