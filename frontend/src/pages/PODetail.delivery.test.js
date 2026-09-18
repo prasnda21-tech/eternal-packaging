@@ -167,9 +167,19 @@ describe("PO Detail delivery cards", () => {
     expect(slot2).not.toMatch(/data-testid="customer-approval-standalone"/);
   });
 
+  test("Design workspace shows data and approval cards together", () => {
+    const pair = detail.slice(detail.indexOf("design-approval-pair"), detail.indexOf("payment-approval-pair"));
+    expect(pair).toMatch(/workflow-slot-1/);
+    expect(pair).toMatch(/workflow-slot-2/);
+    expect(pair).toMatch(/AttachmentsPanel/);
+    expect(pair).toMatch(/approval-design-actions/);
+    expect(pair).not.toMatch(/hidden=\{viewedStage !== 1\}/);
+    expect(pair).not.toMatch(/hidden=\{viewedStage !== 2\}/);
+  });
+
   test("pairs payment evidence with Approval Payment in one outer card", () => {
     expect(detail).toMatch(/payment-approval-pair/);
-    expect(detail).toMatch(/Payment &amp; Approval/);
+    expect(detail).toMatch(/title="Payment"/);
     expect(detail).toMatch(/upload-payment-label/);
     expect(detail).toMatch(/Tambah Bukti/);
     expect(detail).toMatch(/approve-payment-button/);

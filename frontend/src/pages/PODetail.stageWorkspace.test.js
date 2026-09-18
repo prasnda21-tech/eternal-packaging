@@ -45,7 +45,8 @@ const printActive = {
 
 describe("Detail PO stage-focused workspace", () => {
   test("default panel is the actual stage; viewed and actual stay distinct", () => {
-    expect(detail).toMatch(/clampWorkflowStageIndex\(order\.current_stage/);
+    expect(detail).toMatch(/collapsePoDetailUiStage/);
+    expect(detail).toMatch(/clampWorkflowStageIndex\(resolveOperationalStage/);
     expect(detail).toMatch(/data-actual-stage=\{actualStage\}/);
     expect(detail).toMatch(/data-viewed-stage=\{viewedStage\}/);
     expect(detail).toMatch(/po-actual-stage-label/);
@@ -70,14 +71,13 @@ describe("Detail PO stage-focused workspace", () => {
     expect(slot0).toMatch(/detail-info/);
     expect(slot0).toMatch(/line-items-panel/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("0"/);
-    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("2"/);
+    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("design"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("5"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("11"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("12"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("13"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("14"/);
-    expect(detail).toMatch(/hidden=\{viewedStage !== 3\}/);
-    expect(detail).toMatch(/hidden=\{viewedStage !== 4\}/);
+    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("payment"/);
     expect(detail).toMatch(/hidden=\{viewedStage !== 8\}/);
     expect(detail).toMatch(/hidden=\{viewedStage !== 9\}/);
   });
@@ -100,7 +100,7 @@ describe("Detail PO stage-focused workspace", () => {
   });
 
   test("Ringkasan PO drawer does not change the viewed stage", () => {
-    expect(detail).toMatch(/btn-po-summary/);
+    expect(detail).toMatch(/Ringkasan PO/);
     expect(detail).toMatch(/PoSummaryDrawer/);
     expect(detail).toMatch(/setSummaryOpen\(true\)/);
     const drawer = fs.readFileSync(
@@ -130,7 +130,7 @@ describe("Detail PO stage-focused workspace", () => {
 
   test("mobile chrome and 15-stage sheet exist without forcing a tiny 15-up row", () => {
     expect(detail).toMatch(/po-mobile-stage-chrome/);
-    expect(detail).toMatch(/Tahap \{viewedStage \+ 1\} dari 15/);
+    expect(detail).toMatch(/Tahap \{poDetailUiStageNumber\(viewedStage\)\} dari \{PO_DETAIL_UI_STAGE_COUNT\}/);
     expect(detail).toMatch(/btn-open-stage-sheet/);
     expect(detail).toMatch(/PoStagePickerSheet/);
     expect(css).toMatch(/po-mobile-stage-chrome\{display:none\}/);
