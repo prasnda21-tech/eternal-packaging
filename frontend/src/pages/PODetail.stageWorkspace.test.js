@@ -45,7 +45,8 @@ const printActive = {
 
 describe("Detail PO stage-focused workspace", () => {
   test("default panel is the actual stage; viewed and actual stay distinct", () => {
-    expect(detail).toMatch(/clampWorkflowStageIndex\(order\.current_stage/);
+    expect(detail).toMatch(/collapsePoDetailUiStage/);
+    expect(detail).toMatch(/clampWorkflowStageIndex\(resolveOperationalStage/);
     expect(detail).toMatch(/data-actual-stage=\{actualStage\}/);
     expect(detail).toMatch(/data-viewed-stage=\{viewedStage\}/);
     expect(detail).toMatch(/po-actual-stage-label/);
@@ -99,7 +100,7 @@ describe("Detail PO stage-focused workspace", () => {
   });
 
   test("Ringkasan PO drawer does not change the viewed stage", () => {
-    expect(detail).toMatch(/btn-po-summary/);
+    expect(detail).toMatch(/Ringkasan PO/);
     expect(detail).toMatch(/PoSummaryDrawer/);
     expect(detail).toMatch(/setSummaryOpen\(true\)/);
     const drawer = fs.readFileSync(
