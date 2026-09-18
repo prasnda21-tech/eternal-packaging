@@ -1,6 +1,12 @@
 import { X } from "lucide-react";
 import { STAGES } from "../../lib/constants";
-import { getStagePresentation } from "../../lib/poDetailPresentation";
+import { getGroupedStagePresentation } from "../../lib/poDetailPresentation";
+import {
+  PO_DETAIL_STEPPER_OMIT,
+  PO_DETAIL_UI_STAGE_COUNT,
+  collapsePoDetailUiStage,
+  poDetailUiStageNumber,
+} from "../../lib/poDetailStageNav";
 
 export default function PoStagePickerSheet({
   open,
@@ -32,7 +38,7 @@ export default function PoStagePickerSheet({
         aria-labelledby="po-stage-sheet-title"
       >
         <header className="po-stage-sheet-head">
-          <h2 id="po-stage-sheet-title">15 tahap workflow</h2>
+          <h2 id="po-stage-sheet-title">{PO_DETAIL_UI_STAGE_COUNT} tahap workflow</h2>
           <button
             type="button"
             className="icon-button"
@@ -45,9 +51,10 @@ export default function PoStagePickerSheet({
         </header>
         <ol className="po-stage-sheet-list">
           {STAGES.map((name, i) => {
-            const pres = getStagePresentation(i, order, actualStage);
-            const isViewed = Number(viewedStage) === i;
-            const isActual = Number(actualStage) === i;
+            if (PO_DETAIL_STEPPER_OMIT.includes(i)) return null;
+            const pres = getGroupedStagePresentation(i, order, actualStage);
+            const isViewed = collapsePoDetailUiStage(viewedStage) === i;
+            const isActual = collapsePoDetailUiStage(actualStage) === i;
             return (
               <li key={name}>
                 <button
@@ -61,7 +68,7 @@ export default function PoStagePickerSheet({
                   data-testid={`po-stage-sheet-item-${i}`}
                   onClick={() => onSelect(i)}
                 >
-                  <span className="po-stage-sheet-num">{i + 1}</span>
+                  <span className="po-stage-sheet-num">{poDetailUiStageNumber(i)}</span>
                   <span className="po-stage-sheet-main">
                     <strong>{name}</strong>
                     <span className="po-stage-sheet-status">{pres.label || pres.summary}</span>

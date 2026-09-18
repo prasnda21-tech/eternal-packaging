@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { STAGES } from "../lib/constants";
 import { resolveOperationalStage, resolveStageState } from "../lib/stageState";
-import { getStagePresentation, stageBarClassForTone } from "../lib/poDetailPresentation";
+import { getGroupedStagePresentation, getStagePresentation, stageBarClassForTone } from "../lib/poDetailPresentation";
+import { collapsePoDetailUiStage } from "../lib/poDetailStageNav";
 
 /**
  * Shared stage progress rail.
@@ -15,6 +16,8 @@ export default function StageBar({
   onStageClick,
   showLabels = false,
   viewedStage = null,
+  omitStageIndexes = [],
+  groupedPresentation = false,
 }) {
   const rootRef = useRef(null);
   const operationalStage = resolveOperationalStage(order, stage);
@@ -37,13 +40,16 @@ export default function StageBar({
       title={STAGES[operationalStage]}
     >
       {STAGES.map((s, i) => {
+        if (omitStageIndexes.includes(i)) return null;
         const isFinal = stage >= STAGES.length - 1;
         let cls = "";
         let tone = "";
         let pres = null;
         if (order) {
           if (showLabels) {
-            pres = getStagePresentation(i, order, stage);
+            pres = groupedPresentation
+              ? getGroupedStagePresentation(i, order, stage)
+              : getStagePresentation(i, order, stage);
             tone = pres.tone;
             cls = stageBarClassForTone(pres.tone);
           } else {
@@ -55,8 +61,14 @@ export default function StageBar({
           cls = i < stage || isFinal ? "done" : i === stage ? "current" : "";
         }
         const clickable = typeof onStageClick === "function";
-        const isViewed = viewedStage != null && Number(viewedStage) === i;
-        const isActual = Number(operationalStage) === i;
+        const viewedMapped = viewedStage != null && groupedPresentation
+          ? collapsePoDetailUiStage(viewedStage)
+          : viewedStage;
+        const actualMapped = groupedPresentation
+          ? collapsePoDetailUiStage(operationalStage)
+          : operationalStage;
+        const isViewed = viewedMapped != null && Number(viewedMapped) === i;
+        const isActual = Number(actualMapped) === i;
         const holdish = !!(order?.hold && isActual);
         const cancelled = !!(order?.cancelled && isActual);
         const stateLabel = holdish

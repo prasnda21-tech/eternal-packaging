@@ -4,7 +4,7 @@ import { STAGES } from "./constants";
 export const PO_DETAIL_STAGE_SECTION_IDS = {
   "Order Masuk": "po-stage-order-masuk",
   Design: "po-stage-design",
-  "Approval Design": "po-stage-approval-design",
+  "Approval Design": "po-stage-design",
   Payment: "po-stage-payment",
   "Approval Payment": "po-stage-payment",
   Penjadwalan: "po-stage-penjadwalan",
@@ -83,8 +83,35 @@ export function parsePoDetailStageParam(search) {
   return null;
 }
 
+/** Visual Detail PO stepper hides these as separate steps; backend indexes stay. */
+export const PO_DETAIL_STEPPER_OMIT = [2, 4];
+export const PO_DETAIL_UI_STAGE_COUNT = STAGES.length - PO_DETAIL_STEPPER_OMIT.length;
+
+/** Map Approval Design/Payment onto their combined UI stage. */
+export function collapsePoDetailUiStage(stageIndex) {
+  const i = clampWorkflowStageIndex(stageIndex, 0);
+  if (i === 2) return 1;
+  if (i === 4) return 3;
+  return i;
+}
+
+export function poDetailUiStageName(stageIndex) {
+  return STAGES[collapsePoDetailUiStage(stageIndex)];
+}
+
+export function poDetailUiStageNumber(stageIndex) {
+  const mapped = collapsePoDetailUiStage(stageIndex);
+  let n = 0;
+  for (let i = 0; i <= mapped; i += 1) {
+    if (PO_DETAIL_STEPPER_OMIT.includes(i)) continue;
+    n += 1;
+  }
+  return n;
+}
+
 export function accordionIndexForFocus(stageIndex) {
   const i = clampWorkflowStageIndex(stageIndex, 0);
+  if (i === 2) return 1;
   if (i === 4) return 3;
   if (i === 9) return 8;
   return i;
@@ -93,6 +120,7 @@ export function accordionIndexForFocus(stageIndex) {
 export function deskPanelOwnsStage(stageToken, viewedStage) {
   const viewed = Number(viewedStage);
   const token = String(stageToken);
+  if (token === "1" || token === "2" || token === "design") return viewed === 1 || viewed === 2;
   if (token === "3" || token === "4" || token === "payment") return viewed === 3 || viewed === 4;
   if (token === "8" || token === "9" || token === "sample") return viewed === 8 || viewed === 9;
   return viewed === Number(token);
@@ -100,6 +128,8 @@ export function deskPanelOwnsStage(stageToken, viewedStage) {
 
 export function poDetailStagePanelTitle(stageIndex) {
   const i = clampWorkflowStageIndex(stageIndex, 0);
+  if (i === 1 || i === 2) return "Workspace Design";
+  if (i === 3 || i === 4) return "Workspace Payment";
   return `Workspace ${i + 1} — ${STAGES[i]}`;
 }
 

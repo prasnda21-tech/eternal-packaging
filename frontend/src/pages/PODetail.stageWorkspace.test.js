@@ -70,14 +70,13 @@ describe("Detail PO stage-focused workspace", () => {
     expect(slot0).toMatch(/detail-info/);
     expect(slot0).toMatch(/line-items-panel/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("0"/);
-    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("2"/);
+    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("design"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("5"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("11"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("12"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("13"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("14"/);
-    expect(detail).toMatch(/hidden=\{viewedStage !== 3\}/);
-    expect(detail).toMatch(/hidden=\{viewedStage !== 4\}/);
+    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("payment"/);
     expect(detail).toMatch(/hidden=\{viewedStage !== 8\}/);
     expect(detail).toMatch(/hidden=\{viewedStage !== 9\}/);
   });
@@ -130,7 +129,7 @@ describe("Detail PO stage-focused workspace", () => {
 
   test("mobile chrome and 15-stage sheet exist without forcing a tiny 15-up row", () => {
     expect(detail).toMatch(/po-mobile-stage-chrome/);
-    expect(detail).toMatch(/Tahap \{viewedStage \+ 1\} dari 15/);
+    expect(detail).toMatch(/Tahap \{poDetailUiStageNumber\(viewedStage\)\} dari \{PO_DETAIL_UI_STAGE_COUNT\}/);
     expect(detail).toMatch(/btn-open-stage-sheet/);
     expect(detail).toMatch(/PoStagePickerSheet/);
     expect(css).toMatch(/po-mobile-stage-chrome\{display:none\}/);

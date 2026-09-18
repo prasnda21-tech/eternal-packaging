@@ -3,6 +3,7 @@
  * Derives visual tone/summary from existing resolveStageState — no workflow mutation.
  */
 import { STAGES } from "./constants";
+import { collapsePoDetailUiStage } from "./poDetailStageNav";
 import { resolveStageState } from "./stageState";
 
 const PRINT_ONLY_STAGES = new Set([6, 7, 8, 9, 10]); // Screener … Cetak
@@ -10,8 +11,9 @@ const PRINT_ONLY_STAGES = new Set([6, 7, 8, 9, 10]); // Screener … Cetak
 /**
  * @returns {{ state: string, label: string, tone: 'completed'|'active'|'blocked'|'not-required'|'upcoming', summary: string }}
  */
-export function getStagePresentation(idx, order, currentStage) {
-  const { state, label } = resolveStageState(idx, order, currentStage);
+function presentationFromResolved(idx, resolved, order, currentStage) {
+  const state = resolved?.state;
+  const label = resolved?.label;
   const reqPrint = order?.requires_printing !== false;
 
   if (!reqPrint && PRINT_ONLY_STAGES.has(idx)) {
@@ -47,6 +49,33 @@ export function getStagePresentation(idx, order, currentStage) {
     return { state, label, tone: "upcoming", summary: label || "Belum tersedia" };
   }
   return { state, label, tone: "blocked", summary: label || "Menunggu" };
+}
+
+export function getStagePresentation(idx, order, currentStage) {
+  return presentationFromResolved(idx, resolveStageState(idx, order, currentStage), order, currentStage);
+}
+
+/**
+ * Detail PO stepper/workspace grouping only.
+ * Design absorbs Approval Design; Payment absorbs Approval Payment.
+ * Uses existing resolveStageState — no new workflow states.
+ */
+export function getGroupedStagePresentation(idx, order, currentStage) {
+  if (idx === 1 || idx === 2) {
+    const approval = resolveStageState(2, order, currentStage);
+    if (approval.state === "done" || approval.state === "bypass" || approval.state === "current") {
+      return presentationFromResolved(1, approval, order, currentStage);
+    }
+    return getStagePresentation(1, order, currentStage);
+  }
+  if (idx === 3 || idx === 4) {
+    const approval = resolveStageState(4, order, currentStage);
+    if (approval.state === "done" || approval.state === "bypass" || approval.state === "current") {
+      return presentationFromResolved(3, approval, order, currentStage);
+    }
+    return getStagePresentation(3, order, currentStage);
+  }
+  return getStagePresentation(idx, order, currentStage);
 }
 
 /**
@@ -110,11 +139,12 @@ export function resolveOperationalFocus(order) {
     }
   }
 
+  const displayIdx = collapsePoDetailUiStage(focusIdx);
   return {
-    stageIndex: focusIdx,
-    stageName: STAGES[focusIdx] || "—",
+    stageIndex: displayIdx,
+    stageName: STAGES[displayIdx] || "—",
     tone: focusPres.tone,
-    title: focusPres.tone === "completed" ? "Tidak ada aksi aktif" : `Tahap: ${STAGES[focusIdx]}`,
+    title: focusPres.tone === "completed" ? "Tidak ada aksi aktif" : `Tahap: ${STAGES[displayIdx]}`,
     detail: focusPres.summary,
     holdReasons: [],
   };

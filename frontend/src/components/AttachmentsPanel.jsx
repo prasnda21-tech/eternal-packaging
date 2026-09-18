@@ -249,7 +249,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           )}
         </header>
         <p className="muted small" style={{ marginTop: 0 }}>
-          File design. Upload di sini; approval berada di card Approval Design.
+          File design. Upload dan preview di sini; approval tetap memakai aksi existing di card kanan Design.
         </p>
         {renderList(order.design_files, "design")}
         {designSlot}

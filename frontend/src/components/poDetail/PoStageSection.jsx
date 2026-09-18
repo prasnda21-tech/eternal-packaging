@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { ChevronDown } from "lucide-react";
 import { STAGES } from "../../lib/constants";
-import { getStagePresentation } from "../../lib/poDetailPresentation";
+import { getGroupedStagePresentation, getStagePresentation } from "../../lib/poDetailPresentation";
 import { usePoStageAccordion } from "./PoStageAccordionContext";
 
 /**
@@ -16,11 +16,14 @@ export default function PoStageSection({
   title,
   summary,
   hasError = false,
+  grouped = false,
   children,
   testid,
 }) {
   const currentStage = order?.current_stage || 0;
-  const presentation = getStagePresentation(stageIndex, order, currentStage);
+  const presentation = grouped
+    ? getGroupedStagePresentation(stageIndex, order, currentStage)
+    : getStagePresentation(stageIndex, order, currentStage);
   const { open, toggle } = usePoStageAccordion(stageIndex);
   const panelId = useId();
 
