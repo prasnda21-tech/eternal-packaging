@@ -154,7 +154,7 @@ describe("PODetail delivery proof lazy blob fetch", () => {
     expect(slot).not.toMatch(/\{open\s*&&\s*<DeliveryProofPanel/);
     expect(proofSrc).toMatch(/isOpen = true/);
     expect(proofSrc).toMatch(/if \(!isOpen\) return;/);
-    expect(proofSrc).toMatch(/\[isOpen, proofs\.length, selectionKey\]/);
+    expect(proofSrc).toMatch(/\[isOpen, proofLoadKey, selectionKey\]/);
     expect(proofSrc).toMatch(/fetch\(fileUrl\(p\.storage_path\), \{ credentials: "include" \}\)/);
     expect(proofSrc).toMatch(/api\.uploadDeliveryProof/);
     expect(proofSrc).toMatch(/canConfirmDelivered\(proofs\)/);

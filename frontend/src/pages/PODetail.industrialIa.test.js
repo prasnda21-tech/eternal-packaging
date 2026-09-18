@@ -8,7 +8,10 @@ import {
 } from "../lib/poDetailPresentation";
 
 describe("Detail PO industrial information architecture", () => {
-  const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
+  const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8")
+    + fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8")
+    + fs.readFileSync(path.join(__dirname, "../components/poDetail/PoContextRail.jsx"), "utf8")
+    + fs.readFileSync(path.join(__dirname, "../components/poDetail/PoStageWorkspace.jsx"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
   const bar = fs.readFileSync(path.join(__dirname, "../components/StageBar.jsx"), "utf8");
   const timeline = fs.readFileSync(path.join(__dirname, "../components/Timeline.jsx"), "utf8");
