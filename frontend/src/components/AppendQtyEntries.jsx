@@ -21,6 +21,9 @@ export default function AppendQtyEntries({
 }) {
   const rows = visibleEntries(entries, snapshotQty, snapshotAt, snapshotName);
   const total = rows.length ? sumEntryQty(rows) : Number(snapshotQty || 0);
+  const draftQty = Number(draft || 0);
+  const remainingQty = remaining == null ? null : Math.max(0, Number(remaining || 0));
+  const exceedsRemaining = remainingQty != null && draftQty > remainingQty;
   return (
     <div className="append-entries" data-testid={testid || "append-entries"}>
       {rows.length > 0 && (
@@ -56,17 +59,23 @@ export default function AppendQtyEntries({
             onChange={(e) => onDraftChange(e.target.value)}
             disabled={busy}
             testid={inputTestid || `${testid || "append"}-input`}
-            className="is-compact"
+            className={`is-compact${exceedsRemaining ? " is-invalid" : ""}`}
+            title={exceedsRemaining ? `Qty tambahan melebihi sisa tahap sebelumnya (${remainingQty}).` : undefined}
           />
           <button
             type="button"
             className="primary"
             onClick={onConfirmClick}
-            disabled={busy || !Number(draft)}
+            disabled={busy || draftQty <= 0 || exceedsRemaining}
             data-testid={confirmTestid || `${testid || "append"}-confirm`}
           >
             Konfirmasi
           </button>
+          {exceedsRemaining && (
+            <span className="error small" role="alert" data-testid={`${testid || "append"}-limit-error`}>
+              Maksimal tambahan {fmtQty(remainingQty)} {unit}.
+            </span>
+          )}
         </div>
       )}
     </div>
