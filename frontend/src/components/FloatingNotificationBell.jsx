@@ -46,7 +46,7 @@ function viewportSize() {
   };
 }
 
-export default function FloatingNotificationBell({ docked = false }) {
+export default function FloatingNotificationBell() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -275,8 +275,8 @@ export default function FloatingNotificationBell({ docked = false }) {
   return (
     <div
       ref={rootRef}
-      className={`ep-web-notif-root${docked ? " is-docked" : ""}`}
-      style={docked ? undefined : { left: pos.x, top: pos.y }}
+      className="ep-web-notif-root"
+      style={{ left: pos.x, top: pos.y }}
       data-testid="web-floating-notification-bell"
       data-x={pos.x}
       data-y={pos.y}
@@ -288,10 +288,10 @@ export default function FloatingNotificationBell({ docked = false }) {
         aria-expanded={panelOpen}
         data-testid="web-notif-bell-button"
         style={{ width: BELL_SIZE_PX, height: BELL_SIZE_PX }}
-        onPointerDown={docked ? undefined : onPointerDown}
-        onPointerMove={docked ? undefined : onPointerMove}
-        onPointerUp={docked ? undefined : endPointer}
-        onPointerCancel={docked ? undefined : endPointer}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
       >
         <Bell size={22} strokeWidth={2.25} aria-hidden />
         {unreadCount > 0 ? (
@@ -307,12 +307,7 @@ export default function FloatingNotificationBell({ docked = false }) {
           role="dialog"
           aria-label="Notifikasi"
           data-testid="web-notif-panel"
-          style={docked ? {
-            right: 0,
-            top: BELL_SIZE_PX + 6,
-            width: PANEL_WIDTH,
-            maxHeight: PANEL_HEIGHT,
-          } : {
+          style={{
             left: panel.left - pos.x,
             top: panel.top - pos.y,
             width: PANEL_WIDTH,

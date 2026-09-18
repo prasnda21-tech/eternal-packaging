@@ -7,7 +7,6 @@ describe("sidebar flyout interaction", () => {
   const grid = fs.readFileSync(path.join(__dirname, "SidebarFlyoutGrid.jsx"), "utf8");
   const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
-  const notificationCss = fs.readFileSync(path.join(__dirname, "floatingNotificationBell.css"), "utf8");
 
   test("click parent opens, same parent closes, other parent switches", () => {
     expect(nextSidebarMenu(null, "produksi")).toBe("produksi");
@@ -162,8 +161,5 @@ describe("sidebar flyout interaction", () => {
   test("authenticated shell mounts web floating notification bell once", () => {
     expect(shell).toMatch(/import FloatingNotificationBell from "\.\/FloatingNotificationBell"/);
     expect(shell).toMatch(/<FloatingNotificationBell \/>/);
-    expect(shell).toMatch(/poDetailActive && <FloatingNotificationBell docked \/>/);
-    expect(shell).toMatch(/!poDetailActive && <FloatingNotificationBell \/>/);
-    expect(notificationCss).toMatch(/\.ep-web-notif-root\.is-docked\{?[\s\S]*position:\s*relative/);
   });
 });

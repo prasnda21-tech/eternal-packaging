@@ -14,7 +14,6 @@ import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
 import WorkspaceTabs from "../components/WorkspaceTabs";
 import PODetail from "./PODetail";
 import { openOrActivateGlobalTab } from "../lib/globalWorkspace";
-import { clearPoDetailRetention } from "../lib/poDetailRetention";
 
 const mockPermissions = [...Object.values(NAV_KEYS), "po.view", "sales_order.view"];
 const mockAuthUser = {
@@ -248,7 +247,6 @@ function renderApp(initialEntries) {
 
 describe("PO tab existence + customer label (regression)", () => {
   beforeEach(() => {
-    clearPoDetailRetention();
     sessionStorage.clear();
     api.getOrder.mockReset();
     api.listSalesReceipts.mockReset();

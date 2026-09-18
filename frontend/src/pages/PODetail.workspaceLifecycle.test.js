@@ -6,7 +6,6 @@ import { NAV_KEYS } from "../lib/navAccess";
 import { useGlobalWorkspaceTabs } from "../hooks/useGlobalWorkspaceTabs";
 import WorkspaceTabs from "../components/WorkspaceTabs";
 import PODetail from "./PODetail";
-import { clearPoDetailRetention } from "../lib/poDetailRetention";
 
 const mockPermissions = [...Object.values(NAV_KEYS), "po.view", "sales_order.view"];
 const mockAuthUser = {
@@ -249,7 +248,6 @@ function renderApp(initialEntries) {
 
 describe("PO workspace tab render lifecycle", () => {
   beforeEach(() => {
-    clearPoDetailRetention();
     sessionStorage.clear();
     api.getOrder.mockReset();
     api.listSalesReceipts.mockReset();
