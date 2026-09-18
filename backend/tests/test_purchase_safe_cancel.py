@@ -410,18 +410,27 @@ async def test_k_gr_cancel_recalculates_po_received_qty_no_stock_double():
             missing_reason = await c.post(
                 f"/api/purchase-goods-receipts/{gr['id']}/cancel", json={}
             )
-            assert missing_reason.status_code == 400
-            assert "alasan" in str(missing_reason.json()["detail"]).lower()
+            assert missing_reason.status_code == 200, missing_reason.text
+            body = missing_reason.json()["receipt"]
+            assert body["cancelled"] is True
+            assert body.get("can_cancel") is False
+            assert body.get("cancel_reason") == "Pembatalan penerimaan"
+            assert body.get("cancelled_at")
+            assert (body.get("cancelled_by") or {}).get("email") == "admin@example.com"
 
             mov_before = await server.db.stock_movements.count_documents({
                 "reference_type": "goods_receipt", "reference_id": gr["id"],
             })
 
-            cancel = await c.post(f"/api/purchase-goods-receipts/{gr['id']}/cancel", json={"reason": "salah input"})
+            # Already cancelled — keep a named cancel path for regression continuity
+            cancel = await c.post(
+                f"/api/purchase-goods-receipts/{gr['id']}/cancel",
+                json={"reason": "salah input"},
+            )
             assert cancel.status_code == 200, cancel.text
             body = cancel.json()["receipt"]
             assert body["cancelled"] is True
-            assert body.get("can_cancel") is False
+            assert body.get("cancel_reason") == "Pembatalan penerimaan"
 
             raw = await server.db.purchase_goods_receipts.find_one({"id": gr["id"]}, {"_id": 0})
             assert raw is not None and raw.get("cancelled") is True
@@ -544,13 +553,13 @@ async def test_gr_stock_cancel_appends_one_idempotent_reversal():
 
             cancel = await c.post(
                 f"/api/purchase-goods-receipts/{gr_id}/cancel",
-                json={"reason": "Qty penerimaan salah"},
+                json={},
             )
             assert cancel.status_code == 200, cancel.text
             cancelled = cancel.json()["receipt"]
             assert cancelled["cancelled"] is True
             assert cancelled["status"] == "CANCELLED"
-            assert cancelled["cancel_reason"] == "Qty penerimaan salah"
+            assert cancelled["cancel_reason"] == "Pembatalan penerimaan"
             assert cancelled.get("cancelled_by", {}).get("email") == "admin@example.com"
             assert cancelled.get("cancelled_at")
             assert cancelled.get("reversal_movement_id")
@@ -574,7 +583,7 @@ async def test_gr_stock_cancel_appends_one_idempotent_reversal():
             assert reversals[0]["delta"] == -4
             assert reversals[0]["reversal_of_movement_id"] == original[0]["id"]
             assert reversals[0]["goods_receipt_id"] == gr_id
-            assert reversals[0]["cancel_reason"] == "Qty penerimaan salah"
+            assert reversals[0]["cancel_reason"] == "Pembatalan penerimaan"
 
             retry = await c.post(f"/api/purchase-goods-receipts/{gr_id}/cancel", json={})
             assert retry.status_code == 200, retry.text
@@ -747,13 +756,13 @@ async def test_manual_receipt_cancel_is_soft_idempotent_and_accurate_is_blocked(
 
             cancelled = await c.post(
                 f"/api/purchase-receipts/{manual_id}/cancel",
-                json={"reason": "UAT manual cancel"},
+                json={},
             )
             assert cancelled.status_code == 200, cancelled.text
             body = cancelled.json()["receipt"]
             assert body["status"] == "CANCELLED"
             assert body["cancelled"] is True
-            assert body["cancel_reason"] == "UAT manual cancel"
+            assert body["cancel_reason"] == "Pembatalan penerimaan"
             assert body.get("cancelled_at")
             assert body.get("cancelled_by", {}).get("email") == "admin@example.com"
             assert await server.db.stock_movements.count_documents({}) == before_movements
@@ -761,6 +770,7 @@ async def test_manual_receipt_cancel_is_soft_idempotent_and_accurate_is_blocked(
             retry = await c.post(f"/api/purchase-receipts/{manual_id}/cancel", json={})
             assert retry.status_code == 200
             assert await server.db.stock_movements.count_documents({}) == before_movements
+            assert retry.json()["receipt"]["cancel_reason"] == "Pembatalan penerimaan"
 
             accurate_id = f"accurate-{uuid.uuid4()}"
             await server.db.accurate_purchase_receipts.insert_one({
@@ -869,12 +879,13 @@ async def test_manual_receipt_stock_in_idempotent_and_cancel_reverses():
 
             cancelled = await c.post(
                 f"/api/purchase-receipts/{manual_id}/cancel",
-                json={"reason": "Qty salah"},
+                json={},
             )
             assert cancelled.status_code == 200, cancelled.text
             body = cancelled.json()["receipt"]
             assert body["cancelled"] is True
             assert body["status"] == "CANCELLED"
+            assert body["cancel_reason"] == "Pembatalan penerimaan"
 
             after_cancel = await server.db.product_stock_state.find_one({"master_item_id": mid})
             assert after_cancel["total_qty"] == 0
@@ -886,6 +897,7 @@ async def test_manual_receipt_stock_in_idempotent_and_cancel_reverses():
             }, {"_id": 0}).to_list(None)
             assert len(reversals) == 1
             assert reversals[0]["delta"] == -2 or reversals[0]["transaction_qty"] == -2
+            assert reversals[0]["cancel_reason"] == "Pembatalan penerimaan"
 
             cancel_retry = await c.post(f"/api/purchase-receipts/{manual_id}/cancel", json={})
             assert cancel_retry.status_code == 200
