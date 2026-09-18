@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, CalendarClock, Check, Eye, FileCheck2, FileText, MapPin, MessageSquare, ScanLine, ShieldOff, Trash2, X, XCircle } from "lucide-react";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
+import { AlertCircle, AlertTriangle, CalendarClock, Check, ChevronDown, Copy, Eye, FileCheck2, FileText, MapPin, MessageSquare, RotateCcw, ScanLine, ShieldOff, Trash2, Truck, X, XCircle } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
@@ -30,11 +30,7 @@ import {
   clampWorkflowStageIndex,
   deskPanelOwnsStage,
   parsePoDetailStageParam,
-  parsePoDetailViewParam,
-  hasRetiredPoDetailViewParam,
   poDetailStagePanelTitle,
-  PO_DETAIL_VIEW_TITLES,
-  syncPoDetailQuery,
   syncPoDetailStageQuery,
 } from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
@@ -48,6 +44,7 @@ import { openPaymentProofSource, paymentProofIsImage, paymentProofIsPdf, payment
 import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
+import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
 import { readPoDetailRetention, writePoDetailRetention } from "../lib/poDetailRetention";
 import LineProductReplaceControl from "../components/LineProductReplaceControl";
 import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
@@ -58,10 +55,9 @@ import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poD
 import PoDetailShell from "../components/poDetail/PoDetailShell";
 import PoGlobalCommandBar from "../components/poDetail/PoGlobalCommandBar";
 import PoContextRail from "../components/poDetail/PoContextRail";
-import PoContextPage from "../components/poDetail/PoContextPage";
+import PoContextDrawer from "../components/poDetail/PoContextDrawer";
 import PoStageWorkspace from "../components/poDetail/PoStageWorkspace";
 import PoStageActionFooter from "../components/poDetail/PoStageActionFooter";
-import LineItemOverflow from "../components/poDetail/LineItemOverflow";
 
 function PengirimanDeliveryProofPanel({ order, onUpdated }) {
   const { open } = usePoStageAccordion(14);
@@ -103,15 +99,13 @@ export default function PODetail() {
   const [trackingBusy, setTrackingBusy] = useState(false);
   const [locRow, setLocRow] = useState(null);
   const [editInfoOpen, setEditInfoOpen] = useState(false);
+  const [dangerActionsOpen, setDangerActionsOpen] = useState(false);
   const [selectedWorkflowStage, setSelectedWorkflowStage] = useState(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [stageSheetOpen, setStageSheetOpen] = useState(false);
-  const [contextView, setContextView] = useState(() => parsePoDetailViewParam(
-    typeof window !== "undefined" ? window.location.search : "",
-  ));
-  const [planActionsOpen, setPlanActionsOpen] = useState(false);
+  const [utilityDrawer, setUtilityDrawer] = useState(null);
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const selectedForOrderRef = useRef(null);
-  const planTriggerRef = useRef(null);
 
   const commitOrder = (nextOrder) => {
     setOrder(nextOrder);
@@ -193,58 +187,58 @@ export default function PODetail() {
     if (!order?.id) return;
     const switched = selectedForOrderRef.current !== order.id;
     if (switched) selectedForOrderRef.current = order.id;
-    const search = location.search || (typeof window !== "undefined" ? window.location.search : "");
     setSelectedWorkflowStage((prev) => {
       if (!switched && prev != null) return prev;
+      const search = location.search || (typeof window !== "undefined" ? window.location.search : "");
       const fromQuery = parsePoDetailStageParam(search);
       if (fromQuery != null) return fromQuery;
       return clampWorkflowStageIndex(resolveOperationalStage(order, order.current_stage), 0);
-    });
-    setContextView((prev) => {
-      const fromView = parsePoDetailViewParam(search);
-      if (switched) return fromView;
-      return fromView !== undefined ? fromView : prev;
     });
   }, [order, location.search]);
 
   useEffect(() => {
     const onPop = () => {
-      const search = typeof window !== "undefined" ? window.location.search : "";
-      const fromQuery = parsePoDetailStageParam(search);
+      const fromQuery = parsePoDetailStageParam(typeof window !== "undefined" ? window.location.search : "");
       if (fromQuery != null) setSelectedWorkflowStage(fromQuery);
-      setContextView(parsePoDetailViewParam(search));
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // Canonicalize ?stage= / ?view= on first load / refresh without adding history.
+  // Canonicalize ?stage= on first load / refresh without adding history.
   useEffect(() => {
     if (selectedWorkflowStage == null) return;
     if (typeof window === "undefined") return;
     const current = parsePoDetailStageParam(window.location.search);
-    const currentView = parsePoDetailViewParam(window.location.search);
-    if (
-      current !== selectedWorkflowStage
-      || currentView !== contextView
-      || hasRetiredPoDetailViewParam(window.location.search)
-    ) {
-      syncPoDetailQuery({ stageIndex: selectedWorkflowStage, view: contextView, push: false });
+    if (current !== selectedWorkflowStage) {
+      syncPoDetailStageQuery(selectedWorkflowStage, { push: false });
     }
-  }, [order?.id, selectedWorkflowStage, contextView]);
+  }, [order?.id, selectedWorkflowStage]);
+
+  const lastDrawerFocusRef = useRef(null);
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    if (utilityDrawer) {
+      lastDrawerFocusRef.current = document.activeElement;
+      const closeBtn = document.querySelector(".po-context-drawer.is-open .icon-button");
+      if (closeBtn && typeof closeBtn.focus === "function") closeBtn.focus();
+    } else if (lastDrawerFocusRef.current && typeof lastDrawerFocusRef.current.focus === "function") {
+      lastDrawerFocusRef.current.focus();
+      lastDrawerFocusRef.current = null;
+    }
+    return undefined;
+  }, [utilityDrawer]);
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== "Escape") return;
+      if (moreActionsOpen) setMoreActionsOpen(false);
+      if (utilityDrawer) setUtilityDrawer(null);
       if (stageSheetOpen) setStageSheetOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stageSheetOpen]);
-
-  useEffect(() => {
-    setPlanActionsOpen(false);
-  }, [id, selectedWorkflowStage, contextView]);
+  }, [moreActionsOpen, utilityDrawer, stageSheetOpen]);
 
   // Start with route id (parallel to getOrder) — do not wait for order payload.
   // Payment stamps still trigger refetch after order hydrate / payment changes.
@@ -475,21 +469,8 @@ export default function PODetail() {
   const selectWorkflowStage = (idx) => {
     const next = clampWorkflowStageIndex(idx, actualStage);
     setSelectedWorkflowStage(next);
-    setContextView(null);
     setStageSheetOpen(false);
-    setPlanActionsOpen(false);
-    syncPoDetailStageQuery(next, { push: true, view: null });
-  };
-  const selectContextView = (view) => {
-    if (view === contextView) return;
-    setContextView(view);
-    setPlanActionsOpen(false);
-    syncPoDetailQuery({ stageIndex: viewedStage, view, push: true });
-  };
-  const backToWorkflow = () => {
-    setContextView(null);
-    setPlanActionsOpen(false);
-    syncPoDetailQuery({ stageIndex: viewedStage, view: null, push: true });
+    syncPoDetailStageQuery(next, { push: true });
   };
   const lineItemCount = order.item_count ?? (order.line_items || []).length;
 
@@ -517,6 +498,16 @@ export default function PODetail() {
     setLocRow(row);
   };
 
+  const backToPoList = () => {
+    const target = resolvePoBackTarget({
+      location,
+      userId: storageUserKey(user),
+      orderId: id,
+      mobileFallback: "/m/tasks",
+      webFallback: "/",
+    });
+    navigate(target);
+  };
   // "Read-only" hint hanya muncul jika user benar-benar tidak punya action perm apapun
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
@@ -631,93 +622,107 @@ export default function PODetail() {
       data-testid="po-detail-page"
       data-actual-stage={actualStage}
       data-viewed-stage={viewedStage}
-      data-context-view={contextView || ""}
     >
     <PoDetailShell
+      drawerOpen={!!utilityDrawer}
       header={(
-      <div className="detail-header po-stage-ws-header po-identity-header">
+      <div className="detail-header po-stage-ws-header">
         <div className="po-hero-title-row">
           <div className="po-hero-identity">
-            <div className="po-hero-customer-row">
-              <h1 className="po-hero-customer" data-testid="detail-customer-name">
-                {order.customer || "Customer belum tersedia"}
-              </h1>
-              {order.priority === "urgent" ? (
-                <span className="po-hero-status-badge is-urgent" data-testid="detail-priority">URGENT</span>
-              ) : null}
-              {order.buffer_stock ? (
-                <span className="po-hero-status-badge is-buffer" data-testid="buffer-stock-badge">BUFFER STOCK</span>
-              ) : null}
-              {order.hold ? (
-                <span
-                  className="po-hero-hold"
-                  data-testid="hold-banner"
-                  title={["PO HOLD — belum bisa masuk Penjadwalan", ...(order.hold_reasons || [])].join(" · ")}
-                >
-                  <strong>PO HOLD</strong>
-                  <span> — belum bisa masuk Penjadwalan</span>
-                  {(order.hold_reasons || []).map((r, i) => (
-                    <span key={i} data-testid={`hold-reason-${i}`} hidden>{r}</span>
-                  ))}
-                </span>
-              ) : null}
-            </div>
+            <h1 className="po-hero-customer" data-testid="detail-customer-name">
+              {order.customer || "Customer belum tersedia"}
+            </h1>
             <div className="po-hero-identity-meta">
               <p className="po-hero-number" data-testid="detail-po-number">{order.po_number}</p>
-              {order.outlet ? <span className="po-hero-dot" aria-hidden="true">·</span> : null}
-              <p className="po-hero-outlet" data-testid="detail-outlet" hidden={!order.outlet}>{order.outlet || "—"}</p>
               {(order.branch_name || order.branch) ? (
-                <span className="po-hero-branch" data-testid="detail-branch" hidden>{order.branch_name || order.branch}</span>
+                <>
+                  <span className="po-hero-dot" aria-hidden="true">·</span>
+                  <span className="po-hero-branch" data-testid="detail-branch">{order.branch_name || order.branch}</span>
+                </>
               ) : null}
+              {order.outlet ? (
+                <>
+                  <span className="po-hero-dot" aria-hidden="true">·</span>
+                  <p className="po-hero-outlet" data-testid="detail-outlet">{order.outlet}</p>
+                </>
+              ) : (
+                <p className="po-hero-outlet" data-testid="detail-outlet" hidden>—</p>
+              )}
             </div>
           </div>
-          <div className="po-hero-toolbar" data-testid="po-hero-toolbar">
-            <span className="po-hero-sedang" data-testid="po-actual-stage-label">
-              Tahap aktif saat ini: <strong data-testid="detail-stage">{actualStage + 1}. {STAGES[actualStage]}</strong>
+        </div>
+        <div className="po-hero-toolbar" data-testid="po-hero-toolbar">
+          <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
+            {order.priority === "urgent" ? "URGENT" : "NORMAL"}
+          </span>
+          <span className="pill sm" data-testid="header-order-kind">
+            {order.requires_printing === false ? "Non-Cetak" : "Cetak"}
+          </span>
+          {order.buffer_stock && (
+            <span className="pill sm" data-testid="buffer-stock-badge">
+              BUFFER STOCK
             </span>
-            <span className="po-hero-ship-date" data-testid="header-tanggal-pengiriman">
-              Tanggal Pengiriman:{" "}
-              <strong data-testid="detail-tanggal-pengiriman-header">
-                {formatDate(
-                  order.tanggal_pengiriman
-                  || order.effective_delivery_date
-                  || order.delivery_deadline_effective
-                  || order.scheduled_delivery_date
-                  || order.delivery_deadline_manual
-                )}
-              </strong>
-              {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
-                <span className="muted small"> Manual</span>
-              ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
-                <span className="muted small"> Otomatis</span>
-              ) : null}
-            </span>
-            <span className="po-hero-extra" hidden>
-              <span className="pill sm" data-testid="header-order-kind">
-                {order.requires_printing === false ? "Non-Cetak" : "Cetak"}
-              </span>
-              <span className="po-hero-qty" data-testid="po-header-total-qty">
-                Qty: <strong>{(order.total_quantity ?? 0).toLocaleString("id-ID")}</strong>
-              </span>
-              <span className="po-hero-lines" data-testid="po-header-line-count">
-                Line: <strong>{lineItemCount}</strong>
-              </span>
-              <span data-testid="po-last-updated" className="po-hero-updated">
-                Update: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
-              </span>
-            </span>
-          </div>
+          )}
+          <span className="po-hero-sedang" data-testid="po-actual-stage-label">
+            Tahap aktif saat ini: <strong data-testid="detail-stage">{actualStage + 1}. {STAGES[actualStage]}</strong>
+          </span>
+          <span className="po-hero-qty" data-testid="po-header-total-qty">
+            Qty: <strong>{(order.total_quantity ?? 0).toLocaleString("id-ID")}</strong>
+          </span>
+          <span className="po-hero-lines" data-testid="po-header-line-count">
+            Line: <strong>{lineItemCount}</strong>
+          </span>
+          <span className="po-hero-ship-date" data-testid="header-tanggal-pengiriman">
+            Tanggal Pengiriman:{" "}
+            <strong data-testid="detail-tanggal-pengiriman-header">
+              {formatDate(
+                order.tanggal_pengiriman
+                || order.effective_delivery_date
+                || order.delivery_deadline_effective
+                || order.scheduled_delivery_date
+                || order.delivery_deadline_manual
+              )}
+            </strong>
+            {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
+              <span className="muted small"> Manual</span>
+            ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
+              <span className="muted small"> Otomatis</span>
+            ) : null}
+          </span>
+          <span data-testid="po-last-updated" className="po-hero-updated">
+            Update: {poLastUpdated ? new Date(poLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"}
+          </span>
         </div>
       </div>
       )}
-      rail={(
-        <PoContextRail
-          active={contextView}
-          onSelect={selectContextView}
-          planOpen={planActionsOpen}
-          onTogglePlan={() => setPlanActionsOpen((value) => !value)}
-          planTriggerRef={planTriggerRef}
+      commandBar={(
+        <PoGlobalCommandBar
+          canEditPoInfo={canEditPoInfo}
+          cancelled={order.cancelled}
+          onEditInfo={() => setEditInfoOpen(true)}
+          canSetLocation={canSetLocation}
+          hasOutlet={!!order.outlet}
+          onEditLocation={openLocationEditor}
+          canRepeatOrder={canRepeatOrder}
+          orderId={order.id}
+          canManageUrgent={canManageUrgent}
+          isUrgent={order.priority === "urgent"}
+          onToggleUrgent={toggleUrgent}
+          busy={busy}
+          canManageBufferStock={canManageBufferStock}
+          isBufferStock={!!order.buffer_stock}
+          onToggleBufferStock={toggleBufferStock}
+          onPrint={() => window.print()}
+          moreOpen={moreActionsOpen}
+          onToggleMore={() => setMoreActionsOpen((value) => !value)}
+          onRefresh={() => { setMoreActionsOpen(false); refreshPO(); }}
+          refreshing={poIsPolling}
+          onSummary={() => { setMoreActionsOpen(false); setSummaryOpen(true); }}
+          onBack={() => { setMoreActionsOpen(false); backToPoList(); }}
         />
+      )}
+      rail={(
+        <PoContextRail active={utilityDrawer} onSelect={setUtilityDrawer} />
       )}
       mobileChrome={(
       <div className="po-mobile-stage-chrome" data-testid="po-mobile-stage-chrome">
@@ -750,15 +755,13 @@ export default function PODetail() {
       )}
       workspace={(
       <PoStageWorkspace
-        title={contextView ? (PO_DETAIL_VIEW_TITLES[contextView] || "") : (viewedStage === 0 ? "" : poDetailStagePanelTitle(viewedStage))}
-        summary={contextView ? "" : (viewedStagePresentation?.summary || viewedStagePresentation?.label)}
-        viewingOtherStage={!contextView && viewingOtherStage}
+        title={poDetailStagePanelTitle(viewedStage)}
+        summary={viewedStagePresentation?.summary || viewedStagePresentation?.label}
+        viewingOtherStage={viewingOtherStage}
         onBackToActive={() => selectWorkflowStage(actualStage)}
-        contextView={contextView}
-        onBackToWorkflow={backToWorkflow}
         notices={(
           <>
-      <section className="po-kpi-strip" data-testid="po-kpi-strip" hidden={!!contextView || viewedStage !== 0}>
+      <section className="po-kpi-strip" data-testid="po-kpi-strip" hidden={viewedStage !== 0}>
         <MetricRow columns={5}>
           <MetricCell label="Total PO" value={order.total_quantity} testid="kpi-total-po" />
           <MetricCell className="kpi-accent-target" label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
@@ -789,6 +792,16 @@ export default function PODetail() {
         onGotoStage={selectWorkflowStage}
       />
 
+      {/* HOLD banner (Req 2) */}
+      {order.hold && (
+        <div className="hold-banner" data-testid="hold-banner">
+          <AlertCircle size={18}/>
+          <div>
+            <strong>PO HOLD — belum bisa masuk Penjadwalan</strong>
+            <ul>{(order.hold_reasons || []).map((r, i) => <li key={i} data-testid={`hold-reason-${i}`}>{r}</li>)}</ul>
+          </div>
+        </div>
+      )}
       {(order.design_bypassed || order.payment_bypassed) && (
         <div className="bypass-banner" data-testid="bypass-banner">
           <ShieldOff size={16}/>
@@ -817,233 +830,21 @@ export default function PODetail() {
         )}
       >
 
-      <div className="po-context-pages" data-testid="po-context-pages" hidden={!contextView}>
-        <PoContextPage view="informasi-po" active={contextView === "informasi-po"} testid="detail-info" className="po-info-panel">
-          <div className="po-info-grid">
-            <div>
-              <span className="lbl">PO / Sales Order</span>
-              <strong className="mono">{order.po_number || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Customer</span>
-              <strong>{order.customer || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Outlet</span>
-              <strong>{order.outlet || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Tanggal PO</span>
-              <strong>{formatDate(order.order_date)}</strong>
-            </div>
-            <div>
-              <span className="lbl">Tanggal Pengiriman</span>
-              <strong data-testid="detail-tanggal-pengiriman">
-                {formatDate(
-                  order.tanggal_pengiriman
-                  || order.effective_delivery_date
-                  || order.delivery_deadline_effective
-                  || order.scheduled_delivery_date
-                  || order.delivery_deadline_manual
-                )}
-                {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
-                  <span className="muted small" style={{ marginLeft: 6 }}>Manual</span>
-                ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
-                  <span className="muted small" style={{ marginLeft: 6 }}>Otomatis</span>
-                ) : null}
-              </strong>
-            </div>
-            <div>
-              <span className="lbl">Estimasi kirim</span>
-              <strong data-testid="detail-estimated-delivery">{formatDate(order.estimated_delivery)}</strong>
-            </div>
-            <div>
-              <span className="lbl">Penerima</span>
-              <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Sales</span>
-              <strong data-testid="detail-sales">
-                {order.sales || order.sales_user || <em className="muted">Perlu verifikasi</em>}
-              </strong>
-            </div>
-            <div className="po-info-address">
-              <span className="lbl"><MapPin size={12} /> Alamat</span>
-              <strong data-testid="detail-address">{order.address || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Ekspedisi</span>
-              <strong>{order.expedition || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Zona kirim</span>
-              <strong>{order.delivery_zone || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">User / Pembuat PO</span>
-              <strong data-testid="detail-created-by-user">
-                {order.created_by_user || <em className="muted">Perlu verifikasi</em>}
-              </strong>
-            </div>
-            <div>
-              <span className="lbl">Termin bayar</span>
-              <strong>{order.payment_terms || <span className="po-info-empty">—</span>}</strong>
-            </div>
-            <div>
-              <span className="lbl">Status Payment</span>
-              <strong className={order.payment_status === "Approved" ? "status-ok" : "status-wait"} data-testid="payment-status">
-                {order.payment_status === "Approved" ? "Approved" : "Menunggu approval"}
-              </strong>
-            </div>
-            <div>
-              <span className="lbl">Status Design</span>
-              <strong className={(order.design_status === "Approved" || isCustomerDesignApproved(order)) ? "status-ok" : "status-wait"} data-testid="design-status">
-                {(order.design_status === "Approved" || isCustomerDesignApproved(order))
-                  ? "Approved"
-                  : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
-              </strong>
-            </div>
-            {order.imported_by && (
-              <div>
-                <span className="lbl">Diimport oleh (Admin)</span>
-                <strong data-testid="detail-imported-by">
-                  {order.imported_by_name || order.imported_by}
-                  {order.imported_at && <span className="muted small"> · {formatDate(order.imported_at)}</span>}
-                </strong>
-              </div>
-            )}
-            {order.accurate_id && (
-              <div>
-                <span className="lbl">Accurate ID</span>
-                <strong className="mono" data-testid="detail-accurate-id">{order.accurate_id}</strong>
-              </div>
-            )}
-            {order.notes && (
-              <div className="po-info-address" data-testid="detail-keterangan">
-                <span className="lbl">Keterangan</span>
-                <strong style={{whiteSpace:"pre-wrap"}}>{order.notes}</strong>
-              </div>
-            )}
-            {order.source_pdf?.storage_path && (
-              <div>
-                <span className="lbl">PDF asli import</span>
-                <strong>
-                  <a
-                    href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${order.source_pdf.storage_path}`}
-                    target="_blank" rel="noopener noreferrer"
-                    data-testid="detail-source-pdf"
-                    className="link-inline"
-                  >
-                    <FileText size={13}/> {order.source_pdf.original_filename || "Lihat PDF"}
-                  </a>
-                </strong>
-              </div>
-            )}
-            {order.urgency_approved_by && (
-              <div>
-                <span className="lbl">Urgent disetujui oleh</span>
-                <strong>{order.urgency_approved_by}</strong>
-              </div>
-            )}
-          </div>
-        </PoContextPage>
-
-        <PoContextPage view="dokumen-pengecualian" active={contextView === "dokumen-pengecualian"} testid="po-documents-page" className="po-documents-page">
-          <table className="po-docs-index" data-testid="po-documents-index">
-            <thead>
-              <tr>
-                <th>Jenis</th>
-                <th>Nama</th>
-                <th>Jumlah</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Dokumen PO</td>
-                <td>
-                  {order.source_pdf?.storage_path ? (
-                    <a href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${order.source_pdf.storage_path}`} target="_blank" rel="noopener noreferrer" className="po-drawer-link" data-testid="drawer-source-pdf">
-                      <FileText size={14} /> {order.source_pdf.original_filename || "PDF asli import"}
-                    </a>
-                  ) : "Tidak ada PDF asli import"}
-                </td>
-                <td>{order.source_pdf?.storage_path ? 1 : 0}</td>
-              </tr>
-              <tr>
-                <td>Design</td>
-                <td>{(order.design_files || []).map((f) => f.name || f.original_filename || "File design").join(", ") || "—"}</td>
-                <td>{(order.design_files || []).length}</td>
-              </tr>
-              <tr>
-                <td>Invoice / Faktur</td>
-                <td>{order.invoice_number || order.sales_invoice_number || "Lihat Buat Faktur di menu Perencanaan"}</td>
-                <td>{order.invoice_number || order.sales_invoice_number ? 1 : 0}</td>
-              </tr>
-              <tr>
-                <td>Sample</td>
-                <td>{(order.sample_files || []).map((f) => f.name || f.original_filename || "File sample").join(", ") || "—"}</td>
-                <td>{(order.sample_files || []).length}</td>
-              </tr>
-              <tr>
-                <td>Surat Jalan</td>
-                <td>{order.surat_jalan_number || order.delivery_note_number || "Lihat tahap Surat Jalan"}</td>
-                <td>{order.surat_jalan_number || order.delivery_note_number ? 1 : 0}</td>
-              </tr>
-              <tr>
-                <td>Bukti loading</td>
-                <td>Lihat tahap Loading</td>
-                <td>{order.loading_info?.photos?.length || order.loading_photos?.length || 0}</td>
-              </tr>
-              <tr>
-                <td>Bukti pengiriman</td>
-                <td>Lihat tahap Pengiriman</td>
-                <td>{(order.delivery_proofs || order.delivery_photos || []).length}</td>
-              </tr>
-            </tbody>
-          </table>
-          <dl className="po-drawer-status-list">
-            <div><dt>Prioritas</dt><dd>{order.priority === "urgent" ? "Urgent" : "Normal"}</dd></div>
-            <div><dt>Buffer stock</dt><dd>{order.buffer_stock ? "Aktif" : "Tidak aktif"}</dd></div>
-            <div><dt>Status PO</dt><dd>{order.cancelled ? "Dibatalkan" : "Aktif"}</dd></div>
-          </dl>
-          <p className="muted small">Aksi pengecualian tersedia di menu Perencanaan dan tetap mengikuti izin pengguna.</p>
-          <section className={`panel po-notes-panel${!order.notes && !note ? " is-empty" : ""}`} data-testid="notes-panel">
-            <header className="panel-head"><h3>Catatan Produksi</h3></header>
-            {order.notes && <pre className="notes-view">{order.notes}</pre>}
-            {!order.notes && !note && <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>}
-            {!isCrm && (
-              <div className="note-add">
-                <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Tambahkan catatan..." rows={2} data-testid="note-input" className="manual-input" />
-                <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
-                  <MessageSquare size={14} /> Simpan catatan
-                </button>
-              </div>
-            )}
-          </section>
-        </PoContextPage>
-
-        <PoContextPage view="alur-pekerjaan" active={contextView === "alur-pekerjaan"} testid="po-workflow-page" className="po-workflow-page">
-          <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen />
-        </PoContextPage>
-      </div>
-
-      <div className="po-workflow po-stage-ws-stack" data-testid="po-workflow" hidden={!!contextView}>
+      <div className="po-workflow po-stage-ws-stack" data-testid="po-workflow">
       <PoStageAccordionProvider openStageIndex={accordionOpenIndex} onToggleStage={selectWorkflowStage}>
       {/* 01 Order Masuk */}
       <div id="po-stage-order-masuk" data-testid="workflow-slot-0" data-workflow-stage="0" className={"po-stage-workspace-slot" + (deskPanelOwnsStage("0", viewedStage) ? " is-desk-viewed" : "")} hidden={!deskPanelOwnsStage("0", viewedStage)}>
       <div className="po-stage-workspace-scroll">
       <section className="panel po-line-items-panel" data-testid="line-items-panel">
-        <header className="panel-head po-line-items-head">
+        <header className="panel-head">
           <h3>Line Item ({order.item_count ?? 0})</h3>
-          <div className="po-line-items-totals">
-            <span data-testid="scope-total-po">Total PO: {(order.total_quantity ?? 0).toLocaleString("id-ID")} pcs</span>
-            <span data-testid="scope-print-qty">
-              Cetak: {Number(order.print_qty_total ?? 0).toLocaleString("id-ID")}
-            </span>
-            <span data-testid="scope-nonprint-qty">
-              Non-Cetak: {Math.max(Number(order.total_quantity ?? 0) - Number(order.print_qty_total ?? 0), 0).toLocaleString("id-ID")}
-            </span>
-          </div>
+          <span className="pill" data-testid="scope-total-po">Total PO: {(order.total_quantity ?? 0).toLocaleString("id-ID")} pcs</span>
+          <span className="pill sm" data-testid="scope-print-qty">
+            Cetak: {Number(order.print_qty_total ?? 0).toLocaleString("id-ID")}
+          </span>
+          <span className="pill sm" data-testid="scope-nonprint-qty">
+            Non-Cetak: {Math.max(Number(order.total_quantity ?? 0) - Number(order.print_qty_total ?? 0), 0).toLocaleString("id-ID")}
+          </span>
         </header>
         <div className="line-items-table-wrap">
           <table className="line-items-table" data-testid="line-items-table">
@@ -1060,20 +861,12 @@ export default function PODetail() {
             </thead>
             <tbody>
               {(order.line_items || []).map((li, i) => {
-                const sizeLabel = li.size || li.ukuran || li.dimensions || li.spec || li.item_size || "";
-                const thumb = li.image_url || li.photo_url || li.thumbnail_url || li.image || "";
                 return (
                   <tr key={i} className="line-item-row" data-testid={`line-item-${i}`}>
                     <td className="num li-row-number">{i + 1}</td>
                     <td className="li-name">
-                      <span className="li-thumb" aria-hidden="true">
-                        {thumb ? <img src={thumb} alt="" /> : <span className="li-thumb-fallback" />}
-                      </span>
-                      <span className="li-name-copy">
-                        <strong>{li.name}</strong>
-                        {sizeLabel ? <span className="li-size">{sizeLabel}</span> : null}
-                        {li.notes ? <span className="li-notes">Catatan sablon: {li.notes}</span> : null}
-                      </span>
+                      <strong>{li.name}</strong>
+                      {li.notes ? <span className="li-notes">Catatan sablon: {li.notes}</span> : null}
                     </td>
                     <td className="mono" data-testid={`line-item-code-${i}`}>{li.item_code}</td>
                     <td className="num" data-testid={`line-item-qty-${i}`}>
@@ -1096,7 +889,6 @@ export default function PODetail() {
                         canEdit={canReplaceLineProduct}
                         onUpdated={setOrder}
                       />
-                      <LineItemOverflow line={li} index={i} />
                     </td>
                   </tr>
                 );
@@ -1593,43 +1385,264 @@ export default function PODetail() {
       </div>
       </PoStageWorkspace>
       )}
-    />
+      drawers={(
+        <>
+          <div className="po-meta-aksi-row po-command-drawers" data-testid="po-meta-aksi-row">
+            <PoContextDrawer
+              open={utilityDrawer === "info"}
+              title="Informasi PO"
+              testid="detail-info"
+              className="po-info-panel"
+              closeLabel="Tutup informasi PO"
+              onClose={() => setUtilityDrawer(null)}
+            >
+              <div className="po-info-grid">
+                <div>
+                  <span className="lbl">PO / Sales Order</span>
+                  <strong className="mono">{order.po_number || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Customer</span>
+                  <strong>{order.customer || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Outlet</span>
+                  <strong>{order.outlet || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Tanggal PO</span>
+                  <strong>{formatDate(order.order_date)}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Tanggal Pengiriman</span>
+                  <strong data-testid="detail-tanggal-pengiriman">
+                    {formatDate(
+                      order.tanggal_pengiriman
+                      || order.effective_delivery_date
+                      || order.delivery_deadline_effective
+                      || order.scheduled_delivery_date
+                      || order.delivery_deadline_manual
+                    )}
+                    {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
+                      <span className="muted small" style={{ marginLeft: 6 }}>Manual</span>
+                    ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
+                      <span className="muted small" style={{ marginLeft: 6 }}>Otomatis</span>
+                    ) : null}
+                  </strong>
+                </div>
+                <div>
+                  <span className="lbl">Estimasi kirim</span>
+                  <strong data-testid="detail-estimated-delivery">{formatDate(order.estimated_delivery)}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Penerima</span>
+                  <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Sales</span>
+                  <strong data-testid="detail-sales">
+                    {order.sales || order.sales_user || <em className="muted">Perlu verifikasi</em>}
+                  </strong>
+                </div>
+                <div className="po-info-address">
+                  <span className="lbl"><MapPin size={12} /> Alamat</span>
+                  <strong data-testid="detail-address">{order.address || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Ekspedisi</span>
+                  <strong>{order.expedition || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Zona kirim</span>
+                  <strong>{order.delivery_zone || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">User / Pembuat PO</span>
+                  <strong data-testid="detail-created-by-user">
+                    {order.created_by_user || <em className="muted">Perlu verifikasi</em>}
+                  </strong>
+                </div>
+                <div>
+                  <span className="lbl">Termin bayar</span>
+                  <strong>{order.payment_terms || <span className="po-info-empty">—</span>}</strong>
+                </div>
+                <div>
+                  <span className="lbl">Status Payment</span>
+                  <strong className={order.payment_status === "Approved" ? "status-ok" : "status-wait"} data-testid="payment-status">
+                    {order.payment_status === "Approved" ? "Approved" : "Menunggu approval"}
+                  </strong>
+                </div>
+                <div>
+                  <span className="lbl">Status Design</span>
+                  <strong className={(order.design_status === "Approved" || isCustomerDesignApproved(order)) ? "status-ok" : "status-wait"} data-testid="design-status">
+                    {(order.design_status === "Approved" || isCustomerDesignApproved(order))
+                      ? "Approved"
+                      : (order.design_files?.length ? "Menunggu approval" : "Belum ada design")}
+                  </strong>
+                </div>
+                {order.imported_by && (
+                  <div>
+                    <span className="lbl">Diimport oleh (Admin)</span>
+                    <strong data-testid="detail-imported-by">
+                      {order.imported_by_name || order.imported_by}
+                      {order.imported_at && <span className="muted small"> · {formatDate(order.imported_at)}</span>}
+                    </strong>
+                  </div>
+                )}
+                {order.accurate_id && (
+                  <div>
+                    <span className="lbl">Accurate ID</span>
+                    <strong className="mono" data-testid="detail-accurate-id">{order.accurate_id}</strong>
+                  </div>
+                )}
+                {order.notes && (
+                  <div className="po-info-address" data-testid="detail-keterangan">
+                    <span className="lbl">Keterangan</span>
+                    <strong style={{whiteSpace:"pre-wrap"}}>{order.notes}</strong>
+                  </div>
+                )}
+                {order.source_pdf?.storage_path && (
+                  <div>
+                    <span className="lbl">PDF asli import</span>
+                    <strong>
+                      <a
+                        href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${order.source_pdf.storage_path}`}
+                        target="_blank" rel="noopener noreferrer"
+                        data-testid="detail-source-pdf"
+                        className="link-inline"
+                      >
+                        <FileText size={13}/> {order.source_pdf.original_filename || "Lihat PDF"}
+                      </a>
+                    </strong>
+                  </div>
+                )}
+                {order.urgency_approved_by && (
+                  <div>
+                    <span className="lbl">Urgent disetujui oleh</span>
+                    <strong>{order.urgency_approved_by}</strong>
+                  </div>
+                )}
+              </div>
+            </PoContextDrawer>
 
-      <PoGlobalCommandBar
-        triggerRef={planTriggerRef}
-        canEditPoInfo={canEditPoInfo}
-        cancelled={order.cancelled}
-        onEditInfo={() => setEditInfoOpen(true)}
-        canSetLocation={canSetLocation}
-        hasOutlet={!!order.outlet}
-        onEditLocation={openLocationEditor}
-        canRepeatOrder={canRepeatOrder}
-        orderId={order.id}
-        canManageUrgent={canManageUrgent}
-        isUrgent={order.priority === "urgent"}
-        onToggleUrgent={toggleUrgent}
-        busy={busy}
-        canManageBufferStock={canManageBufferStock}
-        isBufferStock={!!order.buffer_stock}
-        onToggleBufferStock={toggleBufferStock}
-        onPrint={() => window.print()}
-        canCopyTrackingLink={canCopyTrackingLink}
-        onCopyTracking={copyTrackingLink}
-        trackingBusy={trackingBusy}
-        trackingCopyMsg={trackingCopyMsg}
-        canProcessSalesDelivery={canProcessSalesDelivery}
-        salesDeliveryAllQtyDone={salesDeliveryAllQtyDone}
-        planOpen={planActionsOpen}
-        onClosePlan={() => setPlanActionsOpen(false)}
-        canCancel={canCancel}
-        onCancelPo={doCancelPO}
-        canDelete={canDelete}
-        onDeletePo={openDeleteModal}
-        deleting={deleting}
-        canRollback={canRollback}
-        currentStage={order.current_stage}
-        onRollback={doRollback}
-      />
+            <PoContextDrawer
+              open={utilityDrawer === "operational"}
+              title="Aksi PO"
+              testid="po-actions-panel"
+              className="po-actions-panel"
+              closeLabel="Tutup aksi PO"
+              onClose={() => setUtilityDrawer(null)}
+            >
+              <div className="po-actions-ops" data-testid="po-actions-ops">
+                {canCopyTrackingLink && (
+                  <div className="po-tracking-actions" data-testid="tracking-customer-panel">
+                    <button
+                      className="ghost sm"
+                      onClick={copyTrackingLink}
+                      disabled={trackingBusy || order.cancelled}
+                      data-testid="copy-tracking-link"
+                    >
+                      <Copy size={14} /> Live Tracking
+                    </button>
+                    {trackingCopyMsg && <span className="muted small" data-testid="tracking-copy-msg">{trackingCopyMsg}</span>}
+                  </div>
+                )}
+                {canProcessSalesDelivery ? (
+                  <Link
+                    to={`/penjualan/pengiriman-pesanan?po_id=${order.id}&action=create`}
+                    className="po-action-primary"
+                    data-testid="btn-proses-pengiriman-pesanan"
+                  >
+                    <Truck size={16} /> PROSES KE PENGIRIMAN PESANAN
+                  </Link>
+                ) : salesDeliveryAllQtyDone ? (
+                  <span className="po-action-done" data-testid="badge-pengiriman-selesai">
+                    <Check size={14} /> Seluruh Qty Selesai Dibuatkan SJ
+                  </span>
+                ) : null}
+              </div>
+              {(canRollback || canCancel || canDelete) && (
+                <div className="po-actions-admin">
+                  <button
+                    type="button"
+                    className="po-actions-danger-toggle"
+                    aria-expanded={dangerActionsOpen}
+                    data-testid="po-actions-danger-toggle"
+                    onClick={() => setDangerActionsOpen((v) => !v)}
+                  >
+                    Aksi berbahaya / pengecualian
+                    <ChevronDown size={14} className={`po-stage-chevron${dangerActionsOpen ? " is-open" : ""}`} aria-hidden="true" />
+                  </button>
+                  <div className="po-actions-danger-body" hidden={!dangerActionsOpen} data-testid="po-actions-danger-body">
+                    <div className="po-actions-row">
+                      {canRollback && order.current_stage > 0 && (
+                        <button className="ghost" onClick={doRollback} disabled={busy} data-testid="rollback-button" title="Butuh permission workflow.rollback">
+                          <RotateCcw size={14}/> Rollback
+                        </button>
+                      )}
+                      {canCancel && !order.cancelled && (
+                        <button className="ghost" onClick={doCancelPO} disabled={busy} data-testid="cancel-po-button" title="Butuh permission po.cancel">
+                          <XCircle size={16}/> Batalkan PO
+                        </button>
+                      )}
+                      {canDelete && (
+                        <button className="ghost danger" onClick={openDeleteModal} disabled={busy || deleting} data-testid="delete-po-button" title="Butuh permission po.delete">
+                          <Trash2 size={16}/> Hapus Permanen PO
+                        </button>
+                      )}
+                    </div>
+                    <p className="muted small po-actions-hint">
+                      <b>Batalkan PO</b> menyimpan histori &amp; audit (tab <em>Cancelled</em>).
+                      {" "}<b>Hapus Permanen</b> hanya untuk PO test/duplicate.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </PoContextDrawer>
+          </div>
+
+          <PoContextDrawer
+            as="aside"
+            open={utilityDrawer === "documents"}
+            title="Berkas PO"
+            kicker="Dokumen & pengecualian"
+            labelledBy="po-documents-title"
+            testid="po-documents-drawer"
+            className="po-documents-drawer"
+            closeLabel="Tutup dokumen PO"
+            onClose={() => setUtilityDrawer(null)}
+          >
+            {order.source_pdf?.storage_path ? (
+              <a href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${order.source_pdf.storage_path}`} target="_blank" rel="noopener noreferrer" className="po-drawer-link" data-testid="drawer-source-pdf">
+                <FileText size={16} /> {order.source_pdf.original_filename || "Lihat PDF asli import"}
+              </a>
+            ) : (
+              <p className="muted small">Tidak ada PDF asli import pada PO ini.</p>
+            )}
+            <dl className="po-drawer-status-list">
+              <div><dt>Prioritas</dt><dd>{order.priority === "urgent" ? "Urgent" : "Normal"}</dd></div>
+              <div><dt>Buffer stock</dt><dd>{order.buffer_stock ? "Aktif" : "Tidak aktif"}</dd></div>
+              <div><dt>Status PO</dt><dd>{order.cancelled ? "Dibatalkan" : "Aktif"}</dd></div>
+            </dl>
+            <p className="muted small">Aksi pengecualian tersedia di drawer Operasional dan tetap mengikuti izin pengguna.</p>
+            <section className={`panel po-notes-panel${!order.notes && !note ? " is-empty" : ""}`} data-testid="notes-panel">
+              <header className="panel-head"><h3>Catatan Produksi</h3></header>
+              {order.notes && <pre className="notes-view">{order.notes}</pre>}
+              {!order.notes && !note && <p className="muted small po-notes-empty">Belum ada catatan produksi.</p>}
+              {!isCrm && (
+                <div className="note-add">
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Tambahkan catatan..." rows={2} data-testid="note-input" className="manual-input" />
+                  <button className="ghost sm" onClick={saveNote} disabled={busy || !note.trim()} data-testid="save-note-button">
+                    <MessageSquare size={14} /> Simpan catatan
+                  </button>
+                </div>
+              )}
+            </section>
+            <Timeline timeline={order.timeline} currentStage={order.current_stage} order={order} defaultOpen={false} />
+          </PoContextDrawer>
+        </>
+      )}
+    />
 
       <PoSummaryDrawer
         open={summaryOpen}
@@ -1638,6 +1651,9 @@ export default function PODetail() {
         viewedStage={viewedStage}
         onClose={() => setSummaryOpen(false)}
       />
+      {utilityDrawer && (
+        <button type="button" className="po-utility-scrim" aria-label="Tutup panel" onClick={() => setUtilityDrawer(null)} />
+      )}
       <PoStagePickerSheet
         open={stageSheetOpen}
         order={order}

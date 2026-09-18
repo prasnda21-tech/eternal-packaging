@@ -5,8 +5,7 @@ describe("Customer tracking public page", () => {
   const page = fs.readFileSync(path.join(__dirname, "CustomerTrackingPage.jsx"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
   const api = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
-  const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8")
-    + fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8");
+  const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
   const panel = fs.readFileSync(path.join(__dirname, "../components/DeliveryProofPanel.jsx"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
   const cssMobileLayout = () => {
@@ -69,18 +68,15 @@ describe("Customer tracking public page", () => {
   });
 
   test("internal detail keeps document actions in Aksi PO not Pengiriman header", () => {
+    expect(detail).toMatch(/Live Tracking/);
+    expect(detail).toMatch(/copy-tracking-link/);
     expect(detail).toMatch(/orderTrackingLink/);
     expect(detail).not.toMatch(/live-tracking-workflow/);
     expect(detail).not.toMatch(/liveTrackingRows/);
-    const commandBar = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8");
-    expect(commandBar).toMatch(/Live Tracking/);
-    expect(commandBar).toMatch(/copy-tracking-link/);
-    expect(commandBar).toMatch(/btn-proses-pengiriman-pesanan/);
-    expect(commandBar).toMatch(/btn-buat-faktur-penjualan/);
-    const poDetailOnly = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
-    expect(poDetailOnly).not.toMatch(/btn-buat-faktur-penjualan/);
-    expect(poDetailOnly).not.toMatch(/copy-tracking-link/);
-    expect(poDetailOnly).not.toMatch(/btn-proses-pengiriman-pesanan/);
+    const actions = detail.slice(detail.indexOf("po-actions-panel"), detail.indexOf("line-items-panel"));
+    expect(actions).toMatch(/copy-tracking-link/);
+    expect(actions).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(actions).toMatch(/btn-buat-faktur-penjualan/);
     expect(detail).not.toMatch(/sales-delivery-summary-panel/);
     expect(detail).not.toMatch(/Pengiriman Pesanan \(Surat Jalan Penjualan\)/);
   });

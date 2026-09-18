@@ -1,47 +1,29 @@
-import { ChevronLeft, ClipboardList, GitBranch, Info, Paperclip } from "lucide-react";
+import { Info, Paperclip, Settings } from "lucide-react";
 
-export const PO_CONTEXT_RAIL_ITEMS = [
-  { id: "informasi-po", railId: "info", kind: "page", label: <>Informasi<br />PO</>, text: "Informasi PO", Icon: Info },
-  { id: "perencanaan", railId: "plan", kind: "menu", label: <>Perencanaan</>, text: "Perencanaan", Icon: ClipboardList },
-  { id: "dokumen-pengecualian", railId: "documents", kind: "page", label: <>Dokumen &<br />Pengecualian</>, text: "Dokumen & Pengecualian", Icon: Paperclip },
-  { id: "alur-pekerjaan", railId: "workflow", kind: "page", label: <>Alur<br />Pekerjaan</>, text: "Alur Pekerjaan", Icon: GitBranch },
+const RAIL_ITEMS = [
+  { id: "info", label: <>Informasi<br />PO</>, Icon: Info },
+  { id: "operational", label: "Operasional", Icon: Settings },
+  { id: "documents", label: <>Dokumen &<br />Pengecualian</>, Icon: Paperclip },
 ];
 
 /**
- * Fixed context navigation rail. Pages replace the workspace. Perencanaan opens a popover.
+ * Fixed context rail — part of the shell, never a floating action button.
  */
-export default function PoContextRail({
-  active,
-  onSelect,
-  planOpen,
-  onTogglePlan,
-  planTriggerRef,
-}) {
+export default function PoContextRail({ active, onSelect }) {
   return (
-    <aside className="po-context-rail" aria-label="Navigasi detail PO" data-testid="po-context-rail">
-      {PO_CONTEXT_RAIL_ITEMS.map(({ id, railId, kind, label, text, Icon }) => {
-        const isMenu = kind === "menu";
-        const isActive = isMenu ? !!planOpen : active === id;
-        return (
-          <button
-            key={id}
-            type="button"
-            ref={isMenu ? planTriggerRef : undefined}
-            className={isActive ? "is-active" : ""}
-            aria-current={isMenu ? undefined : (isActive ? "page" : undefined)}
-            aria-expanded={isMenu ? !!planOpen : undefined}
-            aria-haspopup={isMenu ? "menu" : undefined}
-            aria-label={text}
-            data-testid={isMenu ? "po-plan-actions" : `po-rail-${railId}`}
-            data-view={isMenu ? undefined : id}
-            onClick={() => (isMenu ? onTogglePlan() : onSelect(id))}
-          >
-            <Icon size={21} />
-            <span>{label}</span>
-            {isMenu ? <ChevronLeft size={12} className="po-rail-chevron" aria-hidden="true" /> : null}
-          </button>
-        );
-      })}
+    <aside className="po-context-rail" aria-label="Panel detail PO" data-testid="po-context-rail">
+      {RAIL_ITEMS.map(({ id, label, Icon }) => (
+        <button
+          key={id}
+          type="button"
+          className={active === id ? "is-active" : ""}
+          aria-pressed={active === id}
+          data-testid={`po-rail-${id}`}
+          onClick={() => onSelect(active === id ? null : id)}
+        >
+          <Icon size={21} /><span>{label}</span>
+        </button>
+      ))}
     </aside>
   );
 }

@@ -69,12 +69,11 @@ describe("Detail PO stage-focused workspace", () => {
     expect(accordionIndexForFocus(4)).toBe(3);
   });
 
-  test("Order Masuk workspace is line items; context pages stay global across stages", () => {
+  test("Order Masuk workspace is line items; drawers stay global across stages", () => {
     const slot0 = detail.slice(detail.indexOf("workflow-slot-0"), detail.indexOf("workflow-slot-1"));
     expect(slot0).toMatch(/line-items-panel/);
     expect(slot0).not.toMatch(/detail-info/);
-    expect(detail).toMatch(/PoContextPage/);
-    expect(detail).not.toMatch(/PoContextDrawer/);
+    expect(detail).toMatch(/PoContextDrawer/);
     expect(detail).toMatch(/PoGlobalCommandBar/);
     expect(detail).toMatch(/PoContextRail/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("0"/);
@@ -103,13 +102,14 @@ describe("Detail PO stage-focused workspace", () => {
     expect(detail).toMatch(/parsePoDetailStageParam/);
     expect(detail).toMatch(/if \(!switched && prev != null\) return prev/);
     expect(detail).toMatch(/popstate/);
-    expect(detail).toMatch(/syncPoDetailQuery\(\{ stageIndex: selectedWorkflowStage, view: contextView, push: false \}\)/);
+    expect(detail).toMatch(/syncPoDetailStageQuery\(selectedWorkflowStage, \{ push: false \}\)/);
     expect(nav).toMatch(/searchParams\.set\("stage"/);
   });
 
   test("Ringkasan PO drawer does not change the viewed stage", () => {
-    expect(ui).not.toMatch(/btn-po-summary/);
+    expect(ui).toMatch(/btn-po-summary/);
     expect(detail).toMatch(/PoSummaryDrawer/);
+    expect(detail).toMatch(/setSummaryOpen\(true\)/);
     const drawer = fs.readFileSync(
       path.join(__dirname, "../components/poDetail/PoSummaryDrawer.jsx"),
       "utf8"
@@ -158,7 +158,7 @@ describe("Detail PO stage-focused workspace", () => {
       "hold-banner",
       "crm-readonly-note",
     ].forEach((id) => {
-      expect(ui).toMatch(new RegExp(`data-testid="${id}"`));
+      expect(detail).toMatch(new RegExp(`data-testid="${id}"`));
     });
     expect(detail).toMatch(/hasPerm\("design\.approve"\)/);
     expect(detail).toMatch(/hasPerm\("payment\.approve"\)/);
