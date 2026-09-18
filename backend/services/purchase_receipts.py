@@ -37,6 +37,7 @@ PURCHASE_SOURCE_MANUAL = "MANUAL_FALLBACK"
 RECEIPT_SOURCE_ACCURATE = "accurate"
 RECEIPT_SOURCE_MANUAL = "manual"
 MANUAL_RECEIPT_ID_PREFIX = "manual:"
+DEFAULT_RECEIPT_CANCEL_REASON = "Pembatalan penerimaan"
 
 
 def now_iso() -> str:
@@ -551,8 +552,7 @@ async def cancel_manual_purchase_receipt(
             raise HTTPException(409, "Riwayat Penerimaan Accurate tidak dapat dibatalkan dari ERP.")
         if is_cancelled(doc):
             return doc
-        if not why:
-            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
+        why = why or DEFAULT_RECEIPT_CANCEL_REASON
 
         linked_gr = None
         reversal_ids: List[str] = []

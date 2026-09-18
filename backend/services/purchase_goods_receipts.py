@@ -44,6 +44,7 @@ from services.stock_ledger import (
 COLLECTION = "purchase_goods_receipts"
 ALLOC_COLLECTION = "purchase_receipt_po_links"
 INV_COLLECTION = "purchase_invoices"
+DEFAULT_RECEIPT_CANCEL_REASON = "Pembatalan penerimaan"
 
 
 
@@ -351,8 +352,7 @@ async def cancel_purchase_goods_receipt(
                 "Penerimaan tidak dapat dihapus karena sudah memiliki faktur. "
                 "Batalkan faktur terkait terlebih dahulu.",
             )
-        if not reason:
-            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
+        reason = str(reason or "").strip() or DEFAULT_RECEIPT_CANCEL_REASON
 
         reversal_ids = await apply_receipt_stock_reversals(
             db,
