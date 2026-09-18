@@ -3,10 +3,13 @@ import {
   PO_DETAIL_STAGE_SECTION_IDS,
   deskPanelOwnsStage,
   parsePoDetailStageParam,
+  parsePoDetailViewParam,
+  hasRetiredPoDetailViewParam,
   poDetailStageSectionId,
   poDetailStageSlug,
   scrollToPoDetailStage,
   scrollToPoDetailStageIndex,
+  syncPoDetailQuery,
   syncPoDetailStageQuery,
 } from "./poDetailStageNav";
 
@@ -73,5 +76,23 @@ describe("PO Detail stage navigation", () => {
     expect(String(replace.mock.calls[0][2])).toMatch(/stage=order-masuk/);
     push.mockRestore();
     replace.mockRestore();
+  });
+
+  test("parses and syncs display-only ?view= pages", () => {
+    expect(parsePoDetailViewParam("?view=informasi-po")).toBe("informasi-po");
+    expect(parsePoDetailViewParam("?view=operasional")).toBe(null);
+    expect(parsePoDetailViewParam("?view=operational")).toBe(null);
+    expect(hasRetiredPoDetailViewParam("?view=operasional")).toBe(true);
+    expect(hasRetiredPoDetailViewParam("?stage=packing&view=operational")).toBe(true);
+    expect(hasRetiredPoDetailViewParam("?view=informasi-po")).toBe(false);
+    expect(parsePoDetailViewParam("?view=dokumen-pengecualian")).toBe("dokumen-pengecualian");
+    expect(parsePoDetailViewParam("?view=alur-pekerjaan")).toBe("alur-pekerjaan");
+    expect(parsePoDetailViewParam("?view=timeline")).toBe("alur-pekerjaan");
+    expect(parsePoDetailViewParam("?view=nope")).toBe(null);
+    const push = jest.spyOn(window.history, "pushState");
+    syncPoDetailQuery({ stageIndex: 13, view: null, push: true });
+    expect(String(push.mock.calls[0][2])).toMatch(/stage=loading/);
+    expect(String(push.mock.calls[0][2])).not.toMatch(/view=operasional/);
+    push.mockRestore();
   });
 });

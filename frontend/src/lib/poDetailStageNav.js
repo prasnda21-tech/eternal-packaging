@@ -103,24 +103,95 @@ export function poDetailStagePanelTitle(stageIndex) {
   return `Workspace ${i + 1} — ${STAGES[i]}`;
 }
 
+/** Display-only context pages (`?view=`). Never sent to the backend. */
+export const PO_DETAIL_VIEWS = {
+  "informasi-po": "informasi-po",
+  "dokumen-pengecualian": "dokumen-pengecualian",
+  "alur-pekerjaan": "alur-pekerjaan",
+};
+
+/** Retired slugs fall back to the last viewed workflow workspace (null). */
+export const PO_DETAIL_RETIRED_VIEWS = {
+  operasional: null,
+  operational: null,
+};
+
+export const PO_DETAIL_VIEW_ALIASES = {
+  info: "informasi-po",
+  "informasi-po": "informasi-po",
+  ...PO_DETAIL_RETIRED_VIEWS,
+  documents: "dokumen-pengecualian",
+  dokumen: "dokumen-pengecualian",
+  "dokumen-pengecualian": "dokumen-pengecualian",
+  alur: "alur-pekerjaan",
+  workflow: "alur-pekerjaan",
+  timeline: "alur-pekerjaan",
+  "alur-pekerjaan": "alur-pekerjaan",
+};
+
+export const PO_DETAIL_VIEW_TITLES = {
+  "informasi-po": "Informasi PO",
+  "dokumen-pengecualian": "Dokumen & Pengecualian",
+  "alur-pekerjaan": "Alur Pekerjaan",
+};
+
+export function parsePoDetailViewParam(search) {
+  const rawSearch = String(search || "");
+  const q = new URLSearchParams(rawSearch.startsWith("?") ? rawSearch.slice(1) : rawSearch);
+  const raw = q.get("view");
+  if (raw == null || raw === "") return null;
+  const slug = String(raw).toLowerCase().replace(/_/g, "-");
+  return Object.prototype.hasOwnProperty.call(PO_DETAIL_VIEW_ALIASES, slug)
+    ? PO_DETAIL_VIEW_ALIASES[slug]
+    : null;
+}
+
+export function hasRetiredPoDetailViewParam(search) {
+  const rawSearch = String(search || "");
+  const q = new URLSearchParams(rawSearch.startsWith("?") ? rawSearch.slice(1) : rawSearch);
+  const raw = q.get("view");
+  if (raw == null || raw === "") return false;
+  const slug = String(raw).toLowerCase().replace(/_/g, "-");
+  return Object.prototype.hasOwnProperty.call(PO_DETAIL_RETIRED_VIEWS, slug);
+}
+
+function applyPoDetailSearch(url, { stageIndex, view } = {}) {
+  if (stageIndex != null) {
+    url.searchParams.set("stage", poDetailStageSlug(stageIndex));
+    url.searchParams.delete("focus");
+  }
+  if (view) url.searchParams.set("view", view);
+  else if (view === null) url.searchParams.delete("view");
+  return url;
+}
+
 /**
- * Display-only URL sync. Uses history so Back/Forward restore the viewed stage.
+ * Display-only URL sync. Uses history so Back/Forward restore viewed stage + page.
  * Does not touch React Router (custom MemoryRouter mocks omit search).
  */
-export function syncPoDetailStageQuery(stageIndex, { push = true } = {}) {
+export function syncPoDetailQuery({ stageIndex, view, push = true } = {}) {
   if (typeof window === "undefined" || !window.history) return;
-  const slug = poDetailStageSlug(stageIndex);
   try {
-    const url = new URL(window.location.href);
-    url.searchParams.set("stage", slug);
-    url.searchParams.delete("focus");
+    const url = applyPoDetailSearch(new URL(window.location.href), { stageIndex, view });
     const next = `${url.pathname}${url.search}${url.hash}`;
-    const state = { ...(window.history.state || {}), poStage: slug };
+    const state = {
+      ...(window.history.state || {}),
+      poStage: url.searchParams.get("stage"),
+      poView: url.searchParams.get("view") || null,
+    };
     if (push) window.history.pushState(state, "", next);
     else window.history.replaceState(state, "", next);
   } catch {
     /* ignore malformed location in tests */
   }
+}
+
+/**
+ * Display-only URL sync. Uses history so Back/Forward restore the viewed stage.
+ * Does not touch React Router (custom MemoryRouter mocks omit search).
+ */
+export function syncPoDetailStageQuery(stageIndex, { push = true, view = null } = {}) {
+  syncPoDetailQuery({ stageIndex, view, push });
 }
 
 export function scrollToPoDetailStage(stageName, { behavior = "smooth" } = {}) {
