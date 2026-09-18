@@ -7,10 +7,10 @@ const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
 const shell = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoDetailShell.jsx"), "utf8");
 const commandBar = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoGlobalCommandBar.jsx"), "utf8");
 const rail = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoContextRail.jsx"), "utf8");
-const page = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoContextPage.jsx"), "utf8");
+const drawer = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoContextDrawer.jsx"), "utf8");
 const workspace = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoStageWorkspace.jsx"), "utf8");
 const footer = fs.readFileSync(path.join(__dirname, "../components/poDetail/PoStageActionFooter.jsx"), "utf8");
-const ui = [detail, shell, commandBar, rail, page, workspace, footer].join("\n");
+const ui = [detail, shell, commandBar, rail, drawer, workspace, footer].join("\n");
 
 function countTestId(src, id) {
   const re = new RegExp(`data-testid="${id}"`, "g");
@@ -18,15 +18,14 @@ function countTestId(src, id) {
 }
 
 describe("Detail PO global one-screen workspace", () => {
-  test("planning menu and rail are not gated to Order Masuk", () => {
+  test("command bar and rail are not gated to Order Masuk", () => {
     expect(detail).not.toMatch(/viewedStage === 0 && \(/);
     expect(detail).toMatch(/<PoGlobalCommandBar/);
     expect(detail).toMatch(/<PoContextRail/);
     expect(detail).toMatch(/<PoDetailShell/);
-    expect(commandBar).toMatch(/data-testid="po-plan-actions-menu"/);
+    expect(commandBar).toMatch(/data-testid="po-command-bar"/);
     expect(rail).toMatch(/data-testid="po-context-rail"/);
     expect(css).not.toMatch(/\[data-viewed-stage="0"\] \.po-command-bar/);
-    expect(shell).not.toMatch(/commandBar/);
   });
 
   test("all 15 stages stay mounted and only the viewed workspace is shown", () => {
@@ -49,8 +48,10 @@ describe("Detail PO global one-screen workspace", () => {
       "toggle-buffer-stock-button",
       "btn-print-po",
       "btn-buat-faktur-penjualan",
+      "po-refresh-button",
+      "btn-po-summary",
+      "back-button",
       "btn-proses-pengiriman-pesanan",
-      "copy-tracking-link",
       "approve-design-button",
       "approve-payment-button",
       "upload-payment-input",
@@ -67,24 +68,19 @@ describe("Detail PO global one-screen workspace", () => {
     expect(commandBar).not.toMatch(/api\./);
   });
 
-  test("context pages stay global and keep drafts mounted", () => {
+  test("drawers stay global and keep drafts mounted", () => {
     expect(detail).toMatch(/testid="detail-info"/);
-    expect(detail).not.toMatch(/testid="po-actions-panel"/);
-    expect(detail).toMatch(/testid="po-documents-page"/);
-    expect(detail).toMatch(/testid="po-workflow-page"/);
+    expect(detail).toMatch(/testid="po-actions-panel"/);
+    expect(detail).toMatch(/testid="po-documents-drawer"/);
     expect(detail).toMatch(/note-input/);
     expect(detail).toMatch(/save-note-button/);
-    expect(page).toMatch(/po-context-page-body/);
-    expect(page).not.toMatch(/aria-modal/);
-    expect(detail).not.toMatch(/PoContextDrawer/);
-    expect(detail).not.toMatch(/po-utility-scrim/);
-    expect(css).not.toMatch(/po-detail-shell\.is-drawer-open/);
+    expect(drawer).toMatch(/po-context-drawer-body/);
+    expect(css).toMatch(/po-detail-shell\.is-drawer-open/);
   });
 
   test("desktop shell locks document scroll; mobile uses stage sheet", () => {
-    expect(css).toMatch(/\.app-shell\.po-detail-route/);
+    expect(css).toMatch(/html:has\(\.po-detail-shell\)/);
     expect(css).toMatch(/overflow:hidden/);
-    expect(css).not.toMatch(/html:has\(\.po-detail-shell\)/);
     expect(detail).toMatch(/po-mobile-stage-chrome/);
     expect(detail).toMatch(/PoStagePickerSheet/);
     expect(css).toMatch(/@media \(max-width:800px\)/);

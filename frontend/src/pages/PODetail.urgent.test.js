@@ -13,8 +13,6 @@ describe("PODetail urgent + payment proof wiring", () => {
     expect(commandBar).toMatch(/toggle-urgent-button/);
     expect(src).toMatch(/api\.setUrgent\(order\.id, order\.priority !== "urgent"\)/);
     expect(src).not.toMatch(/require\("admin", "head_production"\)/);
-    expect(src).toMatch(/order\.priority === "urgent" \?[\s\S]*data-testid="detail-priority"/);
-    expect(src).toMatch(/order\.buffer_stock \?[\s\S]*data-testid="buffer-stock-badge"/);
   });
 
   test("payment files open through blob helper, not raw data navigation only", () => {

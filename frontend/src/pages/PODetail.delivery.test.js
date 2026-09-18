@@ -112,8 +112,8 @@ describe("PO Detail delivery cards", () => {
     expect(detail).toMatch(/canProcessSalesDelivery/);
     expect(detail).toMatch(/aksiPoSalesDeliveryState/);
     expect(detail).toMatch(/salesDeliveryTotalRemaining/);
-    expect(commandBar).toMatch(/btn-proses-pengiriman-pesanan/);
-    expect(commandBar).toMatch(/badge-pengiriman-selesai|Seluruh Qty Selesai Dibuatkan SJ/);
+    expect(detail).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(detail).toMatch(/badge-pengiriman-selesai|Seluruh Qty Selesai Dibuatkan SJ/);
     // No packing/loading prerequisite on the Aksi PO create entry
     const gateBlock = detail.slice(
       detail.indexOf("aksiPoSalesDeliveryState"),
@@ -134,11 +134,11 @@ describe("PO Detail delivery cards", () => {
     expect(stageState).toMatch(/Menunggu bukti pengiriman/);
   });
 
-  test("Aksi PO lives in the Perencanaan menu and shipping summary is gone", () => {
-    expect(detail).toMatch(/PoContextPage/);
+  test("Aksi PO lives in the global operational drawer and shipping summary is gone", () => {
+    expect(detail).toMatch(/PoContextDrawer/);
     expect(detail).toMatch(/testid="detail-info"/);
-    expect(detail).not.toMatch(/testid="po-actions-panel"/);
-    expect(commandBar).toMatch(/po-plan-actions-menu/);
+    expect(detail).toMatch(/testid="po-actions-panel"/);
+    expect(detail.split("testid=\"po-actions-panel\"").length - 1).toBe(1);
     expect(detail).not.toMatch(/sales-delivery-summary-panel/);
     expect(detail).not.toMatch(/Pengiriman Pesanan \(Surat Jalan Penjualan\)/);
     expect(detail).not.toMatch(/kpi-delivery-total-order/);
@@ -146,8 +146,8 @@ describe("PO Detail delivery cards", () => {
     expect(detail.indexOf("workflow-slot-11")).toBeLessThan(detail.indexOf("workflow-slot-12"));
     expect(detail.indexOf("workflow-slot-12")).toBeLessThan(detail.indexOf("workflow-slot-13"));
     expect(detail.indexOf("workflow-slot-13")).toBeLessThan(detail.indexOf("workflow-slot-14"));
-    expect(commandBar).toMatch(/copy-tracking-link/);
-    expect(commandBar).toMatch(/btn-proses-pengiriman-pesanan/);
+    expect(detail).toMatch(/copy-tracking-link/);
+    expect(detail).toMatch(/btn-proses-pengiriman-pesanan/);
     expect(commandBar).toMatch(/btn-buat-faktur-penjualan/);
   });
 
