@@ -16,6 +16,11 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { paginateRows, receiptListMatchesFilter, SALES_DEFAULT_PAGE_SIZE } from "../lib/salesWorkspaceList";
+import SalesPaginationBar from "../components/salesWorkspace/SalesPaginationBar";
+import SalesWorkspaceDrawer from "../components/salesWorkspace/SalesWorkspaceDrawer";
+import SalesRowMenu from "../components/salesWorkspace/SalesRowMenu";
+import "./salesWorkspacePages.css";
 
 function getTodayString() {
   const d = new Date();
@@ -58,6 +63,9 @@ export default function PenerimaanPenjualan() {
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [statusChip, setStatusChip] = useState("all");
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(SALES_DEFAULT_PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -111,6 +119,17 @@ export default function PenerimaanPenjualan() {
     if (selectedIds.size === receipts.length && receipts.length > 0) setSelectedIds(new Set());
     else setSelectedIds(new Set(receipts.map((r) => r.id)));
   };
+  const filteredReceipts = useMemo(
+    () => (receipts || []).filter((r) => receiptListMatchesFilter(r, statusChip)),
+    [receipts, statusChip]
+  );
+  const pagedReceipts = useMemo(
+    () => paginateRows(filteredReceipts, listPage, listPageSize),
+    [filteredReceipts, listPage, listPageSize]
+  );
+  useEffect(() => {
+    setListPage(1);
+  }, [searchQuery, statusChip]);
   const formatDeleteError = (det) => {
     if (typeof det === "object" && det) {
       const blockers = det.blockers || [];
@@ -352,18 +371,17 @@ export default function PenerimaanPenjualan() {
 
   return (
     <div
-      className="page-container penjualan-page penjualan-workspace"
+      className="page-container penjualan-page penjualan-workspace sales-compact-workspace"
       data-testid="penerimaan-penjualan-page"
-      style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
     >
       {/* HEADER SECTION */}
       <div
         className="page-heading"
+        className="page-heading sw-page-header"
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginBottom: 24,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -473,223 +491,111 @@ export default function PenerimaanPenjualan() {
         </div>
       </div>
 
-      {/* FILTER & SEARCH BAR */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          marginBottom: 18,
-          backgroundColor: "#fff",
-          padding: 12,
-          borderRadius: 8,
-          border: "1px solid #e5e7eb",
-          alignItems: "center",
-        }}
-      >
-        <div style={{ position: "relative", flex: 1 }}>
-          <Search
-            size={16}
-            style={{
-              position: "absolute",
-              left: 12,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "#9ca3af",
-            }}
-          />
-          <input
-            type="text"
-            className="form-input"
-            data-testid="search-receipt-input"
-            placeholder="Cari nomor penerimaan, no faktur, no PO, customer..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              paddingLeft: 36,
-              width: "100%",
-              height: 38,
-              fontSize: 13,
-              borderRadius: 6,
-              border: "1px solid #d1d5db",
-            }}
-          />
+      <section className="sw-list-panel">
+        {listErr && (
+          <div style={{ padding: "8px 12px", backgroundColor: "#fef2f2", color: "#b91c1c", display: "flex", gap: 8 }}>
+            <AlertCircle size={16} /><span>{listErr}</span>
+          </div>
+        )}
+        <div className="sw-toolbar">
+          <div className="sw-search">
+            <Search size={16} className="sw-search-icon" />
+            <input
+              type="text"
+              className="form-input"
+              data-testid="search-receipt-input"
+              placeholder="Cari nomor penerimaan, no faktur, no PO, customer..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <div className="sw-chip-group">
+            {[
+              { id: "all", label: "Semua" },
+              { id: "DP", label: "DP" },
+              { id: "LUNAS", label: "Lunas" },
+            ].map((tab) => (
+              <button key={tab.id} type="button" className={`sw-chip${statusChip === tab.id ? " is-active" : ""}`} onClick={() => setStatusChip(tab.id)}>
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
-
-      {listErr && (
-        <div
-          style={{
-            padding: "10px 14px",
-            backgroundColor: "#fef2f2",
-            border: "1px solid #fecaca",
-            color: "#b91c1c",
-            borderRadius: 6,
-            marginBottom: 16,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            fontSize: 13,
-          }}
-        >
-          <AlertCircle size={16} />
-          <span>{listErr}</span>
-        </div>
-      )}
-
-      {/* TABLE DATA */}
-      <div
-        style={{
-          backgroundColor: "#fff",
-          borderRadius: 8,
-          border: "1px solid #e5e7eb",
-          overflow: "hidden",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-        }}
-      >
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
+        <div className="sw-table-scroll sw-desktop-table">
+          <table className="sw-table">
             <thead>
-              <tr style={{ backgroundColor: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#4b5563" }}>
+              <tr>
                 {canDelete && (
-                  <th style={{ padding: "12px 8px", width: 36 }}>
-                    <input type="checkbox" data-testid="select-all-receipts" checked={receipts.length > 0 && selectedIds.size === receipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                  <th style={{ width: 40 }}>
+                    <input type="checkbox" data-testid="select-all-receipts" checked={receipts.length > 0 && selectedIds.size === receipts.length} onChange={toggleSelectAll} aria-label="Pilih seluruh hasil, bukan hanya halaman ini" title="Pilih seluruh hasil" />
                   </th>
                 )}
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Penerimaan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Tgl Penerimaan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Faktur</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Customer</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. PO</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "right" }}>Jumlah Penerimaan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Status Faktur</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Catatan</th>
-                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Aksi</th>
+                <th>Penerimaan / Tanggal</th>
+                <th>Faktur / PO</th>
+                <th>Customer</th>
+                <th className="num">Jumlah Penerimaan</th>
+                <th>Status Faktur</th>
+                <th className="sw-actions">Aksi</th>
               </tr>
             </thead>
             <tbody>
               {listLoading ? (
+                <tr><td colSpan={canDelete ? 7 : 6}>Memuat data penerimaan penjualan...</td></tr>
+              ) : filteredReceipts.length === 0 ? (
                 <tr>
-                  <td colSpan={canDelete ? 10 : 9} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
-                    Memuat data penerimaan penjualan...
-                  </td>
-                </tr>
-              ) : receipts.length === 0 ? (
-                <tr>
-                  <td colSpan={canDelete ? 10 : 9} style={{ padding: 48, textAlign: "center" }}>
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                  <td colSpan={canDelete ? 7 : 6}>
+                    <div className="sw-empty">
                       <FileText size={36} color="#9ca3af" />
-                      <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
-                      <span style={{ fontSize: 12, color: "#6b7280" }}>
-                        Penerimaan pembayaran dari Faktur Penjualan akan tercatat di sini.
-                      </span>
+                      <span style={{ fontWeight: 600 }}>Belum ada Penerimaan Penjualan</span>
                     </div>
                   </td>
                 </tr>
               ) : (
-                receipts.map((r, idx) => (
-                  <tr
-                    key={r.id || idx}
-                    style={{
-                      borderBottom: "1px solid #f3f4f6",
-                      backgroundColor: idx % 2 === 0 ? "#fff" : "#fafafa",
-                    }}
-                  >
+                pagedReceipts.rows.map((r, idx) => (
+                  <tr key={r.id || idx} className="is-clickable" onClick={(e) => {
+                    if (e.target.closest("input, button, a, [role='menu'], [role='menuitem']")) return;
+                    setDetailReceipt(r);
+                  }}>
                     {canDelete && (
-                      <td style={{ padding: "12px 8px" }}>
+                      <td>
                         <input type="checkbox" data-testid={`receipt-checkbox-${r.id}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} aria-label={`Pilih ${r.receipt_number}`} />
                       </td>
                     )}
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontFamily: "monospace", color: "#059669", fontWeight: 700 }} data-testid={`receipt-number-${r.id}`}>
-                        {r.receipt_number || "-"}
-                      </span>
+                    <td>
+                      <span className="sw-primary" data-testid={`receipt-number-${r.id}`}>{r.receipt_number || "-"}</span>
+                      <div className="sw-secondary">{formatDisplayDate(r.receipt_date)}</div>
                     </td>
-                    <td style={{ padding: "12px 16px", fontWeight: 500, color: "#111827" }}>
-                      {formatDisplayDate(r.receipt_date)}
+                    <td>
+                      <div>{r.invoice_number || "-"}</div>
+                      <div className="sw-secondary">{r.po_number || "-"}</div>
                     </td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontFamily: "monospace", color: "#9333ea", fontWeight: 600 }}>
-                        {r.invoice_number || "-"}
-                      </span>
-                    </td>
-                    <td style={{ padding: "12px 16px", fontWeight: 500, color: "#374151" }}>
-                      {r.customer || "-"}
-                    </td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontFamily: "monospace", color: "#4b5563" }}>
-                        {r.po_number || "-"}
-                      </span>
-                    </td>
-                    <td style={{ padding: "12px 16px", textAlign: "right", fontWeight: 700, color: "#059669" }}>
-                      {formatRupiah(r.amount)}
-                    </td>
-                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
-                      <span
-                        className="pj-status-badge"
-                        style={{
-                          display: "inline-block",
-                          padding: "3px 10px",
-                          borderRadius: 9999,
-                          fontSize: 11,
-                          fontWeight: 700,
-                          backgroundColor: r.payment_state === "LUNAS" ? "#d1fae5" : "#e0e7ff",
-                          color: r.payment_state === "LUNAS" ? "#065f46" : "#3730a3",
-                          border: `1.5px solid ${r.payment_state === "LUNAS" ? "#a7f3d0" : "#c7d2fe"}`,
-                        }}
-                      >
+                    <td>{r.customer || "-"}</td>
+                    <td className="num">{formatRupiah(r.amount)}</td>
+                    <td>
+                      <span className="pj-status-badge" style={{ display: "inline-block", padding: "3px 10px", borderRadius: 9999, fontSize: 11, fontWeight: 700, backgroundColor: r.payment_state === "LUNAS" ? "#d1fae5" : "#e0e7ff", color: r.payment_state === "LUNAS" ? "#065f46" : "#3730a3" }}>
                         {r.payment_state || "DP"}
                       </span>
                     </td>
-                    <td style={{ padding: "12px 16px", color: "#6b7280", maxWidth: 220 }}>
-                      {r.notes || "-"}
-                    </td>
-                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
-                      <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
-                        <button
-                          type="button"
-                          onClick={(e) => handlePrintPdf(e, r.id)}
-                          data-testid={`btn-print-pdf-${r.id}`}
-                          disabled={pdfLoadingId === r.id}
-                          title="Cetak PDF Penerimaan Penjualan"
-                          style={{
-                            padding: "5px 12px",
-                            fontSize: "0.8rem",
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            color: "#0284c7",
-                            cursor: pdfLoadingId === r.id ? "wait" : "pointer",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {pdfLoadingId === r.id ? "Memuat..." : "Cetak PDF"}
+                    <td className="sw-actions" onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "inline-flex", gap: 6 }}>
+                        <button type="button" className="sw-icon-btn" onClick={(e) => handlePrintPdf(e, r.id)} data-testid={`btn-print-pdf-${r.id}`} disabled={pdfLoadingId === r.id} title="Cetak PDF Penerimaan Penjualan" aria-label="Cetak PDF Penerimaan Penjualan">
+                          <FileText size={14} />
                         </button>
-                        {canDelete && (
-                          <button
-                            type="button"
-                            data-testid={`btn-delete-receipt-${r.id}`}
-                            onClick={() => {
-                              setDeleteErr("");
-                              setDeleteConfirm({
-                                id: r.id,
-                                number: r.receipt_number,
-                                numbers: [r.receipt_number],
-                              });
-                            }}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "0.8rem",
-                              borderRadius: 6,
-                              border: "1px solid #fecaca",
-                              background: "#fef2f2",
-                              color: "#b91c1c",
-                              cursor: "pointer",
-                              fontWeight: 600,
-                            }}
-                          >
-                            Hapus
-                          </button>
-                        )}
+                        <SalesRowMenu
+                          testId={`receipt-row-menu-${r.id}`}
+                          items={[
+                            canDelete && {
+                              id: "delete",
+                              label: "Hapus",
+                              danger: true,
+                              testId: `btn-delete-receipt-${r.id}`,
+                              onClick: () => {
+                                setDeleteErr("");
+                                setDeleteConfirm({ id: r.id, number: r.receipt_number, numbers: [r.receipt_number] });
+                              },
+                            },
+                          ]}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -698,7 +604,33 @@ export default function PenerimaanPenjualan() {
             </tbody>
           </table>
         </div>
-      </div>
+        <SalesPaginationBar
+          page={pagedReceipts.page}
+          pageSize={pagedReceipts.pageSize}
+          pageCount={pagedReceipts.pageCount}
+          total={pagedReceipts.total}
+          start={pagedReceipts.start}
+          end={pagedReceipts.end}
+          onPageChange={setListPage}
+          onPageSizeChange={(size) => { setListPageSize(size); setListPage(1); }}
+        />
+      </section>
+
+      <SalesWorkspaceDrawer
+        open={Boolean(detailReceipt)}
+        title={detailReceipt?.receipt_number || "Detail Penerimaan"}
+        onClose={() => setDetailReceipt(null)}
+      >
+        {detailReceipt && (
+          <div>
+            <p>Faktur: <strong>{detailReceipt.invoice_number || "-"}</strong></p>
+            <p>PO: <strong>{detailReceipt.po_number || "-"}</strong></p>
+            <p>Customer: <strong>{detailReceipt.customer || "-"}</strong></p>
+            <p>Jumlah: <strong>{formatRupiah(detailReceipt.amount)}</strong></p>
+            <p>Catatan: {detailReceipt.notes || "-"}</p>
+          </div>
+        )}
+      </SalesWorkspaceDrawer>
 
       {/* CREATE RECEIPT MODAL */}
       {isModalOpen && (
@@ -720,7 +652,7 @@ export default function PenerimaanPenjualan() {
             bottom: 0,
             backgroundColor: "rgba(0, 0, 0, 0.45)",
             display: "flex",
-            alignItems: "flex-start",
+            alignItems: "center",
             justifyContent: "center",
             zIndex: 1000,
             padding: "24px 16px",
@@ -729,12 +661,13 @@ export default function PenerimaanPenjualan() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
+            className="sw-receipt-modal"
             style={{
               backgroundColor: "#fff",
               borderRadius: 10,
               width: "100%",
-              maxWidth: 580,
-              maxHeight: "calc(100vh - 48px)",
+              maxWidth: 840,
+              maxHeight: 680,
               display: "flex",
               flexDirection: "column",
               boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
@@ -784,7 +717,8 @@ export default function PenerimaanPenjualan() {
             <form onSubmit={handleSaveReceipt} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
               <div
                 data-testid="receipt-modal-body"
-                style={{ padding: "20px 20px 28px", overflowY: "auto", flex: "1 1 auto", minHeight: 0 }}
+                className="sw-receipt-grid"
+                style={{ padding: "16px 20px", overflowY: "auto", flex: "1 1 auto", minHeight: 0 }}
               >
                 {createErr && (
                   <div
@@ -826,6 +760,7 @@ export default function PenerimaanPenjualan() {
                   </div>
                 )}
 
+                <div>
                 <FormProgress
                   percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, proofFile].filter(Boolean).length / 4) * 100)}
                   completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, proofFile].filter(Boolean).length}
@@ -905,6 +840,8 @@ export default function PenerimaanPenjualan() {
                     </div>
                   )}
                 </FormSection>
+                </div>
+                <div>
 
                 {/* 2. Detail Pembayaran */}
                 <FormSection
@@ -1077,6 +1014,7 @@ export default function PenerimaanPenjualan() {
                   </div>
                 )}
                 </FormSection>
+                </div>
               </div>
 
               {/* Modal Actions */}
@@ -1084,7 +1022,8 @@ export default function PenerimaanPenjualan() {
                 data-testid="receipt-modal-footer"
                 style={{
                   display: "flex",
-                  justifyContent: "flex-end",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                   gap: 10,
                   padding: "12px 20px 16px",
                   borderTop: "1px solid #f1f5f9",
@@ -1092,6 +1031,12 @@ export default function PenerimaanPenjualan() {
                   flex: "0 0 auto",
                 }}
               >
+                <div className="sw-required-hint">
+                  Sisa sebelum: {formatRupiah(previewCalc?.outstandingBefore || selectedInvoice?.outstanding_amount || 0)} ·
+                  Bayar: {formatRupiah(previewCalc?.amount || 0)} ·
+                  Sisa setelah: {formatRupiah(previewCalc?.newOutstanding ?? selectedInvoice?.outstanding_amount ?? 0)}
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
                 <button
                   type="button"
                   data-testid="btn-cancel-receipt-modal"
@@ -1125,6 +1070,7 @@ export default function PenerimaanPenjualan() {
                 >
                   {createBusy ? "Menyimpan..." : "Simpan Penerimaan"}
                 </button>
+                </div>
               </div>
             </form>
           </div>

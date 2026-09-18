@@ -36,6 +36,11 @@ import {
   poNavStateFromList,
 } from "../lib/poListReturn";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
+import { paginateRows, SALES_DEFAULT_PAGE_SIZE, formatDeliveryStatusLabel } from "../lib/salesWorkspaceList";
+import SalesPaginationBar from "../components/salesWorkspace/SalesPaginationBar";
+import SalesWorkspaceDrawer from "../components/salesWorkspace/SalesWorkspaceDrawer";
+import SalesRowMenu from "../components/salesWorkspace/SalesRowMenu";
+import "./salesWorkspacePages.css";
 
 function getTodayString() {
   const d = new Date();
@@ -99,6 +104,12 @@ export default function PesananPenjualan() {
   } = useDebouncedLiveSearch(searchParams.get("q") || "");
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(SALES_DEFAULT_PAGE_SIZE);
+  const [drawerOrder, setDrawerOrder] = useState(null);
+  const [drawerTab, setDrawerTab] = useState("ringkasan");
+  const [drawerDetail, setDrawerDetail] = useState(null);
+  const [createStep, setCreateStep] = useState(1);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
@@ -216,6 +227,24 @@ export default function PesananPenjualan() {
       }
     }
   }, [searchQuery, statusFilter]);
+
+  useEffect(() => {
+    setListPage(1);
+  }, [searchQuery, statusFilter]);
+
+  useEffect(() => {
+    if (!drawerOrder?.id) {
+      setDrawerDetail(null);
+      return undefined;
+    }
+    let cancelled = false;
+    api.getOrder(drawerOrder.id).then((data) => {
+      if (!cancelled) setDrawerDetail(data);
+    }).catch(() => {
+      if (!cancelled) setDrawerDetail(null);
+    });
+    return () => { cancelled = true; };
+  }, [drawerOrder?.id]);
 
   // Sync filter/search into URL so browser Back restores list presentation state.
   useEffect(() => {
@@ -469,6 +498,26 @@ export default function PesananPenjualan() {
     if (selectedIds.size === orders.length && orders.length > 0) setSelectedIds(new Set());
     else setSelectedIds(new Set(orders.map((o) => o.id)));
   };
+  const pagedOrders = useMemo(
+    () => paginateRows(orders, listPage, listPageSize),
+    [orders, listPage, listPageSize]
+  );
+  const openOrderDrawer = (order) => {
+    setDrawerOrder(order);
+    setDrawerTab("ringkasan");
+  };
+  const closeOrderDrawer = () => {
+    setDrawerOrder(null);
+    setDrawerDetail(null);
+  };
+  const isInteractiveTarget = (target) =>
+    Boolean(target?.closest("input, button, a, select, textarea, label, [role='menu'], [role='menuitem']"));
+  const requiredCreateComplete = [
+    formData.po_number,
+    formData.order_date,
+    formData.customer,
+    formData.line_items.some((l) => (l.name || l.product_name) && Number(l.quantity) > 0),
+  ].filter(Boolean).length;
   const formatDeleteError = (det) => {
     if (typeof det === "object" && det) {
       const blockers = det.blockers || [];
@@ -751,17 +800,17 @@ export default function PesananPenjualan() {
   }, [options.outlets_by_customer, formData.customer]);
 
   return (
-    <div className="sales-order-page penjualan-page penjualan-workspace" data-testid="sales-order-page" style={{ padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}>
+    <div className="sales-order-page penjualan-page penjualan-workspace sales-compact-workspace" data-testid="sales-order-page">
       {/* Top Header */}
-      <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+      <div className="page-heading sw-page-header">
         <div>
-          <p className="eyebrow" style={{ color: "#64748b", fontSize: "0.85rem", fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>
+          <p className="eyebrow">
             Penjualan · Pesanan Penjualan
           </p>
-          <h1 data-testid="sales-order-title" style={{ fontSize: "1.75rem", fontWeight: 700, margin: 0, color: "#0f172a" }}>
+          <h1 data-testid="sales-order-title">
             {viewMode === "create" ? "Buat Pesanan Penjualan" : "Pesanan Penjualan"}
           </h1>
-          <p className="subhead" style={{ color: "#64748b", margin: "4px 0 0 0", fontSize: "0.95rem" }}>
+          <p className="subhead">
             {viewMode === "create"
               ? "Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
               : "Daftar PO Penjualan dan pembuatan Sales Order baru"}
@@ -802,6 +851,7 @@ export default function PesananPenjualan() {
                   className="primary"
                   onClick={() => {
                     resetForm();
+                    setCreateStep(1);
                     setViewMode("create");
                   }}
                   data-testid="create-sales-order-btn"
@@ -826,7 +876,14 @@ export default function PesananPenjualan() {
 
       {/* VIEW: CREATE FORM */}
       {viewMode === "create" && (
-        <form onSubmit={handleFormSubmit} data-testid="sales-order-form">
+        <form onSubmit={handleFormSubmit} data-testid="sales-order-form" className="sw-form-shell">
+          <div className="sw-stepper" data-testid="sales-order-stepper">
+            <span className={`sw-step${createStep === 1 ? " is-active" : ""}`}>1. Informasi Pesanan</span>
+            <span className={`sw-step${createStep === 2 ? " is-active" : ""}`}>2. Barang dan Desain</span>
+            <span className={`sw-step${createStep === 3 ? " is-active" : ""}`}>3. Review dan Simpan</span>
+            <span className="sw-required-hint" style={{ marginLeft: "auto" }}>{requiredCreateComplete} dari 4 field wajib lengkap</span>
+          </div>
+          <div className="sw-form-body">
           {formErr && (
             <div
               className="alert-box error"
@@ -853,10 +910,10 @@ export default function PesananPenjualan() {
             percentage={Math.round(([formData.po_number, formData.po_date, formData.customer_name, formData.line_items.some(l => l.product_name && Number(l.quantity) > 0)].filter(Boolean).length / 4) * 100)}
             completed={[formData.po_number, formData.po_date, formData.customer_name, formData.line_items.some(l => l.product_name && Number(l.quantity) > 0)].filter(Boolean).length}
             total={4}
-            className="mb-4"
+            className="mb-4 sw-required-hint"
           />
 
-          {/* Card 1: Informasi Header PO */}
+          {createStep === 1 && (
           <FormSection
             id="so-header"
             title="Informasi Pesanan (Header)"
@@ -972,6 +1029,8 @@ export default function PesananPenjualan() {
                 ) : null}
               </div>
 
+              <details className="sw-extra-panel span-4" open={false} style={{ gridColumn: "1 / -1" }}>
+                <summary>Informasi Tambahan</summary>
               {/* No. HP / WhatsApp Pelanggan */}
               <div>
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
@@ -1131,7 +1190,6 @@ export default function PesananPenjualan() {
                   style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
                 />
               </div>
-            </div>
 
             {/* Alamat Kirim */}
             <div style={{ marginTop: 16 }}>
@@ -1162,9 +1220,12 @@ export default function PesananPenjualan() {
                 style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
               />
             </div>
+              </details>
+            </div>
           </FormSection>
+          )}
 
-          {/* Card 2: Line Items */}
+          {createStep === 2 && (
           <FormSection
             id="so-lines"
             title="Daftar Line Item (Barang / Jasa)"
@@ -1393,50 +1454,78 @@ export default function PesananPenjualan() {
               </span>
             </div>
           </FormSection>
+          )}
+
+          {createStep === 3 && (
+            <section data-testid="sales-order-review" className="panel" style={{ padding: 12 }}>
+              <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Review dan Simpan</h3>
+              <div className="sw-summary-strip">
+                <div><span>Nomor PO</span><strong>{formData.po_number || "-"}</strong></div>
+                <div><span>Tanggal</span><strong>{formData.order_date || "-"}</strong></div>
+                <div><span>Customer</span><strong>{formData.customer || "-"}</strong></div>
+                <div><span>Outlet</span><strong>{formData.outlet || "-"}</strong></div>
+                <div><span>Sales</span><strong>{formData.sales || "-"}</strong></div>
+                <div><span>Total Qty</span><strong>{totalQty.toLocaleString("id-ID")} pcs</strong></div>
+              </div>
+              <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>{formData.line_items.length} baris barang siap disimpan.</p>
+            </section>
+          )}
+          </div>
 
           {/* Form Actions */}
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 24 }}>
+          <div className="sw-form-foot">
             <button
               type="button"
               className="ghost"
-              onClick={() => setViewMode("list")}
+              onClick={() => {
+                if (createStep > 1) setCreateStep((s) => s - 1);
+                else setViewMode("list");
+              }}
               disabled={formBusy}
-              data-testid="btn-cancel-form"
-              style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
+              data-testid={createStep > 1 ? "btn-back-step" : "btn-cancel-form"}
             >
-              Batal
+              {createStep > 1 ? "Kembali" : "Batal"}
             </button>
-            <button
-              type="submit"
-              className="primary"
-              disabled={formBusy}
-              data-testid="btn-submit-sales-order"
-              style={{ padding: "10px 24px", borderRadius: 8, background: "#0284c7", color: "#fff", border: "none", cursor: formBusy ? "not-allowed" : "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}
-            >
-              {formBusy ? "Menyimpan..." : "Simpan Pesanan Penjualan"}
-            </button>
+            {createStep < 3 ? (
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setCreateStep((s) => s + 1)}
+                data-testid="btn-next-step"
+              >
+                Berikutnya
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="primary"
+                disabled={formBusy}
+                data-testid="btn-submit-sales-order"
+              >
+                {formBusy ? "Menyimpan..." : "Simpan Pesanan"}
+              </button>
+            )}
           </div>
         </form>
       )}
 
       {/* VIEW: LIST ORDERS */}
       {viewMode === "list" && (
-        <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+        <section className="sw-list-panel">
           {listErr && (
             <div
               className="alert-box error"
               data-testid="list-error-banner"
-              style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "10px 14px", borderRadius: 8, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}
+              style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "8px 12px", display: "flex", alignItems: "center", gap: 10 }}
             >
               <AlertCircle size={16} />
               <span>{listErr}</span>
             </div>
           )}
 
-          {/* Filter Bar */}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <div style={{ position: "relative", minWidth: 280, flex: "1 1 300px" }}>
-              <Search size={16} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }} />
+          <div className="sw-toolbar">
+            <div className="sw-search">
+              <Search size={16} className="sw-search-icon" />
               <input
                 type="text"
                 placeholder="Cari No PO / Customer / Outlet / Sales..."
@@ -1446,21 +1535,20 @@ export default function PesananPenjualan() {
                   if (e.key === "Enter") flushSearch(e);
                 }}
                 data-testid="search-sales-orders-input"
-                style={{ width: "100%", padding: "8px 12px 8px 34px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.9rem", boxSizing: "border-box" }}
               />
               {searchInput && (
                 <button
                   type="button"
                   onClick={() => clearSearch()}
                   data-testid="search-sales-orders-clear"
-                  style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8" }}
+                  className="sw-search-clear"
+                  aria-label="Bersihkan pencarian"
                 >
                   <X size={14} />
                 </button>
               )}
             </div>
-
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div className="sw-chip-group">
               {[
                 { id: "all", label: "Semua" },
                 { id: "aktif", label: "Aktif" },
@@ -1471,19 +1559,9 @@ export default function PesananPenjualan() {
                 <button
                   key={tab.id}
                   type="button"
+                  className={`sw-chip${statusFilter === tab.id ? " is-active" : ""}`}
                   onClick={() => setStatusFilter(tab.id)}
                   data-testid={`filter-status-${tab.id}`}
-                  style={{
-                    padding: "6px 14px",
-                    borderRadius: 6,
-                    border: "1px solid",
-                    borderColor: statusFilter === tab.id ? "#0284c7" : "#e2e8f0",
-                    background: statusFilter === tab.id ? "#e0f2fe" : "#f8fafc",
-                    color: statusFilter === tab.id ? "#0369a1" : "#475569",
-                    fontWeight: statusFilter === tab.id ? 600 : 500,
-                    cursor: "pointer",
-                    fontSize: "0.85rem",
-                  }}
                 >
                   {tab.label}
                 </button>
@@ -1491,166 +1569,145 @@ export default function PesananPenjualan() {
             </div>
           </div>
 
-          {/* Orders Table */}
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+          <div className="sw-table-scroll sw-desktop-table">
+            <table className="sw-table">
               <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                <tr>
                   {canDelete && (
-                    <th style={{ padding: "10px 8px", width: 36 }}>
-                      <input type="checkbox" data-testid="select-all-orders" checked={orders.length > 0 && selectedIds.size === orders.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                    <th style={{ width: 40 }}>
+                      <input type="checkbox" data-testid="select-all-orders" checked={orders.length > 0 && selectedIds.size === orders.length} onChange={toggleSelectAll} aria-label="Pilih seluruh hasil, bukan hanya halaman ini" title="Pilih seluruh hasil" />
                     </th>
                   )}
-                  <th style={{ padding: "10px 12px" }}>No PO</th>
-                  <th style={{ padding: "10px 12px" }}>Tanggal PO</th>
-                  <th style={{ padding: "10px 12px" }}>Customer</th>
-                  <th style={{ padding: "10px 12px" }}>Outlet</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Qty</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Sisa Kirim</th>
-                  <th style={{ padding: "10px 12px" }}>Status Kirim</th>
-                  <th style={{ padding: "10px 12px" }}>Sales</th>
-                  <th style={{ padding: "10px 12px" }}>Status / Stage</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
+                  <th>PO / Tanggal</th>
+                  <th>Customer / Outlet</th>
+                  <th className="num">Qty</th>
+                  <th>Pengiriman</th>
+                  <th>Tahap Aktif</th>
+                  <th className="sw-hide-tablet">Sales</th>
+                  <th className="sw-actions">Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
                   <tr>
-                    <td colSpan={canDelete ? 11 : 10} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
-                      Memuat daftar Pesanan Penjualan...
-                    </td>
+                    <td colSpan={canDelete ? 8 : 7}>Memuat daftar Pesanan Penjualan...</td>
                   </tr>
                 ) : orders.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 11 : 10} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
-                      <FileText size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
-                      <p style={{ margin: 0, fontWeight: 500 }}>Belum ada Pesanan Penjualan yang sesuai filter.</p>
-                      {canCreate && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            resetForm();
-                            setViewMode("create");
-                          }}
-                          style={{ marginTop: 12, padding: "6px 14px", background: "#0284c7", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}
-                        >
-                          + Buat PO Baru
-                        </button>
-                      )}
+                    <td colSpan={canDelete ? 8 : 7} data-testid="empty-sales-orders">
+                      <div className="sw-empty">
+                        <FileText size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
+                        <p style={{ margin: 0, fontWeight: 500 }}>Belum ada Pesanan Penjualan yang sesuai filter.</p>
+                      </div>
                     </td>
                   </tr>
                 ) : (
-                  orders.map((o) => {
+                  pagedOrders.rows.map((o) => {
                     const isCancelled = !!o.cancelled;
                     const isHold = !!o.hold;
                     const stageLabel = o.status_label || `Tahap ${o.current_stage}`;
                     const delivSummary = o.delivery_summary;
                     const remainQty = delivSummary ? delivSummary.total_remaining : Number(o.total_quantity || 0);
                     const delivStatus = delivSummary?.status || (isCancelled ? "DIBATALKAN" : "BELUM DIKIRIM");
+                    const delivLabel = formatDeliveryStatusLabel(delivStatus, isCancelled);
                     const canProcessDelivery = !isCancelled && remainQty > 0;
 
                     return (
-                      <tr key={o.id} data-testid={`order-row-${o.id}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      <tr
+                        key={o.id}
+                        data-testid={`order-row-${o.id}`}
+                        className={`is-clickable${drawerOrder?.id === o.id ? " is-active" : ""}`}
+                        onClick={(e) => {
+                          if (isInteractiveTarget(e.target)) return;
+                          openOrderDrawer(o);
+                        }}
+                      >
                         {canDelete && (
-                          <td style={{ padding: "10px 8px" }}>
+                          <td>
                             <input type="checkbox" data-testid={`order-checkbox-${o.id}`} checked={selectedIds.has(o.id)} onChange={() => toggleSelect(o.id)} aria-label={`Pilih ${o.po_number}`} />
                           </td>
                         )}
-                        <td style={{ padding: "10px 12px", fontWeight: 600 }}>
+                        <td>
+                          <button
+                            type="button"
+                            className="sw-primary"
+                            data-testid={`po-link-${o.po_number}`}
+                            onClick={() => openOrderDrawer(o)}
+                            style={{ background: "none", border: 0, padding: 0, color: "#0284c7", cursor: "pointer", textAlign: "left" }}
+                          >
+                            {o.po_number}
+                          </button>
+                          <div className="sw-secondary">{formatDisplayDate(o.order_date) || "-"}</div>
                           <Link
                             to={`/po/${o.id}`}
                             state={poListNavState({ po_number: o.po_number, customer: o.customer })}
                             onClick={() => onOpenPo(o.id)}
-                            style={{ color: "#0284c7", textDecoration: "none" }}
-                            data-testid={`po-link-${o.po_number}`}
+                            className="sr-only"
                           >
                             {o.po_number}
                           </Link>
                         </td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {formatDisplayDate(o.order_date) || "-"}
+                        <td>
+                          <div className="sw-primary">{o.customer || "-"}</div>
+                          <div className="sw-secondary">{o.outlet || "-"}</div>
                         </td>
-                        <td style={{ padding: "10px 12px", fontWeight: 500, color: "#1e293b" }}>
-                          {o.customer || "-"}
+                        <td className="num">
+                          <div>{Number(o.total_quantity || 0).toLocaleString("id-ID")}</div>
+                          <div className="sw-secondary">Sisa Kirim {remainQty.toLocaleString("id-ID")}</div>
                         </td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {o.outlet || "-"}
-                        </td>
-                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                          {Number(o.total_quantity || 0).toLocaleString("id-ID")} pcs
-                        </td>
-                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: remainQty > 0 ? "#0284c7" : "#16a34a" }}>
-                          {remainQty.toLocaleString("id-ID")} pcs
-                        </td>
-                        <td style={{ padding: "10px 12px" }}>
-                          <span
-                            style={{
-                              display: "inline-block",
-                              padding: "2px 8px",
-                              borderRadius: 12,
-                              fontSize: "0.75rem",
-                              fontWeight: 600,
-                              background: (delivStatus === "SELESAI" || delivStatus === "SELESAI PENGIRIMAN") ? "#dcfce7" : (delivStatus === "SEBAGIAN" || delivStatus === "SEBAGIAN DIKIRIM") ? "#e0f2fe" : "#f1f5f9",
-                              color: (delivStatus === "SELESAI" || delivStatus === "SELESAI PENGIRIMAN") ? "#166534" : (delivStatus === "SEBAGIAN" || delivStatus === "SEBAGIAN DIKIRIM") ? "#0369a1" : "#475569",
-                            }}
-                          >
-                            {delivStatus}
+                        <td>
+                          <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, background: delivLabel === "Selesai" ? "#dcfce7" : delivLabel === "Sebagian" ? "#e0f2fe" : "#f1f5f9", color: delivLabel === "Selesai" ? "#166534" : delivLabel === "Sebagian" ? "#0369a1" : "#475569" }}>
+                            {delivLabel}
                           </span>
+                          <span className="sr-only">Status Kirim {delivStatus}</span>
                         </td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {o.sales || o.sales_user || "-"}
-                        </td>
-                        <td style={{ padding: "10px 12px" }}>
+                        <td>
                           {isCancelled ? (
-                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fca5a5" }}>
-                              Cancelled
-                            </span>
+                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fca5a5" }}>Cancelled</span>
                           ) : isHold ? (
-                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fef3c7", color: "#92400e", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fcd34d" }}>
-                              HOLD
-                            </span>
+                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: "#fef3c7", color: "#92400e", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: "1.5px solid #fcd34d" }}>HOLD</span>
                           ) : (
-                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: o.current_stage >= 14 ? "#dcfce7" : "#e0f2fe", color: o.current_stage >= 14 ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600, border: o.current_stage >= 14 ? "1.5px solid #86efac" : "1.5px solid #7dd3fc" }}>
-                              {stageLabel}
-                            </span>
+                            <span className="pj-status-badge" style={{ display: "inline-block", padding: "2px 8px", background: o.current_stage >= 14 ? "#dcfce7" : "#e0f2fe", color: o.current_stage >= 14 ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 600 }}>{stageLabel}</span>
                           )}
                         </td>
-                        <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                          <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
-                            <Link
-                              to={`/po/${o.id}`}
-                              state={poListNavState({ po_number: o.po_number, customer: o.customer })}
-                              onClick={() => onOpenPo(o.id)}
-                              data-testid={`btn-view-po-${o.id}`}
-                              style={{ display: "inline-block", padding: "4px 8px", background: "#f1f5f9", color: "#334155", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600 }}
-                            >
-                              Lihat PO
-                            </Link>
-                            {canCreate && !isCancelled && (
-                              <button
-                                type="button"
-                                data-testid={`btn-repeat-order-${o.id}`}
-                                title="Repeat Order dari PO ini"
-                                onClick={() => {
-                                  resetForm();
-                                  setViewMode("create");
-                                  void handleRepeatSpecificPo(o.id);
-                                }}
-                                style={{ display: "inline-block", padding: "4px 8px", background: "#f8fafc", color: "#0f172a", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
-                              >
-                                Repeat Order
-                              </button>
-                            )}
+                        <td className="sw-hide-tablet">{o.sales || o.sales_user || "-"}</td>
+                        <td className="sw-actions" onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
                             {canProcessDelivery && (
                               <Link
                                 to={`/penjualan/pengiriman-pesanan?po_id=${o.id}&action=create`}
                                 data-testid={`btn-process-delivery-${o.id}`}
                                 title="Proses ke Pengiriman Pesanan"
-                                style={{ display: "inline-block", padding: "4px 8px", background: "#e0f2fe", color: "#0369a1", borderRadius: 6, textDecoration: "none", fontSize: "0.8rem", fontWeight: 600, whiteSpace: "nowrap" }}
+                                aria-label="Buat Pengiriman"
+                                className="sw-icon-btn"
+                                style={{ width: "auto", padding: "0 8px", textDecoration: "none" }}
                               >
                                 + Kirim
                               </Link>
                             )}
+                            <SalesRowMenu
+                              testId={`order-row-menu-${o.id}`}
+                              items={[
+                                {
+                                  id: "view",
+                                  label: "Lihat PO",
+                                  to: `/po/${o.id}`,
+                                  state: poListNavState({ po_number: o.po_number, customer: o.customer }),
+                                  testId: `btn-view-po-${o.id}`,
+                                },
+                                canCreate && !isCancelled && {
+                                  id: "repeat",
+                                  label: "Repeat Order",
+                                  testId: `btn-repeat-order-${o.id}`,
+                                  onClick: () => {
+                                    resetForm();
+                                    setCreateStep(1);
+                                    setViewMode("create");
+                                    void handleRepeatSpecificPo(o.id);
+                                  },
+                                },
+                              ]}
+                            />
                           </div>
                         </td>
                       </tr>
@@ -1660,8 +1717,111 @@ export default function PesananPenjualan() {
               </tbody>
             </table>
           </div>
+          <div className="sw-mobile-cards">
+            {pagedOrders.rows.map((o) => (
+              <button key={o.id} type="button" className="sw-card" onClick={() => openOrderDrawer(o)}>
+                <strong>{o.po_number}</strong>
+                <div className="sw-secondary">{o.customer} · {formatDisplayDate(o.order_date) || "-"}</div>
+              </button>
+            ))}
+          </div>
+          <SalesPaginationBar
+            page={pagedOrders.page}
+            pageSize={pagedOrders.pageSize}
+            pageCount={pagedOrders.pageCount}
+            total={pagedOrders.total}
+            start={pagedOrders.start}
+            end={pagedOrders.end}
+            onPageChange={setListPage}
+            onPageSizeChange={(size) => { setListPageSize(size); setListPage(1); }}
+          />
         </section>
       )}
+
+      <SalesWorkspaceDrawer
+        open={Boolean(drawerOrder)}
+        title={drawerOrder?.po_number || "Detail Pesanan"}
+        subtitle={drawerOrder?.customer}
+        tabs={[
+          { id: "ringkasan", label: "Ringkasan" },
+          { id: "barang", label: "Barang" },
+          { id: "workflow", label: "Workflow" },
+          { id: "pengiriman", label: "Pengiriman" },
+          { id: "riwayat", label: "Riwayat" },
+        ]}
+        activeTab={drawerTab}
+        onTabChange={setDrawerTab}
+        onClose={closeOrderDrawer}
+        footer={(
+          <>
+            {drawerOrder && (
+              <Link
+                to={`/po/${drawerOrder.id}`}
+                state={poListNavState({ po_number: drawerOrder.po_number, customer: drawerOrder.customer })}
+                onClick={() => onOpenPo(drawerOrder.id)}
+                className="ghost"
+              >
+                Lihat Detail PO
+              </Link>
+            )}
+            {canCreate && drawerOrder && !drawerOrder.cancelled && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  resetForm();
+                  setCreateStep(1);
+                  setViewMode("create");
+                  void handleRepeatSpecificPo(drawerOrder.id);
+                }}
+              >
+                Repeat Order
+              </button>
+            )}
+            {drawerOrder && !drawerOrder.cancelled && (drawerOrder.delivery_summary ? drawerOrder.delivery_summary.total_remaining : Number(drawerOrder.total_quantity || 0)) > 0 && (
+              <Link
+                to={`/penjualan/pengiriman-pesanan?po_id=${drawerOrder.id}&action=create`}
+                className="primary"
+              >
+                Buat Pengiriman
+              </Link>
+            )}
+          </>
+        )}
+      >
+        {drawerTab === "ringkasan" && drawerOrder && (
+          <div className="sw-summary-strip">
+            <div><span>Customer</span><strong>{drawerOrder.customer || "-"}</strong></div>
+            <div><span>Outlet</span><strong>{drawerOrder.outlet || "-"}</strong></div>
+            <div><span>Sales</span><strong>{drawerOrder.sales || drawerOrder.sales_user || "-"}</strong></div>
+            <div><span>Total Qty</span><strong>{Number(drawerOrder.total_quantity || 0).toLocaleString("id-ID")}</strong></div>
+            <div><span>Sisa Kirim</span><strong>{Number(drawerOrder.delivery_summary?.total_remaining ?? drawerOrder.total_quantity ?? 0).toLocaleString("id-ID")}</strong></div>
+            <div><span>Tahap Aktif</span><strong>{drawerOrder.status_label || "-"}</strong></div>
+          </div>
+        )}
+        {drawerTab === "barang" && (
+          <div>
+            {(drawerDetail?.line_items || drawerDetail?.order?.line_items || []).length === 0 ? (
+              <p>Buka Lihat Detail PO untuk rincian barang lengkap.</p>
+            ) : (
+              <ul>
+                {(drawerDetail?.line_items || drawerDetail?.order?.line_items || []).map((line, idx) => (
+                  <li key={idx}>{line.name || line.item_name} · {Number(line.quantity || 0).toLocaleString("id-ID")} {line.unit || "pcs"}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {drawerTab === "workflow" && (
+          <p>Tahap aktif: {drawerOrder?.status_label || drawerDetail?.status_label || "-"} (stage {drawerOrder?.current_stage ?? drawerDetail?.current_stage ?? "-"}).</p>
+        )}
+        {drawerTab === "pengiriman" && (
+          <p>Status Kirim: {formatDeliveryStatusLabel(drawerOrder?.delivery_summary?.status, drawerOrder?.cancelled)}. Sisa Kirim: {Number(drawerOrder?.delivery_summary?.total_remaining ?? 0).toLocaleString("id-ID")}.</p>
+        )}
+        {drawerTab === "riwayat" && (
+          <p>Riwayat lengkap tetap tersedia di halaman detail PO.</p>
+        )}
+      </SalesWorkspaceDrawer>
 
       {deleteConfirm && (
         <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>

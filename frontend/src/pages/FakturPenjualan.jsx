@@ -16,6 +16,10 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { invoiceListMatchesFilter, paginateRows, SALES_DEFAULT_PAGE_SIZE } from "../lib/salesWorkspaceList";
+import SalesPaginationBar from "../components/salesWorkspace/SalesPaginationBar";
+import SalesRowMenu from "../components/salesWorkspace/SalesRowMenu";
+import "./salesWorkspacePages.css";
 
 function getTodayString() {
   const d = new Date();
@@ -127,6 +131,9 @@ export default function FakturPenjualan() {
   const [listLoading, setListLoading] = useState(false);
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [statusChip, setStatusChip] = useState("all");
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(SALES_DEFAULT_PAGE_SIZE);
 
   // Checkbox selection
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -201,9 +208,21 @@ export default function FakturPenjualan() {
       return next;
     });
   };
+  const filteredInvoices = useMemo(
+    () => (invoices || []).filter((inv) => invoiceListMatchesFilter(inv, statusChip)),
+    [invoices, statusChip]
+  );
+  const pagedInvoices = useMemo(
+    () => paginateRows(filteredInvoices, listPage, listPageSize),
+    [filteredInvoices, listPage, listPageSize]
+  );
   const draftInvoiceIds = invoices
     .filter((inv) => invoiceFinancialStatus(inv) === "draft")
     .map((inv) => inv.id);
+
+  useEffect(() => {
+    setListPage(1);
+  }, [searchQuery, statusChip]);
   const toggleSelectAll = () => {
     if (selectedIds.size === draftInvoiceIds.length && draftInvoiceIds.length > 0) {
       setSelectedIds(new Set());
@@ -691,21 +710,12 @@ export default function FakturPenjualan() {
 
   return (
     <div
-      className="page-container penjualan-page penjualan-workspace"
+      className="page-container penjualan-page penjualan-workspace sales-compact-workspace"
       data-testid="faktur-penjualan-page"
-      style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}
     >
       {/* HEADER SECTION */}
       <div
-        className="page-heading"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-          flexWrap: "wrap",
-          gap: 12,
-        }}
+        className="page-heading sw-page-header"
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {viewMode !== "list" ? (
@@ -858,252 +868,126 @@ export default function FakturPenjualan() {
 
       {/* VIEW: LIST */}
       {viewMode === "list" && (
-        <section
-          className="panel"
-          style={{
-            background: "#fff",
-            border: "1px solid #e2e8f0",
-            borderRadius: 10,
-            padding: 20,
-            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-          }}
-        >
+        <section className="sw-list-panel">
           {listErr && (
-            <div
-              className="alert-box error"
-              style={{
-                background: "#fef2f2",
-                border: "1px solid #fecaca",
-                color: "#b91c1c",
-                padding: "10px 14px",
-                borderRadius: 8,
-                marginBottom: 16,
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
-              <AlertCircle size={16} />
-              <span>{listErr}</span>
+            <div className="alert-box error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", display: "flex", gap: 8 }}>
+              <AlertCircle size={16} /><span>{listErr}</span>
             </div>
           )}
-
-          {/* Search & Refresh Toolbar */}
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ position: "relative", minWidth: 280, flex: "1 1 300px" }}>
-              <Search
-                size={16}
-                style={{
-                  position: "absolute",
-                  left: 10,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  color: "#94a3b8",
-                }}
-              />
+          <div className="sw-toolbar">
+            <div className="sw-search">
+              <Search size={16} className="sw-search-icon" />
               <input
                 type="text"
                 placeholder="Cari No PO / Customer / Sales / Faktur..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") loadInvoices();
-                }}
+                onKeyDown={(e) => { if (e.key === "Enter") loadInvoices(); }}
                 data-testid="search-invoice-input"
-                style={{
-                  width: "100%",
-                  padding: "8px 12px 8px 34px",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: 6,
-                  fontSize: "0.9rem",
-                  boxSizing: "border-box",
-                }}
               />
             </div>
-
-            <button
-              type="button"
-              onClick={loadInvoices}
-              disabled={listLoading}
-              title="Refresh data"
-              data-testid="refresh-invoice-btn"
-              style={{
-                padding: "8px 14px",
-                borderRadius: 6,
-                border: "1px solid #cbd5e1",
-                background: "#f8fafc",
-                color: "#475569",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                fontWeight: 500,
-                fontSize: "0.85rem",
-              }}
-            >
-              <RefreshCw size={14} className={listLoading ? "spin" : ""} /> Refresh
+            <div className="sw-chip-group">
+              {[
+                { id: "all", label: "Semua" },
+                { id: "unpaid", label: "Belum Lunas" },
+                { id: "partial", label: "Sebagian" },
+                { id: "paid", label: "Lunas" },
+                { id: "overdue", label: "Jatuh Tempo" },
+              ].map((tab) => (
+                <button key={tab.id} type="button" className={`sw-chip${statusChip === tab.id ? " is-active" : ""}`} onClick={() => setStatusChip(tab.id)}>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="ghost" onClick={loadInvoices} disabled={listLoading} title="Refresh data" data-testid="refresh-invoice-btn" aria-label="Refresh data">
+              <RefreshCw size={14} className={listLoading ? "spin" : ""} />
             </button>
           </div>
-
-          {/* Invoices Table */}
-          <div style={{ overflowX: "auto" }}>
-            <table
-              style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}
-              data-testid="invoices-table"
-            >
+          <div className="sw-table-scroll sw-desktop-table">
+            <table className="sw-table" data-testid="invoices-table">
               <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                <tr>
                   {canDelete && (
-                    <th style={{ padding: "10px 8px", width: 36 }}>
-                      <input
-                        type="checkbox"
-                        data-testid="select-all-invoices"
-                        checked={draftInvoiceIds.length > 0 && selectedIds.size === draftInvoiceIds.length}
-                        onChange={toggleSelectAll}
-                        aria-label="Pilih semua baris tampilan"
-                      />
+                    <th style={{ width: 40 }}>
+                      <input type="checkbox" data-testid="select-all-invoices" checked={draftInvoiceIds.length > 0 && selectedIds.size === draftInvoiceIds.length} onChange={toggleSelectAll} aria-label="Pilih seluruh hasil draft, bukan hanya halaman ini" title="Pilih seluruh hasil draft" />
                     </th>
                   )}
-                  <th style={{ padding: "10px 12px" }}>No. Faktur</th>
-                  <th style={{ padding: "10px 12px" }}>No. PO</th>
-                  <th style={{ padding: "10px 12px" }}>Customer</th>
-                  <th style={{ padding: "10px 12px" }}>Tanggal</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Faktur</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Sisa Tagihan</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Status Faktur</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Status Pembayaran</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
+                  <th>Faktur / Tanggal</th>
+                  <th>PO / Customer</th>
+                  <th className="num">Total Faktur</th>
+                  <th className="num sw-hide-tablet">Terbayar</th>
+                  <th className="num">Sisa Tagihan</th>
+                  <th className="sw-hide-tablet">Jatuh Tempo</th>
+                  <th>Status</th>
+                  <th className="sw-actions">Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
+                  <tr><td colSpan={canDelete ? 9 : 8}>Memuat daftar Faktur Penjualan...</td></tr>
+                ) : filteredInvoices.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
-                      Memuat daftar Faktur Penjualan...
-                    </td>
-                  </tr>
-                ) : invoices.length === 0 ? (
-                  <tr>
-                    <td colSpan={canDelete ? 10 : 9} style={{ padding: "36px 20px", textAlign: "center", color: "#64748b" }} data-testid="empty-invoices">
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                    <td colSpan={canDelete ? 9 : 8} data-testid="empty-invoices">
+                      <div className="sw-empty">
                         <FileText size={32} color="#94a3b8" />
                         <div style={{ fontWeight: 600, color: "#1e293b", marginTop: 8 }}>Belum ada Faktur Penjualan</div>
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  invoices.map((inv) => (
-                    <tr key={inv.id} style={{ borderBottom: "1px solid #f1f5f9" }} data-testid={`invoice-row-${inv.id}`}>
+                  pagedInvoices.rows.map((inv) => (
+                    <tr key={inv.id} data-testid={`invoice-row-${inv.id}`} className="is-clickable" onClick={(e) => {
+                      if (e.target.closest("input, button, a, [role='menu'], [role='menuitem']")) return;
+                      handleOpenDetail(inv.id);
+                    }}>
                       {canDelete && (
-                        <td style={{ padding: "10px 8px" }}>
-                          <input
-                            type="checkbox"
-                            data-testid={`invoice-checkbox-${inv.id}`}
-                            checked={selectedIds.has(inv.id)}
-                            onChange={() => toggleSelect(inv.id)}
-                            aria-label={`Pilih ${inv.invoice_number}`}
-                          />
+                        <td>
+                          <input type="checkbox" data-testid={`invoice-checkbox-${inv.id}`} checked={selectedIds.has(inv.id)} onChange={() => toggleSelect(inv.id)} aria-label={`Pilih ${inv.invoice_number}`} />
                         </td>
                       )}
-                      <td style={{ padding: "10px 12px", fontWeight: 700, color: "#9333ea" }}>
-                        <span className="mono" data-testid={`invoice-number-${inv.id}`}>
-                          {inv.invoice_number || "-"}
-                        </span>
+                      <td>
+                        <span className="sw-primary mono" data-testid={`invoice-number-${inv.id}`}>{inv.invoice_number || "-"}</span>
+                        <div className="sw-secondary">{formatDisplayDate(inv.invoice_date || inv.created_at)}</div>
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 500 }}>
-                        <Link to={`/po/${inv.po_id}`} style={{ color: "#0284c7", textDecoration: "none" }} title="Buka PO">
-                          {inv.po_number || "-"}
-                        </Link>
+                      <td>
+                        <Link to={`/po/${inv.po_id}`} style={{ color: "#0284c7", textDecoration: "none" }}>{inv.po_number || "-"}</Link>
+                        <div className="sw-secondary">{inv.customer || "-"}{inv.outlet ? ` · ${inv.outlet}` : ""}</div>
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 500, color: "#1e293b" }}>
-                        <div>{inv.customer || "-"}</div>
-                        {inv.outlet && <div style={{ fontSize: "0.75rem", color: "#64748b" }}>{inv.outlet}</div>}
-                      </td>
-                      <td style={{ padding: "10px 12px", color: "#475569" }}>
-                        {formatDisplayDate(inv.invoice_date || inv.created_at)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                        {formatRupiah(inv.grand_total)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: (inv.outstanding_amount > 0 ? "#dc2626" : "#059669") }}>
-                        {formatRupiah(inv.outstanding_amount)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                      <td className="num">{formatRupiah(inv.grand_total)}</td>
+                      <td className="num sw-hide-tablet">{formatRupiah(inv.paid_total)}</td>
+                      <td className="num">{formatRupiah(inv.outstanding_amount)}</td>
+                      <td className="sw-hide-tablet">{formatDisplayDate(inv.due_date) || "-"}</td>
+                      <td>
                         {renderFinancialBadge(inv.financial_status)}
                         {(inv.accounting_status === "posted" || inv.accounting_posted === true) && renderPostedAccountingBadge()}
+                        <div>{renderPaymentBadge(inv.payment_status)}</div>
                       </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        {renderPaymentBadge(inv.payment_status)}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenDetail(inv.id)}
-                          data-testid={`view-invoice-btn-${inv.id}`}
-                          style={{
-                            padding: "5px 12px",
-                            fontSize: "0.8rem",
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            color: "#334155",
-                            cursor: "pointer",
-                            fontWeight: 500,
-                          }}
-                        >
-                          {invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handlePrintPdf(e, inv.id)}
-                          data-testid={`btn-print-pdf-${inv.id}`}
-                          disabled={pdfLoadingId === inv.id}
-                          title="Cetak PDF Faktur Penjualan"
-                          style={{
-                            padding: "5px 12px",
-                            fontSize: "0.8rem",
-                            borderRadius: 6,
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            color: "#0284c7",
-                            cursor: pdfLoadingId === inv.id ? "wait" : "pointer",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF"}
-                        </button>
-                        {canDelete && invoiceFinancialStatus(inv) === "draft" && (
-                          <button
-                            type="button"
-                            data-testid={`btn-delete-invoice-${inv.id}`}
-                            onClick={() => {
-                              setDeleteErr("");
-                              setDeleteConfirm({ id: inv.id, number: inv.invoice_number, numbers: [inv.invoice_number] });
-                            }}
-                            style={{
-                              padding: "5px 10px",
-                              fontSize: "0.8rem",
-                              borderRadius: 6,
-                              border: "1px solid #fecaca",
-                              background: "#fef2f2",
-                              color: "#b91c1c",
-                              cursor: "pointer",
-                              fontWeight: 600,
-                            }}
-                          >
-                            Hapus
+                      <td className="sw-actions" onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: "inline-flex", gap: 6 }}>
+                          <button type="button" className="sw-icon-btn" onClick={() => handleOpenDetail(inv.id)} data-testid={`view-invoice-btn-${inv.id}`} title={invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"} aria-label={invoiceFinancialStatus(inv) === "draft" ? "Lihat / Edit" : "Lihat"}>
+                            <FileText size={14} />
                           </button>
-                        )}
+                          <SalesRowMenu
+                            testId={`invoice-row-menu-${inv.id}`}
+                            items={[
+                              {
+                                id: "pdf",
+                                label: pdfLoadingId === inv.id ? "Memuat..." : "Cetak PDF",
+                                testId: `btn-print-pdf-${inv.id}`,
+                                onClick: (e) => handlePrintPdf(e, inv.id),
+                              },
+                              canDelete && invoiceFinancialStatus(inv) === "draft" && {
+                                id: "delete",
+                                label: "Hapus",
+                                danger: true,
+                                testId: `btn-delete-invoice-${inv.id}`,
+                                onClick: () => {
+                                  setDeleteErr("");
+                                  setDeleteConfirm({ id: inv.id, number: inv.invoice_number, numbers: [inv.invoice_number] });
+                                },
+                              },
+                            ]}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -1112,12 +996,24 @@ export default function FakturPenjualan() {
               </tbody>
             </table>
           </div>
+          <SalesPaginationBar
+            page={pagedInvoices.page}
+            pageSize={pagedInvoices.pageSize}
+            pageCount={pagedInvoices.pageCount}
+            total={pagedInvoices.total}
+            start={pagedInvoices.start}
+            end={pagedInvoices.end}
+            onPageChange={setListPage}
+            onPageSizeChange={(size) => { setListPageSize(size); setListPage(1); }}
+          />
         </section>
       )}
 
       {/* VIEW: CREATE */}
       {viewMode === "create" && (
-        <div>
+        <div className="sw-form-shell">
+          <div className="sw-form-body">
+          <p className="sw-required-hint">{[selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length} dari 3 field wajib lengkap</p>
           <FormProgress
             percentage={Math.round(([selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length / 3) * 100)}
             completed={[selectedPoId || queryPoId, invoiceDate, (createCalculations?.lines || []).some(l => Number(l.numericQty || 0) > 0)].filter(Boolean).length}
@@ -1292,7 +1188,7 @@ export default function FakturPenjualan() {
                 className="panel"
               >
 
-                <div style={{ overflowX: "auto" }}>
+                <div className="sw-lines-viewport" style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
                     <thead>
                       <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
@@ -1474,7 +1370,11 @@ export default function FakturPenjualan() {
                 </div>
               )}
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 20 }}>
+              <div className="sw-form-foot" style={{ marginTop: 8 }}>
+                <div className="sw-required-hint">
+                  Subtotal {formatRupiah(createCalculations.subtotal)} · Diskon {formatRupiah(createCalculations.discount)} · PPN {formatRupiah(createCalculations.ppn)} · Total {formatRupiah(createCalculations.grandTotal)}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
                 <button
                   type="button"
                   className="ghost"
@@ -1483,7 +1383,6 @@ export default function FakturPenjualan() {
                     setViewMode("list");
                   }}
                   disabled={formBusy}
-                  style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
                 >
                   Batal
                 </button>
@@ -1492,18 +1391,10 @@ export default function FakturPenjualan() {
                   className="primary"
                   disabled={formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0}
                   data-testid="save-invoice-btn"
-                  style={{
-                    padding: "10px 24px",
-                    borderRadius: 8,
-                    background: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "#94a3b8" : "#9333ea",
-                    color: "#fff",
-                    border: "none",
-                    cursor: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "not-allowed" : "pointer",
-                    fontWeight: 600,
-                  }}
                 >
                   {formBusy ? "Menyimpan..." : "Simpan Faktur Penjualan"}
                 </button>
+                </div>
               </div>
             </form>
           ) : (
@@ -1511,6 +1402,7 @@ export default function FakturPenjualan() {
               Silakan pilih Pesanan Penjualan pada bagian 1 di atas untuk memulai.
             </div>
           )}
+          </div>
         </div>
       )}
 

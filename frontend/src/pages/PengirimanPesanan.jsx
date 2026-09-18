@@ -20,6 +20,11 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
+import { deliveryDateInRange, paginateRows, SALES_DEFAULT_PAGE_SIZE } from "../lib/salesWorkspaceList";
+import SalesPaginationBar from "../components/salesWorkspace/SalesPaginationBar";
+import SalesWorkspaceDrawer from "../components/salesWorkspace/SalesWorkspaceDrawer";
+import SalesRowMenu from "../components/salesWorkspace/SalesRowMenu";
+import "./salesWorkspacePages.css";
 
 function getTodayString() {
   const d = new Date();
@@ -46,6 +51,12 @@ export default function PengirimanPesanan() {
   const [listErr, setListErr] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(SALES_DEFAULT_PAGE_SIZE);
+  const [createStep, setCreateStep] = useState(1);
+  const [drawerTab, setDrawerTab] = useState("ringkasan");
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -370,6 +381,20 @@ export default function PengirimanPesanan() {
     if (selectedIds.size === deliveries.length && deliveries.length > 0) setSelectedIds(new Set());
     else setSelectedIds(new Set(deliveries.map((d) => d.id)));
   };
+  const filteredDeliveries = useMemo(
+    () => (deliveries || []).filter((d) => deliveryDateInRange(d, dateFrom, dateTo)),
+    [deliveries, dateFrom, dateTo]
+  );
+  const pagedDeliveries = useMemo(
+    () => paginateRows(filteredDeliveries, listPage, listPageSize),
+    [filteredDeliveries, listPage, listPageSize]
+  );
+  const isInteractiveTarget = (target) =>
+    Boolean(target?.closest("input, button, a, select, textarea, label, [role='menu'], [role='menuitem']"));
+
+  useEffect(() => {
+    setListPage(1);
+  }, [searchQuery, statusFilter, dateFrom, dateTo]);
   const formatDeleteError = (det) => {
     if (typeof det === "object" && det) {
       const blockers = det.blockers || [];
@@ -416,9 +441,9 @@ export default function PengirimanPesanan() {
   };
 
   return (
-    <div className="page-container penjualan-page penjualan-workspace" style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+    <div className="page-container penjualan-page penjualan-workspace sales-compact-workspace">
       {/* HEADER SECTION */}
-      <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+      <div className="page-heading sw-page-header">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {viewMode === "create" ? (
             <button
@@ -506,7 +531,12 @@ export default function PengirimanPesanan() {
 
       {/* VIEW: CREATE DELIVERY ORDER */}
       {viewMode === "create" && (
-        <form onSubmit={handleSubmitDelivery}>
+        <form onSubmit={handleSubmitDelivery} className="sw-form-shell">
+          <div className="sw-stepper">
+            <span className={`sw-step${createStep === 1 ? " is-active" : ""}`}>1. Data Pengiriman</span>
+            <span className={`sw-step${createStep === 2 ? " is-active" : ""}`}>2. Alokasi Qty dan Review</span>
+          </div>
+          <div className="sw-form-body">
           {formErr && (
             <div
               className="alert-box error"
@@ -518,8 +548,8 @@ export default function PengirimanPesanan() {
             </div>
           )}
 
-          {/* Section 1: PO Selection & Information */}
-          <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+          {createStep === 1 && (
+          <section className="panel" style={{ background: "#fff", padding: 12, marginBottom: 12 }}>
             <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16 }}>
               <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>1. Data Pesanan Penjualan (PO Asal)</h3>
               <p style={{ margin: "4px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
@@ -527,7 +557,15 @@ export default function PengirimanPesanan() {
               </p>
             </header>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+            {poSummary && (
+              <div className="sw-summary-strip" data-testid="delivery-readonly-summary">
+                <div><span>Nomor SJ</span><strong>{poSummary.suggested_sj_number || "-"}</strong></div>
+                <div><span>Customer</span><strong>{poSummary.customer || "-"}</strong></div>
+                <div><span>PO</span><strong>{poSummary.po_number || "-"}</strong></div>
+                <div><span>Sales</span><strong>{formData.sales || poSummary.sales || "-"}</strong></div>
+              </div>
+            )}
+            <div className="sw-form-grid">
               {/* Select PO */}
               <div>
                 <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
@@ -724,9 +762,10 @@ export default function PengirimanPesanan() {
               />
             </div>
           </section>
+          )}
 
-          {/* Section 2: Line Items & Quantity Allocation */}
-          <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, marginBottom: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+          {createStep === 2 && (
+          <section className="panel" style={{ background: "#fff", padding: 12, marginBottom: 12 }}>
             <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 12, marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>2. Alokasi Kuantitas Pengiriman</h3>
@@ -867,9 +906,11 @@ export default function PengirimanPesanan() {
               </div>
             )}
           </section>
+          )}
+          </div>
 
           {/* Form Actions */}
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 24 }}>
+          <div className="sw-form-foot">
             <button
               type="button"
               className="ghost"
@@ -879,246 +920,162 @@ export default function PengirimanPesanan() {
               }}
               disabled={formBusy}
               data-testid="btn-cancel-delivery"
-              style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
             >
               Batal
             </button>
+            {createStep > 1 && (
+              <button type="button" className="ghost" onClick={() => setCreateStep(1)} disabled={formBusy}>
+                Kembali
+              </button>
+            )}
+            {createStep === 1 ? (
+              <button type="button" className="primary" onClick={() => setCreateStep(2)}>
+                Berikutnya
+              </button>
+            ) : (
             <button
               type="submit"
               className="primary"
               disabled={formBusy || !poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0}
               data-testid="btn-submit-delivery-order"
-              style={{
-                padding: "10px 24px",
-                borderRadius: 8,
-                background: (!poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0 || formBusy) ? "#94a3b8" : "#0284c7",
-                color: "#fff",
-                border: "none",
-                cursor: (!poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0 || formBusy) ? "not-allowed" : "pointer",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
             >
               {formBusy ? "Memproses..." : "Buat & Terbitkan Surat Jalan"}
             </button>
+            )}
           </div>
         </form>
       )}
 
       {/* VIEW: LIST DELIVERIES */}
       {viewMode === "list" && (
-        <section className="panel" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+        <section className="sw-list-panel">
           {listErr && (
-            <div
-              className="alert-box error"
-              data-testid="list-error-banner"
-              style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "10px 14px", borderRadius: 8, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}
-            >
+            <div className="alert-box error" data-testid="list-error-banner" style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "8px 12px", display: "flex", alignItems: "center", gap: 10 }}>
               <AlertCircle size={16} />
               <span>{listErr}</span>
             </div>
           )}
-
-          {/* Filter Bar */}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <div style={{ position: "relative", minWidth: 280, flex: "1 1 300px" }}>
-              <Search size={16} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }} />
+          <div className="sw-toolbar">
+            <div className="sw-search">
+              <Search size={16} className="sw-search-icon" />
               <input
                 type="text"
                 placeholder="Cari No SJ / No PO / Customer / Outlet / Sales..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 data-testid="search-deliveries-input"
-                style={{ width: "100%", padding: "8px 12px 8px 34px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.9rem", boxSizing: "border-box" }}
               />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery("")}
-                  style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8" }}
-                >
-                  <X size={14} />
-                </button>
-              )}
             </div>
-
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div className="sw-chip-group">
               {[
                 { id: "all", label: "Semua Status" },
                 { id: "SEBAGIAN", label: "Sebagian" },
                 { id: "SELESAI", label: "Selesai" },
               ].map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setStatusFilter(tab.id)}
-                  data-testid={`filter-status-${tab.id}`}
-                  style={{
-                    padding: "6px 14px",
-                    borderRadius: 6,
-                    border: "1px solid",
-                    borderColor: statusFilter === tab.id ? "#0284c7" : "#e2e8f0",
-                    background: statusFilter === tab.id ? "#e0f2fe" : "#f8fafc",
-                    color: statusFilter === tab.id ? "#0369a1" : "#475569",
-                    fontWeight: statusFilter === tab.id ? 600 : 500,
-                    cursor: "pointer",
-                    fontSize: "0.85rem",
-                  }}
-                >
+                <button key={tab.id} type="button" className={`sw-chip${statusFilter === tab.id ? " is-active" : ""}`} onClick={() => setStatusFilter(tab.id)} data-testid={`filter-status-${tab.id}`}>
                   {tab.label}
                 </button>
               ))}
             </div>
+            <input type="date" aria-label="Dari tanggal" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ height: 40 }} />
+            <input type="date" aria-label="Sampai tanggal" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ height: 40 }} />
           </div>
-
-          {/* Deliveries Table */}
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+          <div className="sw-table-scroll sw-desktop-table">
+            <table className="sw-table">
               <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
+                <tr>
                   {canDelete && (
-                    <th style={{ padding: "10px 8px", width: 36 }}>
-                      <input type="checkbox" data-testid="select-all-deliveries" checked={deliveries.length > 0 && selectedIds.size === deliveries.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                    <th style={{ width: 40 }}>
+                      <input type="checkbox" data-testid="select-all-deliveries" checked={deliveries.length > 0 && selectedIds.size === deliveries.length} onChange={toggleSelectAll} aria-label="Pilih seluruh hasil, bukan hanya halaman ini" title="Pilih seluruh hasil" />
                     </th>
                   )}
-                  <th style={{ padding: "10px 12px" }}>No SJ</th>
-                  <th style={{ padding: "10px 12px" }}>No PO</th>
-                  <th style={{ padding: "10px 12px" }}>Tanggal Kirim</th>
-                  <th style={{ padding: "10px 12px" }}>Customer</th>
-                  <th style={{ padding: "10px 12px" }}>Outlet</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Qty</th>
-                  <th style={{ padding: "10px 12px" }}>Status</th>
-                  <th style={{ padding: "10px 12px" }}>Dibuat Oleh</th>
-                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
+                  <th>Surat Jalan</th>
+                  <th>PO / Customer</th>
+                  <th className="num">Total Qty</th>
+                  <th>Status</th>
+                  <th className="sw-hide-tablet">Dibuat Oleh</th>
+                  <th className="sw-actions">Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 {listLoading ? (
+                  <tr><td colSpan={canDelete ? 7 : 6}>Memuat daftar Pengiriman Pesanan...</td></tr>
+                ) : filteredDeliveries.length === 0 ? (
                   <tr>
-                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
-                      Memuat daftar Pengiriman Pesanan...
-                    </td>
-                  </tr>
-                ) : deliveries.length === 0 ? (
-                  <tr>
-                    <td colSpan={canDelete ? 10 : 9} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-deliveries">
-                      <Truck size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
-                      <p style={{ margin: 0, fontWeight: 500 }}>Belum ada data Pengiriman Pesanan yang sesuai.</p>
-                      {canCreate && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setViewMode("create");
-                            setSelectedPoId("");
-                          }}
-                          style={{ marginTop: 12, padding: "6px 14px", background: "#0284c7", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}
-                        >
-                          + Buat Pengiriman Pertama
-                        </button>
-                      )}
+                    <td colSpan={canDelete ? 7 : 6} data-testid="empty-deliveries">
+                      <div className="sw-empty">
+                        <Truck size={32} style={{ opacity: 0.4 }} />
+                        <p style={{ margin: 0, fontWeight: 500 }}>Belum ada data Pengiriman Pesanan yang sesuai.</p>
+                      </div>
                     </td>
                   </tr>
                 ) : (
-                  deliveries.map((d) => (
-                    <tr key={d.id} data-testid={`delivery-row-${d.id}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                  pagedDeliveries.rows.map((d) => (
+                    <tr
+                      key={d.id}
+                      data-testid={`delivery-row-${d.id}`}
+                      className={`is-clickable${selectedDeliveryId === d.id ? " is-active" : ""}`}
+                      onClick={(e) => {
+                        if (isInteractiveTarget(e.target)) return;
+                        setDrawerTab("ringkasan");
+                        setSelectedDeliveryId(d.id);
+                        loadDeliveryDetail(d.id);
+                      }}
+                    >
                       {canDelete && (
-                        <td style={{ padding: "10px 8px" }}>
+                        <td>
                           <input type="checkbox" data-testid={`delivery-checkbox-${d.id}`} checked={selectedIds.has(d.id)} onChange={() => toggleSelect(d.id)} aria-label={`Pilih ${d.sj_number}`} />
                         </td>
                       )}
-                      <td style={{ padding: "10px 12px", fontWeight: 700, color: "#0369a1" }}>
-                        <span data-testid={`sj-number-${d.sj_number}`}>{d.sj_number}</span>
+                      <td>
+                        <button type="button" className="sw-primary" data-testid={`sj-number-${d.sj_number}`} onClick={() => { setDrawerTab("ringkasan"); setSelectedDeliveryId(d.id); loadDeliveryDetail(d.id); }} style={{ background: "none", border: 0, padding: 0, color: "#0369a1", fontWeight: 700, cursor: "pointer" }}>
+                          {d.sj_number}
+                        </button>
+                        <div className="sw-secondary">{formatDisplayDate(d.delivery_date) || "-"}</div>
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 500 }}>
-                        <Link to={`/po/${d.po_id}`} style={{ color: "#0284c7", textDecoration: "none" }} data-testid={`po-link-${d.po_number}`}>
-                          {d.po_number}
-                        </Link>
+                      <td>
+                        <Link to={`/po/${d.po_id}`} style={{ color: "#0284c7", textDecoration: "none" }} data-testid={`po-link-${d.po_number}`}>{d.po_number}</Link>
+                        <div className="sw-secondary">{d.customer || "-"}{d.outlet ? ` · ${d.outlet}` : ""}</div>
                       </td>
-                      <td style={{ padding: "10px 12px", color: "#475569" }}>
-                        {formatDisplayDate(d.delivery_date) || "-"}
-                      </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 500, color: "#1e293b" }}>
-                        {d.customer || "-"}
-                      </td>
-                      <td style={{ padding: "10px 12px", color: "#475569" }}>
-                        {d.outlet || "-"}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                        {Number(d.total_qty || 0).toLocaleString("id-ID")} pcs
-                      </td>
-                      <td style={{ padding: "10px 12px" }}>
-                        <span
-                          className="pj-status-badge"
-                          data-testid={`delivery-status-${d.id}`}
-                          style={{
-                            display: "inline-block",
-                            padding: "2px 8px",
-                            background: String(d.status).toUpperCase() === "SELESAI" ? "#dcfce7" : "#e0f2fe",
-                            color: String(d.status).toUpperCase() === "SELESAI" ? "#166534" : "#075985",
-                            borderRadius: 12,
-                            fontSize: "0.75rem",
-                            fontWeight: 700,
-                            border: String(d.status).toUpperCase() === "SELESAI" ? "1.5px solid #86efac" : "1.5px solid #7dd3fc",
-                          }}
-                        >
+                      <td className="num">{Number(d.total_qty || 0).toLocaleString("id-ID")}</td>
+                      <td>
+                        <span className="pj-status-badge" data-testid={`delivery-status-${d.id}`} style={{ display: "inline-block", padding: "2px 8px", background: String(d.status).toUpperCase() === "SELESAI" ? "#dcfce7" : "#e0f2fe", color: String(d.status).toUpperCase() === "SELESAI" ? "#166534" : "#075985", borderRadius: 12, fontSize: "0.75rem", fontWeight: 700 }}>
                           {String(d.status).toUpperCase() === "SELESAI" ? "SELESAI" : "SEBAGIAN"}
                         </span>
                       </td>
-                      <td style={{ padding: "10px 12px", color: "#64748b", fontSize: "0.85rem" }}>
-                        {d.created_by_name || d.created_by || "-"}
-                      </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedDeliveryId(d.id);
-                              loadDeliveryDetail(d.id);
-                            }}
-                            data-testid={`btn-view-delivery-${d.id}`}
-                            style={{ padding: "4px 10px", background: "#f1f5f9", color: "#334155", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
-                          >
-                            Lihat
-                          </button>
+                      <td className="sw-hide-tablet">{d.created_by_name || d.created_by || "-"}</td>
+                      <td className="sw-actions" onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
                           {canPrint && (
-                            <button
-                              type="button"
-                              onClick={() => handlePrintPdf(d.id)}
-                              data-testid={`btn-print-delivery-${d.id}`}
-                              title="Cetak PDF Surat Jalan"
-                              style={{ padding: "4px 8px", background: "#f8fafc", color: "#0284c7", border: "1px solid #cbd5e1", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem", fontWeight: 600 }}
-                            >
-                              <Printer size={14} /> PDF
+                            <button type="button" className="sw-icon-btn" onClick={() => handlePrintPdf(d.id)} data-testid={`btn-print-delivery-${d.id}`} title="Cetak PDF Surat Jalan" aria-label="Cetak PDF Surat Jalan">
+                              <Printer size={14} />
                             </button>
                           )}
-                          {canDelete && (
-                            <button
-                              type="button"
-                              data-testid={`btn-delete-delivery-${d.id}`}
-                              onClick={() => {
-                                setDeleteErr("");
-                                setDeleteConfirm({
-                                  id: d.id,
-                                  number: d.sj_number,
-                                  numbers: [d.sj_number],
-                                });
-                              }}
-                              style={{
-                                padding: "4px 10px",
-                                fontSize: "0.8rem",
-                                borderRadius: 6,
-                                border: "1px solid #fecaca",
-                                background: "#fef2f2",
-                                color: "#b91c1c",
-                                cursor: "pointer",
-                                fontWeight: 600,
-                              }}
-                            >
-                              Hapus
-                            </button>
-                          )}
+                          <SalesRowMenu
+                            testId={`delivery-row-menu-${d.id}`}
+                            items={[
+                              {
+                                id: "view",
+                                label: "Lihat",
+                                testId: `btn-view-delivery-${d.id}`,
+                                onClick: () => {
+                                  setDrawerTab("ringkasan");
+                                  setSelectedDeliveryId(d.id);
+                                  loadDeliveryDetail(d.id);
+                                },
+                              },
+                              canDelete && {
+                                id: "delete",
+                                label: "Hapus",
+                                danger: true,
+                                testId: `btn-delete-delivery-${d.id}`,
+                                onClick: () => {
+                                  setDeleteErr("");
+                                  setDeleteConfirm({ id: d.id, number: d.sj_number, numbers: [d.sj_number] });
+                                },
+                              },
+                            ]}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -1127,263 +1084,105 @@ export default function PengirimanPesanan() {
               </tbody>
             </table>
           </div>
+          <div className="sw-mobile-cards">
+            {pagedDeliveries.rows.map((d) => (
+              <button key={d.id} type="button" className="sw-card" onClick={() => { setSelectedDeliveryId(d.id); loadDeliveryDetail(d.id); }}>
+                <strong>{d.sj_number}</strong>
+                <div className="sw-secondary">{d.po_number} · {d.customer}</div>
+              </button>
+            ))}
+          </div>
+          <SalesPaginationBar
+            page={pagedDeliveries.page}
+            pageSize={pagedDeliveries.pageSize}
+            pageCount={pagedDeliveries.pageCount}
+            total={pagedDeliveries.total}
+            start={pagedDeliveries.start}
+            end={pagedDeliveries.end}
+            onPageChange={setListPage}
+            onPageSizeChange={(size) => { setListPageSize(size); setListPage(1); }}
+          />
         </section>
       )}
 
-      {/* DETAIL MODAL */}
-      {selectedDeliveryId && detailData && (
-        <div
-          className="modal-overlay"
-          data-testid="delivery-detail-modal"
-          style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}
-        >
-          <div
-            className="modal-content"
-            style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 840, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 10px 25px rgba(0,0,0,0.15)" }}
-          >
-            {/* Modal Header */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e2e8f0", paddingBottom: 12, marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 8, background: "#e0f2fe", color: "#0369a1", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Truck size={20} />
-                </div>
-                <div>
-                  <h2 style={{ margin: 0, fontSize: "1.25rem", color: "#0f172a" }}>
-                    Detail Surat Jalan: <span style={{ color: "#0284c7" }}>{detailData.delivery?.sj_number}</span>
-                  </h2>
-                  <span style={{ fontSize: "0.8rem", color: "#64748b" }}>
-                    Pengiriman #{detailData.delivery?.shipment_index} dari PO <strong>{detailData.delivery?.po_number}</strong>
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedDeliveryId(null);
-                  setDetailData(null);
-                }}
-                data-testid="btn-close-delivery-modal"
-                style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}
-              >
-                <X size={20} />
+      <SalesWorkspaceDrawer
+        open={Boolean(selectedDeliveryId)}
+        title={detailData?.delivery?.sj_number ? `Detail Surat Jalan: ${detailData.delivery.sj_number}` : "Detail Surat Jalan"}
+        subtitle={detailData?.delivery ? `Pengiriman #${detailData.delivery.shipment_index} dari PO ${detailData.delivery.po_number}` : ""}
+        testId="delivery-detail-modal"
+        tabs={[
+          { id: "ringkasan", label: "Ringkasan" },
+          { id: "barang", label: "Barang Dikirim" },
+          { id: "loading", label: "Loading" },
+          { id: "bukti", label: "Bukti Pengiriman" },
+          { id: "riwayat", label: "Riwayat" },
+        ]}
+        activeTab={drawerTab}
+        onTabChange={setDrawerTab}
+        onClose={() => { setSelectedDeliveryId(null); setDetailData(null); }}
+        footer={(
+          <>
+            {canPrint && detailData?.delivery?.id && (
+              <button type="button" className="primary" onClick={() => handlePrintPdf(detailData.delivery.id)} data-testid="btn-print-modal-pdf">
+                <Printer size={16} /> Cetak PDF
               </button>
-            </div>
-
-            {/* PO Progress Summary Box */}
+            )}
+            <button type="button" className="ghost" onClick={() => { setSelectedDeliveryId(null); setDetailData(null); }} data-testid="btn-close-modal-bottom">Tutup</button>
+          </>
+        )}
+      >
+        {detailLoading && <p>Memuat rincian...</p>}
+        {detailErr && <p>{detailErr}</p>}
+        {detailData && drawerTab === "ringkasan" && (
+          <>
             {detailData.po_summary && (
-              <div
-                style={{
-                  background: "#f0f9ff",
-                  border: "1px solid #bae6fd",
-                  borderRadius: 8,
-                  padding: "14px 16px",
-                  marginBottom: 16,
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                  gap: 12,
-                }}
-                data-testid="delivery-po-progress-summary"
-              >
+              <div data-testid="delivery-po-progress-summary" className="sw-summary-strip">
+                <div><span>TOTAL QTY PO</span><strong data-testid="detail-total-po-qty">{Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs</strong></div>
+                <div><span>SUDAH DIBUAT SURAT JALAN</span><strong data-testid="detail-cumulative-sj-qty">{Number(detailData.po_summary.total_shipped || 0).toLocaleString("id-ID")} pcs</strong></div>
+                <div><span>SISA</span><strong data-testid="detail-remaining-po-qty">{Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs</strong></div>
                 <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    TOTAL QTY PO
-                  </span>
-                  <strong style={{ fontSize: "1.1rem", color: "#0c4a6e" }} data-testid="detail-total-po-qty">
-                    {Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs
-                  </strong>
-                </div>
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    SUDAH DIBUAT SURAT JALAN
-                  </span>
-                  <strong style={{ fontSize: "1.1rem", color: "#0284c7" }} data-testid="detail-cumulative-sj-qty">
-                    {Number(detailData.po_summary.total_shipped || 0).toLocaleString("id-ID")} pcs
-                  </strong>
-                </div>
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    SISA
-                  </span>
-                  <strong style={{ fontSize: "1.1rem", color: Number(detailData.po_summary.total_remaining || 0) === 0 ? "#16a34a" : "#ea580c" }} data-testid="detail-remaining-po-qty">
-                    {Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs
-                  </strong>
-                </div>
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    STATUS
-                  </span>
-                  <span
-                    data-testid="detail-delivery-status"
-                    style={{
-                      display: "inline-block",
-                      marginTop: 2,
-                      padding: "3px 10px",
-                      background: (detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "#dcfce7" : "#e0f2fe",
-                      color: (detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "#166534" : "#075985",
-                      borderRadius: 12,
-                      fontSize: "0.8rem",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {(detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "SELESAI" : "SEBAGIAN"}
-                  </span>
+                  <span>STATUS</span>
+                  <strong data-testid="detail-delivery-status">{(detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "SELESAI" : "SEBAGIAN"}</strong>
                 </div>
               </div>
             )}
-
-            {/* Delivery Meta Grid */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, background: "#f8fafc", padding: 16, borderRadius: 8, marginBottom: 16, fontSize: "0.85rem" }}>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Nomor PO:</span>
-                <Link to={`/po/${detailData.delivery?.po_id}`} style={{ color: "#0284c7", fontWeight: 600, textDecoration: "none" }}>
-                  {detailData.delivery?.po_number}
-                </Link>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Customer:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.customer || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Outlet:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.outlet || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Tanggal Kirim:</span>
-                <strong style={{ color: "#1e293b" }}>{formatDisplayDate(detailData.delivery?.delivery_date) || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Penerima (PIC):</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.recipient || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Sales:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.sales || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Ekspedisi / Zona:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.expedition || "-"} ({detailData.delivery?.delivery_zone || "-"})</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Dibuat Oleh:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.created_by_name || detailData.delivery?.created_by || "-"}</strong>
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <span style={{ color: "#64748b", display: "block" }}>Alamat Lengkap:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.address || "-"}</strong>
-              </div>
-              {detailData.delivery?.notes && (
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <span style={{ color: "#64748b", display: "block" }}>Catatan:</span>
-                  <strong style={{ color: "#1e293b" }}>{detailData.delivery?.notes}</strong>
-                </div>
-              )}
-            </div>
-
-            {/* Line Items on this SJ */}
-            <div style={{ marginBottom: 20 }}>
-              <h4 style={{ margin: "0 0 8px 0", fontSize: "0.95rem", color: "#1e293b" }}>Daftar Barang Dikirim pada Surat Jalan Ini:</h4>
-              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.85rem" }}>
-                <thead>
-                  <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569" }}>
-                    <th style={{ padding: "8px" }}>#</th>
-                    <th style={{ padding: "8px" }}>Barang / Jasa</th>
-                    <th style={{ padding: "8px" }}>Proses</th>
-                    <th style={{ padding: "8px", textAlign: "right" }}>Qty Kirim</th>
-                    <th style={{ padding: "8px" }}>Satuan</th>
-                    <th style={{ padding: "8px" }}>Catatan</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detailData.delivery?.line_items || []).map((li, idx) => (
-                    <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                      <td style={{ padding: "8px", color: "#64748b" }}>{idx + 1}</td>
-                      <td style={{ padding: "8px", fontWeight: 600, color: "#1e293b" }}>
-                        {li.name}
-                        {li.color && <div style={{ fontSize: "0.75rem", color: "#64748b", fontWeight: 400 }}>{li.color}</div>}
-                      </td>
-                      <td style={{ padding: "8px" }}>
-                        <span style={{ fontSize: "0.75rem", padding: "2px 6px", borderRadius: 4, background: li.production_process === "non_print" ? "#fef3c7" : "#e0f2fe", color: li.production_process === "non_print" ? "#92400e" : "#0369a1" }}>
-                          {li.production_process === "non_print" ? "Non-Cetak" : "Cetak"}
-                        </span>
-                      </td>
-                      <td style={{ padding: "8px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                        {Number(li.qty || li.quantity || 0).toLocaleString("id-ID")}
-                      </td>
-                      <td style={{ padding: "8px", color: "#475569" }}>{li.unit || "pcs"}</td>
-                      <td style={{ padding: "8px", color: "#64748b" }}>{li.notes || "-"}</td>
-                    </tr>
-                  ))}
-                  <tr style={{ background: "#f8fafc", fontWeight: 700, borderTop: "2px solid #cbd5e1" }}>
-                    <td colSpan={3} style={{ padding: "8px", textAlign: "right" }}>Total Kuantitas:</td>
-                    <td style={{ padding: "8px", textAlign: "right", color: "#0284c7" }}>
-                      {Number(detailData.delivery?.total_qty || 0).toLocaleString("id-ID")}
-                    </td>
-                    <td colSpan={2} style={{ padding: "8px" }}>pcs</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            {/* Shipment History for this PO */}
-            {detailData.all_po_deliveries?.length > 1 && (
-              <div style={{ marginBottom: 20, padding: 14, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8 }}>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#166534", display: "flex", alignItems: "center", gap: 6 }}>
-                  <Clock size={16} /> Riwayat Pengiriman untuk PO {detailData.delivery?.po_number}:
-                </h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: "0.85rem" }}>
-                  {detailData.all_po_deliveries.map((shipment) => (
-                    <div
-                      key={shipment.id}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        padding: "6px 10px",
-                        background: shipment.id === detailData.delivery?.id ? "#dcfce7" : "#fff",
-                        border: "1px solid",
-                        borderColor: shipment.id === detailData.delivery?.id ? "#86efac" : "#e2e8f0",
-                        borderRadius: 6,
-                        fontWeight: shipment.id === detailData.delivery?.id ? 600 : 400,
-                      }}
-                    >
-                      <span>
-                        Surat Jalan <strong>{shipment.sj_number}</strong> (Kirim #{shipment.shipment_index}) - {formatDisplayDate(shipment.delivery_date)}
-                      </span>
-                      <span style={{ fontWeight: 700, color: "#15803d" }}>
-                        {Number(shipment.total_qty || 0).toLocaleString("id-ID")} pcs
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Modal Actions */}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, borderTop: "1px solid #e2e8f0", paddingTop: 14 }}>
-              {canPrint && (
-                <button
-                  type="button"
-                  onClick={() => handlePrintPdf(detailData.delivery?.id)}
-                  data-testid="btn-print-modal-pdf"
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#0284c7", color: "#fff", border: "none", borderRadius: 6, fontWeight: 600, cursor: "pointer" }}
-                >
-                  <Printer size={16} /> Cetak PDF Surat Jalan
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedDeliveryId(null);
-                  setDetailData(null);
-                }}
-                data-testid="btn-close-modal-bottom"
-                style={{ padding: "8px 16px", background: "#f1f5f9", color: "#334155", border: "1px solid #cbd5e1", borderRadius: 6, fontWeight: 600, cursor: "pointer" }}
-              >
-                Tutup
-              </button>
-            </div>
+            <p>Customer: <strong>{detailData.delivery?.customer || "-"}</strong></p>
+            <p>Outlet: <strong>{detailData.delivery?.outlet || "-"}</strong></p>
+            <p>Alamat: <strong>{detailData.delivery?.address || "-"}</strong></p>
+          </>
+        )}
+        {detailData && drawerTab === "barang" && (
+          <table className="sw-table">
+            <thead>
+              <tr><th>#</th><th>Barang / Jasa</th><th className="num">Qty Kirim</th></tr>
+            </thead>
+            <tbody>
+              {(detailData.delivery?.line_items || []).map((li, idx) => (
+                <tr key={idx}>
+                  <td>{idx + 1}</td>
+                  <td>{li.name}</td>
+                  <td className="num">{Number(li.qty || li.quantity || 0).toLocaleString("id-ID")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {detailData && drawerTab === "loading" && (
+          <p>{detailData.delivery?.loading_notes || detailData.delivery?.armada || "Tidak ada data loading terpisah pada dokumen ini."}</p>
+        )}
+        {detailData && drawerTab === "bukti" && (
+          <p>{detailData.delivery?.notes || "Bukti pengiriman dapat dilihat dari PDF Surat Jalan bila tersedia."}</p>
+        )}
+        {detailData && drawerTab === "riwayat" && (
+          <div>
+            <h4>Riwayat Pengiriman untuk PO {detailData.delivery?.po_number}:</h4>
+            {(detailData.all_po_deliveries || []).map((shipment) => (
+              <div key={shipment.id}>Surat Jalan <strong>{shipment.sj_number}</strong> (Kirim #{shipment.shipment_index}) - {formatDisplayDate(shipment.delivery_date)}</div>
+            ))}
           </div>
-        </div>
-      )}
+        )}
+        <button type="button" className="sr-only" data-testid="btn-close-delivery-modal" onClick={() => { setSelectedDeliveryId(null); setDetailData(null); }}>Tutup</button>
+      </SalesWorkspaceDrawer>
 
       {deleteConfirm && (
         <div className="modal-overlay" data-testid="delete-confirm-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}>
