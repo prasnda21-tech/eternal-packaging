@@ -1,6 +1,9 @@
 import { X } from "lucide-react";
-import { STAGES } from "../../lib/constants";
 import { getStagePresentation } from "../../lib/poDetailPresentation";
+import {
+  PO_DETAIL_VISUAL_STEPS,
+  visualStepPresentationIndex,
+} from "../../lib/poDetailStageNav";
 
 export default function PoStagePickerSheet({
   open,
@@ -32,7 +35,7 @@ export default function PoStagePickerSheet({
         aria-labelledby="po-stage-sheet-title"
       >
         <header className="po-stage-sheet-head">
-          <h2 id="po-stage-sheet-title">15 tahap workflow</h2>
+          <h2 id="po-stage-sheet-title">Tahap workflow</h2>
           <button
             type="button"
             className="icon-button"
@@ -44,12 +47,13 @@ export default function PoStagePickerSheet({
           </button>
         </header>
         <ol className="po-stage-sheet-list">
-          {STAGES.map((name, i) => {
-            const pres = getStagePresentation(i, order, actualStage);
-            const isViewed = Number(viewedStage) === i;
-            const isActual = Number(actualStage) === i;
+          {PO_DETAIL_VISUAL_STEPS.map((step) => {
+            const presIdx = visualStepPresentationIndex(step, actualStage);
+            const pres = getStagePresentation(presIdx, order, actualStage);
+            const isViewed = step.internalIndexes.includes(Number(viewedStage));
+            const isActual = step.internalIndexes.includes(Number(actualStage));
             return (
-              <li key={name}>
+              <li key={step.id}>
                 <button
                   type="button"
                   className={
@@ -58,12 +62,13 @@ export default function PoStagePickerSheet({
                     + (isActual ? " is-actual" : "")
                     + ` tone-${pres.tone}`
                   }
-                  data-testid={`po-stage-sheet-item-${i}`}
-                  onClick={() => onSelect(i)}
+                  data-testid={`po-stage-sheet-item-${step.canonicalIndex}`}
+                  data-visual-number={step.displayNumber}
+                  onClick={() => onSelect(step.canonicalIndex)}
                 >
-                  <span className="po-stage-sheet-num">{i + 1}</span>
+                  <span className="po-stage-sheet-num">{step.displayNumber}</span>
                   <span className="po-stage-sheet-main">
-                    <strong>{name}</strong>
+                    <strong>{step.label}</strong>
                     <span className="po-stage-sheet-status">{pres.label || pres.summary}</span>
                   </span>
                   {isActual ? <span className="po-stage-sheet-flag">Aktif</span> : null}

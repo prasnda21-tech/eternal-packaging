@@ -30,7 +30,11 @@ import {
   deskPanelOwnsStage,
   parsePoDetailStageParam,
   poDetailStagePanelTitle,
+  PO_DETAIL_VISUAL_STEPS,
+  shouldShowPoActiveStagePanel,
   syncPoDetailStageQuery,
+  visualCanonicalIndex,
+  visualStepForInternalIndex,
 } from "../lib/poDetailStageNav";
 import { salesOrderLineColor } from "../lib/salesOrderLineColor";
 import { enrichWorkspaceTab } from "../lib/workspaceTabEnrichment";
@@ -429,7 +433,8 @@ export default function PODetail() {
   const terkirimSummary = terkirimQtySummary(order);
   const actualStage = clampWorkflowStageIndex(resolveOperationalStage(order, order.current_stage), 0);
   const viewedStage = selectedWorkflowStage == null ? actualStage : clampWorkflowStageIndex(selectedWorkflowStage, actualStage);
-  const viewingOtherStage = viewedStage !== actualStage;
+  const viewedVisualStep = visualStepForInternalIndex(viewedStage);
+  const viewingOtherStage = visualCanonicalIndex(viewedStage) !== visualCanonicalIndex(actualStage);
   const accordionOpenIndex = accordionIndexForFocus(viewedStage);
   const selectWorkflowStage = (idx) => {
     const next = clampWorkflowStageIndex(idx, actualStage);
@@ -675,8 +680,8 @@ export default function PODetail() {
 
       <div className="po-mobile-stage-chrome" data-testid="po-mobile-stage-chrome">
         <div>
-          <p className="po-mobile-stage-kicker">Tahap {viewedStage + 1} dari 15</p>
-          <strong data-testid="po-mobile-stage-name">{STAGES[viewedStage]}</strong>
+          <p className="po-mobile-stage-kicker">Tahap {viewedVisualStep.displayNumber} dari 15</p>
+          <strong data-testid="po-mobile-stage-name">{viewedVisualStep.label}</strong>
         </div>
         <button
           type="button"
@@ -695,6 +700,7 @@ export default function PODetail() {
             order={order}
             showLabels
             viewedStage={viewedStage}
+            steps={PO_DETAIL_VISUAL_STEPS}
             onStageClick={selectWorkflowStage}
           />
         </div>
@@ -741,6 +747,7 @@ export default function PODetail() {
         </div>
       </section>
 
+      {shouldShowPoActiveStagePanel(viewedStage) ? (
       <PoDetailFocusPanel
         order={order}
         viewedStage={viewedStage}
@@ -758,6 +765,7 @@ export default function PODetail() {
           ) : null
         }
       />
+      ) : null}
 
       {/* HOLD banner (Req 2) */}
       {order.hold && (
@@ -1145,80 +1153,81 @@ export default function PODetail() {
 
       <div className="workflow-group" data-testid="workflow-group-2">
         <p className="workflow-group-label">A · DESIGN &amp; PAYMENT</p>
-      {/* 02 Design */}
-      <div id="po-stage-design" data-testid="workflow-slot-1" data-workflow-stage="1" className={deskPanelOwnsStage("1", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("1", viewedStage)}>
-      <PoStageSection stageIndex={1} order={order} title="File Design" hasError={!!err}>
-      <AttachmentsPanel
-        order={order}
-        user={user}
-        onUpdated={setOrder}
-        section="design"
-        designSlot={(
-          <div className="design-actions" data-testid="design-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
-            <DesignStatusBadge order={order} />
-          </div>
-        )}
-      />
-      </PoStageSection>
-      </div>
-
-      {/* 03 Approval Design + Customer Approval (visual pair only) */}
-      <div id="po-stage-approval-design" data-testid="workflow-slot-2" data-workflow-stage="2" className={deskPanelOwnsStage("2", viewedStage) ? "is-desk-viewed" : ""} hidden={!deskPanelOwnsStage("2", viewedStage)}>
-      <PoStageSection stageIndex={2} order={order} title="Approval Design">
-      <section className="panel po-pair-card po-phase-design" data-testid="approval-design-panel">
+      {/* 02–03 Design + Approval Design (visual workspace only; internal stages stay 2 and 3) */}
+      <section
+        id="po-stage-design"
+        className={"panel po-pair-card po-phase-design" + (deskPanelOwnsStage("design", viewedStage) ? " is-desk-viewed" : "")}
+        data-testid="design-approval-pair"
+        hidden={!deskPanelOwnsStage("design", viewedStage)}
+      >
+      <PoStageSection stageIndex={1} order={order} title="Design" hasError={!!err}>
         <header className="panel-head">
-          <h3>Approval Design</h3>
+          <h3>DESIGN — 2&amp;3</h3>
           <DesignStatusBadge order={order} />
         </header>
         <div className="po-pair-grid">
-          <div className="po-pair-col">
-            <h4 className="po-pair-col-title">Internal Approval</h4>
-            <div className="workflow-stage-actions" data-testid="approval-design-actions">
-              {canApproveDesign && (order.design_files?.length || 0) > 0 && !isApprovalDesignComplete(order) && (
-                <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
-                  <FileCheck2 size={16} /> Approve Design
-                </button>
-              )}
-              {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
-                <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
-                  Batalkan approve design
-                </button>
-              )}
-              {canBypassDesign && !isApprovalDesignComplete(order) && (
-                <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
-                  <ShieldOff size={14}/> Bypass Design
-                </button>
-              )}
-              {!canApproveDesign && !canBypassDesign && !isApprovalDesignComplete(order) && (
-                <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
-              )}
-            </div>
-          </div>
-          <div className="po-pair-col">
-            <CustomerApprovalPanel
+          <div className="po-pair-col" data-testid="workflow-slot-1" data-workflow-stage="1">
+            <h4 className="po-pair-col-title">Data / Input Design</h4>
+            <AttachmentsPanel
               order={order}
-              canView={canViewCustomerApproval}
-              canManage={canManageCustomerApproval}
-              onOrderUpdated={setOrder}
+              user={user}
+              onUpdated={setOrder}
+              section="design"
+              designSlot={(
+                <div className="design-actions" data-testid="design-actions" style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:10,alignItems:"center"}}>
+                  <DesignStatusBadge order={order} />
+                </div>
+              )}
             />
           </div>
+          <div className="po-pair-col" data-testid="workflow-slot-2" data-workflow-stage="2">
+            <div data-testid="approval-design-panel">
+              <h4 className="po-pair-col-title">Design / Approval</h4>
+              <h4 className="po-pair-col-title">Internal Approval</h4>
+              <div className="workflow-stage-actions" data-testid="approval-design-actions">
+                {canApproveDesign && (order.design_files?.length || 0) > 0 && !isApprovalDesignComplete(order) && (
+                  <button className="primary" onClick={approveDesign} disabled={busy} data-testid="approve-design-button">
+                    <FileCheck2 size={16} /> Approve Design
+                  </button>
+                )}
+                {canApproveDesign && order.design_status === "Approved" && (order.current_stage || 0) < 12 && (
+                  <button className="ghost" onClick={rejectDesign} disabled={busy} data-testid="revoke-design-button">
+                    Batalkan approve design
+                  </button>
+                )}
+                {canBypassDesign && !isApprovalDesignComplete(order) && (
+                  <button className="ghost" onClick={doBypassDesign} disabled={busy} data-testid="bypass-design-button" title="Butuh permission design.bypass_approval">
+                    <ShieldOff size={14}/> Bypass Design
+                  </button>
+                )}
+                {!canApproveDesign && !canBypassDesign && !isApprovalDesignComplete(order) && (
+                  <p className="muted small" data-testid="design-readonly-note">Anda hanya dapat melihat status approval design (read-only).</p>
+                )}
+              </div>
+              <CustomerApprovalPanel
+                order={order}
+                canView={canViewCustomerApproval}
+                canManage={canManageCustomerApproval}
+                onOrderUpdated={setOrder}
+              />
+            </div>
+          </div>
         </div>
-      </section>
       </PoStageSection>
-      </div>
+      </section>
 
       {/* 04–05 Payment + Approval Payment (visual pair only) */}
       <section id="po-stage-payment" className={"panel payment-panel po-pair-card po-phase-payment" + (deskPanelOwnsStage("payment", viewedStage) ? " is-desk-viewed" : "")} data-testid="payment-approval-pair" hidden={!deskPanelOwnsStage("payment", viewedStage)}>
         <PoStageSection stageIndex={3} order={order} title="Payment &amp; Approval" hasError={!!payUploadErr || !!salesReceiptsErr}>
         <header className="panel-head">
-          <h3>Payment &amp; Approval</h3>
+          <h3>PAYMENT — 4&amp;5</h3>
           <span className="muted small" data-testid="payment-proof-count">
             Bukti Payment {paymentProofCount(order.payment_files)} / {MAX_PAYMENT_PROOFS} file
           </span>
           <PaymentStatusBadge order={order} />
         </header>
         <div className="po-pair-grid">
-        <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3" hidden={viewedStage !== 3}>
+        <div className="po-pair-col" data-testid="workflow-slot-3" data-workflow-stage="3">
         <div data-testid="payment-panel">
         <h4 className="po-pair-col-title">Bukti Payment</h4>
         <div className="payment-body">
@@ -1307,7 +1316,7 @@ export default function PODetail() {
         </div>
         </div>
 
-      <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4" hidden={viewedStage !== 4}>
+      <div className="po-pair-col" data-testid="workflow-slot-4" data-workflow-stage="4">
       <div data-testid="approval-payment-panel">
         <h4 className="po-pair-col-title">Approval Payment</h4>
         <div className="workflow-stage-actions" data-testid="approval-payment-actions">

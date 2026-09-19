@@ -51,6 +51,12 @@ describe("PO Detail compact header + sticky StageFlow", () => {
     expect(nav).toMatch(/"Approval Payment":\s*"po-stage-payment"/);
   });
 
+  test("Design and Approval Design resolve to the shared design section id", () => {
+    expect(detail).toMatch(/id="po-stage-design"/);
+    expect(nav).toMatch(/Design:\s*"po-stage-design"/);
+    expect(nav).toMatch(/"Approval Design":\s*"po-stage-design"/);
+  });
+
   test("later stages have explicit anchors", () => {
     expect(detail).toMatch(/id="po-stage-packing"/);
     expect(detail).toMatch(/id="po-stage-surat-jalan"/);

@@ -18,6 +18,11 @@ describe("PO Detail stage navigation", () => {
     });
   });
 
+  test("Design and Approval Design share the combined design card", () => {
+    expect(PO_DETAIL_STAGE_SECTION_IDS.Design).toBe("po-stage-design");
+    expect(PO_DETAIL_STAGE_SECTION_IDS["Approval Design"]).toBe("po-stage-design");
+  });
+
   test("Payment and Approval Payment share the combined payment card", () => {
     expect(PO_DETAIL_STAGE_SECTION_IDS.Payment).toBe("po-stage-payment");
     expect(PO_DETAIL_STAGE_SECTION_IDS["Approval Payment"]).toBe("po-stage-payment");
@@ -53,6 +58,12 @@ describe("PO Detail stage navigation", () => {
   });
 
   test("combined panels own adjacent canonical stages without sharing others", () => {
+    expect(deskPanelOwnsStage("design", 1)).toBe(true);
+    expect(deskPanelOwnsStage("design", 2)).toBe(true);
+    expect(deskPanelOwnsStage("design", 0)).toBe(false);
+    expect(deskPanelOwnsStage("design", 3)).toBe(false);
+    expect(deskPanelOwnsStage("1", 2)).toBe(true);
+    expect(deskPanelOwnsStage("2", 1)).toBe(true);
     expect(deskPanelOwnsStage("payment", 3)).toBe(true);
     expect(deskPanelOwnsStage("payment", 4)).toBe(true);
     expect(deskPanelOwnsStage("payment", 5)).toBe(false);

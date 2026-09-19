@@ -4,7 +4,7 @@ import { STAGES } from "./constants";
 export const PO_DETAIL_STAGE_SECTION_IDS = {
   "Order Masuk": "po-stage-order-masuk",
   Design: "po-stage-design",
-  "Approval Design": "po-stage-approval-design",
+  "Approval Design": "po-stage-design",
   Payment: "po-stage-payment",
   "Approval Payment": "po-stage-payment",
   Penjadwalan: "po-stage-penjadwalan",
@@ -83,8 +83,68 @@ export function parsePoDetailStageParam(search) {
   return null;
 }
 
+/**
+ * Display-only Detail PO stepper nodes.
+ * Internal workflow stays 15 stages; these labels/numbers are UI grouping only.
+ */
+export const PO_DETAIL_VISUAL_STEPS = [
+  { id: "order-masuk", label: "Order Masuk", displayNumber: "1", canonicalIndex: 0, internalIndexes: [0] },
+  { id: "design", label: "Design", displayNumber: "2&3", canonicalIndex: 1, internalIndexes: [1, 2] },
+  { id: "payment", label: "Payment", displayNumber: "4&5", canonicalIndex: 3, internalIndexes: [3, 4] },
+  { id: "penjadwalan", label: "Penjadwalan", displayNumber: "6", canonicalIndex: 5, internalIndexes: [5] },
+  { id: "screener", label: "Screener", displayNumber: "7", canonicalIndex: 6, internalIndexes: [6] },
+  { id: "persiapan-helper", label: "Persiapan Helper", displayNumber: "8", canonicalIndex: 7, internalIndexes: [7] },
+  { id: "operator", label: "Operator", displayNumber: "9", canonicalIndex: 8, internalIndexes: [8] },
+  { id: "konfirmasi-sample", label: "Konfirmasi Sample", displayNumber: "10", canonicalIndex: 9, internalIndexes: [9] },
+  { id: "cetak", label: "Cetak", displayNumber: "11", canonicalIndex: 10, internalIndexes: [10] },
+  { id: "packing", label: "Packing", displayNumber: "12", canonicalIndex: 11, internalIndexes: [11] },
+  { id: "surat-jalan", label: "Surat Jalan", displayNumber: "13", canonicalIndex: 12, internalIndexes: [12] },
+  { id: "loading", label: "Loading", displayNumber: "14", canonicalIndex: 13, internalIndexes: [13] },
+  { id: "pengiriman", label: "Pengiriman", displayNumber: "15", canonicalIndex: 14, internalIndexes: [14] },
+];
+
+const VISUAL_STEP_BY_INTERNAL = PO_DETAIL_VISUAL_STEPS.reduce((acc, step) => {
+  step.internalIndexes.forEach((idx) => {
+    acc[idx] = step;
+  });
+  return acc;
+}, {});
+
+export function visualStepForInternalIndex(stageIndex) {
+  const i = clampWorkflowStageIndex(stageIndex, 0);
+  return VISUAL_STEP_BY_INTERNAL[i] || PO_DETAIL_VISUAL_STEPS[0];
+}
+
+export function visualCanonicalIndex(stageIndex) {
+  return visualStepForInternalIndex(stageIndex).canonicalIndex;
+}
+
+/** Presentation index for a visual node: live internal stage, else last if passed, else first. */
+export function visualStepPresentationIndex(step, currentStage) {
+  const current = Number(currentStage);
+  if (step?.internalIndexes?.includes(current)) return current;
+  const last = step?.internalIndexes?.[step.internalIndexes.length - 1];
+  if (Number.isFinite(last) && current > last) return last;
+  return step?.internalIndexes?.[0] ?? 0;
+}
+
+export function isVisualStepActive(step, currentStage) {
+  return !!step?.internalIndexes?.includes(Number(currentStage));
+}
+
+export function isVisualStepCompleted(step, currentStage) {
+  const last = step?.internalIndexes?.[step.internalIndexes.length - 1];
+  return Number.isFinite(last) && Number(currentStage) > last;
+}
+
+/** "Tahap Aktif Saat Ini" panel: Order Masuk only. */
+export function shouldShowPoActiveStagePanel(viewedStage) {
+  return clampWorkflowStageIndex(viewedStage, 0) === 0;
+}
+
 export function accordionIndexForFocus(stageIndex) {
   const i = clampWorkflowStageIndex(stageIndex, 0);
+  if (i === 2) return 1;
   if (i === 4) return 3;
   if (i === 9) return 8;
   return i;
@@ -93,14 +153,18 @@ export function accordionIndexForFocus(stageIndex) {
 export function deskPanelOwnsStage(stageToken, viewedStage) {
   const viewed = Number(viewedStage);
   const token = String(stageToken);
+  if (token === "1" || token === "2" || token === "design") return viewed === 1 || viewed === 2;
   if (token === "3" || token === "4" || token === "payment") return viewed === 3 || viewed === 4;
   if (token === "8" || token === "9" || token === "sample") return viewed === 8 || viewed === 9;
   return viewed === Number(token);
 }
 
 export function poDetailStagePanelTitle(stageIndex) {
-  const i = clampWorkflowStageIndex(stageIndex, 0);
-  return `Workspace ${i + 1} — ${STAGES[i]}`;
+  const step = visualStepForInternalIndex(stageIndex);
+  if (step.internalIndexes.length > 1) {
+    return `${step.label.toUpperCase()} — ${step.displayNumber}`;
+  }
+  return `Workspace ${step.displayNumber} — ${step.label}`;
 }
 
 /**

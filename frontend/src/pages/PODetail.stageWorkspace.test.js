@@ -45,7 +45,7 @@ const printActive = {
 
 describe("Detail PO stage-focused workspace", () => {
   test("default panel is the actual stage; viewed and actual stay distinct", () => {
-    expect(detail).toMatch(/clampWorkflowStageIndex\(order\.current_stage/);
+    expect(detail).toMatch(/clampWorkflowStageIndex\(resolveOperationalStage\(order, order\.current_stage\)/);
     expect(detail).toMatch(/data-actual-stage=\{actualStage\}/);
     expect(detail).toMatch(/data-viewed-stage=\{viewedStage\}/);
     expect(detail).toMatch(/po-actual-stage-label/);
@@ -62,6 +62,7 @@ describe("Detail PO stage-focused workspace", () => {
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage/);
     expect(detail).toMatch(/PoStageAccordionProvider openStageIndex=\{accordionOpenIndex\}/);
     expect(css).not.toMatch(/po-stage-ws-stack \[data-workflow-stage\]\{[^}]*display:none/);
+    expect(accordionIndexForFocus(2)).toBe(1);
     expect(accordionIndexForFocus(4)).toBe(3);
   });
 
@@ -70,14 +71,13 @@ describe("Detail PO stage-focused workspace", () => {
     expect(slot0).toMatch(/detail-info/);
     expect(slot0).toMatch(/line-items-panel/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("0"/);
-    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("2"/);
+    expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("design"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("5"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("11"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("12"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("13"/);
     expect(detail).toMatch(/hidden=\{\!deskPanelOwnsStage\("14"/);
-    expect(detail).toMatch(/hidden=\{viewedStage !== 3\}/);
-    expect(detail).toMatch(/hidden=\{viewedStage !== 4\}/);
+    expect(detail).toMatch(/deskPanelOwnsStage\("payment"/);
     expect(detail).toMatch(/hidden=\{viewedStage !== 8\}/);
     expect(detail).toMatch(/hidden=\{viewedStage !== 9\}/);
   });
@@ -130,7 +130,7 @@ describe("Detail PO stage-focused workspace", () => {
 
   test("mobile chrome and 15-stage sheet exist without forcing a tiny 15-up row", () => {
     expect(detail).toMatch(/po-mobile-stage-chrome/);
-    expect(detail).toMatch(/Tahap \{viewedStage \+ 1\} dari 15/);
+    expect(detail).toMatch(/Tahap \{viewedVisualStep\.displayNumber\} dari 15/);
     expect(detail).toMatch(/btn-open-stage-sheet/);
     expect(detail).toMatch(/PoStagePickerSheet/);
     expect(css).toMatch(/po-mobile-stage-chrome\{display:none\}/);
@@ -186,5 +186,34 @@ describe("Detail PO stage-focused workspace", () => {
     expect(STAGES).toHaveLength(15);
     expect(STAGES[11]).toBe("Packing");
     expect(bar).toMatch(/viewedStage/);
+  });
+
+  test("Design and Payment workspaces merge existing content without new actions", () => {
+    const designPair = detail.slice(detail.indexOf("design-approval-pair"), detail.indexOf("payment-approval-pair"));
+    expect(designPair).toMatch(/AttachmentsPanel/);
+    expect(designPair).toMatch(/approval-design-panel/);
+    expect(designPair).toMatch(/approval-design-actions/);
+    expect(designPair).toMatch(/approve-design-button/);
+    expect(designPair).toMatch(/bypass-design-button/);
+    expect(designPair).toMatch(/CustomerApprovalPanel/);
+    expect(designPair).toMatch(/data-workflow-stage="1"/);
+    expect(designPair).toMatch(/data-workflow-stage="2"/);
+    expect(designPair).not.toMatch(/hidden=\{viewedStage !== 1\}/);
+    expect(designPair).not.toMatch(/hidden=\{viewedStage !== 2\}/);
+
+    const payPair = detail.slice(detail.indexOf("payment-approval-pair"), detail.indexOf("workflow-slot-5"));
+    expect(payPair).toMatch(/payment-panel/);
+    expect(payPair).toMatch(/approval-payment-panel/);
+    expect(payPair).toMatch(/approval-payment-actions/);
+    expect(payPair).toMatch(/approve-payment-button/);
+    expect(payPair).toMatch(/bypass-payment-button/);
+    expect(payPair).toMatch(/upload-payment-input/);
+    expect(payPair).not.toMatch(/hidden=\{viewedStage !== 3\}/);
+    expect(payPair).not.toMatch(/hidden=\{viewedStage !== 4\}/);
+  });
+
+  test("Tahap Aktif panel renders only for Order Masuk workspace", () => {
+    expect(detail).toMatch(/shouldShowPoActiveStagePanel\(viewedStage\)/);
+    expect(detail).toMatch(/PoDetailFocusPanel/);
   });
 });
