@@ -32,6 +32,12 @@ jest.mock("../lib/api", () => ({
   },
 }));
 
+jest.mock("../components/ui/popover", () => ({
+  Popover: ({ children }) => <div>{children}</div>,
+  PopoverTrigger: ({ children }) => children,
+  PopoverContent: ({ children }) => <div>{children}</div>,
+}));
+
 describe("Pesanan Penjualan UI & Data Invariants", () => {
   const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
   const appSrc = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
@@ -107,7 +113,26 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/Hapus Terpilih/);
     expect(src).toMatch(/delete-confirm-modal/);
     expect(src).toMatch(/po_number/);
-    expect(src).toMatch(/selectedIds\.size === orders\.length/);
+    expect(src).toMatch(/selectedIds\.size === displayedOrders\.length/);
+  });
+
+  test("list header is title-only and table columns have compact filters", () => {
+    expect(src).not.toMatch(/Penjualan · Pesanan Penjualan/);
+    expect(src).not.toMatch(/Daftar PO Penjualan dan pembuatan Sales Order baru/);
+    expect(src).toMatch(/data-testid="sales-order-title"/);
+    expect(src).toMatch(/so-th-filter-po/);
+    expect(src).toMatch(/so-th-filter-date/);
+    expect(src).toMatch(/so-th-filter-customer/);
+    expect(src).toMatch(/so-th-filter-outlet/);
+    expect(src).toMatch(/so-th-filter-qty/);
+    expect(src).toMatch(/so-th-filter-remain/);
+    expect(src).toMatch(/so-th-filter-delivery/);
+    expect(src).toMatch(/so-th-filter-sales/);
+    expect(src).toMatch(/so-th-filter-stage/);
+    expect(src).toMatch(/applySalesOrderColumnFilters/);
+    expect(src).toMatch(/sales-order-clear-column-filters/);
+    expect(src).toMatch(/sales-order-refresh-button/);
+    expect(src).toMatch(/create-sales-order-btn/);
   });
 
   test("Barang/Jasa live search uses shared picker with 5-row list capacity", () => {
