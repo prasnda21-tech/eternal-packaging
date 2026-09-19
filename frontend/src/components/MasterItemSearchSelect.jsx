@@ -42,6 +42,15 @@ export function listboxViewState({ pending, loading, error, itemCount }) {
   return "results";
 }
 
+export function formatMasterItemSearchError(err) {
+  if (Number(err?.response?.status) === 502) {
+    return "Gagal memuat daftar barang. Coba lagi.";
+  }
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === "string" && detail) return detail;
+  return err?.message || "Gagal mencari produk";
+}
+
 /**
  * Live searchable master item picker.
  * Canonical identity: accurate_item_id (+ master_item_id when present).
@@ -85,10 +94,9 @@ export default function MasterItemSearchSelect({
     setLoading(true);
     setError("");
     try {
-      const response = await api.masterItems({
+      const response = await api.masterItemsPicker({
         q: needle,
         status,
-        page: 1,
         page_size: MASTER_ITEM_SEARCH_PAGE_SIZE,
       });
       if (!shouldApplySearchResult(requestId, reqSeq.current)) return;
@@ -98,7 +106,7 @@ export default function MasterItemSearchSelect({
     } catch (err) {
       if (!shouldApplySearchResult(requestId, reqSeq.current)) return;
       setItems([]);
-      setError(err?.response?.data?.detail || err?.message || "Gagal mencari produk");
+      setError(formatMasterItemSearchError(err));
       setPending(false);
     } finally {
       if (shouldApplySearchResult(requestId, reqSeq.current)) setLoading(false);
