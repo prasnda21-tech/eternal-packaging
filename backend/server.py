@@ -95,6 +95,14 @@ from services.surat_jalan_files import (
     sniffer_content_type as _sj_sniff_ct,
     strip_sj_bytes_from_order as _strip_sj_bytes,
 )
+from services.inline_attachments import (
+    ALLOWED_KINDS as _INLINE_ATTACHMENT_KINDS,
+    content_disposition as _inline_attachment_disposition,
+    decode_inline_attachment as _decode_inline_attachment,
+    field_for_kind as _inline_attachment_field,
+    find_inline_attachment as _find_inline_attachment,
+    strip_inline_attachment_bytes as _strip_inline_attachment_bytes,
+)
 from services.status_po import build_status_po
 from services.order_prediction import (
     ORDER_PREDICTION_PROJECTION,
@@ -1747,7 +1755,7 @@ async def get_order(order_id: str, user=Depends(current_user)):
     except Exception:
         order["line_product_replace"] = []
     _strip_tracking_secret(order)
-    return {"order": _strip_sj_bytes(order)}
+    return {"order": _strip_inline_attachment_bytes(_strip_sj_bytes(order))}
 
 
 def _check_stage_permission(current_stage: int, role: str):
@@ -4477,6 +4485,53 @@ async def add_attachment(order_id: str, payload: AttachmentInput, user=Depends(c
     if audit_action:
         await _audit_po(order, audit_action, user, note=f"{payload.name}")
     return {"order": _strip_sj_bytes(order)}
+
+
+_STAFF_ORDER_VIEW_PERMS = (
+    "po.view", "work_panel.view", "schedule.view",
+    "screen.update", "helper.prepare", "operator.update",
+    "packing.update", "delivery_note.view", "delivery_note.manage",
+    "loading.update", "delivery.update", "design.view", "payment.view",
+)
+
+
+async def _require_staff_order_view(user) -> None:
+    """Same view gate as GET /orders/:id. Admin skips; others need one view perm."""
+    if user.get("role") == "admin":
+        return
+    eff = await user_permissions(user)
+    if not any(p in eff for p in _STAFF_ORDER_VIEW_PERMS):
+        raise HTTPException(403, "Anda tidak punya permission untuk melihat PO ini")
+
+
+@api_router.get("/orders/{order_id}/attachments/{kind}/{file_id}")
+async def get_order_attachment(order_id: str, kind: str, file_id: str, user=Depends(current_user)):
+    """Authenticated staff fetch of one design/payment file stored as data_url."""
+    reject_sales_pwa_bypass(user)
+    kind_key = (kind or "").strip().lower()
+    field = _inline_attachment_field(kind_key)
+    if kind_key not in _INLINE_ATTACHMENT_KINDS or not field:
+        raise HTTPException(400, "Jenis file tidak valid")
+    query = {"id": order_id}
+    query.update(sales_owner_match(user))
+    order = await db.orders.find_one(query, {"_id": 0, "id": 1, field: 1})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    await _require_staff_order_view(user)
+    entry = _find_inline_attachment(order, kind_key, file_id)
+    if not entry:
+        raise HTTPException(404, "File tidak ditemukan")
+    try:
+        data, ct = _decode_inline_attachment(entry)
+    except ValueError:
+        raise HTTPException(404, "Isi file tidak tersedia")
+    filename = str(entry.get("name") or "file")
+    headers = {
+        "Content-Disposition": _inline_attachment_disposition(filename),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
+    return FastAPIResponse(content=data, media_type=ct, headers=headers)
 
 
 async def _safe_db_call(coro_or_val):

@@ -1790,7 +1790,7 @@ function PaymentFilesList({ files, order }) {
     <>
       <ul className="payment-files" data-testid="payment-files-list">
         {files.map((f, i) => (
-          <PaymentFileRow key={f.id || i} file={f} index={i + 1} />
+          <PaymentFileRow key={f.id || i} file={f} index={i + 1} orderId={order.id} />
         ))}
       </ul>
       {order.payment_status === "Approved" && (
@@ -1803,37 +1803,80 @@ function PaymentFilesList({ files, order }) {
   );
 }
 
-function PaymentFileRow({ file, index }) {
+export function PaymentFileRow({ file, index, orderId }) {
   const url = paymentProofSource(file);
-  const isImage = paymentProofIsImage(file, url);
-  const isPdf = paymentProofIsPdf(file, url);
+  const name = file?.name || "";
+  const ct = String(file?.content_type || "");
+  const isImage = paymentProofIsImage(file, url) || ct.startsWith("image/") || /\.(jpe?g|png|gif|webp)$/i.test(name);
+  const isPdf = paymentProofIsPdf(file, url) || ct.includes("pdf") || /\.pdf$/i.test(name);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [localErr, setLocalErr] = useState("");
+  const objectUrlRef = useRef(null);
 
-  const handleOpen = (e) => {
-    e.preventDefault();
-    const result = openPaymentProofSource(url);
-    if (!result.ok) {
-      alert("File Bukti Payment gagal dibuka. Silakan coba lagi.");
+  const revokeObjectUrl = () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
     }
   };
 
+  const closePreview = () => {
+    revokeObjectUrl();
+    setPreviewUrl("");
+  };
+
+  useEffect(() => () => revokeObjectUrl(), []);
+
+  const handleOpen = async (e) => {
+    e.preventDefault();
+    setLocalErr("");
+    if (url) {
+      const result = openPaymentProofSource(url);
+      if (!result.ok) {
+        setLocalErr("Gagal memuat file. Coba lagi.");
+      }
+      return;
+    }
+    if (!orderId || !file?.id) {
+      setLocalErr("Gagal memuat file. Coba lagi.");
+      return;
+    }
+    try {
+      const blob = await api.getOrderAttachment(orderId, "payment", file.id);
+      revokeObjectUrl();
+      const objectUrl = URL.createObjectURL(blob);
+      objectUrlRef.current = objectUrl;
+      if (isImage) {
+        setPreviewUrl(objectUrl);
+      } else {
+        const opened = window.open(objectUrl, "_blank", "noopener,noreferrer");
+        if (!opened) setLocalErr("Gagal memuat file. Coba lagi.");
+        setTimeout(() => {
+          if (objectUrlRef.current === objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrlRef.current = null;
+          }
+        }, 60000);
+      }
+    } catch {
+      setLocalErr("Gagal memuat file. Coba lagi.");
+    }
+  };
+
+  const openId = file.id || file.name;
+
   return (
-    <li className="payment-file" data-testid={`payment-file-${file.id || file.name}`}>
+    <li className="payment-file" data-testid={`payment-file-${openId}`}>
       <div className="payment-file-thumb">
-        {isImage ? (
-          <a href={url} target="_blank" rel="noreferrer" onClick={handleOpen} data-testid={`payment-file-open-${file.id || file.name}`}>
-            <img src={url} alt={file.name} />
-          </a>
-        ) : isPdf ? (
-          <a
-            href={url}
-            target="_blank"
-            rel="noreferrer"
-            className="pdf-thumb"
+        {isImage || isPdf ? (
+          <button
+            type="button"
+            className={isPdf ? "pdf-thumb" : "ghost sm"}
             onClick={handleOpen}
-            data-testid={`payment-file-open-${file.id || file.name}`}
+            data-testid={`payment-file-open-${openId}`}
           >
-            <FileText size={22} /> PDF
-          </a>
+            <FileText size={22} /> {isPdf ? "PDF" : "Lihat"}
+          </button>
         ) : (
           <span className="muted small">—</span>
         )}
@@ -1847,7 +1890,13 @@ function PaymentFileRow({ file, index }) {
         {file.uploaded_at && (
           <span className="muted small">{formatDate(file.uploaded_at)}</span>
         )}
+        {localErr && <span className="error" data-testid={`payment-file-error-${openId}`}>{localErr}</span>}
       </div>
+      {previewUrl && (
+        <div className="lightbox" onClick={closePreview} data-testid={`payment-file-preview-${openId}`}>
+          <img src={previewUrl} alt={file.name} />
+        </div>
+      )}
     </li>
   );
 }

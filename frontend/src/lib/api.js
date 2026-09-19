@@ -67,6 +67,11 @@ export const api = {
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload) => client.post(`/orders/${id}/attachment`, payload).then((r) => r.data),
+  getOrderAttachment: (id, kind, fileId) =>
+    client.get(
+      `/orders/${encodeURIComponent(id)}/attachments/${encodeURIComponent(kind)}/${encodeURIComponent(fileId)}`,
+      { responseType: "blob" },
+    ).then((r) => r.data),
   deleteDesignFile: (id, fileId) =>
     client.delete(`/orders/${id}/design/files/${encodeURIComponent(fileId)}`).then((r) => r.data),
 

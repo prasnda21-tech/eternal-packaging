@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Upload, Image as ImageIcon } from "lucide-react";
 import api from "../lib/api";
 import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
@@ -17,6 +17,8 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
+  const [previewErr, setPreviewErr] = useState("");
+  const previewObjectUrl = useRef(null);
   const [pendingSample, setPendingSample] = useState(null);
   const [pendingDesign, setPendingDesign] = useState(null);
   const [pendingDeleteDesign, setPendingDeleteDesign] = useState(null);
@@ -106,59 +108,104 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
     }
   };
 
-  const openAttachment = (file) => {
-    const url = file?.data_url || file?.url;
+  const revokePreviewObjectUrl = () => {
+    if (previewObjectUrl.current) {
+      URL.revokeObjectURL(previewObjectUrl.current);
+      previewObjectUrl.current = null;
+    }
+  };
 
-    if (!url) {
-      setErr("File tidak memiliki data yang dapat dibuka.");
+  const closePreview = () => {
+    revokePreviewObjectUrl();
+    setPreview(null);
+    setPreviewErr("");
+  };
+
+  useEffect(() => () => revokePreviewObjectUrl(), []);
+
+  const fileLooksImage = (file, src, blobType) => {
+    const name = file?.name || "";
+    const ct = String(file?.content_type || blobType || "");
+    return (
+      (typeof src === "string" && src.startsWith("data:image/")) ||
+      ct.startsWith("image/") ||
+      /\.(jpe?g|png|gif|webp)$/i.test(name)
+    );
+  };
+
+  const fileLooksPdf = (file, src, blobType) => {
+    const name = file?.name || "";
+    const ct = String(file?.content_type || blobType || "");
+    return (
+      (typeof src === "string" && src.startsWith("data:application/pdf")) ||
+      ct.includes("pdf") ||
+      /\.pdf$/i.test(name)
+    );
+  };
+
+  const openFetchedBlob = (file, blob) => {
+    const objectUrl = URL.createObjectURL(blob);
+    if (fileLooksImage(file, "", blob.type)) {
+      revokePreviewObjectUrl();
+      previewObjectUrl.current = objectUrl;
+      setPreview({ ...file, objectUrl });
       return;
     }
+    const opened = window.open(objectUrl, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      setPreviewErr("Gagal memuat file. Coba lagi.");
+    }
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+  };
 
-    const isImage =
-      url.startsWith("data:image/") ||
-      /\.(jpe?g|png|gif|webp)$/i.test(file?.name || "");
-
-    const isPdf =
-      url.startsWith("data:application/pdf") ||
-      /\.pdf$/i.test(file?.name || "");
-
-    if (isImage) {
+  const openInlineSource = (file, url) => {
+    if (fileLooksImage(file, url)) {
       setPreview(file);
       return;
     }
-
-    if (isPdf && url.startsWith("data:application/pdf")) {
+    if (fileLooksPdf(file, url) && url.startsWith("data:application/pdf")) {
       try {
         const commaIndex = url.indexOf(",");
         if (commaIndex < 0) throw new Error("Invalid PDF data URL");
-
         const encoded = url.slice(commaIndex + 1);
         const binary = atob(encoded);
         const bytes = new Uint8Array(binary.length);
-
         for (let i = 0; i < binary.length; i += 1) {
           bytes[i] = binary.charCodeAt(i);
         }
-
         const blob = new Blob([bytes], { type: "application/pdf" });
         const blobUrl = URL.createObjectURL(blob);
-
         const opened = window.open(blobUrl, "_blank");
-
         if (!opened) {
           setErr("Browser memblokir tab PDF. Izinkan pop-up untuk situs ini.");
         }
-
         setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
       } catch (e) {
         console.error("Gagal membuka PDF attachment:", e);
         setErr("PDF gagal dibuka. Silakan coba kembali.");
       }
-
       return;
     }
-
     window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const openAttachment = async (file, kind) => {
+    const url = file?.data_url || file?.url;
+    setPreviewErr("");
+    if (url) {
+      openInlineSource(file, url);
+      return;
+    }
+    if (kind !== "design" && kind !== "payment") {
+      setErr("File tidak memiliki data yang dapat dibuka.");
+      return;
+    }
+    try {
+      const blob = await api.getOrderAttachment(order.id, kind, file.id);
+      openFetchedBlob(file, blob);
+    } catch (e) {
+      setPreviewErr("Gagal memuat file. Coba lagi.");
+    }
   };
 
   const renderList = (files, kind) => (
@@ -173,8 +220,8 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
           <div
             role="button"
             tabIndex={0}
-            onClick={() => openAttachment(f)}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") openAttachment(f); }}
+            onClick={() => openAttachment(f, kind)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") openAttachment(f, kind); }}
             style={{ cursor: "pointer" }}
           >
             {f.data_url?.startsWith("data:image") ? (
@@ -192,7 +239,7 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
             <button
               type="button"
               className="ghost sm"
-              onClick={() => openAttachment(f)}
+              onClick={() => openAttachment(f, kind)}
               data-testid={`view-${kind}-file-${f.id}`}
             >
               Lihat
@@ -291,10 +338,11 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
       )}
 
       {err && <div className="error" data-testid="attachment-error">{err}</div>}
+      {previewErr && <div className="error" data-testid="attachment-preview-error">{previewErr}</div>}
 
       {preview && (
-        <div className="lightbox" onClick={() => setPreview(null)} data-testid="attachment-preview">
-          <img src={preview.data_url || preview.url} alt={preview.name} />
+        <div className="lightbox" onClick={closePreview} data-testid="attachment-preview">
+          <img src={preview.objectUrl || preview.data_url || preview.url} alt={preview.name} />
         </div>
       )}
       <ConfirmActionModal
