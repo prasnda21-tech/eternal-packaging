@@ -207,6 +207,14 @@ export const api = {
       })
       .then((r) => r.data),
   masterItems: (params = {}) => client.get(`/master-items`, { params }).then((r) => r.data),
+  masterItemsPicker: (params = {}) => client.get(`/master-items`, {
+    params: {
+      q: params.q ?? "",
+      status: params.status ?? "",
+      page_size: params.page_size,
+      picker: true,
+    },
+  }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   replaceSalesOrderLineProduct: (orderId, lineIdx, payload) =>
     client.patch(`/sales-orders/${orderId}/lines/${lineIdx}/product`, payload).then((r) => r.data),

@@ -35,6 +35,7 @@ from services.master_items import (
     MasterItemUnresolvedError,
     SyncInProgressError,
     list_master_items,
+    list_master_items_picker,
     resolve_po_line_items,
     sync_master_items,
 )
@@ -10619,9 +10620,17 @@ async def master_items_get(
     status: str = "",
     page: int = 1,
     page_size: int = 50,
+    picker: bool = False,
     user=Depends(require_perm("master_items.view")),
 ):
-    """List Master Barang/Jasa with server-side search, filter, and pagination."""
+    """List Master Barang/Jasa with server-side search, filter, and pagination.
+
+    picker=true is the autocomplete path: one limited find, no catalog summary.
+    """
+    if picker:
+        return await list_master_items_picker(
+            db, q=q, status=status, page_size=page_size,
+        )
     return await list_master_items(
         db, q=q, item_type=item_type, status=status, page=page, page_size=page_size,
     )

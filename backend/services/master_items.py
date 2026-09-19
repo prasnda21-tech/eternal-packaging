@@ -269,6 +269,26 @@ def build_list_query(
     return filt
 
 
+PICKER_PAGE_SIZE_MAX = 40
+
+
+async def list_master_items_picker(
+    db,
+    *,
+    q: str = "",
+    status: str = "",
+    page_size: int = 40,
+) -> Dict[str, Any]:
+    """Autocomplete candidates only. One find+limit. No summary/distinct/counts."""
+    page_size = max(1, min(int(page_size or 40), PICKER_PAGE_SIZE_MAX))
+    filt = build_list_query(q, "", status)
+    col = db[COLLECTION]
+    docs = await col.find(filt, {"_id": 0}).sort("item_name", 1).limit(page_size).to_list(page_size)
+    return {
+        "items": [public_master_item(d) for d in docs],
+    }
+
+
 async def list_master_items(
     db,
     *,
