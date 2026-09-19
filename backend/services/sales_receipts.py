@@ -25,6 +25,15 @@ from services.sales_receipt_payment_proof import (
     soft_delete_proof_for_receipt,
     store_payment_proof,
 )
+from services.sales_receipt_posting import (
+    POSTED_DELETE_MESSAGE,
+    REVERSED_DELETE_MESSAGE,
+    attach_receipt_accounting_fields,
+    find_sales_receipt_source_journal,
+    receipt_counts_toward_outstanding,
+    receipt_is_cancelled,
+    resolve_cash_bank_for_create,
+)
 
 _receipt_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
@@ -120,7 +129,7 @@ async def list_sales_receipts(
 
     cursor = db.sales_receipts.find(filters, {"_id": 0}).sort("created_at", -1)
     receipts = await cursor.to_list(1000)
-    return [_public_receipt(r) for r in receipts]
+    return await attach_receipt_accounting_fields(db, [_public_receipt(r) for r in receipts])
 
 
 def _public_receipt(receipt: Dict[str, Any]) -> Dict[str, Any]:
@@ -145,7 +154,8 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
         r = await db.sales_receipts.find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
     if not r:
         raise HTTPException(404, f"Penerimaan Penjualan '{receipt_id}' tidak ditemukan.")
-    return _public_receipt(r)
+    attached = await attach_receipt_accounting_fields(db, [_public_receipt(r)])
+    return attached[0]
 
 
 async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
@@ -191,7 +201,8 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
                         await _patch_order_payment_receipt_proof(db, existing_by_key, proof_meta)
                     except HTTPException:
                         raise
-                return _public_receipt(existing_by_key)
+                attached = await attach_receipt_accounting_fields(db, [_public_receipt(existing_by_key)])
+                return attached[0]
 
         # 1. Fetch exact invoice
         invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
@@ -202,9 +213,15 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
 
         grand_total = float(invoice.get("grand_total", 0))
 
+        cash_bank_id = str(payload.get("cash_bank_id") or "").strip()
+        cash_snap = await resolve_cash_bank_for_create(db, cash_bank_id) if cash_bank_id else {}
+
         # 2. Fetch existing receipts for this invoice to calculate paid_total & outstanding
         existing_receipts = await db.sales_receipts.find({"invoice_id": invoice["id"]}, {"_id": 0}).to_list(500)
-        paid_total_before = round(sum(float(r.get("amount", 0)) for r in existing_receipts), 2)
+        paid_total_before = round(
+            sum(float(r.get("amount", 0)) for r in existing_receipts if receipt_counts_toward_outstanding(r)),
+            2,
+        )
         outstanding_before = max(round(grand_total - paid_total_before, 2), 0.0)
 
         # 3. Validate receipt amount
@@ -246,6 +263,8 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
             "amount": amount,
             "payment_state": payment_state,
             "notes": str(payload.get("notes") or "").strip(),
+            "financial_status": "active",
+            **cash_snap,
             "created_at": now_iso(),
             "created_by": {
                 "id": str(user.get("id") or user.get("_id") or ""),
@@ -260,7 +279,8 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
             if idempotency_key:
                 existing = await db.sales_receipts.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
                 if existing:
-                    return existing
+                    attached = await attach_receipt_accounting_fields(db, [_public_receipt(existing)])
+                    return attached[0]
             raise HTTPException(409, "Penerimaan Penjualan duplikat terdeteksi.")
 
         receipt_doc.pop("_id", None)
@@ -362,7 +382,8 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
             receipt_doc["payment_proof"] = proof_meta
             await _patch_order_payment_receipt_proof(db, receipt_doc, proof_meta)
 
-        return _public_receipt(receipt_doc)
+        attached = await attach_receipt_accounting_fields(db, [_public_receipt(receipt_doc)])
+        return attached[0]
 
 
 async def _patch_order_payment_receipt_proof(db, receipt: dict, proof_meta: dict) -> None:
@@ -393,7 +414,8 @@ async def attach_payment_proof_to_receipt(db, receipt_id: str, payload: Dict[str
         raise HTTPException(404, "Penerimaan Penjualan tidak ditemukan.")
     existing = proof_from_receipt(receipt)
     if existing and existing.get("id"):
-        return _public_receipt(receipt)
+        attached = await attach_receipt_accounting_fields(db, [_public_receipt(receipt)])
+        return attached[0]
     proof_input = parse_proof_payload(payload.get("payment_proof") or payload)
     if not proof_input:
         raise HTTPException(400, "Bukti Payment wajib diunggah.")
@@ -408,7 +430,8 @@ async def attach_payment_proof_to_receipt(db, receipt_id: str, payload: Dict[str
     await db.sales_receipts.update_one({"id": receipt["id"]}, {"$set": {"payment_proof": proof_meta}})
     receipt["payment_proof"] = proof_meta
     await _patch_order_payment_receipt_proof(db, receipt, proof_meta)
-    return _public_receipt(receipt)
+    attached = await attach_receipt_accounting_fields(db, [_public_receipt(receipt)])
+    return attached[0]
 
 
 _PAY_DOWNSTREAM_MSG = (
@@ -439,7 +462,10 @@ async def _recalc_invoice_payment_from_receipts(db, invoice_id: str) -> None:
     if not invoice:
         return
     remaining = await db.sales_receipts.find({"invoice_id": invoice_id}, {"_id": 0}).to_list(500)
-    paid = round(sum(float(r.get("amount", 0)) for r in remaining), 2)
+    paid = round(
+        sum(float(r.get("amount", 0)) for r in remaining if receipt_counts_toward_outstanding(r)),
+        2,
+    )
     grand = float(invoice.get("grand_total", 0))
     outstanding = max(round(grand - paid, 2), 0.0)
     if paid <= 0:
@@ -462,7 +488,11 @@ async def _recalc_order_payment_facts_after_receipt_delete(db, po_id: str, delet
     if not order:
         return
     deleted = set(deleted_receipt_ids or [])
-    remaining_docs = await db.sales_receipts.find({"po_id": po_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    remaining_docs = [
+        r
+        for r in await db.sales_receipts.find({"po_id": po_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+        if receipt_counts_toward_outstanding(r)
+    ]
     kept_facts = [
         r for r in (order.get("payment_receipts") or [])
         if r.get("receipt_id") not in deleted
@@ -503,6 +533,14 @@ async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
     remaining_after = 0
     if po_id:
         remaining_after = max(await db.sales_receipts.count_documents({"po_id": po_id}) - 1, 0)
+    journal = await find_sales_receipt_source_journal(db, rec["id"])
+    if journal:
+        if str(journal.get("status") or "").strip().lower() == "reversed" or receipt_is_cancelled(rec):
+            raise HTTPException(409, REVERSED_DELETE_MESSAGE)
+        raise HTTPException(409, POSTED_DELETE_MESSAGE)
+    if receipt_is_cancelled(rec):
+        raise HTTPException(409, REVERSED_DELETE_MESSAGE)
+
     if await _receipt_delete_blocked_by_workflow(db, rec, remaining_after):
         raise HTTPException(400, _PAY_DOWNSTREAM_MSG)
 
@@ -543,6 +581,25 @@ async def bulk_delete_sales_receipts(db, ids: list, user: dict) -> dict:
             all_po_receipts = await db.sales_receipts.count_documents({"po_id": po_id})
             po_receipts_in_batch = sum(1 for rid2 in unique_ids if by_id.get(rid2, {}).get("po_id") == po_id)
             remaining_after = max(all_po_receipts - po_receipts_in_batch, 0)
+        journal = await find_sales_receipt_source_journal(db, rec["id"])
+        if journal:
+            blockers.append({
+                "id": rec["id"],
+                "number": rec.get("receipt_number", rec["id"]),
+                "reason": (
+                    REVERSED_DELETE_MESSAGE
+                    if str(journal.get("status") or "").strip().lower() == "reversed" or receipt_is_cancelled(rec)
+                    else POSTED_DELETE_MESSAGE
+                ),
+            })
+            continue
+        if receipt_is_cancelled(rec):
+            blockers.append({
+                "id": rec["id"],
+                "number": rec.get("receipt_number", rec["id"]),
+                "reason": REVERSED_DELETE_MESSAGE,
+            })
+            continue
         if await _receipt_delete_blocked_by_workflow(db, rec, remaining_after):
             blockers.append({
                 "id": rec["id"],

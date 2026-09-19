@@ -50,6 +50,8 @@ export default function PenerimaanPenjualan() {
     hasPerm("sales.receipt.create") ||
     hasPerm("po.edit") ||
     user?.role === "admin";
+  const canPostAccounting = hasPerm("sales.receipt.accounting.post") || user?.role === "admin";
+  const canReverseAccounting = hasPerm("sales.receipt.accounting.reverse") || user?.role === "admin";
 
   const queryInvoiceId = searchParams.get("invoice_id") || "";
 
@@ -74,12 +76,18 @@ export default function PenerimaanPenjualan() {
   const [receiptNotes, setReceiptNotes] = useState("");
   const [proofFile, setProofFile] = useState(null);
   const [proofErr, setProofErr] = useState("");
+  const [cashBankId, setCashBankId] = useState("");
+  const [cashBanks, setCashBanks] = useState([]);
+  const [cashBanksLoading, setCashBanksLoading] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [createErr, setCreateErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
   // Detail Modal State
   const [detailReceipt, setDetailReceipt] = useState(null);
+  const [accountingTarget, setAccountingTarget] = useState(null);
+  const [accountingBusy, setAccountingBusy] = useState(false);
+  const [accountingErr, setAccountingErr] = useState("");
 
   // Load receipts list
   const loadReceipts = useCallback(async () => {
@@ -99,6 +107,10 @@ export default function PenerimaanPenjualan() {
     }
   }, [searchQuery]);
 
+  const deletableReceipts = useMemo(
+    () => receipts.filter((r) => r.can_delete !== false),
+    [receipts]
+  );
   const toggleSelect = (id) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -108,8 +120,11 @@ export default function PenerimaanPenjualan() {
     });
   };
   const toggleSelectAll = () => {
-    if (selectedIds.size === receipts.length && receipts.length > 0) setSelectedIds(new Set());
-    else setSelectedIds(new Set(receipts.map((r) => r.id)));
+    if (deletableReceipts.length > 0 && selectedIds.size === deletableReceipts.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(deletableReceipts.map((r) => r.id)));
+    }
   };
   const formatDeleteError = (det) => {
     if (typeof det === "object" && det) {
@@ -178,6 +193,25 @@ export default function PenerimaanPenjualan() {
   };
 
   // Load unpaid / partially paid invoices for the dropdown
+  const accountingLabel = (status) => {
+    const raw = String(status || "not_posted").toLowerCase();
+    if (raw === "posted") return "Posted";
+    if (raw === "reversed") return "Reversed";
+    return "Belum Diposting";
+  };
+
+  const loadCashBanks = useCallback(async () => {
+    setCashBanksLoading(true);
+    try {
+      const res = await api.salesReceiptCashBankOptions();
+      setCashBanks(res.items || []);
+    } catch {
+      setCashBanks([]);
+    } finally {
+      setCashBanksLoading(false);
+    }
+  }, []);
+
   const loadInvoicesForReceipt = useCallback(async () => {
     if (!canCreate) return;
     setInvoicesLoading(true);
@@ -205,8 +239,9 @@ export default function PenerimaanPenjualan() {
   useEffect(() => {
     if (isModalOpen) {
       loadInvoicesForReceipt();
+      loadCashBanks();
     }
-  }, [isModalOpen, loadInvoicesForReceipt]);
+  }, [isModalOpen, loadInvoicesForReceipt, loadCashBanks]);
 
   // When selected invoice changes, fetch its full detail
   useEffect(() => {
@@ -247,6 +282,7 @@ export default function PenerimaanPenjualan() {
     setReceiptNotes("");
     setProofFile(null);
     setProofErr("");
+    setCashBankId("");
     setCreateErr("");
     setIsModalOpen(true);
   };
@@ -259,8 +295,41 @@ export default function PenerimaanPenjualan() {
     setReceiptNotes("");
     setProofFile(null);
     setProofErr("");
+    setCashBankId("");
     setCreateErr("");
     setSearchParams({});
+  };
+
+  const handleConfirmAccounting = async () => {
+    const target = accountingTarget;
+    if (!target?.receipt?.id) return;
+    if (target.action === "post" && !target.receipt.cash_bank_id && !target.cash_bank_id) {
+      setAccountingErr("Silakan pilih Kas/Bank terlebih dahulu.");
+      return;
+    }
+    setAccountingBusy(true);
+    setAccountingErr("");
+    try {
+      const res = target.action === "reverse"
+        ? await api.reverseSalesReceiptAccounting(target.receipt.id)
+        : await api.postSalesReceiptAccounting(
+            target.receipt.id,
+            target.cash_bank_id ? { cash_bank_id: target.cash_bank_id } : {}
+          );
+      const updated = res.receipt || res;
+      setAccountingTarget(null);
+      setSuccessMsg(res.message || (target.action === "reverse"
+        ? "Penerimaan di-reverse dari accounting."
+        : "Penerimaan diposting ke accounting."));
+      if (detailReceipt?.id === target.receipt.id) setDetailReceipt(updated);
+      loadReceipts();
+      setTimeout(() => setSuccessMsg(""), 2500);
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setAccountingErr(typeof det === "object" ? det.message : det || "Gagal memproses accounting.");
+    } finally {
+      setAccountingBusy(false);
+    }
   };
 
   const handleProofFileChange = (e) => {
@@ -310,6 +379,10 @@ export default function PenerimaanPenjualan() {
       setCreateErr("Jumlah penerimaan harus lebih besar dari 0.");
       return;
     }
+    if (!cashBankId) {
+      setCreateErr("Silakan pilih Kas/Bank terlebih dahulu.");
+      return;
+    }
     if (previewCalc?.isOverpayment) {
       setCreateErr(`Jumlah penerimaan (${formatRupiah(numAmount)}) melebihi sisa tagihan (${formatRupiah(previewCalc.outstandingBefore)}).`);
       return;
@@ -333,6 +406,7 @@ export default function PenerimaanPenjualan() {
         receipt_date: receiptDate || getTodayString(),
         amount: numAmount,
         notes: receiptNotes.trim(),
+        cash_bank_id: cashBankId,
         payment_proof,
       };
       const res = await api.createSalesReceipt(payload);
@@ -536,6 +610,48 @@ export default function PenerimaanPenjualan() {
         </div>
       )}
 
+      {successMsg && !isModalOpen && (
+        <div
+          data-testid="receipt-accounting-success"
+          style={{
+            padding: "10px 14px",
+            backgroundColor: "#ecfdf5",
+            border: "1px solid #a7f3d0",
+            color: "#065f46",
+            borderRadius: 6,
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+          }}
+        >
+          <CheckCircle2 size={16} />
+          <span>{successMsg}</span>
+        </div>
+      )}
+
+      {accountingErr && !accountingTarget && (
+        <div
+          data-testid="receipt-accounting-error"
+          style={{
+            padding: "10px 14px",
+            backgroundColor: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#b91c1c",
+            borderRadius: 6,
+            marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+          }}
+        >
+          <AlertCircle size={16} />
+          <span>{accountingErr}</span>
+        </div>
+      )}
+
       {/* TABLE DATA */}
       <div
         style={{
@@ -552,7 +668,7 @@ export default function PenerimaanPenjualan() {
               <tr style={{ backgroundColor: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#4b5563" }}>
                 {canDelete && (
                   <th style={{ padding: "12px 8px", width: 36 }}>
-                    <input type="checkbox" data-testid="select-all-receipts" checked={receipts.length > 0 && selectedIds.size === receipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                    <input type="checkbox" data-testid="select-all-receipts" checked={deletableReceipts.length > 0 && selectedIds.size === deletableReceipts.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
                   </th>
                 )}
                 <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. Penerimaan</th>
@@ -562,6 +678,8 @@ export default function PenerimaanPenjualan() {
                 <th style={{ padding: "12px 16px", fontWeight: 600 }}>No. PO</th>
                 <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "right" }}>Jumlah Penerimaan</th>
                 <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Status Faktur</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Accounting</th>
+                <th style={{ padding: "12px 16px", fontWeight: 600 }}>Kas / Bank</th>
                 <th style={{ padding: "12px 16px", fontWeight: 600 }}>Catatan</th>
                 <th style={{ padding: "12px 16px", fontWeight: 600, textAlign: "center" }}>Aksi</th>
               </tr>
@@ -569,13 +687,13 @@ export default function PenerimaanPenjualan() {
             <tbody>
               {listLoading ? (
                 <tr>
-                  <td colSpan={canDelete ? 10 : 9} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
+                  <td colSpan={canDelete ? 12 : 11} style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
                     Memuat data penerimaan penjualan...
                   </td>
                 </tr>
               ) : receipts.length === 0 ? (
                 <tr>
-                  <td colSpan={canDelete ? 10 : 9} style={{ padding: 48, textAlign: "center" }}>
+                  <td colSpan={canDelete ? 12 : 11} style={{ padding: 48, textAlign: "center" }}>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                       <FileText size={36} color="#9ca3af" />
                       <span style={{ fontWeight: 600, color: "#374151" }}>Belum ada Penerimaan Penjualan</span>
@@ -596,13 +714,29 @@ export default function PenerimaanPenjualan() {
                   >
                     {canDelete && (
                       <td style={{ padding: "12px 8px" }}>
-                        <input type="checkbox" data-testid={`receipt-checkbox-${r.id}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} aria-label={`Pilih ${r.receipt_number}`} />
+                        {r.can_delete !== false && (
+                          <input type="checkbox" data-testid={`receipt-checkbox-${r.id}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} aria-label={`Pilih ${r.receipt_number}`} />
+                        )}
                       </td>
                     )}
                     <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontFamily: "monospace", color: "#059669", fontWeight: 700 }} data-testid={`receipt-number-${r.id}`}>
+                      <button
+                        type="button"
+                        data-testid={`receipt-number-${r.id}`}
+                        onClick={() => { setAccountingErr(""); setDetailReceipt(r); }}
+                        style={{
+                          fontFamily: "monospace",
+                          color: "#059669",
+                          fontWeight: 700,
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          cursor: "pointer",
+                          textDecoration: "underline",
+                        }}
+                      >
                         {r.receipt_number || "-"}
-                      </span>
+                      </button>
                     </td>
                     <td style={{ padding: "12px 16px", fontWeight: 500, color: "#111827" }}>
                       {formatDisplayDate(r.receipt_date)}
@@ -640,6 +774,27 @@ export default function PenerimaanPenjualan() {
                         {r.payment_state || "DP"}
                       </span>
                     </td>
+                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
+                      <span
+                        data-testid={`receipt-accounting-status-${r.id}`}
+                        className="pj-status-badge"
+                        style={{
+                          display: "inline-block",
+                          padding: "3px 10px",
+                          borderRadius: 9999,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          backgroundColor: r.accounting_status === "posted" ? "#d1fae5" : r.accounting_status === "reversed" ? "#f3f4f6" : "#fef3c7",
+                          color: r.accounting_status === "posted" ? "#065f46" : r.accounting_status === "reversed" ? "#374151" : "#92400e",
+                          border: `1.5px solid ${r.accounting_status === "posted" ? "#a7f3d0" : r.accounting_status === "reversed" ? "#e5e7eb" : "#fde68a"}`,
+                        }}
+                      >
+                        {accountingLabel(r.accounting_status)}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px", color: "#374151" }} data-testid={`receipt-cash-bank-${r.id}`}>
+                      {r.cash_bank_name || "-"}
+                    </td>
                     <td style={{ padding: "12px 16px", color: "#6b7280", maxWidth: 220 }}>
                       {r.notes || "-"}
                     </td>
@@ -664,7 +819,52 @@ export default function PenerimaanPenjualan() {
                         >
                           {pdfLoadingId === r.id ? "Memuat..." : "Cetak PDF"}
                         </button>
-                        {canDelete && (
+                        {canPostAccounting && r.can_post_accounting && (
+                          <button
+                            type="button"
+                            data-testid={`btn-post-accounting-${r.id}`}
+                            onClick={() => {
+                              setAccountingErr("");
+                              if (!r.cash_bank_id) loadCashBanks();
+                              setAccountingTarget({ action: "post", receipt: r, cash_bank_id: r.cash_bank_id || "" });
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              fontSize: "0.8rem",
+                              borderRadius: 6,
+                              border: "none",
+                              background: "#047857",
+                              color: "#fff",
+                              cursor: "pointer",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Post Accounting
+                          </button>
+                        )}
+                        {canReverseAccounting && r.can_reverse_accounting && (
+                          <button
+                            type="button"
+                            data-testid={`btn-reverse-accounting-${r.id}`}
+                            onClick={() => {
+                              setAccountingErr("");
+                              setAccountingTarget({ action: "reverse", receipt: r });
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              fontSize: "0.8rem",
+                              borderRadius: 6,
+                              border: "1px solid #fecaca",
+                              background: "#fff",
+                              color: "#b91c1c",
+                              cursor: "pointer",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Reverse
+                          </button>
+                        )}
+                        {canDelete && r.can_delete !== false && (
                           <button
                             type="button"
                             data-testid={`btn-delete-receipt-${r.id}`}
@@ -827,9 +1027,9 @@ export default function PenerimaanPenjualan() {
                 )}
 
                 <FormProgress
-                  percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, proofFile].filter(Boolean).length / 4) * 100)}
-                  completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, proofFile].filter(Boolean).length}
-                  total={4}
+                  percentage={Math.round(([selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, cashBankId, proofFile].filter(Boolean).length / 5) * 100)}
+                  completed={[selectedInvoiceId, Number(receiptAmount) > 0, receiptDate, cashBankId, proofFile].filter(Boolean).length}
+                  total={5}
                   className="mb-4"
                 />
 
@@ -911,7 +1111,7 @@ export default function PenerimaanPenjualan() {
                   id="sr-payment-section"
                   title="2. Detail Penerimaan Pembayaran"
                   description="Masukkan nominal pembayaran, tanggal, dan metode transfer."
-                  status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }])}
+                  status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }, { value: cashBankId, isRequired: true }])}
                   className="fs-section-scroll-safe"
                 >
                   <div style={{ marginBottom: 16 }}>
@@ -972,6 +1172,32 @@ export default function PenerimaanPenjualan() {
                       fontSize: 13,
                     }}
                   />
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                    Kas / Bank *
+                  </label>
+                  <select
+                    className="form-select"
+                    data-testid="select-receipt-cash-bank"
+                    value={cashBankId}
+                    onChange={(e) => setCashBankId(e.target.value)}
+                    disabled={createBusy || cashBanksLoading}
+                    style={{ width: "100%", fontSize: 13 }}
+                  >
+                    <option value="">-- Pilih Kas / Bank --</option>
+                    {cashBanks.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name}
+                      </option>
+                    ))}
+                  </select>
+                  {cashBanks.length === 0 && !cashBanksLoading && (
+                    <p data-testid="no-cash-bank-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
+                      Belum ada Kas/Bank aktif. Tambahkan di menu Kas &amp; Bank terlebih dahulu.
+                    </p>
+                  )}
                 </div>
 
                 {/* 4. Catatan */}
@@ -1150,6 +1376,140 @@ export default function PenerimaanPenjualan() {
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 600 }}
               >
                 {deleteLoading ? "Menghapus..." : "Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {detailReceipt && (
+        <div
+          className="modal-overlay"
+          data-testid="receipt-detail-modal"
+          style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 80 }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Detail Penerimaan</h3>
+            <p data-testid="receipt-detail-number" style={{ margin: "0 0 16px", fontFamily: "monospace", fontWeight: 700, color: "#059669" }}>
+              {detailReceipt.receipt_number}
+            </p>
+            <dl style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
+              <dt>Accounting</dt>
+              <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
+              <dt>Kas / Bank</dt>
+              <dd data-testid="receipt-detail-cash-bank" style={{ margin: 0 }}>{detailReceipt.cash_bank_name || "-"}</dd>
+              <dt>Jumlah</dt>
+              <dd style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(detailReceipt.amount)}</dd>
+              <dt>Faktur</dt>
+              <dd style={{ margin: 0, fontFamily: "monospace" }}>{detailReceipt.invoice_number || "-"}</dd>
+            </dl>
+            {canPostAccounting && detailReceipt.can_post_accounting && (
+              <button
+                type="button"
+                data-testid="btn-detail-post-accounting"
+                onClick={() => {
+                  setAccountingErr("");
+                  if (!detailReceipt.cash_bank_id) loadCashBanks();
+                  setAccountingTarget({ action: "post", receipt: detailReceipt, cash_bank_id: detailReceipt.cash_bank_id || "" });
+                }}
+                style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600 }}
+              >
+                Post Accounting
+              </button>
+            )}
+            {canReverseAccounting && detailReceipt.can_reverse_accounting && (
+              <button
+                type="button"
+                data-testid="btn-detail-reverse-accounting"
+                onClick={() => {
+                  setAccountingErr("");
+                  setAccountingTarget({ action: "reverse", receipt: detailReceipt });
+                }}
+                style={{ marginRight: 8, padding: "8px 14px", borderRadius: 8, border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", fontWeight: 600 }}
+              >
+                Reverse
+              </button>
+            )}
+            <button type="button" onClick={() => setDetailReceipt(null)} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}>
+              Tutup
+            </button>
+          </div>
+        </div>
+      )}
+
+      {accountingTarget && (
+        <div
+          className="modal-overlay"
+          data-testid={accountingTarget.action === "reverse" ? "reverse-accounting-confirm-modal" : "post-accounting-confirm-modal"}
+          style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 90 }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 480 }}>
+            <h3 style={{ margin: "0 0 8px" }}>
+              {accountingTarget.action === "reverse" ? "Reverse Accounting?" : "Post ke Accounting?"}
+            </h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>
+              {accountingTarget.action === "reverse"
+                ? "Jurnal akan di-reverse (Dr Piutang / Cr Kas-Bank). Penerimaan tidak dihapus dan tidak lagi dihitung pada sisa tagihan faktur."
+                : "Jurnal: Dr Kas/Bank / Cr Piutang Usaha. Penerimaan operasional tetap tersimpan."}
+            </p>
+            <dl data-testid="receipt-accounting-summary" style={{ margin: "0 0 16px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 16px", fontSize: "0.9rem" }}>
+              <dt>No. Penerimaan</dt>
+              <dd style={{ margin: 0, fontFamily: "monospace", fontWeight: 700 }}>{accountingTarget.receipt.receipt_number}</dd>
+              <dt>Jumlah</dt>
+              <dd style={{ margin: 0, fontWeight: 700 }}>{formatRupiah(accountingTarget.receipt.amount)}</dd>
+              <dt>Kas / Bank</dt>
+              <dd style={{ margin: 0 }}>{accountingTarget.receipt.cash_bank_name || "-"}</dd>
+            </dl>
+            {accountingTarget.action === "post" && !accountingTarget.receipt.cash_bank_id && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Kas / Bank *</label>
+                <select
+                  className="form-select"
+                  data-testid="select-post-cash-bank"
+                  value={accountingTarget.cash_bank_id || ""}
+                  onChange={(e) => setAccountingTarget((prev) => ({ ...prev, cash_bank_id: e.target.value }))}
+                  style={{ width: "100%", fontSize: 13 }}
+                >
+                  <option value="">-- Pilih Kas / Bank --</option>
+                  {cashBanks.map((acc) => (
+                    <option key={acc.id} value={acc.id}>{acc.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {accountingErr && (
+              <div data-testid="accounting-confirm-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
+                {accountingErr}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => { setAccountingTarget(null); setAccountingErr(""); }}
+                disabled={accountingBusy}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                data-testid={accountingTarget.action === "reverse" ? "btn-confirm-reverse-accounting" : "btn-confirm-post-accounting"}
+                onClick={handleConfirmAccounting}
+                disabled={accountingBusy}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: accountingTarget.action === "reverse" ? "#dc2626" : "#047857",
+                  color: "#fff",
+                  fontWeight: 600,
+                }}
+              >
+                {accountingBusy
+                  ? "Memproses..."
+                  : accountingTarget.action === "reverse"
+                    ? "Reverse Accounting"
+                    : "Post ke Accounting"}
               </button>
             </div>
           </div>

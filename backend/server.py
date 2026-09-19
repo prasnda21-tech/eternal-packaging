@@ -8972,6 +8972,13 @@ from services.sales_invoice_posting import (
     PERM_POST as _SALES_ACCOUNTING_POST_PERM,
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
 )
+from services.sales_receipt_posting import (
+    PERM_POST as _SALES_RECEIPT_ACCOUNTING_POST_PERM,
+    PERM_REVERSE as _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM,
+    list_cash_bank_options as _list_sales_receipt_cash_bank_options,
+    post_sales_receipt_accounting as _post_sales_receipt_accounting,
+    reverse_sales_receipt_accounting as _reverse_sales_receipt_accounting,
+)
 from services.sales_receipts import (
     list_sales_receipts as _list_sales_receipts,
     get_sales_receipt_detail as _get_sales_receipt_detail,
@@ -9124,8 +9131,13 @@ class SalesReceiptCreatePayload(BaseModel):
     receipt_date: Optional[str] = None
     amount: Union[int, float, str]
     notes: Optional[str] = ""
+    cash_bank_id: Optional[str] = None
     idempotency_key: Optional[str] = None
     payment_proof: Optional[SalesReceiptPaymentProofPayload] = None
+
+
+class SalesReceiptPostAccountingPayload(BaseModel):
+    cash_bank_id: Optional[str] = None
 
 
 class SalesReceiptAttachProofPayload(BaseModel):
@@ -10263,6 +10275,21 @@ async def list_sales_receipts_endpoint(
     return {"receipts": receipts, "count": len(receipts)}
 
 
+@api_router.get("/sales-receipts/cash-bank-options")
+async def list_sales_receipt_cash_bank_options_endpoint(user=Depends(current_user)):
+    """Active Kas/Bank options for Penerimaan Penjualan. Does not require cash_bank.view."""
+    await _require_any_perm(
+        user,
+        "sales.receipt.view",
+        "sales.receipt.create",
+        "sales.invoice.view",
+        "sales_order.view",
+        "po.view",
+    )
+    items = await _list_sales_receipt_cash_bank_options(db)
+    return {"items": items, "total": len(items)}
+
+
 @api_router.get("/sales-receipts/{id}")
 async def get_sales_receipt_endpoint(id: str, user=Depends(current_user)):
     """Get detail of a single sales receipt."""
@@ -10280,6 +10307,26 @@ async def create_sales_receipt_endpoint(payload: SalesReceiptCreatePayload, user
         data.pop("payment_proof", None)
     receipt = await _create_sales_receipt(db, data, user)
     return {"receipt": receipt, "message": "Penerimaan Penjualan berhasil dibuat"}
+
+
+@api_router.post("/sales-receipts/{id}/post-accounting")
+async def post_sales_receipt_accounting_endpoint(
+    id: str,
+    payload: SalesReceiptPostAccountingPayload = SalesReceiptPostAccountingPayload(),
+    user=Depends(current_user),
+):
+    """Explicit journal post for one sales receipt. Does not run on create."""
+    await _require_perm(user, _SALES_RECEIPT_ACCOUNTING_POST_PERM)
+    receipt = await _post_sales_receipt_accounting(db, id, user, cash_bank_id=payload.cash_bank_id)
+    return {"receipt": receipt, "message": "Penerimaan Penjualan diposting ke accounting"}
+
+
+@api_router.post("/sales-receipts/{id}/reverse-accounting")
+async def reverse_sales_receipt_accounting_endpoint(id: str, user=Depends(current_user)):
+    """Reverse a posted sales receipt journal and exclude it from invoice outstanding."""
+    await _require_perm(user, _SALES_RECEIPT_ACCOUNTING_REVERSE_PERM)
+    receipt = await _reverse_sales_receipt_accounting(db, id, user)
+    return {"receipt": receipt, "message": "Penerimaan Penjualan di-reverse dari accounting"}
 
 
 @api_router.post("/sales-receipts/{id}/payment-proof")
