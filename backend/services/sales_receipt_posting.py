@@ -65,6 +65,9 @@ POSTING_IN_PROGRESS_DELETE_MESSAGE = (
 DELETE_IN_PROGRESS_POST_MESSAGE = (
     "Penerimaan sedang dihapus dan tidak dapat diposting ke accounting."
 )
+DELETE_IN_PROGRESS_DELETE_MESSAGE = (
+    "Penerimaan sedang dihapus dan tidak dapat dihapus secara satuan."
+)
 INVOICE_AR_MISSING_MESSAGE = (
     "Jurnal faktur tidak memiliki akun piutang yang dapat digunakan untuk penerimaan."
 )

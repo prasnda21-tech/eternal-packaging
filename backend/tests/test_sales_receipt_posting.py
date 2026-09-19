@@ -31,6 +31,7 @@ from services.sales_accounting_settings import SETTINGS_KEY
 from services.sales_invoice_posting import SOURCE_TYPE as INVOICE_SOURCE
 from services.sales_receipt_posting import (
     CLAIM_FIELD,
+    DELETE_IN_PROGRESS_DELETE_MESSAGE,
     DELETE_IN_PROGRESS_POST_MESSAGE,
     INVOICE_NOT_POSTED_MESSAGE,
     INACTIVE_CASH_BANK_MESSAGE,
@@ -42,7 +43,7 @@ from services.sales_receipt_posting import (
     SOURCE_TYPE,
     post_sales_receipt_accounting,
 )
-from services.sales_receipts import bulk_delete_sales_receipts
+from services.sales_receipts import bulk_delete_sales_receipts, delete_sales_receipt
 from fastapi import HTTPException
 
 POST_USER = {
@@ -972,5 +973,41 @@ async def test_bulk_delete_vs_post_after_reserve_delete_wins_no_journal():
         await _assert_no_orphan_receipt_journals()
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_single_delete_cannot_steal_bulk_reserved_receipt():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            r1 = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            r2 = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+
+        async def after_reserve(_rows, _token):
+            with pytest.raises(HTTPException) as exc:
+                await delete_sales_receipt(server.db, r1["id"], POST_USER)
+            assert exc.value.status_code == 409
+            assert DELETE_IN_PROGRESS_DELETE_MESSAGE in str(exc.value.detail)
+            assert await server.db.sales_receipts.find_one({"id": r1["id"]}) is not None
+            assert await server.db.sales_receipts.find_one({"id": r2["id"]}) is not None
+
+        deleted = await bulk_delete_sales_receipts(
+            server.db, [r1["id"], r2["id"]], POST_USER, after_reserve=after_reserve
+        )
+        assert deleted["deleted_count"] == 2
+        assert await server.db.sales_receipts.find_one({"id": r1["id"]}) is None
+        assert await server.db.sales_receipts.find_one({"id": r2["id"]}) is None
+        assert await _source_journals(r1["id"]) == []
+        assert await _source_journals(r2["id"]) == []
+        await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
 
 
