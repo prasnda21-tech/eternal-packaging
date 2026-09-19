@@ -94,6 +94,162 @@ def derive_sj_number(po_number: str, shipment_index: int) -> str:
     return f"{base}_{shipment_index}"
 
 
+# Dated SJ forms already produced by derive_base_sj_number.
+_SJ_YMD_RE = re.compile(r"^(SJ/)(\d{4})/(\d{2})/(\d{2})/(\d+)(_\d+)?$", re.I)
+_SJ_DMY_RE = re.compile(r"^(SJ/)(\d{2})/(\d{2})/(\d{2})/(\d+)(_\d+)?$", re.I)
+
+
+def parse_sj_number_parts(sj_number: str) -> Optional[Dict[str, Any]]:
+    text = (sj_number or "").strip()
+    m = _SJ_YMD_RE.match(text)
+    style = "ymd" if m else "dmy"
+    if not m:
+        m = _SJ_DMY_RE.match(text)
+    if not m:
+        return None
+    a, b, c, seq = int(m.group(2)), int(m.group(3)), int(m.group(4)), m.group(5)
+    y, mo, d = (a, b, c) if style == "ymd" else (2000 + c, b, a)
+    try:
+        datetime(y, mo, d)
+    except ValueError:
+        return None
+    return {
+        "style": style, "date_key": f"{y:04d}-{mo:02d}-{d:02d}",
+        "seq": int(seq), "width": len(seq), "suffix": text[m.end(5):],
+    }
+
+
+def sj_number_date_key(sj_number: str) -> Optional[str]:
+    parts = parse_sj_number_parts(sj_number)
+    return parts["date_key"] if parts else None
+
+
+def _format_sj_for_date(parts: Dict[str, Any], date_key: str, sequence: Optional[int] = None) -> str:
+    dt = datetime.strptime(date_key, "%Y-%m-%d")
+    seq = int(parts["seq"] if sequence is None else sequence)
+    width = max(int(parts["width"]), len(str(seq)))
+    stamp = dt.strftime("%d/%m/%y") if parts["style"] == "dmy" else dt.strftime("%Y/%m/%d")
+    return f"SJ/{stamp}/{seq:0{width}d}{parts.get('suffix') or ''}"
+
+
+async def allocate_sj_number_for_date(
+    db, current_sj: str, date_key: str, *, exclude_id: Optional[str] = None,
+) -> str:
+    """Unique SJ for a new date: unique index + max+1 prefix scan."""
+    current = str(current_sj or "").strip()
+    parts = parse_sj_number_parts(current)
+    if not parts or parts["date_key"] == date_key:
+        return current
+    dt = datetime.strptime(date_key, "%Y-%m-%d")
+    prefix = f"SJ/{dt.strftime('%d/%m/%y')}/" if parts["style"] == "dmy" else f"SJ/{date_key.replace('-', '/')}/"
+    exclude = str(exclude_id or "").strip()
+
+    async def taken(num: str) -> bool:
+        q: Dict[str, Any] = {"sj_number": num, "is_cancelled": {"$ne": True}}
+        if exclude:
+            q["id"] = {"$ne": exclude}
+        return bool(await db.sales_deliveries.find_one(q, {"_id": 1}))
+
+    candidate = _format_sj_for_date(parts, date_key)
+    if not await taken(candidate):
+        return candidate
+    max_seq = 0
+    async for doc in db.sales_deliveries.find(
+        {"sj_number": {"$regex": f"^{re.escape(prefix)}\\d+"}, "is_cancelled": {"$ne": True}},
+        {"sj_number": 1, "id": 1, "_id": 0},
+    ):
+        if exclude and str(doc.get("id") or "") == exclude:
+            continue
+        m = re.match(r"^(\d+)", str(doc.get("sj_number") or "")[len(prefix):])
+        if m:
+            max_seq = max(max_seq, int(m.group(1)))
+    nxt = max_seq + 1
+    for _ in range(16):
+        candidate = _format_sj_for_date(parts, date_key, nxt)
+        if not await taken(candidate):
+            return candidate
+        nxt += 1
+    raise HTTPException(409, "Gagal mengalokasikan nomor Surat Jalan unik untuk tanggal kirim baru.")
+
+
+def _stamp_sj_on_order(order: dict, sid: str, old_sj: str, new_sj: str, date_key: str) -> None:
+    for sh in order.get("shipments") or []:
+        if isinstance(sh, dict) and str(sh.get("id") or sh.get("sales_delivery_id") or "") == sid:
+            sh["number"] = new_sj
+            if sh.get("sj_number"):
+                sh["sj_number"] = new_sj
+            sh["delivery_date"] = date_key
+    for f in order.get("surat_jalan_files") or []:
+        if not isinstance(f, dict):
+            continue
+        if str(f.get("shipment_id") or f.get("id") or "") != sid and str(f.get("sj_number") or "") != old_sj:
+            continue
+        f["sj_number"] = new_sj
+        if old_sj and old_sj in str(f.get("name") or ""):
+            f["name"] = str(f.get("name")).replace(old_sj, new_sj)
+    if str(order.get("delivery_note_number") or "") == old_sj:
+        order["delivery_note_number"] = new_sj
+
+
+async def sync_sj_numbers_after_reschedule(
+    db, order: dict, *, previous_date: Optional[str], new_date: Optional[str],
+    shipment_id: Optional[str] = None, user: Optional[dict] = None,
+) -> List[Dict[str, str]]:
+    """Reschedule-only: claim a unique SJ when the scheduled date actually changes."""
+    from services.delivery_schedule import is_delivered, parse_date_key
+    from quantity_rules import shipment_is_active
+
+    date_key = parse_date_key(new_date)
+    if not date_key or parse_date_key(previous_date) == date_key:
+        return []
+    if is_delivered(order) or str(order.get("delivery_status") or "") == "Terkirim":
+        return []
+
+    want = str(shipment_id or "").strip()
+    changes: List[Dict[str, str]] = []
+    async with _get_delivery_lock():
+        for sh in order.get("shipments") or []:
+            if not isinstance(sh, dict):
+                continue
+            sid = str(sh.get("id") or sh.get("sales_delivery_id") or "").strip()
+            if not sid or (want and sid != want) or not shipment_is_active(sh):
+                continue
+            if str(sh.get("delivery_status") or "") == "Terkirim" or sh.get("delivered_at"):
+                continue
+            delivery = await db.sales_deliveries.find_one(
+                {"id": sid, "is_cancelled": {"$ne": True}}, {"_id": 0},
+            )
+            old_sj = str((delivery or {}).get("sj_number") or sh.get("number") or sh.get("sj_number") or "").strip()
+            if not parse_sj_number_parts(old_sj) or sj_number_date_key(old_sj) == date_key:
+                sh["delivery_date"] = date_key
+                continue
+            claimed = None
+            for _ in range(8):
+                new_sj = await allocate_sj_number_for_date(db, old_sj, date_key, exclude_id=sid)
+                if not delivery:
+                    claimed = new_sj
+                    break
+                try:
+                    await db.sales_deliveries.update_one(
+                        {"id": sid},
+                        {"$set": {"sj_number": new_sj, "delivery_date": date_key, "updated_at": now_iso()}},
+                    )
+                    claimed = new_sj
+                    break
+                except DuplicateKeyError:
+                    continue
+            if not claimed:
+                raise HTTPException(409, "Nomor Surat Jalan bentrok. Penjadwalan ulang tidak disimpan.")
+            _stamp_sj_on_order(order, sid, old_sj, claimed, date_key)
+            changes.append({"delivery_id": sid, "old_sj": old_sj, "new_sj": claimed})
+
+    for change in changes:
+        delivery = await db.sales_deliveries.find_one({"id": change["delivery_id"]}, {"_id": 0})
+        if delivery:
+            await ensure_generated_sj_pdf(db, order, delivery, user or {}, force=True)
+    return changes
+
+
 def delivery_lines_fingerprint(lines: List[dict]) -> Tuple[Tuple[int, int, str], ...]:
     """Exact-line identity fingerprint. Same-name products stay separate."""
     rows = []
@@ -158,11 +314,12 @@ def build_generated_sj_file_entry(delivery: dict, user: dict, storage_path: str,
     }
 
 
-async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict) -> Tuple[Optional[dict], Optional[str]]:
+async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *, force: bool = False) -> Tuple[Optional[dict], Optional[str]]:
     """Generate the real SJ PDF, store it, and register the authoritative file.
 
     Idempotent: same shipment always maps to the same file id / object key.
     Never writes fake surat_jalan_files metadata when storage/PDF fails.
+    force=True overwrites the stored PDF after an SJ number / delivery_date change.
     """
     shipment_id = str(delivery.get("id") or delivery.get("delivery_id") or "").strip()
     po_id = str(delivery.get("po_id") or (order or {}).get("id") or "").strip()
@@ -171,7 +328,7 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict) -
 
     fresh = await db.orders.find_one({"id": po_id}, {"_id": 0}) or order or {}
     existing = find_generated_sj_file(fresh, shipment_id)
-    if generated_file_is_real(existing):
+    if not force and generated_file_is_real(existing):
         rec = await db.files.find_one({"id": existing.get("id"), "is_deleted": {"$ne": True}}, {"_id": 0})
         if rec and rec.get("storage_path"):
             return existing, None
