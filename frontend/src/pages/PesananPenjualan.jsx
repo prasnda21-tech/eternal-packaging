@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   FileText,
+  Filter,
   Package,
   Plus,
   RefreshCw,
@@ -17,8 +18,22 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import {
+  EMPTY_SALES_ORDER_COLUMN_FILTERS,
+  SALES_ORDER_STATUS_FILTERS,
+  applySalesOrderColumnFilters,
+  salesOrderColumnFilterActive,
+  salesOrderColumnFiltersAreActive,
+  salesOrderDeliveryStatus,
+  salesOrderRemainingQty,
+  salesOrderSalesName,
+  salesOrderStageLabel,
+  uniqueDeliveryStatuses,
+} from "../lib/pesananPenjualanColumnFilters";
+import "./pesananPenjualan.css";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
@@ -60,6 +75,46 @@ const INITIAL_LINE_ITEM = {
   master_item_id: null,
 };
 
+function SalesOrderHeaderFilter({ label, testid, active, alignEnd, onClear, children }) {
+  return (
+    <div className={"so-th-inner" + (alignEnd ? " is-end" : "")}>
+      <span className="so-th-label">{label}</span>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={"so-th-filter" + (active ? " is-active" : "")}
+            aria-label={`Filter ${label}`}
+            data-testid={testid}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Filter size={11} />
+            {active && <span className="so-th-dot" />}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className="so-th-popover sales-order-page-popover"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="so-th-pop-label">{label}</div>
+          {children}
+          {active && (
+            <button
+              type="button"
+              className="so-th-clear"
+              onClick={onClear}
+              data-testid={`${testid}-clear`}
+            >
+              Hapus filter
+            </button>
+          )}
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
 export function filterPoLineItems(lineItems, searchQuery) {
   const q = (searchQuery || "").trim().toLowerCase();
   const list = (lineItems || []).map((line, originalIndex) => ({
@@ -98,6 +153,7 @@ export default function PesananPenjualan() {
     clear: clearSearch,
   } = useDebouncedLiveSearch(searchParams.get("q") || "");
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
+  const [columnFilters, setColumnFilters] = useState(EMPTY_SALES_ORDER_COLUMN_FILTERS);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -216,6 +272,45 @@ export default function PesananPenjualan() {
       }
     }
   }, [searchQuery, statusFilter]);
+
+  const displayedOrders = useMemo(
+    () => applySalesOrderColumnFilters(orders, columnFilters),
+    [orders, columnFilters]
+  );
+  const columnFiltersActive = salesOrderColumnFiltersAreActive(columnFilters, statusFilter);
+  const deliveryStatusOptions = useMemo(() => uniqueDeliveryStatuses(orders), [orders]);
+
+  const patchColumnFilter = (patch) => {
+    setColumnFilters((prev) => ({ ...prev, ...patch }));
+  };
+  const clearColumnKey = (key) => {
+    if (key === "po") patchColumnFilter({ po: "" });
+    else if (key === "date") patchColumnFilter({ dateFrom: "", dateTo: "" });
+    else if (key === "customer") patchColumnFilter({ customer: "" });
+    else if (key === "outlet") patchColumnFilter({ outlet: "" });
+    else if (key === "qty") patchColumnFilter({ qtyMin: "", qtyMax: "" });
+    else if (key === "remain") patchColumnFilter({ remainMin: "", remainMax: "" });
+    else if (key === "delivery") patchColumnFilter({ deliveryStatuses: [] });
+    else if (key === "sales") patchColumnFilter({ sales: "" });
+    else if (key === "stage") {
+      setStatusFilter("all");
+      patchColumnFilter({ stageText: "" });
+    }
+  };
+  const clearAllColumnFilters = () => {
+    setColumnFilters(EMPTY_SALES_ORDER_COLUMN_FILTERS);
+    setStatusFilter("all");
+  };
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const visible = new Set(displayedOrders.map((o) => o.id));
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      if (next.size === prev.size) return prev;
+      return next;
+    });
+  }, [displayedOrders]);
 
   // Sync filter/search into URL so browser Back restores list presentation state.
   useEffect(() => {
@@ -466,8 +561,8 @@ export default function PesananPenjualan() {
     });
   };
   const toggleSelectAll = () => {
-    if (selectedIds.size === orders.length && orders.length > 0) setSelectedIds(new Set());
-    else setSelectedIds(new Set(orders.map((o) => o.id)));
+    if (selectedIds.size === displayedOrders.length && displayedOrders.length > 0) setSelectedIds(new Set());
+    else setSelectedIds(new Set(displayedOrders.map((o) => o.id)));
   };
   const formatDeleteError = (det) => {
     if (typeof det === "object" && det) {
@@ -753,19 +848,16 @@ export default function PesananPenjualan() {
   return (
     <div className="sales-order-page penjualan-page penjualan-workspace" data-testid="sales-order-page" style={{ padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}>
       {/* Top Header */}
-      <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+      <div className="page-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: viewMode === "create" ? "flex-start" : "center", marginBottom: 20 }}>
         <div>
-          <p className="eyebrow" style={{ color: "#64748b", fontSize: "0.85rem", fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>
-            Penjualan · Pesanan Penjualan
-          </p>
           <h1 data-testid="sales-order-title" style={{ fontSize: "1.75rem", fontWeight: 700, margin: 0, color: "#0f172a" }}>
             {viewMode === "create" ? "Buat Pesanan Penjualan" : "Pesanan Penjualan"}
           </h1>
-          <p className="subhead" style={{ color: "#64748b", margin: "4px 0 0 0", fontSize: "0.95rem" }}>
-            {viewMode === "create"
-              ? "Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
-              : "Daftar PO Penjualan dan pembuatan Sales Order baru"}
-          </p>
+          {viewMode === "create" && (
+            <p className="subhead" style={{ color: "#64748b", margin: "4px 0 0 0", fontSize: "0.95rem" }}>
+              Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO
+            </p>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -1460,14 +1552,8 @@ export default function PesananPenjualan() {
               )}
             </div>
 
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {[
-                { id: "all", label: "Semua" },
-                { id: "aktif", label: "Aktif" },
-                { id: "selesai", label: "Selesai" },
-                { id: "hold", label: "HOLD" },
-                { id: "cancelled", label: "Batal" },
-              ].map((tab) => (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {SALES_ORDER_STATUS_FILTERS.map((tab) => (
                 <button
                   key={tab.id}
                   type="button"
@@ -1488,6 +1574,16 @@ export default function PesananPenjualan() {
                   {tab.label}
                 </button>
               ))}
+              {columnFiltersActive && (
+                <button
+                  type="button"
+                  className="so-clear-columns"
+                  onClick={clearAllColumnFilters}
+                  data-testid="sales-order-clear-column-filters"
+                >
+                  Hapus filter kolom
+                </button>
+              )}
             </div>
           </div>
 
@@ -1498,18 +1594,163 @@ export default function PesananPenjualan() {
                 <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
                   {canDelete && (
                     <th style={{ padding: "10px 8px", width: 36 }}>
-                      <input type="checkbox" data-testid="select-all-orders" checked={orders.length > 0 && selectedIds.size === orders.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
+                      <input type="checkbox" data-testid="select-all-orders" checked={displayedOrders.length > 0 && selectedIds.size === displayedOrders.length} onChange={toggleSelectAll} aria-label="Pilih semua baris tampilan" />
                     </th>
                   )}
-                  <th style={{ padding: "10px 12px" }}>No PO</th>
-                  <th style={{ padding: "10px 12px" }}>Tanggal PO</th>
-                  <th style={{ padding: "10px 12px" }}>Customer</th>
-                  <th style={{ padding: "10px 12px" }}>Outlet</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Total Qty</th>
-                  <th style={{ padding: "10px 12px", textAlign: "right" }}>Sisa Kirim</th>
-                  <th style={{ padding: "10px 12px" }}>Status Kirim</th>
-                  <th style={{ padding: "10px 12px" }}>Sales</th>
-                  <th style={{ padding: "10px 12px" }}>Status / Stage</th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="No PO"
+                      testid="so-th-filter-po"
+                      active={salesOrderColumnFilterActive("po", columnFilters)}
+                      onClear={() => clearColumnKey("po")}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Cari No PO"
+                        value={columnFilters.po}
+                        onChange={(e) => patchColumnFilter({ po: e.target.value })}
+                        data-testid="so-filter-po"
+                      />
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="Tanggal PO"
+                      testid="so-th-filter-date"
+                      active={salesOrderColumnFilterActive("date", columnFilters)}
+                      onClear={() => clearColumnKey("date")}
+                    >
+                      <label>Dari <input type="date" value={columnFilters.dateFrom} onChange={(e) => patchColumnFilter({ dateFrom: e.target.value })} data-testid="so-filter-date-from" /></label>
+                      <label>Sampai <input type="date" value={columnFilters.dateTo} onChange={(e) => patchColumnFilter({ dateTo: e.target.value })} data-testid="so-filter-date-to" /></label>
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="Customer"
+                      testid="so-th-filter-customer"
+                      active={salesOrderColumnFilterActive("customer", columnFilters)}
+                      onClear={() => clearColumnKey("customer")}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Cari customer"
+                        value={columnFilters.customer}
+                        onChange={(e) => patchColumnFilter({ customer: e.target.value })}
+                        data-testid="so-filter-customer"
+                      />
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="Outlet"
+                      testid="so-th-filter-outlet"
+                      active={salesOrderColumnFilterActive("outlet", columnFilters)}
+                      onClear={() => clearColumnKey("outlet")}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Cari outlet"
+                        value={columnFilters.outlet}
+                        onChange={(e) => patchColumnFilter({ outlet: e.target.value })}
+                        data-testid="so-filter-outlet"
+                      />
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px", textAlign: "right" }}>
+                    <SalesOrderHeaderFilter
+                      label="Total Qty"
+                      testid="so-th-filter-qty"
+                      active={salesOrderColumnFilterActive("qty", columnFilters)}
+                      alignEnd
+                      onClear={() => clearColumnKey("qty")}
+                    >
+                      <label>Min <input type="number" value={columnFilters.qtyMin} onChange={(e) => patchColumnFilter({ qtyMin: e.target.value })} data-testid="so-filter-qty-min" /></label>
+                      <label>Max <input type="number" value={columnFilters.qtyMax} onChange={(e) => patchColumnFilter({ qtyMax: e.target.value })} data-testid="so-filter-qty-max" /></label>
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px", textAlign: "right" }}>
+                    <SalesOrderHeaderFilter
+                      label="Sisa Kirim"
+                      testid="so-th-filter-remain"
+                      active={salesOrderColumnFilterActive("remain", columnFilters)}
+                      alignEnd
+                      onClear={() => clearColumnKey("remain")}
+                    >
+                      <label>Min <input type="number" value={columnFilters.remainMin} onChange={(e) => patchColumnFilter({ remainMin: e.target.value })} data-testid="so-filter-remain-min" /></label>
+                      <label>Max <input type="number" value={columnFilters.remainMax} onChange={(e) => patchColumnFilter({ remainMax: e.target.value })} data-testid="so-filter-remain-max" /></label>
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="Status Kirim"
+                      testid="so-th-filter-delivery"
+                      active={salesOrderColumnFilterActive("delivery", columnFilters)}
+                      onClear={() => clearColumnKey("delivery")}
+                    >
+                      <div className="so-th-check-list">
+                        {deliveryStatusOptions.map((status) => {
+                          const checked = columnFilters.deliveryStatuses.includes(status);
+                          return (
+                            <label key={status} className="so-th-check">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                data-testid={`so-filter-delivery-${status}`}
+                                onChange={() => {
+                                  const next = checked
+                                    ? columnFilters.deliveryStatuses.filter((s) => s !== status)
+                                    : [...columnFilters.deliveryStatuses, status];
+                                  patchColumnFilter({ deliveryStatuses: next });
+                                }}
+                              />
+                              {status}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="Sales"
+                      testid="so-th-filter-sales"
+                      active={salesOrderColumnFilterActive("sales", columnFilters)}
+                      onClear={() => clearColumnKey("sales")}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Cari sales"
+                        value={columnFilters.sales}
+                        onChange={(e) => patchColumnFilter({ sales: e.target.value })}
+                        data-testid="so-filter-sales"
+                      />
+                    </SalesOrderHeaderFilter>
+                  </th>
+                  <th style={{ padding: "10px 12px" }}>
+                    <SalesOrderHeaderFilter
+                      label="Status / Stage"
+                      testid="so-th-filter-stage"
+                      active={salesOrderColumnFilterActive("stage", columnFilters, statusFilter)}
+                      onClear={() => clearColumnKey("stage")}
+                    >
+                      <select
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                        data-testid="so-filter-stage-status"
+                      >
+                        {SALES_ORDER_STATUS_FILTERS.map((tab) => (
+                          <option key={tab.id} value={tab.id}>{tab.label}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Cari status / stage"
+                        value={columnFilters.stageText}
+                        onChange={(e) => patchColumnFilter({ stageText: e.target.value })}
+                        data-testid="so-filter-stage-text"
+                      />
+                    </SalesOrderHeaderFilter>
+                  </th>
                   <th style={{ padding: "10px 12px", textAlign: "center" }}>Aksi</th>
                 </tr>
               </thead>
@@ -1520,7 +1761,7 @@ export default function PesananPenjualan() {
                       Memuat daftar Pesanan Penjualan...
                     </td>
                   </tr>
-                ) : orders.length === 0 ? (
+                ) : displayedOrders.length === 0 ? (
                   <tr>
                     <td colSpan={canDelete ? 11 : 10} style={{ padding: 40, textAlign: "center", color: "#64748b" }} data-testid="empty-sales-orders">
                       <FileText size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
@@ -1540,13 +1781,12 @@ export default function PesananPenjualan() {
                     </td>
                   </tr>
                 ) : (
-                  orders.map((o) => {
+                  displayedOrders.map((o) => {
                     const isCancelled = !!o.cancelled;
                     const isHold = !!o.hold;
-                    const stageLabel = o.status_label || `Tahap ${o.current_stage}`;
-                    const delivSummary = o.delivery_summary;
-                    const remainQty = delivSummary ? delivSummary.total_remaining : Number(o.total_quantity || 0);
-                    const delivStatus = delivSummary?.status || (isCancelled ? "DIBATALKAN" : "BELUM DIKIRIM");
+                    const stageLabel = salesOrderStageLabel(o) || `Tahap ${o.current_stage}`;
+                    const remainQty = salesOrderRemainingQty(o);
+                    const delivStatus = salesOrderDeliveryStatus(o);
                     const canProcessDelivery = !isCancelled && remainQty > 0;
 
                     return (
@@ -1598,7 +1838,7 @@ export default function PesananPenjualan() {
                           </span>
                         </td>
                         <td style={{ padding: "10px 12px", color: "#475569" }}>
-                          {o.sales || o.sales_user || "-"}
+                          {salesOrderSalesName(o) || "-"}
                         </td>
                         <td style={{ padding: "10px 12px" }}>
                           {isCancelled ? (

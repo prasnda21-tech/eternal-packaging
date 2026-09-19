@@ -29,6 +29,12 @@ jest.mock("../lib/api", () => ({
   },
 }));
 
+jest.mock("../components/ui/popover", () => ({
+  Popover: ({ children }) => <div>{children}</div>,
+  PopoverTrigger: ({ children }) => children,
+  PopoverContent: ({ children }) => <div>{children}</div>,
+}));
+
 jest.mock("lucide-react", () => new Proxy({}, {
   get: (_target, prop) => {
     if (prop === "__esModule") return true;

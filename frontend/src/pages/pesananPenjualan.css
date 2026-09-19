@@ -1,0 +1,138 @@
+/* Compact column-header filters — scoped to Pesanan Penjualan only */
+.sales-order-page .so-th-inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sales-order-page .so-th-inner.is-end {
+  justify-content: flex-end;
+}
+
+.sales-order-page .so-th-label {
+  white-space: nowrap;
+}
+
+.sales-order-page .so-th-filter {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+.sales-order-page .so-th-filter:hover {
+  color: #0369a1;
+  background: #e0f2fe;
+}
+
+.sales-order-page .so-th-filter.is-active {
+  color: #0369a1;
+  background: #e0f2fe;
+}
+
+.sales-order-page .so-th-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0284c7;
+  box-shadow: 0 0 0 1px #fff;
+}
+
+.sales-order-page-popover.so-th-popover {
+  z-index: 80;
+  width: 220px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sales-order-page-popover .so-th-pop-label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.sales-order-page-popover select,
+.sales-order-page-popover input[type="date"],
+.sales-order-page-popover input[type="number"],
+.sales-order-page-popover input[type="text"] {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #0f172a;
+  font-family: inherit;
+  min-height: 28px;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+.sales-order-page-popover label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.sales-order-page-popover .so-th-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.sales-order-page-popover .so-th-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #334155;
+}
+
+.sales-order-page-popover .so-th-check input {
+  width: auto;
+  min-height: 0;
+}
+
+.sales-order-page-popover .so-th-clear {
+  align-self: flex-start;
+  padding: 2px 8px;
+  min-height: 26px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.sales-order-page .so-clear-columns {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #0369a1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
