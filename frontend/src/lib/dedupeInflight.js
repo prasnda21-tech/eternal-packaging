@@ -1,14 +1,20 @@
 /**
  * Share one in-flight Promise across concurrent identical callers.
  * Used to collapse duplicate mount-time GETs (e.g. two OperatorSplitPanels).
+ *
+ * Optional `keyFn` scopes the inflight slot (e.g. getOrder(id)).
+ * Without it, all callers share one slot — same as the original helper.
  */
-export function dedupeInflight(fn) {
-  let inflight = null;
+export function dedupeInflight(fn, keyFn) {
+  const inflight = new Map();
   return function deduped(...args) {
-    if (inflight) return inflight;
-    inflight = Promise.resolve(fn(...args)).finally(() => {
-      inflight = null;
+    const key = keyFn ? String(keyFn(...args)) : "__default__";
+    const existing = inflight.get(key);
+    if (existing) return existing;
+    const pending = Promise.resolve(fn(...args)).finally(() => {
+      inflight.delete(key);
     });
-    return inflight;
+    inflight.set(key, pending);
+    return pending;
   };
 }

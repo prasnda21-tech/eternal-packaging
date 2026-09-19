@@ -1,8 +1,9 @@
 /* Eternal Packaging PWA — static app-shell only.
    Network-first for navigations. Never cache /api or authenticated business data.
+   Hashed /static/* assets are cache-first (content-hashed filenames).
    No offline mutation queue. Installability only — not offline ERP. */
 
-const SHELL_CACHE = "eternal-pwa-shell-v1";
+const SHELL_CACHE = "eternal-pwa-shell-v2";
 const SHELL_ASSETS = ["/manifest.json", "/sales-manifest.json", "/eternal-favicon.png"];
 
 self.addEventListener("install", (event) => {
@@ -27,6 +28,10 @@ function isStaticAsset(url) {
   return /\.(?:js|css|png|jpg|jpeg|gif|webp|svg|woff2?|ico)$/i.test(url.pathname);
 }
 
+function isHashedStaticAsset(url) {
+  return url.pathname.startsWith("/static/") && isStaticAsset(url);
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
@@ -48,6 +53,22 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (!isStaticAsset(url)) return;
+
+  if (isHashedStaticAsset(url)) {
+    event.respondWith(
+      caches.match(request).then((cached) => {
+        if (cached) return cached;
+        return fetch(request).then((response) => {
+          if (response && response.ok) {
+            const copy = response.clone();
+            caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
+          }
+          return response;
+        });
+      }),
+    );
+    return;
+  }
 
   event.respondWith(
     fetch(request).then((response) => {

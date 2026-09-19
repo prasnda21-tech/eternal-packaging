@@ -18,7 +18,7 @@
   min-height: 100dvh;
   background: var(--mop-bg);
   color: var(--mop-ink);
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
 .mop-root * { box-sizing: border-box; }

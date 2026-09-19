@@ -38,4 +38,22 @@ describe("dedupeInflight", () => {
     await expect(fetchOnce()).resolves.toBe(2);
     expect(calls).toBe(2);
   });
+
+  test("keyed callers only share the same key", async () => {
+    const calls = [];
+    const fetchById = dedupeInflight(
+      async (id) => {
+        calls.push(id);
+        return id;
+      },
+      (id) => `getOrder:${id}`,
+    );
+    const a1 = fetchById("a");
+    const a2 = fetchById("a");
+    const b1 = fetchById("b");
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b1);
+    await expect(Promise.all([a1, a2, b1])).resolves.toEqual(["a", "a", "b"]);
+    expect(calls).toEqual(["a", "b"]);
+  });
 });

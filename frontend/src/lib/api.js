@@ -33,7 +33,7 @@ const publicJsonRequest = async (path, options = {}) => {
 export const api = {
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
-  me: () => client.get("/auth/me").then((r) => r.data),
+  me: dedupeInflight(() => client.get("/auth/me").then((r) => r.data)),
   systemHealth: () => client.get("/system/health").then((r) => r.data),
   listOrders: (status, extra) => client.get("/orders", {
     params: {
@@ -46,7 +46,10 @@ export const api = {
   deletePO: (id, reason, confirm) => client.delete(`/orders/${id}`, { data: { reason, confirm } }).then((r) => r.data),
   bulkCancel: (ids, reason) => client.post(`/orders-bulk/cancel`, { ids, reason }).then((r) => r.data),
   bulkDelete: (ids, reason, confirm) => client.post(`/orders-bulk/delete`, { ids, reason, confirm }).then((r) => r.data),
-  getOrder: (id) => client.get(`/orders/${id}`).then((r) => r.data),
+  getOrder: dedupeInflight(
+    (id) => client.get(`/orders/${id}`).then((r) => r.data),
+    (id) => `getOrder:${id}`,
+  ),
   updateOrderInfo: (id, payload) => client.patch(`/orders/${id}/info`, payload).then((r) => r.data),
   advance: (id, payload = {}) => client.post(`/orders/${id}/advance`, payload).then((r) => r.data),
   approveDesign: (id, approved = true, note = "") => client.post(`/orders/${id}/approve-design`, { approved, note }).then((r) => r.data),
@@ -571,7 +574,10 @@ export const api = {
   cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
   postSalesInvoiceAccounting: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
   // ---- Sales Receipt (Penerimaan Penjualan) ----
-  listSalesReceipts: (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
+  listSalesReceipts: dedupeInflight(
+    (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
+    (params = {}) => `listSalesReceipts:${JSON.stringify(params || {})}`,
+  ),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
   attachSalesReceiptPaymentProof: (id, paymentProof) =>
