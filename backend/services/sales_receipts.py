@@ -27,14 +27,17 @@ from services.sales_receipt_payment_proof import (
 )
 from services.sales_receipt_posting import (
     CLAIM_FIELD,
+    DELETE_CLAIM_FIELD,
     POSTED_DELETE_MESSAGE,
     POSTING_IN_PROGRESS_DELETE_MESSAGE,
     REVERSED_DELETE_MESSAGE,
+    acquire_delete_claim,
     attach_receipt_accounting_fields,
     find_sales_receipt_source_journal,
     posting_claim_is_active,
     receipt_counts_toward_outstanding,
     receipt_is_cancelled,
+    release_delete_claims,
     resolve_cash_bank_for_create,
 )
 
@@ -579,8 +582,15 @@ async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
     return {"deleted": True, "receipt_number": receipt_number, "id": rec["id"]}
 
 
-async def bulk_delete_sales_receipts(db, ids: list, user: dict) -> dict:
-    """Bulk delete receipts — ALL OR NOTHING."""
+async def bulk_delete_sales_receipts(
+    db,
+    ids: list,
+    user: dict,
+    *,
+    after_eligibility=None,
+    after_reserve=None,
+) -> dict:
+    """Bulk delete receipts — ALL OR NOTHING, reserved before any physical delete."""
     unique_ids = list(dict.fromkeys(ids))
     receipts = await db.sales_receipts.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
     by_id = {r["id"]: r for r in receipts}
@@ -641,29 +651,75 @@ async def bulk_delete_sales_receipts(db, ids: list, user: dict) -> dict:
     if blockers:
         raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa penerimaan memiliki dependensi.", "blockers": blockers})
 
-    if to_delete:
-        delete_ids = [r["id"] for r in to_delete]
-        await db.sales_receipts.delete_many({"id": {"$in": delete_ids}})
-        for r in to_delete:
-            await soft_delete_proof_for_receipt(
-                db,
-                r["id"],
-                deleted_by=str(user.get("email") or ""),
-                reason="sales_receipt_bulk_deleted",
-            )
+    if after_eligibility is not None:
+        await after_eligibility(list(to_delete))
 
-        affected_invoice_ids = list(set(r.get("invoice_id") for r in to_delete if r.get("invoice_id")))
-        for inv_id in affected_invoice_ids:
-            await _recalc_invoice_payment_from_receipts(db, inv_id)
+    if not to_delete:
+        return {"deleted_count": 0, "deleted": []}
 
-        affected_po_ids = list(set(r.get("po_id") for r in to_delete if r.get("po_id")))
-        for po_id in affected_po_ids:
-            po_deleted = [r["id"] for r in to_delete if r.get("po_id") == po_id]
-            await _recalc_order_payment_facts_after_receipt_delete(db, po_id, po_deleted)
+    token = str(uuid.uuid4())
+    reserved: List[dict] = []
+    try:
+        for rec in to_delete:
+            claimed = await acquire_delete_claim(db, rec["id"], token)
+            if claimed is None:
+                raise HTTPException(409, {
+                    "message": "Tidak dapat menghapus. Beberapa penerimaan memiliki dependensi.",
+                    "blockers": [{
+                        "id": rec["id"],
+                        "number": rec.get("receipt_number", rec["id"]),
+                        "reason": POSTING_IN_PROGRESS_DELETE_MESSAGE,
+                    }],
+                })
+            journal = await find_sales_receipt_source_journal(db, rec["id"])
+            if journal:
+                raise HTTPException(409, {
+                    "message": "Tidak dapat menghapus. Beberapa penerimaan memiliki dependensi.",
+                    "blockers": [{
+                        "id": rec["id"],
+                        "number": rec.get("receipt_number", rec["id"]),
+                        "reason": POSTED_DELETE_MESSAGE,
+                    }],
+                })
+            reserved.append(rec)
+
+        if after_reserve is not None:
+            await after_reserve(list(reserved), token)
+
+        result = await db.sales_receipts.delete_many({DELETE_CLAIM_FIELD: token})
+        if int(result.deleted_count or 0) != len(reserved):
+            raise HTTPException(409, {
+                "message": "Tidak dapat menghapus. Beberapa penerimaan memiliki dependensi.",
+                "blockers": [{
+                    "id": reserved[0]["id"] if reserved else "",
+                    "number": reserved[0].get("receipt_number", "") if reserved else "",
+                    "reason": POSTING_IN_PROGRESS_DELETE_MESSAGE,
+                }],
+            })
+    except Exception:
+        await release_delete_claims(db, token)
+        raise
+
+    for r in reserved:
+        await soft_delete_proof_for_receipt(
+            db,
+            r["id"],
+            deleted_by=str(user.get("email") or ""),
+            reason="sales_receipt_bulk_deleted",
+        )
+
+    affected_invoice_ids = list(set(r.get("invoice_id") for r in reserved if r.get("invoice_id")))
+    for inv_id in affected_invoice_ids:
+        await _recalc_invoice_payment_from_receipts(db, inv_id)
+
+    affected_po_ids = list(set(r.get("po_id") for r in reserved if r.get("po_id")))
+    for po_id in affected_po_ids:
+        po_deleted = [r["id"] for r in reserved if r.get("po_id") == po_id]
+        await _recalc_order_payment_facts_after_receipt_delete(db, po_id, po_deleted)
 
     return {
-        "deleted_count": len(to_delete),
-        "deleted": [{"id": r["id"], "receipt_number": r.get("receipt_number", "")} for r in to_delete],
+        "deleted_count": len(reserved),
+        "deleted": [{"id": r["id"], "receipt_number": r.get("receipt_number", "")} for r in reserved],
     }
 
 

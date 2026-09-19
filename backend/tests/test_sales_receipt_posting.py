@@ -31,6 +31,7 @@ from services.sales_accounting_settings import SETTINGS_KEY
 from services.sales_invoice_posting import SOURCE_TYPE as INVOICE_SOURCE
 from services.sales_receipt_posting import (
     CLAIM_FIELD,
+    DELETE_IN_PROGRESS_POST_MESSAGE,
     INVOICE_NOT_POSTED_MESSAGE,
     INACTIVE_CASH_BANK_MESSAGE,
     PERM_POST,
@@ -41,6 +42,7 @@ from services.sales_receipt_posting import (
     SOURCE_TYPE,
     post_sales_receipt_accounting,
 )
+from services.sales_receipts import bulk_delete_sales_receipts
 from fastapi import HTTPException
 
 POST_USER = {
@@ -864,4 +866,111 @@ async def test_blocker_d_reversal_crash_heals_operational_outstanding():
             assert await _account_net(bca["account_id"]) == Decimal("0.00")
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+async def _assert_no_orphan_receipt_journals():
+    journals = await server.db.journal_entries.find(
+        {"source_type": SOURCE_TYPE, "reversal_of": None},
+        {"_id": 0, "id": 1, "source_id": 1},
+    ).to_list(200)
+    for journal in journals:
+        receipt = await server.db.sales_receipts.find_one({"id": journal["source_id"]}, {"_id": 0, "id": 1})
+        assert receipt is not None, f"orphan sales_receipt journal {journal['id']}"
+
+
+@pytest.mark.anyio
+async def test_bulk_delete_vs_post_after_eligibility_post_wins():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+
+        async def after_eligibility(_rows):
+            posted = await post_sales_receipt_accounting(
+                server.db, receipt["id"], POST_USER, cash_bank_id=bca["id"], serialize_in_process=False
+            )
+            assert posted["accounting_status"] == "posted"
+
+        with pytest.raises(HTTPException) as exc:
+            await bulk_delete_sales_receipts(
+                server.db, [receipt["id"]], POST_USER, after_eligibility=after_eligibility
+            )
+        assert exc.value.status_code in (400, 409)
+        stored = await server.db.sales_receipts.find_one({"id": receipt["id"]})
+        assert stored is not None
+        assert len(await _source_journals(receipt["id"])) == 1
+        await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_bulk_delete_all_or_nothing_when_second_receipt_posts():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            r1 = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            r2 = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+
+        async def after_eligibility(_rows):
+            posted = await post_sales_receipt_accounting(
+                server.db, r2["id"], POST_USER, cash_bank_id=bca["id"], serialize_in_process=False
+            )
+            assert posted["accounting_status"] == "posted"
+
+        with pytest.raises(HTTPException) as exc:
+            await bulk_delete_sales_receipts(
+                server.db, [r1["id"], r2["id"]], POST_USER, after_eligibility=after_eligibility
+            )
+        assert exc.value.status_code in (400, 409)
+        assert await server.db.sales_receipts.find_one({"id": r1["id"]}) is not None
+        assert await server.db.sales_receipts.find_one({"id": r2["id"]}) is not None
+        assert len(await _source_journals(r1["id"])) == 0
+        assert len(await _source_journals(r2["id"])) == 1
+        await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_bulk_delete_vs_post_after_reserve_delete_wins_no_journal():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+
+        async def after_reserve(_rows, _token):
+            result = await _unlocked_post(receipt["id"], bca["id"])
+            assert isinstance(result, HTTPException)
+            assert result.status_code == 409
+            assert DELETE_IN_PROGRESS_POST_MESSAGE in str(result.detail)
+
+        deleted = await bulk_delete_sales_receipts(
+            server.db, [receipt["id"]], POST_USER, after_reserve=after_reserve
+        )
+        assert deleted["deleted_count"] == 1
+        assert await server.db.sales_receipts.find_one({"id": receipt["id"]}) is None
+        assert await _source_journals(receipt["id"]) == []
+        await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
 

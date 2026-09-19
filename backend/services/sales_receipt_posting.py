@@ -45,6 +45,7 @@ PERM_POST = "sales.receipt.accounting.post"
 PERM_REVERSE = "sales.receipt.accounting.reverse"
 CLAIM_FIELD = "accounting_posting_claim"
 REVERSE_CLAIM_FIELD = "accounting_reverse_claim"
+DELETE_CLAIM_FIELD = "accounting_delete_claim"
 
 INVOICE_NOT_POSTED_MESSAGE = "Faktur harus diposting ke accounting terlebih dahulu."
 POSTED_DELETE_MESSAGE = (
@@ -60,6 +61,9 @@ INACTIVE_CASH_BANK_MESSAGE = "Kas/Bank nonaktif tidak dapat digunakan untuk post
 MISSING_CASH_BANK_MESSAGE = "Kas/Bank wajib dipilih untuk posting accounting."
 POSTING_IN_PROGRESS_DELETE_MESSAGE = (
     "Penerimaan sedang diposting ke accounting dan tidak dapat dihapus."
+)
+DELETE_IN_PROGRESS_POST_MESSAGE = (
+    "Penerimaan sedang dihapus dan tidak dapat diposting ke accounting."
 )
 INVOICE_AR_MISSING_MESSAGE = (
     "Jurnal faktur tidak memiliki akun piutang yang dapat digunakan untuk penerimaan."
@@ -110,6 +114,15 @@ def posting_claim_is_active(receipt: Optional[dict]) -> bool:
 def reverse_claim_is_active(receipt: Optional[dict]) -> bool:
     raw = (receipt or {}).get(REVERSE_CLAIM_FIELD)
     return bool(str(raw or "").strip())
+
+
+def delete_claim_is_active(receipt: Optional[dict]) -> bool:
+    raw = (receipt or {}).get(DELETE_CLAIM_FIELD)
+    return bool(str(raw or "").strip())
+
+
+def _claim_absent_clause(field: str) -> Dict[str, Any]:
+    return {"$or": [{field: {"$exists": False}}, {field: None}, {field: ""}]}
 
 
 async def find_sales_receipt_source_journal(db, receipt_id: str) -> Optional[dict]:
@@ -373,6 +386,7 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
             and amount_ok
             and bool(rec.get("invoice_id"))
             and not posting_claim_is_active(rec)
+            and not delete_claim_is_active(rec)
         )
         rec["can_reverse_accounting"] = (
             not cancelled
@@ -384,9 +398,11 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
             and not cancelled
             and not journal
             and not posting_claim_is_active(rec)
+            and not delete_claim_is_active(rec)
         )
         rec.pop(CLAIM_FIELD, None)
         rec.pop(REVERSE_CLAIM_FIELD, None)
+        rec.pop(DELETE_CLAIM_FIELD, None)
     return receipts
 
 
@@ -419,9 +435,39 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
                 {"financial_status": {"$in": ["cancelled", "reversed"]}},
                 {"cancelled": True},
             ],
+            **_claim_absent_clause(DELETE_CLAIM_FIELD),
         },
         {"$set": {CLAIM_FIELD: claim_token, "updated_at": now_iso()}},
         return_document=ReturnDocument.AFTER,
+    )
+
+
+async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict]:
+    from services.sales_receipts import now_iso
+
+    return await db.sales_receipts.find_one_and_update(
+        {
+            "id": str(receipt_id),
+            "$nor": [
+                {"financial_status": {"$in": ["cancelled", "reversed"]}},
+                {"cancelled": True},
+            ],
+            "$and": [
+                _claim_absent_clause(CLAIM_FIELD),
+                _claim_absent_clause(DELETE_CLAIM_FIELD),
+            ],
+        },
+        {"$set": {DELETE_CLAIM_FIELD: str(token), "updated_at": now_iso()}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def release_delete_claims(db, token: str) -> None:
+    from services.sales_receipts import now_iso
+
+    await db.sales_receipts.update_many(
+        {DELETE_CLAIM_FIELD: str(token)},
+        {"$unset": {DELETE_CLAIM_FIELD: ""}, "$set": {"updated_at": now_iso()}},
     )
 
 
@@ -542,6 +588,8 @@ async def post_sales_receipt_accounting(
             if existing:
                 await _heal_posted_receipt_from_journal(db, rec, existing, user)
                 return await _public_receipt_detail(db, rec["id"])
+            if current and delete_claim_is_active(current):
+                raise HTTPException(409, DELETE_IN_PROGRESS_POST_MESSAGE)
             raise HTTPException(409, "Posting accounting gagal karena perubahan bersamaan.")
 
         existing = await find_sales_receipt_source_journal(db, rec["id"])
