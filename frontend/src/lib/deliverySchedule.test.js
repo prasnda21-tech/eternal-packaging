@@ -8,6 +8,7 @@ import {
   matchesDeliveryScheduleFilters,
   rescheduleConfirmLabel,
   sortDeliveryRows,
+  wibTodayKey,
 } from "./deliverySchedule";
 import { locationSetupStatusLabel } from "./deliveryRouteBridge";
 import { STATUS_LOKASI_SORT_DUMMY_ROWS } from "./deliveryScheduleStatusLokasiFixtures";
@@ -41,6 +42,52 @@ describe("delivery schedule filters", () => {
 
   test("reset empty filters keep all rows", () => {
     expect(matchesDeliveryScheduleFilters(row, { dateFrom: "", dateTo: "", po: "", customer: "", status: "semua" })).toBe(true);
+  });
+
+  test("Hari Ini matches effective_delivery_date == today WIB, not row.status", () => {
+    const today = "2026-09-19";
+    const hariIni = { status: "hari_ini" };
+    const nara = { order_number: "PO/2026/09/14/000011", customer_name: "NARA", effective_delivery_date: "2026-09-19", status: "hari_ini" };
+    const pureve = { order_number: "PO/2026/09/16/000010", customer_name: "PUREVE", effective_delivery_date: "2026-09-19", status: "terkirim" };
+    const songolas = { order_number: "PO/2026/09/14/000019", customer_name: "SONGOLAS", effective_delivery_date: "2026-09-19", status: "terkirim" };
+    const limo = { order_number: "PO/2026/09/17/000015", customer_name: "LIMO", effective_delivery_date: "2026-09-21", status: "terjadwal" };
+    const late = { order_number: "PO/YEST", customer_name: "Late", effective_delivery_date: "2026-09-18", status: "terlambat" };
+    const todayScheduled = { order_number: "PO/TODAY-SCHED", customer_name: "Sched", effective_delivery_date: "2026-09-19", status: "terjadwal" };
+
+    expect(matchesDeliveryScheduleFilters(nara, hariIni, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(pureve, hariIni, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(songolas, hariIni, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(todayScheduled, hariIni, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(limo, hariIni, today)).toBe(false);
+    expect(matchesDeliveryScheduleFilters(late, hariIni, today)).toBe(false);
+
+    expect(matchesDeliveryScheduleFilters(pureve, { status: "terkirim" }, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(nara, { status: "terkirim" }, today)).toBe(false);
+    expect(matchesDeliveryScheduleFilters(late, { status: "terlambat" }, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(pureve, { status: "terlambat" }, today)).toBe(false);
+
+    expect(matchesDeliveryScheduleFilters(nara, { ...hariIni, po: "000011" }, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(pureve, { ...hariIni, po: "000011" }, today)).toBe(false);
+    expect(matchesDeliveryScheduleFilters(nara, { ...hariIni, customer: "nara" }, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(pureve, { ...hariIni, dateFrom: "2026-09-19", dateTo: "2026-09-19" }, today)).toBe(true);
+    expect(matchesDeliveryScheduleFilters(pureve, { ...hariIni, dateFrom: "2026-09-20" }, today)).toBe(false);
+  });
+
+  test("wibTodayKey uses Asia/Jakarta not UTC midnight", () => {
+    expect(wibTodayKey(new Date("2026-09-18T17:01:00.000Z"))).toBe("2026-09-19");
+    expect(wibTodayKey(new Date("2026-09-18T16:59:00.000Z"))).toBe("2026-09-18");
+  });
+
+  test("wibTodayKey ignores host timezone offset", () => {
+    const original = Date.prototype.getTimezoneOffset;
+    try {
+      Date.prototype.getTimezoneOffset = function wibHostOffset() { return -420; };
+      expect(wibTodayKey(new Date("2026-09-18T17:01:00.000Z"))).toBe("2026-09-19");
+      Date.prototype.getTimezoneOffset = function utcHostOffset() { return 0; };
+      expect(wibTodayKey(new Date("2026-09-18T17:01:00.000Z"))).toBe("2026-09-19");
+    } finally {
+      Date.prototype.getTimezoneOffset = original;
+    }
   });
 
   test("active filter count ignores defaults", () => {

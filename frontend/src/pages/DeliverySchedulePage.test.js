@@ -3,6 +3,7 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import DeliverySchedulePage, { scheduleRowSjNumber, desktopDeliveryPoHref, desktopDeliveryKerjaHref } from "./DeliverySchedulePage";
+import { wibTodayKey } from "../lib/deliverySchedule";
 import { locationSetupStatusLabel } from "../lib/deliveryRouteBridge";
 import { STATUS_LOKASI_SORT_DUMMY_ROWS } from "../lib/deliveryScheduleStatusLokasiFixtures";
 import { desktopScheduleReviewHref } from "../lib/mobileDeliverySchedule";
@@ -550,6 +551,7 @@ describe("DeliverySchedulePage Surat Jalan column", () => {
           id: "po-x",
           order_number: "PO-X",
           shipment_id: "sh-a",
+          effective_delivery_date: wibTodayKey(),
           status: "hari_ini",
           status_label: "Hari Ini",
           sj_label: "SJ/001",
@@ -560,6 +562,7 @@ describe("DeliverySchedulePage Surat Jalan column", () => {
           id: "po-x",
           order_number: "PO-X",
           shipment_id: "sh-b",
+          effective_delivery_date: "2026-09-21",
           status: "terjadwal",
           status_label: "Terjadwal",
           sj_label: "SJ/002",
