@@ -17,6 +17,23 @@ export function dateKey(raw) {
   return "";
 }
 
+/** Asia/Jakarta (WIB, UTC+7) calendar date. Do not use UTC ISO slice. */
+export function wibTodayKey(now = new Date()) {
+  const instant = now instanceof Date ? now : new Date(now);
+  const utcMs = instant.getTime() + instant.getTimezoneOffset() * 60000;
+  const wib = new Date(utcMs + 7 * 3600000);
+  const y = wib.getUTCFullYear();
+  const m = String(wib.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(wib.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function resolveFilterTodayKey(today) {
+  if (typeof today === "string" && dateKey(today)) return dateKey(today);
+  if (today instanceof Date && !Number.isNaN(today.getTime())) return wibTodayKey(today);
+  return wibTodayKey();
+}
+
 function matchesProgressBand(pct, band) {
   const key = (band || "all").trim() || "all";
   if (key === "all") return true;
@@ -27,13 +44,19 @@ function matchesProgressBand(pct, band) {
   return true;
 }
 
-export function matchesDeliveryScheduleFilters(row, filters = {}) {
+export function matchesDeliveryScheduleFilters(row, filters = {}, today = null) {
   const po = (filters.po || "").trim().toLowerCase();
   if (po && !String(row.order_number || "").toLowerCase().includes(po)) return false;
   const customer = (filters.customer || "").trim().toLowerCase();
   if (customer && !String(row.customer_name || "").toLowerCase().includes(customer)) return false;
   const status = (filters.status || "").trim().toLowerCase();
-  if (status && status !== "semua" && row.status !== status) return false;
+  if (status && status !== "semua") {
+    if (status === "hari_ini") {
+      if (dateKey(row.effective_delivery_date) !== resolveFilterTodayKey(today)) return false;
+    } else if (row.status !== status) {
+      return false;
+    }
+  }
   const from = dateKey(filters.dateFrom);
   const to = dateKey(filters.dateTo);
   const eff = dateKey(row.effective_delivery_date);
