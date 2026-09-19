@@ -593,6 +593,9 @@ export const api = {
   ),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
+  salesReceiptCashBankOptions: () => client.get(`/sales-receipts/cash-bank-options`).then((r) => r.data),
+  postSalesReceiptAccounting: (id, payload = {}) => client.post(`/sales-receipts/${encodeURIComponent(id)}/post-accounting`, payload).then((r) => r.data),
+  reverseSalesReceiptAccounting: (id) => client.post(`/sales-receipts/${encodeURIComponent(id)}/reverse-accounting`).then((r) => r.data),
   attachSalesReceiptPaymentProof: (id, paymentProof) =>
     client.post(`/sales-receipts/${encodeURIComponent(id)}/payment-proof`, { payment_proof: paymentProof }).then((r) => r.data),
   // ---- Delete (Safe) ----

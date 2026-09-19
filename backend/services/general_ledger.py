@@ -38,6 +38,9 @@ SOURCE_LABELS = {
     SOURCE_GENERAL_JOURNAL_REVERSAL: "Reversal Jurnal Umum",
     SOURCE_OPENING_BALANCE: "Saldo Awal",
     SOURCE_OPENING_BALANCE_REVERSAL: "Reversal Saldo Awal",
+    "sales_invoice": "Faktur Penjualan",
+    "sales_receipt": "Penerimaan Penjualan",
+    "sales_receipt_reversal": "Reversal Penerimaan Penjualan",
 }
 
 # Only sources with an existing detail-route + ?id= deep-link.

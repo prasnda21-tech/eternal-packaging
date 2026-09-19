@@ -55,6 +55,9 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(apiSrc).toMatch(/createSalesReceipt:/);
     expect(apiSrc).toMatch(/deleteSalesReceipt:/);
     expect(apiSrc).toMatch(/bulkDeleteSalesReceipts:/);
+    expect(apiSrc).toMatch(/salesReceiptCashBankOptions:/);
+    expect(apiSrc).toMatch(/postSalesReceiptAccounting:/);
+    expect(apiSrc).toMatch(/reverseSalesReceiptAccounting:/);
   });
 
   test("Penerimaan list has checkbox, visible-only select all, Hapus Terpilih, and PAY number confirm", () => {
@@ -64,7 +67,24 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Hapus Terpilih/);
     expect(pageSrc).toMatch(/delete-confirm-modal/);
     expect(pageSrc).toMatch(/receipt_number/);
-    expect(pageSrc).toMatch(/selectedIds\.size === receipts\.length/);
+    expect(pageSrc).toMatch(/selectedIds\.size === deletableReceipts\.length/);
+  });
+
+  test("Penerimaan accounting UI has Kas/Bank picker, status, post, and reverse", () => {
+    expect(pageSrc).toMatch(/select-receipt-cash-bank/);
+    expect(pageSrc).toMatch(/sales\.receipt\.accounting\.post/);
+    expect(pageSrc).toMatch(/sales\.receipt\.accounting\.reverse/);
+    expect(pageSrc).toMatch(/receipt-accounting-status-/);
+    expect(pageSrc).toMatch(/btn-post-accounting-/);
+    expect(pageSrc).toMatch(/btn-reverse-accounting-/);
+    expect(pageSrc).toMatch(/post-accounting-confirm-modal/);
+    expect(pageSrc).toMatch(/reverse-accounting-confirm-modal/);
+    expect(pageSrc).toMatch(/btn-confirm-post-accounting/);
+    expect(pageSrc).toMatch(/btn-confirm-reverse-accounting/);
+    expect(pageSrc).toMatch(/Belum Diposting/);
+    expect(pageSrc).toMatch(/api\.postSalesReceiptAccounting/);
+    expect(pageSrc).toMatch(/api\.reverseSalesReceiptAccounting/);
+    expect(pageSrc).toMatch(/can_delete !== false/);
   });
 
   test("Penerimaan row has Hapus button with PAY business number confirmation and safe-delete wiring", () => {
