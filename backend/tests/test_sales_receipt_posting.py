@@ -26,14 +26,17 @@ from server import app, current_user
 from services.cash_bank_master import COLLECTION as CB_COLLECTION, create_cash_bank, ensure_indexes as ensure_cb
 from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
 from services.general_ledger import SOURCE_LABELS
-from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal
+from services.journal_core import ensure_indexes as ensure_journal, post_balanced_journal, reverse_journal
 from services.sales_accounting_settings import SETTINGS_KEY
+from services.sales_invoice_posting import SOURCE_TYPE as INVOICE_SOURCE
 from services.sales_receipt_posting import (
+    CLAIM_FIELD,
     INVOICE_NOT_POSTED_MESSAGE,
     INACTIVE_CASH_BANK_MESSAGE,
     PERM_POST,
     PERM_REVERSE,
     POSTED_DELETE_MESSAGE,
+    POSTING_IN_PROGRESS_DELETE_MESSAGE,
     SOURCE_REVERSAL,
     SOURCE_TYPE,
     post_sales_receipt_accounting,
@@ -633,3 +636,232 @@ async def test_non_admin_without_accounting_perm_forbidden():
             assert await _source_journals(receipt["id"]) == []
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_blocker_a_receipt_credits_invoice_journal_ar_not_current_settings():
+    ar_a, rev, tax = await _configure_settings()
+    bca = await _cash_bank("BCA Operasional")
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"], unit_price=10_000_000)
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            inv_journals = await server.db.journal_entries.find(
+                {"source_type": INVOICE_SOURCE, "source_id": inv["id"]}, {"_id": 0}
+            ).to_list(5)
+            assert len(inv_journals) == 1
+            inv_lines = await _journal_lines(inv_journals[0]["id"])
+            assert Decimal(str({ln["account_id"]: ln for ln in inv_lines}[ar_a["id"]]["debit"])) == Decimal("10000000.00")
+
+            ar_b = await _coa("11", "Piutang Baru", "AREC")
+            await _configure_settings(rec=ar_b, rev=rev, tax=tax)
+
+            receipt = await _create_receipt(client, inv["id"], 4_000_000, cash_bank_id=bca["id"])
+            posted = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
+            assert posted.status_code == 200, posted.text
+            journals = await _source_journals(receipt["id"])
+            assert len(journals) == 1
+            lines = await _journal_lines(journals[0]["id"])
+            by_account = {ln["account_id"]: ln for ln in lines}
+            assert Decimal(str(by_account[ar_a["id"]]["credit"])) == Decimal("4000000.00")
+            assert ar_b["id"] not in by_account
+            assert await _account_net(ar_a["id"]) == Decimal("6000000.00")
+            assert await _account_net(ar_b["id"]) == Decimal("0.00")
+            assert await _account_net(bca["account_id"]) == Decimal("4000000.00")
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_blocker_b_concurrent_historical_bank_matches_winning_journal():
+    await _configure_settings()
+    bca = await _cash_bank("BCA Operasional")
+    mandiri = await _cash_bank("Mandiri")
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 4_000_000)
+
+        results = await asyncio.gather(
+            _unlocked_post(receipt["id"], bca["id"]),
+            _unlocked_post(receipt["id"], mandiri["id"]),
+        )
+        ok = [r for r in results if not isinstance(r, HTTPException)]
+        assert len(ok) >= 1
+        journals = await _source_journals(receipt["id"])
+        assert len(journals) == 1
+        lines = await _journal_lines(journals[0]["id"])
+        cash_line = max(lines, key=lambda ln: Decimal(str(ln.get("debit") or 0)))
+        journal_cash_id = cash_line["account_id"]
+        assert journal_cash_id in {bca["account_id"], mandiri["account_id"]}
+        stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+        assert stored["cash_bank_account_id"] == journal_cash_id
+        winner = bca if journal_cash_id == bca["account_id"] else mandiri
+        assert stored["cash_bank_id"] == winner["id"]
+        assert stored["cash_bank_name"] == winner["name"]
+        retry = await post_sales_receipt_accounting(
+            server.db, receipt["id"], POST_USER, cash_bank_id=bca["id"], serialize_in_process=False
+        )
+        assert retry["cash_bank_account_id"] == journal_cash_id
+        assert len(await _source_journals(receipt["id"])) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_blocker_c_posting_claim_blocks_single_and_bulk_delete():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            claimed = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            posted = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            ok = await client.post(f"/api/sales-receipts/{posted['id']}/post-accounting")
+            assert ok.status_code == 200
+            await server.db.sales_receipts.update_one(
+                {"id": claimed["id"]},
+                {"$set": {CLAIM_FIELD: "claim-in-flight"}},
+            )
+
+            blocked = await client.delete(f"/api/sales-receipts/{claimed['id']}")
+            assert blocked.status_code == 409
+            assert POSTING_IN_PROGRESS_DELETE_MESSAGE in str(blocked.json()["detail"])
+            assert await server.db.sales_receipts.find_one({"id": claimed["id"]}) is not None
+
+            bulk = await client.post("/api/sales-receipts-bulk/delete", json={"ids": [claimed["id"]], "reason": "bulk"})
+            assert bulk.status_code == 400
+            assert POSTING_IN_PROGRESS_DELETE_MESSAGE in str(bulk.json()["detail"])
+
+            posted_del = await client.delete(f"/api/sales-receipts/{posted['id']}")
+            assert posted_del.status_code == 409
+            assert POSTED_DELETE_MESSAGE in str(posted_del.json()["detail"])
+            assert len(await _source_journals(posted["id"])) == 1
+
+            await server.db.sales_receipts.update_one({"id": claimed["id"]}, {"$unset": {CLAIM_FIELD: ""}})
+            allowed = await client.delete(f"/api/sales-receipts/{claimed['id']}")
+            assert allowed.status_code == 200
+            assert await server.db.sales_receipts.find_one({"id": claimed["id"]}) is None
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_blocker_post_crash_heals_metadata_from_actual_journal():
+    rec, _rev, _tax = await _configure_settings()
+    bca = await _cash_bank("BCA Operasional")
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 4_000_000, cash_bank_id=bca["id"])
+
+        await post_balanced_journal(
+            server.db,
+            date="2026-09-05",
+            source_type=SOURCE_TYPE,
+            source_id=receipt["id"],
+            description="incomplete post",
+            lines=[
+                {"account_id": bca["account_id"], "debit": Decimal("4000000.00"), "credit": Decimal("0.00")},
+                {"account_id": rec["id"], "debit": Decimal("0.00"), "credit": Decimal("4000000.00")},
+            ],
+            posted_by=POST_USER,
+        )
+        await server.db.sales_receipts.update_one(
+            {"id": receipt["id"]},
+            {
+                "$unset": {
+                    "cash_bank_id": "",
+                    "cash_bank_name": "",
+                    "cash_bank_account_id": "",
+                    "accounting_posted_at": "",
+                    "accounting_posted_by": "",
+                },
+                "$set": {CLAIM_FIELD: "stale-claim"},
+            },
+        )
+        healed = await post_sales_receipt_accounting(server.db, receipt["id"], POST_USER, cash_bank_id=bca["id"])
+        assert healed["accounting_status"] == "posted"
+        assert healed["cash_bank_id"] == bca["id"]
+        assert healed["cash_bank_account_id"] == bca["account_id"]
+        assert healed["cash_bank_name"] == "BCA Operasional"
+        stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+        assert not stored.get(CLAIM_FIELD)
+        assert len(await _source_journals(receipt["id"])) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_blocker_d_reversal_crash_heals_operational_outstanding():
+    rec, _rev, _tax = await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 4_000_000, cash_bank_id=bca["id"])
+            posted = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
+            assert posted.status_code == 200
+            journals = await _source_journals(receipt["id"])
+            await reverse_journal(
+                server.db,
+                journals[0]["id"],
+                source_type=SOURCE_REVERSAL,
+                source_id=receipt["id"],
+                posted_by=POST_USER,
+                description="crash before operational finalize",
+            )
+            await server.db.sales_receipts.update_one(
+                {"id": receipt["id"]},
+                {
+                    "$set": {"financial_status": "active", "cancelled": False},
+                    "$unset": {
+                        "cancelled_at": "",
+                        "cancelled_by": "",
+                        "accounting_reversed_at": "",
+                        "accounting_reversed_by": "",
+                    },
+                },
+            )
+            await server.db.sales_invoices.update_one(
+                {"id": inv["id"]},
+                {"$set": {"paid_total": 4_000_000, "outstanding_amount": 6_000_000, "payment_status": "DP"}},
+            )
+            before_rev = await _source_journals(receipt["id"], SOURCE_REVERSAL)
+            assert len(before_rev) == 1
+            healed = await client.post(f"/api/sales-receipts/{receipt['id']}/reverse-accounting")
+            assert healed.status_code == 200, healed.text
+            body = healed.json()["receipt"]
+            assert body["financial_status"] == "cancelled"
+            assert body["cancelled"] is True
+            assert body["accounting_status"] == "reversed"
+            assert await server.db.sales_receipts.find_one({"id": receipt["id"]}) is not None
+            assert len(await _source_journals(receipt["id"], SOURCE_REVERSAL)) == 1
+            invoice = await server.db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+            assert Decimal(str(invoice["paid_total"])) == Decimal("0")
+            assert Decimal(str(invoice["outstanding_amount"])) == Decimal("10000000")
+            assert invoice["payment_status"] == "BELUM DIBAYAR"
+            assert await _account_net(rec["id"]) == Decimal("10000000.00")
+            assert await _account_net(bca["account_id"]) == Decimal("0.00")
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+

@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from pymongo import ReturnDocument
 
 from services.cash_bank_master import (
+    COLLECTION as CASH_BANK_COLLECTION,
     CashBankValidationError,
     get_cash_bank_raw,
     require_bank_coa,
@@ -29,11 +30,7 @@ from services.journal_core import (
     post_balanced_journal,
     reverse_journal,
 )
-from services.sales_accounting_settings import (
-    _load_account,
-    _validate_receivable,
-    get_sales_accounting_settings,
-)
+from services.sales_accounting_settings import _validate_receivable
 from services.sales_invoice_posting import (
     ACCOUNTING_NOT_POSTED,
     ACCOUNTING_POSTED,
@@ -61,6 +58,12 @@ REVERSED_DELETE_MESSAGE = (
 CANCELLED_POST_MESSAGE = "Penerimaan yang dibatalkan tidak dapat diposting ke accounting."
 INACTIVE_CASH_BANK_MESSAGE = "Kas/Bank nonaktif tidak dapat digunakan untuk posting."
 MISSING_CASH_BANK_MESSAGE = "Kas/Bank wajib dipilih untuk posting accounting."
+POSTING_IN_PROGRESS_DELETE_MESSAGE = (
+    "Penerimaan sedang diposting ke accounting dan tidak dapat dihapus."
+)
+INVOICE_AR_MISSING_MESSAGE = (
+    "Jurnal faktur tidak memiliki akun piutang yang dapat digunakan untuk penerimaan."
+)
 
 
 def _money(raw: Any, field: str) -> Decimal:
@@ -180,12 +183,109 @@ async def resolve_cash_bank_for_posting(
     return snap
 
 
-async def _require_receivable_account(db) -> dict:
-    settings = await get_sales_accounting_settings(db)
-    receivable_id = str(settings.get("receivable_account_id") or "").strip()
-    if not receivable_id:
-        raise HTTPException(400, "Pengaturan Akuntansi Penjualan belum dikonfigurasi.")
-    return _validate_receivable(await _load_account(db, receivable_id))
+def _line_amount(raw: Any) -> Decimal:
+    try:
+        return Decimal(str(raw if raw is not None else 0))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0.00")
+
+
+async def _journal_lines_for(db, journal: Optional[dict]) -> List[dict]:
+    if not journal:
+        return []
+    lines = journal.get("lines")
+    if isinstance(lines, list) and lines:
+        return lines
+    jid = str(journal.get("id") or "").strip()
+    if not jid:
+        return []
+    return await db.journal_lines.find({"journal_id": jid}, {"_id": 0}).to_list(50)
+
+
+async def resolve_invoice_receivable_account(db, invoice_id: str) -> dict:
+    """AR account is the AREC debit on the posted invoice journal, not current settings."""
+    journal = await find_sales_invoice_source_journal(db, invoice_id)
+    if accounting_status_from_journal(journal) != ACCOUNTING_POSTED:
+        raise HTTPException(409, INVOICE_NOT_POSTED_MESSAGE)
+    lines = await _journal_lines_for(db, journal)
+    candidates: List[dict] = []
+    for ln in lines:
+        debit = _line_amount(ln.get("debit"))
+        credit = _line_amount(ln.get("credit"))
+        if debit <= 0 or credit > 0:
+            continue
+        account = await get_account(db, ln.get("account_id") or "")
+        if not account:
+            continue
+        try:
+            candidates.append(_validate_receivable(account))
+        except HTTPException:
+            continue
+    if not candidates:
+        raise HTTPException(400, INVOICE_AR_MISSING_MESSAGE)
+    return candidates[0]
+
+
+async def snapshot_cash_bank_from_journal(db, journal: dict) -> Dict[str, Any]:
+    """Cash/Bank snapshot from the actual receipt journal debit line."""
+    lines = await _journal_lines_for(db, journal)
+    debit_lines = [ln for ln in lines if _line_amount(ln.get("debit")) > 0]
+    if not debit_lines:
+        raise HTTPException(400, "Jurnal penerimaan tidak memiliki baris Kas/Bank.")
+    debit_lines.sort(key=lambda ln: _line_amount(ln.get("debit")), reverse=True)
+    account_id = str(debit_lines[0].get("account_id") or "").strip()
+    if not account_id:
+        raise HTTPException(400, "Akun perkiraan Kas/Bank pada jurnal tidak valid.")
+    raw = await db[CASH_BANK_COLLECTION].find_one({"account_id": account_id}, {"_id": 0})
+    coa = await get_account(db, account_id)
+    if raw:
+        return cash_bank_snapshot(raw, coa)
+    return {
+        "cash_bank_id": None,
+        "cash_bank_name": (coa or {}).get("name"),
+        "cash_bank_account_id": account_id,
+        "cash_bank_account_code": (coa or {}).get("code"),
+        "cash_bank_account_name": (coa or {}).get("name"),
+    }
+
+
+async def _heal_posted_receipt_from_journal(db, receipt: dict, journal: dict, user: dict) -> None:
+    from services.sales_receipts import now_iso
+
+    snap = await snapshot_cash_bank_from_journal(db, journal)
+    now = now_iso()
+    stored = await db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}) or {}
+    patch: Dict[str, Any] = {**snap, "updated_at": now}
+    if not stored.get("accounting_posted_at"):
+        patch["accounting_posted_at"] = journal.get("posted_at") or now
+        patch["accounting_posted_by"] = stored.get("accounting_posted_by") or _actor_public(user)
+    await db.sales_receipts.update_one(
+        {"id": receipt["id"]},
+        {"$set": patch, "$unset": {CLAIM_FIELD: ""}},
+    )
+
+
+async def _finalize_reversal_operational_state(db, receipt: dict, user: dict) -> None:
+    from services.sales_receipts import _recalc_invoice_payment_from_receipts, now_iso
+
+    now = now_iso()
+    stored = await db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0}) or {}
+    patch: Dict[str, Any] = {
+        "financial_status": "cancelled",
+        "cancelled": True,
+        "updated_at": now,
+    }
+    if not stored.get("cancelled_at"):
+        patch["cancelled_at"] = now
+        patch["cancelled_by"] = _actor_public(user)
+    if not stored.get("accounting_reversed_at"):
+        patch["accounting_reversed_at"] = now
+        patch["accounting_reversed_by"] = _actor_public(user)
+    await db.sales_receipts.update_one(
+        {"id": receipt["id"]},
+        {"$set": patch, "$unset": {REVERSE_CLAIM_FIELD: ""}},
+    )
+    await _recalc_invoice_payment_from_receipts(db, stored.get("invoice_id") or receipt.get("invoice_id"))
 
 
 def _require_receipt_amount(receipt: dict) -> Decimal:
@@ -251,9 +351,6 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
 
         invoice_journals = await load_source_journals_by_invoice_ids(db, invoice_ids)
 
-    settings = await get_sales_accounting_settings(db)
-    receivable_ready = bool(settings.get("configured") and settings.get("receivable_account_id"))
-
     for rec in receipts:
         journal = journals.get(str(rec.get("id")))
         accounting_status = accounting_status_from_journal(journal)
@@ -273,7 +370,6 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
             not cancelled
             and accounting_status == ACCOUNTING_NOT_POSTED
             and invoice_posted
-            and receivable_ready
             and amount_ok
             and bool(rec.get("invoice_id"))
             and not posting_claim_is_active(rec)
@@ -283,7 +379,12 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
             and accounting_status == ACCOUNTING_POSTED
             and not reverse_claim_is_active(rec)
         )
-        rec["can_delete"] = accounting_status == ACCOUNTING_NOT_POSTED and not cancelled and not journal
+        rec["can_delete"] = (
+            accounting_status == ACCOUNTING_NOT_POSTED
+            and not cancelled
+            and not journal
+            and not posting_claim_is_active(rec)
+        )
         rec.pop(CLAIM_FIELD, None)
         rec.pop(REVERSE_CLAIM_FIELD, None)
     return receipts
@@ -373,9 +474,9 @@ async def _require_invoice_posted(db, invoice_id: str) -> dict:
     return invoice
 
 
-async def _write_source_journal(db, receipt: dict, user: dict, cash_snap: dict) -> None:
+async def _write_source_journal(db, receipt: dict, user: dict, cash_snap: dict) -> dict:
     amount = _require_receipt_amount(receipt)
-    receivable = await _require_receivable_account(db)
+    receivable = await resolve_invoice_receivable_account(db, receipt.get("invoice_id"))
     lines = _build_journal_lines(
         cash_ledger_account_id=str(cash_snap["cash_bank_account_id"]),
         receivable_account_id=str(receivable["id"]),
@@ -383,7 +484,7 @@ async def _write_source_journal(db, receipt: dict, user: dict, cash_snap: dict) 
         receipt_number=str(receipt.get("receipt_number") or ""),
     )
     try:
-        await post_balanced_journal(
+        journal = await post_balanced_journal(
             db,
             date=journal_date_from_receipt(receipt),
             source_type=SOURCE_TYPE,
@@ -392,12 +493,13 @@ async def _write_source_journal(db, receipt: dict, user: dict, cash_snap: dict) 
             lines=lines,
             posted_by=user,
         )
+        return journal
     except JournalValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
     except JournalConflictError:
         existing = await find_sales_receipt_source_journal(db, receipt["id"])
         if existing:
-            return
+            return existing
         raise HTTPException(409, "Jurnal untuk penerimaan ini sudah ada.")
 
 
@@ -415,9 +517,7 @@ async def post_sales_receipt_accounting(
     cash_bank_id: Optional[str] = None,
     serialize_in_process: bool = True,
 ) -> Dict[str, Any]:
-    """Post one active receipt. Idempotent. Safety is the Mongo claim, not the lock."""
-    from services.sales_receipts import now_iso
-
+    """Post one active receipt. Idempotent. Finalize metadata from the actual journal."""
     async with _optional_receipt_lock(serialize_in_process):
         rec = await _load_receipt(db, receipt_id)
         if receipt_is_cancelled(rec):
@@ -425,13 +525,12 @@ async def post_sales_receipt_accounting(
 
         existing = await find_sales_receipt_source_journal(db, rec["id"])
         if existing:
-            if posting_claim_is_active(rec):
-                await clear_posting_claim(db, rec["id"])
+            await _heal_posted_receipt_from_journal(db, rec, existing, user)
             return await _public_receipt_detail(db, rec["id"])
 
         _require_receipt_amount(rec)
         await _require_invoice_posted(db, rec.get("invoice_id"))
-        await _require_receivable_account(db)
+        await resolve_invoice_receivable_account(db, rec.get("invoice_id"))
         cash_snap = await resolve_cash_bank_for_posting(db, rec, cash_bank_id)
 
         claimed = await acquire_posting_claim(db, rec["id"])
@@ -441,35 +540,26 @@ async def post_sales_receipt_accounting(
                 raise HTTPException(409, CANCELLED_POST_MESSAGE)
             existing = await find_sales_receipt_source_journal(db, rec["id"])
             if existing:
+                await _heal_posted_receipt_from_journal(db, rec, existing, user)
                 return await _public_receipt_detail(db, rec["id"])
             raise HTTPException(409, "Posting accounting gagal karena perubahan bersamaan.")
 
         existing = await find_sales_receipt_source_journal(db, rec["id"])
         if existing:
-            await clear_posting_claim(db, rec["id"])
+            await _heal_posted_receipt_from_journal(db, rec, existing, user)
             return await _public_receipt_detail(db, rec["id"])
 
         try:
-            await _write_source_journal(db, claimed, user, cash_snap)
+            journal = await _write_source_journal(db, claimed, user, cash_snap)
         except Exception:
             still = await find_sales_receipt_source_journal(db, rec["id"])
-            if not still:
-                await clear_posting_claim(db, rec["id"])
+            if still:
+                await _heal_posted_receipt_from_journal(db, rec, still, user)
+                return await _public_receipt_detail(db, rec["id"])
+            await clear_posting_claim(db, rec["id"])
             raise
 
-        now = now_iso()
-        await db.sales_receipts.update_one(
-            {"id": rec["id"]},
-            {
-                "$set": {
-                    **cash_snap,
-                    "accounting_posted_at": now,
-                    "accounting_posted_by": _actor_public(user),
-                    "updated_at": now,
-                },
-                "$unset": {CLAIM_FIELD: ""},
-            },
-        )
+        await _heal_posted_receipt_from_journal(db, rec, journal, user)
         return await _public_receipt_detail(db, rec["id"])
 
 
@@ -477,18 +567,19 @@ async def reverse_sales_receipt_accounting(
     db, receipt_id: str, user: dict, *, serialize_in_process: bool = True
 ) -> Dict[str, Any]:
     """Reverse a posted receipt journal and exclude it from operational outstanding."""
-    from services.sales_receipts import _recalc_invoice_payment_from_receipts, now_iso
-
     async with _optional_receipt_lock(serialize_in_process):
         rec = await _load_receipt(db, receipt_id)
         existing = await find_sales_receipt_source_journal(db, rec["id"])
         status = accounting_status_from_journal(existing)
 
-        if status == ACCOUNTING_REVERSED or receipt_is_cancelled(rec):
-            if receipt_is_cancelled(rec) or status == ACCOUNTING_REVERSED:
-                if reverse_claim_is_active(rec):
-                    await clear_reverse_claim(db, rec["id"])
-                return await _public_receipt_detail(db, rec["id"])
+        if status == ACCOUNTING_REVERSED:
+            await _finalize_reversal_operational_state(db, rec, user)
+            return await _public_receipt_detail(db, rec["id"])
+
+        if receipt_is_cancelled(rec):
+            if reverse_claim_is_active(rec):
+                await clear_reverse_claim(db, rec["id"])
+            return await _public_receipt_detail(db, rec["id"])
 
         if status != ACCOUNTING_POSTED or not existing:
             raise HTTPException(409, "Hanya penerimaan yang sudah diposting yang dapat di-reverse.")
@@ -496,19 +587,19 @@ async def reverse_sales_receipt_accounting(
         claimed = await acquire_reverse_claim(db, rec["id"])
         if claimed is None:
             current = await db.sales_receipts.find_one({"id": rec["id"]}, {"_id": 0})
+            still = await find_sales_receipt_source_journal(db, rec["id"])
             if current and (
                 receipt_is_cancelled(current)
-                or accounting_status_from_journal(
-                    await find_sales_receipt_source_journal(db, rec["id"])
-                )
-                == ACCOUNTING_REVERSED
+                or accounting_status_from_journal(still) == ACCOUNTING_REVERSED
             ):
+                if accounting_status_from_journal(still) == ACCOUNTING_REVERSED:
+                    await _finalize_reversal_operational_state(db, rec, user)
                 return await _public_receipt_detail(db, rec["id"])
             raise HTTPException(409, "Reversal accounting gagal karena perubahan bersamaan.")
 
         existing = await find_sales_receipt_source_journal(db, rec["id"])
         if accounting_status_from_journal(existing) == ACCOUNTING_REVERSED:
-            await clear_reverse_claim(db, rec["id"])
+            await _finalize_reversal_operational_state(db, rec, user)
             return await _public_receipt_detail(db, rec["id"])
         if accounting_status_from_journal(existing) != ACCOUNTING_POSTED or not existing:
             await clear_reverse_claim(db, rec["id"])
@@ -535,21 +626,5 @@ async def reverse_sales_receipt_accounting(
                 await clear_reverse_claim(db, rec["id"])
                 raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
 
-        now = now_iso()
-        await db.sales_receipts.update_one(
-            {"id": rec["id"]},
-            {
-                "$set": {
-                    "financial_status": "cancelled",
-                    "cancelled": True,
-                    "cancelled_at": now,
-                    "cancelled_by": _actor_public(user),
-                    "accounting_reversed_at": now,
-                    "accounting_reversed_by": _actor_public(user),
-                    "updated_at": now,
-                },
-                "$unset": {REVERSE_CLAIM_FIELD: ""},
-            },
-        )
-        await _recalc_invoice_payment_from_receipts(db, rec.get("invoice_id"))
+        await _finalize_reversal_operational_state(db, rec, user)
         return await _public_receipt_detail(db, rec["id"])

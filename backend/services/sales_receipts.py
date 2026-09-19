@@ -26,10 +26,13 @@ from services.sales_receipt_payment_proof import (
     store_payment_proof,
 )
 from services.sales_receipt_posting import (
+    CLAIM_FIELD,
     POSTED_DELETE_MESSAGE,
+    POSTING_IN_PROGRESS_DELETE_MESSAGE,
     REVERSED_DELETE_MESSAGE,
     attach_receipt_accounting_fields,
     find_sales_receipt_source_journal,
+    posting_claim_is_active,
     receipt_counts_toward_outstanding,
     receipt_is_cancelled,
     resolve_cash_bank_for_create,
@@ -540,12 +543,31 @@ async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
         raise HTTPException(409, POSTED_DELETE_MESSAGE)
     if receipt_is_cancelled(rec):
         raise HTTPException(409, REVERSED_DELETE_MESSAGE)
+    if posting_claim_is_active(rec):
+        raise HTTPException(409, POSTING_IN_PROGRESS_DELETE_MESSAGE)
 
     if await _receipt_delete_blocked_by_workflow(db, rec, remaining_after):
         raise HTTPException(400, _PAY_DOWNSTREAM_MSG)
 
     receipt_number = rec.get("receipt_number", rec["id"])
-    await db.sales_receipts.delete_one({"id": rec["id"]})
+    deleted = await db.sales_receipts.find_one_and_delete(
+        {
+            "id": rec["id"],
+            "$or": [
+                {CLAIM_FIELD: {"$exists": False}},
+                {CLAIM_FIELD: None},
+                {CLAIM_FIELD: ""},
+            ],
+        }
+    )
+    if not deleted:
+        fresh = await db.sales_receipts.find_one({"id": rec["id"]}, {"_id": 0})
+        if fresh and posting_claim_is_active(fresh):
+            raise HTTPException(409, POSTING_IN_PROGRESS_DELETE_MESSAGE)
+        journal = await find_sales_receipt_source_journal(db, rec["id"])
+        if journal:
+            raise HTTPException(409, POSTED_DELETE_MESSAGE)
+        raise HTTPException(409, POSTING_IN_PROGRESS_DELETE_MESSAGE)
     await soft_delete_proof_for_receipt(
         db,
         rec["id"],
@@ -598,6 +620,13 @@ async def bulk_delete_sales_receipts(db, ids: list, user: dict) -> dict:
                 "id": rec["id"],
                 "number": rec.get("receipt_number", rec["id"]),
                 "reason": REVERSED_DELETE_MESSAGE,
+            })
+            continue
+        if posting_claim_is_active(rec):
+            blockers.append({
+                "id": rec["id"],
+                "number": rec.get("receipt_number", rec["id"]),
+                "reason": POSTING_IN_PROGRESS_DELETE_MESSAGE,
             })
             continue
         if await _receipt_delete_blocked_by_workflow(db, rec, remaining_after):
