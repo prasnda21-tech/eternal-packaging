@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,9 @@ from services.sales_accounting_settings import SETTINGS_KEY
 from services.sales_invoice_posting import SOURCE_TYPE as INVOICE_SOURCE
 from services.sales_receipt_posting import (
     CLAIM_FIELD,
+    DELETE_CLAIM_AT_FIELD,
+    DELETE_CLAIM_FIELD,
+    DELETE_CLAIM_TTL_SECONDS,
     DELETE_IN_PROGRESS_DELETE_MESSAGE,
     DELETE_IN_PROGRESS_POST_MESSAGE,
     INVOICE_NOT_POSTED_MESSAGE,
@@ -41,7 +45,9 @@ from services.sales_receipt_posting import (
     POSTING_IN_PROGRESS_DELETE_MESSAGE,
     SOURCE_REVERSAL,
     SOURCE_TYPE,
+    delete_claim_is_active,
     post_sales_receipt_accounting,
+    release_delete_claims,
 )
 from services.sales_receipts import bulk_delete_sales_receipts, delete_sales_receipt
 from fastapi import HTTPException
@@ -1006,6 +1012,243 @@ async def test_single_delete_cannot_steal_bulk_reserved_receipt():
         assert await _source_journals(r1["id"]) == []
         assert await _source_journals(r2["id"]) == []
         await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+def _stale_delete_claim_at() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=DELETE_CLAIM_TTL_SECONDS + 60)).isoformat()
+
+
+def _fresh_delete_claim_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _plant_delete_claim(receipt_id: str, token: str, claimed_at=None, *, unset_at: bool = False):
+    patch = {DELETE_CLAIM_FIELD: token}
+    unset = {}
+    if unset_at:
+        unset[DELETE_CLAIM_AT_FIELD] = ""
+    else:
+        patch[DELETE_CLAIM_AT_FIELD] = claimed_at
+    update = {"$set": patch}
+    if unset:
+        update["$unset"] = unset
+    await server.db.sales_receipts.update_one({"id": receipt_id}, update)
+
+
+def _assert_public_receipt_hides_delete_claim(payload: dict):
+    assert DELETE_CLAIM_FIELD not in payload
+    assert DELETE_CLAIM_AT_FIELD not in payload
+
+
+@pytest.mark.anyio
+async def test_stale_delete_claim_post_recovery():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            await _plant_delete_claim(receipt["id"], "old-token", _stale_delete_claim_at())
+
+            posted = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
+            assert posted.status_code == 200, posted.text
+            body = posted.json()["receipt"]
+            assert body["accounting_status"] == "posted"
+            assert body["id"] == receipt["id"]
+            _assert_public_receipt_hides_delete_claim(body)
+
+            stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+            assert stored is not None
+            assert not stored.get(DELETE_CLAIM_FIELD)
+            assert not stored.get(DELETE_CLAIM_AT_FIELD)
+            assert stored.get("accounting_posted_at")
+            assert len(await _source_journals(receipt["id"])) == 1
+            await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_delete_claim_single_delete_recovery():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            await _plant_delete_claim(receipt["id"], "old-token", _stale_delete_claim_at())
+
+            deleted = await client.delete(f"/api/sales-receipts/{receipt['id']}")
+            assert deleted.status_code == 200, deleted.text
+            assert await server.db.sales_receipts.find_one({"id": receipt["id"]}) is None
+            assert await _source_journals(receipt["id"]) == []
+            await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_delete_claim_bulk_delete_recovery():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            r1 = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            r2 = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            await _plant_delete_claim(r1["id"], "old-token", _stale_delete_claim_at())
+
+            bulk = await client.post(
+                "/api/sales-receipts-bulk/delete",
+                json={"ids": [r1["id"], r2["id"]], "reason": "bulk"},
+            )
+            assert bulk.status_code == 200, bulk.text
+            assert bulk.json()["deleted_count"] == 2
+            assert await server.db.sales_receipts.find_one({"id": r1["id"]}) is None
+            assert await server.db.sales_receipts.find_one({"id": r2["id"]}) is None
+            assert await _source_journals(r1["id"]) == []
+            assert await _source_journals(r2["id"]) == []
+            await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_fresh_delete_claim_blocks_post_single_and_other_bulk():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            await _plant_delete_claim(receipt["id"], "fresh-token", _fresh_delete_claim_at())
+
+            detail = await client.get(f"/api/sales-receipts/{receipt['id']}")
+            assert detail.status_code == 200
+            _assert_public_receipt_hides_delete_claim(detail.json()["receipt"])
+
+            posted = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
+            assert posted.status_code == 409
+            assert DELETE_IN_PROGRESS_POST_MESSAGE in str(posted.json()["detail"])
+            assert await _source_journals(receipt["id"]) == []
+
+            blocked = await client.delete(f"/api/sales-receipts/{receipt['id']}")
+            assert blocked.status_code == 409
+            assert DELETE_IN_PROGRESS_DELETE_MESSAGE in str(blocked.json()["detail"])
+
+            bulk = await client.post(
+                "/api/sales-receipts-bulk/delete",
+                json={"ids": [receipt["id"]], "reason": "bulk"},
+            )
+            assert bulk.status_code in (400, 409)
+            assert DELETE_IN_PROGRESS_DELETE_MESSAGE in str(bulk.json()["detail"])
+
+            stored = await server.db.sales_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+            assert stored is not None
+            assert stored.get(DELETE_CLAIM_FIELD) == "fresh-token"
+            assert stored.get(DELETE_CLAIM_AT_FIELD)
+            assert delete_claim_is_active(stored) is True
+            assert await _source_journals(receipt["id"]) == []
+            await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_legacy_delete_claim_without_timestamp_is_recoverable():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            postable = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            single = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            bulk_a = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            bulk_b = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+
+            await _plant_delete_claim(postable["id"], "legacy-token", unset_at=True)
+            await _plant_delete_claim(single["id"], "legacy-token", unset_at=True)
+            await _plant_delete_claim(bulk_a["id"], "legacy-token", unset_at=True)
+
+            stored_legacy = await server.db.sales_receipts.find_one({"id": postable["id"]}, {"_id": 0})
+            assert stored_legacy.get(DELETE_CLAIM_FIELD) == "legacy-token"
+            assert not stored_legacy.get(DELETE_CLAIM_AT_FIELD)
+            assert delete_claim_is_active(stored_legacy) is False
+
+            posted = await client.post(f"/api/sales-receipts/{postable['id']}/post-accounting")
+            assert posted.status_code == 200, posted.text
+            body = posted.json()["receipt"]
+            assert body["accounting_status"] == "posted"
+            _assert_public_receipt_hides_delete_claim(body)
+            healed = await server.db.sales_receipts.find_one({"id": postable["id"]}, {"_id": 0})
+            assert healed is not None
+            assert not healed.get(DELETE_CLAIM_FIELD)
+            assert not healed.get(DELETE_CLAIM_AT_FIELD)
+            assert len(await _source_journals(postable["id"])) == 1
+
+            deleted = await client.delete(f"/api/sales-receipts/{single['id']}")
+            assert deleted.status_code == 200, deleted.text
+            assert await server.db.sales_receipts.find_one({"id": single["id"]}) is None
+
+            bulk = await client.post(
+                "/api/sales-receipts-bulk/delete",
+                json={"ids": [bulk_a["id"], bulk_b["id"]], "reason": "bulk"},
+            )
+            assert bulk.status_code == 200, bulk.text
+            assert bulk.json()["deleted_count"] == 2
+            assert await server.db.sales_receipts.find_one({"id": bulk_a["id"]}) is None
+            assert await server.db.sales_receipts.find_one({"id": bulk_b["id"]}) is None
+            await _assert_no_orphan_receipt_journals()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_release_delete_claims_is_token_scoped_and_clears_timestamp():
+    await _configure_settings()
+    bca = await _cash_bank()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            owned = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            other = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
+            await _plant_delete_claim(owned["id"], "token-a", _fresh_delete_claim_at())
+            await _plant_delete_claim(other["id"], "token-b", _fresh_delete_claim_at())
+
+            await release_delete_claims(server.db, "token-a")
+            released = await server.db.sales_receipts.find_one({"id": owned["id"]}, {"_id": 0})
+            kept = await server.db.sales_receipts.find_one({"id": other["id"]}, {"_id": 0})
+            assert not released.get(DELETE_CLAIM_FIELD)
+            assert not released.get(DELETE_CLAIM_AT_FIELD)
+            assert kept.get(DELETE_CLAIM_FIELD) == "token-b"
+            assert kept.get(DELETE_CLAIM_AT_FIELD)
+            assert delete_claim_is_active(kept) is True
     finally:
         app.dependency_overrides.pop(current_user, None)
 

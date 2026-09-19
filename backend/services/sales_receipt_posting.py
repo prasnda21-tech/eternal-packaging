@@ -7,6 +7,7 @@ and journal_core.reverse_journal.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 import uuid
@@ -46,6 +47,8 @@ PERM_REVERSE = "sales.receipt.accounting.reverse"
 CLAIM_FIELD = "accounting_posting_claim"
 REVERSE_CLAIM_FIELD = "accounting_reverse_claim"
 DELETE_CLAIM_FIELD = "accounting_delete_claim"
+DELETE_CLAIM_AT_FIELD = "accounting_delete_claim_at"
+DELETE_CLAIM_TTL_SECONDS = 600
 
 INVOICE_NOT_POSTED_MESSAGE = "Faktur harus diposting ke accounting terlebih dahulu."
 POSTED_DELETE_MESSAGE = (
@@ -119,13 +122,55 @@ def reverse_claim_is_active(receipt: Optional[dict]) -> bool:
     return bool(str(raw or "").strip())
 
 
-def delete_claim_is_active(receipt: Optional[dict]) -> bool:
-    raw = (receipt or {}).get(DELETE_CLAIM_FIELD)
-    return bool(str(raw or "").strip())
+def _parse_claim_at(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def delete_claim_cutoff_iso(*, now: Optional[datetime] = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    return (current - timedelta(seconds=DELETE_CLAIM_TTL_SECONDS)).isoformat()
+
+
+def delete_claim_is_active(receipt: Optional[dict], *, now: Optional[datetime] = None) -> bool:
+    """Fresh lease only. Token without timestamp is stale/recoverable."""
+    token = str((receipt or {}).get(DELETE_CLAIM_FIELD) or "").strip()
+    if not token:
+        return False
+    claimed_at = _parse_claim_at((receipt or {}).get(DELETE_CLAIM_AT_FIELD))
+    if claimed_at is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    return (current - claimed_at).total_seconds() < DELETE_CLAIM_TTL_SECONDS
 
 
 def _claim_absent_clause(field: str) -> Dict[str, Any]:
     return {"$or": [{field: {"$exists": False}}, {field: None}, {field: ""}]}
+
+
+def delete_claim_absent_or_stale_clause(*, now: Optional[datetime] = None) -> Dict[str, Any]:
+    cutoff = delete_claim_cutoff_iso(now=now)
+    return {
+        "$or": [
+            {DELETE_CLAIM_FIELD: {"$exists": False}},
+            {DELETE_CLAIM_FIELD: None},
+            {DELETE_CLAIM_FIELD: ""},
+            {DELETE_CLAIM_AT_FIELD: {"$exists": False}},
+            {DELETE_CLAIM_AT_FIELD: None},
+            {DELETE_CLAIM_AT_FIELD: ""},
+            {DELETE_CLAIM_AT_FIELD: {"$lte": cutoff}},
+        ]
+    }
 
 
 async def find_sales_receipt_source_journal(db, receipt_id: str) -> Optional[dict]:
@@ -406,6 +451,7 @@ async def attach_receipt_accounting_fields(db, receipts: List[Dict[str, Any]]) -
         rec.pop(CLAIM_FIELD, None)
         rec.pop(REVERSE_CLAIM_FIELD, None)
         rec.pop(DELETE_CLAIM_FIELD, None)
+        rec.pop(DELETE_CLAIM_AT_FIELD, None)
     return receipts
 
 
@@ -438,9 +484,12 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
                 {"financial_status": {"$in": ["cancelled", "reversed"]}},
                 {"cancelled": True},
             ],
-            **_claim_absent_clause(DELETE_CLAIM_FIELD),
+            **delete_claim_absent_or_stale_clause(),
         },
-        {"$set": {CLAIM_FIELD: claim_token, "updated_at": now_iso()}},
+        {
+            "$set": {CLAIM_FIELD: claim_token, "updated_at": now_iso()},
+            "$unset": {DELETE_CLAIM_FIELD: "", DELETE_CLAIM_AT_FIELD: ""},
+        },
         return_document=ReturnDocument.AFTER,
     )
 
@@ -448,6 +497,7 @@ async def acquire_posting_claim(db, receipt_id: str, *, token: Optional[str] = N
 async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict]:
     from services.sales_receipts import now_iso
 
+    now = now_iso()
     return await db.sales_receipts.find_one_and_update(
         {
             "id": str(receipt_id),
@@ -457,10 +507,16 @@ async def acquire_delete_claim(db, receipt_id: str, token: str) -> Optional[dict
             ],
             "$and": [
                 _claim_absent_clause(CLAIM_FIELD),
-                _claim_absent_clause(DELETE_CLAIM_FIELD),
+                delete_claim_absent_or_stale_clause(),
             ],
         },
-        {"$set": {DELETE_CLAIM_FIELD: str(token), "updated_at": now_iso()}},
+        {
+            "$set": {
+                DELETE_CLAIM_FIELD: str(token),
+                DELETE_CLAIM_AT_FIELD: now,
+                "updated_at": now,
+            }
+        },
         return_document=ReturnDocument.AFTER,
     )
 
@@ -470,7 +526,10 @@ async def release_delete_claims(db, token: str) -> None:
 
     await db.sales_receipts.update_many(
         {DELETE_CLAIM_FIELD: str(token)},
-        {"$unset": {DELETE_CLAIM_FIELD: ""}, "$set": {"updated_at": now_iso()}},
+        {
+            "$unset": {DELETE_CLAIM_FIELD: "", DELETE_CLAIM_AT_FIELD: ""},
+            "$set": {"updated_at": now_iso()},
+        },
     )
 
 

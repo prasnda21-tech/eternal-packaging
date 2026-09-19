@@ -35,6 +35,7 @@ from services.sales_receipt_posting import (
     _claim_absent_clause,
     acquire_delete_claim,
     attach_receipt_accounting_fields,
+    delete_claim_absent_or_stale_clause,
     delete_claim_is_active,
     find_sales_receipt_source_journal,
     posting_claim_is_active,
@@ -563,7 +564,7 @@ async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
             "id": rec["id"],
             "$and": [
                 _claim_absent_clause(CLAIM_FIELD),
-                _claim_absent_clause(DELETE_CLAIM_FIELD),
+                delete_claim_absent_or_stale_clause(),
             ],
         }
     )
