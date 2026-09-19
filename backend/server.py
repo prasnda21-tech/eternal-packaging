@@ -1450,6 +1450,7 @@ def _orders_dashboard_list_projection() -> dict:
         "delivery_deadline_effective": 1,
         "scheduled_delivery_date": 1,
         "delivery_deadline_manual": 1,
+        "buffer_stock": 1,
         "design_approved_at": 1,
         "design_bypassed_at": 1,
         "payment_approved_at": 1,
@@ -1798,7 +1799,11 @@ def _calculated_delivery_deadline(order: dict, lead_time_days: int) -> Optional[
 
 def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     """Predicate priority: overdue > h6 > h1 > normal. Kalau PO Terkirim →
-    'terkirim' (warning aktif hilang; Tanggal Pengiriman tetap untuk audit)."""
+    'terkirim' (warning aktif hilang; Tanggal Pengiriman tetap untuk audit).
+
+    Buffer Stock is not a customer SLA commitment: never return overdue.
+    Missing/None/false buffer_stock is treated as a normal PO.
+    """
     if order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14:
         return "terkirim"
     if not deadline_iso:
@@ -1812,7 +1817,7 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     now = datetime.now(timezone.utc)
     delta = dt - now
     if delta.total_seconds() <= 0:
-        return "overdue"
+        return "normal" if bool(order.get("buffer_stock")) else "overdue"
     hours = delta.total_seconds() / 3600.0
     if hours <= 6:
         return "h6"
@@ -3430,6 +3435,7 @@ def _orders_action_center_projection() -> dict:
         "loading_checklist.seal_ok": 1,
         "delivery_deadline_manual": 1,
         "scheduled_delivery_date": 1,
+        "buffer_stock": 1,
         "design_files": _orders_dashboard_file_presence_expr("design_files"),
         "payment_files": _orders_dashboard_file_presence_expr("payment_files"),
         "sample_files": _orders_dashboard_file_presence_expr("sample_files"),
@@ -3513,6 +3519,7 @@ def _shape_order_for_action_center_compute(order: dict) -> dict:
         "qty_packed": src.get("qty_packed"),
         "delivery_deadline_manual": src.get("delivery_deadline_manual"),
         "scheduled_delivery_date": src.get("scheduled_delivery_date"),
+        "buffer_stock": src.get("buffer_stock"),
         "design_files": _action_center_file_presence(src.get("design_files")),
         "payment_files": _action_center_file_presence(src.get("payment_files")),
         "sample_files": _action_center_file_presence(src.get("sample_files")),
@@ -6787,6 +6794,7 @@ def _orders_dashboard_summary_projection() -> dict:
         "loading_completed_at": 1,
         "delivery_deadline_manual": 1,
         "scheduled_delivery_date": 1,
+        "buffer_stock": 1,
         "qty_packed": 1,
         "customer_approval.status": 1,
         "loading_checklist.items_loaded": 1,
@@ -6840,6 +6848,7 @@ def _shape_order_for_dashboard_summary_compute(order: dict) -> dict:
         "loading_completed_at": src.get("loading_completed_at"),
         "delivery_deadline_manual": src.get("delivery_deadline_manual"),
         "scheduled_delivery_date": src.get("scheduled_delivery_date"),
+        "buffer_stock": src.get("buffer_stock"),
         "qty_packed": src.get("qty_packed"),
         "design_files": _dashboard_summary_file_presence(src.get("design_files")),
         "payment_files": _dashboard_summary_file_presence(src.get("payment_files")),
@@ -7393,6 +7402,7 @@ STATUS_PO_PROJECTION = {
     "deadline": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
+    "buffer_stock": 1,
     "design_approved_at": 1,
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
@@ -9982,6 +9992,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
     "delivery_deadline_manual": 1,
+    "buffer_stock": 1,
     "delivery_status": 1,
     "_has_design_files": _mongo_array_nonempty_expr("design_files"),
     "_has_payment_files": _mongo_array_nonempty_expr("payment_files"),

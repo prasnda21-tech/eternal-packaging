@@ -145,6 +145,7 @@ TASK_PROJECTION = {
     "delivered_at": 1,
     "work_date": 1,
     "delivery_deadline_manual": 1,
+    "buffer_stock": 1,
     "design_approved_at": 1,
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
