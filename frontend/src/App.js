@@ -9,7 +9,6 @@ import Login from "./pages/Login";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import { isSalesPwaRole } from "./lib/salesPwa";
 import "@/App.css";
-import "@/productionSheet.css";
 import "@/ui-system.css";
 
 const Settings = lazy(() => import("./pages/Settings"));

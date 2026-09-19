@@ -27,7 +27,7 @@
   --mop-bg: var(--ops-bg);
   background: var(--ops-bg);
   color: var(--ops-navy-text);
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
 .mop-root--ops-wide .mop-shell,
@@ -684,7 +684,7 @@
   font-size: calc(12px * var(--production-sheet-zoom, 1));
   font-weight: 500;
   color: var(--ops-po);
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
 .mop-root--ops-wide .mop-ops-qty-total {

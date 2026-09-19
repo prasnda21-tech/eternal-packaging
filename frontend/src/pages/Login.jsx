@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import BrandMark from "../components/BrandMark";
@@ -9,9 +9,12 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const submittingRef = useRef(false);
 
   const submit = async (e) => {
     e.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setError("");
     setBusy(true);
     try {
@@ -19,6 +22,7 @@ export default function Login() {
     } catch (err) {
       setError(err.response?.data?.detail || "Gagal masuk");
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   };
@@ -44,7 +48,7 @@ export default function Login() {
             <input data-testid="login-password-input" value={password} onChange={(e) => setPassword(e.target.value)} type="password" required />
           </label>
           {error && <div className="error" data-testid="login-error">{error}</div>}
-          <button className="primary full" data-testid="login-submit-button" disabled={busy}>
+          <button type="submit" className="primary full" data-testid="login-submit-button" disabled={busy}>
             {busy ? "Memproses..." : "Masuk ke workspace"} <ChevronRight size={18} />
           </button>
         </form>

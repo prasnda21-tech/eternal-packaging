@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Filter } from "lucide-react";
+import "../productionSheet.css";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { getCanonicalCustomerName } from "../lib/canonicalCustomer";

@@ -15,6 +15,8 @@ describe("PWA config", () => {
     expect(sw).toMatch(/network-first|network first|NetworkFirst/i);
     expect(sw).toMatch(/\/api\//);
     expect(sw).toMatch(/skipWaiting|clients\.claim/);
+    expect(sw).toMatch(/isHashedStaticAsset/);
+    expect(sw).toMatch(/\/static\//);
     expect(sw).not.toMatch(/background.?sync|offline.?queue|replay/i);
     expect(sw).not.toMatch(/packing-info|confirm-delivered|operator-progress/);
   });

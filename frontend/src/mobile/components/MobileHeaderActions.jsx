@@ -10,6 +10,7 @@ export default function MobileHeaderActions() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
     const load = async () => {
       try {
         const res = await api.chatUnreadSummary();
@@ -18,9 +19,38 @@ export default function MobileHeaderActions() {
         if (!cancelled) setUnread(0);
       }
     };
+    const startPoll = () => {
+      if (timer != null) return;
+      timer = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+        load();
+      }, 30000);
+    };
+    const stopPoll = () => {
+      if (timer == null) return;
+      clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        load();
+        startPoll();
+        return;
+      }
+      stopPoll();
+    };
     load();
-    const t = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(t); };
+    if (typeof document === "undefined" || document.visibilityState === "visible") startPoll();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+    return () => {
+      cancelled = true;
+      stopPoll();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
+    };
   }, []);
 
   return (

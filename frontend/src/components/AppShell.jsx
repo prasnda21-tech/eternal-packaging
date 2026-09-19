@@ -171,6 +171,7 @@ export default function AppShell() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
     const check = async () => {
       try {
         const r = await api.systemHealth();
@@ -179,9 +180,38 @@ export default function AppShell() {
         if (!cancelled) setHealth({ ok: false, checkedAt: null });
       }
     };
+    const startPoll = () => {
+      if (timer != null) return;
+      timer = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+        check();
+      }, 30000);
+    };
+    const stopPoll = () => {
+      if (timer == null) return;
+      clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        check();
+        startPoll();
+        return;
+      }
+      stopPoll();
+    };
     check();
-    const t = setInterval(check, 30000); // Reuse existing polling cadence (30s)
-    return () => { cancelled = true; clearInterval(t); };
+    if (typeof document === "undefined" || document.visibilityState === "visible") startPoll();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+    return () => {
+      cancelled = true;
+      stopPoll();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
+    };
   }, []);
 
   useEffect(() => {
