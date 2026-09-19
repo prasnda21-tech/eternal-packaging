@@ -7,9 +7,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.inline_attachments import (
     ALLOWED_KINDS,
+    SAFE_INLINE_MIMES,
+    UnsafeInlineMime,
     decode_inline_attachment,
     field_for_kind,
     find_inline_attachment,
+    normalize_safe_inline_mime,
     strip_inline_attachment_bytes,
 )
 
@@ -85,3 +88,30 @@ def test_decode_inline_attachment_returns_raw_bytes():
     data, ct = decode_inline_attachment(_file("p1", "bukti.pdf", PDF_DATA_URL, content_type="application/pdf"))
     assert data == PDF_BYTES
     assert ct == "application/pdf"
+
+
+def test_normalize_safe_inline_mime_allowlist():
+    assert normalize_safe_inline_mime("image/jpg") == "image/jpeg"
+    assert normalize_safe_inline_mime("IMAGE/PNG; charset=binary") == "image/png"
+    assert "application/pdf" in SAFE_INLINE_MIMES
+    for banned in ("text/html", "application/javascript", "image/svg+xml", "application/octet-stream"):
+        try:
+            normalize_safe_inline_mime(banned)
+            raise AssertionError(f"expected reject for {banned}")
+        except UnsafeInlineMime:
+            pass
+
+
+def test_decode_rejects_unsafe_claimed_mime():
+    html = "data:text/html;base64," + base64.b64encode(b"<html></html>").decode("ascii")
+    try:
+        decode_inline_attachment(_file("h1", "page.html", html, content_type="text/html"))
+        raise AssertionError("html should be rejected")
+    except UnsafeInlineMime:
+        pass
+    svg = "data:image/svg+xml;base64," + base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").decode("ascii")
+    try:
+        decode_inline_attachment(_file("s1", "icon.svg", svg, content_type="image/svg+xml"))
+        raise AssertionError("svg should be rejected")
+    except UnsafeInlineMime:
+        pass

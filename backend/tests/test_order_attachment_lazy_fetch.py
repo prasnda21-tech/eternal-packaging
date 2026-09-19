@@ -25,6 +25,13 @@ PNG_BYTES = (
     b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
+PDF_BYTES = b"%PDF-1.4\n%%EOF\n"
+PDF_DATA_URL = "data:application/pdf;base64," + base64.b64encode(PDF_BYTES).decode("ascii")
+HTML_DATA_URL = "data:text/html;base64," + base64.b64encode(b"<html><body>x</body></html>").decode("ascii")
+SVG_DATA_URL = (
+    "data:image/svg+xml;base64,"
+    + base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").decode("ascii")
+)
 
 
 @pytest.fixture
@@ -156,6 +163,76 @@ async def test_get_payment_attachment_raw_bytes():
     assert r.status_code == 200
     assert r.content == PNG_BYTES
     assert r.headers["content-type"].startswith("image/png")
+    await server.db.orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_historical_png_attachment_ok():
+    import server
+    order = _order(payment=False)
+    await server.db.orders.delete_many({"id": order["id"]})
+    await server.db.orders.insert_one(dict(order))
+    async with await _client(_admin()) as client:
+        r = await client.get(f"/api/orders/{order['id']}/attachments/design/design-1")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/png")
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    await server.db.orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_historical_pdf_attachment_ok():
+    import server
+    order = _order(design=False, payment=False)
+    order["design_files"] = [{
+        "id": "pdf-1",
+        "name": "old.pdf",
+        "content_type": "application/pdf",
+        "data_url": PDF_DATA_URL,
+    }]
+    await server.db.orders.delete_many({"id": order["id"]})
+    await server.db.orders.insert_one(dict(order))
+    async with await _client(_admin()) as client:
+        r = await client.get(f"/api/orders/{order['id']}/attachments/design/pdf-1")
+    assert r.status_code == 200
+    assert r.content == PDF_BYTES
+    assert r.headers["content-type"].startswith("application/pdf")
+    await server.db.orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_historical_claimed_html_rejected():
+    import server
+    order = _order(design=False, payment=False)
+    order["design_files"] = [{
+        "id": "html-1",
+        "name": "page.html",
+        "content_type": "text/html",
+        "data_url": HTML_DATA_URL,
+    }]
+    await server.db.orders.delete_many({"id": order["id"]})
+    await server.db.orders.insert_one(dict(order))
+    async with await _client(_admin()) as client:
+        r = await client.get(f"/api/orders/{order['id']}/attachments/design/html-1")
+    assert r.status_code == 415
+    await server.db.orders.delete_many({"id": order["id"]})
+
+
+@pytest.mark.anyio
+async def test_historical_claimed_svg_rejected():
+    import server
+    order = _order(design=False, payment=False)
+    order["payment_files"] = [{
+        "id": "svg-1",
+        "name": "icon.svg",
+        "content_type": "image/svg+xml",
+        "data_url": SVG_DATA_URL,
+    }]
+    await server.db.orders.delete_many({"id": order["id"]})
+    await server.db.orders.insert_one(dict(order))
+    async with await _client(_admin()) as client:
+        r = await client.get(f"/api/orders/{order['id']}/attachments/payment/svg-1")
+    assert r.status_code == 415
     await server.db.orders.delete_many({"id": order["id"]})
 
 

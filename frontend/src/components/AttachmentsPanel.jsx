@@ -143,18 +143,16 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
     );
   };
 
-  const openFetchedBlob = (file, blob) => {
+  const openFetchedImage = (file, blob) => {
     const objectUrl = URL.createObjectURL(blob);
-    if (fileLooksImage(file, "", blob.type)) {
-      revokePreviewObjectUrl();
-      previewObjectUrl.current = objectUrl;
-      setPreview({ ...file, objectUrl });
-      return;
-    }
-    const opened = window.open(objectUrl, "_blank", "noopener,noreferrer");
-    if (!opened) {
-      setPreviewErr("Gagal memuat file. Coba lagi.");
-    }
+    revokePreviewObjectUrl();
+    previewObjectUrl.current = objectUrl;
+    setPreview({ ...file, objectUrl });
+  };
+
+  const assignPdfPlaceholder = (placeholder, blob) => {
+    const objectUrl = URL.createObjectURL(blob);
+    placeholder.location.replace(objectUrl);
     setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
   };
 
@@ -200,10 +198,27 @@ export default function AttachmentsPanel({ order, user, onUpdated, designSlot = 
       setErr("File tidak memiliki data yang dapat dibuka.");
       return;
     }
+    const isPdf = fileLooksPdf(file);
+    let placeholder = null;
+    if (isPdf) {
+      placeholder = window.open("about:blank", "_blank");
+      if (placeholder) placeholder.opener = null;
+    }
     try {
       const blob = await api.getOrderAttachment(order.id, kind, file.id);
-      openFetchedBlob(file, blob);
+      if (isPdf) {
+        if (!placeholder) {
+          setPreviewErr("Gagal memuat file. Coba lagi.");
+          return;
+        }
+        assignPdfPlaceholder(placeholder, blob);
+        return;
+      }
+      openFetchedImage(file, blob);
     } catch (e) {
+      if (placeholder) {
+        try { placeholder.close(); } catch { /* ignore */ }
+      }
       setPreviewErr("Gagal memuat file. Coba lagi.");
     }
   };

@@ -18,6 +18,18 @@ KIND_FIELDS = {
 
 ALLOWED_KINDS = frozenset(KIND_FIELDS)
 
+SAFE_INLINE_MIMES = frozenset({
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "application/pdf",
+})
+
+
+class UnsafeInlineMime(ValueError):
+    """Resolved MIME is not safe to serve with Content-Disposition: inline."""
+
 
 def strip_inline_attachment_bytes(order: dict) -> dict:
     """Shallow-copy order and drop design/payment `data_url` from the response.
@@ -61,14 +73,23 @@ def find_inline_attachment(order: Optional[dict], kind: str, file_id: str) -> Op
     return None
 
 
+def normalize_safe_inline_mime(content_type: str) -> str:
+    raw = (content_type or "").split(";", 1)[0].strip().lower()
+    if raw == "image/jpg":
+        raw = "image/jpeg"
+    if raw not in SAFE_INLINE_MIMES:
+        raise UnsafeInlineMime(raw or "unknown")
+    return raw
+
+
 def decode_inline_attachment(entry: dict) -> Tuple[bytes, str]:
-    """Return raw bytes and a preview-safe content type from an existing row."""
+    """Return raw bytes and an allowlisted inline content type from an existing row."""
     data_url = str((entry or {}).get("data_url") or "").strip()
     data, decoded_ct = decode_data_url(data_url)
     claimed = str((entry or {}).get("content_type") or "").strip()
     filename = str((entry or {}).get("name") or "")
     ct = sniffer_content_type(data, filename, claimed or decoded_ct)
-    return data, ct
+    return data, normalize_safe_inline_mime(ct)
 
 
 def content_disposition(filename: str) -> str:

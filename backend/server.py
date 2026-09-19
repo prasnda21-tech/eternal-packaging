@@ -97,6 +97,7 @@ from services.surat_jalan_files import (
 )
 from services.inline_attachments import (
     ALLOWED_KINDS as _INLINE_ATTACHMENT_KINDS,
+    UnsafeInlineMime as _UnsafeInlineMime,
     content_disposition as _inline_attachment_disposition,
     decode_inline_attachment as _decode_inline_attachment,
     field_for_kind as _inline_attachment_field,
@@ -4523,6 +4524,8 @@ async def get_order_attachment(order_id: str, kind: str, file_id: str, user=Depe
         raise HTTPException(404, "File tidak ditemukan")
     try:
         data, ct = _decode_inline_attachment(entry)
+    except _UnsafeInlineMime:
+        raise HTTPException(415, "Tipe file tidak didukung untuk preview")
     except ValueError:
         raise HTTPException(404, "Isi file tidak tersedia")
     filename = str(entry.get("name") or "file")

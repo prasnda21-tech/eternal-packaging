@@ -1841,24 +1841,39 @@ export function PaymentFileRow({ file, index, orderId }) {
       setLocalErr("Gagal memuat file. Coba lagi.");
       return;
     }
+    let placeholder = null;
+    if (isPdf) {
+      placeholder = window.open("about:blank", "_blank");
+      if (placeholder) placeholder.opener = null;
+    }
     try {
       const blob = await api.getOrderAttachment(orderId, "payment", file.id);
       revokeObjectUrl();
       const objectUrl = URL.createObjectURL(blob);
       objectUrlRef.current = objectUrl;
-      if (isImage) {
-        setPreviewUrl(objectUrl);
-      } else {
-        const opened = window.open(objectUrl, "_blank", "noopener,noreferrer");
-        if (!opened) setLocalErr("Gagal memuat file. Coba lagi.");
+      if (isPdf) {
+        if (!placeholder) {
+          setLocalErr("Gagal memuat file. Coba lagi.");
+          return;
+        }
+        placeholder.location.replace(objectUrl);
         setTimeout(() => {
           if (objectUrlRef.current === objectUrl) {
             URL.revokeObjectURL(objectUrl);
             objectUrlRef.current = null;
           }
         }, 60000);
+        return;
       }
+      if (isImage) {
+        setPreviewUrl(objectUrl);
+        return;
+      }
+      setLocalErr("Gagal memuat file. Coba lagi.");
     } catch {
+      if (placeholder) {
+        try { placeholder.close(); } catch { /* ignore */ }
+      }
       setLocalErr("Gagal memuat file. Coba lagi.");
     }
   };

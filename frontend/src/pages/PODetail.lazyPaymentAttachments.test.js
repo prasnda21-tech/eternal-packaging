@@ -49,18 +49,25 @@ describe("PaymentFileRow lazy fetch", () => {
   let container;
   let root;
   let created;
+  let opened;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     created = [];
+    opened = [];
     URL.createObjectURL = jest.fn(() => {
       const url = `blob:pay-${created.length}`;
       created.push(url);
       return url;
     });
     URL.revokeObjectURL = jest.fn();
+    window.open = jest.fn(() => {
+      const w = { opener: "parent", location: { replace: jest.fn() }, close: jest.fn() };
+      opened.push(w);
+      return w;
+    });
     api.getOrderAttachment.mockReset();
   });
 
@@ -98,6 +105,7 @@ describe("PaymentFileRow lazy fetch", () => {
     const img = container.querySelector('[data-testid="payment-file-preview-p1"] img');
     expect(img).toBeTruthy();
     expect(img.getAttribute("src")).toBe("blob:pay-0");
+    expect(window.open).not.toHaveBeenCalled();
   });
 
   test("E: close preview revokes Blob URL", async () => {
@@ -113,6 +121,56 @@ describe("PaymentFileRow lazy fetch", () => {
     });
     expect(container.querySelector('[data-testid="payment-file-preview-p1"]')).toBeFalsy();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:pay-0");
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  test("Payment PDF opens placeholder synchronously then assigns blob URL", async () => {
+    const pdf = {
+      id: "pdfp",
+      name: "bukti.pdf",
+      content_type: "application/pdf",
+      uploaded_by_name: "Admin",
+    };
+    let resolveFetch;
+    api.getOrderAttachment.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+    await act(async () => {
+      root.render(<PaymentFileRow file={pdf} index={1} orderId="po-1" />);
+    });
+    act(() => {
+      container.querySelector('[data-testid="payment-file-open-pdfp"]').click();
+    });
+    expect(window.open).toHaveBeenCalledTimes(1);
+    expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(opened[0].opener).toBe(null);
+    expect(api.getOrderAttachment).toHaveBeenCalledTimes(1);
+    expect(api.getOrderAttachment).toHaveBeenCalledWith("po-1", "payment", "pdfp");
+    expect(opened[0].location.replace).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveFetch(new Blob([new Uint8Array([37, 80, 68, 70])], { type: "application/pdf" }));
+    });
+    expect(opened[0].location.replace).toHaveBeenCalledWith("blob:pay-0");
+    expect(window.open).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="payment-file-preview-pdfp"]')).toBeFalsy();
+  });
+
+  test("Payment PDF fetch failure closes placeholder and shows local error", async () => {
+    const pdf = {
+      id: "pdfp",
+      name: "bukti.pdf",
+      content_type: "application/pdf",
+      uploaded_by_name: "Admin",
+    };
+    api.getOrderAttachment.mockRejectedValue(new Error("boom"));
+    await act(async () => {
+      root.render(<PaymentFileRow file={pdf} index={1} orderId="po-1" />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="payment-file-open-pdfp"]').click();
+    });
+    expect(opened[0].close).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="payment-file-error-pdfp"]').textContent).toMatch(
+      /Gagal memuat file/,
+    );
   });
 });
 
