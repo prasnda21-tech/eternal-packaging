@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
+import { sortNotificationsUnreadFirst } from "../lib/floatingNotificationBell";
 import MobileTopBar from "./MobileTopBar";
 
 function decisionLabel(decision) {
@@ -22,7 +23,7 @@ export default function MobileNotificationsPage() {
     setError("");
     try {
       const res = await api.listNotifications({ limit: 50 });
-      setItems(Array.isArray(res?.notifications) ? res.notifications : []);
+      setItems(sortNotificationsUnreadFirst(Array.isArray(res?.notifications) ? res.notifications : []));
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || "Gagal memuat notifikasi");
       setItems([]);
@@ -43,11 +44,15 @@ export default function MobileNotificationsPage() {
         const res = await api.markNotificationRead(item.id);
         const updated = res?.notification;
         if (updated) {
-          setItems((prev) => prev.map((row) => (row.id === item.id ? { ...row, ...updated } : row)));
+          setItems((prev) =>
+            sortNotificationsUnreadFirst(prev.map((row) => (row.id === item.id ? { ...row, ...updated } : row)))
+          );
         } else {
-          setItems((prev) => prev.map((row) => (
-            row.id === item.id ? { ...row, is_read: true, read_at: new Date().toISOString() } : row
-          )));
+          setItems((prev) =>
+            sortNotificationsUnreadFirst(
+              prev.map((row) => (row.id === item.id ? { ...row, is_read: true, read_at: new Date().toISOString() } : row))
+            )
+          );
         }
       }
       const link = item.deep_link || (item.order_id ? `/m/orders/${encodeURIComponent(item.order_id)}` : "");

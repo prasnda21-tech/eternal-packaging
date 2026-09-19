@@ -11,14 +11,33 @@ export function storageKeyForUser(userId) {
   return id ? `${POS_STORAGE_PREFIX}.${id}` : `${POS_STORAGE_PREFIX}.anon`;
 }
 
+export function isNotificationUnread(item) {
+  if (!item) return false;
+  // Canonical client/unread source: read_at (API also exposes is_read = bool(read_at)).
+  return item.read_at == null || item.read_at === "";
+}
+
 export function countUnread(notifications) {
   if (!Array.isArray(notifications)) return 0;
-  return notifications.reduce((n, item) => {
-    if (!item) return n;
-    // Canonical client/unread source: read_at (API also exposes is_read = bool(read_at)).
-    const unread = item.read_at == null || item.read_at === "";
-    return unread ? n + 1 : n;
-  }, 0);
+  return notifications.reduce((n, item) => (isNotificationUnread(item) ? n + 1 : n), 0);
+}
+
+function createdAtMs(item) {
+  const raw = item?.created_at;
+  if (raw == null || raw === "") return 0;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/** Unread first (read_at empty), then created_at DESC within each group. */
+export function sortNotificationsUnreadFirst(notifications) {
+  if (!Array.isArray(notifications)) return [];
+  return notifications.slice().sort((a, b) => {
+    const aUnread = isNotificationUnread(a);
+    const bUnread = isNotificationUnread(b);
+    if (aUnread !== bUnread) return aUnread ? -1 : 1;
+    return createdAtMs(b) - createdAtMs(a);
+  });
 }
 
 export function defaultBellPosition(viewport = {}) {

@@ -390,6 +390,14 @@ async def emit_customer_design_approval_notifications(
         return []
 
 
+def _created_at_desc_key(row: Dict[str, Any]) -> str:
+    return str((row or {}).get("created_at") or "")
+
+
+def _is_unread_read_at(value: Any) -> bool:
+    return value is None or value == ""
+
+
 async def list_notifications_for_user(
     db,
     user_id: str,
@@ -400,10 +408,47 @@ async def list_notifications_for_user(
     if not uid:
         return []
     lim = max(1, min(int(limit or 50), 100))
-    rows = await db[COLLECTION].find(
-        {"user_id": uid},
-        {"_id": 0},
+    coll = db[COLLECTION]
+    projection = {"_id": 0}
+
+    # Unread-first MUST happen before limit so an old unread is not clipped
+    # by newer reads. Two bounded finds stay index-compatible with
+    # (user_id, created_at) — do not fetch the full inbox and sort in Python.
+    unread_missing = await coll.find(
+        {"user_id": uid, "read_at": None},
+        projection,
     ).sort("created_at", -1).to_list(lim)
+
+    unread_empty: List[Dict[str, Any]] = []
+    if len(unread_missing) < lim:
+        unread_empty = await coll.find(
+            {"user_id": uid, "read_at": ""},
+            projection,
+        ).sort("created_at", -1).to_list(lim - len(unread_missing))
+
+    unread = list(unread_missing)
+    if unread_empty:
+        unread.extend(unread_empty)
+        if unread_missing:
+            unread = sorted(unread, key=_created_at_desc_key, reverse=True)[:lim]
+
+    rows = list(unread)
+    remaining = lim - len(rows)
+    if remaining > 0:
+        # $ne: None includes "" on some matchers; over-fetch by the empty-unread
+        # count (already bounded) so those rows can be skipped.
+        read_rows = await coll.find(
+            {"user_id": uid, "read_at": {"$ne": None}},
+            projection,
+        ).sort("created_at", -1).to_list(remaining + len(unread_empty))
+        seen = {r.get("id") for r in rows}
+        for row in read_rows:
+            if row.get("id") in seen or _is_unread_read_at(row.get("read_at")):
+                continue
+            rows.append(row)
+            if len(rows) >= lim:
+                break
+
     return [_public_notification(r) for r in rows]
 
 
