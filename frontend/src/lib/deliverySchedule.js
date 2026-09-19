@@ -17,11 +17,10 @@ export function dateKey(raw) {
   return "";
 }
 
-/** Asia/Jakarta (WIB, UTC+7) calendar date. Do not use UTC ISO slice. */
+/** Asia/Jakarta (WIB, UTC+7) calendar date. Independent of host timezone. */
 export function wibTodayKey(now = new Date()) {
   const instant = now instanceof Date ? now : new Date(now);
-  const utcMs = instant.getTime() + instant.getTimezoneOffset() * 60000;
-  const wib = new Date(utcMs + 7 * 3600000);
+  const wib = new Date(instant.getTime() + 7 * 60 * 60 * 1000);
   const y = wib.getUTCFullYear();
   const m = String(wib.getUTCMonth() + 1).padStart(2, "0");
   const d = String(wib.getUTCDate()).padStart(2, "0");

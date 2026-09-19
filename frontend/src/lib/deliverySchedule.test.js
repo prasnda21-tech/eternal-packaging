@@ -78,6 +78,18 @@ describe("delivery schedule filters", () => {
     expect(wibTodayKey(new Date("2026-09-18T16:59:00.000Z"))).toBe("2026-09-18");
   });
 
+  test("wibTodayKey ignores host timezone offset", () => {
+    const original = Date.prototype.getTimezoneOffset;
+    try {
+      Date.prototype.getTimezoneOffset = function wibHostOffset() { return -420; };
+      expect(wibTodayKey(new Date("2026-09-18T17:01:00.000Z"))).toBe("2026-09-19");
+      Date.prototype.getTimezoneOffset = function utcHostOffset() { return 0; };
+      expect(wibTodayKey(new Date("2026-09-18T17:01:00.000Z"))).toBe("2026-09-19");
+    } finally {
+      Date.prototype.getTimezoneOffset = original;
+    }
+  });
+
   test("active filter count ignores defaults", () => {
     expect(countActiveDeliveryFilters(EMPTY_DELIVERY_FILTERS)).toBe(0);
     expect(countActiveDeliveryFilters({ ...EMPTY_DELIVERY_FILTERS, customer: "a", terkirim: "partial" })).toBe(2);
