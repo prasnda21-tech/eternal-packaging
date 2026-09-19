@@ -1,4 +1,5 @@
 """Division task list: own assignment, line identity, qty semantics."""
+import os
 import sys
 from pathlib import Path
 
@@ -513,6 +514,7 @@ def test_enrichment_does_not_change_task_eligibility_count():
 def test_projection_includes_schedule_read_fields_not_blobs():
     assert "work_date" in TASK_PROJECTION
     assert "delivery_deadline_manual" in TASK_PROJECTION
+    assert "buffer_stock" in TASK_PROJECTION
     assert "design_approved_at" in TASK_PROJECTION
     assert "priority" in TASK_PROJECTION
     assert "line_items" in TASK_PROJECTION
@@ -572,3 +574,80 @@ def test_division_tasks_endpoint_is_read_only():
     assert "insert_one" not in body
     assert "replace_one" not in body
     assert ".find(" in body
+
+
+def _import_server():
+    from dotenv import load_dotenv
+
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+    os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+    os.environ.setdefault("DB_NAME", "test_database")
+    import server
+
+    return server
+
+
+def _apply_task_projection(order: dict) -> dict:
+    """In-memory mirror of TASK_PROJECTION top-level includes."""
+    out = {}
+    for key, include in TASK_PROJECTION.items():
+        if key == "_id" or include != 1 or "." in str(key):
+            continue
+        if key in order:
+            out[key] = order[key]
+    return out
+
+
+def _division_task_after_endpoint_snapshot(order: dict):
+    """Same path as GET /work/division-tasks: lean projection → attach snapshot → rows."""
+    server = _import_server()
+    projected = _apply_task_projection(order)
+    server._attach_deadline_snapshot(projected, 3)
+    rows = build_screener_tasks(projected)
+    return projected, rows
+
+
+def test_buffer_stock_overdue_date_is_not_overdue_on_division_task():
+    normal = _print_po(
+        id="div-normal",
+        current_stage=6,
+        delivery_status="Belum Terkirim",
+        buffer_stock=False,
+        delivery_deadline_manual="2020-01-15T00:00:00+07:00",
+    )
+    buffer = _print_po(
+        id="div-buffer",
+        current_stage=6,
+        delivery_status="Belum Terkirim",
+        buffer_stock=True,
+        delivery_deadline_manual="2020-01-15T00:00:00+07:00",
+    )
+    missing = _print_po(
+        id="div-missing",
+        current_stage=6,
+        delivery_status="Belum Terkirim",
+        delivery_deadline_manual="2020-01-15T00:00:00+07:00",
+    )
+    delivered = _print_po(
+        id="div-done",
+        current_stage=14,
+        delivery_status="Terkirim",
+        buffer_stock=True,
+        delivery_deadline_manual="2020-01-15T00:00:00+07:00",
+    )
+
+    _, normal_rows = _division_task_after_endpoint_snapshot(normal)
+    _, buffer_rows = _division_task_after_endpoint_snapshot(buffer)
+    _, missing_rows = _division_task_after_endpoint_snapshot(missing)
+    _, delivered_rows = _division_task_after_endpoint_snapshot(delivered)
+
+    assert len(normal_rows) >= 1
+    assert len(buffer_rows) >= 1
+    assert normal_rows[0]["delivery_deadline_status"] == "overdue"
+    assert buffer_rows[0]["delivery_deadline_status"] != "overdue"
+    assert buffer_rows[0]["delivery_deadline_status"] == "normal"
+    assert buffer_rows[0]["order_id"] == "div-buffer"
+    assert missing_rows[0]["delivery_deadline_status"] == "overdue"
+    assert delivered_rows[0]["delivery_deadline_status"] == "terkirim"

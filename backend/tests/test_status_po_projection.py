@@ -50,7 +50,7 @@ def apply_status_po_projection(order: dict) -> dict:
     src = order or {}
     shaped = _pick(src, (
         "id", "po_number", "customer", "order_date", "deadline",
-        "delivery_deadline_manual", "scheduled_delivery_date",
+        "delivery_deadline_manual", "scheduled_delivery_date", "buffer_stock",
         "design_approved_at", "design_bypassed_at",
         "payment_approved_at", "payment_bypassed_at",
         "delivered_at", "qty_delivered", "qty_packed", "delivery_status",

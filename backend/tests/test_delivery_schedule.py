@@ -210,6 +210,27 @@ def test_schedule_status_today_and_late():
     assert schedule_status_code(o3, today="2026-08-27") == "terkirim"
 
 
+def test_buffer_stock_past_sj_row_exists_but_not_terlambat():
+    sh = {
+        "id": "sh-buf",
+        "number": "SJBUF",
+        "shipment_index": 1,
+        "delivery_date": "2026-09-10",
+        "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cup", "qty": 1000}],
+    }
+    buffer_po = _po(buffer_stock=True, shipments=[sh])
+    normal_po = _po(buffer_stock=False, shipments=[sh])
+    buf_rows = schedule_rows(buffer_po, today="2026-09-19")
+    norm_rows = schedule_rows(normal_po, today="2026-09-19")
+    assert len(buf_rows) == 1
+    assert buf_rows[0]["status"] == "terjadwal"
+    assert buf_rows[0]["status"] != "terlambat"
+    assert buf_rows[0]["effective_delivery_date"] == "2026-09-10"
+    assert buf_rows[0]["sj_label"] == "SJBUF"
+    assert len(norm_rows) == 1
+    assert norm_rows[0]["status"] == "terlambat"
+
+
 def test_filter_and_reset_semantics():
     # Automatic future date → terjadwal (not belum).
     row = schedule_row(_po(customer="PT Contoh"), today="2026-08-20")

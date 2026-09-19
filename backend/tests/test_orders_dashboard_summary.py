@@ -677,6 +677,32 @@ def test_deadline_h1_h6_overdue_use_snapshot_status():
     assert out2["kpi"][ {"overdue": "overdue", "h1": "deadline_h1", "h6": "deadline_h6"}[st] ] == 1
 
 
+def test_buffer_stock_does_not_increment_overdue_kpi():
+    server = _import_server()
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    shared = dict(
+        current_stage=5,
+        delivery_deadline_manual="2026-09-01",
+        design_status="Approved",
+        payment_status="Approved",
+        operator_splits=[],
+        shipments=[],
+        delivery_proofs=[],
+        delivery_note_created_at=None,
+        packing_info={"qty_packed": 0, "lines": []},
+        loading_confirmations=[],
+        loading_info={"lines": [], "events": []},
+    )
+    normal = _base_print_po(id="ov-normal", po_number="PO-OV-N", buffer_stock=False, **shared)
+    buffer = _base_print_po(id="ov-buffer", po_number="PO-OV-B", buffer_stock=True, **shared)
+    _, out, _ = _assert_hop_parity(server, normal, buffer, now=now)
+    assert out["kpi"]["overdue"] == 1
+    assert [row["id"] for row in out["overdue"]] == ["ov-normal"]
+    full_buffer = copy.deepcopy(buffer)
+    server._attach_deadline_snapshot(full_buffer, 3)
+    assert full_buffer["delivery_deadline_status"] == "normal"
+
+
 def test_work_today_from_order_and_operator_splits():
     server = _import_server()
     now = datetime(2026, 9, 13, 6, 0, tzinfo=timezone.utc)

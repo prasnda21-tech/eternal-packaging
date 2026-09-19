@@ -346,7 +346,12 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
     counts = _document_counts(order, deliveries, invoices)
     kirim = order.get("tanggal_pengiriman")
     today = wib_today().isoformat()
-    overdue = bool(kirim and kirim < today and effective_workflow_status(order) not in ("Terkirim",))
+    overdue = bool(
+        not bool(order.get("buffer_stock"))
+        and kirim
+        and kirim < today
+        and effective_workflow_status(order) not in ("Terkirim",)
+    )
     return {
         "id": order.get("id"),
         "po_number": order.get("po_number"),

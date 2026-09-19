@@ -112,6 +112,7 @@ SCHEDULE_PROJECTION = {
     "terkirim_confirmed": 1,
     "priority": 1,
     "cancelled": 1,
+    "buffer_stock": 1,
 }
 
 RESCHEDULE_PROJECTION = {
@@ -187,6 +188,9 @@ def schedule_status_code(
     if eff == day:
         return "hari_ini"
     if eff < day:
+        # Buffer Stock is not a customer SLA — keep the row, never mark terlambat.
+        if bool(order.get("buffer_stock")):
+            return "terjadwal"
         return "terlambat"
     # Any future authoritative Tanggal Pengiriman (manual or automatic) is scheduled.
     return "terjadwal"
