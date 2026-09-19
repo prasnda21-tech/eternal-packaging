@@ -6206,19 +6206,29 @@ async def create_delivery_reschedule(order_id: str, payload: DeliveryRescheduleP
         if order.get("deadline") != deadline_before:
             raise HTTPException(500, "Deadline asli tidak boleh berubah")
         if not mutated:
-            return rec
-        if order.get("delivery_proofs") != proofs_before:
+            return rec, False
+        if list(order.get("delivery_proofs") or []) != proofs_before:
             raise HTTPException(500, "Bukti kirim tidak boleh berubah")
         if order.get("packing_info") != packed_before or order.get("loading_info") != loading_before:
             raise HTTPException(500, "Qty packing/loading tidak boleh berubah")
         if order.get("delivery_status") != status_before:
             raise HTTPException(500, "Status pengiriman tidak boleh berubah")
-        return rec
+        return rec, True
 
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
-    rec = mutate(order)
+    rec, mutated = mutate(order)
+    if mutated and rec.get("status") == "scheduled" and rec.get("new_date"):
+        from services.sales_deliveries import sync_sj_numbers_after_reschedule
+        await sync_sj_numbers_after_reschedule(
+            db,
+            order,
+            previous_date=rec.get("previous_date"),
+            new_date=rec.get("new_date"),
+            shipment_id=payload.shipment_id,
+            user=user,
+        )
     persisted = await _persist_order(order)
     attach_schedule_snapshot(persisted)
     on_rs = getattr(_delivery_route_api, "_hooks", {}).get("on_rescheduled")
@@ -6310,6 +6320,16 @@ async def set_delivery_reschedule_date(
         raise HTTPException(400, str(e))
     if order.get("deadline") != deadline_before:
         raise HTTPException(500, "Deadline asli tidak boleh berubah")
+    if mutated and rec.get("status") == "scheduled" and rec.get("new_date"):
+        from services.sales_deliveries import sync_sj_numbers_after_reschedule
+        await sync_sj_numbers_after_reschedule(
+            db,
+            order,
+            previous_date=rec.get("previous_date"),
+            new_date=rec.get("new_date"),
+            shipment_id=rec.get("shipment_id"),
+            user=user,
+        )
     persisted = await _persist_order(order)
     attach_schedule_snapshot(persisted)
     return {"order": persisted, "reschedule": rec, "mutated": mutated}
