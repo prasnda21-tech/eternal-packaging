@@ -8,6 +8,7 @@ import {
   movementExceededThreshold,
   panelPlacement,
   readStoredBellPosition,
+  sortNotificationsUnreadFirst,
   storageKeyForUser,
   writeStoredBellPosition,
 } from "./floatingNotificationBell";
@@ -46,6 +47,78 @@ describe("floatingNotificationBell helpers", () => {
   test("countUnread: canonical source is read_at (is_read is API-normalized convenience)", () => {
     expect(countUnread([{ id: "1", is_read: false, read_at: "2026-01-01T00:00:00Z" }])).toBe(0);
     expect(countUnread([{ id: "2", is_read: true, read_at: null }])).toBe(1);
+  });
+
+  test("sortNotificationsUnreadFirst: 2 unread + 2 read keeps unread above newer read", () => {
+    const mixed = [
+      { id: "C", read_at: "2026-09-11T12:31:00Z", created_at: "2026-09-11T12:30:00Z" },
+      { id: "A", read_at: null, created_at: "2026-09-11T12:00:00Z" },
+      { id: "B", read_at: null, created_at: "2026-09-11T11:00:00Z" },
+      { id: "D", read_at: "2026-09-11T10:01:00Z", created_at: "2026-09-11T10:00:00Z" },
+    ];
+    expect(sortNotificationsUnreadFirst(mixed).map((n) => n.id)).toEqual(["A", "B", "C", "D"]);
+    expect(countUnread(mixed)).toBe(2);
+  });
+
+  test("sortNotificationsUnreadFirst: unread newest then older", () => {
+    const unread = [
+      { id: "old", read_at: null, created_at: "2026-09-11T11:00:00Z" },
+      { id: "new", read_at: "", created_at: "2026-09-11T12:00:00Z" },
+    ];
+    expect(sortNotificationsUnreadFirst(unread).map((n) => n.id)).toEqual(["new", "old"]);
+  });
+
+  test("sortNotificationsUnreadFirst: read newest then older", () => {
+    const read = [
+      { id: "old", read_at: "x", created_at: "2026-09-11T10:00:00Z" },
+      { id: "new", read_at: "y", created_at: "2026-09-11T12:30:00Z" },
+    ];
+    expect(sortNotificationsUnreadFirst(read).map((n) => n.id)).toEqual(["new", "old"]);
+  });
+
+  test("sortNotificationsUnreadFirst: mark unread as read moves into read group by created_at", () => {
+    const before = [
+      { id: "A", read_at: null, created_at: "2026-09-11T12:00:00Z" },
+      { id: "B", read_at: null, created_at: "2026-09-11T11:00:00Z" },
+      { id: "C", read_at: "z", created_at: "2026-09-11T12:30:00Z" },
+      { id: "D", read_at: "z", created_at: "2026-09-11T10:00:00Z" },
+    ];
+    const afterMarkA = before.map((row) =>
+      row.id === "A" ? { ...row, is_read: true, read_at: "2026-09-11T13:00:00Z" } : row
+    );
+    expect(sortNotificationsUnreadFirst(afterMarkA).map((n) => n.id)).toEqual(["B", "C", "A", "D"]);
+    expect(countUnread(afterMarkA)).toBe(1);
+  });
+
+  test("sortNotificationsUnreadFirst: mark all read keeps created_at DESC and unread count 0", () => {
+    const allRead = [
+      { id: "A", read_at: "r", created_at: "2026-09-11T12:00:00Z" },
+      { id: "B", read_at: "r", created_at: "2026-09-11T11:00:00Z" },
+      { id: "C", read_at: "r", created_at: "2026-09-11T12:30:00Z" },
+      { id: "D", read_at: "r", created_at: "2026-09-11T10:00:00Z" },
+    ];
+    expect(sortNotificationsUnreadFirst(allRead).map((n) => n.id)).toEqual(["C", "A", "B", "D"]);
+    expect(countUnread(allRead)).toBe(0);
+  });
+
+  test("sortNotificationsUnreadFirst: refetch created_at DESC still unread-first", () => {
+    const refetch = [
+      { id: "C", read_at: "z", created_at: "2026-09-11T12:30:00Z" },
+      { id: "A", read_at: "z", created_at: "2026-09-11T12:00:00Z" },
+      { id: "B", read_at: null, created_at: "2026-09-11T11:00:00Z" },
+      { id: "D", read_at: "z", created_at: "2026-09-11T10:00:00Z" },
+    ];
+    expect(sortNotificationsUnreadFirst(refetch).map((n) => n.id)).toEqual(["B", "C", "A", "D"]);
+  });
+
+  test("sortNotificationsUnreadFirst: does not mutate input and ignores is_read when read_at disagrees", () => {
+    const input = [
+      { id: "read-newer", is_read: false, read_at: "2026-09-11T12:30:00Z", created_at: "2026-09-11T12:30:00Z" },
+      { id: "unread-older", is_read: true, read_at: null, created_at: "2026-09-11T11:00:00Z" },
+    ];
+    const snapshot = input.map((row) => ({ ...row }));
+    expect(sortNotificationsUnreadFirst(input).map((n) => n.id)).toEqual(["unread-older", "read-newer"]);
+    expect(input).toEqual(snapshot);
   });
 
   test("default position is bottom-right safe area", () => {

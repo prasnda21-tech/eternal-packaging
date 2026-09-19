@@ -348,6 +348,82 @@ describe("FloatingNotificationBell", () => {
     expect(container.querySelector('[data-testid="web-notif-badge"]').textContent).toBe("1");
   });
 
+  test("unread-first: mixed list and refetch keep unread above newer read", async () => {
+    api.listNotifications
+      .mockResolvedValueOnce({
+        notifications: [
+          notif({ id: "C", is_read: true, read_at: "x", created_at: "2026-09-11T12:30:00Z" }),
+          notif({ id: "A", created_at: "2026-09-11T12:00:00Z" }),
+          notif({ id: "B", created_at: "2026-09-11T11:00:00Z" }),
+          notif({ id: "D", is_read: true, read_at: "y", created_at: "2026-09-11T10:00:00Z" }),
+        ],
+      })
+      .mockResolvedValue({
+        notifications: [
+          notif({ id: "C", is_read: true, read_at: "x", created_at: "2026-09-11T12:30:00Z" }),
+          notif({ id: "A", is_read: true, read_at: "z", created_at: "2026-09-11T12:00:00Z" }),
+          notif({ id: "B", created_at: "2026-09-11T11:00:00Z" }),
+          notif({ id: "D", is_read: true, read_at: "y", created_at: "2026-09-11T10:00:00Z" }),
+        ],
+      });
+    await renderBell();
+    expect(container.querySelector('[data-testid="web-notif-badge"]').textContent).toBe("2");
+    const bell = container.querySelector('[data-testid="web-notif-bell-button"]');
+    await act(async () => {
+      firePointer(bell, "pointerdown", { clientX: 5, clientY: 5, pointerId: 1 });
+      firePointer(bell, "pointerup", { clientX: 5, clientY: 5, pointerId: 1 });
+    });
+    const ids = () =>
+      [...container.querySelectorAll("[data-testid^='web-notif-item-']")].map((el) =>
+        el.getAttribute("data-testid").replace("web-notif-item-", "")
+      );
+    expect(ids()).toEqual(["A", "B", "C", "D"]);
+
+    await act(async () => {
+      jest.advanceTimersByTime(POLL_INTERVAL_MS);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="web-notif-badge"]').textContent).toBe("1");
+    expect(ids()).toEqual(["B", "C", "A", "D"]);
+  });
+
+  test("unread-first: mark-read immediately reorders without waiting for poll", async () => {
+    api.listNotifications.mockResolvedValue({
+      notifications: [
+        notif({ id: "A", created_at: "2026-09-11T12:00:00Z", order_id: "ord-a" }),
+        notif({ id: "B", created_at: "2026-09-11T11:00:00Z" }),
+        notif({ id: "C", is_read: true, read_at: "x", created_at: "2026-09-11T12:30:00Z" }),
+        notif({ id: "D", is_read: true, read_at: "y", created_at: "2026-09-11T10:00:00Z" }),
+      ],
+    });
+    api.markNotificationRead.mockResolvedValue({
+      notification: { id: "A", is_read: true, read_at: "2026-09-11T13:00:00Z" },
+    });
+    await renderBell();
+    const bell = container.querySelector('[data-testid="web-notif-bell-button"]');
+    await act(async () => {
+      firePointer(bell, "pointerdown", { clientX: 5, clientY: 5, pointerId: 1 });
+      firePointer(bell, "pointerup", { clientX: 5, clientY: 5, pointerId: 1 });
+    });
+    expect(api.listNotifications).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      container.querySelector('[data-testid="web-notif-item-A"]').click();
+      await Promise.resolve();
+    });
+    expect(api.markNotificationRead).toHaveBeenCalledWith("A");
+    expect(container.querySelector('[data-testid="web-notif-badge"]').textContent).toBe("1");
+    expect(api.listNotifications).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      firePointer(bell, "pointerdown", { clientX: 5, clientY: 5, pointerId: 2 });
+      firePointer(bell, "pointerup", { clientX: 5, clientY: 5, pointerId: 2 });
+    });
+    const ids = [...container.querySelectorAll("[data-testid^='web-notif-item-']")].map((el) =>
+      el.getAttribute("data-testid").replace("web-notif-item-", "")
+    );
+    expect(ids).toEqual(["B", "C", "A", "D"]);
+  });
+
   test("CASE 13 existing bell renders canonical SJ-created notification", async () => {
     api.listNotifications.mockResolvedValue({
       notifications: [notif({

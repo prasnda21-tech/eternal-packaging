@@ -10,6 +10,7 @@ import {
   clampBellPosition,
   countUnread,
   decisionLabel,
+  sortNotificationsUnreadFirst,
   defaultBellPosition,
   movementExceededThreshold,
   panelPlacement,
@@ -112,7 +113,7 @@ export default function FloatingNotificationBell() {
     try {
       const data = await api.listNotifications({ limit: 50 });
       if (!mounted.current || gen !== fetchGen.current) return;
-      setItems(Array.isArray(data?.notifications) ? data.notifications : []);
+      setItems(sortNotificationsUnreadFirst(Array.isArray(data?.notifications) ? data.notifications : []));
       setError("");
     } catch (err) {
       if (!mounted.current || gen !== fetchGen.current) return;
@@ -249,13 +250,17 @@ export default function FloatingNotificationBell() {
         const res = await api.markNotificationRead(item.id);
         const updated = res?.notification;
         if (updated) {
-          setItems((prev) => prev.map((row) => (row.id === item.id ? { ...row, ...updated } : row)));
+          setItems((prev) =>
+            sortNotificationsUnreadFirst(prev.map((row) => (row.id === item.id ? { ...row, ...updated } : row)))
+          );
         } else {
           setItems((prev) =>
-            prev.map((row) =>
-              row.id === item.id
-                ? { ...row, is_read: true, read_at: new Date().toISOString() }
-                : row
+            sortNotificationsUnreadFirst(
+              prev.map((row) =>
+                row.id === item.id
+                  ? { ...row, is_read: true, read_at: new Date().toISOString() }
+                  : row
+              )
             )
           );
         }

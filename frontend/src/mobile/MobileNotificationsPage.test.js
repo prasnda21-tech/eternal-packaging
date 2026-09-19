@@ -82,6 +82,65 @@ describe("MobileNotificationsPage regression", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/m/orders/ord-9");
   });
 
+  test("unread-first: mixed list, mark-read reorder, and refetch stay unread-first", async () => {
+    api.listNotifications
+      .mockResolvedValueOnce({
+        notifications: [
+          { id: "C", title: "C", body: "c", is_read: true, read_at: "x", created_at: "2026-09-11T12:30:00Z" },
+          { id: "A", title: "A", body: "a", is_read: false, read_at: null, created_at: "2026-09-11T12:00:00Z", deep_link: "/m/orders/ord-a" },
+          { id: "B", title: "B", body: "b", is_read: false, read_at: null, created_at: "2026-09-11T11:00:00Z" },
+          { id: "D", title: "D", body: "d", is_read: true, read_at: "y", created_at: "2026-09-11T10:00:00Z" },
+        ],
+      })
+      .mockResolvedValue({
+        notifications: [
+          { id: "C", title: "C", body: "c", is_read: true, read_at: "x", created_at: "2026-09-11T12:30:00Z" },
+          { id: "A", title: "A", body: "a", is_read: true, read_at: "z", created_at: "2026-09-11T12:00:00Z" },
+          { id: "B", title: "B", body: "b", is_read: false, read_at: null, created_at: "2026-09-11T11:00:00Z" },
+          { id: "D", title: "D", body: "d", is_read: true, read_at: "y", created_at: "2026-09-11T10:00:00Z" },
+        ],
+      });
+    api.markNotificationRead.mockResolvedValue({
+      notification: { id: "A", is_read: true, read_at: "2026-09-11T13:00:00Z" },
+    });
+
+    await act(async () => {
+      root.render(<MobileNotificationsPage />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const ids = () =>
+      [...container.querySelectorAll("[data-testid^='mobile-notification-']")].map((el) =>
+        el.getAttribute("data-testid").replace("mobile-notification-", "")
+      );
+    expect(ids()).toEqual(["A", "B", "C", "D"]);
+    expect(container.querySelector('[data-testid="mobile-notification-A"]').getAttribute("data-unread")).toBe("1");
+
+    await act(async () => {
+      container.querySelector('[data-testid="mobile-notification-A"]').click();
+      await Promise.resolve();
+    });
+    expect(api.markNotificationRead).toHaveBeenCalledWith("A");
+    expect(ids()).toEqual(["B", "C", "A", "D"]);
+    expect(container.querySelector('[data-testid="mobile-notification-A"]').getAttribute("data-unread")).toBe("0");
+    expect(container.querySelector('[data-testid="mobile-notification-B"]').getAttribute("data-unread")).toBe("1");
+    expect(api.listNotifications).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<MobileNotificationsPage />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(ids()).toEqual(["B", "C", "A", "D"]);
+  });
+
   test("source still uses shared notification APIs", () => {
     const src = fs.readFileSync(path.join(__dirname, "MobileNotificationsPage.jsx"), "utf8");
     expect(src).toMatch(/listNotifications/);
