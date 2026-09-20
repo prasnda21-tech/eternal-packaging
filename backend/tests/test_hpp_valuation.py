@@ -23,12 +23,14 @@ from services.hpp_valuation import (
     InsufficientCostLayerError,
     METHOD_AVG,
     METHOD_FIFO,
+    FINANCIAL_INVENTORY_BASIS_GR,
     REASON_FINANCIAL_COST_BASIS_MISMATCH,
     REASON_FINANCIAL_MODEL_VERSION_MISMATCH,
     REASON_HPP_VERSION_NOT_ACTIVE,
     REASON_INVALID_FINANCIAL_UOM_VERSION,
     REASON_LEGACY_HPP_VERSION,
     REASON_NO_ACTIVE_HPP_VERSION,
+    REASON_NO_FINANCIAL_INVENTORY_BASIS,
     RECOG_GR,
     RECOG_PO,
     assess_version_financial_readiness,
@@ -360,6 +362,8 @@ async def test_legacy_and_invalid_versions_are_not_financially_ready():
         "financial_uom_normalization_valid": False,
         "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
         "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
     }
     ready, reason = assess_version_financial_readiness(invalid_uom)
     assert ready is False
@@ -386,6 +390,8 @@ async def test_legacy_and_invalid_versions_are_not_financially_ready():
         "financial_uom_normalization_valid": True,
         "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
         "cost_basis_uom": "TRANSACTION_UOM",
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
     }
     ready, reason = assess_version_financial_readiness(wrong_basis)
     assert ready is False
@@ -405,16 +411,32 @@ async def test_legacy_and_invalid_versions_are_not_financially_ready():
         "financial_uom_normalization_valid": True,
         "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
         "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
     }
     ready, reason = assess_version_financial_readiness(not_active)
     assert ready is False
     assert reason == REASON_HPP_VERSION_NOT_ACTIVE
+
+    zero_eligible = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": True,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 0,
+    }
+    ready, reason = assess_version_financial_readiness(zero_eligible)
+    assert ready is False
+    assert reason == REASON_NO_FINANCIAL_INVENTORY_BASIS
 
     valid = {
         "status": "ACTIVE",
         "financial_uom_normalization_valid": True,
         "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
         "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
     }
     ready, reason = assess_version_financial_readiness(valid)
     assert ready is True

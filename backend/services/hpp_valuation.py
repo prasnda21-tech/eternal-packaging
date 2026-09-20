@@ -27,6 +27,7 @@ from services.purchase_common import (
     qty_round,
 )
 from services.inventory_accounting import (
+    CANONICAL_GR,
     COST_BASIS_UOM,
     FINANCIAL_INVENTORY_MODEL_VERSION,
     REASON_INVALID_UNIT_CONVERSION,
@@ -66,6 +67,8 @@ REASON_HPP_VERSION_NOT_ACTIVE = "HPP_VERSION_NOT_ACTIVE"
 REASON_FINANCIAL_MODEL_VERSION_MISMATCH = "FINANCIAL_MODEL_VERSION_MISMATCH"
 REASON_FINANCIAL_COST_BASIS_MISMATCH = "FINANCIAL_COST_BASIS_MISMATCH"
 REASON_HPP_METHOD_INVALID = "HPP_METHOD_INVALID"
+REASON_NO_FINANCIAL_INVENTORY_BASIS = "NO_FINANCIAL_INVENTORY_BASIS"
+FINANCIAL_INVENTORY_BASIS_GR = "GOODS_RECEIPT"
 
 
 class InsufficientCostLayerError(ValueError):
@@ -172,6 +175,18 @@ def _persisted_version_field(version: Optional[dict], key: str):
     return version.get(key)
 
 
+def count_financial_eligible_acquisitions(events: List[dict]) -> int:
+    """Count canonical GR events that are financially eligible. Does not infer from layers."""
+    count = 0
+    for ev in events:
+        if ev.get("financial_inventory_eligible") is not True:
+            continue
+        if str(ev.get("canonical_source_type") or "") != CANONICAL_GR:
+            continue
+        count += 1
+    return count
+
+
 def assess_version_financial_readiness(version: Optional[dict]) -> Tuple[bool, Optional[str]]:
     """Pure check of a persisted HPP version. Missing/legacy metadata is not ready."""
     if not version:
@@ -182,6 +197,8 @@ def assess_version_financial_readiness(version: Optional[dict]) -> Tuple[bool, O
         "financial_uom_normalization_valid" not in version
         or "financial_inventory_model_version" not in version
         or "cost_basis_uom" not in version
+        or "financial_inventory_basis" not in version
+        or "financial_eligible_acquisition_count" not in version
     ):
         return False, REASON_LEGACY_HPP_VERSION
     if version.get("financial_uom_normalization_valid") is not True:
@@ -190,6 +207,14 @@ def assess_version_financial_readiness(version: Optional[dict]) -> Tuple[bool, O
         return False, REASON_FINANCIAL_MODEL_VERSION_MISMATCH
     if version.get("cost_basis_uom") != COST_BASIS_UOM:
         return False, REASON_FINANCIAL_COST_BASIS_MISMATCH
+    if version.get("financial_inventory_basis") != FINANCIAL_INVENTORY_BASIS_GR:
+        return False, REASON_NO_FINANCIAL_INVENTORY_BASIS
+    try:
+        eligible_count = int(version.get("financial_eligible_acquisition_count"))
+    except (TypeError, ValueError):
+        return False, REASON_NO_FINANCIAL_INVENTORY_BASIS
+    if eligible_count <= 0:
+        return False, REASON_NO_FINANCIAL_INVENTORY_BASIS
     return True, None
 
 
@@ -625,6 +650,7 @@ async def recalculate_hpp(
                 for ev in events
             ]
             uom_valid = financial_uom_normalization_valid(events)
+            eligible_count = count_financial_eligible_acquisitions(events)
             if method == METHOD_FIFO:
                 layers, cogs = fifo_consume(fifo_layers_from_events(events), issues or [])
             else:
@@ -663,6 +689,8 @@ async def recalculate_hpp(
                     "financial_cost_basis_uom": COST_BASIS_UOM,
                     "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
                     "financial_uom_normalization_valid": uom_valid,
+                    "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+                    "financial_eligible_acquisition_count": eligible_count,
                     "error": None,
                 }},
             )
@@ -783,6 +811,10 @@ async def query_cost_boundary(
         "financial_cost_basis_uom": _persisted_version_field(version, "financial_cost_basis_uom"),
         "financial_inventory_model_version": _persisted_version_field(
             version, "financial_inventory_model_version"
+        ),
+        "financial_inventory_basis": _persisted_version_field(version, "financial_inventory_basis"),
+        "financial_eligible_acquisition_count": _persisted_version_field(
+            version, "financial_eligible_acquisition_count"
         ),
         "issues": [],
         "acquisitions": acquisitions,

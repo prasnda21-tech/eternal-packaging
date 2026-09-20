@@ -24,9 +24,11 @@ from services.hpp_valuation import (
     COST_BASIS_UOM,
     FINANCIAL_INVENTORY_MODEL_VERSION,
     LAYERS,
+    FINANCIAL_INVENTORY_BASIS_GR,
     REASON_INVALID_FINANCIAL_UOM_VERSION,
     REASON_LEGACY_HPP_VERSION,
     REASON_NO_ACTIVE_HPP_VERSION,
+    REASON_NO_FINANCIAL_INVENTORY_BASIS,
     REASON_PURCHASE_INVENTORY_NOT_CONFIGURED,
     SETTINGS_KEY as HPP_SETTINGS_KEY,
     VERSIONS,
@@ -372,6 +374,9 @@ async def test_carton_recalc_version_immutability_and_zero_journals():
     assert settings["financial_cogs_ready"] is True
     assert settings["financial_cogs_ready_reason"] is None
     version_a = settings["active_version"]
+    ver_ready = await server.db[VERSIONS].find_one({"id": version_a}, {"_id": 0})
+    assert ver_ready["financial_inventory_basis"] == FINANCIAL_INVENTORY_BASIS_GR
+    assert ver_ready["financial_eligible_acquisition_count"] >= 1
     layer_a = await server.db[LAYERS].find_one({"calculation_version": version_a}, {"_id": 0})
     assert layer_a["conversion_factor"] == 1000
     assert layer_a["base_qty"] == 1000
@@ -493,6 +498,8 @@ async def test_financial_cogs_ready_requires_current_model_version():
     assert boundary["financial_inventory_model_version"] is None
     assert boundary["cost_basis_uom"] is None
     assert boundary["financial_cost_basis_uom"] is None
+    assert boundary["financial_inventory_basis"] is None
+    assert boundary["financial_eligible_acquisition_count"] is None
     assert boundary["supported_financial_inventory_model_version"] == FINANCIAL_INVENTORY_MODEL_VERSION
 
     await server.db[VERSIONS].update_one(
@@ -501,6 +508,8 @@ async def test_financial_cogs_ready_requires_current_model_version():
             "financial_uom_normalization_valid": False,
             "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
             "cost_basis_uom": COST_BASIS_UOM,
+            "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+            "financial_eligible_acquisition_count": 1,
         }},
     )
     invalid = await get_hpp_settings(server.db)
@@ -518,4 +527,84 @@ async def test_financial_cogs_ready_requires_current_model_version():
     unconfigured = await get_hpp_settings(server.db)
     assert unconfigured["financial_cogs_ready"] is False
     assert unconfigured["financial_cogs_ready_reason"] == REASON_PURCHASE_INVENTORY_NOT_CONFIGURED
+    assert await server.db.journal_entries.count_documents({}) == journals_before
+
+
+async def test_po_management_version_is_not_financial_cogs_ready():
+    await _configure_inventory("2026-10-01")
+    await server.db.master_items.insert_one({"id": "m-inv", "item_type": "INVENTORY", "unit": "PCS"})
+    po, _gr = _po_gr(mid="m-inv", unit="PCS", qty=100, price=500, receipt_date="2026-10-01")
+    await server.db.purchase_orders.insert_one(po)
+    journals_before = await server.db.journal_entries.count_documents({})
+    settings = await recalculate_hpp(server.db, method="FIFO", recognition_point="purchase_order", user=_admin())
+    assert settings["last_recalculation_status"] == "SUCCESS"
+    assert settings["financial_cogs_ready"] is False
+    assert settings["financial_cogs_ready_reason"] == REASON_NO_FINANCIAL_INVENTORY_BASIS
+    version = await server.db[VERSIONS].find_one({"id": settings["active_version"]}, {"_id": 0})
+    assert version["financial_inventory_basis"] == FINANCIAL_INVENTORY_BASIS_GR
+    assert version["financial_eligible_acquisition_count"] == 0
+    layers = await server.db[LAYERS].find({"calculation_version": settings["active_version"]}, {"_id": 0}).to_list(10)
+    assert layers
+    view = financial_layer_view(layers[0])
+    assert view["financial_inventory_eligible"] is False
+    assert view["financial_ineligibility_reason"] == REASON_PURCHASE_ORDER_RECOGNITION
+    assert await server.db.journal_entries.count_documents({}) == journals_before
+
+
+async def test_service_pre_effective_and_allocation_have_no_financial_basis():
+    await _configure_inventory("2026-10-01")
+    await server.db.master_items.insert_many([
+        {"id": "m-svc", "item_type": "SERVICE", "unit": "PCS"},
+        {"id": "m-inv", "item_type": "INVENTORY", "unit": "PCS"},
+    ])
+    journals_before = await server.db.journal_entries.count_documents({})
+
+    po_svc = {
+        "id": "po-svc", "po_number": "PB-SVC", "order_date": "2026-09-01", "cancelled": False,
+        "lines": [{"line_id": "ln-svc", "ordered_qty": 1, "unit_price": 100000, "unit": "PCS", "master_item_id": "m-svc"}],
+    }
+    gr_svc = {
+        "id": "gr-svc", "receipt_number": "GR-SVC", "purchase_order_id": "po-svc",
+        "receipt_date": "2026-10-02", "cancelled": False,
+        "lines": [{"line_id": "gl-svc", "purchase_order_line_id": "ln-svc", "received_qty": 1, "unit": "PCS"}],
+    }
+    await server.db.purchase_orders.insert_one(po_svc)
+    await server.db.purchase_goods_receipts.insert_one(gr_svc)
+    svc = await recalculate_hpp(server.db, method="FIFO", recognition_point="goods_receipt", user=_admin())
+    assert svc["financial_cogs_ready"] is False
+    assert svc["financial_cogs_ready_reason"] == REASON_NO_FINANCIAL_INVENTORY_BASIS
+    svc_ver = await server.db[VERSIONS].find_one({"id": svc["active_version"]}, {"_id": 0})
+    assert svc_ver["financial_eligible_acquisition_count"] == 0
+
+    await server.db.purchase_goods_receipts.delete_many({})
+    await server.db.purchase_orders.delete_many({})
+    po_old, gr_old = _po_gr(mid="m-inv", unit="PCS", qty=100, price=500, receipt_date="2026-09-30")
+    await server.db.purchase_orders.insert_one(po_old)
+    await server.db.purchase_goods_receipts.insert_one(gr_old)
+    pre = await recalculate_hpp(server.db, method="FIFO", recognition_point="goods_receipt", user=_admin())
+    assert pre["financial_cogs_ready"] is False
+    assert pre["financial_cogs_ready_reason"] == REASON_NO_FINANCIAL_INVENTORY_BASIS
+    pre_ver = await server.db[VERSIONS].find_one({"id": pre["active_version"]}, {"_id": 0})
+    assert pre_ver["financial_eligible_acquisition_count"] == 0
+
+    await server.db.purchase_goods_receipts.delete_many({})
+    await server.db.purchase_receipt_po_links.insert_one({
+        "id": "alloc-1",
+        "purchase_order_id": "po-1",
+        "purchase_order_line_id": "ln-1",
+        "allocated_qty": 100,
+        "accurate_receipt_id": "acc-r1",
+        "accurate_line_id": "acc-l1",
+        "receipt_date": "2026-10-02",
+        "cancelled": False,
+    })
+    alloc = await recalculate_hpp(server.db, method="FIFO", recognition_point="goods_receipt", user=_admin())
+    assert alloc["financial_cogs_ready"] is False
+    assert alloc["financial_cogs_ready_reason"] == REASON_NO_FINANCIAL_INVENTORY_BASIS
+    alloc_ver = await server.db[VERSIONS].find_one({"id": alloc["active_version"]}, {"_id": 0})
+    assert alloc_ver["financial_eligible_acquisition_count"] == 0
+    query = await query_cost_boundary(server.db)
+    assert query["financial_inventory_basis"] == FINANCIAL_INVENTORY_BASIS_GR
+    assert query["financial_eligible_acquisition_count"] == 0
+    assert query["financial_cogs_ready"] is False
     assert await server.db.journal_entries.count_documents({}) == journals_before
