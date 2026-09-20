@@ -38,6 +38,12 @@ async def ensure_indexes(db) -> None:
     await col.create_index("at")
     await col.create_index("event_type")
     await col.create_index([("entity_type", 1), ("entity_id", 1)])
+    await col.create_index(
+        "operation_key",
+        unique=True,
+        partialFilterExpression={"operation_key": {"$type": "string"}},
+        name="uniq_accounting_audit_operation_key",
+    )
 
 
 def public_event(doc: Optional[dict]) -> Optional[dict]:
@@ -48,6 +54,7 @@ def public_event(doc: Optional[dict]) -> Optional[dict]:
         "event_type": doc.get("event_type"),
         "entity_type": doc.get("entity_type"),
         "entity_id": doc.get("entity_id"),
+        "operation_key": doc.get("operation_key") or "",
         "actor": doc.get("actor"),
         "at": doc.get("at"),
         "before": doc.get("before"),
@@ -68,6 +75,7 @@ async def record_accounting_event(
     after: Any = None,
     reason: Optional[str] = None,
     metadata: Optional[dict] = None,
+    operation_key: Optional[str] = None,
 ) -> dict:
     doc = {
         "id": str(uuid.uuid4()),
@@ -81,6 +89,9 @@ async def record_accounting_event(
         "reason": str(reason or "").strip(),
         "metadata": dict(metadata or {}),
     }
+    key = str(operation_key or "").strip()
+    if key:
+        doc["operation_key"] = key
     await db[COLLECTION].insert_one(dict(doc))
     doc.pop("_id", None)
     return public_event(doc)

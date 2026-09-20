@@ -39,6 +39,8 @@ CLAIM_EXPIRED_MESSAGE = "Klaim periode berakhir. Coba posting ulang."
 PERIOD_RECOVERY_MESSAGE = (
     "Periode belum dapat ditutup karena terdapat recovery akuntansi yang belum selesai."
 )
+PERIOD_REASON_MIN_LENGTH = 3
+PERIOD_REASON_MESSAGE = "Alasan wajib diisi (minimal 3 karakter)."
 OB_RECOVERY_COLLECTION = "opening_balance_vouchers"
 
 
@@ -148,6 +150,21 @@ def public_period(doc: Optional[dict], *, period_key: Optional[str] = None) -> d
 
 def _closed_message(period_key: str) -> str:
     return PERIOD_CLOSED_MESSAGE.format(period_key=period_key)
+
+
+def normalize_period_reason(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if len(text) < PERIOD_REASON_MIN_LENGTH:
+        raise PeriodValidationError(PERIOD_REASON_MESSAGE)
+    return text
+
+
+def period_close_operation_key(period_key: str, closed_at: Any) -> str:
+    return f"period:{period_key}:close:{closed_at}"
+
+
+def period_reopen_operation_key(period_key: str, reopened_at: Any) -> str:
+    return f"period:{period_key}:reopen:{reopened_at}"
 
 
 def _new_period_doc(period_key: str, *, claims: Optional[List[dict]] = None) -> dict:
@@ -365,7 +382,7 @@ def _recovery_close_message(rows: List[dict]) -> str:
     return PERIOD_RECOVERY_MESSAGE + extra
 
 
-async def _record_period_event_if_missing(
+async def _record_period_event(
     db,
     *,
     event_type: str,
@@ -374,26 +391,29 @@ async def _record_period_event_if_missing(
     before: dict,
     after: dict,
     reason: str,
+    operation_key: str,
 ) -> None:
-    """Append audit after mutation. Retry of an already-finished close/reopen
-    writes the event only if the first attempt mutated but the audit insert failed.
-    """
-    existing = await db[AUDIT_COLLECTION].find_one(
-        {"event_type": event_type, "entity_type": ENTITY_PERIOD, "entity_id": period_key},
-        {"_id": 1},
-    )
+    """Write one period lifecycle audit event. Idempotent on operation_key."""
+    key = str(operation_key or "").strip()
+    if not key:
+        raise PeriodValidationError("operation_key periode tidak valid")
+    existing = await db[AUDIT_COLLECTION].find_one({"operation_key": key}, {"_id": 1})
     if existing:
         return
-    await record_accounting_event(
-        db,
-        event_type=event_type,
-        entity_type=ENTITY_PERIOD,
-        entity_id=period_key,
-        actor=user,
-        before=before,
-        after=after,
-        reason=reason,
-    )
+    try:
+        await record_accounting_event(
+            db,
+            event_type=event_type,
+            entity_type=ENTITY_PERIOD,
+            entity_id=period_key,
+            actor=user,
+            before=before,
+            after=after,
+            reason=reason,
+            operation_key=key,
+        )
+    except DuplicateKeyError:
+        return
 
 
 async def close_period(
@@ -406,18 +426,20 @@ async def close_period(
     key = normalize_period_key(period_key)
     now = now_iso()
     actor = actor_snapshot(user)
-    close_reason = str(reason or "").strip()
+    close_reason = normalize_period_reason(reason)
 
     existing = await get_period_raw(db, key)
     if existing and str(existing.get("status")) == STATUS_CLOSED:
-        await _record_period_event_if_missing(
+        stored_reason = str(existing.get("close_reason") or close_reason)
+        await _record_period_event(
             db,
             event_type=EVENT_PERIOD_CLOSED,
             period_key=key,
             user=user,
             before={"status": STATUS_OPEN},
             after={"status": STATUS_CLOSED, "closed_at": existing.get("closed_at")},
-            reason=close_reason or str(existing.get("close_reason") or ""),
+            reason=stored_reason,
+            operation_key=period_close_operation_key(key, existing.get("closed_at")),
         )
         return public_period(existing, period_key=key)
 
@@ -448,28 +470,30 @@ async def close_period(
     )
     if claimed:
         claimed.pop("_id", None)
-        await record_accounting_event(
+        await _record_period_event(
             db,
             event_type=EVENT_PERIOD_CLOSED,
-            entity_type=ENTITY_PERIOD,
-            entity_id=key,
-            actor=user,
+            period_key=key,
+            user=user,
             before={"status": STATUS_OPEN},
-            after={"status": STATUS_CLOSED, "closed_at": now},
-            reason=close_reason,
+            after={"status": STATUS_CLOSED, "closed_at": claimed.get("closed_at") or now},
+            reason=str(claimed.get("close_reason") or close_reason),
+            operation_key=period_close_operation_key(key, claimed.get("closed_at") or now),
         )
         return public_period(claimed, period_key=key)
 
     existing = await get_period_raw(db, key)
     if existing and str(existing.get("status")) == STATUS_CLOSED:
-        await _record_period_event_if_missing(
+        stored_reason = str(existing.get("close_reason") or close_reason)
+        await _record_period_event(
             db,
             event_type=EVENT_PERIOD_CLOSED,
             period_key=key,
             user=user,
             before={"status": STATUS_OPEN},
             after={"status": STATUS_CLOSED, "closed_at": existing.get("closed_at")},
-            reason=close_reason or str(existing.get("close_reason") or ""),
+            reason=stored_reason,
+            operation_key=period_close_operation_key(key, existing.get("closed_at")),
         )
         return public_period(existing, period_key=key)
     if existing and _has_fresh_claims(existing, now=now):
@@ -491,15 +515,15 @@ async def close_period(
     except DuplicateKeyError:
         return await close_period(db, key, user=user, reason=reason)
     doc.pop("_id", None)
-    await record_accounting_event(
+    await _record_period_event(
         db,
         event_type=EVENT_PERIOD_CLOSED,
-        entity_type=ENTITY_PERIOD,
-        entity_id=key,
-        actor=user,
+        period_key=key,
+        user=user,
         before={"status": STATUS_OPEN},
-        after={"status": STATUS_CLOSED, "closed_at": now},
-        reason=close_reason,
+        after={"status": STATUS_CLOSED, "closed_at": doc.get("closed_at") or now},
+        reason=str(doc.get("close_reason") or close_reason),
+        operation_key=period_close_operation_key(key, doc.get("closed_at") or now),
     )
     return public_period(doc, period_key=key)
 
@@ -514,19 +538,21 @@ async def reopen_period(
     key = normalize_period_key(period_key)
     now = now_iso()
     actor = actor_snapshot(user)
-    reopen_reason = str(reason or "").strip()
+    reopen_reason = normalize_period_reason(reason)
 
     existing = await get_period_raw(db, key)
     if not existing or str(existing.get("status")) != STATUS_CLOSED:
         if existing and str(existing.get("status")) == STATUS_OPEN and existing.get("reopened_at"):
-            await _record_period_event_if_missing(
+            stored_reason = str(existing.get("reopen_reason") or reopen_reason)
+            await _record_period_event(
                 db,
                 event_type=EVENT_PERIOD_REOPENED,
                 period_key=key,
                 user=user,
                 before={"status": STATUS_CLOSED},
                 after={"status": STATUS_OPEN, "reopened_at": existing.get("reopened_at")},
-                reason=reopen_reason or str(existing.get("reopen_reason") or ""),
+                reason=stored_reason,
+                operation_key=period_reopen_operation_key(key, existing.get("reopened_at")),
             )
         return public_period(existing, period_key=key)
 
@@ -545,16 +571,28 @@ async def reopen_period(
     )
     if not updated:
         current = await get_period_raw(db, key)
+        if current and str(current.get("status")) == STATUS_OPEN and current.get("reopened_at"):
+            stored_reason = str(current.get("reopen_reason") or reopen_reason)
+            await _record_period_event(
+                db,
+                event_type=EVENT_PERIOD_REOPENED,
+                period_key=key,
+                user=user,
+                before={"status": STATUS_CLOSED},
+                after={"status": STATUS_OPEN, "reopened_at": current.get("reopened_at")},
+                reason=stored_reason,
+                operation_key=period_reopen_operation_key(key, current.get("reopened_at")),
+            )
         return public_period(current, period_key=key)
     updated.pop("_id", None)
-    await record_accounting_event(
+    await _record_period_event(
         db,
         event_type=EVENT_PERIOD_REOPENED,
-        entity_type=ENTITY_PERIOD,
-        entity_id=key,
-        actor=user,
+        period_key=key,
+        user=user,
         before={"status": STATUS_CLOSED},
-        after={"status": STATUS_OPEN, "reopened_at": now},
-        reason=reopen_reason,
+        after={"status": STATUS_OPEN, "reopened_at": updated.get("reopened_at") or now},
+        reason=str(updated.get("reopen_reason") or reopen_reason),
+        operation_key=period_reopen_operation_key(key, updated.get("reopened_at") or now),
     )
     return public_period(updated, period_key=key)

@@ -22,6 +22,9 @@ const actorName = (actor) => {
   return actor.name || actor.email || actor.id || "—";
 };
 
+const CLOSE_WARNING = "Setelah periode ditutup, jurnal baru dan reversal pada bulan ini akan diblokir sampai periode dibuka kembali.";
+const REOPEN_WARNING = "Membuka kembali periode memungkinkan posting dan reversal pada bulan tersebut.";
+
 export default function PeriodeAkuntansi() {
   const { hasPerm } = useAuth();
   const canClose = hasPerm("accounting.period.close");
@@ -31,6 +34,8 @@ export default function PeriodeAkuntansi() {
   const [loadError, setLoadError] = useState("");
   const [actingKey, setActingKey] = useState("");
   const [actionError, setActionError] = useState("");
+  const [dialog, setDialog] = useState(null);
+  const [reason, setReason] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,16 +53,36 @@ export default function PeriodeAkuntansi() {
 
   useEffect(() => { load(); }, [load]);
 
-  const runAction = async (row, kind) => {
+  const openDialog = (row, kind) => {
+    setDialog({ kind, period_key: row.period_key });
+    setReason("");
+    setActionError("");
+  };
+
+  const closeDialog = () => {
     if (actingKey) return;
-    setActingKey(`${kind}:${row.period_key}`);
+    setDialog(null);
+    setReason("");
+  };
+
+  const trimmedReason = String(reason || "").trim();
+  const reasonValid = trimmedReason.length >= 3;
+
+  const confirmAction = async () => {
+    if (!dialog || !reasonValid || actingKey) return;
+    const kind = dialog.kind;
+    const periodKey = dialog.period_key;
+    setActingKey(`${kind}:${periodKey}`);
     setActionError("");
     try {
+      const payload = { reason: trimmedReason };
       if (kind === "close") {
-        await api.closeAccountingPeriod(row.period_key, {});
+        await api.closeAccountingPeriod(periodKey, payload);
       } else {
-        await api.reopenAccountingPeriod(row.period_key, {});
+        await api.reopenAccountingPeriod(periodKey, payload);
       }
+      setDialog(null);
+      setReason("");
       await load();
     } catch (ex) {
       setActionError(errText(ex));
@@ -133,7 +158,7 @@ export default function PeriodeAkuntansi() {
                           type="button"
                           className="ghost sm"
                           disabled={Boolean(actingKey)}
-                          onClick={() => runAction(row, "reopen")}
+                          onClick={() => openDialog(row, "reopen")}
                           data-testid={`periode-reopen-${row.period_key}`}
                         >
                           <Unlock size={12} /> Buka
@@ -146,7 +171,7 @@ export default function PeriodeAkuntansi() {
                         type="button"
                         className="ghost sm"
                         disabled={Boolean(actingKey)}
-                        onClick={() => runAction(row, "close")}
+                        onClick={() => openDialog(row, "close")}
                         data-testid={`periode-close-${row.period_key}`}
                       >
                         <Lock size={12} /> Tutup
@@ -161,6 +186,56 @@ export default function PeriodeAkuntansi() {
           </tbody>
         </table>
       </div>
+
+      {dialog && (
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          data-testid={`periode-${dialog.kind}-modal`}
+          onClick={closeDialog}
+        >
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3 data-testid="periode-modal-title">
+                {dialog.kind === "close"
+                  ? `Tutup Periode ${dialog.period_key}`
+                  : `Buka Kembali Periode ${dialog.period_key}`}
+              </h3>
+            </header>
+            <p className="muted small" data-testid="periode-modal-warning">
+              {dialog.kind === "close" ? CLOSE_WARNING : REOPEN_WARNING}
+            </p>
+            {actionError && (
+              <p className="error" data-testid="periode-modal-error">{actionError}</p>
+            )}
+            <label>
+              {dialog.kind === "close" ? "Alasan penutupan" : "Alasan membuka kembali"}
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={3}
+                autoFocus
+                data-testid="periode-modal-reason"
+              />
+            </label>
+            <div className="delete-modal-actions">
+              <button type="button" className="ghost" disabled={Boolean(actingKey)} onClick={closeDialog}>
+                Batal
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={!reasonValid || Boolean(actingKey)}
+                onClick={confirmAction}
+                data-testid="periode-modal-confirm"
+              >
+                {dialog.kind === "close" ? "Tutup" : "Buka"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

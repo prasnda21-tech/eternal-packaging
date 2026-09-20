@@ -1,6 +1,7 @@
 """Phase 2 accounting controls: period lock, writer leases, COA type lock, audit."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import uuid
@@ -193,7 +194,7 @@ async def test_close_reopen_and_audit_append_only():
         listed = await c.get("/api/ledger/accounting-periods", params={"start": "2026-04", "end": "2026-04"})
         assert listed.json()["items"][0]["status"] == "closed"
 
-        again = await c.post("/api/ledger/accounting-periods/2026-04/close", json={})
+        again = await c.post("/api/ledger/accounting-periods/2026-04/close", json={"reason": "retry close"})
         assert again.status_code == 200
         assert again.json()["status"] == "closed"
 
@@ -216,16 +217,16 @@ async def test_fresh_writer_claim_blocks_close_expired_does_not():
     with pytest.raises(PeriodConflictError, match="diposting"):
         await close_period(server.db, "2026-05", user=_user(), reason="blocked")
     await release_period_writer_claim(server.db, claim["period_key"], claim["token"])
-    closed = await close_period(server.db, "2026-05", user=_user())
+    closed = await close_period(server.db, "2026-05", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
-    await reopen_period(server.db, "2026-05", user=_user())
+    await reopen_period(server.db, "2026-05", user=_user(), reason="aksi periode")
     stale = await acquire_period_writer_claim(server.db, "2026-05-11")
     await server.db[PERIODS].update_one(
         {"period_key": "2026-05", "writer_claims.token": stale["token"]},
         {"$set": {"writer_claims.$.expires_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()}},
     )
-    closed2 = await close_period(server.db, "2026-05", user=_user())
+    closed2 = await close_period(server.db, "2026-05", user=_user(), reason="aksi periode")
     assert closed2["status"] == "closed"
 
 
@@ -235,9 +236,9 @@ async def test_release_is_token_scoped():
     second = await acquire_period_writer_claim(server.db, "2026-06-02")
     await release_period_writer_claim(server.db, first["period_key"], first["token"])
     with pytest.raises(PeriodConflictError):
-        await close_period(server.db, "2026-06", user=_user())
+        await close_period(server.db, "2026-06", user=_user(), reason="aksi periode")
     await release_period_writer_claim(server.db, second["period_key"], second["token"])
-    closed = await close_period(server.db, "2026-06", user=_user())
+    closed = await close_period(server.db, "2026-06", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
 
@@ -255,7 +256,7 @@ async def test_new_post_and_reverse_blocked_idempotent_existing_allowed():
         lines=_journal_lines(a["id"], b["id"]),
         posted_by=_user(),
     )
-    await close_period(server.db, "2026-07", user=_user())
+    await close_period(server.db, "2026-07", user=_user(), reason="aksi periode")
 
     retry = await post_balanced_journal(
         server.db,
@@ -289,7 +290,7 @@ async def test_new_post_and_reverse_blocked_idempotent_existing_allowed():
         )
     assert await server.db[JOURNAL_ENTRIES].count_documents({"reversal_of": posted["id"]}) == 0
 
-    await reopen_period(server.db, "2026-07", user=_user())
+    await reopen_period(server.db, "2026-07", user=_user(), reason="aksi periode")
     rev = await reverse_journal(
         server.db,
         posted["id"],
@@ -306,7 +307,7 @@ async def test_general_journal_http_obeys_lock_drafts_allowed():
     async with await client_for(admin) as c:
         a = await _coa(f"A{uuid.uuid4().hex[:6]}", "Biaya", "EXPS")
         b = await _coa(f"B{uuid.uuid4().hex[:6]}", "Kas", "BANK")
-        await c.post("/api/ledger/accounting-periods/2026-08/close", json={})
+        await c.post("/api/ledger/accounting-periods/2026-08/close", json={"reason": "tutup periode"})
         draft = await c.post(
             "/api/ledger/general-journals",
             json={"date": "2026-08-12", "description": "draft closed", "lines": _journal_lines(a["id"], b["id"])},
@@ -347,7 +348,7 @@ async def test_opening_balance_claim_blocks_close_until_sequence_ends():
 
     async def wrapped(*args, **kwargs):
         with pytest.raises(PeriodConflictError, match="diposting"):
-            await close_period(server.db, "2026-03", user=_user())
+            await close_period(server.db, "2026-03", user=_user(), reason="aksi periode")
         close_attempts.append("failed_close")
         return await original(*args, **kwargs)
 
@@ -359,7 +360,7 @@ async def test_opening_balance_claim_blocks_close_until_sequence_ends():
     finally:
         post_voucher.__globals__["post_balanced_journal"] = original
 
-    closed = await close_period(server.db, "2026-03", user=_user())
+    closed = await close_period(server.db, "2026-03", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
 
@@ -392,20 +393,20 @@ async def test_period_http_rbac_splits_view_close_reopen():
         listed = await c.get("/api/ledger/accounting-periods", params={"start": "2026-10", "end": "2026-10"})
         assert listed.status_code == 200, listed.text
         assert listed.json()["items"][0]["status"] == "open"
-        assert (await c.post("/api/ledger/accounting-periods/2026-10/close", json={})).status_code == 403
+        assert (await c.post("/api/ledger/accounting-periods/2026-10/close", json={"reason": "tutup periode"})).status_code == 403
         assert (await c.post("/api/ledger/accounting-periods/2026-10/reopen", json={})).status_code == 403
 
     async with await client_for(closer) as c:
         assert (await c.get("/api/ledger/accounting-periods")).status_code == 403
-        closed = await c.post("/api/ledger/accounting-periods/2026-10/close", json={})
+        closed = await c.post("/api/ledger/accounting-periods/2026-10/close", json={"reason": "tutup periode"})
         assert closed.status_code == 200, closed.text
         assert closed.json()["status"] == "closed"
         assert (await c.post("/api/ledger/accounting-periods/2026-10/reopen", json={})).status_code == 403
 
     async with await client_for(reopener) as c:
         assert (await c.get("/api/ledger/accounting-periods")).status_code == 403
-        assert (await c.post("/api/ledger/accounting-periods/2026-10/close", json={})).status_code == 403
-        reopened = await c.post("/api/ledger/accounting-periods/2026-10/reopen", json={})
+        assert (await c.post("/api/ledger/accounting-periods/2026-10/close", json={"reason": "tutup periode"})).status_code == 403
+        reopened = await c.post("/api/ledger/accounting-periods/2026-10/reopen", json={"reason": "buka periode"})
         assert reopened.status_code == 200, reopened.text
         assert reopened.json()["status"] == "open"
 
@@ -533,13 +534,13 @@ async def test_writer_claim_ttl_and_crash_recovery_allows_close():
     assert raw["writer_claims"][0]["token"] == claim["token"]
     assert raw["writer_claims"][0]["expires_at"]
     with pytest.raises(PeriodConflictError):
-        await close_period(server.db, "2026-01", user=_user())
+        await close_period(server.db, "2026-01", user=_user(), reason="aksi periode")
     # Worker disappears without release. After TTL the stale lease must not block close.
     await server.db[PERIODS].update_one(
         {"period_key": "2026-01", "writer_claims.token": claim["token"]},
         {"$set": {"writer_claims.$.expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}},
     )
-    closed = await close_period(server.db, "2026-01", user=_user())
+    closed = await close_period(server.db, "2026-01", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
     assert "writer_claims" not in closed
     assert "token" not in closed
@@ -550,12 +551,12 @@ async def test_multiple_writers_token_scoped_release():
     a = await acquire_period_writer_claim(server.db, "2026-02-01")
     b = await acquire_period_writer_claim(server.db, "2026-02-02")
     with pytest.raises(PeriodConflictError, match="diposting"):
-        await close_period(server.db, "2026-02", user=_user())
+        await close_period(server.db, "2026-02", user=_user(), reason="aksi periode")
     await release_period_writer_claim(server.db, a["period_key"], a["token"])
     with pytest.raises(PeriodConflictError, match="diposting"):
-        await close_period(server.db, "2026-02", user=_user())
+        await close_period(server.db, "2026-02", user=_user(), reason="aksi periode")
     await release_period_writer_claim(server.db, b["period_key"], b["token"])
-    closed = await close_period(server.db, "2026-02", user=_user())
+    closed = await close_period(server.db, "2026-02", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
 
@@ -563,7 +564,7 @@ async def test_multiple_writers_token_scoped_release():
 async def test_close_wins_new_journal_not_inserted():
     acc_a = await _coa(f"A{uuid.uuid4().hex[:6]}", "Biaya", "EXPS")
     acc_b = await _coa(f"B{uuid.uuid4().hex[:6]}", "Kas", "BANK")
-    closed = await close_period(server.db, "2026-11", user=_user())
+    closed = await close_period(server.db, "2026-11", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
     before_e = await server.db[JOURNAL_ENTRIES].count_documents({})
     before_l = await server.db[JOURNAL_LINES].count_documents({})
@@ -589,7 +590,7 @@ async def test_writer_wins_then_close_retries():
     acc_b = await _coa(f"B{uuid.uuid4().hex[:6]}", "Kas", "BANK")
     claim = await acquire_period_writer_claim(server.db, "2026-12-01")
     with pytest.raises(PeriodConflictError, match="diposting"):
-        await close_period(server.db, "2026-12", user=_user())
+        await close_period(server.db, "2026-12", user=_user(), reason="aksi periode")
     posted = await post_balanced_journal(
         server.db,
         date="2026-12-01",
@@ -602,7 +603,7 @@ async def test_writer_wins_then_close_retries():
     )
     assert posted["id"]
     await release_period_writer_claim(server.db, claim["period_key"], claim["token"])
-    closed = await close_period(server.db, "2026-12", user=_user())
+    closed = await close_period(server.db, "2026-12", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
 
@@ -622,7 +623,7 @@ async def test_close_vs_reversal_both_directions():
     )
     claim = await acquire_period_writer_claim(server.db, "2026-01-08")
     with pytest.raises(PeriodConflictError):
-        await close_period(server.db, "2026-01", user=_user())
+        await close_period(server.db, "2026-01", user=_user(), reason="aksi periode")
     rev = await reverse_journal(
         server.db,
         posted["id"],
@@ -633,7 +634,7 @@ async def test_close_vs_reversal_both_directions():
     )
     assert rev["date"] == "2026-01-08"
     await release_period_writer_claim(server.db, claim["period_key"], claim["token"])
-    closed = await close_period(server.db, "2026-01", user=_user())
+    closed = await close_period(server.db, "2026-01", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
     other = await post_balanced_journal(
@@ -645,7 +646,7 @@ async def test_close_vs_reversal_both_directions():
         lines=_journal_lines(acc_a["id"], acc_b["id"]),
         posted_by=_user(),
     )
-    await close_period(server.db, "2026-03", user=_user())
+    await close_period(server.db, "2026-03", user=_user(), reason="aksi periode")
     with pytest.raises(PeriodLockedError):
         await reverse_journal(
             server.db,
@@ -678,7 +679,7 @@ async def test_idempotent_retry_after_close_returns_existing_reversal():
         source_id=source_id,
         posted_by=_user(),
     )
-    await close_period(server.db, "2026-04", user=_user())
+    await close_period(server.db, "2026-04", user=_user(), reason="aksi periode")
     retry_post = await post_balanced_journal(
         server.db,
         date="2026-04-02",
@@ -723,7 +724,7 @@ async def test_opening_balance_same_lease_compensation_and_close():
     async def wrapped(*args, **kwargs):
         journal = await original(*args, **kwargs)
         with pytest.raises(PeriodConflictError, match="diposting"):
-            await close_period(server.db, "2026-02", user=_user())
+            await close_period(server.db, "2026-02", user=_user(), reason="aksi periode")
         close_attempts.append("blocked")
         await server.db[OB_COLLECTION].insert_one(
             {
@@ -759,7 +760,7 @@ async def test_opening_balance_same_lease_compensation_and_close():
     for ln in orig_lines + rev_lines:
         net[ln["account_id"]] = net.get(ln["account_id"], 0) + float(ln.get("debit") or 0) - float(ln.get("credit") or 0)
     assert all(abs(v) < 0.001 for v in net.values())
-    closed = await close_period(server.db, "2026-02", user=_user())
+    closed = await close_period(server.db, "2026-02", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
     leftover = await server.db[OB_COLLECTION].find_one({"id": draft["id"]}, {"_id": 0})
     assert leftover.get("accounting_recovery_required") in (None, False)
@@ -821,9 +822,9 @@ async def test_opening_balance_compensation_failure_is_not_swallowed():
     assert voucher["accounting_recovery_reason"] == "opening_balance_cutoff_conflict"
     await server.db[PERIODS].update_one({"period_key": "2026-05"}, {"$set": {"writer_claims": []}})
     with pytest.raises(PeriodConflictError, match="recovery akuntansi"):
-        await close_period(server.db, "2026-05", user=_user())
+        await close_period(server.db, "2026-05", user=_user(), reason="aksi periode")
     async with await client_for(admin) as c:
-        blocked = await c.post("/api/ledger/accounting-periods/2026-05/close", json={})
+        blocked = await c.post("/api/ledger/accounting-periods/2026-05/close", json={"reason": "tutup periode"})
         assert blocked.status_code == 409
         assert "recovery akuntansi" in blocked.json()["detail"]
         assert (voucher.get("number") or draft["id"]) in blocked.json()["detail"]
@@ -855,7 +856,7 @@ async def test_opening_balance_compensation_failure_is_not_swallowed():
     for ln in orig_lines + rev_lines:
         net[ln["account_id"]] = net.get(ln["account_id"], 0) + float(ln.get("debit") or 0) - float(ln.get("credit") or 0)
     assert all(abs(v) < 0.001 for v in net.values())
-    closed = await close_period(server.db, "2026-05", user=_user())
+    closed = await close_period(server.db, "2026-05", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
 
 
@@ -1013,7 +1014,7 @@ async def test_drafts_and_real_source_reversals_obey_closed_month():
             posted_by=_user(),
         )
 
-        await c.post("/api/ledger/accounting-periods/2026-09/close", json={})
+        await c.post("/api/ledger/accounting-periods/2026-09/close", json={"reason": "tutup periode"})
 
         gj_rev = await c.post(f"/api/ledger/general-journals/{gj['id']}/reverse")
         assert gj_rev.status_code == 409
@@ -1121,7 +1122,7 @@ async def test_source_http_409_on_closed_period_post():
                 json={"name": "Kas 409", "account_id": acc_bank["id"], "active": True},
             )
         ).json()
-        await c.post("/api/ledger/accounting-periods/2026-10/close", json={})
+        await c.post("/api/ledger/accounting-periods/2026-10/close", json={"reason": "tutup periode"})
         gj = (
             await c.post(
                 "/api/ledger/general-journals",
@@ -1178,7 +1179,7 @@ async def test_expired_writer_is_fenced_after_close():
         {"period_key": "2026-01", "writer_claims.token": claim["token"]},
         {"$set": {"writer_claims.$.expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}},
     )
-    closed = await close_period(server.db, "2026-01", user=_user())
+    closed = await close_period(server.db, "2026-01", user=_user(), reason="aksi periode")
     assert closed["status"] == "closed"
     raw = await server.db[PERIODS].find_one({"period_key": "2026-01"}, {"_id": 0})
     assert raw.get("writer_claims") == []
@@ -1211,10 +1212,13 @@ async def test_period_close_retry_writes_missing_audit_without_extra_cycle():
     assert again["status"] == "closed"
     refreshed = await server.db[PERIODS].find_one({"period_key": "2026-08"}, {"_id": 0})
     assert refreshed["closed_at"] == closed_at
+    assert refreshed["close_reason"] == "first"
     events = await server.db[AUDIT_COLLECTION].find(
         {"event_type": EVENT_PERIOD_CLOSED, "entity_id": "2026-08"}, {"_id": 0}
     ).to_list(10)
     assert len(events) == 1
+    assert events[0]["operation_key"] == f"period:2026-08:close:{closed_at}"
+    assert events[0]["reason"] == "first"
 
     reopened = await reopen_period(server.db, "2026-08", user=_user(), reason="reopen-first")
     assert reopened["status"] == "open"
@@ -1226,10 +1230,139 @@ async def test_period_close_retry_writes_missing_audit_without_extra_cycle():
     assert again_reopen["status"] == "open"
     refreshed_reopen = await server.db[PERIODS].find_one({"period_key": "2026-08"}, {"_id": 0})
     assert refreshed_reopen["reopened_at"] == reopened_at
+    assert refreshed_reopen["reopen_reason"] == "reopen-first"
     reopen_events = await server.db[AUDIT_COLLECTION].find(
         {"event_type": EVENT_PERIOD_REOPENED, "entity_id": "2026-08"}, {"_id": 0}
     ).to_list(10)
     assert len(reopen_events) == 1
+    assert reopen_events[0]["operation_key"] == f"period:2026-08:reopen:{reopened_at}"
+
+
+@pytest.mark.anyio
+async def test_close_reopen_reason_required_http():
+    admin = _user()
+    async with await client_for(admin) as c:
+        missing = await c.post("/api/ledger/accounting-periods/2026-03/close", json={})
+        assert missing.status_code == 400
+        blank = await c.post("/api/ledger/accounting-periods/2026-03/close", json={"reason": "  "})
+        assert blank.status_code == 400
+        short = await c.post("/api/ledger/accounting-periods/2026-03/close", json={"reason": "ab"})
+        assert short.status_code == 400
+        ok = await c.post("/api/ledger/accounting-periods/2026-03/close", json={"reason": "tutup"})
+        assert ok.status_code == 200, ok.text
+        missing_reopen = await c.post("/api/ledger/accounting-periods/2026-03/reopen", json={})
+        assert missing_reopen.status_code == 400
+        short_reopen = await c.post("/api/ledger/accounting-periods/2026-03/reopen", json={"reason": " x "})
+        assert short_reopen.status_code == 400
+        ok_reopen = await c.post("/api/ledger/accounting-periods/2026-03/reopen", json={"reason": "buka"})
+        assert ok_reopen.status_code == 200, ok_reopen.text
+
+
+@pytest.mark.anyio
+async def test_period_audit_operation_keys_are_distinct_across_cycles():
+    close1 = await close_period(server.db, "2026-11", user=_user(), reason="close one")
+    reopen1 = await reopen_period(server.db, "2026-11", user=_user(), reason="reopen one")
+    close2 = await close_period(server.db, "2026-11", user=_user(), reason="close two")
+    reopen2 = await reopen_period(server.db, "2026-11", user=_user(), reason="reopen two")
+    assert close1["status"] == "closed"
+    assert reopen1["status"] == "open"
+    assert close2["status"] == "closed"
+    assert reopen2["status"] == "open"
+    closed = await server.db[AUDIT_COLLECTION].find(
+        {"event_type": EVENT_PERIOD_CLOSED, "entity_id": "2026-11"}, {"_id": 0}
+    ).to_list(10)
+    reopened = await server.db[AUDIT_COLLECTION].find(
+        {"event_type": EVENT_PERIOD_REOPENED, "entity_id": "2026-11"}, {"_id": 0}
+    ).to_list(10)
+    assert len(closed) == 2
+    assert len(reopened) == 2
+    keys = [row["operation_key"] for row in closed + reopened]
+    assert len(set(keys)) == 4
+    assert all(key.startswith("period:2026-11:") for key in keys)
+
+
+@pytest.mark.anyio
+async def test_second_close_and_reopen_audit_failure_retries():
+    await close_period(server.db, "2026-02", user=_user(), reason="close one")
+    await reopen_period(server.db, "2026-02", user=_user(), reason="reopen one")
+    original = close_period.__globals__["record_accounting_event"]
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("audit insert failed")
+
+    close_period.__globals__["record_accounting_event"] = boom
+    try:
+        with pytest.raises(RuntimeError, match="audit insert failed"):
+            await close_period(server.db, "2026-02", user=_user(), reason="close two")
+    finally:
+        close_period.__globals__["record_accounting_event"] = original
+
+    row = await server.db[PERIODS].find_one({"period_key": "2026-02"}, {"_id": 0})
+    assert row["status"] == "closed"
+    closed_at = row["closed_at"]
+    assert row["close_reason"] == "close two"
+    assert await server.db[AUDIT_COLLECTION].count_documents(
+        {"event_type": EVENT_PERIOD_CLOSED, "entity_id": "2026-02"}
+    ) == 1
+
+    retried = await close_period(server.db, "2026-02", user=_user(), reason="other reason")
+    assert retried["status"] == "closed"
+    refreshed = await server.db[PERIODS].find_one({"period_key": "2026-02"}, {"_id": 0})
+    assert refreshed["closed_at"] == closed_at
+    assert refreshed["close_reason"] == "close two"
+    closed_events = await server.db[AUDIT_COLLECTION].find(
+        {"event_type": EVENT_PERIOD_CLOSED, "entity_id": "2026-02"}, {"_id": 0}
+    ).to_list(10)
+    assert len(closed_events) == 2
+    assert len({row["operation_key"] for row in closed_events}) == 2
+
+    close_period.__globals__["record_accounting_event"] = boom
+    try:
+        with pytest.raises(RuntimeError, match="audit insert failed"):
+            await reopen_period(server.db, "2026-02", user=_user(), reason="reopen two")
+    finally:
+        close_period.__globals__["record_accounting_event"] = original
+
+    row = await server.db[PERIODS].find_one({"period_key": "2026-02"}, {"_id": 0})
+    assert row["status"] == "open"
+    reopened_at = row["reopened_at"]
+    assert row["reopen_reason"] == "reopen two"
+    assert await server.db[AUDIT_COLLECTION].count_documents(
+        {"event_type": EVENT_PERIOD_REOPENED, "entity_id": "2026-02"}
+    ) == 1
+
+    retried_reopen = await reopen_period(server.db, "2026-02", user=_user(), reason="other reopen")
+    assert retried_reopen["status"] == "open"
+    refreshed_reopen = await server.db[PERIODS].find_one({"period_key": "2026-02"}, {"_id": 0})
+    assert refreshed_reopen["reopened_at"] == reopened_at
+    assert refreshed_reopen["reopen_reason"] == "reopen two"
+    reopen_events = await server.db[AUDIT_COLLECTION].find(
+        {"event_type": EVENT_PERIOD_REOPENED, "entity_id": "2026-02"}, {"_id": 0}
+    ).to_list(10)
+    assert len(reopen_events) == 2
+    assert len({row["operation_key"] for row in reopen_events}) == 2
+
+
+@pytest.mark.anyio
+async def test_concurrent_period_audit_retry_writes_one_event():
+    await close_period(server.db, "2026-07", user=_user(), reason="first close")
+    await server.db[AUDIT_COLLECTION].delete_many(
+        {"event_type": EVENT_PERIOD_CLOSED, "entity_id": "2026-07"}
+    )
+    closed_at = (await server.db[PERIODS].find_one({"period_key": "2026-07"}, {"_id": 0}))["closed_at"]
+    results = await asyncio.gather(
+        close_period(server.db, "2026-07", user=_user(), reason="retry aaa"),
+        close_period(server.db, "2026-07", user=_user(), reason="retry bbb"),
+    )
+    assert all(row["status"] == "closed" for row in results)
+    events = await server.db[AUDIT_COLLECTION].find(
+        {"event_type": EVENT_PERIOD_CLOSED, "entity_id": "2026-07"}, {"_id": 0}
+    ).to_list(10)
+    assert len(events) == 1
+    assert events[0]["operation_key"] == f"period:2026-07:close:{closed_at}"
+    refreshed = await server.db[PERIODS].find_one({"period_key": "2026-07"}, {"_id": 0})
+    assert refreshed["closed_at"] == closed_at
+    assert refreshed["close_reason"] == "first close"
 
 
 @pytest.mark.anyio
