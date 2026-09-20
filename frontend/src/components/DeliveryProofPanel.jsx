@@ -9,6 +9,7 @@ import {
   canConfirmDelivered,
   canSubmitConfirmDelivered,
   confirmDeliveredBlockReason,
+  confirmDeliveredLoadingBlockReason,
   authoritativeDriverDisplayName,
   MIN_DELIVERY_PROOFS,
   proofUploadUserError,
@@ -209,8 +210,11 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
   );
   const deliverBlockReason = deliverButtonVisible
-    ? confirmDeliveredBlockReason(
-      proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+    ? (
+      confirmDeliveredLoadingBlockReason(order)
+      || confirmDeliveredBlockReason(
+        proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+      )
     )
     : null;
 
@@ -414,7 +418,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
   const openDeliverConfirm = () => {
     if (!deliverButtonVisible || confirming) return;
-    const blocked = confirmDeliveredBlockReason(
+    const blocked = confirmDeliveredLoadingBlockReason(order) || confirmDeliveredBlockReason(
       proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
     );
     if (blocked) {

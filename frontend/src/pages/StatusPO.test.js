@@ -19,8 +19,15 @@ describe("Status PO header filters", () => {
     expect(src).not.toMatch(/type="date"/);
     expect(src).toMatch(/status-po-filter-reset/);
     expect(src).toMatch(/>\s*Reset\s*</);
+    expect(src).toMatch(/status-po-refresh/);
     expect(src).toMatch(/matchesStatusPoFilters/);
     expect(src).toMatch(/EMPTY_STATUS_PO_FILTERS/);
+    expect(src).not.toMatch(/Pantau status pesanan dari semua cabang secara real-time/);
+    expect(src).not.toMatch(/status-po-subtitle/);
+    expect(src).not.toMatch(/status-po-density/);
+    expect(src).not.toMatch(/Tampilan:\s*Rapat/);
+    expect(src).not.toMatch(/Tampilan:\s*Longgar/);
+    expect(src).not.toMatch(/setDensity/);
   });
 
   test("G. dashboard view query still loads Status PO subset", () => {

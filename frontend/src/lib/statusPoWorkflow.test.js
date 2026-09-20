@@ -7,6 +7,7 @@ import {
   statusStageDisplayNumber,
   statusStripTone,
   workflowCanonicalStageIndex,
+  workflowCellCaption,
   workflowCellState,
   workflowProgressPercent,
 } from "./statusPoWorkflow";
@@ -105,7 +106,7 @@ describe("Status PO workflow matrix mapping", () => {
     expect(progressSegmentTone("cancelled")).toBe("problem");
     expect(progressSegmentTone("pending")).toBe("pending");
     expect(progressSegmentTone("unknown")).toBe("pending");
-    expect(progressSegmentTone("skipped")).toBe("done");
+    expect(progressSegmentTone("skipped")).toBe("skipped");
   });
 });
 
@@ -217,7 +218,7 @@ describe("Status PO stage number, boxes, and percent share one workflow", () => 
       },
     };
     expect(workflowCellState(row, "cetak")).toBe("skipped");
-    expect(progressSegmentTone("skipped")).toBe("done");
+    expect(progressSegmentTone("skipped")).toBe("skipped");
     expect(workflowProgressPercent(row)).toBe(73);
     expect(statusStageDisplayNumber(row)).toBe(12);
   });
@@ -231,5 +232,82 @@ describe("Status PO stage number, boxes, and percent share one workflow", () => 
     expect(statusStageDisplayNumber(row)).toBe(3);
     expect(workflowProgressPercent(row)).toBe(7);
     expect(workflowCellState(row, "appr_design")).toBe("active");
+  });
+
+  test("fully delivered modern is 15 Terkirim with boxes 13-15 completed and 100%", () => {
+    const row = {
+      status: "Terkirim",
+      current_stage: 14,
+      workflow: Object.fromEntries(KEYS.map((k) => [k, "completed"])),
+    };
+    expect(statusStageDisplayNumber(row)).toBe(15);
+    expect(`${statusStageDisplayNumber(row)} ${row.status}`).toBe("15 Terkirim");
+    expect(`${statusStageDisplayNumber(row)} ${row.status}`).not.toBe("13 Terkirim");
+    expect(workflowCellState(row, "sj")).toBe("completed");
+    expect(workflowCellState(row, "loading")).toBe("completed");
+    expect(workflowCellState(row, "kirim")).toBe("completed");
+    expect(workflowProgressPercent(row)).toBe(100);
+    expect(workflowCellCaption(STATUS_PO_WORKFLOW_STAGES[12], "completed")).toBe("13. Surat Jalan — Selesai");
+    expect(workflowCellCaption(STATUS_PO_WORKFLOW_STAGES[13], "completed")).toBe("14. Loading — Selesai");
+    expect(workflowCellCaption(STATUS_PO_WORKFLOW_STAGES[14], "completed")).toBe("15. Pengiriman — Selesai");
+  });
+
+  test("fully delivered legacy skips Loading and stays 15 Terkirim 100%", () => {
+    const row = {
+      status: "Terkirim",
+      current_stage: 14,
+      workflow: {
+        ...Object.fromEntries(KEYS.map((k) => [k, "completed"])),
+        loading: "skipped",
+      },
+      workflow_reasons: { loading: "legacy_no_loading_evidence" },
+    };
+    expect(statusStageDisplayNumber(row)).toBe(15);
+    expect(`${statusStageDisplayNumber(row)} ${row.status}`).toBe("15 Terkirim");
+    expect(workflowCellState(row, "loading")).toBe("skipped");
+    expect(progressSegmentTone("skipped", "legacy_no_loading_evidence")).toBe("skipped");
+    expect(workflowProgressPercent(row)).toBe(100);
+    expect(workflowCellCaption(
+      STATUS_PO_WORKFLOW_STAGES[13],
+      "skipped",
+      "legacy_no_loading_evidence",
+    )).toBe("14. Loading — Dilewati (data lama, bukti Loading tidak tercatat)");
+  });
+
+  test("SJ without Loading never shows 13 Terkirim", () => {
+    const row = {
+      status: "Surat Jalan",
+      current_stage: 12,
+      workflow: {
+        ...completedThrough("packing"),
+        sj: "active",
+        loading: "pending",
+        kirim: "pending",
+      },
+    };
+    expect(statusStageDisplayNumber(row)).toBe(13);
+    expect(`${statusStageDisplayNumber(row)} ${row.status}`).toBe("13 Surat Jalan");
+    expect(`${statusStageDisplayNumber(row)} ${row.status}`).not.toContain("Terkirim");
+    expect(workflowCellState(row, "loading")).toBe("pending");
+    expect(workflowCellState(row, "kirim")).toBe("pending");
+    expect(workflowProgressPercent(row)).toBeLessThan(100);
+    expect(workflowCellCaption(STATUS_PO_WORKFLOW_STAGES[13], "pending")).toBe("14. Loading — Belum dimulai");
+    expect(workflowCellCaption(STATUS_PO_WORKFLOW_STAGES[14], "pending")).toBe("15. Pengiriman — Belum dimulai");
+  });
+
+  test("partial delivery stays Parsial Terkirim below 100%", () => {
+    const row = {
+      status: "Parsial Terkirim",
+      current_stage: 14,
+      workflow: {
+        ...completedThrough("sj"),
+        loading: "completed",
+        kirim: "active",
+      },
+    };
+    expect(statusStageDisplayNumber(row)).toBe(15);
+    expect(`${statusStageDisplayNumber(row)} ${row.status}`).toBe("15 Parsial Terkirim");
+    expect(workflowCellState(row, "kirim")).toBe("active");
+    expect(workflowProgressPercent(row)).toBeLessThan(100);
   });
 });

@@ -29,6 +29,7 @@ from services.status_po import (
     effective_workflow_status,
     item_line_names,
     status_po_workflow,
+    status_po_workflow_detail,
 )
 from services.tanggal_pengiriman import (
     DEFAULT_LEAD_TIME_DAYS,
@@ -109,8 +110,13 @@ LIST_PROJECTION = {
     "surat_jalan_status_semantic": 1,
     "delivery_note_number": 1,
     "delivery_note_created_at": 1,
+    "delivery_note_created_by": 1,
     "loading_completed": 1,
+    "loading_qty_status": 1,
     "loading_info": 1,
+    "loading_confirmations": 1,
+    "legacy_loading_allocations": 1,
+    "delivery_confirmations": 1,
     "terkirim_confirmed": 1,
     "print_status": 1,
     "print_completed_qty": 1,
@@ -195,10 +201,11 @@ def _current_stage_label(order: dict, workflow: dict) -> str:
 
 
 def _active_stage_key(workflow: dict) -> Optional[str]:
+    found = None
     for key in STATUS_PO_STAGE_KEYS:
         if workflow.get(key) in ("active", "hold"):
-            return key
-    return None
+            found = key
+    return found
 
 
 def _search_blob(order: dict) -> str:
@@ -342,7 +349,7 @@ def _sort_value(row: dict, key: str) -> Any:
 
 def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]) -> dict:
     attach_tanggal_pengiriman_snapshot(order)
-    workflow = status_po_workflow(order)
+    workflow, reasons = status_po_workflow_detail(order)
     counts = _document_counts(order, deliveries, invoices)
     kirim = order.get("tanggal_pengiriman")
     today = wib_today().isoformat()
@@ -368,6 +375,7 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
         "hold": bool(order.get("hold")),
         "cancelled": bool(order.get("cancelled")),
         "workflow": workflow,
+        "workflow_reasons": reasons,
         "active_stage": _active_stage_key(workflow),
         "progress_percent": _workflow_progress(workflow),
         "item_names": item_line_names(order),

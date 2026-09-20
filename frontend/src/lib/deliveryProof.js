@@ -202,6 +202,25 @@ export const MSG_PHOTO_SJ_NOT_READY =
   "Surat Jalan untuk pengiriman ini belum siap.";
 export const MSG_PHOTO_LOADING_ITEM_MISMATCH =
   "Qty Loading per item belum mencukupi untuk Surat Jalan pengiriman ini.";
+export const MSG_DELIVERY_LOADING_INCOMPLETE =
+  "Pengiriman belum dapat dikonfirmasi karena Loading untuk Surat Jalan ini belum lengkap.";
+
+export function confirmDeliveredLoadingBlockReason(order) {
+  if (!order) return null;
+  const required = Number(order.packing_required_total || order.total_quantity || 0);
+  const delivered = Number(order.qty_delivered);
+  if (Number.isFinite(delivered) && required > 0 && delivered >= required) return null;
+  if (order.delivery_status === "Terkirim" && Number(order.current_stage || 0) >= 14) return null;
+  const confs = (order.loading_confirmations || []).filter((c) => c && !c.cancelled && !c.deleted);
+  const hasConf = confs.some((c) => (c.lines || []).some((ln) => Number(ln?.qty || ln?.quantity || 0) > 0));
+  const hasLegacy = Number(order.loading_info?.lines?.length || 0) > 0
+    || Number(order.loading_info?.events?.length || 0) > 0
+    || !!order.loading_completed
+    || order.loading_qty_status === "completed"
+    || order.loading_qty_status === "partial";
+  if (hasConf || hasLegacy) return null;
+  return MSG_DELIVERY_LOADING_INCOMPLETE;
+}
 
 export const REASON_SJ_NOT_READY = "SJ_NOT_READY";
 export const REASON_LOADING_INCOMPLETE = "LOADING_INCOMPLETE";

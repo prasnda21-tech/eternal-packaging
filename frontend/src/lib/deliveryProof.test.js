@@ -2,6 +2,8 @@ import {
   canConfirmDelivered,
   canSubmitConfirmDelivered,
   confirmDeliveredBlockReason,
+  confirmDeliveredLoadingBlockReason,
+  MSG_DELIVERY_LOADING_INCOMPLETE,
   MIN_DELIVERY_PROOFS,
   MAX_PHOTOS,
   proofUploadUserError,
@@ -153,6 +155,25 @@ describe("deliveryProof helpers", () => {
         null,
       )
     ).toBeNull();
+  });
+
+  test("new confirm is blocked when Loading evidence is missing", () => {
+    expect(confirmDeliveredLoadingBlockReason({
+      packing_required_total: 1000,
+      qty_delivered: 0,
+      surat_jalan_created: true,
+    })).toBe(MSG_DELIVERY_LOADING_INCOMPLETE);
+    expect(confirmDeliveredLoadingBlockReason({
+      packing_required_total: 1000,
+      qty_delivered: 0,
+      loading_confirmations: [{ surat_jalan_id: "sj1", lines: [{ line_idx: 0, qty: 400 }] }],
+    })).toBeNull();
+    expect(confirmDeliveredLoadingBlockReason({
+      packing_required_total: 1000,
+      qty_delivered: 1000,
+      delivery_status: "Terkirim",
+      current_stage: 14,
+    })).toBeNull();
   });
 
   test("recipient name validation", () => {

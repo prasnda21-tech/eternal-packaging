@@ -463,7 +463,8 @@ def test_generic_enrich_without_id_keeps_latest_shipment_semantics():
     assert enrich.get("surat_jalan_id") == "ship-b"
     assert enrich.get("code") == "packing_insufficient"
     selected = loading_verification_status(o, "file-a")
-    assert selected.get("surat_jalan_id") == "file-a"
+    # Write-time identity resolves the file alias to the unique live shipment.
+    assert selected.get("surat_jalan_id") == "ship-a"
     assert selected.get("code") != "packing_insufficient"
     assert packing_shortfall_for_sj_match(o, "file-a") is None
     assert validate_loading_match_confirmation(o, "file-a") is None
