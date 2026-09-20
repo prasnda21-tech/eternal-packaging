@@ -11,67 +11,30 @@ Presentation sides use actual signed journal balance, not account_type.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from services.chart_of_accounts import list_accounts
-from services.journal_core import (
-    JOURNAL_ENTRIES,
-    JOURNAL_LINES,
-    STATUS_POSTED,
-    STATUS_REVERSED,
+from services.financial_statement_common import (
+    load_statement_accounts,
+    money,
+    money_float,
+    parse_financial_date_range,
+    sum_journal_lines_by_account,
 )
 
 PERM_VIEW = "trial_balance.view"
-
-LEGITIMATE_STATUSES = frozenset({STATUS_POSTED, STATUS_REVERSED})
 
 
 class TrialBalanceValidationError(ValueError):
     pass
 
 
-def _money(raw: Any) -> Decimal:
-    try:
-        return Decimal(str(raw or 0)).quantize(Decimal("0.01"))
-    except Exception:
-        return Decimal("0.00")
-
-
-def _money_float(d: Decimal) -> float:
-    return float(d)
-
-
-def _journal_is_legitimate(doc: dict) -> bool:
-    status = str((doc or {}).get("status") or "").strip()
-    if not status:
-        return True
-    return status in LEGITIMATE_STATUSES
-
-
 def _sides(signed: Decimal) -> Tuple[Decimal, Decimal]:
-    signed = _money(signed)
+    signed = money(signed)
     if signed > 0:
         return signed, Decimal("0.00")
     if signed < 0:
-        return Decimal("0.00"), _money(-signed)
+        return Decimal("0.00"), money(-signed)
     return Decimal("0.00"), Decimal("0.00")
-
-
-async def _sum_by_account(db, journal_ids: List[str]) -> Dict[str, Tuple[Decimal, Decimal]]:
-    out: Dict[str, Tuple[Decimal, Decimal]] = {}
-    if not journal_ids:
-        return out
-    lines = await db[JOURNAL_LINES].find(
-        {"journal_id": {"$in": journal_ids}},
-        {"_id": 0, "account_id": 1, "debit": 1, "credit": 1},
-    ).to_list(500000)
-    for ln in lines:
-        aid = str(ln.get("account_id") or "").strip()
-        if not aid:
-            continue
-        debit, credit = out.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        out[aid] = (debit + _money(ln.get("debit")), credit + _money(ln.get("credit")))
-    return out
 
 
 def _row_matches_search(row: dict, needle: str) -> bool:
@@ -91,28 +54,21 @@ async def get_trial_balance(
     q: Optional[str] = None,
 ) -> dict:
     """Build Neraca Saldo for all COA over [start_date, end_date]. GET-safe."""
-    start = str(start_date or "").strip()
-    end = str(end_date or "").strip()
-    if not start or not end:
-        raise TrialBalanceValidationError("Rentang tanggal wajib diisi")
-    if start > end:
-        raise TrialBalanceValidationError("Tanggal mulai tidak boleh setelah tanggal akhir")
+    start, end = parse_financial_date_range(
+        start_date,
+        end_date,
+        empty_message="Rentang tanggal wajib diisi",
+        start_invalid_message="Tanggal mulai tidak valid",
+        end_invalid_message="Tanggal akhir tidak valid",
+        order_message="Tanggal mulai tidak boleh setelah tanggal akhir",
+        error_cls=TrialBalanceValidationError,
+    )
 
-    accounts = await list_accounts(db)
-
-    opening_journals = await db[JOURNAL_ENTRIES].find(
-        {"date": {"$lt": start}},
-        {"_id": 0, "id": 1, "status": 1},
-    ).to_list(100000)
-    opening_ids = [j["id"] for j in opening_journals if j.get("id") and _journal_is_legitimate(j)]
-    opening_map = await _sum_by_account(db, opening_ids)
-
-    period_journals = await db[JOURNAL_ENTRIES].find(
-        {"date": {"$gte": start, "$lte": end}},
-        {"_id": 0, "id": 1, "status": 1},
-    ).to_list(100000)
-    period_ids = [j["id"] for j in period_journals if j.get("id") and _journal_is_legitimate(j)]
-    period_map = await _sum_by_account(db, period_ids)
+    accounts = await load_statement_accounts(db)
+    opening_map = await sum_journal_lines_by_account(db, {"date": {"$lt": start}})
+    period_map = await sum_journal_lines_by_account(
+        db, {"date": {"$gte": start, "$lte": end}}
+    )
 
     items: List[dict] = []
     tot_open_dr = Decimal("0.00")
@@ -127,11 +83,11 @@ async def get_trial_balance(
         if not aid:
             continue
         open_dr_raw, open_cr_raw = opening_map.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        opening = _money(open_dr_raw - open_cr_raw)
+        opening = money(open_dr_raw - open_cr_raw)
         period_debit, period_credit = period_map.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        period_debit = _money(period_debit)
-        period_credit = _money(period_credit)
-        ending = _money(opening + period_debit - period_credit)
+        period_debit = money(period_debit)
+        period_credit = money(period_credit)
+        ending = money(opening + period_debit - period_credit)
 
         opening_debit, opening_credit = _sides(opening)
         ending_debit, ending_credit = _sides(ending)
@@ -148,26 +104,26 @@ async def get_trial_balance(
             "code": acc.get("code"),
             "name": acc.get("name"),
             "account_type": acc.get("account_type"),
-            "opening_debit": _money_float(opening_debit),
-            "opening_credit": _money_float(opening_credit),
-            "period_debit": _money_float(period_debit),
-            "period_credit": _money_float(period_credit),
-            "ending_debit": _money_float(ending_debit),
-            "ending_credit": _money_float(ending_credit),
+            "opening_debit": money_float(opening_debit),
+            "opening_credit": money_float(opening_credit),
+            "period_debit": money_float(period_debit),
+            "period_credit": money_float(period_credit),
+            "ending_debit": money_float(ending_debit),
+            "ending_credit": money_float(ending_credit),
         })
 
     items.sort(key=lambda row: (str(row.get("code") or ""), str(row.get("account_id") or "")))
 
     totals = {
-        "opening_debit": _money_float(_money(tot_open_dr)),
-        "opening_credit": _money_float(_money(tot_open_cr)),
-        "opening_diff": _money_float(_money(tot_open_dr - tot_open_cr)),
-        "period_debit": _money_float(_money(tot_period_dr)),
-        "period_credit": _money_float(_money(tot_period_cr)),
-        "period_diff": _money_float(_money(tot_period_dr - tot_period_cr)),
-        "ending_debit": _money_float(_money(tot_end_dr)),
-        "ending_credit": _money_float(_money(tot_end_cr)),
-        "ending_diff": _money_float(_money(tot_end_dr - tot_end_cr)),
+        "opening_debit": money_float(money(tot_open_dr)),
+        "opening_credit": money_float(money(tot_open_cr)),
+        "opening_diff": money_float(money(tot_open_dr - tot_open_cr)),
+        "period_debit": money_float(money(tot_period_dr)),
+        "period_credit": money_float(money(tot_period_cr)),
+        "period_diff": money_float(money(tot_period_dr - tot_period_cr)),
+        "ending_debit": money_float(money(tot_end_dr)),
+        "ending_credit": money_float(money(tot_end_cr)),
+        "ending_diff": money_float(money(tot_end_dr - tot_end_cr)),
     }
 
     visible = items

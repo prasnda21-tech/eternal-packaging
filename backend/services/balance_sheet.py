@@ -8,20 +8,18 @@ earnings are derived from income-statement accounts.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from services.account_type_reporting import reporting_metadata
-from services.chart_of_accounts import list_accounts
-from services.journal_core import (
-    JOURNAL_ENTRIES,
-    JOURNAL_LINES,
-    STATUS_POSTED,
-    STATUS_REVERSED,
+from services.financial_statement_common import (
+    load_statement_accounts,
+    money,
+    money_float,
+    parse_financial_date,
+    sum_journal_lines_by_account,
 )
 
 PERM_VIEW = "balance_sheet.view"
-
-LEGITIMATE_STATUSES = frozenset({STATUS_POSTED, STATUS_REVERSED})
 
 BALANCE_SHEET = "BALANCE_SHEET"
 INCOME_STATEMENT = "INCOME_STATEMENT"
@@ -54,37 +52,19 @@ class BalanceSheetValidationError(ValueError):
     pass
 
 
-def _money(raw: Any) -> Decimal:
-    try:
-        return Decimal(str(raw or 0)).quantize(Decimal("0.01"))
-    except Exception:
-        return Decimal("0.00")
-
-
-def _money_float(d: Decimal) -> float:
-    return float(d)
-
-
-def _journal_is_legitimate(doc: dict) -> bool:
-    status = str((doc or {}).get("status") or "").strip()
-    if not status:
-        return True
-    return status in LEGITIMATE_STATUSES
-
-
 def _bs_amount(debit: Decimal, credit: Decimal, report_group: str) -> Decimal:
     if report_group == "asset":
-        return _money(debit - credit)
+        return money(debit - credit)
     if report_group in ("liability", "equity"):
-        return _money(credit - debit)
+        return money(credit - debit)
     return Decimal("0.00")
 
 
 def _pl_amount(debit: Decimal, credit: Decimal, report_group: str) -> Decimal:
     if report_group in ("revenue", "other_income"):
-        return _money(credit - debit)
+        return money(credit - debit)
     if report_group in ("cogs", "expense", "other_expense"):
-        return _money(debit - credit)
+        return money(debit - credit)
     return Decimal("0.00")
 
 
@@ -98,41 +78,6 @@ def _row_matches_search(row: dict, needle: str) -> bool:
     return needle in blob
 
 
-async def _sum_by_account(db, journal_ids: List[str]) -> Dict[str, Tuple[Decimal, Decimal]]:
-    out: Dict[str, Tuple[Decimal, Decimal]] = {}
-    if not journal_ids:
-        return out
-    lines = await db[JOURNAL_LINES].find(
-        {"journal_id": {"$in": journal_ids}},
-        {"_id": 0, "account_id": 1, "debit": 1, "credit": 1},
-    ).to_list(500000)
-    for ln in lines:
-        aid = str(ln.get("account_id") or "").strip()
-        if not aid:
-            continue
-        debit, credit = out.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        out[aid] = (debit + _money(ln.get("debit")), credit + _money(ln.get("credit")))
-    return out
-
-
-def _validate_as_of_date(raw: str) -> str:
-    as_of = str(raw or "").strip()
-    if not as_of:
-        raise BalanceSheetValidationError("Tanggal neraca wajib diisi")
-    parts = as_of.split("-")
-    if len(as_of) != 10 or len(parts) != 3:
-        raise BalanceSheetValidationError("Tanggal neraca tidak valid")
-    year, month, day = parts
-    if not (year.isdigit() and month.isdigit() and day.isdigit()):
-        raise BalanceSheetValidationError("Tanggal neraca tidak valid")
-    if not (len(year) == 4 and len(month) == 2 and len(day) == 2):
-        raise BalanceSheetValidationError("Tanggal neraca tidak valid")
-    yi, mi, di = int(year), int(month), int(day)
-    if mi < 1 or mi > 12 or di < 1 or di > 31:
-        raise BalanceSheetValidationError("Tanggal neraca tidak valid")
-    return as_of
-
-
 async def get_balance_sheet(
     db,
     *,
@@ -140,16 +85,15 @@ async def get_balance_sheet(
     q: Optional[str] = None,
 ) -> dict:
     """Build Neraca as of as_of_date. GET-safe. Never persists totals."""
-    as_of = _validate_as_of_date(as_of_date)
+    as_of = parse_financial_date(
+        as_of_date,
+        empty_message="Tanggal neraca wajib diisi",
+        invalid_message="Tanggal neraca tidak valid",
+        error_cls=BalanceSheetValidationError,
+    )
 
-    accounts = await list_accounts(db)
-
-    journals = await db[JOURNAL_ENTRIES].find(
-        {"date": {"$lte": as_of}},
-        {"_id": 0, "id": 1, "status": 1},
-    ).to_list(100000)
-    journal_ids = [j["id"] for j in journals if j.get("id") and _journal_is_legitimate(j)]
-    by_account = await _sum_by_account(db, journal_ids)
+    accounts = await load_statement_accounts(db)
+    by_account = await sum_journal_lines_by_account(db, {"date": {"$lte": as_of}})
 
     bs_rows: List[dict] = []
     group_totals = {key: Decimal("0.00") for key in BS_GROUPS}
@@ -165,8 +109,8 @@ async def get_balance_sheet(
         statement = meta.get("statement")
         report_group = meta["report_group"]
         debit, credit = by_account.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        debit = _money(debit)
-        credit = _money(credit)
+        debit = money(debit)
+        credit = money(credit)
 
         if statement == INCOME_STATEMENT and report_group in pl_totals:
             pl_totals[report_group] += _pl_amount(debit, credit, report_group)
@@ -184,9 +128,9 @@ async def get_balance_sheet(
             "account_type_label": meta["account_type_label"],
             "report_group": report_group,
             "normal_balance": meta["normal_balance"],
-            "debit": _money_float(debit),
-            "credit": _money_float(credit),
-            "amount": _money_float(amount),
+            "debit": money_float(debit),
+            "credit": money_float(credit),
+            "amount": money_float(amount),
             "drilldown": {
                 "account_id": aid,
                 "end_date": as_of,
@@ -199,19 +143,19 @@ async def get_balance_sheet(
         str(row.get("account_id") or ""),
     ))
 
-    current_earnings = _money(
+    current_earnings = money(
         pl_totals["revenue"]
         - pl_totals["cogs"]
         - pl_totals["expense"]
         + pl_totals["other_income"]
         - pl_totals["other_expense"]
     )
-    total_assets = _money(group_totals["asset"])
-    total_liabilities = _money(group_totals["liability"])
-    equity_accounts_total = _money(group_totals["equity"])
-    total_equity = _money(equity_accounts_total + current_earnings)
-    total_liabilities_and_equity = _money(total_liabilities + total_equity)
-    balance_difference = _money(total_assets - total_liabilities_and_equity)
+    total_assets = money(group_totals["asset"])
+    total_liabilities = money(group_totals["liability"])
+    equity_accounts_total = money(group_totals["equity"])
+    total_equity = money(equity_accounts_total + current_earnings)
+    total_liabilities_and_equity = money(total_liabilities + total_equity)
+    balance_difference = money(total_assets - total_liabilities_and_equity)
     is_balanced = balance_difference == Decimal("0.00")
 
     visible = bs_rows
@@ -225,17 +169,17 @@ async def get_balance_sheet(
             "report_group": key,
             "label": GROUP_LABELS[key],
             "accounts": [row for row in visible if row["report_group"] == key],
-            "total": _money_float(_money(group_totals[key])),
+            "total": money_float(money(group_totals[key])),
         }
 
     summary = {
-        "total_assets": _money_float(total_assets),
-        "total_liabilities": _money_float(total_liabilities),
-        "equity_accounts_total": _money_float(equity_accounts_total),
-        "current_earnings": _money_float(current_earnings),
-        "total_equity": _money_float(total_equity),
-        "total_liabilities_and_equity": _money_float(total_liabilities_and_equity),
-        "balance_difference": _money_float(balance_difference),
+        "total_assets": money_float(total_assets),
+        "total_liabilities": money_float(total_liabilities),
+        "equity_accounts_total": money_float(equity_accounts_total),
+        "current_earnings": money_float(current_earnings),
+        "total_equity": money_float(total_equity),
+        "total_liabilities_and_equity": money_float(total_liabilities_and_equity),
+        "balance_difference": money_float(balance_difference),
         "is_balanced": is_balanced,
     }
 
@@ -244,7 +188,7 @@ async def get_balance_sheet(
         "groups": groups,
         "current_earnings": {
             "label": CURRENT_EARNINGS_LABEL,
-            "amount": _money_float(current_earnings),
+            "amount": money_float(current_earnings),
             "derived": True,
         },
         "summary": summary,

@@ -32,6 +32,7 @@ from services.cash_bank_vouchers import (
 from services.chart_of_accounts import COLLECTION as COA_COLLECTION, create_account, ensure_indexes as ensure_coa
 from services.general_journal import COLLECTION as GJ_COLLECTION, ensure_indexes as ensure_gj
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal
+from services import financial_statement_common as fsc
 from services.opening_balance import COLLECTION as OB_COLLECTION, ensure_indexes as ensure_ob
 
 pytestmark = pytest.mark.anyio
@@ -222,6 +223,8 @@ async def _counts():
         "ob": await db[OB_COLLECTION].count_documents({}),
         "coa": await db[COA_COLLECTION].count_documents({}),
         "cb": await db[CB_COLLECTION].count_documents({}),
+        "settings": await db["app_settings"].count_documents({}),
+        "periods": await db["accounting_periods"].count_documents({}),
     }
 
 
@@ -275,6 +278,15 @@ async def test_as_of_date_required_and_valid():
         assert "tanggal" in bad.json()["detail"].lower()
         empty = await c.get(BS_PATH, params={"as_of_date": " "})
         assert empty.status_code in (400, 422)
+        impossible = await _bs(c, as_of="2026-02-31")
+        assert impossible.status_code == 400
+        assert "tanggal" in impossible.json()["detail"].lower()
+        leap_bad = await _bs(c, as_of="2026-02-29")
+        assert leap_bad.status_code == 400
+        leap_ok = await _bs(c, as_of="2024-02-29")
+        assert leap_ok.status_code == 200, leap_ok.text
+        unpadded = await _bs(c, as_of="2026-9-1")
+        assert unpadded.status_code == 400
 
 
 @pytest.mark.anyio
@@ -641,3 +653,79 @@ async def test_regression_reporting_map_and_ledgers():
         assert gl.json()["total_debit"] == cash_row["period_debit"]
         assert gl.json()["total_credit"] == cash_row["period_credit"]
         assert pay["id"]
+
+
+@pytest.mark.anyio
+async def test_balance_sheet_source_has_no_fixed_read_caps():
+    root = Path(__file__).resolve().parents[1] / "services"
+    for name in ("balance_sheet.py", "financial_statement_common.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "to_list(100000)" not in text
+        assert "to_list(500000)" not in text
+        assert "to_list(5000)" not in text
+    assert "list_accounts" not in (root / "balance_sheet.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.anyio
+async def test_multi_batch_journals_all_included(monkeypatch):
+    monkeypatch.setattr(fsc, "JOURNAL_ID_BATCH_SIZE", 2)
+    admin = _user()
+    async with await client_for(admin) as c:
+        cash = await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        income = await _coa(f"I{uuid.uuid4().hex[:6]}", "Pendapatan", "REVE")
+        bank = await _bank(c, "Bank BSBatch", cash["id"])
+        await _post_receipt(c, bank["id"], income["id"], 1000, date="2026-09-01")
+        await _post_receipt(c, bank["id"], income["id"], 2000, date="2026-09-10")
+        await _post_receipt(c, bank["id"], income["id"], 4000, date="2026-09-30")
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 3
+        body = (await _bs(c, as_of="2026-09-30")).json()
+        assert _row(body, cash["id"])["amount"] == 7000.0
+        assert body["current_earnings"]["label"] == "Laba/Rugi Berjalan"
+        assert body["current_earnings"]["derived"] is True
+        assert body["summary"]["current_earnings"] == 7000.0
+        assert body["summary"]["total_assets"] == 7000.0
+        assert body["summary"]["is_balanced"] is True
+
+
+@pytest.mark.anyio
+async def test_cross_report_earnings_and_trial_balance_agree():
+    admin = _user()
+    async with await client_for(admin) as c:
+        cash = await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        income = await _coa(f"I{uuid.uuid4().hex[:6]}", "Pendapatan", "REVE")
+        cogs = await _coa(f"H{uuid.uuid4().hex[:6]}", "HPP", "COGS")
+        expense = await _coa(f"E{uuid.uuid4().hex[:6]}", "Beban", "EXPS")
+        oinc = await _coa(f"N{uuid.uuid4().hex[:6]}", "Bunga", "OINC")
+        oexp = await _coa(f"X{uuid.uuid4().hex[:6]}", "Beban Lain", "OEXP")
+        equity = await _coa(f"Q{uuid.uuid4().hex[:6]}", "Modal", "EQTY")
+        bank = await _bank(c, "Bank Cross", cash["id"])
+
+        await _post_ob(c, cash["id"], equity["id"], 10000, cutoff="2026-01-01")
+        await _post_receipt(c, bank["id"], income["id"], 100000, date="2026-03-15")
+        await _post_gj(c, cogs["id"], cash["id"], 40000, date="2026-04-01", desc="HPP")
+        await _post_payment(c, bank["id"], expense["id"], 15000, date="2026-05-01")
+        await _post_gj(c, cash["id"], oinc["id"], 3000, date="2026-06-01", desc="Bunga")
+        await _post_gj(c, oexp["id"], cash["id"], 2000, date="2026-07-01", desc="Beban lain")
+
+        before = await _counts()
+        as_of = "2026-09-30"
+        earliest = "2026-01-01"
+        bs = await _bs(c, as_of=as_of)
+        pl = await _pl(c, start=earliest, end=as_of)
+        tb = await _tb(c, start=earliest, end=as_of)
+        assert bs.status_code == 200, bs.text
+        assert pl.status_code == 200, pl.text
+        assert tb.status_code == 200, tb.text
+        assert await _counts() == before
+
+        bs_body = bs.json()
+        pl_body = pl.json()
+        tb_body = tb.json()
+        assert bs_body["current_earnings"]["label"] == "Laba/Rugi Berjalan"
+        assert bs_body["summary"]["current_earnings"] == pl_body["totals"]["net_profit"]
+        assert bs_body["summary"]["current_earnings"] == 46000.0
+        assert bs_body["summary"]["is_balanced"] is True
+        assert tb_body["totals"]["ending_diff"] == 0
+        cash_tb = next(r for r in tb_body["items"] if r["account_id"] == cash["id"])
+        assert cash_tb["ending_debit"] == _row(bs_body, cash["id"])["amount"]
+        assert cash_tb["ending_debit"] == 56000.0
