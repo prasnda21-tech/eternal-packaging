@@ -22,6 +22,7 @@ from services.cash_bank_master import (
     require_bank_coa,
 )
 from services.chart_of_accounts import get_account
+from services.accounting_periods import PeriodLockedError
 from services.journal_core import (
     STATUS_POSTED,
     STATUS_REVERSED,
@@ -630,6 +631,8 @@ async def _write_source_journal(db, receipt: dict, user: dict, cash_snap: dict) 
             posted_by=user,
         )
         return journal
+    except PeriodLockedError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except JournalValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
     except JournalConflictError:
@@ -756,6 +759,9 @@ async def reverse_sales_receipt_accounting(
         except KeyError as exc:
             await clear_reverse_claim(db, rec["id"])
             raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
+        except PeriodLockedError as exc:
+            await clear_reverse_claim(db, rec["id"])
+            raise HTTPException(409, str(exc)) from exc
         except JournalValidationError as exc:
             await clear_reverse_claim(db, rec["id"])
             raise HTTPException(400, str(exc)) from exc

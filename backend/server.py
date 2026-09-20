@@ -214,6 +214,7 @@ from services.chat_indexes import ensure_indexes as ensure_chat_indexes
 from services.chat_membership import bootstrap_system_groups as bootstrap_chat_system_groups, on_user_changed as on_chat_user_changed
 from services.general_journal_http import register_general_journal_routes
 from services.opening_balance_http import register_opening_balance_routes
+from services.accounting_periods_http import register_accounting_periods_routes
 from services.general_ledger_http import register_general_ledger_routes
 from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
@@ -11772,6 +11773,13 @@ register_opening_balance_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+register_accounting_periods_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_general_ledger_routes(
     api_router,
     get_db=lambda: db,
@@ -13404,12 +13412,16 @@ async def seed():
     from services.cash_bank_reconciliation import ensure_indexes as _cash_bank_recon_ensure_indexes
     from services.general_journal import ensure_indexes as _general_journal_ensure_indexes
     from services.opening_balance import ensure_indexes as _opening_balance_ensure_indexes
+    from services.accounting_periods import ensure_indexes as _accounting_periods_ensure_indexes
+    from services.accounting_audit import ensure_indexes as _accounting_audit_ensure_indexes
     await _cash_bank_master_ensure_indexes(db)
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
     await _cash_bank_recon_ensure_indexes(db)
     await _general_journal_ensure_indexes(db)
     await _opening_balance_ensure_indexes(db)
+    await _accounting_periods_ensure_indexes(db)
+    await _accounting_audit_ensure_indexes(db)
     await ensure_chat_indexes(db)
     try:
         await ensure_v2_physical_settings(db)

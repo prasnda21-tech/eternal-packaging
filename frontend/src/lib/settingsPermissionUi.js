@@ -65,6 +65,8 @@ export const SENSITIVE_PERMISSION_KEYS = new Set([
   "payroll.reopen",
   "general_journal.reverse",
   "opening_balance.reverse",
+  "accounting.period.close",
+  "accounting.period.reopen",
   "cash_bank.reverse",
   "design.bypass_approval",
   "payment.bypass_approval",

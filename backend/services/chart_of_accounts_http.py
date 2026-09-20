@@ -96,6 +96,8 @@ def register_chart_of_accounts_routes(
             raise HTTPException(404, "Akun tidak ditemukan") from None
         except AccountValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except AccountInUseError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return doc
 
     @api_router.delete("/ledger/accounts/{account_id}")
@@ -105,7 +107,7 @@ def register_chart_of_accounts_routes(
     ):
         db = get_db()
         try:
-            deleted = await delete_account(db, account_id)
+            deleted = await delete_account(db, account_id, user=user)
         except KeyError:
             raise HTTPException(404, "Akun tidak ditemukan") from None
         except AccountInUseError as exc:

@@ -13,6 +13,11 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 from fastapi import HTTPException
 
 from services.account_type_reporting import reporting_metadata
+from services.accounting_audit import (
+    ENTITY_PAYROLL_SETTINGS,
+    EVENT_PAYROLL_SETTINGS_CHANGED,
+    record_accounting_event,
+)
 
 SETTINGS_KEY = "payroll_accounting"
 PERM_VIEW = "payroll_accounting.view"
@@ -515,7 +520,23 @@ async def update_payroll_accounting_settings(db, payload: Dict[str, Any], user: 
         "updated_at": now_iso(),
         "updated_by": _actor(user),
     }
+    before = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
     await db.app_settings.update_one({"key": SETTINGS_KEY}, {"$set": saved}, upsert=True)
+    await record_accounting_event(
+        db,
+        event_type=EVENT_PAYROLL_SETTINGS_CHANGED,
+        entity_type=ENTITY_PAYROLL_SETTINGS,
+        entity_id=SETTINGS_KEY,
+        actor=user,
+        before={
+            "payroll_payable_account_id": (before or {}).get("payroll_payable_account_id"),
+            "component_mappings": (before or {}).get("component_mappings") or {},
+        },
+        after={
+            "payroll_payable_account_id": saved["payroll_payable_account_id"],
+            "component_mappings": saved["component_mappings"],
+        },
+    )
     return await get_payroll_accounting_settings(db)
 
 

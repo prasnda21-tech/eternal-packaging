@@ -14,6 +14,7 @@ import uuid
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 
+from services.accounting_periods import PeriodLockedError
 from services.journal_core import (
     STATUS_POSTED,
     STATUS_REVERSED,
@@ -629,6 +630,8 @@ async def _write_source_journal(db, inv: dict, user: dict) -> None:
             lines=lines,
             posted_by=user,
         )
+    except PeriodLockedError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except JournalValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
     except JournalConflictError:
@@ -798,6 +801,9 @@ async def reverse_sales_invoice_accounting(
             except KeyError as exc:
                 await clear_reverse_claim(db, inv["id"])
                 raise HTTPException(404, "Jurnal faktur tidak ditemukan.") from exc
+            except PeriodLockedError as exc:
+                await clear_reverse_claim(db, inv["id"])
+                raise HTTPException(409, str(exc)) from exc
             except JournalValidationError as exc:
                 await clear_reverse_claim(db, inv["id"])
                 raise HTTPException(400, str(exc)) from exc

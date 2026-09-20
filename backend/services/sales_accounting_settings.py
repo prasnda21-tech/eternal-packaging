@@ -11,6 +11,11 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 
 from services.account_type_reporting import reporting_metadata
+from services.accounting_audit import (
+    ENTITY_SALES_SETTINGS,
+    EVENT_SALES_SETTINGS_CHANGED,
+    record_accounting_event,
+)
 
 SETTINGS_KEY = "sales_accounting"
 PERM_VIEW = "settings.sales_accounting.view"
@@ -179,5 +184,23 @@ async def update_sales_accounting_settings(db, payload: Dict[str, Any], user: di
         "updated_at": now_iso(),
         "updated_by": _actor(user),
     }
+    before = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
     await db.app_settings.update_one({"key": SETTINGS_KEY}, {"$set": saved}, upsert=True)
+    await record_accounting_event(
+        db,
+        event_type=EVENT_SALES_SETTINGS_CHANGED,
+        entity_type=ENTITY_SALES_SETTINGS,
+        entity_id=SETTINGS_KEY,
+        actor=user,
+        before={
+            "receivable_account_id": (before or {}).get("receivable_account_id"),
+            "revenue_account_id": (before or {}).get("revenue_account_id"),
+            "output_tax_account_id": (before or {}).get("output_tax_account_id"),
+        },
+        after={
+            "receivable_account_id": saved["receivable_account_id"],
+            "revenue_account_id": saved["revenue_account_id"],
+            "output_tax_account_id": saved["output_tax_account_id"],
+        },
+    )
     return await get_sales_accounting_settings(db)

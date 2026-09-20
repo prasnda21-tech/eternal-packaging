@@ -14,6 +14,8 @@ describe("Akun Perkiraan page", () => {
     expect(src).toMatch(/Nama Akun/);
     expect(src).toMatch(/Tipe Akun/);
     expect(src).toMatch(/akun-form-account-type/);
+    expect(src).toMatch(/account_type_locked/);
+    expect(src).toMatch(/Tipe akun terkunci karena akun sudah digunakan\./);
     expect(src).toMatch(/ACCOUNT_TYPE_CODES/);
     expect(src).toMatch(/account_type_label/);
     expect(src).toMatch(/ledgerAccountTypes/);

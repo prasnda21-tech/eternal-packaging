@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from pymongo.errors import DuplicateKeyError
 
 from services.chart_of_accounts import get_account
+from services.accounting_periods import PeriodLockedError
 from services.journal_core import (
     JournalConflictError,
     JournalValidationError,
@@ -355,6 +356,8 @@ async def post_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -> d
                 lines=_journal_lines_from_voucher(doc),
                 posted_by=user,
             )
+        except PeriodLockedError as exc:
+            raise GeneralJournalConflictError(str(exc)) from exc
         except JournalValidationError as exc:
             raise GeneralJournalValidationError(str(exc)) from exc
         except JournalConflictError as exc:
@@ -411,6 +414,8 @@ async def reverse_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -
             )
         except KeyError:
             raise KeyError("missing") from None
+        except PeriodLockedError as exc:
+            raise GeneralJournalConflictError(str(exc)) from exc
         except JournalValidationError as exc:
             raise GeneralJournalValidationError(str(exc)) from exc
         except JournalConflictError as exc:

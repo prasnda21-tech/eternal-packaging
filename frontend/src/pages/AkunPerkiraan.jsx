@@ -111,10 +111,9 @@ export default function AkunPerkiraan() {
     setFormError("");
     try {
       if (editing) {
-        await api.updateLedgerAccount(editing.id, {
-          name,
-          account_type: accountType,
-        });
+        const payload = { name };
+        if (!editing.account_type_locked) payload.account_type = accountType;
+        await api.updateLedgerAccount(editing.id, payload);
       } else {
         await api.createLedgerAccount({
           code,
@@ -287,6 +286,7 @@ export default function AkunPerkiraan() {
                   value={accountType}
                   onChange={(e) => setAccountType(e.target.value)}
                   required
+                  disabled={Boolean(editing?.account_type_locked)}
                   data-testid="akun-form-account-type"
                 >
                   <option value="">Pilih tipe</option>
@@ -301,6 +301,11 @@ export default function AkunPerkiraan() {
                   })}
                 </select>
               </label>
+              {editing?.account_type_locked && (
+                <p className="muted small" data-testid="akun-form-type-locked">
+                  Tipe akun terkunci karena akun sudah digunakan.
+                </p>
+              )}
               {formError && <p className="error" data-testid="akun-form-error">{formError}</p>}
               <div className="delete-modal-actions">
                 <button type="button" className="ghost" disabled={saving} onClick={closeForm}>Batal</button>
