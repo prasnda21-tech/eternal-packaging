@@ -18,6 +18,9 @@ PERMISSION_CATALOG = [
     ("PO", "po.edit", "Ubah PO"),
     ("PO", "po.cancel", "Batalkan PO"),
     ("PO", "po.delete", "Hapus permanen PO"),
+    ("Penjualan", "product_request.create", "Buat Permintaan Produk"),
+    ("Penjualan", "product_request.read_own_draft", "Baca draft Permintaan Produk sendiri"),
+    ("Penjualan", "product_request.read_all", "Baca semua Permintaan Produk terkirim"),
     ("Penjualan", "sales.customer.view", "Lihat Data Pelanggan"),
     ("Penjualan", "sales.customer.manage", "Kelola Data Pelanggan"),
     ("Penjualan", "sales.customer.edit", "Edit Pelanggan"),
@@ -234,6 +237,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.tasks.delivery", "Menu Tugas Driver / Terkirim"),
     ("Akses Menu", "nav.sales", "Menu Penjualan"),
     ("Akses Menu", "nav.sales.customers", "Menu Data Pelanggan"),
+    ("Akses Menu", "nav.sales.product_requests", "Menu Permintaan Produk"),
     ("Akses Menu", "nav.sales.sales_order", "Menu Pesanan Penjualan"),
     ("Akses Menu", "nav.sales.delivery_order", "Menu Pengiriman Pesanan"),
     ("Akses Menu", "nav.sales.sales_invoice", "Menu Faktur Penjualan"),
@@ -350,6 +354,7 @@ NAV_MENU_ITEMS = (
     ("nav.tasks.delivery", "Driver / Terkirim", "nav.tasks"),
     ("nav.sales", "Penjualan", None),
     ("nav.sales.customers", "Data Pelanggan", "nav.sales"),
+    ("nav.sales.product_requests", "Permintaan Produk", "nav.sales"),
     ("nav.sales.sales_order", "Pesanan Penjualan", "nav.sales"),
     ("nav.sales.delivery_order", "Pengiriman Pesanan", "nav.sales"),
     ("nav.sales.sales_invoice", "Faktur Penjualan", "nav.sales"),
@@ -520,6 +525,13 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.hr_payroll.history")
     if "payroll.settings" in existing:
         nav.add("nav.hr_payroll")
+    if (
+        "product_request.create" in existing
+        or "product_request.read_own_draft" in existing
+        or "product_request.read_all" in existing
+    ):
+        nav.add("nav.sales")
+        nav.add("nav.sales.product_requests")
     if (
         "sales.activity.view" in existing
         or "sales.activity.create" in existing
@@ -704,6 +716,13 @@ ROLE_DEFAULT_PERMISSIONS = {
         "customer_approval.view",
         "buffer_stock.manage",
         "reports.order_prediction.view", "reports.order_prediction.import",
+        "product_request.create", "product_request.read_own_draft",
+    ],
+    "holding_team": [
+        "product_request.read_all",
+    ],
+    "direktur_utama": [
+        "product_request.read_all",
     ],
     "sales_eternal": [
         # PWA Sales is a dedicated scoped surface. PO/financial data remains
@@ -733,6 +752,8 @@ ROLE_LABELS = {
     "operator": "Operator",
     "driver": "Driver",
     "crm": "CRM",
+    "holding_team": "Holding",
+    "direktur_utama": "Direktur",
     "sales_eternal": "Sales Eternal",
 }
 

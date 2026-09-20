@@ -189,6 +189,7 @@ from services.purchase_receipts import (
     sync_purchase_receipts,
 )
 from services.purchase_http import register_purchase_routes
+from services.product_requests_http import register_product_request_routes
 from services.customer_pricing_http import register_customer_pricing_routes
 from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
@@ -10848,16 +10849,19 @@ async def master_items_get(
     page: int = 1,
     page_size: int = 50,
     picker: bool = False,
-    user=Depends(require_perm("master_items.view")),
+    user=Depends(current_user),
 ):
     """List Master Barang/Jasa with server-side search, filter, and pagination.
 
     picker=true is the autocomplete path: one limited find, no catalog summary.
+    product_request.create may use picker only — not the full inventory catalog.
     """
     if picker:
+        await _require_any_perm(user, "master_items.view", "product_request.create")
         return await list_master_items_picker(
             db, q=q, status=status, page_size=page_size,
         )
+    await _require_any_perm(user, "master_items.view")
     return await list_master_items(
         db, q=q, item_type=item_type, status=status, page=page, page_size=page_size,
     )
@@ -11790,6 +11794,14 @@ register_purchase_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=require_perm,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_product_request_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
@@ -13492,6 +13504,8 @@ async def seed():
     await db.purchase_requests.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.purchase_requests, "request_number")
     await db.purchase_requests.create_index("created_at")
+    from services.product_requests import ensure_indexes as _product_request_ensure_indexes
+    await _product_request_ensure_indexes(db)
     await db.purchase_orders.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.purchase_orders, "po_number")
     await db.purchase_orders.create_index("request_id")

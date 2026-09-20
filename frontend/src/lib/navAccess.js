@@ -19,6 +19,7 @@ export const NAV_KEYS = {
   tasksDelivery: "nav.tasks.delivery",
   sales: "nav.sales",
   salesCustomers: "nav.sales.customers",
+  productRequests: "nav.sales.product_requests",
   salesOrder: "nav.sales.sales_order",
   salesDeliveryOrder: "nav.sales.delivery_order",
   salesInvoice: "nav.sales.sales_invoice",
@@ -94,6 +95,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.tasksDelivery, label: "Driver / Terkirim", parent: NAV_KEYS.tasks },
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
   { key: NAV_KEYS.salesCustomers, label: "Data Pelanggan", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.productRequests, label: "Permintaan Produk", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesDeliveryOrder, label: "Pengiriman Pesanan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", parent: NAV_KEYS.sales },
@@ -156,6 +158,7 @@ export function canSeeNav(hasPerm, key) {
 export function salesNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
   const salesCustomers = parent && (canSeeNav(hasPerm, NAV_KEYS.salesCustomers) || canSeeNav(hasPerm, "sales.customer.view") || canSeeNav(hasPerm, "sales.customer.manage") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
+  const productRequests = parent && (canSeeNav(hasPerm, NAV_KEYS.productRequests) || canSeeNav(hasPerm, "product_request.create") || canSeeNav(hasPerm, "product_request.read_own_draft") || canSeeNav(hasPerm, "product_request.read_all"));
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
@@ -168,8 +171,9 @@ export function salesNavVisible(hasPerm) {
   const statusPo = reportsParent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const orderPrediction = reportsParent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
   return {
-    parent: Boolean(salesCustomers || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || statusPo || orderPrediction),
+    parent: Boolean(salesCustomers || productRequests || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || statusPo || orderPrediction),
     salesCustomers: Boolean(salesCustomers),
+    productRequests: Boolean(productRequests),
     salesOrder: Boolean(salesOrder),
     salesDeliveryOrder: Boolean(salesDeliveryOrder),
     salesInvoice: Boolean(salesInvoice),
@@ -182,8 +186,26 @@ export function salesNavVisible(hasPerm) {
 }
 
 /** Existing Penjualan child routes. */
+export const PRODUCT_REQUEST_LIST_PATH = "/penjualan/permintaan-produk";
+export const PRODUCT_REQUEST_NEW_PATH = "/penjualan/permintaan-produk/baru";
+
+export function canCreateProductRequest(hasPerm) {
+  return canSeeNav(hasPerm, "product_request.create");
+}
+
+export function canReadAllProductRequests(hasPerm) {
+  return canSeeNav(hasPerm, "product_request.read_all");
+}
+
+export function productRequestEntryPath(hasPerm) {
+  if (canReadAllProductRequests(hasPerm)) return PRODUCT_REQUEST_LIST_PATH;
+  if (canCreateProductRequest(hasPerm)) return PRODUCT_REQUEST_NEW_PATH;
+  return PRODUCT_REQUEST_LIST_PATH;
+}
+
 export const SALES_NAV_ROUTES = {
   [NAV_KEYS.salesCustomers]: "/penjualan/data-pelanggan",
+  [NAV_KEYS.productRequests]: PRODUCT_REQUEST_LIST_PATH,
   [NAV_KEYS.salesOrder]: "/penjualan/pesanan-penjualan",
   [NAV_KEYS.salesDeliveryOrder]: "/penjualan/pengiriman-pesanan",
   [NAV_KEYS.salesInvoice]: "/penjualan/faktur-penjualan",
@@ -197,6 +219,7 @@ export const SALES_NAV_ROUTES = {
 
 const SALES_VIS_FIELD = {
   [NAV_KEYS.salesCustomers]: "salesCustomers",
+  [NAV_KEYS.productRequests]: "productRequests",
   [NAV_KEYS.salesOrder]: "salesOrder",
   [NAV_KEYS.salesDeliveryOrder]: "salesDeliveryOrder",
   [NAV_KEYS.salesInvoice]: "salesInvoice",
@@ -210,6 +233,7 @@ const SALES_VIS_FIELD = {
 /** Stable tile tones keyed by existing nav.* — not randomized per render. */
 export const SALES_TILE_TONES = {
   [NAV_KEYS.salesCustomers]: "teal",
+  [NAV_KEYS.productRequests]: "green",
   [NAV_KEYS.salesOrder]: "blue",
   [NAV_KEYS.salesDeliveryOrder]: "amber",
   [NAV_KEYS.salesInvoice]: "purple",
@@ -222,6 +246,7 @@ export const SALES_TILE_TONES = {
 
 export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.salesCustomers]: "top-nav-sales-customers",
+  [NAV_KEYS.productRequests]: "top-nav-product-requests",
   [NAV_KEYS.salesOrder]: "top-nav-sales-order",
   [NAV_KEYS.salesDeliveryOrder]: "top-nav-sales-delivery-order",
   [NAV_KEYS.salesInvoice]: "top-nav-sales-invoice",
@@ -257,7 +282,11 @@ export function salesMenuItems(hasPerm) {
     SALES_NAV_ROUTES,
     SALES_TILE_TONES,
     SALES_TILE_TESTIDS,
-  );
+  ).map((item) => (
+    item.key === NAV_KEYS.productRequests
+      ? { ...item, to: productRequestEntryPath(hasPerm) }
+      : item
+  ));
 }
 
 export const PURCHASING_NAV_ROUTES = {

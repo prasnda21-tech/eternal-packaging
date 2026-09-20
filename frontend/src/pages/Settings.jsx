@@ -40,6 +40,8 @@ const ROLE_LABELS = {
   operator: "Operator",
   driver: "Driver",
   crm: "CRM",
+  holding_team: "Holding",
+  direktur_utama: "Direktur",
   sales_eternal: "Sales Eternal",
 };
 const ROLE_KEYS = Object.keys(ROLE_LABELS);

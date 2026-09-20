@@ -150,9 +150,29 @@ describe("salesMenuItems", () => {
     ]);
   });
 
+  test("CRM create permission opens the new product request form", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, "product_request.create"));
+    expect(items).toEqual([
+      { key: NAV_KEYS.productRequests, label: "Permintaan Produk", to: "/penjualan/permintaan-produk/baru", tone: "green", testid: "top-nav-product-requests" },
+    ]);
+  });
+
+  test("Holding read_all opens the product request list", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, "product_request.read_all"));
+    expect(items).toEqual([
+      { key: NAV_KEYS.productRequests, label: "Permintaan Produk", to: "/penjualan/permintaan-produk", tone: "green", testid: "top-nav-product-requests" },
+    ]);
+  });
+
+  test("create and read_all still land on the list so Buat Permintaan can appear", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, "product_request.create", "product_request.read_all"));
+    expect(items[0].to).toBe("/penjualan/permintaan-produk");
+  });
+
   test("NAV_MENU_FALLBACK includes Penjualan children", () => {
     expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual([
       "Data Pelanggan",
+      "Permintaan Produk",
       "Pesanan Penjualan",
       "Pengiriman Pesanan",
       "Faktur Penjualan",
