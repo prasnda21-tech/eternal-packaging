@@ -8,20 +8,18 @@ normal_balance is presentation sign convention only; debit/credit stay raw.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from services.account_type_reporting import reporting_metadata
-from services.chart_of_accounts import list_accounts
-from services.journal_core import (
-    JOURNAL_ENTRIES,
-    JOURNAL_LINES,
-    STATUS_POSTED,
-    STATUS_REVERSED,
+from services.financial_statement_common import (
+    load_statement_accounts,
+    money,
+    money_float,
+    parse_financial_date_range,
+    sum_journal_lines_by_account,
 )
 
 PERM_VIEW = "profit_loss.view"
-
-LEGITIMATE_STATUSES = frozenset({STATUS_POSTED, STATUS_REVERSED})
 
 INCOME_STATEMENT = "INCOME_STATEMENT"
 
@@ -46,28 +44,10 @@ class ProfitLossValidationError(ValueError):
     pass
 
 
-def _money(raw: Any) -> Decimal:
-    try:
-        return Decimal(str(raw or 0)).quantize(Decimal("0.01"))
-    except Exception:
-        return Decimal("0.00")
-
-
-def _money_float(d: Decimal) -> float:
-    return float(d)
-
-
-def _journal_is_legitimate(doc: dict) -> bool:
-    status = str((doc or {}).get("status") or "").strip()
-    if not status:
-        return True
-    return status in LEGITIMATE_STATUSES
-
-
 def _presentation_amount(debit: Decimal, credit: Decimal, normal_balance: str) -> Decimal:
     if str(normal_balance or "").strip() == "credit":
-        return _money(credit - debit)
-    return _money(debit - credit)
+        return money(credit - debit)
+    return money(debit - credit)
 
 
 def _row_matches_search(row: dict, needle: str) -> bool:
@@ -80,23 +60,6 @@ def _row_matches_search(row: dict, needle: str) -> bool:
     return needle in blob
 
 
-async def _sum_by_account(db, journal_ids: List[str]) -> Dict[str, Tuple[Decimal, Decimal]]:
-    out: Dict[str, Tuple[Decimal, Decimal]] = {}
-    if not journal_ids:
-        return out
-    lines = await db[JOURNAL_LINES].find(
-        {"journal_id": {"$in": journal_ids}},
-        {"_id": 0, "account_id": 1, "debit": 1, "credit": 1},
-    ).to_list(500000)
-    for ln in lines:
-        aid = str(ln.get("account_id") or "").strip()
-        if not aid:
-            continue
-        debit, credit = out.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        out[aid] = (debit + _money(ln.get("debit")), credit + _money(ln.get("credit")))
-    return out
-
-
 async def get_profit_loss(
     db,
     *,
@@ -105,21 +68,20 @@ async def get_profit_loss(
     q: Optional[str] = None,
 ) -> dict:
     """Build Laba/Rugi for income-statement COA over [start_date, end_date]. GET-safe."""
-    start = str(start_date or "").strip()
-    end = str(end_date or "").strip()
-    if not start or not end:
-        raise ProfitLossValidationError("Rentang tanggal wajib diisi")
-    if start > end:
-        raise ProfitLossValidationError("Tanggal mulai tidak boleh setelah tanggal akhir")
+    start, end = parse_financial_date_range(
+        start_date,
+        end_date,
+        empty_message="Rentang tanggal wajib diisi",
+        start_invalid_message="Tanggal mulai tidak valid",
+        end_invalid_message="Tanggal akhir tidak valid",
+        order_message="Tanggal mulai tidak boleh setelah tanggal akhir",
+        error_cls=ProfitLossValidationError,
+    )
 
-    accounts = await list_accounts(db)
-
-    period_journals = await db[JOURNAL_ENTRIES].find(
-        {"date": {"$gte": start, "$lte": end}},
-        {"_id": 0, "id": 1, "status": 1},
-    ).to_list(100000)
-    period_ids = [j["id"] for j in period_journals if j.get("id") and _journal_is_legitimate(j)]
-    period_map = await _sum_by_account(db, period_ids)
+    accounts = await load_statement_accounts(db)
+    period_map = await sum_journal_lines_by_account(
+        db, {"date": {"$gte": start, "$lte": end}}
+    )
 
     items: List[dict] = []
     group_totals = {key: Decimal("0.00") for key in REPORT_GROUPS}
@@ -136,8 +98,8 @@ async def get_profit_loss(
             continue
 
         period_debit, period_credit = period_map.get(aid, (Decimal("0.00"), Decimal("0.00")))
-        period_debit = _money(period_debit)
-        period_credit = _money(period_credit)
+        period_debit = money(period_debit)
+        period_credit = money(period_credit)
         amount = _presentation_amount(period_debit, period_credit, meta["normal_balance"])
         group_totals[report_group] += amount
 
@@ -149,9 +111,9 @@ async def get_profit_loss(
             "account_type_label": meta["account_type_label"],
             "report_group": report_group,
             "normal_balance": meta["normal_balance"],
-            "debit": _money_float(period_debit),
-            "credit": _money_float(period_credit),
-            "amount": _money_float(amount),
+            "debit": money_float(period_debit),
+            "credit": money_float(period_credit),
+            "amount": money_float(amount),
             "drilldown": {
                 "account_id": aid,
                 "start_date": start,
@@ -165,24 +127,24 @@ async def get_profit_loss(
         str(row.get("account_id") or ""),
     ))
 
-    revenue_total = _money(group_totals["revenue"])
-    cogs_total = _money(group_totals["cogs"])
-    expense_total = _money(group_totals["expense"])
-    other_income_total = _money(group_totals["other_income"])
-    other_expense_total = _money(group_totals["other_expense"])
-    gross_profit = _money(revenue_total - cogs_total)
-    operating_profit = _money(gross_profit - expense_total)
-    net_profit = _money(operating_profit + other_income_total - other_expense_total)
+    revenue_total = money(group_totals["revenue"])
+    cogs_total = money(group_totals["cogs"])
+    expense_total = money(group_totals["expense"])
+    other_income_total = money(group_totals["other_income"])
+    other_expense_total = money(group_totals["other_expense"])
+    gross_profit = money(revenue_total - cogs_total)
+    operating_profit = money(gross_profit - expense_total)
+    net_profit = money(operating_profit + other_income_total - other_expense_total)
 
     totals = {
-        "revenue_total": _money_float(revenue_total),
-        "cogs_total": _money_float(cogs_total),
-        "gross_profit": _money_float(gross_profit),
-        "expense_total": _money_float(expense_total),
-        "operating_profit": _money_float(operating_profit),
-        "other_income_total": _money_float(other_income_total),
-        "other_expense_total": _money_float(other_expense_total),
-        "net_profit": _money_float(net_profit),
+        "revenue_total": money_float(revenue_total),
+        "cogs_total": money_float(cogs_total),
+        "gross_profit": money_float(gross_profit),
+        "expense_total": money_float(expense_total),
+        "operating_profit": money_float(operating_profit),
+        "other_income_total": money_float(other_income_total),
+        "other_expense_total": money_float(other_expense_total),
+        "net_profit": money_float(net_profit),
     }
 
     visible = items

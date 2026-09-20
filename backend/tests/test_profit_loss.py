@@ -32,6 +32,7 @@ from services.cash_bank_vouchers import (
 from services.chart_of_accounts import COLLECTION as COA_COLLECTION, create_account, ensure_indexes as ensure_coa
 from services.general_journal import COLLECTION as GJ_COLLECTION, ensure_indexes as ensure_gj
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal
+from services import financial_statement_common as fsc
 from services.opening_balance import COLLECTION as OB_COLLECTION, ensure_indexes as ensure_ob
 
 pytestmark = pytest.mark.anyio
@@ -215,6 +216,8 @@ async def _counts():
         "ob": await db[OB_COLLECTION].count_documents({}),
         "coa": await db[COA_COLLECTION].count_documents({}),
         "cb": await db[CB_COLLECTION].count_documents({}),
+        "settings": await db["app_settings"].count_documents({}),
+        "periods": await db["accounting_periods"].count_documents({}),
     }
 
 
@@ -237,6 +240,9 @@ async def test_get_zero_write():
         before = await _counts()
         r = await _pl(c)
         assert r.status_code == 200, r.text
+        assert await _counts() == before
+        r2 = await _pl(c)
+        assert r2.status_code == 200
         assert await _counts() == before
 
 
@@ -572,3 +578,62 @@ async def test_regression_reporting_map_and_ledgers():
         assert pay["id"]
         assert _has_account(body, income["id"])
         assert not _has_account(body, cash["id"])
+
+
+@pytest.mark.anyio
+async def test_profit_loss_source_has_no_fixed_read_caps():
+    root = Path(__file__).resolve().parents[1] / "services"
+    for name in ("profit_loss.py", "financial_statement_common.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "to_list(100000)" not in text
+        assert "to_list(500000)" not in text
+        assert "to_list(5000)" not in text
+    assert "list_accounts" not in (root / "profit_loss.py").read_text(encoding="utf-8")
+    assert "hpp_cost_layers" not in (root / "profit_loss.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.anyio
+async def test_strict_dates_and_inclusive_range():
+    admin = _user()
+    async with await client_for(admin) as c:
+        cash = await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        income = await _coa(f"I{uuid.uuid4().hex[:6]}", "Pendapatan", "REVE")
+        bank = await _bank(c, "Bank Range", cash["id"])
+        await _post_receipt(c, bank["id"], income["id"], 1000, date="2026-08-31")
+        await _post_receipt(c, bank["id"], income["id"], 2000, date="2026-09-01")
+        await _post_receipt(c, bank["id"], income["id"], 4000, date="2026-09-30")
+        await _post_receipt(c, bank["id"], income["id"], 8000, date="2026-10-01")
+
+        ok = await _pl(c, start="2024-02-29", end="2026-09-30")
+        assert ok.status_code == 200, ok.text
+
+        body = (await _pl(c, start="2026-09-01", end="2026-09-30")).json()
+        assert _row(body, income["id"])["amount"] == 6000.0
+        assert body["totals"]["revenue_total"] == 6000.0
+
+        bad = await _pl(c, start="2026-02-31", end="2026-09-30")
+        assert bad.status_code == 400
+        leap_bad = await _pl(c, start="2026-09-01", end="2026-02-29")
+        assert leap_bad.status_code == 400
+        unpadded = await _pl(c, start="2026-9-1", end="2026-09-30")
+        assert unpadded.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_multi_batch_journals_all_included(monkeypatch):
+    monkeypatch.setattr(fsc, "JOURNAL_ID_BATCH_SIZE", 2)
+    admin = _user()
+    async with await client_for(admin) as c:
+        cash = await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        income = await _coa(f"I{uuid.uuid4().hex[:6]}", "Pendapatan", "REVE")
+        cogs = await _coa(f"H{uuid.uuid4().hex[:6]}", "HPP", "COGS")
+        bank = await _bank(c, "Bank PLBatch", cash["id"])
+        await _post_receipt(c, bank["id"], income["id"], 1000, date="2026-09-01")
+        await _post_receipt(c, bank["id"], income["id"], 2000, date="2026-09-10")
+        await _post_gj(c, cogs["id"], cash["id"], 300, date="2026-09-15", desc="HPP batch")
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 3
+        body = (await _pl(c)).json()
+        assert _row(body, income["id"])["amount"] == 3000.0
+        assert _row(body, cogs["id"])["amount"] == 300.0
+        assert body["totals"]["cogs_total"] == 300.0
+        assert body["totals"]["net_profit"] == 2700.0

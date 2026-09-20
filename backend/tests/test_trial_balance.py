@@ -31,7 +31,14 @@ from services.cash_bank_vouchers import (
 from services.chart_of_accounts import COLLECTION as COA_COLLECTION, create_account, ensure_indexes as ensure_coa
 from services.general_journal import COLLECTION as GJ_COLLECTION, ensure_indexes as ensure_gj
 from services.journal_core import JOURNAL_ENTRIES, JOURNAL_LINES, ensure_indexes as ensure_journal
+from services.financial_statement_common import (
+    ACCOUNT_READ_BATCH_SIZE,
+    JOURNAL_ID_BATCH_SIZE,
+    parse_financial_date,
+    FinancialStatementDateError,
+)
 from services.opening_balance import COLLECTION as OB_COLLECTION, ensure_indexes as ensure_ob
+from services import financial_statement_common as fsc
 
 pytestmark = pytest.mark.anyio
 
@@ -207,6 +214,8 @@ async def _counts():
         "ob": await db[OB_COLLECTION].count_documents({}),
         "coa": await db[COA_COLLECTION].count_documents({}),
         "cb": await db[CB_COLLECTION].count_documents({}),
+        "settings": await db["app_settings"].count_documents({}),
+        "periods": await db["accounting_periods"].count_documents({}),
     }
 
 
@@ -234,6 +243,9 @@ async def test_get_zero_write():
         before = await _counts()
         r = await _tb(c)
         assert r.status_code == 200, r.text
+        assert await _counts() == before
+        r2 = await _tb(c)
+        assert r2.status_code == 200
         assert await _counts() == before
 
 
@@ -519,3 +531,145 @@ async def test_buku_besar_and_voucher_regression():
         assert gl.json()["total_credit"] == cash_row["period_credit"]
         assert pay["id"]
         _assert_balanced(tb.json()["totals"])
+
+
+def _statement_sources():
+    root = Path(__file__).resolve().parents[1] / "services"
+    return {
+        name: (root / name).read_text(encoding="utf-8")
+        for name in (
+            "trial_balance.py",
+            "profit_loss.py",
+            "balance_sheet.py",
+            "financial_statement_common.py",
+        )
+    }
+
+
+@pytest.mark.anyio
+async def test_no_fixed_read_caps_in_statement_sources():
+    sources = _statement_sources()
+    for name, text in sources.items():
+        assert "to_list(100000)" not in text, name
+        assert "to_list(500000)" not in text, name
+        assert "to_list(5000)" not in text, name
+    for name in ("trial_balance.py", "profit_loss.py", "balance_sheet.py"):
+        assert "list_accounts" not in sources[name]
+
+
+@pytest.mark.anyio
+async def test_strict_financial_date_parser():
+    assert parse_financial_date(
+        "2026-09-30", empty_message="empty", invalid_message="invalid"
+    ) == "2026-09-30"
+    assert parse_financial_date(
+        "2024-02-29", empty_message="empty", invalid_message="invalid"
+    ) == "2024-02-29"
+    for raw in (
+        "2026-02-29",
+        "2026-02-31",
+        "2026-13-01",
+        "2026-00-10",
+        "2026-9-1",
+        "abc",
+        "",
+        "2026-09-30T00:00:00",
+        "2026-09-30 00:00:00",
+    ):
+        with pytest.raises(FinancialStatementDateError):
+            parse_financial_date(raw, empty_message="empty", invalid_message="invalid")
+    assert ACCOUNT_READ_BATCH_SIZE >= 1
+    assert JOURNAL_ID_BATCH_SIZE >= 1
+
+
+@pytest.mark.anyio
+async def test_strict_dates_accepted_and_invalid_rejected():
+    admin = _user()
+    async with await client_for(admin) as c:
+        await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        ok = await _tb(c, start="2024-02-29", end="2026-09-30")
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["start_date"] == "2024-02-29"
+        assert ok.json()["end_date"] == "2026-09-30"
+
+        bad_start = await _tb(c, start="2026-02-31", end="2026-09-30")
+        assert bad_start.status_code == 400
+        assert "tanggal" in bad_start.json()["detail"].lower()
+
+        bad_end = await _tb(c, start="2026-09-01", end="2026-02-29")
+        assert bad_end.status_code == 400
+        assert "tanggal" in bad_end.json()["detail"].lower()
+
+        unpadded = await _tb(c, start="2026-9-1", end="2026-09-30")
+        assert unpadded.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_zero_balance_coa_and_account_batches_included(monkeypatch):
+    monkeypatch.setattr(fsc, "ACCOUNT_READ_BATCH_SIZE", 2)
+    admin = _user()
+    async with await client_for(admin) as c:
+        accounts = []
+        for prefix, name, typ in (
+            ("A", "Kas", "BANK"),
+            ("B", "Piutang", "AREC"),
+            ("C", "Persediaan", "INTR"),
+            ("D", "Modal", "EQTY"),
+            ("E", "Pendapatan", "REVE"),
+        ):
+            accounts.append(await _coa(f"{prefix}{uuid.uuid4().hex[:6]}", name, typ))
+        tb = await _tb(c)
+        assert tb.status_code == 200, tb.text
+        body = tb.json()
+        ids = {row["account_id"] for row in body["items"]}
+        assert {acc["id"] for acc in accounts} <= ids
+        assert body["account_count"] == 5
+        unused = next(row for row in body["items"] if row["account_id"] == accounts[1]["id"])
+        assert unused["opening_debit"] == 0
+        assert unused["period_debit"] == 0
+        assert unused["ending_debit"] == 0
+        _assert_balanced(body["totals"])
+
+
+@pytest.mark.anyio
+async def test_multi_batch_journals_all_included(monkeypatch):
+    monkeypatch.setattr(fsc, "JOURNAL_ID_BATCH_SIZE", 2)
+    admin = _user()
+    async with await client_for(admin) as c:
+        cash = await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        income = await _coa(f"I{uuid.uuid4().hex[:6]}", "Pendapatan", "REVE")
+        bank = await _bank(c, "Bank Batch", cash["id"])
+        await _post_receipt(c, bank["id"], income["id"], 1000, date="2026-09-01")
+        await _post_receipt(c, bank["id"], income["id"], 2000, date="2026-09-10")
+        await _post_receipt(c, bank["id"], income["id"], 4000, date="2026-09-30")
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == 3
+        body = (await _tb(c)).json()
+        cash_row = _row(body, cash["id"])
+        assert cash_row["period_debit"] == 7000.0
+        assert cash_row["ending_debit"] == 7000.0
+        assert body["totals"]["period_debit"] == 7000.0
+        _assert_balanced(body["totals"])
+
+
+@pytest.mark.anyio
+async def test_missing_status_journal_still_included():
+    admin = _user()
+    async with await client_for(admin) as c:
+        cash = await _coa(f"A{uuid.uuid4().hex[:6]}", "Kas", "BANK")
+        equity = await _coa(f"Q{uuid.uuid4().hex[:6]}", "Modal", "EQTY")
+        jid = str(uuid.uuid4())
+        await server.db[JOURNAL_ENTRIES].insert_one({
+            "id": jid,
+            "number": "JE-NOSTATUS",
+            "date": "2026-09-05",
+            "source_type": "legacy_no_status",
+            "source_id": jid,
+            "description": "Historical row without status",
+        })
+        await server.db[JOURNAL_LINES].insert_many([
+            {"id": str(uuid.uuid4()), "journal_id": jid, "account_id": cash["id"], "debit": 50.0, "credit": 0},
+            {"id": str(uuid.uuid4()), "journal_id": jid, "account_id": equity["id"], "debit": 0, "credit": 50.0},
+        ])
+        body = (await _tb(c)).json()
+        assert _row(body, cash["id"])["period_debit"] == 50.0
+        _assert_balanced(body["totals"])
