@@ -11,6 +11,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pymongo.errors import DuplicateKeyError
 
+from services.accounting_periods import (
+    PeriodLockedError,
+    acquire_period_writer_claim,
+    release_period_writer_claim,
+)
 from services.chart_of_accounts import get_account
 from services.journal_core import (
     JournalConflictError,
@@ -37,6 +42,8 @@ STATUS_REVERSED = "reversed"
 
 SOURCE_OPENING_BALANCE = "opening_balance"
 SOURCE_OPENING_BALANCE_REVERSAL = "opening_balance_reversal"
+
+RECOVERY_REASON_CUTOFF = "opening_balance_cutoff_conflict"
 
 PERM_VIEW = "opening_balance.view"
 PERM_MANAGE = "opening_balance.manage"
@@ -91,6 +98,10 @@ async def ensure_indexes(db) -> None:
         name="uniq_posted_cutoff_date",
         partialFilterExpression={"status": STATUS_POSTED},
     )
+    await col.create_index(
+        [("accounting_recovery_required", 1), ("cutoff_date", 1)],
+        name="ob_accounting_recovery",
+    )
 
 
 def _line_totals(lines: Sequence[dict]) -> Tuple[Decimal, Decimal]:
@@ -138,6 +149,11 @@ def public_voucher(doc: Optional[dict], *, journal: Optional[dict] = None, rever
         "posted_by": doc.get("posted_by"),
         "reversed_at": doc.get("reversed_at"),
         "reversed_by": doc.get("reversed_by"),
+        "accounting_recovery_required": bool(doc.get("accounting_recovery_required")),
+        "accounting_recovery_journal_id": doc.get("accounting_recovery_journal_id") or "",
+        "accounting_recovery_reason": doc.get("accounting_recovery_reason") or "",
+        "accounting_recovery_at": doc.get("accounting_recovery_at"),
+        "accounting_recovery_last_error": doc.get("accounting_recovery_last_error") or "",
     }
     if journal is not None:
         out["journal"] = journal
@@ -316,6 +332,85 @@ async def delete_draft(db, voucher_id: str) -> dict:
     return public_voucher(doc)
 
 
+async def _persist_accounting_recovery(
+    db,
+    voucher: dict,
+    journal_id: str,
+    *,
+    last_error: str = "",
+) -> None:
+    await db[COLLECTION].update_one(
+        {"id": voucher["id"]},
+        {
+            "$set": {
+                "accounting_recovery_required": True,
+                "accounting_recovery_journal_id": str(journal_id),
+                "accounting_recovery_reason": RECOVERY_REASON_CUTOFF,
+                "accounting_recovery_at": now_iso(),
+                "accounting_recovery_last_error": str(last_error or ""),
+                "updated_at": now_iso(),
+            }
+        },
+    )
+
+
+async def _clear_accounting_recovery(db, voucher_id: str) -> None:
+    await db[COLLECTION].update_one(
+        {"id": voucher_id},
+        {
+            "$unset": {
+                "accounting_recovery_required": "",
+                "accounting_recovery_journal_id": "",
+                "accounting_recovery_reason": "",
+                "accounting_recovery_at": "",
+                "accounting_recovery_last_error": "",
+            },
+            "$set": {"updated_at": now_iso()},
+        },
+    )
+
+
+async def _recover_opening_balance_orphan(db, doc: dict, *, user: Optional[dict] = None) -> dict:
+    """Compensate an orphan OB journal using a new legitimate writer lease."""
+    journal_id = str(doc.get("accounting_recovery_journal_id") or "").strip()
+    if not journal_id:
+        await _clear_accounting_recovery(db, doc["id"])
+        return await get_voucher(db, doc["id"])
+    cutoff_date = _norm_date(doc.get("cutoff_date"))
+    claim = await acquire_period_writer_claim(db, cutoff_date)
+    try:
+        try:
+            await reverse_journal(
+                db,
+                journal_id,
+                source_type=SOURCE_OPENING_BALANCE_REVERSAL,
+                source_id=f"{doc['id']}:orphan-cutoff",
+                posted_by=user,
+                description=f"Compensating reverse {doc.get('number')}",
+                writer_claim_token=claim["token"],
+            )
+        except PeriodLockedError:
+            raise
+        except JournalConflictError:
+            existing = await db.journal_entries.find_one({"reversal_of": journal_id}, {"_id": 1})
+            if not existing:
+                raise
+        except KeyError:
+            pass
+        await _clear_accounting_recovery(db, doc["id"])
+        return await get_voucher(db, doc["id"])
+    except PeriodLockedError:
+        raise
+    except Exception as exc:
+        await _persist_accounting_recovery(db, doc, journal_id, last_error=str(exc))
+        raise OpeningBalanceConflictError(
+            f"Kompensasi jurnal Saldo Awal gagal untuk cut-off {cutoff_date}. "
+            f"Jurnal {journal_id} masih perlu recovery."
+        ) from exc
+    finally:
+        await release_period_writer_claim(db, claim["period_key"], claim["token"])
+
+
 def _journal_lines_from_voucher(doc: dict) -> List[dict]:
     return [
         {
@@ -341,102 +436,157 @@ async def post_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -> d
         if doc.get("status") != STATUS_DRAFT:
             raise OpeningBalanceConflictError("Status tidak valid untuk posting")
 
+        if doc.get("accounting_recovery_required"):
+            try:
+                return await _recover_opening_balance_orphan(db, doc, user=user)
+            except PeriodLockedError as exc:
+                raise OpeningBalanceConflictError(str(exc)) from exc
+
         cutoff_date = _norm_date(doc.get("cutoff_date"))
         async with get_named_lock(f"opening_balance_cutoff:{cutoff_date}"):
-            competing = await _find_active_posted_for_cutoff(db, cutoff_date, exclude_id=doc["id"])
-            if competing:
-                raise OpeningBalanceConflictError(
-                    f"Sudah ada Saldo Awal posted untuk tanggal cut-off {cutoff_date}"
+            claim = None
+            try:
+                claim = await acquire_period_writer_claim(db, cutoff_date)
+                claim_token = claim["token"]
+
+                competing = await _find_active_posted_for_cutoff(db, cutoff_date, exclude_id=doc["id"])
+                if competing:
+                    raise OpeningBalanceConflictError(
+                        f"Sudah ada Saldo Awal posted untuk tanggal cut-off {cutoff_date}"
+                    )
+
+                # Re-validate lines / COA / balance at post time
+                lines = await normalize_lines(db, doc.get("lines"), require_balanced=True)
+                await db[COLLECTION].update_one(
+                    {"id": doc["id"], "status": STATUS_DRAFT},
+                    {"$set": {"lines": lines, "cutoff_date": cutoff_date, "updated_at": now_iso()}},
                 )
+                doc["lines"] = lines
+                doc["cutoff_date"] = cutoff_date
 
-            # Re-validate lines / COA / balance at post time
-            lines = await normalize_lines(db, doc.get("lines"), require_balanced=True)
-            await db[COLLECTION].update_one(
-                {"id": doc["id"], "status": STATUS_DRAFT},
-                {"$set": {"lines": lines, "cutoff_date": cutoff_date, "updated_at": now_iso()}},
-            )
-            doc["lines"] = lines
-            doc["cutoff_date"] = cutoff_date
+                existing_j = await find_primary_journal_for_source(db, SOURCE_OPENING_BALANCE, doc["id"])
+                if existing_j and existing_j.get("status") == "reversed":
+                    return await get_voucher(db, doc["id"])
+                if existing_j:
+                    try:
+                        result = await db[COLLECTION].update_one(
+                            {"id": doc["id"], "status": STATUS_DRAFT},
+                            {
+                                "$set": {
+                                    "status": STATUS_POSTED,
+                                    "posted_journal_id": existing_j["id"],
+                                    "journal_number": existing_j.get("number"),
+                                    "posted_at": existing_j.get("posted_at") or now_iso(),
+                                    "posted_by": actor_snapshot(user),
+                                    "updated_at": now_iso(),
+                                    "updated_by": actor_snapshot(user),
+                                }
+                            },
+                        )
+                    except DuplicateKeyError as exc:
+                        if existing_j.get("status") == "posted" and existing_j.get("id"):
+                            await _persist_accounting_recovery(db, doc, existing_j["id"])
+                            try:
+                                await reverse_journal(
+                                    db,
+                                    existing_j["id"],
+                                    source_type=SOURCE_OPENING_BALANCE_REVERSAL,
+                                    source_id=f"{doc['id']}:orphan-cutoff",
+                                    posted_by=user,
+                                    description=f"Compensating reverse {doc.get('number')}",
+                                    writer_claim_token=claim_token,
+                                )
+                            except PeriodLockedError:
+                                raise
+                            except Exception as rev_exc:
+                                await _persist_accounting_recovery(
+                                    db, doc, existing_j["id"], last_error=str(rev_exc)
+                                )
+                                raise OpeningBalanceConflictError(
+                                    f"Kompensasi jurnal Saldo Awal gagal untuk cut-off {cutoff_date}. "
+                                    f"Jurnal {existing_j.get('id')} masih perlu recovery."
+                                ) from rev_exc
+                            await _clear_accounting_recovery(db, doc["id"])
+                        raise OpeningBalanceConflictError(
+                            f"Sudah ada Saldo Awal posted untuk tanggal cut-off {cutoff_date}"
+                        ) from exc
+                    if result.matched_count == 0:
+                        return await get_voucher(db, doc["id"])
+                    return await get_voucher(db, doc["id"])
 
-            existing_j = await find_primary_journal_for_source(db, SOURCE_OPENING_BALANCE, doc["id"])
-            if existing_j:
+                try:
+                    journal = await post_balanced_journal(
+                        db,
+                        date=cutoff_date,
+                        source_type=SOURCE_OPENING_BALANCE,
+                        source_id=doc["id"],
+                        description=doc.get("description") or f"Saldo Awal {doc.get('number')}",
+                        lines=_journal_lines_from_voucher(doc),
+                        posted_by=user,
+                        writer_claim_token=claim_token,
+                    )
+                except PeriodLockedError as exc:
+                    raise OpeningBalanceConflictError(str(exc)) from exc
+                except JournalValidationError as exc:
+                    raise OpeningBalanceValidationError(str(exc)) from exc
+                except JournalConflictError as exc:
+                    existing_j = await find_primary_journal_for_source(db, SOURCE_OPENING_BALANCE, doc["id"])
+                    if existing_j:
+                        journal = existing_j
+                    else:
+                        raise OpeningBalanceConflictError(str(exc)) from exc
+
+                now = now_iso()
                 try:
                     result = await db[COLLECTION].update_one(
                         {"id": doc["id"], "status": STATUS_DRAFT},
                         {
                             "$set": {
                                 "status": STATUS_POSTED,
-                                "posted_journal_id": existing_j["id"],
-                                "journal_number": existing_j.get("number"),
-                                "posted_at": existing_j.get("posted_at") or now_iso(),
+                                "posted_journal_id": journal["id"],
+                                "journal_number": journal.get("number"),
+                                "posted_at": now,
                                 "posted_by": actor_snapshot(user),
-                                "updated_at": now_iso(),
+                                "updated_at": now,
                                 "updated_by": actor_snapshot(user),
                             }
                         },
                     )
                 except DuplicateKeyError as exc:
+                    # Persist durable recovery BEFORE releasing writer protection.
+                    await _persist_accounting_recovery(db, doc, journal["id"])
+                    try:
+                        await reverse_journal(
+                            db,
+                            journal["id"],
+                            source_type=SOURCE_OPENING_BALANCE_REVERSAL,
+                            source_id=f"{doc['id']}:orphan-cutoff",
+                            posted_by=user,
+                            description=f"Compensating reverse {doc.get('number')}",
+                            writer_claim_token=claim_token,
+                        )
+                    except PeriodLockedError:
+                        raise
+                    except Exception as rev_exc:
+                        await _persist_accounting_recovery(
+                            db, doc, journal["id"], last_error=str(rev_exc)
+                        )
+                        raise OpeningBalanceConflictError(
+                            f"Kompensasi jurnal Saldo Awal gagal untuk cut-off {cutoff_date}. "
+                            f"Jurnal {journal.get('id')} masih perlu recovery."
+                        ) from rev_exc
+                    await _clear_accounting_recovery(db, doc["id"])
                     raise OpeningBalanceConflictError(
                         f"Sudah ada Saldo Awal posted untuk tanggal cut-off {cutoff_date}"
                     ) from exc
                 if result.matched_count == 0:
                     return await get_voucher(db, doc["id"])
                 return await get_voucher(db, doc["id"])
-
-            try:
-                journal = await post_balanced_journal(
-                    db,
-                    date=cutoff_date,
-                    source_type=SOURCE_OPENING_BALANCE,
-                    source_id=doc["id"],
-                    description=doc.get("description") or f"Saldo Awal {doc.get('number')}",
-                    lines=_journal_lines_from_voucher(doc),
-                    posted_by=user,
-                )
-            except JournalValidationError as exc:
-                raise OpeningBalanceValidationError(str(exc)) from exc
-            except JournalConflictError as exc:
-                existing_j = await find_primary_journal_for_source(db, SOURCE_OPENING_BALANCE, doc["id"])
-                if existing_j:
-                    journal = existing_j
-                else:
-                    raise OpeningBalanceConflictError(str(exc)) from exc
-
-            now = now_iso()
-            try:
-                result = await db[COLLECTION].update_one(
-                    {"id": doc["id"], "status": STATUS_DRAFT},
-                    {
-                        "$set": {
-                            "status": STATUS_POSTED,
-                            "posted_journal_id": journal["id"],
-                            "journal_number": journal.get("number"),
-                            "posted_at": now,
-                            "posted_by": actor_snapshot(user),
-                            "updated_at": now,
-                            "updated_by": actor_snapshot(user),
-                        }
-                    },
-                )
-            except DuplicateKeyError as exc:
-                # Competing posted voucher won the unique cutoff index — reverse orphan journal.
-                try:
-                    await reverse_journal(
-                        db,
-                        journal["id"],
-                        source_type=SOURCE_OPENING_BALANCE_REVERSAL,
-                        source_id=f"{doc['id']}:orphan-cutoff",
-                        posted_by=user,
-                        description=f"Compensating reverse {doc.get('number')}",
-                    )
-                except Exception:
-                    pass
-                raise OpeningBalanceConflictError(
-                    f"Sudah ada Saldo Awal posted untuk tanggal cut-off {cutoff_date}"
-                ) from exc
-            if result.matched_count == 0:
-                return await get_voucher(db, doc["id"])
-            return await get_voucher(db, doc["id"])
+            except PeriodLockedError as exc:
+                raise OpeningBalanceConflictError(str(exc)) from exc
+            finally:
+                if claim:
+                    await release_period_writer_claim(db, claim["period_key"], claim["token"])
 
 
 async def reverse_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -> dict:
@@ -466,6 +616,8 @@ async def reverse_voucher(db, voucher_id: str, *, user: Optional[dict] = None) -
             )
         except KeyError:
             raise KeyError("missing") from None
+        except PeriodLockedError as exc:
+            raise OpeningBalanceConflictError(str(exc)) from exc
         except JournalValidationError as exc:
             raise OpeningBalanceValidationError(str(exc)) from exc
         except JournalConflictError as exc:

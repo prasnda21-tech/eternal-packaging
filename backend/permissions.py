@@ -188,6 +188,9 @@ PERMISSION_CATALOG = [
     ("Buku Besar", "trial_balance.view", "Lihat Neraca Saldo"),
     ("Buku Besar", "profit_loss.view", "Lihat Laba/Rugi"),
     ("Buku Besar", "balance_sheet.view", "Lihat Neraca"),
+    ("Buku Besar", "accounting.period.view", "Lihat Periode Akuntansi"),
+    ("Buku Besar", "accounting.period.close", "Tutup Periode Akuntansi"),
+    ("Buku Besar", "accounting.period.reopen", "Buka Ulang Periode Akuntansi"),
     ("Kas & Bank", "cash_bank.view", "Lihat Kas & Bank"),
     ("Kas & Bank", "cash_bank.manage", "Kelola Kas & Bank"),
     ("Kas & Bank", "cash_bank.post", "Posting Kas & Bank"),
@@ -262,6 +265,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.ledger.trial_balance", "Menu Neraca Saldo"),
     ("Akses Menu", "nav.ledger.profit_loss", "Menu Laba/Rugi"),
     ("Akses Menu", "nav.ledger.balance_sheet", "Menu Neraca"),
+    ("Akses Menu", "nav.ledger.accounting_periods", "Menu Periode Akuntansi"),
     ("Akses Menu", "nav.cash_bank", "Menu Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.accounts", "Menu Daftar Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.receipts", "Menu Penerimaan Kas & Bank"),
@@ -370,6 +374,7 @@ NAV_MENU_ITEMS = (
     ("nav.ledger.accounts", "Akun Perkiraan", "nav.ledger"),
     ("nav.ledger.general_journal", "Jurnal Umum", "nav.ledger"),
     ("nav.ledger.opening_balance", "Saldo Awal", "nav.ledger"),
+    ("nav.ledger.accounting_periods", "Periode Akuntansi", "nav.ledger"),
     ("nav.ledger.general_ledger", "Buku Besar", "nav.ledger"),
     ("nav.ledger.trial_balance", "Neraca Saldo", "nav.ledger"),
     ("nav.ledger.profit_loss", "Laba/Rugi", "nav.ledger"),
@@ -538,6 +543,13 @@ def derived_nav_permissions(existing: set) -> set:
     if "balance_sheet.view" in existing:
         nav.add("nav.ledger")
         nav.add("nav.ledger.balance_sheet")
+    if (
+        "accounting.period.view" in existing
+        or "accounting.period.close" in existing
+        or "accounting.period.reopen" in existing
+    ):
+        nav.add("nav.ledger")
+        nav.add("nav.ledger.accounting_periods")
     if (
         "cash_bank.view" in existing
         or "cash_bank.manage" in existing

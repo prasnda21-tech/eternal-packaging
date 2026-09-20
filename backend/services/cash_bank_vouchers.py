@@ -13,6 +13,7 @@ from services.cash_bank_master import (
     require_active_cash_bank,
 )
 from services.chart_of_accounts import get_account
+from services.accounting_periods import PeriodLockedError
 from services.journal_core import (
     SOURCE_PAYMENT,
     SOURCE_RECEIPT,
@@ -511,6 +512,8 @@ async def post_voucher(db, kind: str, voucher_id: str, *, user: Optional[dict] =
                 lines=lines,
                 posted_by=user,
             )
+        except PeriodLockedError as exc:
+            raise VoucherConflictError(str(exc)) from exc
         except JournalValidationError as exc:
             raise VoucherValidationError(str(exc)) from exc
         except JournalConflictError as exc:
@@ -571,6 +574,8 @@ async def reverse_voucher(db, kind: str, voucher_id: str, *, user: Optional[dict
             )
         except KeyError:
             raise KeyError("missing") from None
+        except PeriodLockedError as exc:
+            raise VoucherConflictError(str(exc)) from exc
         except JournalValidationError as exc:
             raise VoucherValidationError(str(exc)) from exc
         except JournalConflictError as exc:

@@ -17,6 +17,14 @@ from services.account_type_reporting import (
     apply_derived_reporting_fields,
     validate_account_type_reporting_map,
 )
+from services.accounting_audit import (
+    ENTITY_COA,
+    EVENT_COA_CREATED,
+    EVENT_COA_DELETED,
+    EVENT_COA_RENAMED,
+    EVENT_COA_TYPE_CHANGED,
+    record_accounting_event,
+)
 
 COLLECTION = "ledger_accounts"
 PERM_VIEW = "ledger.accounts.view"
@@ -72,6 +80,10 @@ class AccountConflictError(Exception):
 
 class AccountInUseError(Exception):
     """Account is referenced by journal/accounting data."""
+
+
+TYPE_LOCKED_MESSAGE = "Tipe akun terkunci karena akun sudah digunakan."
+DELETE_IN_USE_MESSAGE = "Akun tidak dapat dihapus karena sudah dipakai di jurnal/transaksi akuntansi"
 
 
 def now_iso() -> str:
@@ -130,6 +142,7 @@ def public_account(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "code": normalize_code(doc.get("code")),
         "name": normalize_name(doc.get("name")),
         "account_type": account_type,
+        "account_type_locked": False,
         "created_at": doc.get("created_at"),
         "created_by": doc.get("created_by"),
         "updated_at": doc.get("updated_at"),
@@ -176,12 +189,18 @@ async def list_accounts(db, *, q: Optional[str] = None) -> List[dict]:
             {"account_type": {"$regex": needle, "$options": "i"}},
         ]
     docs = await db[COLLECTION].find(query, {"_id": 0}).sort("code", 1).to_list(5000)
-    return [public_account(d) for d in docs]
+    items = [public_account(d) for d in docs]
+    await attach_account_type_lock_flags(db, items)
+    return items
 
 
 async def get_account(db, account_id: str) -> Optional[dict]:
     doc = await db[COLLECTION].find_one({"id": str(account_id)}, {"_id": 0})
-    return public_account(doc) if doc else None
+    if not doc:
+        return None
+    out = public_account(doc)
+    await attach_account_type_lock_flags(db, [out])
+    return out
 
 
 async def create_account(db, raw: dict, *, user: Optional[dict] = None) -> dict:
@@ -205,7 +224,16 @@ async def create_account(db, raw: dict, *, user: Optional[dict] = None) -> dict:
         await db[COLLECTION].insert_one(dict(doc))
     except DuplicateKeyError as exc:
         raise AccountConflictError(f"Kode Perkiraan '{code}' sudah digunakan") from exc
-    return public_account(doc)
+    created = public_account(doc)
+    await record_accounting_event(
+        db,
+        event_type=EVENT_COA_CREATED,
+        entity_type=ENTITY_COA,
+        entity_id=created["id"],
+        actor=user,
+        after={"code": created["code"], "name": created["name"], "account_type": created["account_type"]},
+    )
+    return created
 
 
 async def update_account(
@@ -242,21 +270,74 @@ async def update_account(
             raise AccountValidationError("Kode Perkiraan tidak dapat diubah")
 
     if not updates:
-        return public_account(doc)
+        out = public_account(doc)
+        await attach_account_type_lock_flags(db, [out])
+        return out
+
+    if "account_type" in updates and updates["account_type"] != normalize_account_type(doc.get("account_type")):
+        if await account_is_referenced(db, aid, doc.get("code") or ""):
+            raise AccountInUseError(TYPE_LOCKED_MESSAGE)
 
     updates["updated_at"] = now_iso()
     updates["updated_by"] = actor_label(user)
     await db[COLLECTION].update_one({"id": aid}, {"$set": updates})
     refreshed = await db[COLLECTION].find_one({"id": aid}, {"_id": 0})
-    return public_account(refreshed)
+    out = public_account(refreshed)
+    await attach_account_type_lock_flags(db, [out])
+    if "name" in updates and updates["name"] != normalize_name(doc.get("name")):
+        await record_accounting_event(
+            db,
+            event_type=EVENT_COA_RENAMED,
+            entity_type=ENTITY_COA,
+            entity_id=aid,
+            actor=user,
+            before={"name": normalize_name(doc.get("name"))},
+            after={"name": updates["name"]},
+        )
+    if "account_type" in updates and updates["account_type"] != normalize_account_type(doc.get("account_type")):
+        await record_accounting_event(
+            db,
+            event_type=EVENT_COA_TYPE_CHANGED,
+            entity_type=ENTITY_COA,
+            entity_id=aid,
+            actor=user,
+            before={"account_type": normalize_account_type(doc.get("account_type"))},
+            after={"account_type": updates["account_type"]},
+        )
+    return out
+
+
+async def _mapped_settings_account_ids(db) -> set:
+    ids = set()
+    sales = await db.app_settings.find_one({"key": "sales_accounting"}, {"_id": 0})
+    if sales:
+        for field in ("receivable_account_id", "revenue_account_id", "output_tax_account_id"):
+            value = str(sales.get(field) or "").strip()
+            if value:
+                ids.add(value)
+    payroll = await db.app_settings.find_one({"key": "payroll_accounting"}, {"_id": 0})
+    if payroll:
+        payable = str(payroll.get("payroll_payable_account_id") or "").strip()
+        if payable:
+            ids.add(payable)
+        mappings = payroll.get("component_mappings") or {}
+        if isinstance(mappings, dict):
+            for raw in mappings.values():
+                if isinstance(raw, dict):
+                    value = str(raw.get("account_id") or "").strip()
+                    if value:
+                        ids.add(value)
+    return ids
 
 
 async def account_is_referenced(db, account_id: str, code: str) -> bool:
-    """True when any future journal/accounting doc references this account."""
+    """True when any journal/accounting doc or settings mapping references this account."""
     aid = str(account_id or "").strip()
     code_s = normalize_code(code)
     if not aid and not code_s:
         return False
+    if aid and aid in await _mapped_settings_account_ids(db):
+        return True
     for coll_name, fields in _REFERENCE_SPECS:
         coll = db[coll_name]
         clauses = []
@@ -279,7 +360,40 @@ async def account_is_referenced(db, account_id: str, code: str) -> bool:
     return False
 
 
-async def delete_account(db, account_id: str) -> dict:
+async def attach_account_type_lock_flags(db, items: List[dict]) -> List[dict]:
+    rows = [item for item in items if item and item.get("id")]
+    if not rows:
+        return items
+    mapped = await _mapped_settings_account_ids(db)
+    locked = {aid for aid in mapped if aid}
+    ids = [str(item["id"]) for item in rows]
+    for coll_name, fields in _REFERENCE_SPECS:
+        remaining = [aid for aid in ids if aid not in locked]
+        if not remaining:
+            break
+        clauses = [{field: {"$in": remaining}} for field in fields]
+        try:
+            hits = await db[coll_name].find({"$or": clauses}, {"_id": 0, **{field: 1 for field in fields}}).to_list(5000)
+        except Exception:
+            continue
+        for hit in hits:
+            for field in fields:
+                value = hit.get(field)
+                if field == "lines.account_id":
+                    continue
+                text = str(value or "").strip()
+                if text:
+                    locked.add(text)
+            for line in hit.get("lines") or []:
+                text = str((line or {}).get("account_id") or "").strip()
+                if text:
+                    locked.add(text)
+    for item in rows:
+        item["account_type_locked"] = str(item.get("id")) in locked
+    return items
+
+
+async def delete_account(db, account_id: str, *, user: Optional[dict] = None) -> dict:
     """Delete exact account by id. Rejects when referenced (409)."""
     aid = str(account_id or "").strip()
     if not aid:
@@ -288,11 +402,18 @@ async def delete_account(db, account_id: str) -> dict:
     if not doc:
         raise KeyError("missing")
     if await account_is_referenced(db, aid, doc.get("code") or ""):
-        raise AccountInUseError(
-            "Akun tidak dapat dihapus karena sudah dipakai di jurnal/transaksi akuntansi"
-        )
+        raise AccountInUseError(DELETE_IN_USE_MESSAGE)
     await db[COLLECTION].delete_one({"id": aid})
-    return public_account(doc)
+    deleted = public_account(doc)
+    await record_accounting_event(
+        db,
+        event_type=EVENT_COA_DELETED,
+        entity_type=ENTITY_COA,
+        entity_id=aid,
+        actor=user,
+        before={"code": deleted.get("code"), "name": deleted.get("name"), "account_type": deleted.get("account_type")},
+    )
+    return deleted
 
 
 def load_seed_rows(path: Optional[Path] = None) -> List[Dict[str, str]]:

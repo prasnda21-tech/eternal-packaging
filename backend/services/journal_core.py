@@ -8,8 +8,17 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from contextlib import asynccontextmanager
+
 from pymongo.errors import DuplicateKeyError
 
+from services.accounting_periods import (
+    PeriodLockedError,
+    PeriodValidationError,
+    acquire_period_writer_claim,
+    release_period_writer_claim,
+    renew_period_writer_claim,
+)
 from services.purchase_common import (
     get_named_lock,
     next_dated_seq,
@@ -93,6 +102,7 @@ async def ensure_indexes(db) -> None:
     await entries.create_index("number", unique=True)
     await entries.create_index("source_type")
     await entries.create_index("source_id")
+    await entries.create_index("date")
     # One primary (non-reversal) posted journal per source transaction.
     await entries.create_index(
         [("source_type", 1), ("source_id", 1)],
@@ -188,6 +198,7 @@ async def _insert_journal_atomic(
     posted_by: Optional[dict],
     reversal_of: Optional[str] = None,
     status: str = STATUS_POSTED,
+    writer_claim_token: Optional[str] = None,
 ) -> dict:
     """Insert header + lines. Compensating delete on line failure. Caller holds lock."""
     _, _, normalized = validate_lines(lines)
@@ -221,6 +232,7 @@ async def _insert_journal_atomic(
     for _ in range(25):
         header["number"] = await next_dated_seq(db, JOURNAL_ENTRIES, "number", PREFIX_JOURNAL)
         try:
+            await renew_period_writer_claim(db, date, writer_claim_token)
             await db[JOURNAL_ENTRIES].insert_one(dict(header))
             header.pop("_id", None)
             saved = header
@@ -258,6 +270,21 @@ async def _insert_journal_atomic(
     return public_journal(saved, line_docs)
 
 
+@asynccontextmanager
+async def _period_writer_guard(db, date: str, writer_claim_token: Optional[str] = None):
+    """Gate new journal inserts. Held tokens are not acquired or released here."""
+    token = str(writer_claim_token or "").strip()
+    if token:
+        await renew_period_writer_claim(db, date, token)
+        yield token
+        return
+    claim = await acquire_period_writer_claim(db, date)
+    try:
+        yield claim["token"]
+    finally:
+        await release_period_writer_claim(db, claim["period_key"], claim["token"])
+
+
 async def post_balanced_journal(
     db,
     *,
@@ -267,6 +294,7 @@ async def post_balanced_journal(
     description: str,
     lines: Sequence[dict],
     posted_by: Optional[dict] = None,
+    writer_claim_token: Optional[str] = None,
 ) -> dict:
     """Create one primary posted journal for a source. Idempotent on retry."""
     existing = await find_primary_journal_for_source(db, source_type, source_id)
@@ -280,17 +308,23 @@ async def post_balanced_journal(
         if existing:
             return existing
         try:
-            return await _insert_journal_atomic(
-                db,
-                date=date,
-                source_type=source_type,
-                source_id=source_id,
-                description=description,
-                lines=lines,
-                posted_by=posted_by,
-                reversal_of=None,
-                status=STATUS_POSTED,
-            )
+            async with _period_writer_guard(db, date, writer_claim_token) as token:
+                return await _insert_journal_atomic(
+                    db,
+                    date=date,
+                    source_type=source_type,
+                    source_id=source_id,
+                    description=description,
+                    lines=lines,
+                    posted_by=posted_by,
+                    reversal_of=None,
+                    status=STATUS_POSTED,
+                    writer_claim_token=token,
+                )
+        except PeriodValidationError as exc:
+            raise JournalValidationError(str(exc)) from exc
+        except PeriodLockedError:
+            raise
         except DuplicateKeyError as exc:
             existing = await find_primary_journal_for_source(db, source_type, source_id)
             if existing:
@@ -306,6 +340,7 @@ async def reverse_journal(
     source_id: str,
     posted_by: Optional[dict] = None,
     description: Optional[str] = None,
+    writer_claim_token: Optional[str] = None,
 ) -> dict:
     """Create exact opposite journal; mark original reversed. Only once."""
     oid = str(original_journal_id or "").strip()
@@ -350,18 +385,25 @@ async def reverse_journal(
             for ln in orig_lines
         ]
         desc = description or f"Reversal {original.get('number') or oid}"
+        rev_date = original.get("date") or ""
         try:
-            rev_doc = await _insert_journal_atomic(
-                db,
-                date=original.get("date") or "",
-                source_type=source_type or SOURCE_REVERSAL,
-                source_id=source_id,
-                description=desc,
-                lines=reverse_lines,
-                posted_by=posted_by,
-                reversal_of=oid,
-                status=STATUS_POSTED,
-            )
+            async with _period_writer_guard(db, rev_date, writer_claim_token) as token:
+                rev_doc = await _insert_journal_atomic(
+                    db,
+                    date=rev_date,
+                    source_type=source_type or SOURCE_REVERSAL,
+                    source_id=source_id,
+                    description=desc,
+                    lines=reverse_lines,
+                    posted_by=posted_by,
+                    reversal_of=oid,
+                    status=STATUS_POSTED,
+                    writer_claim_token=token,
+                )
+        except PeriodValidationError as exc:
+            raise JournalValidationError(str(exc)) from exc
+        except PeriodLockedError:
+            raise
         except DuplicateKeyError as exc:
             raise JournalConflictError("Reversal sudah ada") from exc
 
