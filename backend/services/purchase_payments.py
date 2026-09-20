@@ -171,6 +171,46 @@ async def _build_draft_doc(db, invoice: dict, payload: Dict[str, Any], user: dic
     return await insert_with_unique_number(db, COLLECTION, "payment_number", doc, _alloc)
 
 
+async def _acquire_invoice_for_new_payment(
+    db, invoice: dict, *, claim_token: Optional[str] = None
+) -> tuple:
+    from services.purchase_invoice_posting import (
+        INVOICE_CANCEL_IN_PROGRESS_PAYMENT_CREATE_MESSAGE,
+        INVOICE_REVERSE_IN_PROGRESS_PAYMENT_CREATE_MESSAGE,
+        PAYMENT_CREATE_CLAIM_CONFLICT_MESSAGE,
+        acquire_payment_create_claim,
+        clear_payment_create_claim,
+        invoice_cancel_claim_is_active,
+        reverse_claim_is_active,
+    )
+
+    if is_cancelled(invoice):
+        raise HTTPException(400, "Faktur sudah dibatalkan; pembayaran tidak dapat dibuat.")
+    if reverse_claim_is_active(invoice):
+        raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_PAYMENT_CREATE_MESSAGE)
+    if invoice_cancel_claim_is_active(invoice):
+        raise HTTPException(409, INVOICE_CANCEL_IN_PROGRESS_PAYMENT_CREATE_MESSAGE)
+    token = str(claim_token or uuid.uuid4())
+    claimed = await acquire_payment_create_claim(db, invoice["id"], token=token)
+    if claimed is None:
+        current = await db.purchase_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) or invoice
+        if reverse_claim_is_active(current):
+            raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_PAYMENT_CREATE_MESSAGE)
+        if invoice_cancel_claim_is_active(current):
+            raise HTTPException(409, INVOICE_CANCEL_IN_PROGRESS_PAYMENT_CREATE_MESSAGE)
+        if is_cancelled(current):
+            raise HTTPException(400, "Faktur sudah dibatalkan; pembayaran tidak dapat dibuat.")
+        raise HTTPException(409, PAYMENT_CREATE_CLAIM_CONFLICT_MESSAGE)
+    if is_cancelled(claimed) or reverse_claim_is_active(claimed) or invoice_cancel_claim_is_active(claimed):
+        await clear_payment_create_claim(db, invoice["id"], token=token)
+        if is_cancelled(claimed):
+            raise HTTPException(400, "Faktur sudah dibatalkan; pembayaran tidak dapat dibuat.")
+        if invoice_cancel_claim_is_active(claimed):
+            raise HTTPException(409, INVOICE_CANCEL_IN_PROGRESS_PAYMENT_CREATE_MESSAGE)
+        raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_PAYMENT_CREATE_MESSAGE)
+    return claimed, token
+
+
 async def create_purchase_payment(db, payload: Dict[str, Any], user: dict) -> dict:
     """Create DRAFT payment. Does not settle invoice finances."""
     invoice_id = str(payload.get("purchase_invoice_id") or payload.get("invoice_id") or "").strip()
@@ -185,11 +225,16 @@ async def create_purchase_payment(db, payload: Dict[str, Any], user: dict) -> di
                 return await _attach_invoice_summary(db, existing)
 
         invoice = await get_purchase_invoice(db, invoice_id)
-        if is_cancelled(invoice):
-            raise HTTPException(400, "Faktur sudah dibatalkan; pembayaran tidak dapat dibuat.")
+        _claimed, token = await _acquire_invoice_for_new_payment(
+            db, invoice, claim_token=idem or None
+        )
+        from services.purchase_invoice_posting import clear_payment_create_claim
 
-        saved = await _build_draft_doc(db, invoice, payload, user)
-        return await _attach_invoice_summary(db, saved)
+        try:
+            saved = await _build_draft_doc(db, invoice, payload, user)
+            return await _attach_invoice_summary(db, saved)
+        finally:
+            await clear_payment_create_claim(db, invoice["id"], token=token)
 
 
 async def list_purchase_payments(
@@ -241,6 +286,9 @@ async def list_purchase_payments(
         [("submitted_at", -1), ("created_at", -1)]
     ).to_list(1000)
     enriched = [_enrich_payment(r) for r in rows]
+    from services.purchase_payment_posting import attach_payment_accounting_fields
+
+    enriched = await attach_payment_accounting_fields(db, enriched)
     for row in enriched:
         # List-facing alias: paid submissions show as SELESAI in filter UX.
         if is_settlement_paid(row):
@@ -258,7 +306,11 @@ async def get_purchase_payment(db, payment_id: str) -> dict:
         doc = await db[COLLECTION].find_one({"payment_number": str(payment_id)}, {"_id": 0})
     if not doc:
         raise HTTPException(404, f"Pembayaran Pembelian '{payment_id}' tidak ditemukan.")
-    return await _attach_invoice_summary(db, doc)
+    from services.purchase_payment_posting import attach_payment_accounting_fields
+
+    enriched = await _attach_invoice_summary(db, doc)
+    await attach_payment_accounting_fields(db, [enriched])
+    return enriched
 
 
 async def cancel_purchase_payment(
@@ -269,6 +321,17 @@ async def cancel_purchase_payment(
         doc = await get_purchase_payment(db, payment_id)
         if is_cancelled(doc):
             return doc
+        from services.purchase_payment_posting import (
+            POSTED_CANCEL_MESSAGE,
+            find_purchase_payment_source_journal,
+            posting_claim_is_active,
+        )
+
+        journal = await find_purchase_payment_source_journal(db, doc["id"])
+        if journal:
+            raise HTTPException(409, POSTED_CANCEL_MESSAGE)
+        if posting_claim_is_active(doc):
+            raise HTTPException(409, POSTED_CANCEL_MESSAGE)
         if is_settlement_paid(doc):
             raise HTTPException(
                 409,
@@ -590,7 +653,18 @@ async def create_and_submit_purchase_payment(
         draft_payload = dict(payload)
         if notes:
             draft_payload["notes"] = notes
-        saved = existing_draft or await _build_draft_doc(db, invoice, draft_payload, user)
+        if existing_draft:
+            saved = existing_draft
+        else:
+            from services.purchase_invoice_posting import clear_payment_create_claim
+
+            _claimed, token = await _acquire_invoice_for_new_payment(
+                db, invoice, claim_token=client_key or None
+            )
+            try:
+                saved = await _build_draft_doc(db, invoice, draft_payload, user)
+            finally:
+                await clear_payment_create_claim(db, invoice["id"], token=token)
 
         try:
             room_id, message_id, submitted_at = await _send_submission_chat(

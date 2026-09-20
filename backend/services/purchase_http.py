@@ -52,6 +52,19 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         list_purchase_payments,
         submit_purchase_payment,
     )
+    from services.purchase_invoice_posting import (
+        PERM_POST as PURCHASE_INVOICE_POST_PERM,
+        PERM_REVERSE as PURCHASE_INVOICE_REVERSE_PERM,
+        post_purchase_invoice_accounting,
+        reverse_purchase_invoice_accounting,
+    )
+    from services.purchase_payment_posting import (
+        PERM_POST as PURCHASE_PAYMENT_POST_PERM,
+        PERM_REVERSE as PURCHASE_PAYMENT_REVERSE_PERM,
+        list_cash_bank_options,
+        post_purchase_payment_accounting,
+        reverse_purchase_payment_accounting,
+    )
     from services.purchase_common import actor_user_id
     from services.hpp_valuation import (
         get_hpp_settings,
@@ -243,6 +256,23 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         doc = await cancel_purchase_invoice(get_db(), invoice_id, user, reason=str(data.get("reason") or ""))
         return {"invoice": doc, "message": "Faktur Pembelian dibatalkan"}
 
+    @api_router.post("/purchase-invoices/{invoice_id}/post-accounting")
+    async def post_purchase_invoice_accounting_endpoint(invoice_id: str, user=Depends(current_user)):
+        await require_any_perm(user, PURCHASE_INVOICE_POST_PERM)
+        inv = await post_purchase_invoice_accounting(get_db(), invoice_id, user)
+        return {"invoice": inv, "message": "Faktur Pembelian diposting ke accounting"}
+
+    @api_router.post("/purchase-invoices/{invoice_id}/reverse-accounting")
+    async def reverse_purchase_invoice_accounting_endpoint(
+        invoice_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, PURCHASE_INVOICE_REVERSE_PERM)
+        data = _dump(payload) if payload is not None else {}
+        inv = await reverse_purchase_invoice_accounting(get_db(), invoice_id, user, data.get("reason"))
+        return {"invoice": inv, "message": "Faktur Pembelian di-reverse dari accounting"}
+
     @api_router.get("/purchase-payments")
     async def list_purchase_payments_endpoint(
         q: Optional[str] = None,
@@ -267,6 +297,17 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_payments.view", "purchase_payments.create", "purchase_invoices.view")
         rows = await list_payment_submit_targets(get_db(), q=q or "", exclude_user_id=actor_user_id(user))
         return {"users": rows, "count": len(rows)}
+
+    @api_router.get("/purchase-payments/cash-bank-options")
+    async def purchase_payment_cash_bank_options(user=Depends(current_user)):
+        await require_any_perm(
+            user,
+            "purchase_payments.view",
+            "purchase_payments.create",
+            PURCHASE_PAYMENT_POST_PERM,
+        )
+        items = await list_cash_bank_options(get_db())
+        return {"items": items, "total": len(items)}
 
     @api_router.get("/purchase-payments/{payment_id}")
     async def get_purchase_payment_endpoint(payment_id: str, user=Depends(current_user)):
@@ -329,6 +370,30 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             "reused": result.get("reused", False),
             "message": "Pembayaran sudah dikonfirmasi" if result.get("reused") else "Pembayaran dikonfirmasi dibayar",
         }
+
+    @api_router.post("/purchase-payments/{payment_id}/post-accounting")
+    async def post_purchase_payment_accounting_endpoint(
+        payment_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, PURCHASE_PAYMENT_POST_PERM)
+        data = _dump(payload) if payload is not None else {}
+        payment = await post_purchase_payment_accounting(
+            get_db(), payment_id, user, cash_bank_id=data.get("cash_bank_id")
+        )
+        return {"payment": payment, "message": "Pembayaran Pembelian diposting ke accounting"}
+
+    @api_router.post("/purchase-payments/{payment_id}/reverse-accounting")
+    async def reverse_purchase_payment_accounting_endpoint(
+        payment_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, PURCHASE_PAYMENT_REVERSE_PERM)
+        data = _dump(payload) if payload is not None else {}
+        payment = await reverse_purchase_payment_accounting(get_db(), payment_id, user, data.get("reason"))
+        return {"payment": payment, "message": "Pembayaran Pembelian di-reverse dari accounting"}
 
 
     # --- Purchase documents (multi-file lampiran per transaksi) ---

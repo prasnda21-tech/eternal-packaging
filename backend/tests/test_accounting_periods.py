@@ -74,6 +74,7 @@ from services.sales_accounting_settings import update_sales_accounting_settings
 from services.sales_invoice_posting import reverse_sales_invoice_accounting
 from services.sales_receipt_posting import reverse_sales_receipt_accounting
 from services.payroll_accounting_settings import SETTINGS_KEY as PAYROLL_SETTINGS_KEY
+from services.purchase_accounting_settings import SETTINGS_KEY as PURCHASE_SETTINGS_KEY
 from services.sales_accounting_settings import SETTINGS_KEY as SALES_SETTINGS_KEY
 
 pytestmark = pytest.mark.anyio
@@ -524,6 +525,18 @@ async def test_coa_type_lock_from_each_reference_and_mapping():
         }
     )
     await _assert_locked(payroll_mapped["id"])
+
+    purchase_ap = await _coa(f"PA{uuid.uuid4().hex[:6]}", "Purchase AP", "APAY")
+    purchase_clearing = await _coa(f"PC{uuid.uuid4().hex[:6]}", "Purchase Clearing", "OCLY")
+    await server.db.app_settings.insert_one(
+        {
+            "key": PURCHASE_SETTINGS_KEY,
+            "payable_account_id": purchase_ap["id"],
+            "purchase_clearing_account_id": purchase_clearing["id"],
+        }
+    )
+    await _assert_locked(purchase_ap["id"])
+    await _assert_locked(purchase_clearing["id"])
 
 
 @pytest.mark.anyio

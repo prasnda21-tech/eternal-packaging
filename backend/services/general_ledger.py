@@ -42,6 +42,10 @@ SOURCE_LABELS = {
     "sales_invoice_reversal": "Reversal Faktur Penjualan",
     "sales_receipt": "Penerimaan Penjualan",
     "sales_receipt_reversal": "Reversal Penerimaan Penjualan",
+    "purchase_invoice": "Faktur Pembelian",
+    "purchase_invoice_reversal": "Reversal Faktur Pembelian",
+    "purchase_payment": "Pembayaran Pembelian",
+    "purchase_payment_reversal": "Reversal Pembayaran Pembelian",
 }
 
 # Only sources with an existing detail-route + ?id= deep-link.
@@ -49,6 +53,10 @@ SOURCE_ROUTES = {
     SOURCE_RECEIPT: "/kas-bank/penerimaan",
     SOURCE_PAYMENT: "/kas-bank/pembayaran",
     SOURCE_TRANSFER: "/kas-bank/transfer",
+    "purchase_invoice": "/pembelian/faktur-pembelian",
+    "purchase_invoice_reversal": "/pembelian/faktur-pembelian",
+    "purchase_payment": "/pembelian/pembayaran-pembelian",
+    "purchase_payment_reversal": "/pembelian/pembayaran-pembelian",
 }
 
 LEGITIMATE_STATUSES = frozenset({STATUS_POSTED, STATUS_REVERSED})

@@ -64,6 +64,8 @@ def test_catalog_includes_nav_keys():
         "nav.ledger.accounts",
         "nav.ledger.accounts_receivable",
         "accounts_receivable.view",
+        "nav.ledger.accounts_payable",
+        "accounts_payable.view",
         "ledger.accounts.view",
         "ledger.accounts.manage",
         "accounting.period.view",

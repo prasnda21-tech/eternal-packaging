@@ -82,10 +82,16 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.hpp.manage", "Ubah Pengaturan HPP / hitung ulang"),
     ("Pengaturan", "settings.sales_accounting.view", "Lihat Pengaturan Akuntansi Penjualan"),
     ("Pengaturan", "settings.sales_accounting.manage", "Ubah Pengaturan Akuntansi Penjualan"),
+    ("Pengaturan", "settings.purchase_accounting.view", "Lihat Pengaturan Akuntansi Pembelian"),
+    ("Pengaturan", "settings.purchase_accounting.manage", "Ubah Pengaturan Akuntansi Pembelian"),
     ("Penjualan", "sales_accounting.post", "Post Faktur Penjualan ke Accounting"),
     ("Penjualan", "sales_accounting.reverse", "Reversal Faktur Penjualan dari Accounting"),
     ("Penjualan", "sales.receipt.accounting.post", "Post Penerimaan Penjualan ke Accounting"),
     ("Penjualan", "sales.receipt.accounting.reverse", "Reversal Penerimaan Penjualan dari Accounting"),
+    ("Pembelian", "purchase_accounting.post", "Post Faktur Pembelian ke Accounting"),
+    ("Pembelian", "purchase_accounting.reverse", "Reversal Faktur Pembelian dari Accounting"),
+    ("Pembelian", "purchase.payment.accounting.post", "Post Pembayaran Pembelian ke Accounting"),
+    ("Pembelian", "purchase.payment.accounting.reverse", "Reversal Pembayaran Pembelian dari Accounting"),
     ("Pengaturan", "payroll_accounting.view", "Lihat kesiapan akuntansi payroll"),
     ("Pengaturan", "payroll_accounting.manage", "Kelola pemetaan akuntansi payroll"),
     ("Pengaturan", "settings.customer_pricing.view", "Lihat Harga Customer"),
@@ -186,6 +192,7 @@ PERMISSION_CATALOG = [
     ("Buku Besar", "opening_balance.reverse", "Reversal Saldo Awal"),
     ("Buku Besar", "general_ledger.view", "Lihat Buku Besar"),
     ("Buku Besar", "accounts_receivable.view", "Lihat Piutang Usaha"),
+    ("Buku Besar", "accounts_payable.view", "Lihat Hutang Usaha"),
     ("Buku Besar", "trial_balance.view", "Lihat Neraca Saldo"),
     ("Buku Besar", "profit_loss.view", "Lihat Laba/Rugi"),
     ("Buku Besar", "balance_sheet.view", "Lihat Neraca"),
@@ -264,6 +271,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.ledger.opening_balance", "Menu Saldo Awal"),
     ("Akses Menu", "nav.ledger.general_ledger", "Menu Buku Besar"),
     ("Akses Menu", "nav.ledger.accounts_receivable", "Menu Piutang Usaha"),
+    ("Akses Menu", "nav.ledger.accounts_payable", "Menu Hutang Usaha"),
     ("Akses Menu", "nav.ledger.trial_balance", "Menu Neraca Saldo"),
     ("Akses Menu", "nav.ledger.profit_loss", "Menu Laba/Rugi"),
     ("Akses Menu", "nav.ledger.balance_sheet", "Menu Neraca"),
@@ -379,6 +387,7 @@ NAV_MENU_ITEMS = (
     ("nav.ledger.accounting_periods", "Periode Akuntansi", "nav.ledger"),
     ("nav.ledger.general_ledger", "Buku Besar", "nav.ledger"),
     ("nav.ledger.accounts_receivable", "Piutang Usaha", "nav.ledger"),
+    ("nav.ledger.accounts_payable", "Hutang Usaha", "nav.ledger"),
     ("nav.ledger.trial_balance", "Neraca Saldo", "nav.ledger"),
     ("nav.ledger.profit_loss", "Laba/Rugi", "nav.ledger"),
     ("nav.ledger.balance_sheet", "Neraca", "nav.ledger"),
@@ -540,6 +549,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "accounts_receivable.view" in existing:
         nav.add("nav.ledger")
         nav.add("nav.ledger.accounts_receivable")
+    if "accounts_payable.view" in existing:
+        nav.add("nav.ledger")
+        nav.add("nav.ledger.accounts_payable")
     if "trial_balance.view" in existing:
         nav.add("nav.ledger")
         nav.add("nav.ledger.trial_balance")

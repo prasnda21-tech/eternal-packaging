@@ -22,11 +22,20 @@ const FILTERS = [
   { id: "SELESAI", label: "SELESAI" },
 ];
 
+function accountingLabel(status) {
+  const raw = String(status || "not_posted").toLowerCase();
+  if (raw === "posted") return "Posted";
+  if (raw === "reversed") return "Reversed";
+  return "Not Posted";
+}
+
 export default function PembayaranPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_payments.create");
-  const queryPaymentId = searchParams.get("payment_id") || "";
+  const canPostAccounting = hasPerm("purchase.payment.accounting.post");
+  const canReverseAccounting = hasPerm("purchase.payment.accounting.reverse");
+  const queryPaymentId = searchParams.get("id") || searchParams.get("payment_id") || "";
 
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
@@ -40,6 +49,13 @@ export default function PembayaranPembelian() {
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [acctBusy, setAcctBusy] = useState(false);
+  const [acctErr, setAcctErr] = useState("");
+  const [postConfirm, setPostConfirm] = useState(false);
+  const [reverseConfirm, setReverseConfirm] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [cashBanks, setCashBanks] = useState([]);
+  const [cashBankId, setCashBankId] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -111,6 +127,65 @@ export default function PembayaranPembelian() {
       setCancelErr(errDetail(ex));
     } finally {
       setCancelBusy(false);
+    }
+  };
+
+  const openPostAccounting = async () => {
+    setAcctErr("");
+    setCashBankId(detail?.cash_bank_id || "");
+    if (!detail?.cash_bank_id) {
+      try {
+        const res = await api.listPurchasePaymentCashBankOptions();
+        setCashBanks(res.items || []);
+      } catch (ex) {
+        setAcctErr(errDetail(ex));
+      }
+    }
+    setPostConfirm(true);
+  };
+
+  const confirmPostAccounting = async () => {
+    if (!detail || acctBusy) return;
+    if (!detail.cash_bank_id && !cashBankId) {
+      setAcctErr("Kas/Bank wajib dipilih untuk posting accounting.");
+      return;
+    }
+    setAcctBusy(true);
+    setAcctErr("");
+    try {
+      const res = await api.postPurchasePaymentAccounting(detail.id, {
+        cash_bank_id: detail.cash_bank_id || cashBankId,
+      });
+      setDetail(res.payment);
+      setPostConfirm(false);
+      setOk(res.message || "Pembayaran diposting ke accounting.");
+      await load();
+    } catch (ex) {
+      setAcctErr(errDetail(ex));
+    } finally {
+      setAcctBusy(false);
+    }
+  };
+
+  const confirmReverseAccounting = async () => {
+    if (!detail || acctBusy) return;
+    if (String(reverseReason || "").trim().length < 3) {
+      setAcctErr("Alasan reversal wajib diisi minimal 3 karakter.");
+      return;
+    }
+    setAcctBusy(true);
+    setAcctErr("");
+    try {
+      const res = await api.reversePurchasePaymentAccounting(detail.id, reverseReason);
+      setDetail(res.payment);
+      setReverseConfirm(false);
+      setReverseReason("");
+      setOk(res.message || "Pembayaran di-reverse dari accounting.");
+      await load();
+    } catch (ex) {
+      setAcctErr(errDetail(ex));
+    } finally {
+      setAcctBusy(false);
     }
   };
 
@@ -317,6 +392,16 @@ export default function PembayaranPembelian() {
                     </div>
                   </>
                 ) : null}
+                <div data-testid="payment-accounting-section">
+                  <span className="label">Accounting Status</span>
+                  <span className="value" data-testid="payment-detail-accounting-status">{accountingLabel(detail.accounting_status)}</span>
+                </div>
+                {detail.cash_bank_name ? (
+                  <div data-testid="payment-detail-cash-bank">
+                    <span className="label">Kas / Bank</span>
+                    <span className="value">{detail.cash_bank_name}</span>
+                  </div>
+                ) : null}
               </div>
 
               <PurchaseDocuments
@@ -361,10 +446,33 @@ export default function PembayaranPembelian() {
                   type="button"
                   className="primary"
                   data-testid="btn-konfirmasi-dibayar"
-                  disabled={confirmBusy}
+                  disabled={confirmBusy || acctBusy}
                   onClick={confirmPaid}
                 >
                   {confirmBusy ? "Mengonfirmasi…" : "Konfirmasi Dibayar"}
+                </button>
+              )}
+              {canPostAccounting && settled && String(detail.accounting_status || "not_posted") === "not_posted" && (
+                <button
+                  type="button"
+                  className="primary"
+                  data-testid="btn-post-payment-accounting"
+                  disabled={acctBusy || confirmBusy || detail.can_post_accounting === false}
+                  title={detail.can_post_accounting === false ? "Faktur harus diposting ke accounting terlebih dahulu." : undefined}
+                  onClick={openPostAccounting}
+                >
+                  Post Accounting
+                </button>
+              )}
+              {canReverseAccounting && String(detail.accounting_status || "") === "posted" && (
+                <button
+                  type="button"
+                  className="ghost"
+                  data-testid="btn-reverse-payment-accounting"
+                  disabled={acctBusy || confirmBusy || detail.can_reverse_accounting === false}
+                  onClick={() => { setAcctErr(""); setReverseReason(""); setReverseConfirm(true); }}
+                >
+                  Reverse Accounting
                 </button>
               )}
             </div>
@@ -381,6 +489,95 @@ export default function PembayaranPembelian() {
         onCancel={() => !cancelBusy && setCancelTarget(null)}
         onConfirm={confirmCancel}
       />
+
+      {postConfirm && detail && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="payment-post-accounting-modal">
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Post Accounting?</h3>
+              <button type="button" className="ghost sm" disabled={acctBusy} onClick={() => setPostConfirm(false)}>×</button>
+            </div>
+            <p className="purchase-modal-helper">
+              Jurnal: Dr Hutang Usaha / Cr Kas-Bank. Terpisah dari Konfirmasi Dibayar. Tanggal jurnal = tanggal pembayaran.
+            </p>
+            <dl className="purchase-detail-meta">
+              <div>
+                <span className="label">No Pembayaran</span>
+                <span className="value mono">{detail.payment_number}</span>
+              </div>
+              <div>
+                <span className="label">Jumlah</span>
+                <span className="value">{formatRupiah(detail.amount)}</span>
+              </div>
+            </dl>
+            {!detail.cash_bank_id && (
+              <label style={{ display: "block", margin: "10px 0" }}>
+                <span className="label">Kas / Bank</span>
+                <select
+                  data-testid="select-payment-cash-bank"
+                  value={cashBankId}
+                  onChange={(e) => setCashBankId(e.target.value)}
+                  style={{ width: "100%", marginTop: 6 }}
+                >
+                  <option value="">— Pilih Kas / Bank —</option>
+                  {cashBanks.map((acc) => (
+                    <option key={acc.id} value={acc.id}>{acc.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {acctErr ? <p className="purchase-inline-err" data-testid="payment-accounting-error">{acctErr}</p> : null}
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" disabled={acctBusy} onClick={() => setPostConfirm(false)}>Batal</button>
+              <button
+                type="button"
+                className="primary"
+                data-testid="btn-confirm-post-payment-accounting"
+                disabled={acctBusy || (!detail.cash_bank_id && !cashBankId)}
+                onClick={confirmPostAccounting}
+              >
+                {acctBusy ? "Memproses…" : "Post Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reverseConfirm && detail && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="payment-reverse-accounting-modal">
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Reverse Accounting?</h3>
+              <button type="button" className="ghost sm" disabled={acctBusy} onClick={() => { setReverseConfirm(false); setAcctErr(""); }}>×</button>
+            </div>
+            <p className="purchase-modal-helper">
+              Reversal membalik jurnal pembayaran dan mengeluarkan dokumen dari paid_total operasional. Dokumen tetap tersimpan.
+            </p>
+            <label className="label">Alasan reversal</label>
+            <textarea
+              data-testid="payment-reverse-reason-input"
+              value={reverseReason}
+              onChange={(e) => setReverseReason(e.target.value)}
+              rows={3}
+              placeholder="Minimal 3 karakter"
+              style={{ width: "100%", margin: "6px 0 12px" }}
+            />
+            {acctErr ? <p className="purchase-inline-err" data-testid="payment-reverse-accounting-error">{acctErr}</p> : null}
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" disabled={acctBusy} onClick={() => { setReverseConfirm(false); setAcctErr(""); }}>Batal</button>
+              <button
+                type="button"
+                className="primary"
+                data-testid="btn-confirm-reverse-payment-accounting"
+                disabled={acctBusy || String(reverseReason || "").trim().length < 3}
+                onClick={confirmReverseAccounting}
+              >
+                {acctBusy ? "Memproses…" : "Reverse Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
