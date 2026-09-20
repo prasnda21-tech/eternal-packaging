@@ -58,6 +58,13 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         post_purchase_invoice_accounting,
         reverse_purchase_invoice_accounting,
     )
+    from services.purchase_goods_receipt_posting import (
+        PERM_POST as PURCHASE_RECEIPT_POST_PERM,
+        PERM_REVERSE as PURCHASE_RECEIPT_REVERSE_PERM,
+        get_goods_receipt_accounting_view,
+        post_purchase_goods_receipt_accounting,
+        reverse_purchase_goods_receipt_accounting,
+    )
     from services.purchase_payment_posting import (
         PERM_POST as PURCHASE_PAYMENT_POST_PERM,
         PERM_REVERSE as PURCHASE_PAYMENT_REVERSE_PERM,
@@ -206,6 +213,30 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
             get_db(), receipt_id, user, reason=str(data.get("reason") or "")
         )
         return {"receipt": doc, "message": "Penerimaan Barang dibatalkan"}
+
+    @api_router.get("/purchase-goods-receipts/{receipt_id}/accounting-readiness")
+    async def goods_receipt_accounting_readiness_endpoint(receipt_id: str, user=Depends(current_user)):
+        await require_any_perm(user, "purchase_receipts.view", "purchase_orders.view", PURCHASE_RECEIPT_POST_PERM)
+        return {"readiness": await get_goods_receipt_accounting_view(get_db(), receipt_id)}
+
+    @api_router.post("/purchase-goods-receipts/{receipt_id}/post-accounting")
+    async def post_purchase_goods_receipt_accounting_endpoint(receipt_id: str, user=Depends(current_user)):
+        await require_any_perm(user, PURCHASE_RECEIPT_POST_PERM)
+        receipt = await post_purchase_goods_receipt_accounting(get_db(), receipt_id, user)
+        return {"receipt": receipt, "message": "Penerimaan Barang diposting ke accounting"}
+
+    @api_router.post("/purchase-goods-receipts/{receipt_id}/reverse-accounting")
+    async def reverse_purchase_goods_receipt_accounting_endpoint(
+        receipt_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, PURCHASE_RECEIPT_REVERSE_PERM)
+        data = _dump(payload) if payload is not None else {}
+        receipt = await reverse_purchase_goods_receipt_accounting(
+            get_db(), receipt_id, user, data.get("reason")
+        )
+        return {"receipt": receipt, "message": "Penerimaan Barang di-reverse dari accounting"}
 
     @api_router.post("/purchase-receipts/allocate")
     async def allocate_accurate_receipt_endpoint(payload: LoosePayload, user=Depends(current_user)):

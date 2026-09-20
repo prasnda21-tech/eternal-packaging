@@ -27,9 +27,22 @@ REASON_INVALID_UNIT_CONVERSION = "INVALID_UNIT_CONVERSION"
 REASON_ALLOCATION_NOT_FINANCIAL = "ALLOCATION_NOT_FINANCIAL"
 REASON_PURCHASE_ORDER_RECOGNITION = "PURCHASE_ORDER_RECOGNITION"
 REASON_CANCELLED = "CANCELLED"
+WARNING_PARTIAL_INVENTORY_COVERAGE = "PARTIAL_INVENTORY_ACCOUNTING_COVERAGE"
 
 ITEM_TYPE_INVENTORY = "INVENTORY"
 ITEM_TYPE_SERVICE = "SERVICE"
+
+FATAL_LINE_REASONS = frozenset({
+    REASON_UNKNOWN_ITEM_TYPE,
+    REASON_MISSING_MASTER_ITEM,
+    REASON_MISSING_PO_LINE,
+    REASON_INVALID_UNIT_CONVERSION,
+})
+FATAL_RECEIPT_REASONS = frozenset({
+    REASON_PURCHASE_ACCOUNTING_NOT_CONFIGURED,
+    REASON_LEGACY_BEFORE_EFFECTIVE_DATE,
+    REASON_CANCELLED,
+})
 
 CANONICAL_GR = "purchase_goods_receipt"
 CANONICAL_GR_REVERSAL = "purchase_goods_receipt_reversal"
@@ -307,44 +320,78 @@ async def _load_master_and_units(db, master_item_ids: List[str]) -> Tuple[Dict[s
     return masters, units
 
 
-async def get_goods_receipt_accounting_readiness(db, receipt_id: str) -> Dict[str, Any]:
-    """Read-only GR financial readiness. No journal. No stock mutation."""
-    from services.purchase_accounting_settings import get_purchase_accounting_settings
-    from services.purchase_goods_receipts import COLLECTION as GR_COLLECTION
+def _unique_reasons(*groups: Any) -> List[str]:
+    seen: List[str] = []
+    for group in groups:
+        if isinstance(group, str):
+            values = [group]
+        else:
+            values = list(group or [])
+        for reason in values:
+            text = str(reason or "").strip()
+            if text and text not in seen:
+                seen.append(text)
+    return seen
 
-    rid = str(receipt_id or "").strip()
-    doc = await db[GR_COLLECTION].find_one({"id": rid}, {"_id": 0})
-    if not doc:
-        doc = await db[GR_COLLECTION].find_one({"receipt_number": rid}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, f"Penerimaan Barang '{rid}' tidak ditemukan.")
 
-    settings = await get_purchase_accounting_settings(db)
+def _is_explicit_service_exclusion(reasons: List[str], item_type: Any) -> bool:
+    if str(item_type or "").strip().upper() != ITEM_TYPE_SERVICE:
+        return False
+    line_reasons = [reason for reason in reasons if reason not in FATAL_RECEIPT_REASONS]
+    return bool(line_reasons) and all(reason == REASON_NON_INVENTORY_ITEM for reason in line_reasons)
+
+
+def _partial_coverage_warnings(
+    eligible_lines: List[dict],
+    excluded_service_lines: List[dict],
+    amount: Decimal,
+) -> List[dict]:
+    if not eligible_lines or not excluded_service_lines:
+        return []
+    return [{
+        "code": WARNING_PARTIAL_INVENTORY_COVERAGE,
+        "eligible_amount": money_round(amount),
+        "excluded_line_count": len(excluded_service_lines),
+        "excluded_reasons": [REASON_NON_INVENTORY_ITEM],
+        "message": (
+            "Sebagian baris tidak dikapitalisasi ke Persediaan. "
+            "Sisa nilai dapat tertinggal di Purchase Clearing / GRNI."
+        ),
+    }]
+
+
+def compute_goods_receipt_accounting_readiness(
+    doc: dict,
+    *,
+    settings: Optional[dict] = None,
+    po: Optional[dict] = None,
+    masters: Optional[Dict[str, dict]] = None,
+    units: Optional[Dict[str, dict]] = None,
+) -> Dict[str, Any]:
+    """Canonical GR eligibility. Shared by GET readiness and posting gates."""
+    settings = settings or {}
+    masters = masters or {}
+    units = units or {}
     effective = settings.get("inventory_accounting_effective_date")
     settings_ready = bool(settings.get("inventory_configured"))
     receipt_date = parse_business_date(doc.get("receipt_date") or doc.get("created_at"))
     in_scope = inventory_event_in_accounting_scope(receipt_date, effective)
-
-    po = None
-    po_id = str(doc.get("purchase_order_id") or "").strip()
-    if po_id:
-        po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
     po_lines = {
         str(li.get("line_id") or ""): li
         for li in (po or {}).get("lines") or []
         if li.get("line_id")
     }
-
-    mids = [str(li.get("master_item_id") or "").strip() for li in (doc.get("lines") or [])]
-    for pli in po_lines.values():
-        mids.append(str(pli.get("master_item_id") or "").strip())
-    masters, units = await _load_master_and_units(db, mids)
-
     eligible_lines: List[dict] = []
+    excluded_service_lines: List[dict] = []
+    fatal_ineligible_lines: List[dict] = []
     ineligible_lines: List[dict] = []
     amount = Decimal("0")
 
     if is_cancelled(doc):
+        cancelled_row = {
+            "reason": REASON_CANCELLED,
+            "reasons": [REASON_CANCELLED],
+        }
         return {
             "receipt_id": doc.get("id"),
             "receipt_number": doc.get("receipt_number") or "",
@@ -353,12 +400,16 @@ async def get_goods_receipt_accounting_readiness(db, receipt_id: str) -> Dict[st
             "settings_ready": settings_ready,
             "cancelled": True,
             "eligible_inventory_lines": [],
-            "ineligible_lines": [{
-                "reason": REASON_CANCELLED,
-                "reasons": [REASON_CANCELLED],
-            }],
+            "excluded_service_lines": [],
+            "fatal_ineligible_lines": [cancelled_row],
+            "ineligible_lines": [cancelled_row],
+            "has_fatal_accounting_blocker": True,
+            "fatal_accounting_reasons": [REASON_CANCELLED],
+            "partial_inventory_coverage": False,
             "financial_inventory_amount": 0.0,
+            "eligible_inventory_amount": 0.0,
             "financial_inventory_eligible": False,
+            "accounting_warnings": [],
         }
 
     for li in doc.get("lines") or []:
@@ -393,20 +444,27 @@ async def get_goods_receipt_accounting_readiness(db, receipt_id: str) -> Dict[st
             setting=setting,
             transaction_uom=li.get("unit") or (po_line or {}).get("unit") or master.get("unit"),
         )
+        explicit_service = (
+            REASON_NON_INVENTORY_ITEM in reasons
+            and str(master.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
+            and REASON_MISSING_MASTER_ITEM not in reasons
+            and REASON_UNKNOWN_ITEM_TYPE not in reasons
+        )
         snap = None
-        if conv_err:
-            reasons.append(conv_err)
-        else:
-            try:
-                snap = financial_uom_snapshot(
-                    transaction_qty=tx_qty,
-                    transaction_uom=tx_uom,
-                    conversion_factor=factor,
-                    base_uom=base_uom,
-                    transaction_unit_cost=unit_price,
-                )
-            except InvalidUnitConversionError:
-                reasons.append(REASON_INVALID_UNIT_CONVERSION)
+        if not explicit_service:
+            if conv_err:
+                reasons.append(conv_err)
+            else:
+                try:
+                    snap = financial_uom_snapshot(
+                        transaction_qty=tx_qty,
+                        transaction_uom=tx_uom,
+                        conversion_factor=factor,
+                        base_uom=base_uom,
+                        transaction_unit_cost=unit_price,
+                    )
+                except InvalidUnitConversionError:
+                    reasons.append(REASON_INVALID_UNIT_CONVERSION)
 
         seen = []
         for reason in reasons:
@@ -431,12 +489,33 @@ async def get_goods_receipt_accounting_readiness(db, receipt_id: str) -> Dict[st
         if snap:
             line_out.update(snap)
             line_out["line_financial_amount"] = snap["total_cost"]
+        line_fatal_reasons = [reason for reason in seen if reason in FATAL_LINE_REASONS]
         if not seen:
             eligible_lines.append(line_out)
             amount += _dec(line_out["line_financial_amount"])
+        elif _is_explicit_service_exclusion(seen, master.get("item_type")) and not line_fatal_reasons:
+            excluded_service_lines.append(line_out)
+            ineligible_lines.append(line_out)
+        elif line_fatal_reasons:
+            fatal_ineligible_lines.append(line_out)
+            ineligible_lines.append(line_out)
         else:
             ineligible_lines.append(line_out)
 
+    fatal_accounting_reasons = _unique_reasons(
+        [] if settings_ready else [REASON_PURCHASE_ACCOUNTING_NOT_CONFIGURED],
+        [REASON_LEGACY_BEFORE_EFFECTIVE_DATE] if settings_ready and not in_scope else [],
+        *[
+            row.get("financial_ineligibility_reasons")
+            for row in fatal_ineligible_lines
+        ],
+    )
+    fatal_accounting_reasons = [
+        reason for reason in fatal_accounting_reasons
+        if reason in FATAL_LINE_REASONS or reason in FATAL_RECEIPT_REASONS
+    ]
+    has_fatal = bool(fatal_ineligible_lines) or bool(fatal_accounting_reasons)
+    partial = bool(eligible_lines) and bool(excluded_service_lines) and not has_fatal
     return {
         "receipt_id": doc.get("id"),
         "receipt_number": doc.get("receipt_number") or "",
@@ -445,7 +524,68 @@ async def get_goods_receipt_accounting_readiness(db, receipt_id: str) -> Dict[st
         "settings_ready": settings_ready,
         "cancelled": False,
         "eligible_inventory_lines": eligible_lines,
+        "excluded_service_lines": excluded_service_lines,
+        "fatal_ineligible_lines": fatal_ineligible_lines,
         "ineligible_lines": ineligible_lines,
+        "has_fatal_accounting_blocker": has_fatal,
+        "fatal_accounting_reasons": fatal_accounting_reasons,
+        "partial_inventory_coverage": partial,
         "financial_inventory_amount": money_round(amount),
-        "financial_inventory_eligible": bool(eligible_lines) and not ineligible_lines or bool(eligible_lines),
+        "eligible_inventory_amount": money_round(amount),
+        "financial_inventory_eligible": bool(eligible_lines) and not has_fatal,
+        "accounting_warnings": _partial_coverage_warnings(eligible_lines, excluded_service_lines, amount) if partial else [],
     }
+
+
+async def _load_pos_by_id(db, po_ids: List[str]) -> Dict[str, dict]:
+    ids = [str(pid).strip() for pid in po_ids if str(pid or "").strip()]
+    out: Dict[str, dict] = {}
+    if not ids:
+        return out
+    rows = await db.purchase_orders.find({"id": {"$in": ids}}, {"_id": 0}).to_list(len(ids) + 10)
+    for row in rows or []:
+        pid = str(row.get("id") or "").strip()
+        if pid:
+            out[pid] = row
+    return out
+
+
+async def readiness_for_receipts(db, receipts: List[dict]) -> Dict[str, dict]:
+    """Batch canonical readiness. One settings/PO/master load for the set."""
+    from services.purchase_accounting_settings import get_purchase_accounting_settings
+
+    settings = await get_purchase_accounting_settings(db)
+    po_ids = [str((row or {}).get("purchase_order_id") or "").strip() for row in receipts or []]
+    pos = await _load_pos_by_id(db, po_ids)
+    mids: List[str] = []
+    for doc in receipts or []:
+        for li in (doc or {}).get("lines") or []:
+            mids.append(str(li.get("master_item_id") or "").strip())
+        po = pos.get(str((doc or {}).get("purchase_order_id") or "").strip())
+        for pli in (po or {}).get("lines") or []:
+            mids.append(str(pli.get("master_item_id") or "").strip())
+    masters, units = await _load_master_and_units(db, mids)
+    out: Dict[str, dict] = {}
+    for doc in receipts or []:
+        rid = str((doc or {}).get("id") or "").strip()
+        if not rid:
+            continue
+        po = pos.get(str((doc or {}).get("purchase_order_id") or "").strip())
+        out[rid] = compute_goods_receipt_accounting_readiness(
+            doc, settings=settings, po=po, masters=masters, units=units
+        )
+    return out
+
+
+async def get_goods_receipt_accounting_readiness(db, receipt_id: str) -> Dict[str, Any]:
+    """Read-only GR financial readiness. No journal. No stock mutation."""
+    from services.purchase_goods_receipts import COLLECTION as GR_COLLECTION
+
+    rid = str(receipt_id or "").strip()
+    doc = await db[GR_COLLECTION].find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        doc = await db[GR_COLLECTION].find_one({"receipt_number": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, f"Penerimaan Barang '{rid}' tidak ditemukan.")
+    mapped = await readiness_for_receipts(db, [doc])
+    return mapped[str(doc.get("id"))]

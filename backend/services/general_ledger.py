@@ -46,6 +46,8 @@ SOURCE_LABELS = {
     "purchase_invoice_reversal": "Reversal Faktur Pembelian",
     "purchase_payment": "Pembayaran Pembelian",
     "purchase_payment_reversal": "Reversal Pembayaran Pembelian",
+    "purchase_goods_receipt": "Penerimaan Barang",
+    "purchase_goods_receipt_reversal": "Reversal Penerimaan Barang",
 }
 
 # Only sources with an existing detail-route + ?id= deep-link.

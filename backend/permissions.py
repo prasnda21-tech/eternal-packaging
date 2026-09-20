@@ -92,6 +92,8 @@ PERMISSION_CATALOG = [
     ("Pembelian", "purchase_accounting.reverse", "Reversal Faktur Pembelian dari Accounting"),
     ("Pembelian", "purchase.payment.accounting.post", "Post Pembayaran Pembelian ke Accounting"),
     ("Pembelian", "purchase.payment.accounting.reverse", "Reversal Pembayaran Pembelian dari Accounting"),
+    ("Pembelian", "purchase.receipt.accounting.post", "Post Penerimaan Barang ke Accounting"),
+    ("Pembelian", "purchase.receipt.accounting.reverse", "Reversal Penerimaan Barang dari Accounting"),
     ("Pengaturan", "payroll_accounting.view", "Lihat kesiapan akuntansi payroll"),
     ("Pengaturan", "payroll_accounting.manage", "Kelola pemetaan akuntansi payroll"),
     ("Pengaturan", "settings.customer_pricing.view", "Lihat Harga Customer"),
