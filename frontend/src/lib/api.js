@@ -359,6 +359,12 @@ export const api = {
   getPurchaseGoodsReceipt: (id) => client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   cancelPurchaseGoodsReceipt: (id, reason = "") =>
     client.post(`/purchase-goods-receipts/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  getPurchaseGoodsReceiptAccountingReadiness: (id) =>
+    client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}/accounting-readiness`).then((r) => r.data),
+  postPurchaseGoodsReceiptAccounting: (id) =>
+    client.post(`/purchase-goods-receipts/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
+  reversePurchaseGoodsReceiptAccounting: (id, reason) =>
+    client.post(`/purchase-goods-receipts/${encodeURIComponent(id)}/reverse-accounting`, { reason }).then((r) => r.data),
   purchaseInvoiceFromReceiptPreview: (receiptId) => client.get(`/purchase-invoices/from-receipt/${encodeURIComponent(receiptId)}/preview`).then((r) => r.data),
   cancelPurchaseInvoice: (id, reason = "") =>
     client.post(`/purchase-invoices/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),

@@ -189,7 +189,11 @@ async def get_purchase_goods_receipt(db, receipt_id: str) -> dict:
         doc = await db[COLLECTION].find_one({"receipt_number": str(receipt_id)}, {"_id": 0})
     if not doc:
         raise HTTPException(404, f"Penerimaan Barang '{receipt_id}' tidak ditemukan.")
-    return await enrich_goods_receipt(db, doc)
+    out = await enrich_goods_receipt(db, doc)
+    from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
+
+    await attach_goods_receipt_accounting_fields(db, [out])
+    return out
 
 
 async def cancel_purchase_goods_receipt(
@@ -197,6 +201,9 @@ async def cancel_purchase_goods_receipt(
     receipt_id: str,
     user: dict,
     reason: str = "",
+    *,
+    claim_token: Optional[str] = None,
+    accounting_reversal_owned: bool = False,
 ) -> dict:
     """Soft-cancel PO-linked goods receipt.
 
@@ -216,6 +223,74 @@ async def cancel_purchase_goods_receipt(
         if is_cancelled(doc):
             return await get_purchase_goods_receipt(db, doc["id"])
 
+        from services.purchase_goods_receipt_posting import (
+            ACCOUNTING_REVERSED,
+            CANCEL_CLAIM_MESSAGE,
+            CANCEL_IN_PROGRESS_MESSAGE,
+            RECOVERY_REQUIRED_CODE,
+            RECOVERY_REQUIRED_MESSAGE,
+            REVERSE_CLAIM_MESSAGE,
+            accounting_status_from_journal,
+            acquire_receipt_cancel_claim,
+            cancel_claim_is_active,
+            clear_receipt_cancel_claim,
+            find_goods_receipt_source_journal,
+            posting_claim_is_active,
+            raise_if_journal_blocks_cancel,
+            recovery_required,
+            reverse_claim_is_active,
+        )
+
+        token = ""
+        if not accounting_reversal_owned:
+            if recovery_required(doc):
+                raise HTTPException(409, {
+                    "code": RECOVERY_REQUIRED_CODE,
+                    "message": RECOVERY_REQUIRED_MESSAGE,
+                })
+            existing_journal = await find_goods_receipt_source_journal(db, doc["id"])
+            if accounting_status_from_journal(existing_journal) == ACCOUNTING_REVERSED:
+                raise HTTPException(409, {
+                    "code": RECOVERY_REQUIRED_CODE,
+                    "message": RECOVERY_REQUIRED_MESSAGE,
+                })
+            claimed = await acquire_receipt_cancel_claim(db, doc["id"], token=claim_token)
+            if claimed is None:
+                current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+                if current and is_cancelled(current):
+                    return await get_purchase_goods_receipt(db, doc["id"])
+                if current and posting_claim_is_active(current):
+                    raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+                if current and reverse_claim_is_active(current):
+                    raise HTTPException(409, REVERSE_CLAIM_MESSAGE)
+                if current and cancel_claim_is_active(current):
+                    raise HTTPException(409, CANCEL_IN_PROGRESS_MESSAGE)
+                raced = await find_goods_receipt_source_journal(db, doc["id"])
+                raise_if_journal_blocks_cancel(raced)
+                raise HTTPException(409, "Pembatalan penerimaan gagal karena perubahan bersamaan.")
+            token = str(claimed.get("receipt_cancel_claim") or "")
+
+        try:
+            if not accounting_reversal_owned:
+                journal = await find_goods_receipt_source_journal(db, doc["id"])
+                raise_if_journal_blocks_cancel(journal)
+                current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0}) or doc
+                if posting_claim_is_active(current):
+                    raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+                if reverse_claim_is_active(current):
+                    raise HTTPException(409, REVERSE_CLAIM_MESSAGE)
+            return await _execute_operational_goods_receipt_cancel(db, doc, user, reason)
+        finally:
+            if token:
+                await clear_receipt_cancel_claim(db, doc["id"], token=token)
+
+
+async def _execute_operational_goods_receipt_cancel(
+    db,
+    doc: dict,
+    user: dict,
+    reason: str,
+) -> dict:
         inv_count = await _active_invoice_count_for_receipt(db, doc["id"])
         if inv_count > 0:
             raise HTTPException(
@@ -470,7 +545,11 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
 
         saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
         await handle_goods_receipt_created(db, saved, user)
-        return await enrich_goods_receipt(db, saved)
+        out = await enrich_goods_receipt(db, saved)
+        from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
+
+        await attach_goods_receipt_accounting_fields(db, [out])
+        return out
 
 
 async def list_purchase_goods_receipts(
@@ -491,7 +570,11 @@ async def list_purchase_goods_receipts(
         ]
     query = filters if include_cancelled else with_active_filter(filters)
     rows = await db[COLLECTION].find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return [await enrich_goods_receipt(db, r) for r in rows]
+    enriched = [await enrich_goods_receipt(db, r) for r in rows]
+    from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
+
+    await attach_goods_receipt_accounting_fields(db, enriched)
+    return enriched
 
 
 async def allocate_accurate_receipt_line(db, payload: Dict[str, Any], user: dict) -> dict:

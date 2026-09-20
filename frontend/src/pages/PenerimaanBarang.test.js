@@ -166,7 +166,7 @@ describe("Penerimaan Barang manual create", () => {
   test("PO detail refreshes receipt cancel eligibility before rendering action", () => {
     expect(pageSrc).toMatch(/api\.listPurchaseGoodsReceipts\(\{\s*purchase_order_id: poId,\s*include_cancelled: true/);
     expect(pageSrc).toMatch(/setPoReceipts\(\(current\)/);
-    expect(pageSrc).toMatch(/disabled=\{receipt\.can_cancel === false\}/);
+    expect(pageSrc).toMatch(/disabled=\{receipt\.can_cancel === false \|\| receipt\.accounting_status === "posted"\}/);
   });
 
   test("history exposes cancel for ERP manual receipts but never Accurate history", () => {

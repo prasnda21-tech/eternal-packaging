@@ -11,10 +11,18 @@ import {
   newIdempotencyKey,
   purchaseStatusPillClass,
   purchaseRowInteractionProps,
+  formatRupiah,
   receiptSourceBadge,
   shortReceivingStatus,
   todayYmd,
 } from "../lib/purchaseUi";
+
+function accountingLabel(status) {
+  const raw = String(status || "not_posted").toLowerCase();
+  if (raw === "posted") return "Posted";
+  if (raw === "reversed") return "Reversed";
+  return "Not Posted";
+}
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
@@ -45,10 +53,16 @@ export default function PenerimaanBarang() {
   const canCreate = hasPerm("purchase_receipts.receive");
   const canReceivePo = hasPerm("purchase_receipts.receive") || hasPerm("purchase_receipts.sync");
   const canCreateInvoice = hasPerm("purchase_invoices.create");
+  const canPostAccounting = hasPerm("purchase.receipt.accounting.post");
+  const canReverseAccounting = hasPerm("purchase.receipt.accounting.reverse");
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
   const [cancelReason, setCancelReason] = useState("");
+  const [acctTarget, setAcctTarget] = useState(null);
+  const [acctBusy, setAcctBusy] = useState(false);
+  const [acctErr, setAcctErr] = useState("");
+  const [reverseReason, setReverseReason] = useState("");
   const queryPoId = searchParams.get("purchase_order_id") || "";
   const openCreateFromQuery = searchParams.get("action") === "create";
   const openReceiveFromQuery = searchParams.get("action") === "receive" || Boolean(queryPoId);
@@ -510,6 +524,54 @@ export default function PenerimaanBarang() {
     }
   };
 
+  const refreshAfterAccounting = async (receipt) => {
+    await refreshSideData();
+    if (receipt?.purchase_order_id && String(poDetail?.id || "") === String(receipt.purchase_order_id)) {
+      await openPoReceivingDetail(receipt.purchase_order_id);
+    }
+    if (mainTab === "history") await loadHistory();
+    if (mainTab === "receive-po") await loadPoOrders();
+  };
+
+  const openPostAccounting = (receipt) => {
+    setAcctErr("");
+    setReverseReason("");
+    setAcctTarget({ receipt, action: "post" });
+  };
+
+  const openReverseAccounting = (receipt) => {
+    setAcctErr("");
+    setReverseReason("");
+    setAcctTarget({ receipt, action: "reverse" });
+  };
+
+  const confirmAccountingAction = async () => {
+    if (!acctTarget || acctBusy) return;
+    const receipt = acctTarget.receipt;
+    if (acctTarget.action === "reverse" && reverseReason.trim().length < 3) {
+      setAcctErr("Alasan reversal wajib diisi minimal 3 karakter.");
+      return;
+    }
+    setAcctBusy(true);
+    setAcctErr("");
+    try {
+      if (acctTarget.action === "post") {
+        const res = await api.postPurchaseGoodsReceiptAccounting(receipt.id);
+        setOk(`Penerimaan ${res.receipt?.receipt_number || receipt.receipt_number || ""} diposting ke accounting.`);
+      } else {
+        const res = await api.reversePurchaseGoodsReceiptAccounting(receipt.id, reverseReason.trim());
+        setOk(`Penerimaan ${res.receipt?.receipt_number || receipt.receipt_number || ""} di-reverse dari accounting.`);
+      }
+      setAcctTarget(null);
+      setReverseReason("");
+      await refreshAfterAccounting(receipt);
+    } catch (ex) {
+      setAcctErr(errDetail(ex));
+    } finally {
+      setAcctBusy(false);
+    }
+  };
+
   return (
     <div className="prod-page master-items-page purchase-page" data-testid="penerimaan-barang-page">
       <div className="page-heading prod-heading">
@@ -834,13 +896,25 @@ export default function PenerimaanBarang() {
                             </span>
                           </div>
                           <span className="muted small">{receipt.receipt_date || "—"}</span>
+                          <ReceiptAccountingBlock
+                            receipt={receipt}
+                            testIdPrefix="po-detail"
+                            canPostAccounting={canPostAccounting}
+                            canReverseAccounting={canReverseAccounting}
+                            onPost={openPostAccounting}
+                            onReverse={openReverseAccounting}
+                          />
                           {canReceivePo && !cancelled && (
                             <button
                               type="button"
                               className="ghost danger"
                               data-testid={`btn-batalkan-po-receipt-${receipt.id}`}
-                              disabled={receipt.can_cancel === false}
-                              title={receipt.can_cancel === false ? (receipt.cancel_block_reason || "") : undefined}
+                              disabled={receipt.can_cancel === false || receipt.accounting_status === "posted"}
+                              title={
+                                receipt.accounting_status === "posted"
+                                  ? "Gunakan Reverse Accounting."
+                                  : (receipt.can_cancel === false ? (receipt.cancel_block_reason || "") : undefined)
+                              }
                               onClick={() => openCancelReceipt(receipt)}
                             >
                               Batalkan Penerimaan
@@ -1044,6 +1118,10 @@ export default function PenerimaanBarang() {
                             canCreateInvoice={canCreateInvoice}
                             canCancel={canReceivePo}
                             onCancel={openCancelReceipt}
+                            canPostAccounting={canPostAccounting}
+                            canReverseAccounting={canReverseAccounting}
+                            onPostAccounting={openPostAccounting}
+                            onReverseAccounting={openReverseAccounting}
                           />
                         );
                       }
@@ -1188,6 +1266,153 @@ export default function PenerimaanBarang() {
         }}
         onConfirm={confirmCancelReceipt}
       />
+
+      {acctTarget?.action === "post" && acctTarget.receipt && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="gr-post-accounting-modal">
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Post Accounting Penerimaan Barang?</h3>
+              <button type="button" className="ghost sm" disabled={acctBusy} onClick={() => setAcctTarget(null)}>×</button>
+            </div>
+            <p className="purchase-modal-helper">Jurnal: Dr Persediaan, Cr Purchase Clearing / GRNI. Tanggal jurnal = tanggal penerimaan.</p>
+            <dl className="purchase-detail-meta">
+              <div>
+                <span className="label">No Penerimaan</span>
+                <span className="value mono" data-testid="gr-post-receipt-number">{acctTarget.receipt.receipt_number}</span>
+              </div>
+              <div>
+                <span className="label">Tanggal</span>
+                <span className="value" data-testid="gr-post-receipt-date">{acctTarget.receipt.receipt_date || "—"}</span>
+              </div>
+              <div>
+                <span className="label">Nilai Persediaan</span>
+                <span className="value" data-testid="gr-post-eligible-amount">{formatRupiah(acctTarget.receipt.accounting_amount)}</span>
+              </div>
+            </dl>
+            {(acctTarget.receipt.accounting_warnings || []).length > 0 && (
+              <p className="muted small" data-testid="gr-post-partial-warning">
+                {(acctTarget.receipt.accounting_warnings[0] || {}).message
+                  || "Sebagian baris tidak dikapitalisasi ke Persediaan."}
+              </p>
+            )}
+            {acctErr ? <p className="purchase-inline-err" data-testid="gr-accounting-error">{acctErr}</p> : null}
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" disabled={acctBusy} onClick={() => setAcctTarget(null)}>Batal</button>
+              <button type="button" className="primary" data-testid="btn-confirm-post-gr-accounting" disabled={acctBusy} onClick={confirmAccountingAction}>
+                {acctBusy ? "Memproses…" : "Post Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {acctTarget?.action === "reverse" && acctTarget.receipt && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="gr-reverse-accounting-modal">
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Reverse Accounting Penerimaan Barang?</h3>
+              <button type="button" className="ghost sm" disabled={acctBusy} onClick={() => setAcctTarget(null)}>×</button>
+            </div>
+            <p className="purchase-modal-helper">
+              Reversal juga membatalkan Penerimaan Barang dan
+              mengembalikan stock fisik bila receipt tersebut
+              sebelumnya menambah stock.
+            </p>
+            <label className="purchase-field">
+              <span>Alasan</span>
+              <textarea
+                value={reverseReason}
+                onChange={(e) => setReverseReason(e.target.value)}
+                data-testid="gr-reverse-reason-input"
+                rows={3}
+              />
+            </label>
+            {acctErr ? <p className="purchase-inline-err" data-testid="gr-reverse-accounting-error">{acctErr}</p> : null}
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" disabled={acctBusy} onClick={() => setAcctTarget(null)}>Batal</button>
+              <button type="button" className="primary" data-testid="btn-confirm-reverse-gr-accounting" disabled={acctBusy} onClick={confirmAccountingAction}>
+                {acctBusy ? "Memproses…" : "Reverse Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReceiptAccountingBlock({
+  receipt,
+  testIdPrefix,
+  canPostAccounting,
+  canReverseAccounting,
+  onPost,
+  onReverse,
+}) {
+  const status = String(receipt?.accounting_status || "not_posted").toLowerCase();
+  const warnings = receipt?.accounting_warnings || [];
+  const recovering = receipt?.accounting_recovery_required === true;
+  return (
+    <div className="purchase-detail-meta" data-testid={`${testIdPrefix}-accounting-${receipt.id}`}>
+      <div>
+        <span className="label">Accounting</span>
+        <span className="value" data-testid={`${testIdPrefix}-accounting-status-${receipt.id}`}>{accountingLabel(status)}</span>
+      </div>
+      {receipt?.accounting_journal_id ? (
+        <div>
+          <span className="label">Journal</span>
+          <span className="value mono" data-testid={`${testIdPrefix}-accounting-journal-${receipt.id}`}>{receipt.accounting_journal_id}</span>
+        </div>
+      ) : null}
+      <div>
+        <span className="label">Nilai Persediaan</span>
+        <span className="value" data-testid={`${testIdPrefix}-accounting-amount-${receipt.id}`}>{formatRupiah(receipt?.accounting_amount)}</span>
+      </div>
+      {warnings.length > 0 && (
+        <p className="muted small" data-testid={`${testIdPrefix}-accounting-warning-${receipt.id}`}>
+          {warnings[0].message || "Sebagian baris tidak dikapitalisasi ke Persediaan."}
+        </p>
+      )}
+      {recovering && (
+        <p className="purchase-inline-err" data-testid={`${testIdPrefix}-accounting-recovery-${receipt.id}`}>
+          Reversal Accounting belum selesai. Diperlukan pemulihan.
+        </p>
+      )}
+      <div className="purchase-detail-actions">
+        {canPostAccounting && status === "not_posted" && !recovering && (
+          <button
+            type="button"
+            className="primary"
+            data-testid={`btn-post-gr-accounting-${receipt.id}`}
+            disabled={receipt.can_post_accounting === false}
+            title={receipt.can_post_accounting === false ? (receipt.accounting_post_block_reason || "") : undefined}
+            onClick={(e) => { e.stopPropagation(); onPost?.(receipt); }}
+          >
+            Post Accounting
+          </button>
+        )}
+        {canReverseAccounting && status === "posted" && !recovering && (
+          <button
+            type="button"
+            className="ghost"
+            data-testid={`btn-reverse-gr-accounting-${receipt.id}`}
+            disabled={receipt.can_reverse_accounting === false}
+            onClick={(e) => { e.stopPropagation(); onReverse?.(receipt); }}
+          >
+            Reverse Accounting
+          </button>
+        )}
+        {canReverseAccounting && recovering && (
+          <button
+            type="button"
+            className="primary"
+            data-testid={`btn-retry-reverse-gr-accounting-${receipt.id}`}
+            onClick={(e) => { e.stopPropagation(); onReverse?.(receipt); }}
+          >
+            Retry Reverse Accounting
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1275,7 +1500,20 @@ function FragmentRow({ it, open, onToggle, canCancel, onCancel }) {
   );
 }
 
-function PoHistoryRow({ row, badge, supplierPo, open, onToggle, canCreateInvoice, canCancel, onCancel }) {
+function PoHistoryRow({
+  row,
+  badge,
+  supplierPo,
+  open,
+  onToggle,
+  canCreateInvoice,
+  canCancel,
+  onCancel,
+  canPostAccounting,
+  canReverseAccounting,
+  onPostAccounting,
+  onReverseAccounting,
+}) {
   const lines = row.raw?.lines || [];
   return (
     <>
@@ -1326,14 +1564,26 @@ function PoHistoryRow({ row, badge, supplierPo, open, onToggle, canCreateInvoice
               testId={`receipt-documents-${row.raw.id}`}
             />
             <PurchaseActivityHistory doc={row.raw} testId={`receipt-activity-${row.raw.id}`} />
+            <ReceiptAccountingBlock
+              receipt={row.raw}
+              testIdPrefix="po-history"
+              canPostAccounting={canPostAccounting}
+              canReverseAccounting={canReverseAccounting}
+              onPost={onPostAccounting}
+              onReverse={onReverseAccounting}
+            />
             <div className="purchase-detail-actions">
               {canCancel && (
                 <button
                   type="button"
                   className="ghost danger"
                   data-testid={`btn-batalkan-receipt-${row.raw.id}`}
-                  disabled={row.raw.can_cancel === false}
-                  title={row.raw.can_cancel === false ? (row.raw.cancel_block_reason || "") : undefined}
+                  disabled={row.raw.can_cancel === false || row.raw.accounting_status === "posted"}
+                  title={
+                    row.raw.accounting_status === "posted"
+                      ? "Gunakan Reverse Accounting."
+                      : (row.raw.can_cancel === false ? (row.raw.cancel_block_reason || "") : undefined)
+                  }
                   onClick={(e) => { e.stopPropagation(); onCancel?.(row.raw); }}
                 >
                   Batalkan
