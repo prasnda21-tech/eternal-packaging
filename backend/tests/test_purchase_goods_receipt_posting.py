@@ -1539,21 +1539,90 @@ async def test_post_crash_after_journal_recovers_even_after_period_close(monkeyp
     assert posting_claim_is_active(hanging) is False
 
 
+async def _stock_reversal_count(receipt_id: str) -> int:
+    return await server.db.stock_movements.count_documents({
+        "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
+        "goods_receipt_id": receipt_id,
+    })
+
+
+def _assert_exact_accounting_reversal(src_lines, rev_lines):
+    src_by = {ln["account_id"]: ln for ln in src_lines}
+    rev_by = {ln["account_id"]: ln for ln in rev_lines}
+    assert set(src_by) == set(rev_by)
+    for account_id, src in src_by.items():
+        assert Decimal(str(rev_by[account_id]["debit"])) == Decimal(str(src.get("credit") or 0))
+        assert Decimal(str(rev_by[account_id]["credit"])) == Decimal(str(src.get("debit") or 0))
+
+
 @pytest.mark.anyio
-async def test_accounting_reversal_does_not_mutate_physical_stock(monkeypatch):
+async def test_full_reverse_accounting_cancels_receipt_and_reverses_stock_once():
     await _configure_inventory()
     gr, mid = await _seed_stocked_gr(qty=4, price=500)
     posted = await _unlocked_post(gr["id"])
     assert not isinstance(posted, HTTPException)
     before = await _physical_snapshot(mid, gr["id"])
+    journal, lines = await _primary_journal_lines(gr["id"])
+    assert journal["status"] == "posted"
+    assert before["state"]["total_qty"] == 20
+    assert before["received_qty"] == [4]
+    assert before["cancelled"] is False
+
+    reversed_doc = await _unlocked_reverse(gr["id"], "koreksi stok")
+    assert not isinstance(reversed_doc, HTTPException), getattr(reversed_doc, "detail", reversed_doc)
+    assert reversed_doc["cancelled"] is True
+    assert reversed_doc["accounting_status"] == "reversed"
+    assert reversed_doc.get("accounting_recovery_required") in (None, False)
+    stored = await server.db.purchase_goods_receipts.find_one({"id": gr["id"]}, {"_id": 0})
+    assert stored.get("cancelled") is True
+    assert str(stored.get("cancel_reason") or "") == "koreksi stok"
+    assert not stored.get("accounting_recovery_required")
+
+    src = (await _source_journals(gr["id"]))[0]
+    assert src["status"] == "reversed"
+    revs = await _reversal_journals(gr["id"])
+    assert len(revs) == 1
+    _assert_exact_accounting_reversal(lines, await _journal_lines(revs[0]["id"]))
+
+    after = await _physical_snapshot(mid, gr["id"])
+    assert after["received_qty"] == [4]
+    assert after["cancelled"] is True
+    assert after["hpp_versions"] == before["hpp_versions"]
+    assert after["hpp_layers"] == before["hpp_layers"]
+    assert after["hpp_settings"] == before["hpp_settings"]
+    assert await _stock_reversal_count(gr["id"]) == 1
+    assert after["state"]["total_qty"] == 16
+    assert after["state"]["unprinted_qty"] == 12
+
+    again = await _unlocked_reverse(gr["id"], "ulangi")
+    assert not isinstance(again, HTTPException), getattr(again, "detail", again)
+    assert again["cancelled"] is True
+    assert again["accounting_status"] == "reversed"
+    assert len(await _reversal_journals(gr["id"])) == 1
+    assert await _stock_reversal_count(gr["id"]) == 1
+    final_state = await server.db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
+    assert final_state["total_qty"] == 16
+    assert final_state["unprinted_qty"] == 12
+
+
+@pytest.mark.anyio
+async def test_reversal_crash_before_operational_cancel_leaves_physical_stock_unchanged_until_recovery(monkeypatch):
+    await _configure_inventory()
+    gr, mid = await _seed_stocked_gr(qty=4, price=500)
+    posted = await _unlocked_post(gr["id"])
+    assert not isinstance(posted, HTTPException)
+    before = await _physical_snapshot(mid, gr["id"])
+    journal, lines = await _primary_journal_lines(gr["id"])
     import services.purchase_goods_receipts as pgr
 
     async def boom(*_a, **_k):
-        raise RuntimeError("stop before operational cancel")
+        raise RuntimeError("crash after reverse_journal before operational cancel")
 
     monkeypatch.setattr(pgr, "cancel_purchase_goods_receipt", boom)
-    crashed = await _unlocked_reverse(gr["id"], "hanya accounting")
+    crashed = await _unlocked_reverse(gr["id"], "pulihkan stok")
     assert isinstance(crashed, HTTPException)
+    assert crashed.status_code == 409
+    assert RECOVERY_REQUIRED_CODE in str(crashed.detail)
     after = await _physical_snapshot(mid, gr["id"])
     assert after["state"] == before["state"]
     assert after["movements"] == before["movements"]
@@ -1563,20 +1632,92 @@ async def test_accounting_reversal_does_not_mutate_physical_stock(monkeypatch):
     assert after["hpp_settings"] == before["hpp_settings"]
     stored = await server.db.purchase_goods_receipts.find_one({"id": gr["id"]}, {"_id": 0})
     assert not stored.get("cancelled")
-    journal, lines = await _primary_journal_lines(gr["id"])
-    assert journal["status"] == "reversed"
+    assert stored.get("accounting_recovery_required") is True
+    assert stored.get("accounting_recovery_journal_id")
+    assert stored.get("accounting_recovery_reason")
+    assert stored.get("accounting_recovery_at")
+    src = (await _source_journals(gr["id"]))[0]
+    assert src["status"] == "reversed"
+    assert src["id"] == journal["id"]
+    revs = await _reversal_journals(gr["id"])
+    assert len(revs) == 1
+    _assert_exact_accounting_reversal(lines, await _journal_lines(revs[0]["id"]))
+    assert await _stock_reversal_count(gr["id"]) == 0
+
+
+@pytest.mark.anyio
+async def test_reversal_recovery_retry_completes_physical_cancel_once(monkeypatch):
+    await _configure_inventory()
+    gr, mid = await _seed_stocked_gr(qty=4, price=500)
+    posted = await _unlocked_post(gr["id"])
+    assert not isinstance(posted, HTTPException)
+    import services.purchase_goods_receipts as pgr
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("crash after reverse_journal before operational cancel")
+
+    monkeypatch.setattr(pgr, "cancel_purchase_goods_receipt", boom)
+    crashed = await _unlocked_reverse(gr["id"], "pulihkan stok")
+    assert isinstance(crashed, HTTPException)
+    rev_id = (await _reversal_journals(gr["id"]))[0]["id"]
+    monkeypatch.setattr(pgr, "cancel_purchase_goods_receipt", cancel_purchase_goods_receipt)
+    healed = await _unlocked_reverse(gr["id"], "pulihkan stok")
+    assert not isinstance(healed, HTTPException), getattr(healed, "detail", healed)
+    assert healed["cancelled"] is True
+    assert healed["accounting_status"] == "reversed"
+    assert healed.get("accounting_recovery_required") in (None, False)
+    stored = await server.db.purchase_goods_receipts.find_one({"id": gr["id"]}, {"_id": 0})
+    assert not stored.get("accounting_recovery_required")
+    assert stored.get("accounting_reversal_journal_id") == rev_id
     assert len(await _reversal_journals(gr["id"])) == 1
-    rev = (await _reversal_journals(gr["id"]))[0]
-    rev_lines = await _journal_lines(rev["id"])
-    src_by = {ln["account_id"]: ln for ln in lines}
-    rev_by = {ln["account_id"]: ln for ln in rev_lines}
-    for account_id, src in src_by.items():
-        assert Decimal(str(rev_by[account_id]["debit"])) == Decimal(str(src.get("credit") or 0))
-        assert Decimal(str(rev_by[account_id]["credit"])) == Decimal(str(src.get("debit") or 0))
-    assert await server.db.stock_movements.count_documents({
-        "movement_type": MOVEMENT_REVERSAL_PENERIMAAN,
-        "goods_receipt_id": gr["id"],
-    }) == 0
+    assert await _stock_reversal_count(gr["id"]) == 1
+    state = await server.db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
+    assert state["total_qty"] == 16
+    assert state["unprinted_qty"] == 12
+
+    again = await _unlocked_reverse(gr["id"], "ulangi")
+    assert not isinstance(again, HTTPException)
+    assert again["cancelled"] is True
+    assert again["accounting_status"] == "reversed"
+    assert len(await _reversal_journals(gr["id"])) == 1
+    assert await _stock_reversal_count(gr["id"]) == 1
+    final_state = await server.db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
+    assert final_state["total_qty"] == 16
+    assert final_state["unprinted_qty"] == 12
+
+
+@pytest.mark.anyio
+async def test_reversal_recovery_after_period_close_completes_stock_once(monkeypatch):
+    await _configure_inventory()
+    gr, mid = await _seed_stocked_gr(qty=4, price=500)
+    posted = await _unlocked_post(gr["id"])
+    assert not isinstance(posted, HTTPException)
+    import services.purchase_goods_receipts as pgr
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("crash after reverse_journal before operational cancel")
+
+    monkeypatch.setattr(pgr, "cancel_purchase_goods_receipt", boom)
+    crashed = await _unlocked_reverse(gr["id"], "pulihkan periode")
+    assert isinstance(crashed, HTTPException)
+    stored = await server.db.purchase_goods_receipts.find_one({"id": gr["id"]}, {"_id": 0})
+    assert stored.get("accounting_recovery_required") is True
+    assert await _stock_reversal_count(gr["id"]) == 0
+    rev_id = (await _reversal_journals(gr["id"]))[0]["id"]
+    monkeypatch.setattr(pgr, "cancel_purchase_goods_receipt", cancel_purchase_goods_receipt)
+    await close_period(server.db, "2026-10", user=POST_USER, reason="tutup")
+    healed = await _unlocked_reverse(gr["id"], "pulihkan periode")
+    assert not isinstance(healed, HTTPException), getattr(healed, "detail", healed)
+    assert healed["cancelled"] is True
+    assert healed["accounting_status"] == "reversed"
+    assert not healed.get("accounting_recovery_required")
+    assert len(await _reversal_journals(gr["id"])) == 1
+    assert (await _reversal_journals(gr["id"]))[0]["id"] == rev_id
+    assert await _stock_reversal_count(gr["id"]) == 1
+    state = await server.db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
+    assert state["total_qty"] == 16
+    after = await server.db.purchase_goods_receipts.find_one({"id": gr["id"]}, {"_id": 0})
+    assert not after.get("accounting_recovery_required")
 
 
 @pytest.mark.anyio
