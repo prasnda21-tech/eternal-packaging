@@ -124,12 +124,18 @@ class FakeDB:
             COLLECTION: MemCol(),
             SYNC_META_COLLECTION: MemCol(),
             "master_items": MemCol(),
+            "app_settings": MemCol(),
         }
 
     def __getitem__(self, name):
         if name not in self._cols:
             self._cols[name] = MemCol()
         return self._cols[name]
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self[name]
 
     @property
     def master_items(self):

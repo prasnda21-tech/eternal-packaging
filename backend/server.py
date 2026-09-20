@@ -177,6 +177,7 @@ from services.purchase_receipts import (
     COLLECTION as RECEIPT_COLLECTION,
     PURCHASE_SOURCE_ACCURATE as STOCK_PURCHASE_ACCURATE,
     SYNC_META_COLLECTION as RECEIPT_SYNC_META_COLLECTION,
+    cancel_manual_purchase_receipt,
     create_manual_purchase_receipt,
     filter_public_receipts,
     last_success_at as receipt_last_success_at,
@@ -11634,6 +11635,25 @@ async def purchase_receipts_create(
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     doc = await create_manual_purchase_receipt(db, data or {}, user)
     return {"receipt": public_receipt(doc), "message": "Penerimaan Barang berhasil dibuat"}
+
+
+class PurchaseReceiptCancelPayload(BaseModel):
+    reason: str = ""
+
+
+@api_router.post("/purchase-receipts/{receipt_id}/cancel")
+async def purchase_receipts_cancel(
+    receipt_id: str,
+    payload: PurchaseReceiptCancelPayload,
+    user=Depends(require_perm("purchase_receipts.receive")),
+):
+    doc = await cancel_manual_purchase_receipt(
+        db,
+        receipt_id,
+        user,
+        reason=payload.reason,
+    )
+    return {"receipt": public_receipt(doc), "message": "Penerimaan Barang dibatalkan"}
 
 
 @api_router.get("/purchase-receipts/export")

@@ -37,6 +37,7 @@ PURCHASE_SOURCE_MANUAL = "MANUAL_FALLBACK"
 RECEIPT_SOURCE_ACCURATE = "accurate"
 RECEIPT_SOURCE_MANUAL = "manual"
 MANUAL_RECEIPT_ID_PREFIX = "manual:"
+DEFAULT_RECEIPT_CANCEL_REASON = "Pembatalan penerimaan"
 
 
 def now_iso() -> str:
@@ -436,15 +437,24 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
     """Create a local Penerimaan Barang document in accurate_purchase_receipts.
 
     Does not write journals or call HPP. Does not update Accurate.
-    Standalone (no PO): document-only — excluded from stock aggregation.
+    Standalone (no PO): when Stock V2 is enabled with stock_in_trigger=goods_receipt,
+    appends idempotent PENERIMAAN movements and updates product_stock_state.
     With PO: reuses official create_purchase_goods_receipt (PO remaining + physical
     stock engine), then stores a list projection with source=manual.
+    Manual receipts remain excluded from Accurate Pembelian Barang aggregation.
     """
+    from services.physical_stock_engine import (
+        handle_manual_receipt_created,
+        precheck_manual_receipt_lines,
+    )
+
     async with get_named_lock("purchase_receipt_manual"):
         idem = str(payload.get("idempotency_key") or "").strip()
         if idem:
             existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
             if existing:
+                if not existing.get("goods_receipt_id") and not is_cancelled(existing):
+                    await handle_manual_receipt_created(db, existing, user)
                 return existing
 
         po_id = str(payload.get("purchase_order_id") or "").strip()
@@ -466,6 +476,7 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
             receipt_number = goods_receipt.get("receipt_number") or ""
         else:
             lines = _normalize_manual_lines(payload.get("lines") or payload.get("line_items"))
+            await precheck_manual_receipt_lines(db, lines)
             supplier = str(payload.get("supplier") or payload.get("supplier_name") or "").strip()
             if not supplier:
                 raise HTTPException(400, "Supplier wajib diisi.")
@@ -510,6 +521,8 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
 
         await db[COLLECTION].insert_one(dict(doc))
         doc.pop("_id", None)
+        if not doc.get("goods_receipt_id"):
+            await handle_manual_receipt_created(db, doc, user)
         return doc
 
 
@@ -539,10 +552,10 @@ async def cancel_manual_purchase_receipt(
             raise HTTPException(409, "Riwayat Penerimaan Accurate tidak dapat dibatalkan dari ERP.")
         if is_cancelled(doc):
             return doc
-        if not why:
-            raise HTTPException(400, "Alasan pembatalan Penerimaan Barang wajib diisi.")
+        why = why or DEFAULT_RECEIPT_CANCEL_REASON
 
         linked_gr = None
+        reversal_ids: List[str] = []
         goods_receipt_id = str(doc.get("goods_receipt_id") or "").strip()
         if goods_receipt_id:
             from services.purchase_goods_receipts import cancel_purchase_goods_receipt
@@ -553,13 +566,35 @@ async def cancel_manual_purchase_receipt(
                 user,
                 reason=why,
             )
+            reversal_ids = list(linked_gr.get("reversal_movement_ids") or [])
+            if linked_gr.get("reversal_movement_id") and not reversal_ids:
+                reversal_ids = [linked_gr["reversal_movement_id"]]
+        else:
+            from services.purchase_goods_receipts import apply_receipt_stock_reversals
+
+            reversal_ids = await apply_receipt_stock_reversals(
+                db,
+                str(doc.get("accurate_receipt_id") or ""),
+                receipt_number=doc.get("receipt_number") or "",
+                supplier=doc.get("supplier") or "SUPPLIER",
+                reason=why,
+                user=user,
+                order_id=doc.get("purchase_order_id") or None,
+            )
 
         fields = cancellation_fields(user, why)
         fields.update({
             "status": "CANCELLED",
             "valid": False,
-            "reversal_movement_id": (linked_gr or {}).get("reversal_movement_id"),
-            "reversal_movement_ids": (linked_gr or {}).get("reversal_movement_ids") or [],
+            "reversal_movement_id": (
+                (linked_gr or {}).get("reversal_movement_id")
+                or (reversal_ids[0] if reversal_ids else None)
+            ),
+            "reversal_movement_ids": (
+                (linked_gr or {}).get("reversal_movement_ids")
+                or reversal_ids
+                or []
+            ),
         })
         await db[COLLECTION].update_one(
             {
