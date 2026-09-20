@@ -6,7 +6,7 @@ sales_invoices.outstanding_amount.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -68,6 +68,22 @@ STATEMENT_DISCLAIMER = (
 )
 STATEMENT_SHORT_NOTE = "Statement mengikuti tanggal jurnal."
 GL_DIFF_LABEL = "Selisih non-Faktur / jurnal lain"
+RECONCILIATION_SCOPE = "all_current_ar"
+RECONCILIATION_NOTE = (
+    "Rekonsiliasi GL menggunakan seluruh Piutang Accounting saat ini dan tidak "
+    "dipersempit oleh filter pelanggan, sales, atau aging."
+)
+WIB = timezone(timedelta(hours=7))
+
+INTEGRITY_WARNING_LABELS = {
+    WARN_RECEIPT_AR_ACCOUNT_MISMATCH: "Akun AR penerimaan tidak sesuai faktur",
+    WARN_NEGATIVE_ACCOUNTING_OUTSTANDING: "Saldo Accounting AR negatif",
+    WARN_OVER_APPLIED_ACCOUNTING_RECEIPT: "Penerimaan accounting melebihi nilai AR",
+    WARN_MULTIPLE_INVOICE_AREC_ACCOUNTS: "Faktur menggunakan lebih dari satu akun AR",
+    WARN_MULTIPLE_RECEIPT_AREC_ACCOUNTS: "Penerimaan menggunakan lebih dari satu akun AR",
+    WARN_MISSING_SALES_INVOICE_DOCUMENT: "Jurnal faktur tidak memiliki dokumen Faktur Penjualan",
+    WARN_MISSING_SALES_RECEIPT_DOCUMENT: "Jurnal penerimaan tidak memiliki dokumen Penerimaan Penjualan",
+}
 
 INDEX_SPECS = (
     ("sales_invoices", "financial_status"),
@@ -99,8 +115,21 @@ def _source_label(source_type: Optional[str]) -> str:
     return SOURCE_LABELS.get(st, st or "—")
 
 
-def _today_iso() -> str:
-    return date.today().isoformat()
+def wib_calendar_date(now: Optional[datetime] = None) -> date:
+    """WIB / Asia-Jakarta calendar date. Naive instants are treated as UTC."""
+    instant = now if now is not None else datetime.now(timezone.utc)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(WIB).date()
+
+
+def wib_month_start(now: Optional[datetime] = None) -> str:
+    day = wib_calendar_date(now)
+    return f"{day.year:04d}-{day.month:02d}-01"
+
+
+def _today_iso(now: Optional[datetime] = None) -> str:
+    return wib_calendar_date(now).isoformat()
 
 
 def parse_iso_date(raw: Any, *, field: str, required: bool = False) -> Optional[str]:
@@ -192,7 +221,7 @@ def _invoice_due(invoice: dict) -> Tuple[str, bool]:
 def _analyze_invoice_ar(
     lines: Sequence[dict],
     accounts: Dict[str, dict],
-) -> Tuple[Optional[dict], Decimal, Set[str], List[str]]:
+) -> Tuple[Optional[dict], Decimal, Set[str], List[str], Dict[str, Decimal]]:
     """AREC debit analysis.
 
     Exactly one AREC account (one or more debit lines): that account + sum.
@@ -215,27 +244,29 @@ def _analyze_invoice_ar(
         account_docs[aid] = acc
     warnings: List[str] = []
     if not by_account:
-        return None, Decimal("0.00"), set(), warnings
+        return None, Decimal("0.00"), set(), warnings, {}
     account_ids = set(by_account)
     total = sum(by_account.values(), Decimal("0.00"))
     if len(by_account) == 1:
         aid = next(iter(by_account))
-        return account_docs[aid], by_account[aid], account_ids, warnings
+        return account_docs[aid], by_account[aid], account_ids, warnings, dict(by_account)
     warnings.append(WARN_MULTIPLE_INVOICE_AREC_ACCOUNTS)
-    return None, total, account_ids, warnings
+    return None, total, account_ids, warnings, dict(by_account)
 
 
 def _analyze_receipt_ar(
     lines: Sequence[dict],
     accounts: Dict[str, dict],
     invoice_ar_ids: Set[str],
-) -> Tuple[Decimal, List[str]]:
+) -> Tuple[Decimal, Dict[str, Decimal], Set[str], List[str]]:
     """Receipt AREC credits reduce invoice AR only on the same actual AR account(s).
 
     Never fall back to an unmatched AREC credit or the receipt document amount.
     """
     matched = Decimal("0.00")
     unmatched = Decimal("0.00")
+    matched_by: Dict[str, Decimal] = {}
+    unmatched_ids: Set[str] = set()
     arec_accounts: Set[str] = set()
     for ln in lines:
         debit = _money(ln.get("debit"))
@@ -248,14 +279,16 @@ def _analyze_receipt_ar(
         arec_accounts.add(aid)
         if aid in invoice_ar_ids:
             matched += credit
+            matched_by[aid] = matched_by.get(aid, Decimal("0.00")) + credit
         else:
             unmatched += credit
+            unmatched_ids.add(aid)
     warnings: List[str] = []
     if len(arec_accounts) > 1:
         warnings.append(WARN_MULTIPLE_RECEIPT_AREC_ACCOUNTS)
     if unmatched > ROUNDING_TOLERANCE:
         warnings.append(WARN_RECEIPT_AR_ACCOUNT_MISMATCH)
-    return matched, warnings
+    return matched, matched_by, unmatched_ids, warnings
 
 
 def _normalize_outstanding(raw: Decimal) -> Tuple[Decimal, List[str]]:
@@ -497,6 +530,21 @@ async def _collect_missing_sales_documents(db) -> List[dict]:
                 "source_id": sid,
                 "journal_id": journal.get("id"),
             })
+    journal_ids = [str(item.get("journal_id") or "") for item in anomalies if item.get("journal_id")]
+    if journal_ids:
+        lines = await _find_in(db, JOURNAL_LINES, "journal_id", journal_ids)
+        account_ids = {str(ln.get("account_id") or "") for ln in lines if ln.get("account_id")}
+        accounts = await _load_accounts(db, account_ids)
+        by_jid: Dict[str, Set[str]] = {}
+        for ln in lines:
+            acc = accounts.get(str(ln.get("account_id") or ""))
+            if not _is_arec(acc):
+                continue
+            aid = str(acc.get("id") or "")
+            if aid:
+                by_jid.setdefault(str(ln.get("journal_id") or ""), set()).add(aid)
+        for item in anomalies:
+            item["account_ids"] = sorted(by_jid.get(str(item.get("journal_id") or ""), set()))
     return anomalies
 
 
@@ -578,7 +626,7 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
             # Missing sales document: keep AREC in GL residual only. Do not invent a customer.
             continue
         lines = lines_by_jid.get(str(journal.get("id") or ""), [])
-        ar_account, original_ar, invoice_ar_ids, invoice_warnings = _analyze_invoice_ar(lines, accounts)
+        ar_account, original_ar, invoice_ar_ids, invoice_warnings, invoice_debits = _analyze_invoice_ar(lines, accounts)
         status = str(journal.get("status") or "").strip()
         if status != STATUS_POSTED or original_ar <= 0:
             continue
@@ -588,14 +636,21 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
         pending_receipt = Decimal("0.00")
         operational_paid = Decimal("0.00")
         integrity_warnings = list(invoice_warnings)
+        sales_ar_by_account = {aid: amt for aid, amt in invoice_debits.items()}
+        unmatched_receipt_ar_account_ids: List[str] = []
         for rec in receipts_by_invoice.get(invoice_id, []):
             rec_journal = receipt_journal_by_source.get(str(rec.get("id") or ""))
             rec_status = str((rec_journal or {}).get("status") or "").strip()
             rec_lines = receipt_lines_by_jid.get(str((rec_journal or {}).get("id") or ""), [])
             if rec_status == STATUS_POSTED:
-                matched_credit, rec_warnings = _analyze_receipt_ar(rec_lines, accounts, invoice_ar_ids)
+                matched_credit, matched_by, unmatched_ids, rec_warnings = _analyze_receipt_ar(
+                    rec_lines, accounts, invoice_ar_ids
+                )
                 posted_receipt += matched_credit
                 integrity_warnings.extend(rec_warnings)
+                for aid, amt in matched_by.items():
+                    sales_ar_by_account[aid] = sales_ar_by_account.get(aid, Decimal("0.00")) - amt
+                unmatched_receipt_ar_account_ids.extend(sorted(unmatched_ids))
             if receipt_counts_toward_outstanding(rec):
                 amount = _money(rec.get("amount"))
                 operational_paid += amount
@@ -669,13 +724,78 @@ async def _load_current_invoices(db, *, aging_reference_date: str) -> List[dict]
             "document_mismatch": _document_mismatch(invoice, journal),
             "integrity_warning": integrity_warning,
             "integrity_warnings": integrity_warnings,
+            "sales_ar_by_account": sales_ar_by_account,
+            "unmatched_receipt_ar_account_ids": list(dict.fromkeys(unmatched_receipt_ar_account_ids)),
         })
     return rows
 
 
-async def _account_breakdown(db, invoices: Sequence[dict]) -> List[dict]:
+def _integrity_account_ids(invoices: Sequence[dict], missing_docs: Sequence[dict]) -> Set[str]:
+    affected: Set[str] = set()
+    for row in invoices:
+        warnings = row.get("integrity_warnings") or []
+        if not warnings:
+            continue
+        if any(code != WARN_RECEIPT_AR_ACCOUNT_MISMATCH for code in warnings):
+            affected.update(str(aid) for aid in (row.get("sales_ar_by_account") or {}) if aid)
+        if WARN_RECEIPT_AR_ACCOUNT_MISMATCH in warnings:
+            affected.update(str(aid) for aid in (row.get("unmatched_receipt_ar_account_ids") or []) if aid)
+    for item in missing_docs:
+        affected.update(str(aid) for aid in (item.get("account_ids") or []) if aid)
+    return affected
+
+
+def _aggregate_integrity_anomalies(invoices: Sequence[dict], missing_docs: Sequence[dict]) -> List[dict]:
+    items: List[dict] = []
+    seen: Set[Tuple[str, str]] = set()
+    for row in invoices:
+        invoice_id = str(row.get("invoice_id") or "")
+        for code in row.get("integrity_warnings") or []:
+            key = (str(code), invoice_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append({
+                "code": code,
+                "label": INTEGRITY_WARNING_LABELS.get(code, code),
+                "invoice_id": row.get("invoice_id"),
+                "invoice_number": row.get("invoice_number"),
+                "customer_name": row.get("customer_name"),
+            })
+    for doc in missing_docs:
+        code = str(doc.get("code") or "")
+        identity = str(doc.get("journal_id") or doc.get("source_id") or "")
+        key = (code, identity)
+        if not code or key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "code": code,
+            "label": INTEGRITY_WARNING_LABELS.get(code, code),
+            "journal_id": doc.get("journal_id"),
+            "source_type": doc.get("source_type"),
+            "source_id": doc.get("source_id"),
+        })
+    items.sort(key=lambda r: (
+        str(r.get("code") or ""),
+        str(r.get("invoice_id") or ""),
+        str(r.get("journal_id") or ""),
+        str(r.get("source_id") or ""),
+    ))
+    return items
+
+
+async def _account_breakdown(db, invoices: Sequence[dict], *, anomaly_account_ids: Optional[Set[str]] = None) -> List[dict]:
     sales_by_account: Dict[str, Decimal] = {}
     for row in invoices:
+        by_account = row.get("sales_ar_by_account") or {}
+        if by_account:
+            for aid, amt in by_account.items():
+                key = str(aid or "")
+                if not key:
+                    continue
+                sales_by_account[key] = sales_by_account.get(key, Decimal("0.00")) + _money(amt)
+            continue
         aid = str(row.get("actual_ar_account_id") or "")
         if not aid:
             continue
@@ -688,6 +808,7 @@ async def _account_breakdown(db, invoices: Sequence[dict]) -> List[dict]:
     account_ids.update(sales_by_account.keys())
     accounts = await _load_accounts(db, account_ids)
     gl_balances = await _compute_gl_arec_balances(db, list(account_ids))
+    flagged = set(anomaly_account_ids or ())
 
     breakdown: List[dict] = []
     for aid in sorted(account_ids, key=lambda x: str((accounts.get(x) or {}).get("code") or x)):
@@ -705,6 +826,9 @@ async def _account_breakdown(db, invoices: Sequence[dict]) -> List[dict]:
             "gl_arec_balance": _money_float(gl_bal),
             "difference": _money_float(difference),
             "difference_label": GL_DIFF_LABEL,
+            "difference_has_integrity_anomaly": (
+                aid in flagged and abs(difference) > ROUNDING_TOLERANCE
+            ),
         })
     return breakdown
 
@@ -814,11 +938,11 @@ def _build_summary(invoices: Sequence[dict], customers: Sequence[dict], breakdow
     }
 
 
-async def _filtered_current(db, *, aging_reference_date: Optional[str], q: Optional[str], customer_key: Optional[str], sales: Optional[str], ar_account_id: Optional[str], aging_bucket: Optional[str]) -> Tuple[str, List[dict]]:
+async def _current_invoice_sets(db, *, aging_reference_date: Optional[str], q: Optional[str], customer_key: Optional[str], sales: Optional[str], ar_account_id: Optional[str], aging_bucket: Optional[str]) -> Tuple[str, List[dict], List[dict]]:
     ref = parse_iso_date(aging_reference_date, field="aging_reference_date") or _today_iso()
     if aging_bucket and str(aging_bucket).strip() and str(aging_bucket).strip() not in AGING_BUCKETS:
         raise AccountsReceivableValidationError("aging_bucket tidak valid")
-    rows = await _load_current_invoices(db, aging_reference_date=ref)
+    all_rows = await _load_current_invoices(db, aging_reference_date=ref)
     filters = {
         "q": q,
         "customer_key": customer_key,
@@ -826,7 +950,21 @@ async def _filtered_current(db, *, aging_reference_date: Optional[str], q: Optio
         "ar_account_id": ar_account_id,
         "aging_bucket": aging_bucket,
     }
-    return ref, [row for row in rows if _apply_invoice_filters(row, filters)]
+    filtered = [row for row in all_rows if _apply_invoice_filters(row, filters)]
+    return ref, all_rows, filtered
+
+
+async def _filtered_current(db, *, aging_reference_date: Optional[str], q: Optional[str], customer_key: Optional[str], sales: Optional[str], ar_account_id: Optional[str], aging_bucket: Optional[str]) -> Tuple[str, List[dict]]:
+    ref, _all_rows, filtered = await _current_invoice_sets(
+        db,
+        aging_reference_date=aging_reference_date,
+        q=q,
+        customer_key=customer_key,
+        sales=sales,
+        ar_account_id=ar_account_id,
+        aging_bucket=aging_bucket,
+    )
+    return ref, filtered
 
 
 async def get_accounts_receivable_summary(
@@ -839,7 +977,7 @@ async def get_accounts_receivable_summary(
     ar_account_id: Optional[str] = None,
     aging_bucket: Optional[str] = None,
 ) -> dict:
-    ref, rows = await _filtered_current(
+    ref, all_rows, filtered = await _current_invoice_sets(
         db,
         aging_reference_date=aging_reference_date,
         q=q,
@@ -848,10 +986,17 @@ async def get_accounts_receivable_summary(
         ar_account_id=ar_account_id,
         aging_bucket=aging_bucket,
     )
-    customers = _aggregate_customers(rows)
-    breakdown = await _account_breakdown(db, rows)
-    summary = _build_summary(rows, customers, breakdown, ref)
-    summary["integrity_anomalies"] = await _collect_missing_sales_documents(db)
+    customers = _aggregate_customers(filtered)
+    missing_docs = await _collect_missing_sales_documents(db)
+    anomaly_accounts = _integrity_account_ids(all_rows, missing_docs)
+    breakdown = await _account_breakdown(db, all_rows, anomaly_account_ids=anomaly_accounts)
+    display_account = str(ar_account_id or "").strip()
+    if display_account:
+        breakdown = [row for row in breakdown if str(row.get("account_id") or "") == display_account]
+    summary = _build_summary(filtered, customers, breakdown, ref)
+    summary["reconciliation_scope"] = RECONCILIATION_SCOPE
+    summary["reconciliation_note"] = RECONCILIATION_NOTE
+    summary["integrity_anomalies"] = _aggregate_integrity_anomalies(all_rows, missing_docs)
     return summary
 
 

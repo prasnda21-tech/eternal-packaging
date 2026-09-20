@@ -21,8 +21,11 @@ os.environ.setdefault("STORAGE_PROVIDER", "local")
 import server
 from permissions import ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
 from server import app, current_user
+from datetime import datetime, timezone
+
 from services.accounts_receivable import (
     PERM_VIEW,
+    RECONCILIATION_SCOPE,
     ROUNDING_TOLERANCE,
     STATEMENT_SORT_KEYS,
     WARN_MISSING_SALES_INVOICE_DOCUMENT,
@@ -36,6 +39,8 @@ from services.accounts_receivable import (
     _load_current_invoices,
     aging_bucket_for,
     ensure_indexes,
+    wib_calendar_date,
+    wib_month_start,
     INDEX_SPECS,
 )
 from services.cash_bank_master import COLLECTION as CB_COLLECTION, create_cash_bank, ensure_indexes as ensure_cb
@@ -1197,3 +1202,197 @@ async def test_customer_identity_helpers_are_the_authority():
     assert "resolve_customer_identity" in src
     assert "def normalize_customer_name" not in src
     assert "def resolve_customer_identity" not in src
+
+
+@pytest.mark.anyio
+async def test_wib_calendar_date_is_not_utc():
+    instant = datetime(2026, 9, 19, 18, 30, 0, tzinfo=timezone.utc)
+    assert wib_calendar_date(instant).isoformat() == "2026-09-20"
+    assert wib_month_start(instant) == "2026-09-01"
+    naive = datetime(2026, 9, 19, 18, 30, 0)
+    assert wib_calendar_date(naive).isoformat() == "2026-09-20"
+
+
+async def _split_invoice_arec(invoice_id: str, account_a: str, account_b: str, debit_a, debit_b):
+    journal = await _primary_journal("sales_invoice", invoice_id)
+    credit = await server.db[JOURNAL_LINES].find_one(
+        {"journal_id": journal["id"], "account_id": account_a, "debit": {"$gt": 0}},
+        {"_id": 0},
+    )
+    assert credit
+    await server.db[JOURNAL_LINES].update_one({"id": credit["id"]}, {"$set": {"debit": debit_a}})
+    await _insert_journal_line(journal["id"], account_b, debit=debit_b, desc="second AREC")
+
+
+@pytest.mark.anyio
+async def test_filtered_summary_cards_do_not_change_gl_reconciliation():
+    rec, _rev, _tax = await _configure_settings()
+    po_a = await _seed_po(customer="Cust Filter A", customer_id="CUST-FILT-A", sales="Vira")
+    po_b = await _seed_po(customer="Cust Filter B", customer_id="CUST-FILT-B", sales="Rina")
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await _posted_invoice(client, po_a["id"], unit_price=10_000_000, payment_term_days=29)
+        await _posted_invoice(
+            client, po_b["id"], unit_price=20_000_000, invoice_date="2026-08-01", payment_term_days=0
+        )
+        filtered = (await client.get(AR_SUMMARY, params={"customer_key": "id:CUST-FILT-A"})).json()
+        assert filtered["reconciliation_scope"] == RECONCILIATION_SCOPE
+        assert _money(filtered["total_accounting_ar"]) == Decimal("10000000.00")
+        br = next(r for r in filtered["account_breakdown"] if r["account_id"] == rec["id"])
+        assert _money(br["sales_ar_balance"]) == Decimal("30000000.00")
+        assert _money(br["gl_arec_balance"]) == Decimal("30000000.00")
+        assert _money(br["difference"]) == Decimal("0.00")
+
+        by_sales = (await client.get(AR_SUMMARY, params={"sales": "Vira"})).json()
+        assert _money(by_sales["total_accounting_ar"]) == Decimal("10000000.00")
+        sales_br = next(r for r in by_sales["account_breakdown"] if r["account_id"] == rec["id"])
+        assert _money(sales_br["sales_ar_balance"]) == Decimal("30000000.00")
+        assert _money(sales_br["difference"]) == Decimal("0.00")
+
+        by_bucket = (await client.get(AR_SUMMARY, params={
+            "aging_reference_date": "2026-09-20",
+            "aging_bucket": "NOT_DUE",
+        })).json()
+        assert _money(by_bucket["total_accounting_ar"]) == Decimal("10000000.00")
+        bucket_br = next(r for r in by_bucket["account_breakdown"] if r["account_id"] == rec["id"])
+        assert _money(bucket_br["sales_ar_balance"]) == Decimal("30000000.00")
+        assert _money(bucket_br["gl_arec_balance"]) == Decimal("30000000.00")
+        assert _money(bucket_br["difference"]) == Decimal("0.00")
+
+
+@pytest.mark.anyio
+async def test_ar_account_filter_keeps_full_account_sales_ar():
+    rec_a, rev, tax = await _configure_settings()
+    po_a = await _seed_po(customer="Acc A")
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await _posted_invoice(client, po_a["id"], unit_price=10_000_000)
+        rec_b = await _coa("11", "Piutang Filter B", "AREC")
+        await _configure_settings(rec=rec_b, rev=rev, tax=tax)
+        po_b = await _seed_po(customer="Acc B")
+        await _posted_invoice(client, po_b["id"], unit_price=20_000_000)
+        summary = (await client.get(AR_SUMMARY, params={"ar_account_id": rec_a["id"]})).json()
+        assert [row["account_id"] for row in summary["account_breakdown"]] == [rec_a["id"]]
+        row = summary["account_breakdown"][0]
+        assert _money(row["sales_ar_balance"]) == Decimal("10000000.00")
+        assert _money(row["gl_arec_balance"]) == Decimal("10000000.00")
+        assert _money(summary["total_accounting_ar"]) == Decimal("10000000.00")
+
+
+@pytest.mark.anyio
+async def test_multi_arec_invoice_reconciliation_by_account():
+    rec_a, _rev, _tax = await _configure_settings()
+    rec_b = await _coa("11", "Piutang Multi B", "AREC")
+    po = await _seed_po(customer="PT Multi")
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv = await _posted_invoice(client, po["id"])
+        await _split_invoice_arec(inv["id"], rec_a["id"], rec_b["id"], 6_000_000, 4_000_000)
+        aging = (await client.get(AR_AGING)).json()
+        row = _aging_row(aging, inv["id"])
+        assert row["actual_ar_account_id"] is None
+        assert WARN_MULTIPLE_INVOICE_AREC_ACCOUNTS in row["integrity_warnings"]
+        assert _money(row["accounting_outstanding"]) == Decimal("10000000.00")
+        summary = (await client.get(AR_SUMMARY)).json()
+        by_id = {r["account_id"]: r for r in summary["account_breakdown"]}
+        assert _money(by_id[rec_a["id"]]["sales_ar_balance"]) == Decimal("6000000.00")
+        assert _money(by_id[rec_b["id"]]["sales_ar_balance"]) == Decimal("4000000.00")
+        assert _money(by_id[rec_a["id"]]["difference"]) == Decimal("0.00")
+        assert _money(by_id[rec_b["id"]]["difference"]) == Decimal("0.00")
+
+
+@pytest.mark.anyio
+async def test_multi_arec_receipt_reduces_matching_accounts_only():
+    rec_a, _rev, _tax = await _configure_settings()
+    rec_b = await _coa("11", "Piutang Multi Rec B", "AREC")
+    bca = await _cash_bank()
+    po = await _seed_po(customer="PT Multi Rec")
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv = await _posted_invoice(client, po["id"])
+        await _split_invoice_arec(inv["id"], rec_a["id"], rec_b["id"], 6_000_000, 4_000_000)
+        receipt = await _create_receipt(client, inv["id"], 4_000_000, cash_bank_id=bca["id"])
+        await _post_receipt(client, receipt["id"])
+        journal = await _primary_journal("sales_receipt", receipt["id"])
+        credit = await _arec_credit_line(journal["id"])
+        await server.db[JOURNAL_LINES].update_one({"id": credit["id"]}, {"$set": {"credit": 2_000_000, "account_id": rec_a["id"]}})
+        await _insert_journal_line(journal["id"], rec_b["id"], credit=1_000_000, desc="match B")
+        aging = (await client.get(AR_AGING)).json()
+        row = _aging_row(aging, inv["id"])
+        assert _money(row["accounting_outstanding"]) == Decimal("7000000.00")
+        assert _money(row["posted_receipt_amount"]) == Decimal("3000000.00")
+        summary = (await client.get(AR_SUMMARY)).json()
+        by_id = {r["account_id"]: r for r in summary["account_breakdown"]}
+        assert _money(by_id[rec_a["id"]]["sales_ar_balance"]) == Decimal("4000000.00")
+        assert _money(by_id[rec_b["id"]]["sales_ar_balance"]) == Decimal("3000000.00")
+
+
+@pytest.mark.anyio
+async def test_wrong_account_receipt_reconciliation_residual():
+    rec_a, _rev, _tax = await _configure_settings()
+    rec_b = await _coa("11", "Piutang Residual B", "AREC")
+    bca = await _cash_bank()
+    po = await _seed_po(customer="PT Residual")
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv = await _posted_invoice(client, po["id"])
+        receipt = await _create_receipt(client, inv["id"], 4_000_000, cash_bank_id=bca["id"])
+        await _post_receipt(client, receipt["id"])
+        journal = await _primary_journal("sales_receipt", receipt["id"])
+        credit = await _arec_credit_line(journal["id"])
+        await server.db[JOURNAL_LINES].update_one({"id": credit["id"]}, {"$set": {"account_id": rec_b["id"]}})
+        aging = (await client.get(AR_AGING)).json()
+        row = _aging_row(aging, inv["id"])
+        assert _money(row["accounting_outstanding"]) == Decimal("10000000.00")
+        assert WARN_RECEIPT_AR_ACCOUNT_MISMATCH in row["integrity_warnings"]
+        summary = (await client.get(AR_SUMMARY)).json()
+        by_id = {r["account_id"]: r for r in summary["account_breakdown"]}
+        assert _money(by_id[rec_a["id"]]["sales_ar_balance"]) == Decimal("10000000.00")
+        assert _money(by_id[rec_b["id"]]["sales_ar_balance"]) == Decimal("0.00")
+        assert _money(by_id[rec_b["id"]]["gl_arec_balance"]) == Decimal("-4000000.00")
+        assert by_id[rec_b["id"]]["difference_has_integrity_anomaly"] is True
+        assert any(a["code"] == WARN_RECEIPT_AR_ACCOUNT_MISMATCH for a in summary["integrity_anomalies"])
+
+
+@pytest.mark.anyio
+async def test_summary_aggregates_all_integrity_anomaly_classes():
+    rec, _rev, _tax = await _configure_settings()
+    rec_b = await _coa("11", "Piutang Agg B", "AREC")
+    bca = await _cash_bank()
+    po_wrong = await _seed_po(customer="PT Agg Wrong")
+    po_neg = await _seed_po(customer="PT Agg Neg")
+    _admin()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        inv_wrong = await _posted_invoice(client, po_wrong["id"])
+        rec_wrong = await _create_receipt(client, inv_wrong["id"], 4_000_000, cash_bank_id=bca["id"])
+        await _post_receipt(client, rec_wrong["id"])
+        wrong_j = await _primary_journal("sales_receipt", rec_wrong["id"])
+        credit = await _arec_credit_line(wrong_j["id"])
+        await server.db[JOURNAL_LINES].update_one({"id": credit["id"]}, {"$set": {"account_id": rec_b["id"]}})
+
+        inv_neg = await _posted_invoice(client, po_neg["id"])
+        rec_neg = await _create_receipt(client, inv_neg["id"], 4_000_000, cash_bank_id=bca["id"])
+        await _post_receipt(client, rec_neg["id"])
+        neg_j = await _primary_journal("sales_receipt", rec_neg["id"])
+        neg_credit = await _arec_credit_line(neg_j["id"])
+        await server.db[JOURNAL_LINES].update_one({"id": neg_credit["id"]}, {"$set": {"credit": 11_000_000}})
+
+        orphan_id = f"missing-inv-{uuid.uuid4().hex[:8]}"
+        await server.db[JOURNAL_ENTRIES].insert_one({
+            "id": str(uuid.uuid4()),
+            "number": "JE-ORPHAN-AGG",
+            "date": "2026-09-12",
+            "source_type": "sales_invoice",
+            "source_id": orphan_id,
+            "status": "posted",
+            "reversal_of": None,
+            "description": "orphan",
+        })
+        summary = (await client.get(AR_SUMMARY)).json()
+        codes = [a["code"] for a in summary["integrity_anomalies"]]
+        assert WARN_RECEIPT_AR_ACCOUNT_MISMATCH in codes
+        assert WARN_NEGATIVE_ACCOUNTING_OUTSTANDING in codes
+        assert WARN_OVER_APPLIED_ACCOUNTING_RECEIPT in codes
+        assert WARN_MISSING_SALES_INVOICE_DOCUMENT in codes
+        pairs = [(a["code"], a.get("invoice_id") or a.get("journal_id") or a.get("source_id")) for a in summary["integrity_anomalies"]]
+        assert len(pairs) == len(set(pairs))

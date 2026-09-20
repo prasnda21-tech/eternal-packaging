@@ -17,11 +17,49 @@ const formatMoney = (n) => {
 };
 const formatRp = (n) => `Rp ${formatMoney(n)}`;
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
-const monthStart = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+const INTEGRITY_WARNING_LABELS = {
+  RECEIPT_AR_ACCOUNT_MISMATCH: "Akun AR penerimaan tidak sesuai faktur",
+  NEGATIVE_ACCOUNTING_OUTSTANDING: "Saldo Accounting AR negatif",
+  OVER_APPLIED_ACCOUNTING_RECEIPT: "Penerimaan accounting melebihi nilai AR",
+  MULTIPLE_INVOICE_AREC_ACCOUNTS: "Faktur menggunakan lebih dari satu akun AR",
+  MULTIPLE_RECEIPT_AREC_ACCOUNTS: "Penerimaan menggunakan lebih dari satu akun AR",
+  missing_sales_invoice_document: "Jurnal faktur tidak memiliki dokumen Faktur Penjualan",
+  missing_sales_receipt_document: "Jurnal penerimaan tidak memiliki dokumen Penerimaan Penjualan",
 };
+
+export function integrityWarningLabel(code) {
+  return INTEGRITY_WARNING_LABELS[code] || String(code || "Anomali integritas");
+}
+
+export function wibCalendarDate(now = new Date()) {
+  const instant = now instanceof Date ? now : new Date(now);
+  const wib = new Date(instant.getTime() + 7 * 60 * 60 * 1000);
+  const y = wib.getUTCFullYear();
+  const m = String(wib.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(wib.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+export function wibMonthStart(now = new Date()) {
+  return `${wibCalendarDate(now).slice(0, 7)}-01`;
+}
+
+export function IntegrityMarker({ warnings, testid }) {
+  const codes = Array.isArray(warnings) ? warnings.filter(Boolean) : [];
+  if (!codes.length) {
+    return <span data-testid={testid}>—</span>;
+  }
+  const labels = codes.map(integrityWarningLabel);
+  return (
+    <span
+      className="kb-ar-integrity"
+      title={labels.join(" · ")}
+      data-testid={testid}
+    >
+      Perhatian
+    </span>
+  );
+}
 
 const TABS = [
   { id: "ringkasan", label: "Ringkasan" },
@@ -49,14 +87,14 @@ const bucketLabel = (bucket) => ({
 
 export default function PiutangUsaha() {
   const [tab, setTab] = useState("ringkasan");
-  const [agingRef, setAgingRef] = useState(todayIso);
+  const [agingRef, setAgingRef] = useState(wibCalendarDate);
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [bucket, setBucket] = useState("");
   const [arAccountId, setArAccountId] = useState("");
   const [sales, setSales] = useState("");
   const [customerKey, setCustomerKey] = useState("");
-  const [startDate, setStartDate] = useState(monthStart);
-  const [endDate, setEndDate] = useState(todayIso);
+  const [startDate, setStartDate] = useState(wibMonthStart);
+  const [endDate, setEndDate] = useState(wibCalendarDate);
 
   const [summary, setSummary] = useState(null);
   const [aging, setAging] = useState(null);
@@ -135,6 +173,9 @@ export default function PiutangUsaha() {
   const statementItems = Array.isArray(statement?.items) ? statement.items : [];
   const pendingReceipts = Array.isArray(statement?.pending_receipts) ? statement.pending_receipts : [];
   const breakdown = Array.isArray(summary?.account_breakdown) ? summary.account_breakdown : [];
+  const integrityAnomalies = Array.isArray(summary?.integrity_anomalies) ? summary.integrity_anomalies : [];
+  const reconNote = summary?.reconciliation_note
+    || "Rekonsiliasi GL menggunakan seluruh Piutang Accounting saat ini dan tidak dipersempit oleh filter pelanggan, sales, atau aging.";
 
   return (
     <div className="prod-page kas-bank-page kas-bank-workspace" data-testid="piutang-usaha-page">
@@ -253,7 +294,23 @@ export default function PiutangUsaha() {
             <div className="kb-summary-card"><span>&gt;90</span><strong className="num kb-money">{formatRp(summary.over_90)}</strong></div>
           </div>
 
+          {integrityAnomalies.length > 0 && (
+            <div className="kb-ar-note" data-testid="piutang-integrity-panel" role="status">
+              {integrityAnomalies.length} anomali integritas accounting terdeteksi.
+              <ul data-testid="piutang-integrity-list" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {integrityAnomalies.map((item, idx) => (
+                  <li key={`${item.code}-${item.invoice_id || item.journal_id || item.source_id || idx}`}>
+                    {item.label || integrityWarningLabel(item.code)}
+                    {item.invoice_number ? ` · ${item.invoice_number}` : ""}
+                    {item.customer_name ? ` · ${item.customer_name}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <h2 className="muted" style={{ fontSize: 13, margin: "8px 0" }}>Rekonsiliasi GL</h2>
+          <p className="kb-ar-note" data-testid="piutang-recon-scope">{reconNote}</p>
           <div className="prod-table-wrap kb-workspace-table-wrap kb-ar-table-scroll">
             <table className="prod-table kas-bank-table" data-testid="piutang-gl-table">
               <thead>
@@ -272,7 +329,12 @@ export default function PiutangUsaha() {
                     <td>{[row.account_code, row.account_name].filter(Boolean).join(" · ")}</td>
                     <td className="num kb-money">{formatRp(row.sales_ar_balance)}</td>
                     <td className="num kb-money">{formatRp(row.gl_arec_balance)}</td>
-                    <td className="num kb-money">{formatRp(row.difference)}</td>
+                    <td className="num kb-money">
+                      {formatRp(row.difference)}
+                      {row.difference_has_integrity_anomaly ? (
+                        <span className="kb-ar-integrity" title="Selisih ini juga mengandung anomali integritas jurnal/akun."> · anomali</span>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -299,11 +361,12 @@ export default function PiutangUsaha() {
                   <th className="num">Pending</th>
                   <th className="num">Accounting Outstanding</th>
                   <th className="num">Operational Outstanding</th>
+                  <th>Integritas</th>
                 </tr>
               </thead>
               <tbody>
                 {agingItems.length === 0 ? (
-                  <tr><td colSpan={12} className="muted" data-testid="piutang-aging-empty">Tidak ada piutang accounting outstanding.</td></tr>
+                  <tr><td colSpan={13} className="muted" data-testid="piutang-aging-empty">Tidak ada piutang accounting outstanding.</td></tr>
                 ) : agingItems.map((row) => (
                   <tr key={row.invoice_id} data-testid={`piutang-aging-row-${row.invoice_id}`}>
                     <td className="mono">{row.invoice_number}</td>
@@ -318,6 +381,12 @@ export default function PiutangUsaha() {
                     <td className="num kb-money">{formatRp(row.pending_receipt_amount)}</td>
                     <td className="num kb-money">{formatRp(row.accounting_outstanding)}</td>
                     <td className="num kb-money">{formatRp(row.operational_outstanding)}</td>
+                    <td>
+                      <IntegrityMarker
+                        warnings={row.integrity_warnings}
+                        testid={`piutang-aging-integrity-${row.invoice_id}`}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
