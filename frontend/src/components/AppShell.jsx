@@ -52,6 +52,7 @@ const TILE_ICONS = {
   [NAV_KEYS.ledgerGeneralJournal]: FileText,
   [NAV_KEYS.ledgerOpeningBalance]: Scale,
   [NAV_KEYS.ledgerGeneralLedger]: ListOrdered,
+  [NAV_KEYS.ledgerAccountsReceivable]: Wallet,
   [NAV_KEYS.ledgerTrialBalance]: TableIcon,
   [NAV_KEYS.ledgerProfitLoss]: TrendingUp,
   [NAV_KEYS.ledgerBalanceSheet]: Scale,

@@ -22,6 +22,7 @@ const JurnalUmum = lazy(() => import("./pages/JurnalUmum"));
 const SaldoAwal = lazy(() => import("./pages/SaldoAwal"));
 const PeriodeAkuntansi = lazy(() => import("./pages/PeriodeAkuntansi"));
 const BukuBesar = lazy(() => import("./pages/BukuBesar"));
+const PiutangUsaha = lazy(() => import("./pages/PiutangUsaha"));
 const NeracaSaldo = lazy(() => import("./pages/NeracaSaldo"));
 const LabaRugi = lazy(() => import("./pages/LabaRugi"));
 const Neraca = lazy(() => import("./pages/Neraca"));
@@ -166,6 +167,7 @@ function BukuBesarIndex() {
   if (v.openingBalance) return <Navigate to="/buku-besar/saldo-awal" replace />;
   if (v.accountingPeriods) return <Navigate to="/buku-besar/periode-akuntansi" replace />;
   if (v.generalLedger) return <Navigate to="/buku-besar/buku-besar" replace />;
+  if (v.accountsReceivable) return <Navigate to="/buku-besar/piutang-usaha" replace />;
   if (v.trialBalance) return <Navigate to="/buku-besar/neraca-saldo" replace />;
   if (v.profitLoss) return <Navigate to="/buku-besar/laba-rugi" replace />;
   if (v.balanceSheet) return <Navigate to="/buku-besar/neraca" replace />;
@@ -299,6 +301,7 @@ export default function App() {
             <Route path="/buku-besar/saldo-awal" element={<PermGate anyOf={[NAV_KEYS.ledgerOpeningBalance, NAV_KEYS.ledger, "opening_balance.view", "opening_balance.manage", "opening_balance.post", "opening_balance.reverse"]}><SaldoAwal /></PermGate>} />
             <Route path="/buku-besar/periode-akuntansi" element={<PermGate anyOf={[NAV_KEYS.ledgerAccountingPeriods, NAV_KEYS.ledger, "accounting.period.view", "accounting.period.close", "accounting.period.reopen"]}><PeriodeAkuntansi /></PermGate>} />
             <Route path="/buku-besar/buku-besar" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralLedger, NAV_KEYS.ledger, "general_ledger.view"]}><BukuBesar /></PermGate>} />
+            <Route path="/buku-besar/piutang-usaha" element={<PermGate anyOf={[NAV_KEYS.ledgerAccountsReceivable, "accounts_receivable.view"]}><PiutangUsaha /></PermGate>} />
             <Route path="/buku-besar/neraca-saldo" element={<PermGate anyOf={[NAV_KEYS.ledgerTrialBalance, NAV_KEYS.ledger, "trial_balance.view"]}><NeracaSaldo /></PermGate>} />
             <Route path="/buku-besar/laba-rugi" element={<PermGate anyOf={[NAV_KEYS.ledgerProfitLoss, NAV_KEYS.ledger, "profit_loss.view"]}><LabaRugi /></PermGate>} />
             <Route path="/buku-besar/neraca" element={<PermGate anyOf={[NAV_KEYS.ledgerBalanceSheet, NAV_KEYS.ledger, "balance_sheet.view"]}><Neraca /></PermGate>} />

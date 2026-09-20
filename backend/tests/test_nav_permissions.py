@@ -62,6 +62,8 @@ def test_catalog_includes_nav_keys():
         "nav.route_optimizer",
         "nav.ledger",
         "nav.ledger.accounts",
+        "nav.ledger.accounts_receivable",
+        "accounts_receivable.view",
         "ledger.accounts.view",
         "ledger.accounts.manage",
         "accounting.period.view",
