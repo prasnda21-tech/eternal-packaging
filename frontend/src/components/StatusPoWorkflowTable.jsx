@@ -18,8 +18,8 @@ import {
   statusStageDisplayNumber,
   statusStripTone,
   stickyOffsets,
+  workflowCellCaption,
   workflowCellState,
-  workflowCellTitle,
   workflowProgressPercent,
   writeStoredColWidths,
 } from "../lib/statusPoWorkflow";
@@ -344,14 +344,16 @@ export default function StatusPoWorkflowTable({
                 >
                   {STATUS_PO_WORKFLOW_STAGES.map((s) => {
                     const state = workflowCellState(r, s.key);
-                    const tone = progressSegmentTone(state);
+                    const reason = r?.workflow_reasons?.[s.key];
+                    const tone = progressSegmentTone(state, reason);
                     return (
                       <span
                         key={s.key}
                         className={`spo-seg is-${tone}`}
-                        title={`${s.full}: ${workflowCellTitle(state)}`}
+                        title={workflowCellCaption(s, state, reason)}
                         data-testid={`status-po-wf-${r.po_number}-${s.key}`}
                         data-state={state}
+                        data-reason={reason || undefined}
                       />
                     );
                   })}

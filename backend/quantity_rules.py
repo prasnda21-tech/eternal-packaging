@@ -735,6 +735,10 @@ def apply_delivery_from_proof_evidence(order: dict, shipment: Optional[dict] = N
     gate applies only when a concrete SJ batch is present to compare against.
     """
     selected = shipment if isinstance(shipment, dict) else None
+    try:
+        from services.delivery_loading_gate import new_delivery_block_reason
+    except ImportError:
+        new_delivery_block_reason = None
     if selected is not None:
         if shipment_is_delivered(order, selected):
             current = qty_delivered(order)
@@ -766,6 +770,8 @@ def apply_delivery_from_proof_evidence(order: dict, shipment: Optional[dict] = N
         err = validate_delivery_qty(new_delivered, order)
         if err:
             return None
+        if increment > 0 and new_delivery_block_reason and new_delivery_block_reason(order, selected, requested_qty=new_delivered):
+            return None
         full = bool(required) and new_delivered >= required
         return {
             "qty_delivered": new_delivered,
@@ -793,6 +799,8 @@ def apply_delivery_from_proof_evidence(order: dict, shipment: Optional[dict] = N
         new_delivered = min(new_delivered, required)
     err = validate_delivery_qty(new_delivered, order)
     if err:
+        return None
+    if new_delivered > current and new_delivery_block_reason and new_delivery_block_reason(order, requested_qty=new_delivered):
         return None
     full = bool(required) and new_delivered >= required
     return {
@@ -863,6 +871,14 @@ def confirm_delivery_block_reason(order: dict, shipment: Optional[dict] = None) 
         ready = delivery_batch_photo_readiness(order, shipment)
         if not ready.get("allowed") and ready.get("reason_code") != REASON_SJ_NOT_READY:
             return ready.get("reason") or MSG_PHOTO_LOADING_INSUFFICIENT
+    try:
+        from services.delivery_loading_gate import new_delivery_block_reason
+    except ImportError:
+        new_delivery_block_reason = None
+    if new_delivery_block_reason:
+        blocked = new_delivery_block_reason(order, shipment)
+        if blocked:
+            return blocked
     return None
 
 
@@ -1767,6 +1783,7 @@ def apply_loading_confirmation(
         "confirmed_by_name": actor.get("name") or actor.get("email"),
         "confirmed_at": confirmed_at,
         "action_id": action_id,
+        "sj_fingerprint": sj_fingerprint(order, identity["shipment_id"]),
     }
     order.setdefault("loading_confirmations", []).append(record)
     from services.sj_integrity import build_loading_confirm_snapshot
@@ -1782,6 +1799,7 @@ def apply_loading_confirmation(
     )
     snap["qty_sj_at_confirm"] = qty_sj_snapshot
     snap["physical_qty"] = qty_physical_snapshot
+    snap["sj_fingerprint"] = record["sj_fingerprint"]
     order.setdefault("loading_snapshots", []).append(snap)
     return record
 

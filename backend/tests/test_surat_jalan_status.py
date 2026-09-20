@@ -120,7 +120,13 @@ def test_grand_total_cannot_hide_line_shortfall():
 
 
 def test_live_tracking_fifteen_stages_match_alur():
-    o = _sj_po()
+    o = _sj_po(
+        sample_approved=True,
+        operator_splits=[{"qty_completed": 1000, "line_idx": 0, "quantity": 1000}],
+        helper_prep={"qty_prepared": 1000},
+        design_status="Approved",
+        payment_status="Approved",
+    )
     apply_loading_confirmation(o, surat_jalan_id="f-sj-1", lines=[{"line_idx": 0, "qty": 1000}], confirmation_id="c1")
     rows = workflow_stage_rows(o)
     assert [r["stage"] for r in rows] == list(STAGES)

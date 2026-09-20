@@ -60,7 +60,7 @@ def apply_status_po_projection(order: dict) -> dict:
         "design_status", "design_bypassed", "payment_status", "payment_bypassed",
         "sample_approved", "packing_status", "packing_status_semantic",
         "surat_jalan_created", "surat_jalan_status_semantic",
-        "delivery_note_number", "delivery_note_created_at",
+        "delivery_note_number", "delivery_note_created_at", "delivery_note_created_by",
         "loading_completed", "loading_completed_at", "loading_qty_status",
         "terkirim_confirmed", "print_status", "print_completed_qty",
     ))
@@ -83,7 +83,11 @@ def apply_status_po_projection(order: dict) -> dict:
     for sh in (src.get("shipments") or []):
         if not isinstance(sh, dict):
             continue
-        row = _pick(sh, ("id", "created_at", "number"))
+        row = _pick(sh, (
+            "id", "created_at", "number", "delivery_status", "delivered_at",
+            "sales_delivery_id", "status", "sj_status", "cancelled", "superseded",
+            "superseded_by_shipment_id", "qty_delivered", "total_qty",
+        ))
         row["lines"] = [ln for ln in (sh.get("lines") or []) if isinstance(ln, dict)]
         shaped["shipments"].append(row)
     shaped["design_files"] = [_pick(f, ("id",)) for f in (src.get("design_files") or []) if isinstance(f, dict)]
@@ -113,15 +117,56 @@ def apply_status_po_projection(order: dict) -> dict:
     if isinstance(li, dict):
         shaped["loading_info"] = {
             "events": [
-                _pick(ev, ("at", "created_at"))
+                _pick(ev, ("at", "created_at", "qty", "line_idx"))
                 for ev in (li.get("events") or [])
                 if isinstance(ev, dict)
-            ]
+            ],
+            "lines": [
+                _pick(ln, ("line_idx", "loaded_qty"))
+                for ln in (li.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
         }
     shaped["loading_confirmations"] = [
-        _pick(c, ("surat_jalan_id",))
+        {
+            **_pick(c, ("id", "surat_jalan_id", "shipment_id", "cancelled", "deleted")),
+            "lines": [
+                _pick(ln, ("line_idx", "qty", "quantity"))
+                for ln in (c.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        }
         for c in (src.get("loading_confirmations") or [])
         if isinstance(c, dict)
+    ]
+    shaped["legacy_loading_allocations"] = [
+        {
+            **_pick(row, ("status", "shipment_id", "surat_jalan_id")),
+            "lines": [
+                _pick(ln, ("line_idx", "qty", "quantity"))
+                for ln in (row.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        }
+        for row in (src.get("legacy_loading_allocations") or [])
+        if isinstance(row, dict)
+    ]
+    shaped["surat_jalan_files"] = [
+        {
+            **_pick(f, ("id", "shipment_id", "sj_number", "number", "sales_delivery_id", "status")),
+            "lines": [
+                _pick(ln, ("line_idx", "qty", "quantity"))
+                for ln in (f.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        }
+        for f in (src.get("surat_jalan_files") or [])
+        if isinstance(f, dict)
+    ]
+    shaped["delivery_confirmations"] = [
+        _pick(rec, ("shipment_id", "qty"))
+        for rec in (src.get("delivery_confirmations") or [])
+        if isinstance(rec, dict)
     ]
     return shaped
 

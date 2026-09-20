@@ -158,6 +158,11 @@ const DONE_CELL_STATES = new Set(["completed", "skipped", "na", "not_applicable"
 /** 0-based canonical stage from the same workflow evidence as the 15 boxes. 15 = all done. */
 export function workflowCanonicalStageIndex(row) {
   if (row?.cancelled || normalizeStatusLabel(row?.status) === "cancelled") return 0;
+  const label = normalizeStatusLabel(row?.status);
+  if (label === "terkirim") return 15;
+  if (label === "parsial terkirim" || label === "pengiriman") return 14;
+  if (label === "loading") return 13;
+  if (label === "surat jalan" || label === "sj parsial") return 12;
   const wf = row?.workflow;
   const keys = STATUS_PO_WORKFLOW_STAGES.map((s) => s.key);
   if (wf && typeof wf === "object") {
@@ -165,8 +170,14 @@ export function workflowCanonicalStageIndex(row) {
     if (holdIdx >= 0) return holdIdx;
     const allDone = keys.length > 0 && keys.every((k) => DONE_CELL_STATES.has(wf[k]));
     if (allDone) return 15;
-    const activeIdx = keys.findIndex((k) => wf[k] === "active");
-    if (activeIdx >= 0) return activeIdx;
+    if (DONE_CELL_STATES.has(wf.kirim)) return 15;
+    if (wf.kirim === "active") return 14;
+    if (DONE_CELL_STATES.has(wf.loading) && wf.kirim === "pending") return 14;
+    let latestActive = -1;
+    keys.forEach((k, i) => {
+      if (wf[k] === "active") latestActive = i;
+    });
+    if (latestActive >= 0) return latestActive;
     let lastDone = -1;
     keys.forEach((k, i) => {
       if (DONE_CELL_STATES.has(wf[k])) lastDone = i;
@@ -176,14 +187,24 @@ export function workflowCanonicalStageIndex(row) {
   return workflowStageIndex(row);
 }
 
-export function workflowCellTitle(state) {
+export function workflowCellTitle(state, reason) {
+  if (reason === "legacy_no_loading_evidence") {
+    return "Dilewati (data lama, bukti Loading tidak tercatat)";
+  }
   if (state === "completed" || state === "done") return "Selesai";
-  if (state === "skipped") return "Tidak berlaku";
+  if (state === "skipped") return "Dilewati (data lama)";
   if (state === "active" || state === "current") return "Sedang berjalan";
   if (state === "pending") return "Belum dimulai";
   if (state === "hold") return "Tertahan";
   if (state === "cancelled") return "Dibatalkan";
   return "Tidak dapat ditentukan";
+}
+
+export function workflowCellCaption(stage, state, reason) {
+  const idx = STATUS_PO_WORKFLOW_STAGES.findIndex((s) => s.key === stage?.key);
+  const number = idx >= 0 ? idx + 1 : "";
+  const name = stage?.full || stage?.header || "";
+  return `${number}. ${name} — ${workflowCellTitle(state, reason)}`;
 }
 
 export function workflowProgressPercent(row) {
@@ -250,8 +271,9 @@ export function statusStripTone(row) {
 }
 
 /** Map explicit workflow cell state to a 15-segment color token. */
-export function progressSegmentTone(state) {
-  if (state === "completed" || state === "done" || state === "skipped") return "done";
+export function progressSegmentTone(state, reason) {
+  if (state === "skipped" || reason === "legacy_no_loading_evidence") return "skipped";
+  if (state === "completed" || state === "done") return "done";
   if (state === "active" || state === "current") return "active";
   if (state === "hold") return "problem";
   if (state === "cancelled") return "problem";

@@ -18,6 +18,7 @@ import {
   canConfirmDelivered,
   canSubmitConfirmDelivered,
   confirmDeliveredBlockReason,
+  confirmDeliveredLoadingBlockReason,
   hasConfirmableDeliverySignatures,
   normalizeRecipientName,
   proofUploadUserError,
@@ -331,7 +332,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       recipientNameRef.current = name;
       setRecipientName(name);
     }
-    const blocked = confirmDeliveredBlockReason(
+    const blocked = confirmDeliveredLoadingBlockReason(order) || confirmDeliveredBlockReason(
       proofs, name, localSig.recipient, orderSig, localSig.driver, driverSig,
     );
     if (blocked || !batchPhotoReady || !canMutate || photoBusy) {
@@ -640,7 +641,7 @@ export default function MobileDeliveryWorkspace({ order, canEdit, onUpdated, onR
       ) : null}
       {canMutate && !canConfirm ? (
         <p className="mop-muted" data-testid="mobile-confirm-block-reason">
-          {confirmDeliveredBlockReason(
+          {confirmDeliveredLoadingBlockReason(order) || confirmDeliveredBlockReason(
             proofs, liveRecipientName, localSig.recipient, orderSig, localSig.driver, driverSig,
           ) || batchPhotoBlockReason || "Konfirmasi terkirim belum memenuhi syarat."}
         </p>

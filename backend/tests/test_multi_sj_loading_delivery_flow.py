@@ -160,10 +160,14 @@ def test_9_loading_gate_is_per_sj():
             {"id": "p4", "shipment_id": "sj-2"},
         ],
     )
+    o["delivery_recipient_signature"]["shipment_id"] = "sj-1"
+    o["delivery_driver_signature"]["shipment_id"] = "sj-1"
     assert confirm_delivery_block_reason(o, o["shipments"][0]) is None
+    o["delivery_recipient_signature"]["shipment_id"] = "sj-2"
+    o["delivery_driver_signature"]["shipment_id"] = "sj-2"
     blocked = confirm_delivery_block_reason(o, o["shipments"][1])
     assert blocked
-    assert "Loading" in blocked or "belum mencukupi" in blocked.lower()
+    assert "Loading" in blocked or "belum mencukupi" in blocked.lower() or "belum lengkap" in blocked.lower()
 
 
 def test_10_ship_sj1_leaves_sj2_unshipped():

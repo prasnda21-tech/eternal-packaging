@@ -8,17 +8,13 @@ from quantity_rules import (
     PRINT_STATUS_DONE,
     PRINT_STATUS_IN_PROGRESS,
     PRINT_STATUS_NOT_STARTED,
-    is_fully_delivered,
-    loading_status_semantic,
     packing_status_semantic,
     print_completed_qty,
     print_status,
-    qty_delivered,
     requires_printing,
-    surat_jalan_created,
-    surat_jalan_status_semantic,
 )
 from services.dashboard_today import is_shipment_today, is_work_today, wib_today
+from services.delivery_loading_gate import dispatch_stage_states
 from services.shipment_status import shipment_status_row, status_percent, status_percent_display
 from workflow_gates import (
     customer_design_approved,
@@ -82,6 +78,13 @@ def _overlay_row_flags(state: str, *, cancelled: bool, hold: bool) -> str:
     return state
 
 
+def status_po_workflow_detail(order: dict) -> tuple:
+    """Return (workflow states, reasons). Reasons are display-only."""
+    wf = status_po_workflow(order)
+    _states, reasons = dispatch_stage_states(order or {})
+    return wf, reasons
+
+
 def status_po_workflow(order: dict) -> Dict[str, str]:
     """Explicit per-stage state from existing order evidence. Never sequential current_stage completion."""
     order = order or {}
@@ -137,7 +140,9 @@ def status_po_workflow(order: dict) -> Dict[str, str]:
     else:
         workflow["helper"] = out("pending")
 
-    if sample_uploaded(order):
+    if not requires_printing(order):
+        workflow["operator"] = out("completed" if penjadwalan_done(order) else "pending")
+    elif sample_uploaded(order):
         workflow["operator"] = out("completed")
     else:
         workflow["operator"] = out("pending")
@@ -172,32 +177,10 @@ def status_po_workflow(order: dict) -> Dict[str, str]:
     else:
         workflow["packing"] = out("unknown")
 
-    sj_created = _surat_jalan_created(order) or surat_jalan_created(order)
-    sj_sem = order.get("surat_jalan_status_semantic") or surat_jalan_status_semantic(order)
-    if sj_created:
-        if sj_sem == "completed":
-            workflow["sj"] = out("completed")
-        else:
-            workflow["sj"] = out("active")
-    else:
-        workflow["sj"] = out("pending")
-
-    load_sem = loading_status_semantic(order)
-    info = order.get("loading_info") or {}
-    has_load_events = bool((info.get("events") or []) if isinstance(info, dict) else [])
-    if order.get("loading_completed") or load_sem == "completed":
-        workflow["loading"] = out("completed")
-    elif load_sem == "partial" or has_load_events or (order.get("loading_confirmations") or []):
-        workflow["loading"] = out("active")
-    else:
-        workflow["loading"] = out("pending")
-
-    if is_fully_delivered(order) or order.get("terkirim_confirmed") or order.get("delivery_status") == "Terkirim":
-        workflow["kirim"] = out("completed")
-    elif qty_delivered(order) > 0 or order.get("delivery_status") == "Sebagian Terkirim":
-        workflow["kirim"] = out("active")
-    else:
-        workflow["kirim"] = out("pending")
+    dispatch, _reasons = dispatch_stage_states(order)
+    workflow["sj"] = out(dispatch["sj"])
+    workflow["loading"] = out(dispatch["loading"])
+    workflow["kirim"] = out(dispatch["kirim"])
 
     return {key: workflow.get(key, "unknown") for key in STATUS_PO_STAGE_KEYS}
 
@@ -216,24 +199,16 @@ def effective_workflow_status(order: dict) -> str:
         return "Cancelled"
     if order.get("hold"):
         return "HOLD"
-    if is_fully_delivered(order) or order.get("terkirim_confirmed") or order.get("delivery_status") == "Terkirim":
-        if qty_delivered(order) > 0:
-            required = order.get("packing_required_total") or order.get("total_quantity") or 0
-            delivered = qty_delivered(order)
-            try:
-                required_n = int(required or 0)
-            except (TypeError, ValueError):
-                required_n = 0
-            if required_n and delivered < required_n:
-                return "Parsial Terkirim"
-        if is_fully_delivered(order) or order.get("terkirim_confirmed") or (
-            order.get("delivery_status") == "Terkirim" and (order.get("current_stage") or 0) >= 14
-        ):
-            return "Terkirim"
-    delivered = qty_delivered(order)
-    if delivered > 0 or order.get("delivery_status") == "Sebagian Terkirim":
+    dispatch, _reasons = dispatch_stage_states(order or {})
+    if dispatch.get("kirim") == "completed":
+        return "Terkirim"
+    if dispatch.get("kirim") == "active":
         return "Parsial Terkirim"
-    if _surat_jalan_created(order):
+    if dispatch.get("loading") == "active":
+        return "Loading"
+    if dispatch.get("loading") == "completed" and dispatch.get("kirim") == "pending":
+        return "Pengiriman"
+    if dispatch.get("sj") == "active":
         semantic = order.get("surat_jalan_status_semantic")
         if semantic == "partial":
             return "SJ parsial"
@@ -372,6 +347,7 @@ def matches_status_po_filters(row: dict, filters: Optional[dict] = None) -> bool
 
 def status_po_row(order: dict) -> dict:
     ship = shipment_status_row(order)
+    workflow, reasons = status_po_workflow_detail(order)
     return {
         "id": order.get("id"),
         "po_number": order.get("po_number") or ship.get("order_number") or "",
@@ -386,7 +362,8 @@ def status_po_row(order: dict) -> dict:
         "current_stage": order.get("current_stage"),
         "cancelled": bool(order.get("cancelled")),
         "hold": bool(order.get("hold")),
-        "workflow": status_po_workflow(order),
+        "workflow": workflow,
+        "workflow_reasons": reasons,
     }
 
 

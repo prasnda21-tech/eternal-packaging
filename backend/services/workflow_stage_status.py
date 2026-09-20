@@ -28,6 +28,10 @@ from quantity_rules import (
     surat_jalan_created,
     surat_jalan_status_semantic,
 )
+from services.delivery_loading_gate import (
+    legacy_fully_delivered_without_loading,
+    po_is_fully_delivered,
+)
 from services.status_po import STAGES
 from workflow_gates import (
     customer_design_approved,
@@ -260,6 +264,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
         created = surat_jalan_created(order) or bool(order.get("surat_jalan_created"))
         sj_status = order.get("surat_jalan_status_semantic") or surat_jalan_status_semantic(order)
         loading_qty = order.get("loading_qty_status") or loading_status_semantic(order)
+        if po_is_fully_delivered(order) and (created or order.get("delivery_status") == "Terkirim"):
+            return {"state": "done", "label": "Selesai"}
         if created:
             if sj_status == "completed" or loading_qty == "completed":
                 return {"state": "done", "label": "Selesai"}
@@ -289,6 +295,8 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
             or bool(order.get("loading_completed"))
             or qty_status in ("completed", "partial")
         )
+        if legacy_fully_delivered_without_loading(order):
+            return {"state": "bypass", "label": "Dilewati (data lama)"}
         if has_confirm:
             if qty_status == "completed" or _loading_completed(order):
                 return {"state": "done", "label": "Selesai"}
@@ -296,16 +304,14 @@ def resolve_stage_chip(idx: int, order: dict, current_stage: int | None = None) 
                 return {"state": "current", "label": "Parsial"}
             return {"state": "current", "label": "Verifikasi Kesesuaian SJ"}
         created = surat_jalan_created(order) or bool(order.get("surat_jalan_created"))
-        if created:
-            return {"state": "current", "label": "Verifikasi Kesesuaian SJ"}
         if has_legacy and not has_confirm:
             return {"state": "done", "label": "Riwayat Loading"}
-        if _terkirim_confirmed(order) or order.get("delivery_status") == "Terkirim":
-            return {"state": "done", "label": "Dilewati"}
+        if created:
+            return {"state": "pending", "label": "Menunggu Loading"}
         return {"state": "pending", "label": "Menunggu Surat Jalan"}
 
     if idx == STAGE_TERKIRIM:
-        if _terkirim_confirmed(order) or order.get("delivery_status") == "Terkirim":
+        if po_is_fully_delivered(order):
             return {"state": "done", "label": "Selesai"}
         if order.get("delivery_status") == "Sebagian Terkirim" or qty_delivered(order) > 0:
             return {"state": "current", "label": "Parsial"}

@@ -2343,13 +2343,14 @@ def _prereq_reasons_for_loading(order: dict) -> list:
 
 
 def _prereq_reasons_for_terkirim(order: dict) -> list:
-    """Gate Surat Jalan → Terkirim (advance / mark_delivered). Loading is not required.
-
-    Bukti pengiriman parsial tidak memakai gate ini — lihat upload_delivery_proof.
-    """
+    """Gate Surat Jalan → Terkirim (advance / mark_delivered). Loading is required for new delivery."""
+    from services.delivery_loading_gate import new_delivery_block_reason
     reasons = []
     if not _surat_jalan_created(order):
         reasons.append("Surat Jalan belum dibuat.")
+    blocked = new_delivery_block_reason(order)
+    if blocked and blocked not in reasons:
+        reasons.append(blocked)
     return reasons
 
 
@@ -5659,7 +5660,24 @@ async def mark_delivered(
     await _require_perm(user, "delivery.update")
 
     def mutate(order: dict):
-        reasons = _prereq_reasons_for_terkirim(order)
+        packed = _qr_qty_packed(order)
+        required = _packing_required_total(order)
+        new_delivered = packed if qty_delivered is None else int(qty_delivered)
+        current = _qr_qty_delivered(order)
+        from services.delivery_loading_gate import (
+            new_delivery_block_reason,
+            po_is_fully_delivered,
+        )
+        # Already Terkirim: do not rewrite historical timestamps/actors/qty.
+        if po_is_fully_delivered(order) and new_delivered <= current:
+            return
+        reasons = []
+        if not _surat_jalan_created(order):
+            reasons.append("Surat Jalan belum dibuat.")
+        # Gate must see the requested qty so partial Loading can cap — not reject — a valid increment.
+        gate = new_delivery_block_reason(order, requested_qty=new_delivered)
+        if gate and gate not in reasons:
+            reasons.append(gate)
         if reasons:
             raise HTTPException(400, {
                 "message": "Belum bisa Terkirim — prerequisite belum lengkap.",
@@ -5669,9 +5687,6 @@ async def mark_delivered(
             blocked = _qr_confirm_delivery_block_reason(order)
             if blocked:
                 raise HTTPException(400, blocked)
-        packed = _qr_qty_packed(order)
-        required = _packing_required_total(order)
-        new_delivered = packed if qty_delivered is None else int(qty_delivered)
         err = _qr_validate_delivery_qty(new_delivered, order)
         if err:
             raise HTTPException(400, err)
@@ -7463,10 +7478,51 @@ STATUS_PO_PROJECTION = {
     "surat_jalan_status_semantic": 1,
     "delivery_note_number": 1,
     "delivery_note_created_at": 1,
+    "delivery_note_created_by": 1,
     "loading_completed": 1,
     "loading_completed_at": 1,
+    "loading_qty_status": 1,
     "loading_info.events.at": 1,
     "loading_info.events.created_at": 1,
+    "loading_info.events.qty": 1,
+    "loading_info.events.line_idx": 1,
+    "loading_info.lines.line_idx": 1,
+    "loading_info.lines.loaded_qty": 1,
+    "loading_confirmations.id": 1,
+    "loading_confirmations.surat_jalan_id": 1,
+    "loading_confirmations.shipment_id": 1,
+    "loading_confirmations.cancelled": 1,
+    "loading_confirmations.deleted": 1,
+    "loading_confirmations.lines.line_idx": 1,
+    "loading_confirmations.lines.qty": 1,
+    "loading_confirmations.lines.quantity": 1,
+    "legacy_loading_allocations.status": 1,
+    "legacy_loading_allocations.shipment_id": 1,
+    "legacy_loading_allocations.surat_jalan_id": 1,
+    "legacy_loading_allocations.lines.line_idx": 1,
+    "legacy_loading_allocations.lines.qty": 1,
+    "legacy_loading_allocations.lines.quantity": 1,
+    "shipments.delivery_status": 1,
+    "shipments.delivered_at": 1,
+    "shipments.sales_delivery_id": 1,
+    "shipments.status": 1,
+    "shipments.sj_status": 1,
+    "shipments.cancelled": 1,
+    "shipments.superseded": 1,
+    "shipments.superseded_by_shipment_id": 1,
+    "shipments.qty_delivered": 1,
+    "shipments.total_qty": 1,
+    "surat_jalan_files.id": 1,
+    "surat_jalan_files.shipment_id": 1,
+    "surat_jalan_files.sj_number": 1,
+    "surat_jalan_files.number": 1,
+    "surat_jalan_files.sales_delivery_id": 1,
+    "surat_jalan_files.status": 1,
+    "surat_jalan_files.lines.line_idx": 1,
+    "surat_jalan_files.lines.qty": 1,
+    "surat_jalan_files.lines.quantity": 1,
+    "delivery_confirmations.shipment_id": 1,
+    "delivery_confirmations.qty": 1,
     "terkirim_confirmed": 1,
     "print_status": 1,
     "print_completed_qty": 1,

@@ -4,7 +4,7 @@ import { resolveOperationalStage, resolveStageState } from "./stageState";
 import { resolveApprovalDesignChip } from "./designEvidence";
 
 describe("SJ / Loading / Terkirim chips", () => {
-  test("operational stage advances legacy PO from SJ to Loading without mutating qty", () => {
+  test("operational stage stays on Surat Jalan until Loading evidence exists", () => {
     const order = {
       current_stage: 12,
       surat_jalan_created: true,
@@ -12,7 +12,7 @@ describe("SJ / Loading / Terkirim chips", () => {
       loading_qty_status: "pending",
       eligible_delivery_qty: 0,
     };
-    expect(resolveOperationalStage(order, order.current_stage)).toBe(13);
+    expect(resolveOperationalStage(order, order.current_stage)).toBe(12);
     expect(order.current_stage).toBe(12);
     expect(order.loading_qty_status).toBe("pending");
   });
@@ -162,13 +162,33 @@ describe("SJ / Loading / Terkirim chips", () => {
     expect(sj.state).not.toBe("done");
   });
 
-  test("Loading is current after Surat Jalan file", () => {
+  test("Loading stays pending after Surat Jalan until Loading evidence exists", () => {
     const loading = resolveStageState(13, {
       surat_jalan_created: true,
       current_stage: 12,
     }, 12);
-    expect(loading.label).toMatch(/verifikasi|kesesuaian|sj/i);
-    expect(loading.state).toBe("current");
+    expect(loading.label).toMatch(/menunggu loading/i);
+    expect(loading.state).toBe("pending");
+  });
+
+  test("fully delivered historical PO without Loading evidence is skipped legacy", () => {
+    const loading = resolveStageState(13, {
+      surat_jalan_created: true,
+      qty_delivered: 1000,
+      packing_required_total: 1000,
+      delivery_status: "Terkirim",
+      current_stage: 14,
+    }, 14);
+    expect(loading.state).toBe("bypass");
+    expect(loading.label).toMatch(/dilewati \(data lama\)/i);
+    const kirim = resolveStageState(14, {
+      surat_jalan_created: true,
+      qty_delivered: 1000,
+      packing_required_total: 1000,
+      delivery_status: "Terkirim",
+      current_stage: 14,
+    }, 14);
+    expect(kirim.state).toBe("done");
   });
 
   test("legacy Loading history stays read-only", () => {
@@ -203,8 +223,8 @@ describe("SJ / Loading / Terkirim chips", () => {
       qty_delivered: 0,
       current_stage: 12,
     }, 12);
-    expect(loading.state).toBe("current");
-    expect(loading.label).toMatch(/verifikasi|kesesuaian|sj/i);
+    expect(loading.state).toBe("pending");
+    expect(loading.label).toMatch(/menunggu loading/i);
 
     const terkirim = resolveStageState(14, {
       surat_jalan_created: true,

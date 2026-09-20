@@ -69,6 +69,12 @@ def test_confirm_still_needs_two_photos_not_role():
         "total_quantity": 1000,
         "packing_info": {"qty_packed": 1000, "lines": [{"line_idx": 0, "packed_qty": 1000}]},
         "shipments": [{"id": "s1", "number": "SJ-1", "lines": [{"line_idx": 0, "qty": 1000}]}],
+        "loading_confirmations": [{
+            "id": "c1",
+            "surat_jalan_id": "s1",
+            "shipment_id": "s1",
+            "lines": [{"line_idx": 0, "qty": 1000}],
+        }],
         "delivery_proofs": [{"id": "p1"}],
         "qty_delivered": 0,
         "delivery_status": "Belum Terkirim",

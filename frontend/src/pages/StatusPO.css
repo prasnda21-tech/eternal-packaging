@@ -18,18 +18,31 @@
   --spo-ink:#0B2D5C;
   --spo-muted:#60738F;
   --spo-surface:#FFFFFF;
-  --spo-ctrl-h:42px;
-  --spo-radius:5px;
+  --spo-ctrl-h:39px;
+  --spo-radius:8px;
   --spo-row-h:40px;
+  --spo-filter-search-bg:#DDF3E8;
+  --spo-filter-search-ink:#123C2F;
+  --spo-filter-customer-bg:#E2ECFA;
+  --spo-filter-customer-ink:#17365D;
+  --spo-filter-status-bg:#EDE7FA;
+  --spo-filter-status-ink:#3B285F;
+  --spo-filter-date-bg:#FBECC8;
+  --spo-filter-date-ink:#513800;
+  --spo-filter-date-border:#E5C878;
+  --spo-filter-reset-bg:#F9DEDE;
+  --spo-filter-reset-ink:#6D2020;
+  --spo-filter-refresh-bg:#DDF1EF;
+  --spo-filter-refresh-ink:#163F3B;
   background:var(--spo-page);
   color:var(--spo-ink);
 }
 .status-po-page.ship-status-page{
   background:var(--spo-page);
 }
-.status-po-page[data-density="longgar"]{
-  --spo-row-h:46px;
-  --spo-ctrl-h:42px;
+.status-po-page[data-density="rapat"]{
+  --spo-row-h:40px;
+  --spo-ctrl-h:39px;
 }
 
 .content.content-workspace:has(.status-po-page) > .status-po-page,
@@ -40,10 +53,10 @@
 .status-po-page.ship-status-page .spo-heading{
   display:flex;
   flex-direction:row;
-  align-items:flex-start;
+  align-items:center;
   justify-content:space-between;
-  gap:16px;
-  margin:0 0 8px;
+  gap:12px;
+  margin:0 0 6px;
 }
 .status-po-page .spo-heading-copy{
   min-width:0;
@@ -64,14 +77,9 @@
   font:700 15px/1.2 "IBM Plex Sans",sans-serif;
   color:var(--spo-muted);
 }
-.status-po-page .spo-heading .spo-sub{
-  margin:3px 0 0;
-  font:13px/1.35 "IBM Plex Sans",sans-serif;
-  color:var(--spo-muted);
-}
 .status-po-page .spo-updated{
-  margin:2px 0 0;
-  font:12.5px/1.35 "IBM Plex Sans",sans-serif;
+  margin:0;
+  font:12.5px/1.2 "IBM Plex Sans",sans-serif;
   color:var(--spo-muted);
   white-space:nowrap;
 }
@@ -91,9 +99,9 @@
 .status-po-page .ship-status-toolbar{
   display:flex;
   align-items:center;
-  gap:8px;
-  flex-wrap:wrap;
-  margin:0 0 8px;
+  gap:9px;
+  flex-wrap:nowrap;
+  margin:0 0 9px;
   padding:0;
   border:0;
   background:transparent;
@@ -113,14 +121,16 @@
   height:var(--spo-ctrl-h);
   max-height:var(--spo-ctrl-h);
   border-radius:var(--spo-radius);
-  background:#fff;
-  border:1px solid var(--spo-border);
-  color:var(--spo-ink);
+  border:1px solid transparent;
   font-size:13px;
+  font-weight:600;
   box-shadow:none;
+  padding:0 13px;
 }
 .content .status-po-page.ship-status-page .ship-status-toolbar .spo-search-wrap input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]){
-  padding:0 12px 0 40px;
+  padding:0 13px 0 34px;
+  background:transparent;
+  border:0;
 }
 .status-po-page .ship-status-toolbar input:focus-visible,
 .status-po-page .ship-status-toolbar select:focus-visible,
@@ -130,70 +140,137 @@
   outline:2px solid var(--spo-blue);
   outline-offset:1px;
 }
+.status-po-page .spo-date-range input:focus,
+.status-po-page .spo-date-range input:focus-visible{
+  outline:none;
+}
 
 .status-po-page .spo-filter-search{
-  flex:1 1 420px;
-  min-width:280px;
+  flex:1 1 220px;
+  min-width:180px;
   max-width:100%;
 }
 .status-po-page .spo-search-wrap{
   position:relative;
   display:block;
   width:100%;
+  height:var(--spo-ctrl-h);
+  border-radius:var(--spo-radius);
+  background:var(--spo-filter-search-bg);
+  color:var(--spo-filter-search-ink);
 }
 .status-po-page .spo-search-wrap svg{
   position:absolute;
   left:12px;
   top:50%;
   transform:translateY(-50%);
-  color:var(--spo-muted);
+  color:var(--spo-filter-search-ink);
   pointer-events:none;
   z-index:1;
+  width:15px;
+  height:15px;
 }
 .status-po-page .spo-search-wrap input{
   width:100%;
-  padding-left:40px;
+  padding-left:34px;
+  background:transparent;
+  color:var(--spo-filter-search-ink);
 }
-.status-po-page .spo-filter-customer{width:150px;max-width:100%}
-.status-po-page .spo-filter-status{width:160px;max-width:100%}
-.status-po-page .spo-filter-density{width:168px;max-width:100%;margin-left:auto}
+.status-po-page .spo-search-wrap input::placeholder{
+  color:#123C2F;
+  opacity:.62;
+}
+.status-po-page .spo-filter-customer{width:138px;max-width:100%;flex:0 0 138px}
+.status-po-page .spo-filter-status{width:148px;max-width:100%;flex:0 0 148px}
 .status-po-page .spo-filter-customer input,
 .status-po-page .spo-filter-status select,
-.status-po-page .spo-filter-density select,
 .status-po-page .spo-filter-date input{width:100%}
+
+.content .status-po-page .spo-filter-customer input,
+.status-po-page .spo-filter-customer input{
+  background:var(--spo-filter-customer-bg);
+  color:var(--spo-filter-customer-ink);
+}
+.status-po-page .spo-filter-customer input::placeholder{
+  color:#17365D;
+  opacity:.62;
+}
+.content .status-po-page .spo-filter-status select,
+.status-po-page .spo-filter-status select{
+  background:var(--spo-filter-status-bg);
+  color:var(--spo-filter-status-ink);
+}
 
 .status-po-page .spo-date-range{
   display:flex;
-  align-items:center;
-  gap:6px;
+  align-items:stretch;
+  gap:0;
   min-height:var(--spo-ctrl-h);
   height:var(--spo-ctrl-h);
-  padding:0 10px;
-  border:1px solid var(--spo-border);
+  padding:0;
+  border:1px solid var(--spo-filter-date-border);
   border-radius:var(--spo-radius);
-  background:#fff;
-  color:var(--spo-muted);
+  background:var(--spo-filter-date-bg);
+  color:var(--spo-filter-date-ink);
+  flex:0 1 auto;
+  overflow:visible;
+  box-sizing:border-box;
+}
+.status-po-page .spo-date-range svg{
+  width:15px;
+  height:15px;
+  color:var(--spo-filter-date-ink);
+  flex:0 0 auto;
+  align-self:center;
+  margin:0 10px;
 }
 .status-po-page .spo-date-range .spo-filter-date{
   width:auto;
+  height:100%;
+  margin:0;
+  display:flex;
+  flex-direction:row;
+  align-items:center;
+  background:transparent;
+  border:0;
+  border-radius:0;
+  box-shadow:none;
+  border-left:1px solid rgba(81,56,0,.18);
 }
 .content .status-po-page.ship-status-page .spo-date-range input[type="text"],
 .content .status-po-page .spo-date-range input[type="text"],
 .status-po-page .spo-date-range input[type="text"]{
-  height:36px;
-  min-height:36px;
-  max-height:36px;
+  height:100%;
+  min-height:100%;
+  max-height:100%;
   border:0;
-  padding:0 2px;
-  width:108px;
+  border-radius:0;
+  padding:0 10px;
+  width:104px;
+  min-width:104px;
+  max-width:104px;
   background:transparent;
   box-shadow:none;
-  color:var(--spo-ink);
+  color:var(--spo-filter-date-ink);
   font-variant-numeric:tabular-nums;
+  font-weight:600;
+}
+.status-po-page .spo-date-range input::placeholder{
+  color:#513800;
+  opacity:.68;
 }
 .status-po-page .spo-date-sep{
-  color:var(--spo-muted);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  align-self:stretch;
+  min-width:18px;
+  padding:0 6px;
+  color:var(--spo-filter-date-ink);
   font-size:13px;
+  font-weight:700;
+  background:transparent;
+  border-left:1px solid rgba(81,56,0,.18);
 }
 
 .status-po-page .ship-reset-btn,
@@ -201,25 +278,43 @@
   min-height:var(--spo-ctrl-h);
   height:var(--spo-ctrl-h);
   border-radius:var(--spo-radius);
-  border:1px solid var(--spo-border);
-  background:#fff;
-  color:var(--spo-ink);
+  border:1px solid transparent;
   box-shadow:none;
+  flex:0 0 auto;
 }
 .status-po-page .ship-reset-btn{
   display:inline-flex;
   align-items:center;
   gap:6px;
-  padding:0 12px;
-  font-weight:600;
+  padding:0 13px;
+  font-weight:700;
   font-size:13px;
+  background:var(--spo-filter-reset-bg);
+  color:var(--spo-filter-reset-ink);
 }
+.status-po-page .ship-reset-btn svg{width:14px;height:14px}
 .status-po-page .ship-icon-btn{
-  width:var(--spo-ctrl-h);
-  padding:0;
+  width:auto;
+  padding:0 13px;
   display:inline-flex;
   align-items:center;
   justify-content:center;
+  gap:6px;
+  font-weight:700;
+  font-size:13px;
+  background:var(--spo-filter-refresh-bg);
+  color:var(--spo-filter-refresh-ink);
+}
+.status-po-page .ship-icon-btn svg{width:14px;height:14px}
+.status-po-page .spo-filter-search:hover .spo-search-wrap{filter:brightness(.97)}
+.status-po-page .spo-filter-customer input:hover,
+.status-po-page .spo-filter-status select:hover,
+.status-po-page .spo-date-range:hover,
+.status-po-page .ship-reset-btn:hover,
+.status-po-page .ship-icon-btn:hover:not(:disabled){filter:brightness(.97)}
+.status-po-page .ship-icon-btn:disabled{
+  opacity:.55;
+  cursor:not-allowed;
 }
 
 .status-po-page .ship-status-chrome > .muted.small{
@@ -304,8 +399,8 @@
   background:#E7F1FF;
   box-shadow:inset 3px 0 0 var(--spo-blue);
 }
-.status-po-page[data-density="longgar"] .spo-table tbody td{
-  height:46px;
+.status-po-page[data-density="rapat"] .spo-table tbody td{
+  height:var(--spo-row-h);
 }
 
 .status-po-page .spo-po-link{
@@ -429,7 +524,8 @@
 }
 .status-po-page .spo-seg.is-done{background:var(--spo-green)}
 .status-po-page .spo-seg.is-active{background:var(--spo-blue)}
-.status-po-page .spo-seg.is-process{background:var(--spo-orange)}
+.status-po-page .spo-seg.is-process,
+.status-po-page .spo-seg.is-skipped{background:var(--spo-orange)}
 .status-po-page .spo-seg.is-problem{background:var(--spo-red)}
 .status-po-page .spo-seg.is-pending{background:var(--spo-empty)}
 
@@ -521,14 +617,21 @@
 }
 .status-po-page .spo-legend-dot.is-done{background:var(--spo-green)}
 .status-po-page .spo-legend-dot.is-active{background:var(--spo-blue)}
-.status-po-page .spo-legend-dot.is-process{background:var(--spo-orange)}
+.status-po-page .spo-legend-dot.is-process,
+.status-po-page .spo-legend-dot.is-skipped{background:var(--spo-orange)}
 .status-po-page .spo-legend-dot.is-pending{background:var(--spo-empty)}
 .status-po-page .spo-legend-dot.is-problem{background:var(--spo-red)}
 
 @media (max-width: 1100px){
-  .status-po-page .spo-filter-density{margin-left:0}
   .status-po-page .spo-heading{
     flex-wrap:wrap;
+  }
+  .status-po-page .ship-status-toolbar{
+    flex-wrap:wrap;
+  }
+  .status-po-page .spo-filter-customer,
+  .status-po-page .spo-filter-status{
+    flex:1 1 140px;
   }
 }
 @media (max-width: 900px){
@@ -539,9 +642,81 @@
     box-shadow:none !important;
   }
   .status-po-page .spo-date-range{
-    width:100%;
+    flex:1 1 auto;
   }
   .status-po-page .spo-filter-search{
-    flex-basis:100%;
+    flex:1 1 100%;
   }
+}
+
+/* Reclaim Status PO filter colors from shared ops-list toolbar tokens. */
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-search-wrap{
+  background:var(--spo-filter-search-bg);
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-search-wrap input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-search-wrap input:hover:not(:disabled):not(:focus-visible),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-search-wrap input:focus-visible{
+  background:transparent;
+  color:var(--spo-filter-search-ink);
+  border-color:transparent;
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-filter-customer input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-filter-customer input:hover:not(:disabled):not(:focus-visible),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-filter-customer input:focus-visible{
+  background:var(--spo-filter-customer-bg);
+  color:var(--spo-filter-customer-ink);
+  border-color:transparent;
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-filter-status select,
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-filter-status select:hover:not(:disabled):not(:focus-visible),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-filter-status select:focus-visible{
+  background:var(--spo-filter-status-bg);
+  color:var(--spo-filter-status-ink);
+  border-color:transparent;
+}
+.content .status-po-page.ship-status-page .spo-date-range,
+.content .status-po-page.ship-status-page .spo-date-range:hover,
+.content .status-po-page.ship-status-page .spo-date-range:focus-within{
+  background:var(--spo-filter-date-bg);
+  color:var(--spo-filter-date-ink);
+  border-color:var(--spo-filter-date-border);
+}
+.content .status-po-page.ship-status-page .spo-date-range:focus-within{
+  outline:2px solid var(--spo-blue);
+  outline-offset:1px;
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-date-range input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-date-range input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]):hover:not(:disabled):not(:focus-visible),
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-date-range input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]):focus,
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-date-range input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]):focus-visible{
+  height:100%;
+  min-height:100%;
+  max-height:100%;
+  min-width:104px;
+  width:104px;
+  padding:0 10px;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  color:var(--spo-filter-date-ink);
+  box-shadow:none;
+  outline:none;
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .spo-date-range input::placeholder{
+  color:var(--spo-filter-date-ink);
+  opacity:.68;
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .ship-reset-btn,
+.content .status-po-page.ship-status-page .ship-status-toolbar .ship-reset-btn:hover:not(:disabled){
+  background:var(--spo-filter-reset-bg);
+  color:var(--spo-filter-reset-ink);
+  border-color:transparent;
+}
+.content .status-po-page.ship-status-page .ship-status-toolbar .ship-icon-btn,
+.content .status-po-page.ship-status-page .ship-status-toolbar .ship-icon-btn:hover:not(:disabled){
+  width:auto;
+  min-width:var(--spo-ctrl-h);
+  background:var(--spo-filter-refresh-bg);
+  color:var(--spo-filter-refresh-ink);
+  border-color:transparent;
 }

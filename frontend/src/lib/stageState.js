@@ -132,6 +132,24 @@ function loadingCompleted(order) {
 function terkirimConfirmed(order) {
   return !!(order?.terkirim_confirmed);
 }
+function poFullyDelivered(order) {
+  const required = Number(order?.packing_required_total || order?.total_quantity || order?.quantity || 0);
+  const delivered = Number(order?.qty_delivered);
+  if (Number.isFinite(delivered) && String(order?.qty_delivered ?? "").trim() !== "" && required > 0) {
+    return delivered >= required;
+  }
+  return order?.delivery_status === "Terkirim" && Number(order?.current_stage || 0) >= 14;
+}
+function hasLoadingEvidence(order) {
+  const confs = (Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [])
+    .filter((c) => c && !c.cancelled && !c.deleted);
+  if (confs.some((c) => (c.lines || []).some((ln) => Number(ln?.qty || ln?.quantity || 0) > 0))) return true;
+  if (Number(order?.loading_info?.lines?.length || 0) > 0) return true;
+  if (Number(order?.loading_info?.events?.length || 0) > 0) return true;
+  if (order?.loading_completed) return true;
+  const qtyStatus = String(order?.loading_qty_status || "");
+  return qtyStatus === "completed" || qtyStatus === "partial";
+}
 
 export function resolveStageState(idx, order, currentStage) {
   const ready = getWorkflowReady(order);
@@ -229,6 +247,9 @@ export function resolveStageState(idx, order, currentStage) {
   }
   if (idx === STAGE_SURAT_JALAN) {
     const sjStatus = order?.surat_jalan_status_semantic;
+    if (poFullyDelivered(order) && (suratJalanCreated(order) || order?.delivery_status === "Terkirim")) {
+      return { state: "done", label: "Selesai" };
+    }
     if (suratJalanCreated(order)) {
       const loadingDone = order?.loading_qty_status === "completed";
       if (sjStatus === "completed" || loadingDone) {
@@ -263,6 +284,9 @@ export function resolveStageState(idx, order, currentStage) {
       || !!(order?.loading_completed)
       || qtyStatus === "completed"
       || qtyStatus === "partial";
+    if (poFullyDelivered(order) && !hasLoadingEvidence(order)) {
+      return { state: "bypass", label: "Dilewati (data lama)" };
+    }
     if (hasConfirm) {
       if (qtyStatus === "completed" || loadingCompleted(order)) {
         return { state: "done", label: "Loading Selesai" };
@@ -270,19 +294,18 @@ export function resolveStageState(idx, order, currentStage) {
       if (qtyStatus === "partial") return { state: "current", label: "Siap Diverifikasi" };
       return { state: "current", label: "Verifikasi Kesesuaian SJ" };
     }
-    if (suratJalanCreated(order)) {
-      return { state: "current", label: "Verifikasi Kesesuaian SJ" };
-    }
     if (hasLegacy) {
       return { state: "done", label: "Riwayat Loading" };
     }
-    if (terkirimConfirmed(order) || order?.delivery_status === "Terkirim") {
-      return { state: "done", label: "Dilewati" };
+    if (suratJalanCreated(order)) {
+      return { state: "pending", label: "Menunggu Loading" };
     }
     return { state: "pending", label: "Menunggu Surat Jalan" };
   }
   if (idx === STAGE_TERKIRIM) {
-    if (terkirimConfirmed(order) || order?.delivery_status === "Terkirim") return { state: "done", label: "Selesai" };
+    if (poFullyDelivered(order)) {
+      return { state: "done", label: "Selesai" };
+    }
     if (order?.delivery_status === "Sebagian Terkirim" || Number(order?.qty_delivered || 0) > 0) {
       return { state: "current", label: "Parsial" };
     }

@@ -78,7 +78,6 @@ export default function StatusPO() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState("");
   const [updatedAt, setUpdatedAt] = useState(null);
-  const [density, setDensity] = useState("rapat");
   const inFlight = useRef(false);
   const loadInFlight = useRef(false);
   const headerRef = useRef(null);
@@ -205,7 +204,7 @@ export default function StatusPO() {
   const updatedLabel = formatStatusPoUpdated(updatedAt);
 
   return (
-    <div className="ship-status-page status-po-page" data-testid="status-po-page" data-density={density}>
+    <div className="ship-status-page status-po-page" data-testid="status-po-page" data-density="rapat">
       <div className="ship-status-chrome">
         <header className="ship-status-heading spo-heading">
           <div className="spo-heading-copy">
@@ -217,11 +216,6 @@ export default function StatusPO() {
                 </span>
               )}
             </div>
-            {!deliveryTodayPage && (
-              <p className="spo-sub" data-testid="status-po-subtitle">
-                Pantau status pesanan dari semua cabang secara real-time
-              </p>
-            )}
           </div>
           <p className="spo-updated muted small" data-testid="status-po-updated">
             {updatedLabel ? `Diperbarui ${updatedLabel}` : (busy ? "Memuat…" : "\u00a0")}
@@ -298,21 +292,10 @@ export default function StatusPO() {
             <RefreshCw size={14} aria-hidden="true" />
             Reset
           </button>
-          <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" aria-label="Muat ulang" data-testid="status-po-refresh" disabled={busy}>
+          <button type="button" className="ship-icon-btn" onClick={load} title="Muat ulang" aria-label="Refresh" data-testid="status-po-refresh" disabled={busy}>
             <RefreshCw size={14} className={busy ? "spin" : ""} aria-hidden="true" />
+            <span>Refresh</span>
           </button>
-          <label className="ship-filter-field spo-filter-density">
-            <span className="spo-sr-only">Tampilan</span>
-            <select
-              value={density}
-              onChange={(e) => setDensity(e.target.value)}
-              aria-label="Tampilan kerapatan tabel"
-              data-testid="status-po-density"
-            >
-              <option value="rapat">Tampilan: Rapat</option>
-              <option value="longgar">Tampilan: Longgar</option>
-            </select>
-          </label>
         </div>
         {canSelect && (
           <p className="muted small spo-sr-only" data-testid="status-po-select-scope">
@@ -365,7 +348,7 @@ export default function StatusPO() {
             headerRef={headerRef}
             user={user}
             location={location}
-            density={density}
+            density="rapat"
           />
         ) : null}
         {busy && !visible.length ? (
@@ -377,7 +360,7 @@ export default function StatusPO() {
         <div className="spo-legend" data-testid="status-po-legend">
           <span className="spo-legend-item"><span className="spo-legend-dot is-done" aria-hidden="true" /> Selesai</span>
           <span className="spo-legend-item"><span className="spo-legend-dot is-active" aria-hidden="true" /> Tahap Aktif</span>
-          <span className="spo-legend-item"><span className="spo-legend-dot is-process" aria-hidden="true" /> Dalam Proses</span>
+          <span className="spo-legend-item"><span className="spo-legend-dot is-skipped" aria-hidden="true" /> Dilewati (data lama)</span>
           <span className="spo-legend-item"><span className="spo-legend-dot is-pending" aria-hidden="true" /> Belum Dimulai</span>
           <span className="spo-legend-item"><span className="spo-legend-dot is-problem" aria-hidden="true" /> Tertahan / Bermasalah</span>
         </div>
