@@ -13,12 +13,22 @@ import PurchaseDocuments from "./PurchaseDocuments";
 import PurchasePaymentAjukanModal from "./PurchasePaymentAjukanModal";
 import "./purchasePages.css";
 
+function accountingLabel(status) {
+  const raw = String(status || "not_posted").toLowerCase();
+  if (raw === "posted") return "Posted";
+  if (raw === "reversed") return "Reversed";
+  return "Not Posted";
+}
+
 export default function FakturPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_invoices.create");
+  const canPostAccounting = hasPerm("purchase_accounting.post");
+  const canReverseAccounting = hasPerm("purchase_accounting.reverse");
   const queryPoId = searchParams.get("purchase_order_id") || "";
   const queryReceiptId = searchParams.get("receipt_id") || "";
+  const queryInvoiceId = searchParams.get("id") || searchParams.get("invoice_id") || "";
   const wantCreate = searchParams.get("action") === "create" || Boolean(queryPoId) || Boolean(queryReceiptId);
   const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
   const [rows, setRows] = useState([]);
@@ -32,6 +42,11 @@ export default function FakturPembelian() {
   const [cancelErr, setCancelErr] = useState("");
   const [ajukanOpen, setAjukanOpen] = useState(false);
   const [lastChatRoomId, setLastChatRoomId] = useState("");
+  const [acctBusy, setAcctBusy] = useState(false);
+  const [acctErr, setAcctErr] = useState("");
+  const [postConfirm, setPostConfirm] = useState(false);
+  const [reverseConfirm, setReverseConfirm] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
 
   const [invoiceSource, setInvoiceSource] = useState(queryPoId && !queryReceiptId ? "purchase_order" : "receipt");
   const [eligiblePos, setEligiblePos] = useState([]);
@@ -51,6 +66,12 @@ export default function FakturPembelian() {
     finally { setLoading(false); }
   }, [q]);
   useEffect(() => { if (view === "list") load(); }, [load, view]);
+
+  useEffect(() => {
+    if (!queryInvoiceId || wantCreate) return;
+    openDetail(queryInvoiceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryInvoiceId]);
 
   const loadPoPreview = useCallback(async (id) => {
     if (!id) { setPreview(null); return; }
@@ -154,6 +175,44 @@ export default function FakturPembelian() {
   const openCancel = (row) => {
     setCancelErr("");
     setCancelTarget(row);
+  };
+
+  const confirmPostAccounting = async () => {
+    if (!detail || acctBusy) return;
+    setAcctBusy(true);
+    setAcctErr("");
+    try {
+      const res = await api.postPurchaseInvoiceAccounting(detail.id);
+      setDetail(res.invoice);
+      setPostConfirm(false);
+      setOk(res.message || "Faktur diposting ke accounting.");
+    } catch (ex) {
+      setAcctErr(errDetail(ex));
+    } finally {
+      setAcctBusy(false);
+    }
+  };
+
+  const confirmReverseAccounting = async () => {
+    if (!detail || acctBusy) return;
+    if (String(reverseReason || "").trim().length < 3) {
+      setAcctErr("Alasan reversal wajib diisi minimal 3 karakter.");
+      return;
+    }
+    setAcctBusy(true);
+    setAcctErr("");
+    try {
+      const res = await api.reversePurchaseInvoiceAccounting(detail.id, reverseReason);
+      setDetail(res.invoice);
+      setReverseConfirm(false);
+      setReverseReason("");
+      setOk(res.message || "Faktur di-reverse dari accounting.");
+      await load();
+    } catch (ex) {
+      setAcctErr(errDetail(ex));
+    } finally {
+      setAcctBusy(false);
+    }
   };
 
   const confirmCancel = async () => {
@@ -481,6 +540,53 @@ export default function FakturPembelian() {
             </div>
           </div>
 
+          <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-accounting-section">
+            <div>
+              <span className="label">Accounting Status</span>
+              <span className="value" data-testid="invoice-detail-accounting-status">{accountingLabel(detail.accounting_status)}</span>
+            </div>
+            {detail.accounting_journal_id ? (
+              <div>
+                <span className="label">Journal</span>
+                <span className="value mono" data-testid="invoice-detail-accounting-journal">{detail.accounting_journal_id}</span>
+              </div>
+            ) : null}
+            {detail.accounting_ready === false && String(detail.accounting_status || "not_posted") === "not_posted" ? (
+              <div>
+                <span className="label">Kesiapan</span>
+                <span className="value muted" data-testid="invoice-accounting-not-ready">
+                  Pengaturan Akuntansi Pembelian belum siap. Post Accounting dinonaktifkan.
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <div className="purchase-detail-actions" style={{ marginTop: 8 }}>
+            {canPostAccounting && String(detail.accounting_status || "not_posted") === "not_posted" && (
+              <button
+                type="button"
+                className="primary"
+                data-testid="btn-post-invoice-accounting"
+                disabled={acctBusy || detail.can_post_accounting === false}
+                title={detail.can_post_accounting === false ? (detail.accounting_ready === false ? "Pengaturan Akuntansi Pembelian belum dikonfigurasi." : "") : undefined}
+                onClick={() => { setAcctErr(""); setPostConfirm(true); }}
+              >
+                Post Accounting
+              </button>
+            )}
+            {canReverseAccounting && String(detail.accounting_status || "") === "posted" && (
+              <button
+                type="button"
+                className="ghost"
+                data-testid="btn-reverse-invoice-accounting"
+                disabled={acctBusy || detail.can_reverse_accounting === false}
+                title={detail.can_reverse_accounting === false ? "Faktur tidak dapat di-reverse karena masih memiliki pembayaran aktif." : undefined}
+                onClick={() => { setAcctErr(""); setReverseReason(""); setReverseConfirm(true); }}
+              >
+                Reverse Accounting
+              </button>
+            )}
+          </div>
+
           {(detail.payments || []).length > 0 && (
             <div className="purchase-table-wrap" style={{ marginTop: 12 }} data-testid="invoice-payment-history">
               <table className="prod-table">
@@ -570,6 +676,69 @@ export default function FakturPembelian() {
           }
         }}
       />
+
+      {postConfirm && detail && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="invoice-post-accounting-modal">
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Post Accounting?</h3>
+              <button type="button" className="ghost sm" disabled={acctBusy} onClick={() => setPostConfirm(false)}>×</button>
+            </div>
+            <p className="purchase-modal-helper">Jurnal: Dr Purchase Clearing / GRNI, Cr Hutang Usaha. Tanggal jurnal = tanggal faktur.</p>
+            <dl className="purchase-detail-meta">
+              <div>
+                <span className="label">No Faktur</span>
+                <span className="value mono">{detail.invoice_number}</span>
+              </div>
+              <div>
+                <span className="label">Grand Total</span>
+                <span className="value">{formatRupiah(detail.grand_total)}</span>
+              </div>
+            </dl>
+            {acctErr ? <p className="purchase-inline-err" data-testid="invoice-accounting-error">{acctErr}</p> : null}
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" disabled={acctBusy} onClick={() => setPostConfirm(false)}>Batal</button>
+              <button type="button" className="primary" data-testid="btn-confirm-post-invoice-accounting" disabled={acctBusy} onClick={confirmPostAccounting}>
+                {acctBusy ? "Memproses…" : "Post Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reverseConfirm && detail && (
+        <div className="modal" role="dialog" aria-modal="true" data-testid="invoice-reverse-accounting-modal">
+          <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Reverse Accounting?</h3>
+              <button type="button" className="ghost sm" disabled={acctBusy} onClick={() => { setReverseConfirm(false); setAcctErr(""); }}>×</button>
+            </div>
+            <p className="purchase-modal-helper">Reversal membalik jurnal faktur dan membatalkan faktur secara operasional. Nomor dokumen tetap tersimpan.</p>
+            <label className="label">Alasan reversal</label>
+            <textarea
+              data-testid="invoice-reverse-reason-input"
+              value={reverseReason}
+              onChange={(e) => setReverseReason(e.target.value)}
+              rows={3}
+              placeholder="Minimal 3 karakter"
+              style={{ width: "100%", margin: "6px 0 12px" }}
+            />
+            {acctErr ? <p className="purchase-inline-err" data-testid="invoice-reverse-accounting-error">{acctErr}</p> : null}
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" disabled={acctBusy} onClick={() => { setReverseConfirm(false); setAcctErr(""); }}>Batal</button>
+              <button
+                type="button"
+                className="primary"
+                data-testid="btn-confirm-reverse-invoice-accounting"
+                disabled={acctBusy || String(reverseReason || "").trim().length < 3}
+                onClick={confirmReverseAccounting}
+              >
+                {acctBusy ? "Memproses…" : "Reverse Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

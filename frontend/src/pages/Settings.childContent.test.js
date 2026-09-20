@@ -51,6 +51,7 @@ function stubApi() {
     hrPayrollSettings: resolved({ settings: hrSettings }),
     hrPayrollComponents: resolved({ components: [] }),
     salesAccountingSettings: resolved({ settings: {} }),
+    purchaseAccountingSettings: resolved({ settings: {} }),
     payrollAccountingSettings: resolved({ settings: {} }),
     ledgerAccounts: resolved({ items: [] }),
     hppSettings: resolved({ settings: { method: "FIFO", recognition_point: "goods_receipt" } }),

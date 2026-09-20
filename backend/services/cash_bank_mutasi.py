@@ -25,6 +25,8 @@ SOURCE_LABELS = {
     SOURCE_PAYMENT: "Pembayaran",
     SOURCE_TRANSFER: "Transfer",
     SOURCE_REVERSAL: "Reversal",
+    "purchase_payment": "Pembayaran Pembelian",
+    "purchase_payment_reversal": "Reversal Pembayaran Pembelian",
 }
 
 SOURCE_ROUTES = {

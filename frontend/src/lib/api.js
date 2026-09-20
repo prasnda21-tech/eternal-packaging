@@ -257,6 +257,10 @@ export const api = {
   accountsReceivableAging: (params = {}) => client.get(`/ledger/accounts-receivable/aging`, { params }).then((r) => r.data),
   accountsReceivableCustomers: (params = {}) => client.get(`/ledger/accounts-receivable/customers`, { params }).then((r) => r.data),
   accountsReceivableStatement: (params = {}) => client.get(`/ledger/accounts-receivable/statement`, { params }).then((r) => r.data),
+  accountsPayableSummary: (params = {}) => client.get(`/ledger/accounts-payable/summary`, { params }).then((r) => r.data),
+  accountsPayableAging: (params = {}) => client.get(`/ledger/accounts-payable/aging`, { params }).then((r) => r.data),
+  accountsPayableSuppliers: (params = {}) => client.get(`/ledger/accounts-payable/suppliers`, { params }).then((r) => r.data),
+  accountsPayableStatement: (params = {}) => client.get(`/ledger/accounts-payable/statement`, { params }).then((r) => r.data),
   trialBalance: (params = {}) => client.get(`/ledger/trial-balance`, { params }).then((r) => r.data),
   profitLoss: (params = {}) => client.get(`/ledger/profit-loss`, { params }).then((r) => r.data),
   balanceSheet: (params = {}) => client.get(`/ledger/balance-sheet`, { params }).then((r) => r.data),
@@ -358,8 +362,18 @@ export const api = {
   purchaseInvoiceFromReceiptPreview: (receiptId) => client.get(`/purchase-invoices/from-receipt/${encodeURIComponent(receiptId)}/preview`).then((r) => r.data),
   cancelPurchaseInvoice: (id, reason = "") =>
     client.post(`/purchase-invoices/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  postPurchaseInvoiceAccounting: (id) =>
+    client.post(`/purchase-invoices/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
+  reversePurchaseInvoiceAccounting: (id, reason) =>
+    client.post(`/purchase-invoices/${encodeURIComponent(id)}/reverse-accounting`, { reason }).then((r) => r.data),
   cancelPurchasePayment: (id, reason = "") =>
     client.post(`/purchase-payments/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  listPurchasePaymentCashBankOptions: () =>
+    client.get(`/purchase-payments/cash-bank-options`).then((r) => r.data),
+  postPurchasePaymentAccounting: (id, payload = {}) =>
+    client.post(`/purchase-payments/${encodeURIComponent(id)}/post-accounting`, payload).then((r) => r.data),
+  reversePurchasePaymentAccounting: (id, reason) =>
+    client.post(`/purchase-payments/${encodeURIComponent(id)}/reverse-accounting`, { reason }).then((r) => r.data),
   listPurchasePaymentSubmitTargets: (params = {}) =>
     client.get(`/purchase-payments/submit-targets`, { params }).then((r) => r.data),
   submitPurchasePayment: (id, payload) =>
@@ -399,6 +413,8 @@ export const api = {
   updateCustomerDesignApprovalNotificationSettings: (payload) => client.put(`/settings/notifications/customer-design-approval`, payload).then((r) => r.data),
   salesAccountingSettings: () => client.get(`/settings/sales-accounting`).then((r) => r.data),
   updateSalesAccountingSettings: (payload) => client.put(`/settings/sales-accounting`, payload).then((r) => r.data),
+  purchaseAccountingSettings: () => client.get(`/settings/purchase-accounting`).then((r) => r.data),
+  updatePurchaseAccountingSettings: (payload) => client.put(`/settings/purchase-accounting`, payload).then((r) => r.data),
   payrollAccountingSettings: () => client.get(`/settings/payroll-accounting`).then((r) => r.data),
   updatePayrollAccountingSettings: (payload) => client.put(`/settings/payroll-accounting`, payload).then((r) => r.data),
   hrPayrollAccountingReadiness: (id) => client.get(`/hr-payroll/periods/${encodeURIComponent(id)}/accounting-readiness`).then((r) => r.data),

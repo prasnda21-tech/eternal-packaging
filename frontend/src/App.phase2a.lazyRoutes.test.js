@@ -71,6 +71,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
       "PesananPembelian",
       "FakturPembelian",
       "PembayaranPembelian",
+      "HutangUsaha",
       "SalesActivityPage",
       "SalesActivityOutletDetail",
       "PoWorkView",

@@ -23,6 +23,7 @@ describe("Settings category card navigation", () => {
       "operator-wage",
       "hpp",
       "sales-accounting",
+      "purchase-accounting",
       "payroll-accounting",
       "customer-pricing",
       "customer-approval",
@@ -63,6 +64,7 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/"route-optimizer":\s*canViewRouteOptimizer/);
     expect(settingsSrc).toMatch(/hpp:\s*canViewHpp/);
     expect(settingsSrc).toMatch(/"sales-accounting":\s*canViewSalesAccounting/);
+    expect(settingsSrc).toMatch(/"purchase-accounting":\s*canViewPurchaseAccounting/);
     expect(settingsSrc).toMatch(/"payroll-accounting":\s*canViewPayrollAccounting/);
     expect(settingsSrc).toMatch(/"customer-pricing":\s*canViewCustomerPricing/);
   });

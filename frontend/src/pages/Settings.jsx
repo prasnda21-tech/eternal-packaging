@@ -5,6 +5,7 @@ import {
   Save, X, RefreshCw, Search, AlertCircle, Info, Lock, Check, Filter, KeyRound, ClipboardCheck, Truck, Bell,
   Target as TargetIcon, PanelLeft, ClipboardList, Coins, Scale, IdCard, Wallet, Route, Tags,
   BookOpen,
+  CreditCard,
   Package,
   Settings as SettingsIcon,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import OperatorWageSettings from "./OperatorWageSettings";
 import HppSettings from "./HppSettings";
 import PhysicalStockSettings from "./PhysicalStockSettings";
 import SalesAccountingSettings from "./SalesAccountingSettings";
+import PurchaseAccountingSettings from "./PurchaseAccountingSettings";
 import PayrollAccountingSettings from "./PayrollAccountingSettings";
 import CustomerPricingSettings from "./CustomerPricingSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
@@ -2134,6 +2136,7 @@ const SETTINGS_NAV_ITEMS = [
   { id: "hpp", label: "Pengaturan HPP", description: "Biaya & harga pokok", Icon: Scale, tone: "amber", testid: "settings-tab-hpp" },
   { id: "physical-stock", label: "Stok Fisik", description: "Otomatisasi & trigger stok", Icon: Package, tone: "emerald", testid: "settings-tab-physical-stock" },
   { id: "sales-accounting", label: "Akuntansi Penjualan", description: "Pemetaan akun penjualan", Icon: BookOpen, tone: "violet", testid: "settings-tab-sales-accounting" },
+  { id: "purchase-accounting", label: "Akuntansi Pembelian", description: "Pemetaan akun pembelian", Icon: CreditCard, tone: "rose", testid: "settings-tab-purchase-accounting" },
   { id: "payroll-accounting", label: "Akuntansi Payroll", description: "Pemetaan akun penggajian", Icon: Wallet, tone: "indigo", testid: "settings-tab-payroll-accounting" },
   { id: "customer-pricing", label: "Harga Customer", description: "Harga publik per produk", Icon: Tags, tone: "emerald", testid: "settings-tab-customer-pricing" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
@@ -2222,6 +2225,8 @@ export default function Settings() {
   const canEditPhysicalStock = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canViewSalesAccounting = hasPerm("settings.sales_accounting.view") || hasPerm("settings.sales_accounting.manage") || hasPerm("permissions.manage");
   const canEditSalesAccounting = hasPerm("settings.sales_accounting.manage");
+  const canViewPurchaseAccounting = hasPerm("settings.purchase_accounting.view") || hasPerm("settings.purchase_accounting.manage") || hasPerm("permissions.manage");
+  const canEditPurchaseAccounting = hasPerm("settings.purchase_accounting.manage");
   const canViewPayrollAccounting = hasPerm("payroll_accounting.view") || hasPerm("payroll_accounting.manage") || hasPerm("permissions.manage");
   const canEditPayrollAccounting = hasPerm("payroll_accounting.manage");
   const canViewCustomerPricing = hasPerm("settings.customer_pricing.view") || hasPerm("settings.customer_pricing.manage") || hasPerm("settings.customer_pricing.publish") || hasPerm("permissions.manage");
@@ -2243,6 +2248,7 @@ export default function Settings() {
     hpp: canViewHpp,
     "physical-stock": canViewPhysicalStock,
     "sales-accounting": canViewSalesAccounting,
+    "purchase-accounting": canViewPurchaseAccounting,
     "payroll-accounting": canViewPayrollAccounting,
     "customer-pricing": canViewCustomerPricing,
     "customer-approval": canViewCaSettings,
@@ -2359,6 +2365,9 @@ export default function Settings() {
       )}
       {tab === "sales-accounting" && canViewSalesAccounting && (
         <SalesAccountingSettings notify={notify} canEdit={canEditSalesAccounting}/>
+      )}
+      {tab === "purchase-accounting" && canViewPurchaseAccounting && (
+        <PurchaseAccountingSettings notify={notify} canEdit={canEditPurchaseAccounting}/>
       )}
       {tab === "payroll-accounting" && canViewPayrollAccounting && (
         <PayrollAccountingSettings notify={notify} canEdit={canEditPayrollAccounting}/>

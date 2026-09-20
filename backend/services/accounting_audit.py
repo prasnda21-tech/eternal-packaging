@@ -25,11 +25,13 @@ EVENT_COA_TYPE_CHANGED = "coa_type_changed"
 EVENT_COA_DELETED = "coa_deleted"
 EVENT_SALES_SETTINGS_CHANGED = "sales_accounting_settings_changed"
 EVENT_PAYROLL_SETTINGS_CHANGED = "payroll_accounting_settings_changed"
+EVENT_PURCHASE_SETTINGS_CHANGED = "purchase_accounting_settings_changed"
 
 ENTITY_PERIOD = "accounting_period"
 ENTITY_COA = "ledger_account"
 ENTITY_SALES_SETTINGS = "sales_accounting_settings"
 ENTITY_PAYROLL_SETTINGS = "payroll_accounting_settings"
+ENTITY_PURCHASE_SETTINGS = "purchase_accounting_settings"
 
 
 async def ensure_indexes(db) -> None:

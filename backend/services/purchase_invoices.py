@@ -13,6 +13,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from pymongo import ReturnDocument
 
 from services.purchase_common import (
     PREFIX_PURCHASE_INVOICE,
@@ -404,7 +405,9 @@ async def list_purchase_invoices(
         if with_outstanding and float(enriched.get("outstanding_amount") or 0) <= 0:
             continue
         out.append(enriched)
-    return out
+    from services.purchase_invoice_posting import attach_invoice_accounting_fields
+
+    return await attach_invoice_accounting_fields(db, out)
 
 
 async def get_purchase_invoice(db, invoice_id: str) -> dict:
@@ -421,10 +424,17 @@ async def get_purchase_invoice(db, invoice_id: str) -> dict:
         {"_id": 0},
     ).sort([("submitted_at", 1), ("created_at", 1)]).to_list(500)
     inv["payments"] = [_enrich_payment(p) for p in payments]
+    from services.purchase_invoice_posting import attach_invoice_accounting_fields
+    from services.purchase_payment_posting import attach_payment_accounting_fields
+
+    await attach_invoice_accounting_fields(db, [inv])
+    await attach_payment_accounting_fields(db, inv["payments"])
     return inv
 
 
-async def cancel_purchase_invoice(db, invoice_id: str, user: dict, reason: str = "") -> dict:
+async def cancel_purchase_invoice(
+    db, invoice_id: str, user: dict, reason: str = "", *, claim_token: Optional[str] = None
+) -> dict:
     """Soft-cancel unpaid invoice. PO invoice qty recalculates via active invoices only."""
     reason = str(reason or "").strip()
 
@@ -438,14 +448,85 @@ async def cancel_purchase_invoice(db, invoice_id: str, user: dict, reason: str =
         if is_cancelled(doc):
             return await get_purchase_invoice(db, doc["id"])
 
-        paid = await _paid_total(db, doc["id"])
-        active_pays = await _active_payment_count(db, doc["id"])
-        if paid > 0 or active_pays > 0:
-            raise HTTPException(
-                409,
-                "Faktur tidak dapat dihapus karena sudah memiliki pembayaran. Batalkan pembayaran terlebih dahulu.",
-            )
+        from services.purchase_invoice_posting import (
+            ACTIVE_PAYMENT_CANCEL_MESSAGE,
+            CANCEL_CLAIM_MESSAGE,
+            INVOICE_CANCEL_CLAIM_AT_FIELD,
+            INVOICE_CANCEL_CLAIM_CONFLICT_MESSAGE,
+            INVOICE_CANCEL_CLAIM_FIELD,
+            PAYMENT_CREATE_CLAIM_CANCEL_MESSAGE,
+            REVERSE_CLAIM_MESSAGE,
+            acquire_invoice_cancel_claim,
+            clear_invoice_cancel_claim,
+            find_purchase_invoice_source_journal,
+            invoice_cancel_claim_is_active,
+            payment_create_claim_is_active,
+            posting_claim_absent_or_stale_clause,
+            posting_claim_is_active,
+            raise_if_journal_blocks_cancel,
+            restore_active_after_cancel_race,
+            reverse_claim_is_active,
+        )
 
-        fields = cancellation_fields(user, reason)
-        await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
-        return await get_purchase_invoice(db, doc["id"])
+        claimed = await acquire_invoice_cancel_claim(db, doc["id"], token=claim_token)
+        if claimed is None:
+            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+            if current and is_cancelled(current):
+                return await get_purchase_invoice(db, doc["id"])
+            if current and payment_create_claim_is_active(current):
+                raise HTTPException(409, PAYMENT_CREATE_CLAIM_CANCEL_MESSAGE)
+            if current and posting_claim_is_active(current):
+                raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+            if current and reverse_claim_is_active(current):
+                raise HTTPException(409, REVERSE_CLAIM_MESSAGE)
+            if current and invoice_cancel_claim_is_active(current):
+                raise HTTPException(409, INVOICE_CANCEL_CLAIM_CONFLICT_MESSAGE)
+            raced = await find_purchase_invoice_source_journal(db, doc["id"])
+            raise_if_journal_blocks_cancel(raced)
+            raise HTTPException(409, "Pembatalan faktur gagal karena perubahan bersamaan.")
+
+        token = str(claimed.get(INVOICE_CANCEL_CLAIM_FIELD) or "")
+        try:
+            paid = await _paid_total(db, doc["id"])
+            active_pays = await _active_payment_count(db, doc["id"])
+            if paid > 0 or active_pays > 0:
+                raise HTTPException(409, ACTIVE_PAYMENT_CANCEL_MESSAGE)
+
+            journal = await find_purchase_invoice_source_journal(db, doc["id"])
+            raise_if_journal_blocks_cancel(journal)
+            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0}) or claimed
+            if posting_claim_is_active(current):
+                raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+
+            fields = cancellation_fields(user, reason)
+            updated = await db[COLLECTION].find_one_and_update(
+                {
+                    "id": doc["id"],
+                    "cancelled": {"$ne": True},
+                    INVOICE_CANCEL_CLAIM_FIELD: token,
+                    **posting_claim_absent_or_stale_clause(),
+                },
+                {
+                    "$set": fields,
+                    "$unset": {INVOICE_CANCEL_CLAIM_FIELD: "", INVOICE_CANCEL_CLAIM_AT_FIELD: ""},
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if updated is None:
+                current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+                if current and is_cancelled(current):
+                    return await get_purchase_invoice(db, doc["id"])
+                if current and posting_claim_is_active(current):
+                    raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+                raced = await find_purchase_invoice_source_journal(db, doc["id"])
+                raise_if_journal_blocks_cancel(raced)
+                raise HTTPException(409, "Pembatalan faktur gagal karena perubahan bersamaan.")
+
+            raced_journal = await find_purchase_invoice_source_journal(db, doc["id"])
+            if raced_journal:
+                await restore_active_after_cancel_race(db, doc["id"])
+                raise_if_journal_blocks_cancel(raced_journal)
+            return await get_purchase_invoice(db, doc["id"])
+        finally:
+            if token:
+                await clear_invoice_cancel_claim(db, doc["id"], token=token)

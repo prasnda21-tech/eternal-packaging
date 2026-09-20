@@ -217,6 +217,8 @@ from services.opening_balance_http import register_opening_balance_routes
 from services.accounting_periods_http import register_accounting_periods_routes
 from services.general_ledger_http import register_general_ledger_routes
 from services.accounts_receivable_http import register_accounts_receivable_routes
+from services.accounts_payable_http import register_accounts_payable_routes
+from services.purchase_accounting_settings_http import register_purchase_accounting_settings_routes
 from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.balance_sheet_http import register_balance_sheet_routes
@@ -11695,6 +11697,13 @@ register_sales_accounting_settings_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_purchase_accounting_settings_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_sales_user_mapping_routes(
     api_router,
     get_db=lambda: db,
@@ -11789,6 +11798,13 @@ register_general_ledger_routes(
     Depends=Depends,
 )
 register_accounts_receivable_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_accounts_payable_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,
@@ -13423,6 +13439,7 @@ async def seed():
     from services.accounting_periods import ensure_indexes as _accounting_periods_ensure_indexes
     from services.accounting_audit import ensure_indexes as _accounting_audit_ensure_indexes
     from services.accounts_receivable import ensure_indexes as _accounts_receivable_ensure_indexes
+    from services.accounts_payable import ensure_indexes as _accounts_payable_ensure_indexes
     await _cash_bank_master_ensure_indexes(db)
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
@@ -13432,6 +13449,7 @@ async def seed():
     await _accounting_periods_ensure_indexes(db)
     await _accounting_audit_ensure_indexes(db)
     await _accounts_receivable_ensure_indexes(db)
+    await _accounts_payable_ensure_indexes(db)
     await ensure_chat_indexes(db)
     try:
         await ensure_v2_physical_settings(db)
