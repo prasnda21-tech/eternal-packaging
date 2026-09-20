@@ -483,17 +483,87 @@ def fifo_consumed_totals(live_issue_bases: Iterable[dict]) -> Dict[str, Dict[str
     return totals
 
 
+def financial_business_date(raw: Any) -> Optional[str]:
+    """Explicit YYYY-MM-DD only. Does not invent a business date."""
+    return parse_business_date(raw)
+
+
+def acquisition_available_for_issue(acq: Optional[dict], issue_journal_date: Optional[str]) -> bool:
+    """Same-day GR may fund the issue. A later GR must not. Invalid dates are unavailable."""
+    receipt_date = financial_business_date((acq or {}).get("receipt_date"))
+    issue_date = financial_business_date(issue_journal_date)
+    if receipt_date is None or issue_date is None:
+        return False
+    return receipt_date <= issue_date
+
+
+def _aware_instant(raw: Any) -> datetime:
+    return parse_movement_instant(raw) or datetime.max.replace(tzinfo=timezone.utc)
+
+
+def current_issue_order_key(
+    issue_journal_date: str,
+    issue_instant: datetime,
+    issue_id: str,
+) -> Tuple[str, int, datetime, str]:
+    instant = issue_instant if getattr(issue_instant, "tzinfo", None) else issue_instant.replace(tzinfo=timezone.utc)
+    return (
+        financial_business_date(issue_journal_date) or "",
+        1,
+        instant,
+        str(issue_id or ""),
+    )
+
+
+def posted_issue_order_key(row: Optional[dict]) -> Optional[Tuple[str, int, datetime, str]]:
+    src = row or {}
+    basis = src.get("basis") or {}
+    journal_date = financial_business_date(basis.get("journal_date") or src.get("journal_date"))
+    mid = str(src.get("movement_id") or "")
+    if not journal_date or not mid:
+        return None
+    return (journal_date, 1, _aware_instant(basis.get("movement_timestamp")), mid)
+
+
+def posted_issue_is_before_current(
+    row: Optional[dict],
+    issue_journal_date: str,
+    issue_instant: datetime,
+    issue_id: str,
+) -> bool:
+    key = posted_issue_order_key(row)
+    if key is None:
+        return False
+    if str((row or {}).get("movement_id") or "") == str(issue_id or ""):
+        return False
+    return key < current_issue_order_key(issue_journal_date, issue_instant, issue_id)
+
+
+def acquisitions_available_for_issue(
+    acquisitions: Iterable[dict],
+    issue_journal_date: Optional[str],
+) -> List[dict]:
+    return [acq for acq in (acquisitions or []) if acquisition_available_for_issue(acq, issue_journal_date)]
+
+
 def fifo_remaining_layers(
     acquisitions: List[dict],
     item_key: str,
     consumed: Dict[str, Dict[str, Decimal]],
+    *,
+    as_of_journal_date: Optional[str] = None,
 ) -> List[dict]:
     layers = [
         dict(acq) for acq in acquisitions
         if str(acq.get("financial_inventory_item_key") or "") == item_key
     ]
+    if as_of_journal_date is not None:
+        layers = [
+            acq for acq in layers
+            if acquisition_available_for_issue(acq, as_of_journal_date)
+        ]
     layers.sort(key=lambda a: (
-        str(a.get("receipt_date") or ""),
+        str(financial_business_date(a.get("receipt_date")) or ""),
         str(a.get("receipt_id") or ""),
         str(a.get("receipt_line_id") or ""),
     ))
@@ -580,12 +650,19 @@ def compute_rata_rata(
     issue_journal_date: str,
     acquisitions: List[dict],
     live_issue_bases: List[dict],
+    prior_issues_only: bool = True,
 ) -> Tuple[Optional[dict], Optional[str]]:
+    issue_date = financial_business_date(issue_journal_date)
+    if not issue_date:
+        return None, CODE_INVALID_TS
+    current_key = current_issue_order_key(issue_date, issue_instant, issue_id)
     events: List[dict] = []
     for acq in acquisitions:
         if str(acq.get("financial_inventory_item_key") or "") != item_key:
             continue
-        receipt_date = str(acq.get("receipt_date") or "")
+        receipt_date = financial_business_date(acq.get("receipt_date"))
+        if receipt_date is None or receipt_date > issue_date:
+            continue
         events.append({
             "kind": "acquisition",
             "business_date": receipt_date,
@@ -600,8 +677,13 @@ def compute_rata_rata(
         if mid == str(issue_id):
             continue
         basis = row.get("basis") or {}
-        journal_date = str(basis.get("journal_date") or row.get("journal_date") or "")
-        instant = parse_movement_instant(basis.get("movement_timestamp")) or datetime.max.replace(tzinfo=timezone.utc)
+        journal_date = financial_business_date(basis.get("journal_date") or row.get("journal_date"))
+        if not journal_date:
+            continue
+        instant = _aware_instant(basis.get("movement_timestamp"))
+        event_key = (journal_date, 1, instant, mid)
+        if prior_issues_only and event_key >= current_key:
+            continue
         events.append({
             "kind": "issue",
             "business_date": journal_date,
@@ -911,8 +993,15 @@ async def _compute_issue_cost(
     if instant is None or not journal_date:
         return None, CODE_INVALID_TS
     if method == METHOD_FIFO:
-        consumed_totals = fifo_consumed_totals(live_issue_bases)
-        layers = fifo_remaining_layers(acquisitions, item_key, consumed_totals)
+        available = acquisitions_available_for_issue(acquisitions, journal_date)
+        prior_issues = [
+            row for row in live_issue_bases
+            if posted_issue_is_before_current(row, journal_date, instant, movement_id_of(movement))
+        ]
+        consumed_totals = fifo_consumed_totals(prior_issues)
+        layers = fifo_remaining_layers(
+            available, item_key, consumed_totals, as_of_journal_date=journal_date
+        )
         consumed, err = compute_fifo_consumption(issue_base_qty=issue_qty, layers=layers)
         if err or not consumed:
             return None, err or CODE_INSUFFICIENT
@@ -1264,10 +1353,14 @@ async def unjournaled_basis_still_coverable(db, basis: Optional[dict]) -> Option
         if str(issue.get("movement_id") or "") != mid
     ]
     if method == METHOD_FIFO:
+        journal_date = str(row.get("journal_date") or "")
         remaining = {
             layer["acquisition_key"]: layer["remaining_base_qty"]
             for layer in fifo_remaining_layers(
-                acquisitions, item_key, fifo_consumed_totals(live_issues)
+                acquisitions_available_for_issue(acquisitions, journal_date),
+                item_key,
+                fifo_consumed_totals(live_issues),
+                as_of_journal_date=journal_date,
             )
         }
         needed_rows = list(row.get("consumed_acquisitions") or [])
@@ -1292,6 +1385,7 @@ async def unjournaled_basis_still_coverable(db, basis: Optional[dict]) -> Option
         issue_journal_date=journal_date,
         acquisitions=acquisitions,
         live_issue_bases=live_issues,
+        prior_issues_only=False,
     )
     return err
 

@@ -559,3 +559,155 @@ async def test_get_list_and_detail_are_zero_write():
         "journals": await server.db[JOURNAL_ENTRIES].count_documents({"source_type": SOURCE_TYPE}),
     }
     assert after == before
+
+
+async def test_fifo_future_gr_cannot_fund_earlier_issue():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid = f"m-fifo-future-{uuid.uuid4().hex[:6]}"
+    await _seed_master(mid)
+    mov = await _seed_movement(mid=mid, qty=100, date="2026-10-05T03:00:00Z")
+    await _seed_gr(qty=100, price=10, receipt_date="2026-10-10", mid=mid, inventory=inventory)
+    row = await evaluate_inventory_issue(server.db, mov["id"])
+    assert row["blocker_code"] == CODE_INSUFFICIENT
+    assert row["can_post"] is False
+    from fastapi import HTTPException
+    try:
+        await post_inventory_issue_accounting(server.db, mov["id"], POST_USER)
+        raise AssertionError("future GR funded earlier FIFO issue")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert (exc.detail or {}).get("code") == CODE_INSUFFICIENT
+    assert await server.db[JOURNAL_ENTRIES].count_documents(
+        {"source_type": SOURCE_TYPE, "source_id": mov["id"]}
+    ) == 0
+
+
+async def test_fifo_same_day_gr_may_fund_issue():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid, _, _ = await _seed_gr(qty=100, price=10, receipt_date="2026-10-05", inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=40, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, mov["id"])
+    assert row["status"] == STATUS_PENDING
+    assert row["can_post"] is True
+    assert row["computed_cogs"] == 400.0
+    posted = await post_inventory_issue_accounting(server.db, mov["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    assert await server.db[JOURNAL_ENTRIES].count_documents(
+        {"source_type": SOURCE_TYPE, "source_id": mov["id"], "reversal_of": None}
+    ) == 1
+
+
+async def test_fifo_future_gr_cannot_rescue_shortage():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid, _, _ = await _seed_gr(qty=40, price=10, receipt_date="2026-10-04", inventory=inventory)
+    await _seed_gr(qty=100, price=20, receipt_date="2026-10-10", mid=mid, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=80, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, mov["id"])
+    assert row["blocker_code"] == CODE_INSUFFICIENT
+    assert row["can_post"] is False
+
+
+async def test_fifo_invalid_receipt_date_is_unavailable():
+    layers = fifo_remaining_layers(
+        [{
+            "acquisition_key": "r-bad:l1",
+            "receipt_id": "r-bad",
+            "receipt_line_id": "l1",
+            "inventory_account_id": "inv",
+            "financial_inventory_item_key": "m:x",
+            "base_qty": Decimal("100"),
+            "total_cost": Decimal("1000.00"),
+            "base_unit_cost": Decimal("10.00"),
+            "receipt_date": "",
+        }],
+        "m:x",
+        {},
+        as_of_journal_date="2026-10-05",
+    )
+    assert layers == []
+    consumed, err = compute_fifo_consumption(issue_base_qty=Decimal("10"), layers=layers)
+    assert consumed is None
+    assert err == CODE_INSUFFICIENT
+
+
+async def test_rata_future_gr_does_not_change_earlier_average():
+    inventory, *_ = await _configure_inventory(method=METHOD_AVG)
+    mid, _, _ = await _seed_gr(qty=100, price=10, receipt_date="2026-10-01", inventory=inventory)
+    await _seed_gr(qty=100, price=100, receipt_date="2026-10-10", mid=mid, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=50, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, mov["id"])
+    assert row["status"] == STATUS_PENDING
+    assert row["computed_cogs"] == 500.0
+    posted = await post_inventory_issue_accounting(server.db, mov["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    stored = await server.db.inventory_issue_accounting.find_one({"movement_id": mov["id"]}, {"_id": 0})
+    assert Decimal(str(stored["accounting_posting_basis"]["total_cogs"])) == Decimal("500.00")
+    assert Decimal(str(stored["accounting_posting_basis"]["average_cost"])) == Decimal("10.00")
+
+
+async def test_rata_future_gr_cannot_rescue_shortage():
+    inventory, *_ = await _configure_inventory(method=METHOD_AVG)
+    mid, _, _ = await _seed_gr(qty=50, price=10, receipt_date="2026-10-01", inventory=inventory)
+    await _seed_gr(qty=100, price=10, receipt_date="2026-10-10", mid=mid, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=100, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, mov["id"])
+    assert row["blocker_code"] == CODE_INSUFFICIENT
+    assert row["can_post"] is False
+
+
+async def test_rata_same_day_acquisition_is_included():
+    inventory, *_ = await _configure_inventory(method=METHOD_AVG)
+    mid, _, _ = await _seed_gr(qty=80, price=12, receipt_date="2026-10-05", inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=20, date="2026-10-05T10:00:00Z")
+    row = await evaluate_inventory_issue(server.db, mov["id"])
+    assert row["status"] == STATUS_PENDING
+    assert row["can_post"] is True
+    assert row["computed_cogs"] == 240.0
+
+
+async def test_rata_later_posted_issue_excluded_from_earlier_replay():
+    inventory, *_ = await _configure_inventory(method=METHOD_AVG)
+    mid, _, _ = await _seed_gr(qty=100, price=10, receipt_date="2026-10-01", inventory=inventory)
+    later = await _seed_movement(mid=mid, qty=50, date="2026-10-10T03:00:00Z")
+    posted_later = await post_inventory_issue_accounting(server.db, later["id"], POST_USER)
+    assert posted_later["status"] == STATUS_POSTED
+    earlier = await _seed_movement(mid=mid, qty=80, date="2026-10-05T03:00:00Z")
+    computed, err = compute_rata_rata(
+        item_key=f"m:{mid}",
+        issue_base_qty=Decimal("80"),
+        issue_instant=datetime(2026, 10, 5, 3, tzinfo=timezone.utc),
+        issue_id=earlier["id"],
+        issue_journal_date="2026-10-05",
+        acquisitions=[{
+            "financial_inventory_item_key": f"m:{mid}",
+            "receipt_date": "2026-10-01",
+            "receipt_id": "r1",
+            "receipt_line_id": "l1",
+            "inventory_account_id": "inv",
+            "base_qty": Decimal("100"),
+            "total_cost": Decimal("1000.00"),
+        }],
+        live_issue_bases=[{
+            "movement_id": later["id"],
+            "financial_inventory_item_key": f"m:{mid}",
+            "journal_date": "2026-10-10",
+            "basis": {
+                "journal_date": "2026-10-10",
+                "movement_timestamp": later["date"],
+                "issue_base_qty": 50,
+                "total_cogs": 500,
+                "inventory_account_id": "inv",
+            },
+        }],
+    )
+    assert err is None
+    assert computed["total_cogs"] == Decimal("800.00")
+    assert computed["qty_before"] == Decimal("100")
+    row = await evaluate_inventory_issue(server.db, earlier["id"])
+    assert row["status"] == STATUS_PENDING
+    assert row["computed_cogs"] == 800.0
+    later_journal = await server.db[JOURNAL_ENTRIES].find_one(
+        {"source_type": SOURCE_TYPE, "source_id": later["id"], "reversal_of": None},
+        {"_id": 0},
+    )
+    assert later_journal and later_journal["status"] == STATUS_POSTED

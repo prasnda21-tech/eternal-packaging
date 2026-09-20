@@ -47,6 +47,7 @@ from services.inventory_issue_accounting import (
 )
 from services.inventory_issue_posting import (
     acquire_posting_claim,
+    clear_posting_claim,
     establish_cogs_policy,
     persist_accounting_posting_basis,
     post_inventory_issue_accounting,
@@ -485,6 +486,11 @@ async def test_crash_before_basis_after_basis_after_journal_and_period_heal():
     mov = await _seed_movement(mid=mid, qty=4)
     claimed = await acquire_posting_claim(server.db, mov["id"])
     assert claimed
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    await server.db[COLLECTION].update_one(
+        {"movement_id": mov["id"]},
+        {"$set": {CLAIM_AT_FIELD: stale}},
+    )
     retry = await _unlocked_post(mov["id"])
     assert not isinstance(retry, HTTPException), getattr(retry, "detail", retry)
     assert len(await _source_journals(mov["id"])) == 1
@@ -507,6 +513,10 @@ async def test_crash_before_basis_after_basis_after_journal_and_period_heal():
         claim_token=claim2[CLAIM_FIELD],
     )
     assert await persist_accounting_posting_basis(server.db, mov2["id"], claim2[CLAIM_FIELD], basis)
+    await server.db[COLLECTION].update_one(
+        {"movement_id": mov2["id"]},
+        {"$set": {CLAIM_AT_FIELD: stale}},
+    )
     again = await _unlocked_post(mov2["id"])
     assert not isinstance(again, HTTPException), getattr(again, "detail", again)
     assert len(await _source_journals(mov2["id"])) == 1
@@ -693,8 +703,12 @@ async def test_immutable_basis_survives_settings_drift():
     rebuilt["total_cogs"] = 1.0
     rebuilt["hpp_method"] = "RATA-RATA"
     rebuilt["cogs_account_id"] = new_cogs["id"]
-    claim2 = await acquire_posting_claim(server.db, mov["id"])
-    assert await persist_accounting_posting_basis(server.db, mov["id"], claim2[CLAIM_FIELD], rebuilt) is False
+    assert await persist_accounting_posting_basis(server.db, mov["id"], "other-token", rebuilt) is False
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    await server.db[COLLECTION].update_one(
+        {"movement_id": mov["id"]},
+        {"$set": {CLAIM_AT_FIELD: stale}},
+    )
     retry = await _unlocked_post(mov["id"])
     assert not isinstance(retry, HTTPException), getattr(retry, "detail", retry)
     stored = await server.db[COLLECTION].find_one({"movement_id": mov["id"]}, {"_id": 0})
@@ -741,6 +755,11 @@ async def test_unjournaled_basis_cannot_overconsume_after_later_post():
     posted_later = await _unlocked_post(later["id"])
     assert not isinstance(posted_later, HTTPException), getattr(posted_later, "detail", posted_later)
     await server.db.stock_movements.update_one({"id": early["id"]}, {"$unset": {"status": ""}})
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    await server.db[COLLECTION].update_one(
+        {"movement_id": early["id"]},
+        {"$set": {CLAIM_AT_FIELD: stale}},
+    )
     retry = await _unlocked_post(early["id"])
     assert isinstance(retry, HTTPException)
     assert (retry.detail or {}).get("code") == "INSUFFICIENT_FINANCIAL_INVENTORY"
@@ -827,3 +846,62 @@ async def test_fifo_qty3_total100_and_multi_account_balance():
         credit = sum(Decimal(str(ln["credit"])) for ln in lines)
         assert debit == credit
     assert sum(totals) == Decimal("100.00")
+
+
+@pytest.mark.anyio
+async def test_fresh_posting_claim_cannot_be_stolen():
+    inventory, *_ = await _configure_inventory()
+    mid, _, _, _ = await _seed_posted_gr(qty=10, price=10, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=2)
+    first = await acquire_posting_claim(server.db, mov["id"], token="token-a")
+    assert first and first[CLAIM_FIELD] == "token-a"
+    second = await acquire_posting_claim(server.db, mov["id"], token="token-b")
+    assert second is None
+    stored = await server.db[COLLECTION].find_one({"movement_id": mov["id"]}, {"_id": 0})
+    assert stored[CLAIM_FIELD] == "token-a"
+
+
+@pytest.mark.anyio
+async def test_stale_posting_claim_is_recoverable():
+    inventory, *_ = await _configure_inventory()
+    mid, _, _, _ = await _seed_posted_gr(qty=10, price=10, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=2)
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    await server.db[COLLECTION].insert_one({
+        "movement_id": mov["id"],
+        CLAIM_FIELD: "token-a",
+        CLAIM_AT_FIELD: stale,
+        "created_at": stale,
+        "updated_at": stale,
+    })
+    recovered = await acquire_posting_claim(server.db, mov["id"], token="token-b")
+    assert recovered and recovered[CLAIM_FIELD] == "token-b"
+    stored = await server.db[COLLECTION].find_one({"movement_id": mov["id"]}, {"_id": 0})
+    assert stored[CLAIM_FIELD] == "token-b"
+
+
+@pytest.mark.anyio
+async def test_old_token_cannot_clear_new_token():
+    inventory, *_ = await _configure_inventory()
+    mid, _, _, _ = await _seed_posted_gr(qty=10, price=10, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=2)
+    owned = await acquire_posting_claim(server.db, mov["id"], token="token-b")
+    assert owned and owned[CLAIM_FIELD] == "token-b"
+    await clear_posting_claim(server.db, mov["id"], token="token-a")
+    stored = await server.db[COLLECTION].find_one({"movement_id": mov["id"]}, {"_id": 0})
+    assert stored[CLAIM_FIELD] == "token-b"
+    await clear_posting_claim(server.db, mov["id"], token="token-b")
+    cleared = await server.db[COLLECTION].find_one({"movement_id": mov["id"]}, {"_id": 0})
+    assert not cleared.get(CLAIM_FIELD)
+
+
+@pytest.mark.anyio
+async def test_same_movement_concurrent_posting_one_journal():
+    inventory, *_ = await _configure_inventory()
+    mid, _, _, _ = await _seed_posted_gr(qty=20, price=10, inventory=inventory)
+    mov = await _seed_movement(mid=mid, qty=3)
+    first, second = await asyncio.gather(_unlocked_post(mov["id"]), _unlocked_post(mov["id"]))
+    ok = [x for x in (first, second) if not isinstance(x, HTTPException)]
+    assert ok
+    journals = await _source_journals(mov["id"])
+    assert len(journals) == 1

@@ -85,11 +85,13 @@ async def acquire_posting_claim(
 ) -> Optional[dict]:
     mid = str(movement_id or "").strip()
     claim_token = str(token or uuid.uuid4())
-    now = now_iso()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
     try:
         doc = await db[COLLECTION].find_one_and_update(
             {
                 "movement_id": mid,
+                **_claim_absent_or_stale_clause(now=now_dt),
             },
             {
                 "$set": {
@@ -304,10 +306,10 @@ async def post_inventory_issue_accounting(
             await _heal_posted_metadata(db, mid, existing, user)
             evaluation = await evaluate_inventory_issue(db, mid)
             return public_issue_view(evaluation)
-        raise InventoryIssueError(
+        raise _http_error(InventoryIssueError(
             CODE_LOCK_CONFLICT,
             "Posting HPP gagal karena perubahan bersamaan.",
-        )
+        ))
 
     post_token = str(claimed.get(CLAIM_FIELD) or "")
     item_key = issue_item_key(movement)
