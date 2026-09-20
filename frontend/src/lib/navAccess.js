@@ -59,6 +59,7 @@ export const NAV_KEYS = {
   ledgerOpeningBalance: "nav.ledger.opening_balance",
   ledgerAccountingPeriods: "nav.ledger.accounting_periods",
   ledgerGeneralLedger: "nav.ledger.general_ledger",
+  ledgerAccountsReceivable: "nav.ledger.accounts_receivable",
   ledgerTrialBalance: "nav.ledger.trial_balance",
   ledgerProfitLoss: "nav.ledger.profit_loss",
   ledgerBalanceSheet: "nav.ledger.balance_sheet",
@@ -131,6 +132,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.ledgerOpeningBalance, label: "Saldo Awal", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.ledgerAccountingPeriods, label: "Periode Akuntansi", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.ledgerGeneralLedger, label: "Buku Besar", parent: NAV_KEYS.ledger },
+  { key: NAV_KEYS.ledgerAccountsReceivable, label: "Piutang Usaha", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.ledgerTrialBalance, label: "Neraca Saldo", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.ledgerProfitLoss, label: "Laba/Rugi", parent: NAV_KEYS.ledger },
   { key: NAV_KEYS.ledgerBalanceSheet, label: "Neraca", parent: NAV_KEYS.ledger },
@@ -743,6 +745,7 @@ export const LEDGER_NAV_ROUTES = {
   [NAV_KEYS.ledgerOpeningBalance]: "/buku-besar/saldo-awal",
   [NAV_KEYS.ledgerAccountingPeriods]: "/buku-besar/periode-akuntansi",
   [NAV_KEYS.ledgerGeneralLedger]: "/buku-besar/buku-besar",
+  [NAV_KEYS.ledgerAccountsReceivable]: "/buku-besar/piutang-usaha",
   [NAV_KEYS.ledgerTrialBalance]: "/buku-besar/neraca-saldo",
   [NAV_KEYS.ledgerProfitLoss]: "/buku-besar/laba-rugi",
   [NAV_KEYS.ledgerBalanceSheet]: "/buku-besar/neraca",
@@ -754,6 +757,7 @@ const LEDGER_VIS_FIELD = {
   [NAV_KEYS.ledgerOpeningBalance]: "openingBalance",
   [NAV_KEYS.ledgerAccountingPeriods]: "accountingPeriods",
   [NAV_KEYS.ledgerGeneralLedger]: "generalLedger",
+  [NAV_KEYS.ledgerAccountsReceivable]: "accountsReceivable",
   [NAV_KEYS.ledgerTrialBalance]: "trialBalance",
   [NAV_KEYS.ledgerProfitLoss]: "profitLoss",
   [NAV_KEYS.ledgerBalanceSheet]: "balanceSheet",
@@ -765,6 +769,7 @@ export const LEDGER_TILE_TONES = {
   [NAV_KEYS.ledgerOpeningBalance]: "amber",
   [NAV_KEYS.ledgerAccountingPeriods]: "rose",
   [NAV_KEYS.ledgerGeneralLedger]: "violet",
+  [NAV_KEYS.ledgerAccountsReceivable]: "slate",
   [NAV_KEYS.ledgerTrialBalance]: "slate",
   [NAV_KEYS.ledgerProfitLoss]: "emerald",
   [NAV_KEYS.ledgerBalanceSheet]: "slate",
@@ -776,6 +781,7 @@ export const LEDGER_TILE_TESTIDS = {
   [NAV_KEYS.ledgerOpeningBalance]: "top-nav-saldo-awal",
   [NAV_KEYS.ledgerAccountingPeriods]: "top-nav-periode-akuntansi",
   [NAV_KEYS.ledgerGeneralLedger]: "top-nav-buku-besar-ledger",
+  [NAV_KEYS.ledgerAccountsReceivable]: "top-nav-piutang-usaha",
   [NAV_KEYS.ledgerTrialBalance]: "top-nav-neraca-saldo",
   [NAV_KEYS.ledgerProfitLoss]: "top-nav-laba-rugi",
   [NAV_KEYS.ledgerBalanceSheet]: "top-nav-neraca",
@@ -801,6 +807,8 @@ export function ledgerNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "accounting.period.reopen");
   const generalLedger = canSeeNav(hasPerm, NAV_KEYS.ledgerGeneralLedger)
     || canSeeNav(hasPerm, "general_ledger.view");
+  const accountsReceivable = canSeeNav(hasPerm, NAV_KEYS.ledgerAccountsReceivable)
+    || canSeeNav(hasPerm, "accounts_receivable.view");
   const trialBalance = canSeeNav(hasPerm, NAV_KEYS.ledgerTrialBalance)
     || canSeeNav(hasPerm, "trial_balance.view");
   const profitLoss = canSeeNav(hasPerm, NAV_KEYS.ledgerProfitLoss)
@@ -808,12 +816,13 @@ export function ledgerNavVisible(hasPerm) {
   const balanceSheet = canSeeNav(hasPerm, NAV_KEYS.ledgerBalanceSheet)
     || canSeeNav(hasPerm, "balance_sheet.view");
   return {
-    parent: Boolean(accounts || generalJournal || openingBalance || accountingPeriods || generalLedger || trialBalance || profitLoss || balanceSheet),
+    parent: Boolean(accounts || generalJournal || openingBalance || accountingPeriods || generalLedger || accountsReceivable || trialBalance || profitLoss || balanceSheet),
     accounts: Boolean(accounts),
     generalJournal: Boolean(generalJournal),
     openingBalance: Boolean(openingBalance),
     accountingPeriods: Boolean(accountingPeriods),
     generalLedger: Boolean(generalLedger),
+    accountsReceivable: Boolean(accountsReceivable),
     trialBalance: Boolean(trialBalance),
     profitLoss: Boolean(profitLoss),
     balanceSheet: Boolean(balanceSheet),
