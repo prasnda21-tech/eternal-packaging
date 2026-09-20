@@ -77,6 +77,11 @@ CODE_COGS_ACCOUNT = "COGS_ACCOUNT_NOT_CONFIGURED"
 CODE_HPP_METHOD = "INVALID_HPP_METHOD"
 CODE_INVENTORY_ACCOUNT = "INVENTORY_ACCOUNT_INVALID"
 CODE_PERIOD_LOCKED = "PERIOD_LOCKED"
+CODE_CHRONOLOGY_CONFLICT = "FINANCIAL_CHRONOLOGY_CONFLICT"
+MSG_CHRONOLOGY_CONFLICT = (
+    "Pengeluaran HPP yang lebih baru sudah diposting. Pengeluaran bertanggal "
+    "lebih lama tidak dapat diposting tanpa koreksi histori HPP."
+)
 
 CHRONOLOGY_BLOCK_CODES = frozenset({
     CODE_MISSING_MASTER,
@@ -92,6 +97,7 @@ CHRONOLOGY_BLOCK_CODES = frozenset({
     CODE_HPP_METHOD,
     CODE_INVENTORY_ACCOUNT,
     CODE_PERIOD_LOCKED,
+    CODE_CHRONOLOGY_CONFLICT,
 })
 
 PERMANENT_EXCLUSION_CODES = frozenset({
@@ -539,6 +545,106 @@ def posted_issue_is_before_current(
     return key < current_issue_order_key(issue_journal_date, issue_instant, issue_id)
 
 
+def posted_issue_is_after_current(
+    row: Optional[dict],
+    issue_journal_date: str,
+    issue_instant: datetime,
+    issue_id: str,
+) -> bool:
+    key = posted_issue_order_key(row)
+    if key is None:
+        return False
+    if str((row or {}).get("movement_id") or "") == str(issue_id or ""):
+        return False
+    return current_issue_order_key(issue_journal_date, issue_instant, issue_id) < key
+
+
+def later_live_posted_issue(
+    live_issue_bases: Iterable[dict],
+    *,
+    item_key: str,
+    issue_journal_date: str,
+    issue_instant: datetime,
+    issue_id: str,
+) -> Optional[dict]:
+    """Return a live posted issue whose financial key is strictly after current."""
+    wanted = str(item_key or "")
+    if not wanted or not financial_business_date(issue_journal_date):
+        return None
+    for row in live_issue_bases or []:
+        if str(row.get("financial_inventory_item_key") or "") != wanted:
+            continue
+        journal = row.get("journal") or {}
+        if journal.get("reversal_of") is not None:
+            continue
+        if journal and str(journal.get("status") or "") not in {"", STATUS_POSTED}:
+            continue
+        if posted_issue_is_after_current(row, issue_journal_date, issue_instant, issue_id):
+            return row
+    return None
+
+
+def later_posted_issue_conflict(
+    *,
+    item_key: str,
+    issue_journal_date: Optional[str],
+    issue_instant: Optional[datetime],
+    issue_id: str,
+    live_issue_bases: Iterable[dict],
+) -> Optional[str]:
+    if issue_instant is None or not issue_journal_date:
+        return None
+    if later_live_posted_issue(
+        live_issue_bases,
+        item_key=item_key,
+        issue_journal_date=issue_journal_date,
+        issue_instant=issue_instant,
+        issue_id=issue_id,
+    ):
+        return CODE_CHRONOLOGY_CONFLICT
+    return None
+
+
+def later_posted_issue_conflict_for_movement(
+    movement: Optional[dict],
+    live_issue_bases: Iterable[dict],
+) -> Optional[str]:
+    row = movement or {}
+    return later_posted_issue_conflict(
+        item_key=issue_item_key(row),
+        issue_journal_date=movement_journal_date(row),
+        issue_instant=parse_movement_instant(row.get("date")),
+        issue_id=movement_id_of(row),
+        live_issue_bases=live_issue_bases,
+    )
+
+
+def later_posted_issue_conflict_for_basis(
+    basis: Optional[dict],
+    live_issue_bases: Iterable[dict],
+) -> Optional[str]:
+    row = basis or {}
+    return later_posted_issue_conflict(
+        item_key=str(row.get("financial_inventory_item_key") or ""),
+        issue_journal_date=str(row.get("journal_date") or "") or None,
+        issue_instant=parse_movement_instant(row.get("movement_timestamp")),
+        issue_id=str(row.get("movement_id") or ""),
+        live_issue_bases=live_issue_bases,
+    )
+
+
+async def assert_no_later_posted_issue(db, movement: Optional[dict] = None, *, basis: Optional[dict] = None) -> None:
+    """Hard-block backdated posting after a later live inventory_issue journal."""
+    live = await load_live_issue_bases(db)
+    code = None
+    if movement is not None:
+        code = later_posted_issue_conflict_for_movement(movement, live)
+    if code is None and basis is not None:
+        code = later_posted_issue_conflict_for_basis(basis, live)
+    if code:
+        raise InventoryIssueError(code, MSG_CHRONOLOGY_CONFLICT)
+
+
 def acquisitions_available_for_issue(
     acquisitions: Iterable[dict],
     issue_journal_date: Optional[str],
@@ -812,6 +918,7 @@ def _blocker(code: Optional[str], message: Optional[str] = None) -> Tuple[Option
         CODE_INVENTORY_ACCOUNT: "Akun Persediaan historis tidak valid.",
         CODE_PERIOD_LOCKED: "Periode akuntansi sudah ditutup.",
         CODE_ALREADY_CONSUMED: "Persediaan finansial penerimaan ini sudah dikonsumsi HPP.",
+        CODE_CHRONOLOGY_CONFLICT: MSG_CHRONOLOGY_CONFLICT,
     }
     if not code:
         return None, None
@@ -1105,6 +1212,15 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
         if row["status"] in {STATUS_EXCLUDED, STATUS_BLOCKED}:
             evaluated.append(row)
             continue
+        chrono = later_posted_issue_conflict_for_movement(movement, live_issue_bases)
+        if chrono:
+            code, msg = _blocker(chrono)
+            row["status"] = STATUS_BLOCKED
+            row["can_post"] = False
+            row["blocker_code"] = code
+            row["blocker_message"] = msg
+            evaluated.append(row)
+            continue
         if cogs_err:
             code, msg = _blocker(cogs_err)
             row["status"] = STATUS_BLOCKED
@@ -1352,6 +1468,9 @@ async def unjournaled_basis_still_coverable(db, basis: Optional[dict]) -> Option
         issue for issue in await load_live_issue_bases(db)
         if str(issue.get("movement_id") or "") != mid
     ]
+    chrono = later_posted_issue_conflict_for_basis(row, live_issues)
+    if chrono:
+        return chrono
     if method == METHOD_FIFO:
         journal_date = str(row.get("journal_date") or "")
         remaining = {

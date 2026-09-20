@@ -35,7 +35,9 @@ from services.inventory_issue_accounting import (
     SOURCE_TYPE,
     STATUS_PENDING,
     STATUS_POSTED,
+    _blocker,
     actor_snapshot,
+    assert_no_later_posted_issue,
     build_cogs_posting_basis,
     evaluate_inventory_issue,
     find_inventory_issue_source_journal,
@@ -325,6 +327,7 @@ async def post_inventory_issue_accounting(
             raise InventoryIssueError(LOCK_CONFLICT_CODE, LOCK_CONFLICT_MESSAGE)
 
         movement = await load_movement(db, mid) or movement
+        await assert_no_later_posted_issue(db, movement)
         evaluation = await _require_postable_evaluation(db, mid)
         raw_method = await read_raw_hpp_method(db)
         if not raw_method:
@@ -340,6 +343,7 @@ async def post_inventory_issue_accounting(
         stored = await db[COLLECTION].find_one({"movement_id": mid}, {"_id": 0}) or {}
         stored_basis = stored.get(POSTING_BASIS_FIELD)
         settings = await get_purchase_accounting_settings(db)
+        await assert_no_later_posted_issue(db, movement, basis=stored_basis)
         recomputed = await evaluate_inventory_issue(db, mid)
         if not recomputed or not recomputed.get("can_post"):
             raise InventoryIssueError(
@@ -385,12 +389,11 @@ async def post_inventory_issue_accounting(
             return public_issue_view(await evaluate_inventory_issue(db, mid))
 
         await require_held_item_lock(db, item_key, str(item_lock.get("token") or ""))
+        await assert_no_later_posted_issue(db, movement, basis=basis)
         cover_err = await unjournaled_basis_still_coverable(db, basis)
         if cover_err:
-            raise InventoryIssueError(
-                cover_err,
-                "Persediaan finansial tidak mencukupi untuk HPP.",
-            )
+            code, msg = _blocker(cover_err)
+            raise InventoryIssueError(code, msg)
         await _write_source_journal_from_basis(db, movement, user, basis)
         written = await find_inventory_issue_source_journal(db, mid)
         if written:

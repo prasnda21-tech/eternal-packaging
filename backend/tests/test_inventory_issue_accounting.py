@@ -25,6 +25,7 @@ from services.accounting_periods import ensure_indexes as ensure_periods
 from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
 from services.general_ledger import SOURCE_LABELS
 from services.inventory_issue_accounting import (
+    CODE_CHRONOLOGY_CONFLICT,
     CODE_INSUFFICIENT,
     CODE_INVALID_TS,
     CODE_INVALID_UOM,
@@ -33,6 +34,7 @@ from services.inventory_issue_accounting import (
     CODE_SERVICE,
     CODE_UNKNOWN_TYPE,
     CODE_WAITING,
+    MSG_CHRONOLOGY_CONFLICT,
     METHOD_AVG,
     METHOD_FIFO,
     SOURCE_TYPE,
@@ -704,10 +706,95 @@ async def test_rata_later_posted_issue_excluded_from_earlier_replay():
     assert computed["total_cogs"] == Decimal("800.00")
     assert computed["qty_before"] == Decimal("100")
     row = await evaluate_inventory_issue(server.db, earlier["id"])
-    assert row["status"] == STATUS_PENDING
-    assert row["computed_cogs"] == 800.0
+    assert row["status"] == STATUS_BLOCKED
+    assert row["can_post"] is False
+    assert row["blocker_code"] == CODE_CHRONOLOGY_CONFLICT
+    assert row["blocker_message"] == MSG_CHRONOLOGY_CONFLICT
     later_journal = await server.db[JOURNAL_ENTRIES].find_one(
         {"source_type": SOURCE_TYPE, "source_id": later["id"], "reversal_of": None},
         {"_id": 0},
     )
     assert later_journal and later_journal["status"] == STATUS_POSTED
+    later_row = await evaluate_inventory_issue(server.db, later["id"])
+    assert later_row["status"] == STATUS_POSTED
+
+
+async def test_fifo_later_posted_blocks_backdated_earlier_issue():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid, _, _ = await _seed_gr(qty=200, price=10, receipt_date="2026-10-01", inventory=inventory)
+    later = await _seed_movement(mid=mid, qty=40, date="2026-10-10T03:00:00Z")
+    posted = await post_inventory_issue_accounting(server.db, later["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    earlier = await _seed_movement(mid=mid, qty=30, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, earlier["id"])
+    assert row["status"] == STATUS_BLOCKED
+    assert row["can_post"] is False
+    assert row["blocker_code"] == CODE_CHRONOLOGY_CONFLICT
+    assert row["blocker_message"] == MSG_CHRONOLOGY_CONFLICT
+    from fastapi import HTTPException
+    try:
+        await post_inventory_issue_accounting(server.db, earlier["id"], POST_USER)
+        raise AssertionError("backdated FIFO issue posted after later journal")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert (exc.detail or {}).get("code") == CODE_CHRONOLOGY_CONFLICT
+    assert await server.db[JOURNAL_ENTRIES].count_documents(
+        {"source_type": SOURCE_TYPE, "source_id": earlier["id"]}
+    ) == 0
+    later_row = await evaluate_inventory_issue(server.db, later["id"])
+    assert later_row["status"] == STATUS_POSTED
+
+
+async def test_fifo_later_posted_blocks_even_when_qty_remains():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid, _, _ = await _seed_gr(qty=50, price=10, receipt_date="2026-10-01", inventory=inventory)
+    await _seed_gr(qty=100, price=20, receipt_date="2026-10-02", mid=mid, inventory=inventory)
+    later = await _seed_movement(mid=mid, qty=80, date="2026-10-10T03:00:00Z")
+    posted = await post_inventory_issue_accounting(server.db, later["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    stored = await server.db.inventory_issue_accounting.find_one({"movement_id": later["id"]}, {"_id": 0})
+    consumed = stored["accounting_posting_basis"]["consumed_acquisitions"]
+    assert len(consumed) == 2
+    earlier = await _seed_movement(mid=mid, qty=30, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, earlier["id"])
+    assert row["blocker_code"] == CODE_CHRONOLOGY_CONFLICT
+    assert row["can_post"] is False
+
+
+async def test_fifo_same_day_later_timestamp_posted_blocks_earlier_timestamp():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid, _, _ = await _seed_gr(qty=200, price=10, receipt_date="2026-10-01", inventory=inventory)
+    later = await _seed_movement(mid=mid, qty=20, date="2026-10-05T03:00:01Z")
+    posted = await post_inventory_issue_accounting(server.db, later["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    earlier = await _seed_movement(mid=mid, qty=20, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, earlier["id"])
+    assert row["blocker_code"] == CODE_CHRONOLOGY_CONFLICT
+    assert row["status"] == STATUS_BLOCKED
+
+
+async def test_fifo_same_timestamp_later_movement_id_posted_blocks_earlier_id():
+    inventory, *_ = await _configure_inventory(method=METHOD_FIFO)
+    mid, _, _ = await _seed_gr(qty=200, price=10, receipt_date="2026-10-01", inventory=inventory)
+    later = await _seed_movement(mid=mid, qty=20, date="2026-10-05T03:00:00Z", movement_id="issue-zzz")
+    posted = await post_inventory_issue_accounting(server.db, later["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    earlier = await _seed_movement(mid=mid, qty=20, date="2026-10-05T03:00:00Z", movement_id="issue-aaa")
+    row = await evaluate_inventory_issue(server.db, earlier["id"])
+    assert row["blocker_code"] == CODE_CHRONOLOGY_CONFLICT
+    assert row["can_post"] is False
+
+
+async def test_rata_later_posted_blocks_backdated_earlier_issue():
+    inventory, *_ = await _configure_inventory(method=METHOD_AVG)
+    mid, _, _ = await _seed_gr(qty=200, price=10, receipt_date="2026-10-01", inventory=inventory)
+    later = await _seed_movement(mid=mid, qty=40, date="2026-10-10T03:00:00Z")
+    posted = await post_inventory_issue_accounting(server.db, later["id"], POST_USER)
+    assert posted["status"] == STATUS_POSTED
+    earlier = await _seed_movement(mid=mid, qty=30, date="2026-10-05T03:00:00Z")
+    row = await evaluate_inventory_issue(server.db, earlier["id"])
+    assert row["status"] == STATUS_BLOCKED
+    assert row["can_post"] is False
+    assert row["blocker_code"] == CODE_CHRONOLOGY_CONFLICT
+    later_row = await evaluate_inventory_issue(server.db, later["id"])
+    assert later_row["status"] == STATUS_POSTED

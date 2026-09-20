@@ -762,7 +762,7 @@ async def test_unjournaled_basis_cannot_overconsume_after_later_post():
     )
     retry = await _unlocked_post(early["id"])
     assert isinstance(retry, HTTPException)
-    assert (retry.detail or {}).get("code") == "INSUFFICIENT_FINANCIAL_INVENTORY"
+    assert (retry.detail or {}).get("code") == "FINANCIAL_CHRONOLOGY_CONFLICT"
     assert await _source_journals(early["id"]) == []
     stored = await server.db[COLLECTION].find_one({"movement_id": early["id"]}, {"_id": 0})
     assert stored[POSTING_BASIS_FIELD]["total_cogs"] == basis["total_cogs"]
@@ -905,3 +905,95 @@ async def test_same_movement_concurrent_posting_one_journal():
     assert ok
     journals = await _source_journals(mov["id"])
     assert len(journals) == 1
+
+
+async def _insert_live_posted_issue(movement: dict, *, item_key: str, journal_date: str, qty: int, total_cogs: float):
+    jid = f"j-{movement['id']}"
+    await server.db[JOURNAL_ENTRIES].insert_one({
+        "id": jid,
+        "source_type": SOURCE_TYPE,
+        "source_id": movement["id"],
+        "status": STATUS_POSTED,
+        "reversal_of": None,
+        "date": journal_date,
+    })
+    await server.db[COLLECTION].insert_one({
+        "movement_id": movement["id"],
+        "financial_inventory_item_key": item_key,
+        POSTING_BASIS_FIELD: {
+            "movement_id": movement["id"],
+            "financial_inventory_item_key": item_key,
+            "journal_date": journal_date,
+            "movement_timestamp": movement["date"],
+            "hpp_method": "FIFO",
+            "issue_base_qty": qty,
+            "total_cogs": total_cogs,
+        },
+        "status": STATUS_POSTED,
+        "accounting_journal_id": jid,
+    })
+
+
+@pytest.mark.anyio
+async def test_post_revalidates_later_posted_issue_before_journal():
+    inventory, *_ = await _configure_inventory()
+    mid, _, _, _ = await _seed_posted_gr(qty=200, price=10, inventory=inventory)
+    older = await _seed_movement(mid=mid, qty=30, date="2026-10-05T03:00:00Z")
+    later = await _seed_movement(mid=mid, qty=20, date="2026-10-10T03:00:00Z")
+    ready = await evaluate_inventory_issue(server.db, older["id"])
+    assert ready["can_post"] is True
+    assert ready["status"] == "pending"
+    await _insert_live_posted_issue(
+        later, item_key=f"m:{mid}", journal_date="2026-10-10", qty=20, total_cogs=200
+    )
+    result = await _unlocked_post(older["id"])
+    assert isinstance(result, HTTPException)
+    assert result.status_code == 409
+    assert (result.detail or {}).get("code") == "FINANCIAL_CHRONOLOGY_CONFLICT"
+    assert await _source_journals(older["id"]) == []
+    later_row = await evaluate_inventory_issue(server.db, later["id"])
+    assert later_row["status"] == STATUS_POSTED
+
+
+@pytest.mark.anyio
+async def test_unjournaled_older_basis_retry_blocks_after_later_post():
+    inventory, *_ = await _configure_inventory()
+    mid, _, _, _ = await _seed_posted_gr(qty=1000, price=1, inventory=inventory)
+    older = await _seed_movement(mid=mid, qty=200, date="2026-10-05T03:00:00Z")
+    later = await _seed_movement(mid=mid, qty=100, date="2026-10-10T03:00:00Z")
+    claim = await acquire_posting_claim(server.db, older["id"])
+    from services.inventory_issue_accounting import build_cogs_posting_basis
+    from services.inventory_issue_posting import _reload_computed
+    from services.purchase_accounting_settings import get_purchase_accounting_settings
+
+    ev = await evaluate_inventory_issue(server.db, older["id"])
+    computed = await _reload_computed(server.db, older["id"])
+    settings = await get_purchase_accounting_settings(server.db)
+    movement = await server.db.stock_movements.find_one({"id": older["id"]}, {"_id": 0})
+    basis = build_cogs_posting_basis(
+        movement=movement,
+        evaluation=ev,
+        computed=computed,
+        settings=settings,
+        user=POST_USER,
+        claim_token=claim[CLAIM_FIELD],
+    )
+    assert await persist_accounting_posting_basis(server.db, older["id"], claim[CLAIM_FIELD], basis)
+    original = dict(basis)
+    await server.db.stock_movements.update_one({"id": older["id"]}, {"$set": {"status": "VOID"}})
+    posted_later = await _unlocked_post(later["id"])
+    assert not isinstance(posted_later, HTTPException), getattr(posted_later, "detail", posted_later)
+    await server.db.stock_movements.update_one({"id": older["id"]}, {"$unset": {"status": ""}})
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+    await server.db[COLLECTION].update_one(
+        {"movement_id": older["id"]},
+        {"$set": {CLAIM_AT_FIELD: stale}},
+    )
+    retry = await _unlocked_post(older["id"])
+    assert isinstance(retry, HTTPException)
+    assert (retry.detail or {}).get("code") == "FINANCIAL_CHRONOLOGY_CONFLICT"
+    assert await _source_journals(older["id"]) == []
+    stored = await server.db[COLLECTION].find_one({"movement_id": older["id"]}, {"_id": 0})
+    assert stored[POSTING_BASIS_FIELD]["total_cogs"] == original["total_cogs"]
+    assert stored[POSTING_BASIS_FIELD]["consumed_acquisitions"] == original["consumed_acquisitions"]
+    assert stored[POSTING_BASIS_FIELD]["hpp_method"] == original["hpp_method"]
