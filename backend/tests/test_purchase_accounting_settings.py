@@ -77,8 +77,12 @@ async def test_unconfigured_get_is_zero_write():
             assert res.status_code == 200, res.text
             settings = res.json()["settings"]
             assert settings["configured"] is False
+            assert settings["inventory_configured"] is False
             assert settings["payable_account_id"] is None
             assert settings["purchase_clearing_account_id"] is None
+            assert settings["inventory_account_id"] is None
+            assert settings["cogs_account_id"] is None
+            assert settings["inventory_accounting_effective_date"] is None
             assert settings["accounts"]["payable"] is None
             assert settings["accounts"]["purchase_clearing"] is None
         assert await server.db.app_settings.find_one({"key": SETTINGS_KEY}) is None
@@ -130,6 +134,7 @@ async def test_mapping_validation_rejects_wrong_types():
             assert ok.status_code == 200, ok.text
             saved = ok.json()["settings"]
             assert saved["configured"] is True
+            assert saved["inventory_configured"] is False
             assert saved["payable_account_id"] == apay["id"]
             assert saved["purchase_clearing_account_id"] == clearing["id"]
             assert saved["accounts"]["payable"]["account_type"] == "APAY"
@@ -197,3 +202,100 @@ async def test_permissions_not_auto_granted():
         assert "purchase.payment.accounting.reverse" not in perms
         assert "accounts_payable.view" not in perms
         assert "nav.ledger.accounts_payable" not in perms
+
+
+@pytest.mark.anyio
+async def test_inventory_settings_are_separate_from_ap_configured():
+    apay = await _coa("21", "Hutang Usaha", "APAY")
+    clearing = await _coa("21", "GRNI", "OCLY")
+    inventory = await _coa("13", "Persediaan", "INTR")
+    cogs = await _coa("51", "HPP", "COGS")
+    bank = await _coa("11", "Kas", "BANK")
+    oass = await _coa("15", "Aset Lain", "OASS")
+    exps = await _coa("51", "Beban", "EXPS")
+    _admin()
+    before_journals = await server.db.journal_entries.count_documents({})
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            ap_only = await client.put("/api/settings/purchase-accounting", json={
+                "payable_account_id": apay["id"],
+                "purchase_clearing_account_id": clearing["id"],
+            })
+            assert ap_only.status_code == 200, ap_only.text
+            ap_saved = ap_only.json()["settings"]
+            assert ap_saved["configured"] is True
+            assert ap_saved["inventory_configured"] is False
+
+            for inv_id, cogs_id, date in (
+                (bank["id"], cogs["id"], "2026-10-01"),
+                (oass["id"], cogs["id"], "2026-10-01"),
+                (inventory["id"], exps["id"], "2026-10-01"),
+                (inventory["id"], inventory["id"], "2026-10-01"),
+                (inventory["id"], cogs["id"], ""),
+                (inventory["id"], cogs["id"], "2026-13-01"),
+            ):
+                bad = await client.put("/api/settings/purchase-accounting", json={
+                    "payable_account_id": apay["id"],
+                    "purchase_clearing_account_id": clearing["id"],
+                    "inventory_account_id": inv_id,
+                    "cogs_account_id": cogs_id,
+                    "inventory_accounting_effective_date": date,
+                })
+                assert bad.status_code == 400, bad.text
+
+            full = await client.put("/api/settings/purchase-accounting", json={
+                "payable_account_id": apay["id"],
+                "purchase_clearing_account_id": clearing["id"],
+                "inventory_account_id": inventory["id"],
+                "cogs_account_id": cogs["id"],
+                "inventory_accounting_effective_date": "2026-10-01",
+            })
+            assert full.status_code == 200, full.text
+            saved = full.json()["settings"]
+            assert saved["configured"] is True
+            assert saved["inventory_configured"] is True
+            assert saved["inventory_account_id"] == inventory["id"]
+            assert saved["cogs_account_id"] == cogs["id"]
+            assert saved["inventory_accounting_effective_date"] == "2026-10-01"
+            assert saved["accounts"]["inventory"]["account_type"] == "INTR"
+            assert saved["accounts"]["cogs"]["account_type"] == "COGS"
+
+            keep_ap = await client.put("/api/settings/purchase-accounting", json={
+                "payable_account_id": apay["id"],
+                "purchase_clearing_account_id": clearing["id"],
+            })
+            assert keep_ap.status_code == 200
+            kept = keep_ap.json()["settings"]
+            assert kept["configured"] is True
+            assert kept["inventory_configured"] is True
+            assert kept["inventory_account_id"] == inventory["id"]
+
+            audit = await server.db.accounting_audit_events.find_one(
+                {"event_type": "purchase_accounting_settings_changed"},
+                {"_id": 0},
+                sort=[("at", -1)],
+            )
+            assert audit
+            for field in (
+                "payable_account_id",
+                "purchase_clearing_account_id",
+                "inventory_account_id",
+                "cogs_account_id",
+                "inventory_accounting_effective_date",
+            ):
+                assert field in (audit.get("before") or {})
+                assert field in (audit.get("after") or {})
+        assert await server.db.journal_entries.count_documents({}) == before_journals
+        with pytest.raises(AccountInUseError):
+            await delete_account(server.db, inventory["id"])
+        with pytest.raises(AccountInUseError):
+            await delete_account(server.db, cogs["id"])
+        with pytest.raises(AccountInUseError, match="terkunci"):
+            await update_account(server.db, inventory["id"], {"account_type": "OASS"}, user=_user())
+        with pytest.raises(AccountInUseError, match="terkunci"):
+            await update_account(server.db, cogs["id"], {"account_type": "EXPS"}, user=_user())
+        renamed = await update_account(server.db, inventory["id"], {"name": "Persediaan Bahan"}, user=_user())
+        assert renamed["name"] == "Persediaan Bahan"
+        assert renamed["account_type"] == "INTR"
+    finally:
+        app.dependency_overrides.pop(current_user, None)

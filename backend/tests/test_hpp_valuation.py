@@ -17,6 +17,8 @@ import server
 from server import app, current_user
 from services.hpp_valuation import (
     COGS_UNAVAILABLE_REASON,
+    INSUFFICIENT_COST_LAYER,
+    InsufficientCostLayerError,
     METHOD_AVG,
     METHOD_FIFO,
     RECOG_GR,
@@ -144,8 +146,9 @@ async def test_hpp_recalc_switches_and_preserves_sources_and_stock():
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             aid = f"hpp{uuid.uuid4().hex[:8]}"
+            mid = f"m-{uuid.uuid4().hex[:8]}"
             req = (await c.post("/api/purchase-requests", json={
-                "lines": [{"item_name": "Film", "requested_qty": 8, "accurate_item_id": aid}],
+                "lines": [{"item_name": "Film", "requested_qty": 8, "accurate_item_id": aid, "master_item_id": mid}],
             })).json()["request"]
             po = (await c.post("/api/purchase-orders", json={
                 "request_id": req["id"], "supplier": "S",
@@ -226,3 +229,101 @@ async def test_failed_rebuild_keeps_prior_version(monkeypatch):
     finally:
         app.dependency_overrides.pop(current_user, None)
         monkeypatch.undo()
+
+
+def _layer_event(event_id, source_id, qty, cost, ident="m:1", ts="2026-01-01"):
+    return {
+        "event_id": event_id,
+        "source_type": "goods_receipt",
+        "source_id": source_id,
+        "source_line_id": event_id,
+        "item_identity": ident,
+        "recognized_at": ts,
+        "recognized_qty": qty,
+        "unit_cost": cost,
+        "total_cost": qty * cost,
+        "item_name": "X",
+        "item_code": "",
+        "master_item_id": "1",
+        "accurate_item_id": "",
+    }
+
+
+@pytest.mark.anyio
+async def test_fifo_example_and_insufficient_layer():
+    events = [
+        _layer_event("l1", "gr1", 500, 400, ts="2026-01-01"),
+        _layer_event("l2", "gr2", 800, 450, ts="2026-01-02"),
+    ]
+    layers = fifo_layers_from_events(events)
+    updated, cogs = fifo_consume(layers, [{"issue_id": "i1", "issued_at": "2026-02-01", "item_identity": "m:1", "qty": 1200}])
+    assert sum(row["total_hpp"] for row in cogs) == 515000
+    remain = {row["layer_id"]: row["remaining_qty"] for row in updated}
+    assert remain["l1"] == 0
+    assert remain["l2"] == 100
+    with pytest.raises(InsufficientCostLayerError) as exc:
+        fifo_consume(
+            fifo_layers_from_events([_layer_event("only", "gr1", 500, 400)]),
+            [{"issue_id": "i2", "issued_at": "2026-02-01", "item_identity": "m:1", "qty": 600}],
+        )
+    assert exc.value.code == INSUFFICIENT_COST_LAYER
+    assert INSUFFICIENT_COST_LAYER in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_moving_average_insufficient_and_same_date_acquisition_first():
+    with pytest.raises(InsufficientCostLayerError) as exc:
+        moving_average_from_events(
+            [_layer_event("only", "gr1", 500, 400)],
+            [{"issue_id": "i2", "issued_at": "2026-02-01", "item_identity": "m:1", "qty": 600}],
+        )
+    assert exc.value.code == INSUFFICIENT_COST_LAYER
+
+    same = "2026-03-01"
+    snaps, cogs, state = moving_average_from_events(
+        [_layer_event("acq", "gr1", 500, 400, ts=same)],
+        [{"issue_id": "iss", "issued_at": same, "item_identity": "m:1", "qty": 200}],
+    )
+    assert cogs[0]["unit_hpp"] == 400.0
+    assert cogs[0]["qty"] == 200
+    assert abs(state["m:1"]["qty"] - 300) < 0.0001
+    assert snaps
+
+
+@pytest.mark.anyio
+async def test_cancelled_po_and_gr_are_excluded_from_acquisition():
+    po_active = {
+        "id": "po-a", "po_number": "PB-A", "order_date": "2026-01-10",
+        "lines": [{"line_id": "ln-a", "ordered_qty": 10, "unit_price": 50, "item_name": "Z", "master_item_id": "m1"}],
+    }
+    po_cancelled = {
+        "id": "po-c", "po_number": "PB-C", "order_date": "2026-01-11", "cancelled": True,
+        "lines": [{"line_id": "ln-c", "ordered_qty": 7, "unit_price": 80, "item_name": "Z", "master_item_id": "m1"}],
+    }
+    po_events = build_acquisition_events(
+        method="FIFO",
+        recognition_point="purchase_order",
+        purchase_orders=[po_active, po_cancelled],
+        goods_receipts=[],
+        allocations=[],
+    )
+    assert [e["source_id"] for e in po_events] == ["po-a"]
+
+    gr_active = {
+        "id": "gr-a", "receipt_number": "GR-A", "purchase_order_id": "po-a", "receipt_date": "2026-01-12",
+        "lines": [{"line_id": "gl-a", "purchase_order_line_id": "ln-a", "received_qty": 4}],
+    }
+    gr_cancelled = {
+        "id": "gr-c", "receipt_number": "GR-C", "purchase_order_id": "po-a", "receipt_date": "2026-01-13",
+        "cancelled": True,
+        "lines": [{"line_id": "gl-c", "purchase_order_line_id": "ln-a", "received_qty": 3}],
+    }
+    gr_events = build_acquisition_events(
+        method="FIFO",
+        recognition_point="goods_receipt",
+        purchase_orders=[po_active],
+        goods_receipts=[gr_active, gr_cancelled],
+        allocations=[],
+    )
+    assert [e["source_id"] for e in gr_events] == ["gr-a"]
+    assert gr_events[0]["recognized_qty"] == 4

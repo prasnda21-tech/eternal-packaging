@@ -329,7 +329,12 @@ async def _mapped_settings_account_ids(db) -> set:
                         ids.add(value)
     purchase = await db.app_settings.find_one({"key": "purchase_accounting"}, {"_id": 0})
     if purchase:
-        for field in ("payable_account_id", "purchase_clearing_account_id"):
+        for field in (
+            "payable_account_id",
+            "purchase_clearing_account_id",
+            "inventory_account_id",
+            "cogs_account_id",
+        ):
             value = str(purchase.get(field) or "").strip()
             if value:
                 ids.add(value)
