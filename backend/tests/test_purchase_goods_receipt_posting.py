@@ -112,6 +112,9 @@ async def indexes(bind_motor):
     await server.db.product_unit_settings.delete_many({})
     await server.db.product_stock_state.delete_many({})
     await server.db.stock_movements.delete_many({})
+    await server.db.inventory_issue_accounting.delete_many({})
+    await server.db.inventory_financial_item_locks.delete_many({})
+    await server.db.inventory_financial_control.delete_many({})
     await server.db.app_settings.update_one(
         {"key": "physical_stock"},
         {"$set": {"key": "physical_stock", "enabled": False, "stock_in_trigger": "goods_receipt"}},
@@ -1756,3 +1759,87 @@ async def test_mixed_service_posts_inventory_only_and_reverses_exact_amount():
     assert Decimal(str(rev_by[clearing["id"]]["debit"])) == Decimal("50000.00")
     assert Decimal(str(rev_by[inv["id"]]["debit"])) == Decimal("0.00")
     assert len(await _source_journals(gr["id"])) == 1
+
+
+async def _seed_pengiriman(mid: str, qty: float, date="2026-10-05T03:00:00Z"):
+    mov_id = str(uuid.uuid4())
+    doc = {
+        "id": mov_id,
+        "movement_type": "PENGIRIMAN",
+        "master_item_id": mid,
+        "date": date,
+        "created_at": date,
+        "transaction_qty": qty,
+        "transaction_uom": "PCS",
+        "conversion_factor": 1,
+        "base_qty": qty,
+        "base_uom": "PCS",
+        "reference_number": f"SJ-{mov_id[:6]}",
+        "status": "POSTED",
+    }
+    await server.db.stock_movements.insert_one(doc)
+    return mov_id
+
+
+@pytest.mark.anyio
+async def test_gr_reverse_blocked_after_fifo_cogs_consume():
+    from services.inventory_issue_accounting import ensure_indexes as ensure_cogs
+    from services.inventory_issue_posting import post_inventory_issue_accounting
+
+    await ensure_cogs(server.db)
+    await server.db.app_settings.update_one(
+        {"key": "hpp_valuation"},
+        {"$set": {"key": "hpp_valuation", "method": "FIFO"}},
+        upsert=True,
+    )
+    await _configure_inventory()
+    po, gr = await _seed_gr(qty=10, price=10)
+    posted = await _unlocked_post(gr["id"])
+    assert not isinstance(posted, HTTPException)
+    mid = po["lines"][0]["master_item_id"]
+    mov_id = await _seed_pengiriman(mid, 4)
+    cogs = await post_inventory_issue_accounting(server.db, mov_id, POST_USER)
+    assert cogs["status"] == "posted"
+    blocked = await _unlocked_reverse(gr["id"], "sudah terpakai")
+    assert isinstance(blocked, HTTPException)
+    assert blocked.status_code == 409
+    assert (blocked.detail or {}).get("code") == "FINANCIAL_INVENTORY_ALREADY_CONSUMED"
+    assert (await _source_journals(gr["id"]))[0]["status"] == "posted"
+
+
+@pytest.mark.anyio
+async def test_gr_reverse_rata_rata_same_day_cogs_blocks_earlier_cogs_does_not():
+    from services.inventory_issue_accounting import ensure_indexes as ensure_cogs
+    from services.inventory_issue_posting import post_inventory_issue_accounting
+
+    await ensure_cogs(server.db)
+    await server.db.app_settings.update_one(
+        {"key": "hpp_valuation"},
+        {"$set": {"key": "hpp_valuation", "method": "RATA-RATA"}},
+        upsert=True,
+    )
+    await _configure_inventory()
+    po_early, gr_early = await _seed_gr(qty=10, price=10, receipt_date="2026-10-01")
+    posted_early = await _unlocked_post(gr_early["id"])
+    assert not isinstance(posted_early, HTTPException)
+    mid = po_early["lines"][0]["master_item_id"]
+    mov_id = await _seed_pengiriman(mid, 2, date="2026-10-02T03:00:00Z")
+    cogs = await post_inventory_issue_accounting(server.db, mov_id, POST_USER)
+    assert cogs["status"] == "posted"
+    po_late, gr_late = await _seed_gr(qty=10, price=10, receipt_date="2026-10-10", mid=mid)
+    posted_late = await _unlocked_post(gr_late["id"])
+    assert not isinstance(posted_late, HTTPException)
+    allowed = await _unlocked_reverse(gr_late["id"], "cogs lebih awal")
+    assert not isinstance(allowed, HTTPException), getattr(allowed, "detail", allowed)
+    assert allowed["accounting_status"] == "reversed"
+
+    po_same, gr_same = await _seed_gr(qty=10, price=10, receipt_date="2026-10-05")
+    posted_same = await _unlocked_post(gr_same["id"])
+    assert not isinstance(posted_same, HTTPException)
+    same_mid = po_same["lines"][0]["master_item_id"]
+    same_mov = await _seed_pengiriman(same_mid, 2, date="2026-10-05T18:00:00Z")
+    posted_cogs = await post_inventory_issue_accounting(server.db, same_mov, POST_USER)
+    assert posted_cogs["status"] == "posted"
+    blocked = await _unlocked_reverse(gr_same["id"], "same day")
+    assert isinstance(blocked, HTTPException)
+    assert (blocked.detail or {}).get("code") == "FINANCIAL_INVENTORY_ALREADY_CONSUMED"

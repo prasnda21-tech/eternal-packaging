@@ -48,6 +48,7 @@ SOURCE_LABELS = {
     "purchase_payment_reversal": "Reversal Pembayaran Pembelian",
     "purchase_goods_receipt": "Penerimaan Barang",
     "purchase_goods_receipt_reversal": "Reversal Penerimaan Barang",
+    "inventory_issue": "HPP / Pengeluaran Persediaan",
 }
 
 # Only sources with an existing detail-route + ?id= deep-link.

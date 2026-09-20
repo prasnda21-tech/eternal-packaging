@@ -217,6 +217,7 @@ from services.general_journal_http import register_general_journal_routes
 from services.opening_balance_http import register_opening_balance_routes
 from services.accounting_periods_http import register_accounting_periods_routes
 from services.general_ledger_http import register_general_ledger_routes
+from services.inventory_issue_http import register_inventory_issue_routes
 from services.accounts_receivable_http import register_accounts_receivable_routes
 from services.accounts_payable_http import register_accounts_payable_routes
 from services.purchase_accounting_settings_http import register_purchase_accounting_settings_routes
@@ -11874,6 +11875,13 @@ register_general_ledger_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+register_inventory_issue_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
 register_accounts_receivable_routes(
     api_router,
     get_db=lambda: db,
@@ -13517,6 +13525,7 @@ async def seed():
     from services.accounting_audit import ensure_indexes as _accounting_audit_ensure_indexes
     from services.accounts_receivable import ensure_indexes as _accounts_receivable_ensure_indexes
     from services.accounts_payable import ensure_indexes as _accounts_payable_ensure_indexes
+    from services.inventory_issue_accounting import ensure_indexes as _inventory_issue_ensure_indexes
     await _cash_bank_master_ensure_indexes(db)
     await _cash_bank_voucher_ensure_indexes(db)
     await _journal_core_ensure_indexes(db)
@@ -13527,6 +13536,7 @@ async def seed():
     await _accounting_audit_ensure_indexes(db)
     await _accounts_receivable_ensure_indexes(db)
     await _accounts_payable_ensure_indexes(db)
+    await _inventory_issue_ensure_indexes(db)
     await ensure_chat_indexes(db)
     try:
         await ensure_v2_physical_settings(db)
