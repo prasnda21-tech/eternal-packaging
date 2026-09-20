@@ -177,10 +177,12 @@ async def _source_journals(invoice_id: str):
 @pytest.mark.anyio
 async def test_permission_not_auto_granted():
     assert "sales_accounting.post" in ALL_PERMISSIONS
+    assert "sales_accounting.reverse" in ALL_PERMISSIONS
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
         if role == "admin":
             continue
         assert "sales_accounting.post" not in perms
+        assert "sales_accounting.reverse" not in perms
 
 
 @pytest.mark.anyio

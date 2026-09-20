@@ -249,6 +249,7 @@ async def test_permissions_not_auto_granted_and_gl_labels():
     assert PERM_POST in ALL_PERMISSIONS
     assert PERM_REVERSE in ALL_PERMISSIONS
     assert SOURCE_LABELS["sales_invoice"] == "Faktur Penjualan"
+    assert SOURCE_LABELS["sales_invoice_reversal"] == "Reversal Faktur Penjualan"
     assert SOURCE_LABELS["sales_receipt"] == "Penerimaan Penjualan"
     assert SOURCE_LABELS["sales_receipt_reversal"] == "Reversal Penerimaan Penjualan"
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
@@ -610,6 +611,7 @@ async def test_create_does_not_write_journal_and_cash_bank_options():
             assert "Mandiri Nonaktif" not in names
 
             inv = await _create_invoice(client, po["id"])
+            await _finalize(client, inv["id"])
             before = await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE})
             receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
             assert receipt["accounting_status"] == "not_posted"

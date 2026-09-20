@@ -153,11 +153,14 @@ async def test_settings_permissions_not_auto_granted():
     assert "settings.sales_accounting.view" in keys
     assert "settings.sales_accounting.manage" in keys
     assert "sales_accounting.post" in keys
+    assert "sales_accounting.reverse" in keys
     assert "settings.sales_accounting.view" in ALL_PERMISSIONS
     assert "sales_accounting.post" in ALL_PERMISSIONS
+    assert "sales_accounting.reverse" in ALL_PERMISSIONS
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
         if role == "admin":
             continue
         assert "settings.sales_accounting.view" not in perms
         assert "settings.sales_accounting.manage" not in perms
         assert "sales_accounting.post" not in perms
+        assert "sales_accounting.reverse" not in perms

@@ -264,6 +264,7 @@ async def test_dashboard_orders_and_visits_use_canonical_scoped_sources():
     ayub_invoice_id = str(uuid.uuid4())
     euis_invoice_id = str(uuid.uuid4())
     draft_invoice_id = str(uuid.uuid4())
+    cancelled_invoice_id = str(uuid.uuid4())
     await db.sales_invoices.insert_many([
         {
             "id": ayub_invoice_id,
@@ -289,13 +290,31 @@ async def test_dashboard_orders_and_visits_use_canonical_scoped_sources():
             "grand_total": 7_000_000,
             "financial_status": "draft",
         },
+        {
+            "id": cancelled_invoice_id,
+            "po_id": ayub_po["id"],
+            "invoice_number": f"INV-CAN-{suffix}",
+            "invoice_date": "2026-09-12",
+            "grand_total": 5_000_000,
+            "financial_status": "cancelled",
+        },
     ])
-    await db.sales_receipts.insert_one({
-        "id": str(uuid.uuid4()),
-        "invoice_id": ayub_invoice_id,
-        "po_id": ayub_po["id"],
-        "amount": 250_000,
-    })
+    await db.sales_receipts.insert_many([
+        {
+            "id": str(uuid.uuid4()),
+            "invoice_id": ayub_invoice_id,
+            "po_id": ayub_po["id"],
+            "amount": 250_000,
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "invoice_id": ayub_invoice_id,
+            "po_id": ayub_po["id"],
+            "amount": 100_000,
+            "financial_status": "cancelled",
+            "cancelled": True,
+        },
+    ])
     ayub_outlet_id = str(uuid.uuid4())
     euis_outlet_id = str(uuid.uuid4())
     await db.sales_outlets.insert_many([
@@ -339,7 +358,7 @@ async def test_dashboard_orders_and_visits_use_canonical_scoped_sources():
 
     app.dependency_overrides.pop(current_user, None)
     await db.orders.delete_many({"id": {"$in": [ayub_po["id"], euis_po["id"]]}})
-    await db.sales_invoices.delete_many({"id": {"$in": [ayub_invoice_id, euis_invoice_id, draft_invoice_id]}})
+    await db.sales_invoices.delete_many({"id": {"$in": [ayub_invoice_id, euis_invoice_id, draft_invoice_id, cancelled_invoice_id]}})
     await db.sales_receipts.delete_many({"invoice_id": ayub_invoice_id})
     await db.sales_outlets.delete_many({"id": {"$in": [ayub_outlet_id, euis_outlet_id]}})
     await db.sales_ownership.delete_many({"outlet_id": {"$in": [ayub_outlet_id, euis_outlet_id]}})

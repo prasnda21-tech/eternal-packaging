@@ -125,6 +125,7 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
           paid_total: 200000,
           outstanding_amount: 300000,
           payment_status: "DP",
+          financial_status: "finalized",
         },
       ];
 
@@ -175,10 +176,10 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
 
     test("CRITICAL: mixed list isolates only invoices with outstanding > 0", () => {
       const mixedInvoices = [
-        { id: "inv-1", invoice_number: "INV-1", grand_total: 100000, paid_total: 0, outstanding_amount: 100000 },
-        { id: "inv-2", invoice_number: "INV-2", grand_total: 200000, paid_total: 200000, outstanding_amount: 0 },
-        { id: "inv-3", invoice_number: "INV-3", grand_total: 0, paid_total: 0, outstanding_amount: 0 },
-        { id: "inv-4", invoice_number: "INV-4", grand_total: 350000, paid_total: 100000, outstanding_amount: 250000 },
+        { id: "inv-1", invoice_number: "INV-1", financial_status: "finalized", grand_total: 100000, paid_total: 0, outstanding_amount: 100000 },
+        { id: "inv-2", invoice_number: "INV-2", financial_status: "finalized", grand_total: 200000, paid_total: 200000, outstanding_amount: 0 },
+        { id: "inv-3", invoice_number: "INV-3", financial_status: "finalized", grand_total: 0, paid_total: 0, outstanding_amount: 0 },
+        { id: "inv-4", invoice_number: "INV-4", financial_status: "finalized", grand_total: 350000, paid_total: 100000, outstanding_amount: 250000 },
       ];
 
       const eligible = filterEligibleInvoices(mixedInvoices);

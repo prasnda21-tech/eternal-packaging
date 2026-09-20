@@ -551,10 +551,14 @@ async def _sales_financial_summary(db, user: dict, month: str) -> dict:
     if inv_ids:
         receipts = await _cursor_rows(db.sales_receipts.find(
             {"invoice_id": {"$in": inv_ids}},
-            {"_id": 0, "invoice_id": 1, "amount": 1},
+            {"_id": 0, "invoice_id": 1, "amount": 1, "financial_status": 1, "cancelled": 1},
         ))
+    from services.sales_receipt_posting import receipt_counts_toward_outstanding
+
     paid_by_invoice: Dict[str, float] = {}
     for receipt in receipts:
+        if not receipt_counts_toward_outstanding(receipt):
+            continue
         iid = str(receipt.get("invoice_id") or "")
         paid_by_invoice[iid] = paid_by_invoice.get(iid, 0.0) + _number(receipt.get("amount"))
     revenue = 0.0

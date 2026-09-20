@@ -33,26 +33,44 @@ function invoiceFinancialStatus(inv) {
   return "draft";
 }
 
-function renderPostedAccountingBadge() {
+function accountingStatusOf(inv) {
+  return String(inv?.accounting_status || "not_posted").toLowerCase();
+}
+
+function renderAccountingBadge(status) {
+  const s = String(status || "not_posted").toLowerCase();
+  const map = {
+    posted: { label: "Posted", bg: "#d1fae5", color: "#065f46", border: "#a7f3d0" },
+    reversed: { label: "Reversed", bg: "#ede9fe", color: "#5b21b6", border: "#ddd6fe" },
+    not_posted: { label: "Belum Diposting", bg: "#f8fafc", color: "#475569", border: "#cbd5e1" },
+  };
+  const t = map[s] || map.not_posted;
   return (
     <span
       className="pj-status-badge"
-      data-testid="invoice-accounting-badge-posted"
+      data-testid={`invoice-accounting-badge-${s === "not_posted" ? "not-posted" : s}`}
       style={{
         display: "inline-block",
         padding: "3px 10px",
         borderRadius: 9999,
         fontSize: 11,
         fontWeight: 700,
-        backgroundColor: "#d1fae5",
-        color: "#065f46",
-        border: "1.5px solid #a7f3d0",
+        backgroundColor: t.bg,
+        color: t.color,
+        border: `1.5px solid ${t.border}`,
         marginLeft: 6,
       }}
     >
-      Posted Accounting
+      {t.label}
     </span>
   );
+}
+
+function receiptAccountingLabel(status) {
+  const s = String(status || "not_posted").toLowerCase();
+  if (s === "posted") return "Posted";
+  if (s === "reversed") return "Reversed";
+  return "Belum Diposting";
 }
 
 function renderFinancialBadge(status) {
@@ -168,6 +186,9 @@ export default function FakturPenjualan() {
   const [finalizeConfirm, setFinalizeConfirm] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
   const [postAccountingConfirm, setPostAccountingConfirm] = useState(false);
+  const [reverseConfirm, setReverseConfirm] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseErr, setReverseErr] = useState("");
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
 
   // Load Invoices List
@@ -619,6 +640,29 @@ export default function FakturPenjualan() {
     }
   };
 
+  const handleReverseAccounting = async () => {
+    if (!selectedInvoiceId) return;
+    setLifecycleBusy(true);
+    setReverseErr("");
+    setDetailErr("");
+    try {
+      const res = await api.reverseSalesInvoiceAccounting(selectedInvoiceId, { reason: reverseReason });
+      const updated = res.invoice || res;
+      setDetailData(updated);
+      setReverseConfirm(false);
+      setReverseReason("");
+      setSuccessMsg("Faktur di-reverse dari accounting.");
+      setTimeout(() => setSuccessMsg(""), 2500);
+    } catch (err) {
+      const det = err.response?.data?.detail;
+      const msg = typeof det === "object" ? det.message : det || err.message || "Gagal reverse accounting";
+      setReverseErr(msg);
+      setDetailErr(msg);
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
   const handleCancelInvoice = async () => {
     if (!selectedInvoiceId) return;
     setLifecycleBusy(true);
@@ -676,13 +720,29 @@ export default function FakturPenjualan() {
   const financialLocked = Boolean(detailData) && detailStatus !== "draft";
   const canPostAccounting =
     hasPerm("sales_accounting.post") || user?.role === "admin";
-  const accountingStatus = String(detailData?.accounting_status || "not_posted").toLowerCase();
+  const canReverseAccountingPerm =
+    hasPerm("sales_accounting.reverse") || user?.role === "admin";
+  const accountingStatus = accountingStatusOf(detailData);
   const isAccountingPosted = accountingStatus === "posted" || detailData?.accounting_posted === true;
+  const isAccountingReversed = accountingStatus === "reversed";
   const showPostAccounting =
     canPostAccounting &&
     detailStatus === "finalized" &&
     !isAccountingPosted &&
+    !isAccountingReversed &&
     detailData?.can_post_accounting === true;
+  const showReverseAccounting =
+    canReverseAccountingPerm &&
+    detailStatus === "finalized" &&
+    isAccountingPosted &&
+    detailData?.can_reverse_accounting === true;
+  const reverseBlockers = Array.isArray(detailData?.reverse_blockers) ? detailData.reverse_blockers : [];
+  const showReverseBlocked =
+    canReverseAccountingPerm &&
+    detailStatus === "finalized" &&
+    isAccountingPosted &&
+    !showReverseAccounting &&
+    reverseBlockers.length > 0;
   const showAccountingUnconfigured =
     detailStatus === "finalized" &&
     !isAccountingPosted &&
@@ -1039,7 +1099,8 @@ export default function FakturPenjualan() {
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {renderFinancialBadge(inv.financial_status)}
-                        {(inv.accounting_status === "posted" || inv.accounting_posted === true) && renderPostedAccountingBadge()}
+                        {(invoiceFinancialStatus(inv) !== "draft" || accountingStatusOf(inv) !== "not_posted") &&
+                          renderAccountingBadge(accountingStatusOf(inv))}
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {renderPaymentBadge(inv.payment_status)}
@@ -1578,7 +1639,8 @@ export default function FakturPenjualan() {
                     </h2>
                     <div style={{ marginTop: 8 }}>
                       {renderFinancialBadge(detailStatus)}
-                      {isAccountingPosted && renderPostedAccountingBadge()}
+                      {(detailStatus !== "draft" || isAccountingPosted || isAccountingReversed) &&
+                        renderAccountingBadge(accountingStatus)}
                     </div>
                     {showAccountingUnconfigured && (
                       <p data-testid="invoice-accounting-unconfigured" style={{ margin: "8px 0 0", fontSize: "0.85rem", color: "#b45309" }}>
@@ -1910,6 +1972,33 @@ export default function FakturPenjualan() {
                     Post ke Accounting
                   </button>
                 )}
+                {showReverseAccounting && (
+                  <button
+                    type="button"
+                    data-testid="btn-reverse-accounting"
+                    disabled={lifecycleBusy}
+                    onClick={() => {
+                      setReverseErr("");
+                      setReverseReason("");
+                      setReverseConfirm(true);
+                    }}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: "#6d28d9", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Reverse Accounting
+                  </button>
+                )}
+                {showReverseBlocked && (
+                  <div data-testid="invoice-reverse-blockers" style={{ flex: "1 1 100%", background: "#fff7ed", color: "#9a3412", padding: "10px 14px", borderRadius: 8, fontSize: "0.85rem" }}>
+                    Faktur tidak dapat di-reverse karena masih memiliki penerimaan aktif.
+                    <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                      {reverseBlockers.map((b) => (
+                        <li key={b.id || b.number}>
+                          {b.number || b.id} — {receiptAccountingLabel(b.accounting_status)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {canEditFinancial && (
                   <button
                     type="submit"
@@ -2046,6 +2135,65 @@ export default function FakturPenjualan() {
                 style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#047857", color: "#fff", fontWeight: 600, cursor: "pointer" }}
               >
                 {lifecycleBusy ? "Memproses..." : "Post ke Accounting"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reverseConfirm && detailData && (
+        <div
+          className="modal-overlay"
+          data-testid="reverse-accounting-confirm-modal"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 80,
+          }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 520, boxShadow: "0 20px 40px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: "1.1rem" }}>Reverse Accounting?</h3>
+            <p style={{ margin: "0 0 12px", color: "#334155", fontSize: "0.9rem" }}>
+              Reversal akan membalik jurnal Faktur dan membatalkan Faktur.
+              Qty Faktur akan kembali tersedia untuk pembuatan Faktur pengganti.
+            </p>
+            <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+              Alasan reversal
+            </label>
+            <textarea
+              data-testid="reverse-reason-input"
+              value={reverseReason}
+              onChange={(e) => setReverseReason(e.target.value)}
+              rows={3}
+              placeholder="Minimal 3 karakter"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, marginBottom: 12, resize: "vertical" }}
+            />
+            {reverseErr && (
+              <div data-testid="reverse-accounting-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
+                {reverseErr}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => { setReverseConfirm(false); setReverseErr(""); }}
+                disabled={lifecycleBusy}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer" }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                data-testid="btn-confirm-reverse-accounting"
+                onClick={handleReverseAccounting}
+                disabled={lifecycleBusy || String(reverseReason || "").trim().length < 3}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#6d28d9", color: "#fff", fontWeight: 600, cursor: "pointer" }}
+              >
+                {lifecycleBusy ? "Memproses..." : "Reverse Accounting"}
               </button>
             </div>
           </div>

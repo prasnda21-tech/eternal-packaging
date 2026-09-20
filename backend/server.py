@@ -8970,7 +8970,9 @@ from services.sales_invoices import (
 )
 from services.sales_invoice_posting import (
     PERM_POST as _SALES_ACCOUNTING_POST_PERM,
+    PERM_REVERSE as _SALES_ACCOUNTING_REVERSE_PERM,
     post_sales_invoice_accounting as _post_sales_invoice_accounting,
+    reverse_sales_invoice_accounting as _reverse_sales_invoice_accounting,
 )
 from services.sales_receipt_posting import (
     PERM_POST as _SALES_RECEIPT_ACCOUNTING_POST_PERM,
@@ -9118,6 +9120,10 @@ class SalesInvoiceUpdatePayload(BaseModel):
     notes: Optional[str] = ""
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
+
+
+class SalesInvoiceReverseAccountingPayload(BaseModel):
+    reason: str
 
 
 # ---------- Sales Receipt (Penerimaan Penjualan) ----------
@@ -10257,6 +10263,18 @@ async def post_sales_invoice_accounting_endpoint(id: str, user=Depends(current_u
     await _require_perm(user, _SALES_ACCOUNTING_POST_PERM)
     inv = await _post_sales_invoice_accounting(db, id, user)
     return {"invoice": inv, "message": "Faktur Penjualan diposting ke accounting"}
+
+
+@api_router.post("/sales-invoices/{id}/reverse-accounting")
+async def reverse_sales_invoice_accounting_endpoint(
+    id: str,
+    payload: SalesInvoiceReverseAccountingPayload,
+    user=Depends(current_user),
+):
+    """Reverse a posted sales invoice journal. Does not cascade receipt reversals."""
+    await _require_perm(user, _SALES_ACCOUNTING_REVERSE_PERM)
+    inv = await _reverse_sales_invoice_accounting(db, id, user, payload.reason)
+    return {"invoice": inv, "message": "Faktur Penjualan di-reverse dari accounting"}
 
 
 # ==================================================

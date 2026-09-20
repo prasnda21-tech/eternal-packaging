@@ -134,6 +134,35 @@ def monetary_invariant_valid(invoice: Optional[dict]) -> bool:
     return grand == after + ppn
 
 
+def apply_invoice_payment_fields(invoice: Dict[str, Any], receipts: Optional[List[dict]]) -> Dict[str, Any]:
+    """Authoritative paid/outstanding from active receipts only. Cancelled is not live AR."""
+    from services.sales_receipt_posting import receipt_counts_toward_outstanding
+
+    rows = receipts or []
+    active = [r for r in rows if receipt_counts_toward_outstanding(r)]
+    invoice["receipt_count"] = len(rows)
+    invoice["active_receipt_count"] = len(active)
+    if effective_financial_status(invoice) == FINANCIAL_CANCELLED:
+        invoice["paid_total"] = 0.0
+        invoice["outstanding_amount"] = 0.0
+        invoice["payment_status"] = "BELUM DIBAYAR"
+        return invoice
+
+    paid = round(sum(float(r.get("amount", 0)) for r in active), 2)
+    grand = float(invoice.get("grand_total", 0))
+    outstanding = max(round(grand - paid, 2), 0.0)
+    if paid <= 0:
+        p_status = "BELUM DIBAYAR"
+    elif paid < grand:
+        p_status = "DP"
+    else:
+        p_status = "LUNAS"
+    invoice["paid_total"] = paid
+    invoice["outstanding_amount"] = outstanding
+    invoice["payment_status"] = p_status
+    return invoice
+
+
 def _draft_filter(invoice_id: str) -> Dict[str, Any]:
     return {
         "id": invoice_id,
@@ -154,10 +183,17 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
     from services.sales_invoice_posting import (
         ACCOUNTING_NOT_POSTED,
         ACCOUNTING_POSTED,
+        RECEIPT_CREATE_CLAIM_AT_FIELD,
+        RECEIPT_CREATE_CLAIM_FIELD,
+        REVERSE_CLAIM_FIELD,
         accounting_status_from_journal,
+        collect_invoice_reverse_receipt_blockers,
         load_source_journals_by_invoice_ids,
         posting_claim_is_active,
+        receipt_create_claim_is_active,
+        reverse_claim_is_active,
     )
+    from services.sales_receipt_posting import receipt_counts_toward_outstanding
 
     configured = await mappings_configured(db)
     journals = await load_source_journals_by_invoice_ids(
@@ -165,26 +201,47 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
     )
     for inv in invoices:
         status = effective_financial_status(inv)
+        receipts = inv.get("receipts") if isinstance(inv.get("receipts"), list) else None
         receipt_count = int(inv.get("receipt_count") or 0)
-        if "receipts" in inv and isinstance(inv.get("receipts"), list):
-            receipt_count = len(inv["receipts"])
+        active_receipt_count = int(inv.get("active_receipt_count") or 0)
+        if receipts is not None:
+            receipt_count = len(receipts)
+            active_receipt_count = len([r for r in receipts if receipt_counts_toward_outstanding(r)])
         journal = journals.get(str(inv.get("id")))
         accounting_status = accounting_status_from_journal(journal)
         inv["financial_status"] = status
         inv["accounting_status"] = accounting_status
         inv["accounting_posted"] = accounting_status == ACCOUNTING_POSTED
         inv["accounting_journal_id"] = journal.get("id") if journal else None
+        inv["accounting_reversal_journal_id"] = inv.get("accounting_reversal_journal_id")
         inv["accounting_ready"] = (
             status == FINANCIAL_FINALIZED and configured and monetary_invariant_valid(inv)
         )
         inv["receipt_count"] = receipt_count
+        inv["active_receipt_count"] = active_receipt_count
         inv["can_cancel"] = (
             status == FINANCIAL_FINALIZED
             and receipt_count == 0
             and accounting_status == ACCOUNTING_NOT_POSTED
             and not posting_claim_is_active(inv)
         )
+        inv["can_reverse_accounting"] = (
+            status == FINANCIAL_FINALIZED
+            and accounting_status == ACCOUNTING_POSTED
+            and active_receipt_count == 0
+            and not posting_claim_is_active(inv)
+            and not reverse_claim_is_active(inv)
+            and not receipt_create_claim_is_active(inv)
+        )
+        if receipts is not None and status == FINANCIAL_FINALIZED and accounting_status == ACCOUNTING_POSTED:
+            if not inv["can_reverse_accounting"] and active_receipt_count > 0:
+                inv["reverse_blockers"] = await collect_invoice_reverse_receipt_blockers(db, inv["id"])
+            else:
+                inv["reverse_blockers"] = []
         inv.pop("accounting_posting_claim", None)
+        inv.pop(REVERSE_CLAIM_FIELD, None)
+        inv.pop(RECEIPT_CREATE_CLAIM_FIELD, None)
+        inv.pop(RECEIPT_CREATE_CLAIM_AT_FIELD, None)
         inv["can_post_accounting"] = (
             status == FINANCIAL_FINALIZED
             and accounting_status == ACCOUNTING_NOT_POSTED
@@ -541,22 +598,7 @@ async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] 
             receipts_by_inv.setdefault(r.get("invoice_id"), []).append(r)
 
         for inv in invoices:
-            inv_receipts = receipts_by_inv.get(inv.get("id"), [])
-            paid = round(sum(float(r.get("amount", 0)) for r in inv_receipts), 2)
-            grand = float(inv.get("grand_total", 0))
-            outstanding = max(round(grand - paid, 2), 0.0)
-
-            if paid <= 0:
-                p_status = "BELUM DIBAYAR"
-            elif paid < grand:
-                p_status = "DP"
-            else:
-                p_status = "LUNAS"
-
-            inv["paid_total"] = paid
-            inv["outstanding_amount"] = outstanding
-            inv["payment_status"] = p_status
-            inv["receipt_count"] = len(inv_receipts)
+            apply_invoice_payment_fields(inv, receipts_by_inv.get(inv.get("id"), []))
 
     await attach_invoice_accounting_fields(db, invoices)
     return invoices
@@ -572,22 +614,8 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
 
     # Fetch live receipts for exact invoice
     receipts = await db.sales_receipts.find({"invoice_id": inv["id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
-    paid = round(sum(float(r.get("amount", 0)) for r in receipts), 2)
-    grand = float(inv.get("grand_total", 0))
-    outstanding = max(round(grand - paid, 2), 0.0)
-
-    if paid <= 0:
-        p_status = "BELUM DIBAYAR"
-    elif paid < grand:
-        p_status = "DP"
-    else:
-        p_status = "LUNAS"
-
-    inv["paid_total"] = paid
-    inv["outstanding_amount"] = outstanding
-    inv["payment_status"] = p_status
+    apply_invoice_payment_fields(inv, receipts)
     inv["receipts"] = receipts
-    inv["receipt_count"] = len(receipts)
     await attach_invoice_accounting_fields(db, [inv])
     return inv
 

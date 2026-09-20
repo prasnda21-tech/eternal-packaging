@@ -586,6 +586,7 @@ export const api = {
   finalizeSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/finalize`).then((r) => r.data),
   cancelSalesInvoice: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/cancel`).then((r) => r.data),
   postSalesInvoiceAccounting: (id) => client.post(`/sales-invoices/${encodeURIComponent(id)}/post-accounting`).then((r) => r.data),
+  reverseSalesInvoiceAccounting: (id, payload) => client.post(`/sales-invoices/${encodeURIComponent(id)}/reverse-accounting`, payload).then((r) => r.data),
   // ---- Sales Receipt (Penerimaan Penjualan) ----
   listSalesReceipts: dedupeInflight(
     (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
