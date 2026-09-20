@@ -34,6 +34,7 @@ from services.inventory_accounting import (
     REASON_NON_INVENTORY_ITEM,
     REASON_UNKNOWN_ITEM_TYPE,
     annotate_acquisition_event,
+    financial_layer_view,
 )
 
 SETTINGS_KEY = "hpp_valuation"
@@ -57,6 +58,14 @@ RECOG_FROM_UI = {v: k for k, v in UI_RECOG.items()}
 
 COGS_UNAVAILABLE_REASON = "no_inventory_issue_ledger"
 INSUFFICIENT_COST_LAYER = "INSUFFICIENT_COST_LAYER"
+REASON_NO_ACTIVE_HPP_VERSION = "NO_ACTIVE_HPP_VERSION"
+REASON_LEGACY_HPP_VERSION = "LEGACY_HPP_VERSION"
+REASON_INVALID_FINANCIAL_UOM_VERSION = "INVALID_FINANCIAL_UOM_VERSION"
+REASON_PURCHASE_INVENTORY_NOT_CONFIGURED = "PURCHASE_INVENTORY_NOT_CONFIGURED"
+REASON_HPP_VERSION_NOT_ACTIVE = "HPP_VERSION_NOT_ACTIVE"
+REASON_FINANCIAL_MODEL_VERSION_MISMATCH = "FINANCIAL_MODEL_VERSION_MISMATCH"
+REASON_FINANCIAL_COST_BASIS_MISMATCH = "FINANCIAL_COST_BASIS_MISMATCH"
+REASON_HPP_METHOD_INVALID = "HPP_METHOD_INVALID"
 
 
 class InsufficientCostLayerError(ValueError):
@@ -106,8 +115,11 @@ def default_settings() -> dict:
         "last_recalculation_error": None,
         "updated_at": None,
         "cost_basis_uom": COST_BASIS_UOM,
+        "financial_cost_basis_uom": COST_BASIS_UOM,
         "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "supported_financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
         "financial_cogs_ready": False,
+        "financial_cogs_ready_reason": REASON_NO_ACTIVE_HPP_VERSION,
     }
 
 
@@ -153,32 +165,59 @@ def financial_uom_normalization_valid(events: List[dict]) -> bool:
     return True
 
 
-async def _compute_financial_cogs_ready(db, hpp: dict) -> bool:
+def _persisted_version_field(version: Optional[dict], key: str):
+    """Return the stored version field, or None when the historical doc lacks it."""
+    if not version or key not in version:
+        return None
+    return version.get(key)
+
+
+def assess_version_financial_readiness(version: Optional[dict]) -> Tuple[bool, Optional[str]]:
+    """Pure check of a persisted HPP version. Missing/legacy metadata is not ready."""
+    if not version:
+        return False, REASON_NO_ACTIVE_HPP_VERSION
+    if str(version.get("status") or "") != "ACTIVE":
+        return False, REASON_HPP_VERSION_NOT_ACTIVE
+    if (
+        "financial_uom_normalization_valid" not in version
+        or "financial_inventory_model_version" not in version
+        or "cost_basis_uom" not in version
+    ):
+        return False, REASON_LEGACY_HPP_VERSION
+    if version.get("financial_uom_normalization_valid") is not True:
+        return False, REASON_INVALID_FINANCIAL_UOM_VERSION
+    if version.get("financial_inventory_model_version") != FINANCIAL_INVENTORY_MODEL_VERSION:
+        return False, REASON_FINANCIAL_MODEL_VERSION_MISMATCH
+    if version.get("cost_basis_uom") != COST_BASIS_UOM:
+        return False, REASON_FINANCIAL_COST_BASIS_MISMATCH
+    return True, None
+
+
+async def assess_financial_cogs_readiness(db, hpp: dict) -> Tuple[bool, Optional[str]]:
     from services.purchase_accounting_settings import get_purchase_accounting_settings
 
     try:
         normalize_method(hpp.get("method"))
     except HTTPException:
-        return False
+        return False, REASON_HPP_METHOD_INVALID
     purchase = await get_purchase_accounting_settings(db)
     if not purchase.get("inventory_configured"):
-        return False
-    active_id = hpp.get("active_version")
+        return False, REASON_PURCHASE_INVENTORY_NOT_CONFIGURED
+    active_id = str(hpp.get("active_version") or "").strip()
     if not active_id:
-        return True
-    version = await db[VERSIONS].find_one(
-        {"id": active_id},
-        {"_id": 0, "financial_uom_normalization_valid": 1},
-    )
-    if version and version.get("financial_uom_normalization_valid") is False:
-        return False
-    return True
+        return False, REASON_NO_ACTIVE_HPP_VERSION
+    version = await db[VERSIONS].find_one({"id": active_id}, {"_id": 0})
+    return assess_version_financial_readiness(version)
 
 
 async def get_hpp_settings(db) -> dict:
     doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
     out = public_settings(doc)
-    out["financial_cogs_ready"] = await _compute_financial_cogs_ready(db, out)
+    ready, reason = await assess_financial_cogs_readiness(db, out)
+    out["financial_cogs_ready"] = ready
+    out["financial_cogs_ready_reason"] = reason
+    out["supported_financial_inventory_model_version"] = FINANCIAL_INVENTORY_MODEL_VERSION
+    out["financial_cost_basis_uom"] = COST_BASIS_UOM
     return out
 
 
@@ -330,6 +369,10 @@ def _financial_meta(ev: dict) -> dict:
 
 
 def fifo_layers_from_events(events: List[dict]) -> List[dict]:
+    """Management layers keep recognized_qty / unit_cost in transaction units.
+
+    Financial Inventory must use financial_layer_view() (base_qty / base_unit_cost).
+    """
     layers = []
     for ev in events:
         qty = qty_round(ev["recognized_qty"])
@@ -596,6 +639,7 @@ async def recalculate_hpp(
                     "method": method,
                     "recognition_point": recognition_point,
                     "cost_basis_uom": COST_BASIS_UOM,
+                    "financial_cost_basis_uom": COST_BASIS_UOM,
                     "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
                 })
             if layer_docs:
@@ -616,6 +660,7 @@ async def recalculate_hpp(
                     "cogs_available": bool(issues),
                     "cogs_unavailable_reason": None if issues else COGS_UNAVAILABLE_REASON,
                     "cost_basis_uom": COST_BASIS_UOM,
+                    "financial_cost_basis_uom": COST_BASIS_UOM,
                     "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
                     "financial_uom_normalization_valid": uom_valid,
                     "error": None,
@@ -720,6 +765,7 @@ async def query_cost_boundary(
         for key in FINANCIAL_META_KEYS:
             if key in l and key not in row:
                 row[key] = l[key]
+        row["financial_view"] = financial_layer_view(l)
         acquisitions.append(row)
     return {
         "method": settings.get("method"),
@@ -731,9 +777,12 @@ async def query_cost_boundary(
         "cogs_available": False,
         "cogs_unavailable_reason": COGS_UNAVAILABLE_REASON,
         "financial_cogs_ready": settings.get("financial_cogs_ready"),
-        "cost_basis_uom": COST_BASIS_UOM,
-        "financial_inventory_model_version": (version or {}).get(
-            "financial_inventory_model_version", FINANCIAL_INVENTORY_MODEL_VERSION
+        "financial_cogs_ready_reason": settings.get("financial_cogs_ready_reason"),
+        "supported_financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": _persisted_version_field(version, "cost_basis_uom"),
+        "financial_cost_basis_uom": _persisted_version_field(version, "financial_cost_basis_uom"),
+        "financial_inventory_model_version": _persisted_version_field(
+            version, "financial_inventory_model_version"
         ),
         "issues": [],
         "acquisitions": acquisitions,

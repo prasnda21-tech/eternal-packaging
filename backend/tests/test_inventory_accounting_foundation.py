@@ -24,8 +24,15 @@ from services.hpp_valuation import (
     COST_BASIS_UOM,
     FINANCIAL_INVENTORY_MODEL_VERSION,
     LAYERS,
+    REASON_INVALID_FINANCIAL_UOM_VERSION,
+    REASON_LEGACY_HPP_VERSION,
+    REASON_NO_ACTIVE_HPP_VERSION,
+    REASON_PURCHASE_INVENTORY_NOT_CONFIGURED,
+    SETTINGS_KEY as HPP_SETTINGS_KEY,
     VERSIONS,
     build_acquisition_events,
+    get_hpp_settings,
+    query_cost_boundary,
     recalculate_hpp,
 )
 from services.inventory_accounting import (
@@ -35,6 +42,7 @@ from services.inventory_accounting import (
     REASON_PURCHASE_ORDER_RECOGNITION,
     annotate_acquisition_event,
     financial_inventory_item_key,
+    financial_layer_view,
     financial_uom_snapshot,
     get_goods_receipt_accounting_readiness,
     inventory_event_in_accounting_scope,
@@ -361,6 +369,8 @@ async def test_carton_recalc_version_immutability_and_zero_journals():
     assert settings["last_recalculation_status"] == "SUCCESS"
     assert settings["cost_basis_uom"] == COST_BASIS_UOM
     assert settings["financial_inventory_model_version"] == FINANCIAL_INVENTORY_MODEL_VERSION
+    assert settings["financial_cogs_ready"] is True
+    assert settings["financial_cogs_ready_reason"] is None
     version_a = settings["active_version"]
     layer_a = await server.db[LAYERS].find_one({"calculation_version": version_a}, {"_id": 0})
     assert layer_a["conversion_factor"] == 1000
@@ -370,6 +380,13 @@ async def test_carton_recalc_version_immutability_and_zero_journals():
     assert layer_a["financial_inventory_eligible"] is True
     assert layer_a["financial_inventory_item_key"] == f"m:{mid}"
     assert layer_a["canonical_source_type"] == "purchase_goods_receipt"
+    assert layer_a["recognized_qty"] == 1
+    assert layer_a["unit_cost"] == 500000
+    carton_view = financial_layer_view(layer_a)
+    assert carton_view["qty"] == 1000
+    assert carton_view["uom"] == "PCS"
+    assert carton_view["unit_cost"] == 500
+    assert carton_view["total_cost"] == 500000
 
     await server.db.product_unit_settings.update_one(
         {"master_item_id": mid},
@@ -442,3 +459,63 @@ async def test_manual_receipt_cancel_route_and_accurate_409():
         assert await server.db.journal_entries.count_documents({}) == journals_before
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+async def test_financial_cogs_ready_requires_current_model_version():
+    await _configure_inventory("2026-10-01")
+    journals_before = await server.db.journal_entries.count_documents({})
+
+    none = await get_hpp_settings(server.db)
+    assert none["financial_cogs_ready"] is False
+    assert none["financial_cogs_ready_reason"] == REASON_NO_ACTIVE_HPP_VERSION
+    assert none["method"] == "FIFO"
+
+    await server.db.app_settings.update_one(
+        {"key": HPP_SETTINGS_KEY},
+        {"$set": {
+            "key": HPP_SETTINGS_KEY,
+            "method": "FIFO",
+            "recognition_point": "goods_receipt",
+            "active_version": "legacy-v1",
+        }},
+        upsert=True,
+    )
+    await server.db[VERSIONS].insert_one({
+        "id": "legacy-v1",
+        "status": "ACTIVE",
+        "method": "FIFO",
+    })
+    legacy = await get_hpp_settings(server.db)
+    assert legacy["financial_cogs_ready"] is False
+    assert legacy["financial_cogs_ready_reason"] == REASON_LEGACY_HPP_VERSION
+    boundary = await query_cost_boundary(server.db)
+    assert boundary["financial_cogs_ready"] is False
+    assert boundary["financial_inventory_model_version"] is None
+    assert boundary["cost_basis_uom"] is None
+    assert boundary["financial_cost_basis_uom"] is None
+    assert boundary["supported_financial_inventory_model_version"] == FINANCIAL_INVENTORY_MODEL_VERSION
+
+    await server.db[VERSIONS].update_one(
+        {"id": "legacy-v1"},
+        {"$set": {
+            "financial_uom_normalization_valid": False,
+            "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+            "cost_basis_uom": COST_BASIS_UOM,
+        }},
+    )
+    invalid = await get_hpp_settings(server.db)
+    assert invalid["financial_cogs_ready"] is False
+    assert invalid["financial_cogs_ready_reason"] == REASON_INVALID_FINANCIAL_UOM_VERSION
+
+    await server.db.app_settings.update_one(
+        {"key": SETTINGS_KEY},
+        {"$unset": {
+            "inventory_account_id": "",
+            "cogs_account_id": "",
+            "inventory_accounting_effective_date": "",
+        }},
+    )
+    unconfigured = await get_hpp_settings(server.db)
+    assert unconfigured["financial_cogs_ready"] is False
+    assert unconfigured["financial_cogs_ready_reason"] == REASON_PURCHASE_INVENTORY_NOT_CONFIGURED
+    assert await server.db.journal_entries.count_documents({}) == journals_before

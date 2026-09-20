@@ -39,6 +39,50 @@ class InvalidUnitConversionError(ValueError):
     code = REASON_INVALID_UNIT_CONVERSION
 
 
+def financial_layer_view(layer: Optional[dict]) -> Dict[str, Any]:
+    """Financial Inventory view of one HPP layer. Never uses management qty/cost.
+
+    Management HPP keeps recognized_qty / unit_cost as transaction-unit fields.
+    Future Financial Inventory/COGS must consume this view (base UOM) only.
+    """
+    row = layer or {}
+    source = str(row.get("canonical_source_type") or row.get("source_type") or "")
+    if source in ("purchase_order",):
+        return {
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": REASON_PURCHASE_ORDER_RECOGNITION,
+        }
+    if source in ("goods_receipt_allocation",):
+        return {
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": REASON_ALLOCATION_NOT_FINANCIAL,
+        }
+    if row.get("financial_inventory_eligible") is not True:
+        return {
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": row.get("financial_ineligibility_reason")
+            or REASON_NON_INVENTORY_ITEM,
+        }
+    if row.get("base_qty") is None or row.get("base_unit_cost") is None or row.get("base_uom") is None:
+        return {
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": REASON_INVALID_UNIT_CONVERSION,
+        }
+    return {
+        "financial_inventory_eligible": True,
+        "financial_inventory_item_key": row.get("financial_inventory_item_key") or "",
+        "base_qty": row.get("base_qty"),
+        "base_uom": row.get("base_uom"),
+        "base_unit_cost": row.get("base_unit_cost"),
+        "total_cost": row.get("total_cost"),
+        "canonical_source_type": row.get("canonical_source_type") or CANONICAL_GR,
+        "canonical_source_id": row.get("canonical_source_id"),
+        "qty": row.get("base_qty"),
+        "uom": row.get("base_uom"),
+        "unit_cost": row.get("base_unit_cost"),
+    }
+
+
 def _dec(value: Any) -> Decimal:
     try:
         return Decimal(str(value if value is not None else 0))
