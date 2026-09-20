@@ -116,6 +116,7 @@ async def test_delete_pay_safe_recalc_and_remaining():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             inv = await _create_invoice(client, order["id"], qty=100)
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
             rec1 = await _create_receipt(client, inv["id"], 30000)
             rec2 = await _create_receipt(client, inv["id"], 20000)
             d1 = await client.delete(f"/api/sales-receipts/{rec1['id']}")
@@ -142,6 +143,7 @@ async def test_delete_last_pay_after_penjadwalan_rejected():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             inv = await _create_invoice(client, order["id"], qty=100)
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
             rec = await _create_receipt(client, inv["id"], 100000)
             res = await client.delete(f"/api/sales-receipts/{rec['id']}")
             assert res.status_code == 400
@@ -179,7 +181,14 @@ async def test_delete_inv_with_pay_rejected():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             inv = await _create_invoice(client, order["id"], qty=50)
-            await _create_receipt(client, inv["id"], 10000)
+            await server.db.sales_receipts.insert_one({
+                "id": str(uuid.uuid4()),
+                "invoice_id": inv["id"],
+                "invoice_number": inv["invoice_number"],
+                "po_id": order["id"],
+                "amount": 10000,
+                "receipt_date": "2026-08-31",
+            })
             res = await client.delete(f"/api/sales-invoices/{inv['id']}")
             assert res.status_code == 400
             assert "Hapus Penerimaan Penjualan terlebih dahulu." in str(res.json()["detail"])
@@ -201,6 +210,7 @@ async def test_delete_sj_safe_and_locks():
 
             sj2 = await _create_sj(client, order["id"], qty=20)
             inv = await _create_invoice(client, order["id"], qty=50)
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
             await _create_receipt(client, inv["id"], 5000)
             blocked_pay = await client.delete(f"/api/sales-deliveries/{sj2['id']}")
             assert blocked_pay.status_code == 400
@@ -315,6 +325,7 @@ async def test_delete_po_with_pay_rejected():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             inv = await _create_invoice(client, order["id"], qty=50)
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
             await _create_receipt(client, inv["id"], 10000)
             res = await client.request(
                 "DELETE",
@@ -337,7 +348,14 @@ async def test_bulk_all_or_nothing_invoices():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             inv_safe = await _create_invoice(client, o1["id"], qty=10)
             inv_blocked = await _create_invoice(client, o2["id"], qty=10)
-            await _create_receipt(client, inv_blocked["id"], 1000)
+            await server.db.sales_receipts.insert_one({
+                "id": str(uuid.uuid4()),
+                "invoice_id": inv_blocked["id"],
+                "invoice_number": inv_blocked["invoice_number"],
+                "po_id": o2["id"],
+                "amount": 1000,
+                "receipt_date": "2026-08-31",
+            })
             res = await client.post("/api/sales-invoices-bulk/delete", json={"ids": [inv_safe["id"], inv_blocked["id"]], "reason": "bulk"})
             assert res.status_code == 400
             detail = res.json()["detail"]

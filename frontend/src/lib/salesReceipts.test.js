@@ -8,10 +8,20 @@ describe("Sales Receipts Eligibility & Preselection Domain Suite", () => {
       po_id: "po-1",
       po_number: "PO-1",
       customer: "Customer Positif",
+      financial_status: "finalized",
       grand_total: 500000,
       paid_total: 200000,
       outstanding_amount: 300000,
       payment_status: "DP",
+    };
+
+    const invoiceCancelled = {
+      id: "inv-cancelled",
+      invoice_number: "INV-CANCELLED",
+      financial_status: "cancelled",
+      grand_total: 500000,
+      paid_total: 0,
+      outstanding_amount: 0,
     };
 
     const invoiceZeroPaid = {
@@ -54,6 +64,16 @@ describe("Sales Receipts Eligibility & Preselection Domain Suite", () => {
 
       const preselected = resolvePreselectedInvoiceId(eligible, "inv-pos-1");
       expect(preselected).toBe("inv-pos-1");
+    });
+
+    test("CASE 5b: cancelled invoice is never eligible even if outstanding > 0", () => {
+      const eligible = filterEligibleInvoices([{ ...invoiceCancelled, outstanding_amount: 500000 }]);
+      expect(eligible).toHaveLength(0);
+    });
+
+    test("CASE 5c: draft invoice is never eligible even if outstanding > 0", () => {
+      const eligible = filterEligibleInvoices([{ ...invoicePositive, financial_status: "draft" }]);
+      expect(eligible).toHaveLength(0);
     });
 
     test("CASE 5: mixed list (A: outstanding > 0, B: outstanding = 0), queryInvoiceId = B -> A eligible, B NOT eligible, preselect empty", () => {

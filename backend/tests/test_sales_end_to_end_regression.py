@@ -184,6 +184,8 @@ async def test_sales_end_to_end_regression_lifecycle():
         assert created_inv["after_discount"] == 390000.0
         assert created_inv["ppn_amount"] == 42900.0
         assert created_inv["grand_total"] == 432900.0
+        r_finalize = await client.post(f"/api/sales-invoices/{invoice_id}/finalize")
+        assert r_finalize.status_code == 200, r_finalize.text
 
         # Step 6: Confirm Penerimaan invoice selector discovers this Faktur with outstanding > 0
         r_list_invs = await client.get(f"/api/sales-invoices?po_id={po_id}")

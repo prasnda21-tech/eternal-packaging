@@ -30,6 +30,7 @@ from fastapi import HTTPException
 from services.sales_invoice_posting import (
     CANCEL_CLAIM_MESSAGE,
     CANCEL_POSTED_MESSAGE,
+    CLAIM_AT_FIELD,
     CLAIM_FIELD,
     SOURCE_TYPE,
     _write_source_journal,
@@ -177,10 +178,12 @@ async def _source_journals(invoice_id: str):
 @pytest.mark.anyio
 async def test_permission_not_auto_granted():
     assert "sales_accounting.post" in ALL_PERMISSIONS
+    assert "sales_accounting.reverse" in ALL_PERMISSIONS
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
         if role == "admin":
             continue
         assert "sales_accounting.post" not in perms
+        assert "sales_accounting.reverse" not in perms
 
 
 @pytest.mark.anyio
@@ -732,6 +735,7 @@ async def test_get_is_zero_write_and_does_not_clear_claim():
         journals_before = await server.db.journal_entries.count_documents({})
         detail = await get_sales_invoice_detail(server.db, fin["id"])
         assert CLAIM_FIELD not in detail
+        assert CLAIM_AT_FIELD not in detail
         assert detail["accounting_status"] == "not_posted"
         assert detail["accounting_posted"] is False
         assert detail["can_cancel"] is False
@@ -743,6 +747,7 @@ async def test_get_is_zero_write_and_does_not_clear_claim():
             http_get = await client.get(f"/api/sales-invoices/{fin['id']}")
         assert http_get.status_code == 200
         assert CLAIM_FIELD not in http_get.json()["invoice"]
+        assert CLAIM_AT_FIELD not in http_get.json()["invoice"]
         still = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
         assert still[CLAIM_FIELD] == "get-must-not-touch"
         assert await _source_journals(fin["id"]) == []

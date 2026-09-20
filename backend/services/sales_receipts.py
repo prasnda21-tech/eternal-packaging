@@ -168,7 +168,9 @@ async def get_sales_receipt_detail(db, receipt_id: str) -> Dict[str, Any]:
     return attached[0]
 
 
-async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+async def create_sales_receipt(
+    db, payload: Dict[str, Any], user: dict, *, claim_token: Optional[str] = None
+) -> Dict[str, Any]:
     """Creates a new Sales Receipt (Penerimaan Penjualan) backend-authoritatively.
 
     Guarantees:
@@ -221,179 +223,206 @@ async def create_sales_receipt(db, payload: Dict[str, Any], user: dict) -> Dict[
         if not invoice:
             raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
 
-        grand_total = float(invoice.get("grand_total", 0))
-
-        cash_bank_id = str(payload.get("cash_bank_id") or "").strip()
-        cash_snap = await resolve_cash_bank_for_create(db, cash_bank_id) if cash_bank_id else {}
-
-        # 2. Fetch existing receipts for this invoice to calculate paid_total & outstanding
-        existing_receipts = await db.sales_receipts.find({"invoice_id": invoice["id"]}, {"_id": 0}).to_list(500)
-        paid_total_before = round(
-            sum(float(r.get("amount", 0)) for r in existing_receipts if receipt_counts_toward_outstanding(r)),
-            2,
+        from services.sales_invoice_posting import (
+            INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE,
+            RECEIPT_CREATE_CLAIM_CONFLICT_MESSAGE,
+            acquire_receipt_create_claim,
+            clear_receipt_create_claim,
+            receipt_create_claim_is_active,
+            reverse_claim_is_active,
         )
-        outstanding_before = max(round(grand_total - paid_total_before, 2), 0.0)
+        from services.sales_invoices import FINANCIAL_CANCELLED, FINANCIAL_FINALIZED, effective_financial_status
 
-        # 3. Validate receipt amount
+        invoice_status = effective_financial_status(invoice)
+        if invoice_status == FINANCIAL_CANCELLED:
+            raise HTTPException(409, "Faktur yang dibatalkan tidak dapat menerima Penerimaan Penjualan.")
+        if invoice_status != FINANCIAL_FINALIZED:
+            raise HTTPException(409, "Hanya faktur finalized yang dapat menerima Penerimaan Penjualan.")
+        if reverse_claim_is_active(invoice):
+            raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
+
         amount = _parse_non_negative_amount(payload.get("amount"), "Jumlah penerimaan")
+        create_claim_token = str(claim_token or uuid.uuid4())
+        claimed = await acquire_receipt_create_claim(db, invoice["id"], token=create_claim_token)
+        if claimed is None:
+            current = await db.sales_invoices.find_one({"id": invoice["id"]}, {"_id": 0}) or invoice
+            if reverse_claim_is_active(current):
+                raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
+            if effective_financial_status(current) == FINANCIAL_CANCELLED:
+                raise HTTPException(409, "Faktur yang dibatalkan tidak dapat menerima Penerimaan Penjualan.")
+            if effective_financial_status(current) != FINANCIAL_FINALIZED:
+                raise HTTPException(409, "Hanya faktur finalized yang dapat menerima Penerimaan Penjualan.")
+            if receipt_create_claim_is_active(current):
+                raise HTTPException(409, RECEIPT_CREATE_CLAIM_CONFLICT_MESSAGE)
+            raise HTTPException(409, RECEIPT_CREATE_CLAIM_CONFLICT_MESSAGE)
 
-        if amount > outstanding_before:
-            raise HTTPException(
-                400,
-                f"Jumlah penerimaan (Rp {amount:,.2f}) melebihi sisa tagihan faktur (Rp {outstanding_before:,.2f})."
-            )
-
-        new_paid_total = round(paid_total_before + amount, 2)
-        new_outstanding = max(round(grand_total - new_paid_total, 2), 0.0)
-        payment_state = "LUNAS" if new_paid_total >= grand_total else "DP"
-
-        receipt_id = str(uuid.uuid4())
-        receipt_date = str(payload.get("receipt_date") or now_iso()[:10]).strip()
-
-        # Derive receipt number based on existing count for exact po_id
-        existing_receipts_count = await db.sales_receipts.count_documents({"po_id": invoice["po_id"]})
-        receipt_index = existing_receipts_count + 1
-        candidate_receipt_number = derive_receipt_number(invoice["po_number"], receipt_index)
-        while await db.sales_receipts.find_one({"receipt_number": candidate_receipt_number}, {"_id": 1}):
-            receipt_index += 1
-            candidate_receipt_number = derive_receipt_number(invoice["po_number"], receipt_index)
-        receipt_number = candidate_receipt_number
-
-        receipt_doc = {
-            "id": receipt_id,
-            "receipt_number": receipt_number,
-            "receipt_index": receipt_index,
-            "idempotency_key": idempotency_key or None,
-            "invoice_id": invoice["id"],
-            "invoice_number": invoice.get("invoice_number", invoice["id"]),
-            "po_id": invoice["po_id"],
-            "po_number": invoice["po_number"],
-            "customer": invoice["customer"],
-            "receipt_date": receipt_date,
-            "amount": amount,
-            "payment_state": payment_state,
-            "notes": str(payload.get("notes") or "").strip(),
-            "financial_status": "active",
-            **cash_snap,
-            "created_at": now_iso(),
-            "created_by": {
-                "id": str(user.get("id") or user.get("_id") or ""),
-                "name": str(user.get("name") or user.get("email") or ""),
-                "role": str(user.get("role") or ""),
-            },
-        }
-
+        invoice = claimed
         try:
-            await db.sales_receipts.insert_one(receipt_doc)
-        except DuplicateKeyError:
-            if idempotency_key:
-                existing = await db.sales_receipts.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
-                if existing:
-                    attached = await attach_receipt_accounting_fields(db, [_public_receipt(existing)])
-                    return attached[0]
-            raise HTTPException(409, "Penerimaan Penjualan duplikat terdeteksi.")
+            invoice_status = effective_financial_status(invoice)
+            if invoice_status != FINANCIAL_FINALIZED:
+                raise HTTPException(409, "Hanya faktur finalized yang dapat menerima Penerimaan Penjualan.")
+            if reverse_claim_is_active(invoice):
+                raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
 
-        receipt_doc.pop("_id", None)
+            grand_total = float(invoice.get("grand_total", 0))
+            cash_bank_id = str(payload.get("cash_bank_id") or "").strip()
+            cash_snap = await resolve_cash_bank_for_create(db, cash_bank_id) if cash_bank_id else {}
 
-        # 4. Update Invoice payment fields
-        await db.sales_invoices.update_one(
-            {"id": invoice["id"]},
-            {
-                "$set": {
-                    "paid_total": new_paid_total,
-                    "outstanding_amount": new_outstanding,
-                    "payment_status": payment_state,
-                    "updated_at": now_iso(),
-                }
-            }
-        )
-
-        # 5. WORKFLOW PAYMENT INTEGRATION on PO
-        po_id = invoice.get("po_id")
-        if po_id:
-            order = await db.orders.find_one({"id": str(po_id)})
-            if not order:
-                order = await db.orders.find_one({"po_number": str(po_id)})
-
-            if order and not order.get("cancelled"):
-                order.setdefault("payment_receipts", []).append({
-                    "receipt_id": receipt_id,
-                    "invoice_id": invoice["id"],
-                    "amount": amount,
-                    "payment_state": payment_state,
-                    "receipt_number": receipt_number,
-                    "receipt_date": receipt_date,
-                    "at": now_iso(),
-                })
-                order["payment_fact"] = {
-                    "receipt_id": receipt_id,
-                    "invoice_id": invoice["id"],
-                    "amount": amount,
-                    "payment_state": payment_state,
-                    "updated_at": now_iso(),
-                }
-
-                # Auto-approve payment stage if not already approved
-                if order.get("payment_status") != "Approved":
-                    order["payment_status"] = "Approved"
-                    order["payment_approved_by"] = "system"
-                    order["payment_approved_by_name"] = "Penerimaan Penjualan"
-                    order["payment_approved_at"] = now_iso()
-                    order.setdefault("payment_approval_history", []).append({
-                        "action": "approve",
-                        "by_email": "system",
-                        "by_name": "Penerimaan Penjualan",
-                        "at": now_iso(),
-                        "note": f"Otomatis disetujui dari Penerimaan Penjualan #{receipt_id} ({payment_state})",
-                        "receipt_id": receipt_id,
-                        "payment_state": payment_state,
-                        "amount_received": amount,
-                    })
-
-                    # Add timeline entry for automated payment approval
-                    timeline_entry = {
-                        "stage": 4,
-                        "stage_label": "Approval Payment",
-                        "at": now_iso(),
-                        "by_email": "system",
-                        "by_role": "system",
-                        "by_name": "Penerimaan Penjualan",
-                        "note": f"Approval Payment otomatis disetujui ({payment_state}) via Penerimaan #{receipt_id}",
-                    }
-                    order.setdefault("timeline", []).append(timeline_entry)
-
-                    # Update current_stage safely without skipping prerequisite stages (Design)
-                    sync_workflow_stage(order)
-
-                await db.orders.replace_one({"id": order["id"]}, order)
-
-        # 6. Optional Bukti Payment — after receipt is legitimate; rollback receipt if storage fails.
-        if proof_input:
-            try:
-                proof_meta = await store_payment_proof(
-                    db,
-                    receipt=receipt_doc,
-                    user=user,
-                    filename=proof_input["name"],
-                    data_url=proof_input["data_url"],
-                    uploaded_at=now_iso(),
-                )
-            except HTTPException:
-                # Roll back receipt + invoice/order payment side-effects so failed proof
-                # does not leave an authoritative payment without required evidence.
-                await db.sales_receipts.delete_one({"id": receipt_id})
-                await _recalc_invoice_payment_from_receipts(db, invoice["id"])
-                await _recalc_order_payment_facts_after_receipt_delete(db, invoice.get("po_id"), [receipt_id])
-                raise
-            await db.sales_receipts.update_one(
-                {"id": receipt_id},
-                {"$set": {"payment_proof": proof_meta}},
+            existing_receipts = await db.sales_receipts.find({"invoice_id": invoice["id"]}, {"_id": 0}).to_list(500)
+            paid_total_before = round(
+                sum(float(r.get("amount", 0)) for r in existing_receipts if receipt_counts_toward_outstanding(r)),
+                2,
             )
-            receipt_doc["payment_proof"] = proof_meta
-            await _patch_order_payment_receipt_proof(db, receipt_doc, proof_meta)
+            outstanding_before = max(round(grand_total - paid_total_before, 2), 0.0)
+            if amount > outstanding_before:
+                raise HTTPException(
+                    400,
+                    f"Jumlah penerimaan (Rp {amount:,.2f}) melebihi sisa tagihan faktur (Rp {outstanding_before:,.2f})."
+                )
 
-        attached = await attach_receipt_accounting_fields(db, [_public_receipt(receipt_doc)])
-        return attached[0]
+            new_paid_total = round(paid_total_before + amount, 2)
+            new_outstanding = max(round(grand_total - new_paid_total, 2), 0.0)
+            payment_state = "LUNAS" if new_paid_total >= grand_total else "DP"
+
+            receipt_id = str(uuid.uuid4())
+            receipt_date = str(payload.get("receipt_date") or now_iso()[:10]).strip()
+
+            existing_receipts_count = await db.sales_receipts.count_documents({"po_id": invoice["po_id"]})
+            receipt_index = existing_receipts_count + 1
+            candidate_receipt_number = derive_receipt_number(invoice["po_number"], receipt_index)
+            while await db.sales_receipts.find_one({"receipt_number": candidate_receipt_number}, {"_id": 1}):
+                receipt_index += 1
+                candidate_receipt_number = derive_receipt_number(invoice["po_number"], receipt_index)
+            receipt_number = candidate_receipt_number
+
+            receipt_doc = {
+                "id": receipt_id,
+                "receipt_number": receipt_number,
+                "receipt_index": receipt_index,
+                "idempotency_key": idempotency_key or None,
+                "invoice_id": invoice["id"],
+                "invoice_number": invoice.get("invoice_number", invoice["id"]),
+                "po_id": invoice["po_id"],
+                "po_number": invoice["po_number"],
+                "customer": invoice["customer"],
+                "receipt_date": receipt_date,
+                "amount": amount,
+                "payment_state": payment_state,
+                "notes": str(payload.get("notes") or "").strip(),
+                "financial_status": "active",
+                **cash_snap,
+                "created_at": now_iso(),
+                "created_by": {
+                    "id": str(user.get("id") or user.get("_id") or ""),
+                    "name": str(user.get("name") or user.get("email") or ""),
+                    "role": str(user.get("role") or ""),
+                },
+            }
+
+            try:
+                await db.sales_receipts.insert_one(receipt_doc)
+            except DuplicateKeyError:
+                if idempotency_key:
+                    existing = await db.sales_receipts.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
+                    if existing:
+                        attached = await attach_receipt_accounting_fields(db, [_public_receipt(existing)])
+                        return attached[0]
+                raise HTTPException(409, "Penerimaan Penjualan duplikat terdeteksi.")
+
+            receipt_doc.pop("_id", None)
+
+            await db.sales_invoices.update_one(
+                {"id": invoice["id"]},
+                {
+                    "$set": {
+                        "paid_total": new_paid_total,
+                        "outstanding_amount": new_outstanding,
+                        "payment_status": payment_state,
+                        "updated_at": now_iso(),
+                    }
+                }
+            )
+
+            po_id = invoice.get("po_id")
+            if po_id:
+                order = await db.orders.find_one({"id": str(po_id)})
+                if not order:
+                    order = await db.orders.find_one({"po_number": str(po_id)})
+
+                if order and not order.get("cancelled"):
+                    order.setdefault("payment_receipts", []).append({
+                        "receipt_id": receipt_id,
+                        "invoice_id": invoice["id"],
+                        "amount": amount,
+                        "payment_state": payment_state,
+                        "receipt_number": receipt_number,
+                        "receipt_date": receipt_date,
+                        "at": now_iso(),
+                    })
+                    order["payment_fact"] = {
+                        "receipt_id": receipt_id,
+                        "invoice_id": invoice["id"],
+                        "amount": amount,
+                        "payment_state": payment_state,
+                        "updated_at": now_iso(),
+                    }
+
+                    if order.get("payment_status") != "Approved":
+                        order["payment_status"] = "Approved"
+                        order["payment_approved_by"] = "system"
+                        order["payment_approved_by_name"] = "Penerimaan Penjualan"
+                        order["payment_approved_at"] = now_iso()
+                        order.setdefault("payment_approval_history", []).append({
+                            "action": "approve",
+                            "by_email": "system",
+                            "by_name": "Penerimaan Penjualan",
+                            "at": now_iso(),
+                            "note": f"Otomatis disetujui dari Penerimaan Penjualan #{receipt_id} ({payment_state})",
+                            "receipt_id": receipt_id,
+                            "payment_state": payment_state,
+                            "amount_received": amount,
+                        })
+
+                        timeline_entry = {
+                            "stage": 4,
+                            "stage_label": "Approval Payment",
+                            "at": now_iso(),
+                            "by_email": "system",
+                            "by_role": "system",
+                            "by_name": "Penerimaan Penjualan",
+                            "note": f"Approval Payment otomatis disetujui ({payment_state}) via Penerimaan #{receipt_id}",
+                        }
+                        order.setdefault("timeline", []).append(timeline_entry)
+                        sync_workflow_stage(order)
+
+                    await db.orders.replace_one({"id": order["id"]}, order)
+
+            if proof_input:
+                try:
+                    proof_meta = await store_payment_proof(
+                        db,
+                        receipt=receipt_doc,
+                        user=user,
+                        filename=proof_input["name"],
+                        data_url=proof_input["data_url"],
+                        uploaded_at=now_iso(),
+                    )
+                except HTTPException:
+                    await db.sales_receipts.delete_one({"id": receipt_id})
+                    await _recalc_invoice_payment_from_receipts(db, invoice["id"])
+                    await _recalc_order_payment_facts_after_receipt_delete(db, invoice.get("po_id"), [receipt_id])
+                    raise
+                await db.sales_receipts.update_one(
+                    {"id": receipt_id},
+                    {"$set": {"payment_proof": proof_meta}},
+                )
+                receipt_doc["payment_proof"] = proof_meta
+                await _patch_order_payment_receipt_proof(db, receipt_doc, proof_meta)
+
+            attached = await attach_receipt_accounting_fields(db, [_public_receipt(receipt_doc)])
+            return attached[0]
+        finally:
+            await clear_receipt_create_claim(db, invoice["id"], token=create_claim_token)
 
 
 async def _patch_order_payment_receipt_proof(db, receipt: dict, proof_meta: dict) -> None:

@@ -38,6 +38,7 @@ from services.sales_invoice_posting import (
     ACCOUNTING_REVERSED,
     accounting_status_from_journal,
     find_sales_invoice_source_journal,
+    reverse_claim_is_active,
 )
 
 SOURCE_TYPE = "sales_receipt"
@@ -51,6 +52,12 @@ DELETE_CLAIM_AT_FIELD = "accounting_delete_claim_at"
 DELETE_CLAIM_TTL_SECONDS = 600
 
 INVOICE_NOT_POSTED_MESSAGE = "Faktur harus diposting ke accounting terlebih dahulu."
+INVOICE_REVERSE_IN_PROGRESS_RECEIPT_MESSAGE = (
+    "Faktur sedang di-reverse dari accounting dan tidak dapat diposting penerimaan."
+)
+INVOICE_NOT_FINALIZED_RECEIPT_POST_MESSAGE = (
+    "Hanya faktur finalized yang dapat diposting penerimaannya."
+)
 POSTED_DELETE_MESSAGE = (
     "Penerimaan sudah diposting ke accounting dan tidak dapat dihapus. "
     "Gunakan Reverse Accounting."
@@ -570,6 +577,27 @@ async def _load_receipt(db, receipt_id: str) -> dict:
     return rec
 
 
+async def assert_invoice_allows_receipt_journal(db, invoice_id: str) -> dict:
+    """Recheck invoice immediately before writing a receipt journal."""
+    from services.sales_invoices import FINANCIAL_FINALIZED, effective_financial_status
+
+    if not invoice_id:
+        raise HTTPException(400, "ID Faktur Penjualan (invoice_id) wajib diisi.")
+    invoice = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
+    if not invoice:
+        invoice = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+    if effective_financial_status(invoice) != FINANCIAL_FINALIZED:
+        raise HTTPException(409, INVOICE_NOT_FINALIZED_RECEIPT_POST_MESSAGE)
+    if reverse_claim_is_active(invoice):
+        raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_MESSAGE)
+    journal = await find_sales_invoice_source_journal(db, invoice["id"])
+    if accounting_status_from_journal(journal) != ACCOUNTING_POSTED:
+        raise HTTPException(409, INVOICE_NOT_POSTED_MESSAGE)
+    return invoice
+
+
 async def _require_invoice_posted(db, invoice_id: str) -> dict:
     if not invoice_id:
         raise HTTPException(400, "ID Faktur Penjualan (invoice_id) wajib diisi.")
@@ -660,6 +688,7 @@ async def post_sales_receipt_accounting(
             return await _public_receipt_detail(db, rec["id"])
 
         try:
+            await assert_invoice_allows_receipt_journal(db, claimed.get("invoice_id") or rec.get("invoice_id"))
             journal = await _write_source_journal(db, claimed, user, cash_snap)
         except Exception:
             still = await find_sales_receipt_source_journal(db, rec["id"])

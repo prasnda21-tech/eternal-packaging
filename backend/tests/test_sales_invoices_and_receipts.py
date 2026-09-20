@@ -342,6 +342,8 @@ async def test_case_14_to_21_sales_receipts_and_overpayment_protections():
             })
             invB = invB_res.json()["invoice"]
             assert invB["grand_total"] == 500000.0
+            assert (await client.post(f"/api/sales-invoices/{invA['id']}/finalize")).status_code == 200
+            assert (await client.post(f"/api/sales-invoices/{invB['id']}/finalize")).status_code == 200
 
             # Case 16, 17: Amount 0 & Negative
             r0 = await client.post("/api/sales-receipts", json={
@@ -442,6 +444,7 @@ async def test_case_22_23_24_workflow_payment_auto_approval():
                 "lines": [{"line_idx": 0, "quantity": 500, "unit_price": 2000}],
             })
             inv = inv_res.json()["invoice"]
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
 
             # Create DP receipt (Case 24: DP is sufficient, does not require LUNAS)
             rec_res = await client.post("/api/sales-receipts", json={
@@ -489,6 +492,7 @@ async def test_case_25_26_design_pending_does_not_skip_and_resolves_later():
                 "lines": [{"line_idx": 0, "quantity": 500, "unit_price": 2000}],
             })
             inv = inv_res.json()["invoice"]
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
 
             rec_res = await client.post("/api/sales-receipts", json={
                 "invoice_id": inv["id"],
@@ -543,6 +547,7 @@ async def test_case_27_28_29_30_idempotency_and_no_unrelated_stage_mutations():
                 "lines": [{"line_idx": 0, "quantity": 500, "unit_price": 2000}],
             })
             inv = inv_res.json()["invoice"]
+            assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
 
             # First receipt -> approves payment
             await client.post("/api/sales-receipts", json={

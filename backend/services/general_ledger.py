@@ -39,6 +39,7 @@ SOURCE_LABELS = {
     SOURCE_OPENING_BALANCE: "Saldo Awal",
     SOURCE_OPENING_BALANCE_REVERSAL: "Reversal Saldo Awal",
     "sales_invoice": "Faktur Penjualan",
+    "sales_invoice_reversal": "Reversal Faktur Penjualan",
     "sales_receipt": "Penerimaan Penjualan",
     "sales_receipt_reversal": "Reversal Penerimaan Penjualan",
 }

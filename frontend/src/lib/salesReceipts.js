@@ -3,9 +3,10 @@
  */
 
 export function filterEligibleInvoices(invoices) {
-  return (invoices || []).filter(
-    (inv) => Number(inv?.outstanding_amount) > 0
-  );
+  return (invoices || []).filter((inv) => {
+    const status = String(inv?.financial_status || "draft").toLowerCase();
+    return status === "finalized" && Number(inv?.outstanding_amount) > 0;
+  });
 }
 
 export function resolvePreselectedInvoiceId(eligibleInvoices, queryInvoiceId) {

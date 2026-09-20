@@ -83,6 +83,7 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.sales_accounting.view", "Lihat Pengaturan Akuntansi Penjualan"),
     ("Pengaturan", "settings.sales_accounting.manage", "Ubah Pengaturan Akuntansi Penjualan"),
     ("Penjualan", "sales_accounting.post", "Post Faktur Penjualan ke Accounting"),
+    ("Penjualan", "sales_accounting.reverse", "Reversal Faktur Penjualan dari Accounting"),
     ("Penjualan", "sales.receipt.accounting.post", "Post Penerimaan Penjualan ke Accounting"),
     ("Penjualan", "sales.receipt.accounting.reverse", "Reversal Penerimaan Penjualan dari Accounting"),
     ("Pengaturan", "payroll_accounting.view", "Lihat kesiapan akuntansi payroll"),
