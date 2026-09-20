@@ -402,3 +402,84 @@ async def test_crm_can_search_existing_customer_and_product_apis():
             assert full_catalog.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_resubmit_does_not_duplicate_or_mutate_snapshot():
+    import server
+    crm = _user("crm", name="CRM Resubmit", override={"product_request.create": True, "product_request.read_own_draft": True})
+    await _prepare(server.db, [crm])
+    customer, product = await _seed_masters(server.db)
+    payload = {
+        **COMPLETE_NEW,
+        "customer_source": "master_crm",
+        "customer_id": customer["id"],
+        "product_source": "product_master",
+        "product_id": product["id"],
+    }
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=payload)
+            assert created.status_code == 200, created.text
+            rid = created.json()["request"]["id"]
+            first = await client.post(f"/api/product-requests/{rid}/submit", json=payload)
+            assert first.status_code == 200, first.text
+            before = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+            count_before = await server.db[COLLECTION].count_documents({})
+
+            await server.db[CUSTOMERS].update_one({"id": customer["id"]}, {"$set": {"name": "CHANGED AFTER SUBMIT"}})
+            second = await client.post(f"/api/product-requests/{rid}/submit", json={
+                **payload,
+                "customer_name": "FORGED",
+                "potential_qty": 999999,
+            })
+            assert second.status_code == 409
+            after = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+            assert await server.db[COLLECTION].count_documents({}) == count_before
+            assert after["customer_snapshot"]["name"] == customer["name"]
+            assert after["customer_snapshot"]["name"] != "CHANGED AFTER SUBMIT"
+            assert after["potential_qty"] == before["potential_qty"]
+            assert after["submitted_at"] == before["submitted_at"]
+            assert after["status"] == "submitted"
+
+            denied_patch = await client.patch(f"/api/product-requests/{rid}", json=payload)
+            assert denied_patch.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_builtin_roles_use_real_defaults_without_admin_override():
+    import server
+    crm = _user("crm", name="CRM Default")
+    holding = _user("holding_team", name="Holding Default")
+    direktur = _user("direktur_utama", name="Direktur Default")
+    helper = _user("helper", name="Helper Default")
+    await _prepare(server.db, [crm, holding, direktur, helper])
+    await server.db.role_permissions.delete_many({
+        "role": {"$in": ["crm", "holding_team", "direktur_utama", "helper"]},
+    })
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            assert created.status_code == 200, created.text
+            rid = created.json()["request"]["id"]
+            submitted = await client.post(f"/api/product-requests/{rid}/submit", json=COMPLETE_NEW)
+            assert submitted.status_code == 200, submitted.text
+            crm_detail = await client.get(f"/api/product-requests/{rid}")
+            assert crm_detail.json()["request"].get("receipt_only") is True
+
+        for actor in (holding, direktur):
+            async with _client_for(actor) as client:
+                listed = await client.get("/api/product-requests")
+                assert listed.status_code == 200, listed.text
+                assert any(r["id"] == rid for r in listed.json()["requests"])
+                detail = await client.get(f"/api/product-requests/{rid}")
+                assert detail.status_code == 200
+                assert detail.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
+
+        async with _client_for(helper) as client:
+            assert (await client.get("/api/product-requests")).status_code == 403
+            assert (await client.get(f"/api/product-requests/{rid}")).status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
