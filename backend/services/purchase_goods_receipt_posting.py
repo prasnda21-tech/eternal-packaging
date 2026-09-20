@@ -1212,43 +1212,88 @@ async def reverse_purchase_goods_receipt_accounting(
                 await clear_reverse_claim(db, receipt["id"], token=reverse_token)
                 raise HTTPException(409, UNPOSTED_REVERSE_MESSAGE)
 
-            try:
-                rev_doc = await reverse_journal(
-                    db,
-                    existing["id"],
-                    source_type=SOURCE_REVERSAL,
-                    source_id=str(receipt["id"]),
-                    posted_by=user,
-                    description=(
-                        f"Reversal Penerimaan Barang {receipt.get('receipt_number') or receipt['id']} — {reason}"
-                    ),
-                )
-            except KeyError as exc:
-                await clear_reverse_claim(db, receipt["id"], token=reverse_token)
-                raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
-            except PeriodLockedError as exc:
-                await clear_reverse_claim(db, receipt["id"], token=reverse_token)
-                raise HTTPException(409, str(exc)) from exc
-            except JournalValidationError as exc:
-                await clear_reverse_claim(db, receipt["id"], token=reverse_token)
-                raise HTTPException(400, str(exc)) from exc
-            except JournalConflictError:
-                still = await find_goods_receipt_source_journal(db, receipt["id"])
-                if accounting_status_from_journal(still) != ACCOUNTING_REVERSED:
-                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
-                    raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
-                rev_doc = await find_goods_receipt_reversal_journal(db, still.get("id") if still else "")
+            from services.inventory_financial_locks import (
+                LOCK_CONFLICT_CODE,
+                LOCK_CONFLICT_MESSAGE,
+                acquire_item_locks,
+                release_item_locks,
+                renew_item_locks,
+            )
+            from services.inventory_issue_accounting import (
+                InventoryIssueError,
+                assert_gr_unconsumed_for_reversal,
+                gr_item_keys_from_basis,
+            )
 
+            item_locks = []
             try:
-                await _persist_recovery_marker(db, receipt["id"], rev_doc)
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(409, {
-                    "code": RECOVERY_REQUIRED_CODE,
-                    "message": RECOVERY_REQUIRED_MESSAGE,
-                }) from exc
-            return await _resume_operational_cancel(db, receipt, user, reason, rev_doc)
+                item_keys = gr_item_keys_from_basis(
+                    (current or {}).get(POSTING_BASIS_FIELD)
+                    or (receipt or {}).get(POSTING_BASIS_FIELD)
+                )
+                item_locks = await acquire_item_locks(
+                    db, item_keys, f"gr_reverse:{receipt['id']}"
+                )
+                if item_locks is None:
+                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                    raise HTTPException(409, {
+                        "code": LOCK_CONFLICT_CODE,
+                        "message": LOCK_CONFLICT_MESSAGE,
+                    })
+                try:
+                    await assert_gr_unconsumed_for_reversal(db, current or receipt)
+                except InventoryIssueError as exc:
+                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                    raise HTTPException(exc.status_code, exc.as_detail()) from exc
+
+                still_held = await renew_item_locks(db, item_locks)
+                if still_held is None:
+                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                    raise HTTPException(409, {
+                        "code": LOCK_CONFLICT_CODE,
+                        "message": LOCK_CONFLICT_MESSAGE,
+                    })
+                item_locks = still_held
+
+                try:
+                    rev_doc = await reverse_journal(
+                        db,
+                        existing["id"],
+                        source_type=SOURCE_REVERSAL,
+                        source_id=str(receipt["id"]),
+                        posted_by=user,
+                        description=(
+                            f"Reversal Penerimaan Barang {receipt.get('receipt_number') or receipt['id']} — {reason}"
+                        ),
+                    )
+                except KeyError as exc:
+                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                    raise HTTPException(404, "Jurnal penerimaan tidak ditemukan.") from exc
+                except PeriodLockedError as exc:
+                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                    raise HTTPException(409, str(exc)) from exc
+                except JournalValidationError as exc:
+                    await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                    raise HTTPException(400, str(exc)) from exc
+                except JournalConflictError:
+                    still = await find_goods_receipt_source_journal(db, receipt["id"])
+                    if accounting_status_from_journal(still) != ACCOUNTING_REVERSED:
+                        await clear_reverse_claim(db, receipt["id"], token=reverse_token)
+                        raise HTTPException(409, "Reversal jurnal untuk penerimaan ini sudah ada.")
+                    rev_doc = await find_goods_receipt_reversal_journal(db, still.get("id") if still else "")
+
+                try:
+                    await _persist_recovery_marker(db, receipt["id"], rev_doc)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(409, {
+                        "code": RECOVERY_REQUIRED_CODE,
+                        "message": RECOVERY_REQUIRED_MESSAGE,
+                    }) from exc
+                return await _resume_operational_cancel(db, receipt, user, reason, rev_doc)
+            finally:
+                await release_item_locks(db, item_locks)
         except HTTPException as exc:
             still = await find_goods_receipt_source_journal(db, receipt["id"])
             if accounting_status_from_journal(still) == ACCOUNTING_REVERSED:
