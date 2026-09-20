@@ -28,17 +28,26 @@ from services.chart_of_accounts import create_account, ensure_indexes as ensure_
 from services.journal_core import ensure_indexes as ensure_journal
 from services.sales_accounting_settings import SETTINGS_KEY
 from services.sales_invoice_posting import (
+    ACCOUNTING_POST_CLAIM_TTL_SECONDS,
     ACCOUNTING_REVERSED,
+    ACCOUNTING_REVERSE_CLAIM_TTL_SECONDS,
+    CLAIM_AT_FIELD,
     CLAIM_FIELD,
+    POSTING_CLAIM_REVERSE_MESSAGE,
     RECEIPT_CREATE_CLAIM_AT_FIELD,
     RECEIPT_CREATE_CLAIM_FIELD,
     RECEIPT_CREATE_CLAIM_TTL_SECONDS,
+    REVERSE_CLAIM_AT_FIELD,
     REVERSE_CLAIM_FIELD,
     SOURCE_REVERSAL,
     SOURCE_TYPE,
     UNPOSTED_REVERSE_MESSAGE,
+    _write_source_journal,
+    acquire_posting_claim,
     acquire_receipt_create_claim,
     acquire_reverse_claim,
+    post_sales_invoice_accounting,
+    posting_claim_is_active,
     reverse_claim_is_active,
     reverse_sales_invoice_accounting,
 )
@@ -233,6 +242,45 @@ def _detail(exc_or_res):
     if isinstance(exc_or_res, HTTPException):
         return exc_or_res.detail
     return exc_or_res.json().get("detail")
+
+
+async def _unlocked_post(invoice_id: str):
+    try:
+        return await post_sales_invoice_accounting(
+            server.db, invoice_id, POST_USER, serialize_in_process=False
+        )
+    except HTTPException as exc:
+        return exc
+
+
+def _stale_post_claim_at() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=ACCOUNTING_POST_CLAIM_TTL_SECONDS + 60)).isoformat()
+
+
+def _stale_reverse_claim_at() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=ACCOUNTING_REVERSE_CLAIM_TTL_SECONDS + 60)).isoformat()
+
+
+def _fresh_claim_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _assert_never_finalized_and_reversed(stored: dict, accounting_status: str) -> None:
+    assert not (
+        stored.get("financial_status") == "finalized" and accounting_status == ACCOUNTING_REVERSED
+    ), "financial_status=finalized must never pair with accounting_status=reversed"
+
+
+def _public_claim_fields_hidden(payload: dict) -> None:
+    for field in (
+        CLAIM_FIELD,
+        CLAIM_AT_FIELD,
+        REVERSE_CLAIM_FIELD,
+        REVERSE_CLAIM_AT_FIELD,
+        RECEIPT_CREATE_CLAIM_FIELD,
+        RECEIPT_CREATE_CLAIM_AT_FIELD,
+    ):
+        assert field not in payload
 
 
 async def _unlocked_reverse(invoice_id: str, reason: str = "Koreksi faktur salah"):
@@ -910,5 +958,385 @@ async def test_receipt_create_claim_stale_recoverable_fresh_blocks_reverse():
             assert RECEIPT_CREATE_CLAIM_FIELD not in body
             assert RECEIPT_CREATE_CLAIM_AT_FIELD not in body
             assert body["can_reverse_accounting"] is False
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_fresh_posting_claim_blocks_reverse_after_journal_exists():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+        claimed = await acquire_posting_claim(server.db, fin["id"], token="fresh-post-after-journal")
+        await _write_source_journal(server.db, claimed, POST_USER)
+        hanging = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert hanging[CLAIM_FIELD] == "fresh-post-after-journal"
+        assert hanging.get(CLAIM_AT_FIELD)
+        assert posting_claim_is_active(hanging)
+        originals = await _invoice_journals(fin["id"], SOURCE_TYPE)
+        assert len(originals) == 1 and originals[0]["status"] == "posted"
+
+        blocked = await _unlocked_reverse(fin["id"])
+        assert isinstance(blocked, HTTPException) and blocked.status_code == 409
+        assert POSTING_CLAIM_REVERSE_MESSAGE in str(blocked.detail)
+        assert await _invoice_journals(fin["id"], SOURCE_REVERSAL) == []
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert stored["financial_status"] == "finalized"
+        assert (await _invoice_journals(fin["id"], SOURCE_TYPE))[0]["status"] == "posted"
+        _assert_never_finalized_and_reversed(stored, "posted")
+
+        posted = await _unlocked_post(fin["id"])
+        assert not isinstance(posted, HTTPException)
+        after_post = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert not posting_claim_is_active(after_post)
+        assert after_post["financial_status"] == "finalized"
+        ok = await _unlocked_reverse(fin["id"])
+        assert not isinstance(ok, HTTPException)
+        assert ok["financial_status"] == "cancelled"
+        assert ok["accounting_status"] == ACCOUNTING_REVERSED
+        assert len(await _invoice_journals(fin["id"], SOURCE_REVERSAL)) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_posting_claim_recoverable_by_reverse():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+        await server.db.sales_invoices.update_one(
+            {"id": fin["id"]},
+            {
+                "$set": {
+                    CLAIM_FIELD: "stale-post-crash",
+                    CLAIM_AT_FIELD: _stale_post_claim_at(),
+                }
+            },
+        )
+        hanging = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert hanging[CLAIM_FIELD] == "stale-post-crash"
+        assert not posting_claim_is_active(hanging)
+        reversed_inv = await _unlocked_reverse(fin["id"])
+        assert not isinstance(reversed_inv, HTTPException)
+        assert reversed_inv["financial_status"] == "cancelled"
+        assert reversed_inv["accounting_status"] == ACCOUNTING_REVERSED
+        assert len(await _invoice_journals(fin["id"], SOURCE_REVERSAL)) == 1
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert not stored.get(CLAIM_FIELD)
+        assert not stored.get(CLAIM_AT_FIELD)
+        _assert_never_finalized_and_reversed(stored, ACCOUNTING_REVERSED)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_legacy_posting_claim_without_timestamp_is_stale():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+        await server.db.sales_invoices.update_one(
+            {"id": fin["id"]},
+            {"$set": {CLAIM_FIELD: "legacy-post"}, "$unset": {CLAIM_AT_FIELD: ""}},
+        )
+        hanging = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert hanging[CLAIM_FIELD] == "legacy-post"
+        assert not posting_claim_is_active(hanging)
+        ok = await _unlocked_reverse(fin["id"])
+        assert not isinstance(ok, HTTPException)
+        assert ok["accounting_status"] == ACCOUNTING_REVERSED
+        assert len(await _invoice_journals(fin["id"], SOURCE_REVERSAL)) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_fresh_reverse_claim_blocks_post_mutation():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            posted = await _post_invoice(client, inv["id"])
+        claimed = await acquire_reverse_claim(server.db, fin["id"], token="fresh-reverse-wins")
+        assert claimed is not None
+        assert reverse_claim_is_active(claimed)
+        retry = await _unlocked_post(fin["id"])
+        assert not isinstance(retry, HTTPException)
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert stored["financial_status"] == "finalized"
+        assert stored.get(REVERSE_CLAIM_FIELD) == "fresh-reverse-wins"
+        assert reverse_claim_is_active(stored)
+        assert await _invoice_journals(fin["id"], SOURCE_REVERSAL) == []
+        assert posted["accounting_journal_id"] == retry["accounting_journal_id"]
+
+        finished = await _unlocked_reverse(fin["id"])
+        assert not isinstance(finished, HTTPException)
+        assert finished["financial_status"] == "cancelled"
+        assert finished["accounting_status"] == ACCOUNTING_REVERSED
+        final = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        _assert_never_finalized_and_reversed(final, ACCOUNTING_REVERSED)
+        assert len(await _invoice_journals(fin["id"], SOURCE_TYPE)) == 1
+        assert len(await _invoice_journals(fin["id"], SOURCE_REVERSAL)) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_fresh_reverse_claim_blocks_original_journal_write():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+        claimed = await acquire_reverse_claim(server.db, fin["id"], token="fresh-reverse-blocks-post")
+        assert claimed is not None
+        blocked = await _unlocked_post(fin["id"])
+        assert isinstance(blocked, HTTPException) and blocked.status_code == 409
+        assert await _invoice_journals(fin["id"], SOURCE_TYPE) == []
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert stored["financial_status"] == "finalized"
+        assert stored.get(REVERSE_CLAIM_FIELD) == "fresh-reverse-blocks-post"
+        assert not stored.get(CLAIM_FIELD)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_reverse_claim_recoverable_by_post_and_reverse():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            inv2 = await _create_invoice(client, po["id"], quantity=1, unit_price=2_000_000)
+            fin2 = await _finalize(client, inv2["id"])
+            await _post_invoice(client, inv2["id"])
+
+        await server.db.sales_invoices.update_one(
+            {"id": fin["id"]},
+            {
+                "$set": {
+                    REVERSE_CLAIM_FIELD: "stale-reverse-before-post",
+                    REVERSE_CLAIM_AT_FIELD: _stale_reverse_claim_at(),
+                }
+            },
+        )
+        posted = await _unlocked_post(fin["id"])
+        assert not isinstance(posted, HTTPException)
+        assert posted["accounting_status"] == "posted"
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert stored["financial_status"] == "finalized"
+        assert not stored.get(REVERSE_CLAIM_FIELD)
+        assert not posting_claim_is_active(stored)
+        assert len(await _invoice_journals(fin["id"], SOURCE_TYPE)) == 1
+
+        await server.db.sales_invoices.update_one(
+            {"id": fin2["id"]},
+            {
+                "$set": {
+                    REVERSE_CLAIM_FIELD: "stale-reverse-crash",
+                    REVERSE_CLAIM_AT_FIELD: _stale_reverse_claim_at(),
+                }
+            },
+        )
+        hanging = await server.db.sales_invoices.find_one({"id": fin2["id"]}, {"_id": 0})
+        assert not reverse_claim_is_active(hanging)
+        recovered = await _unlocked_reverse(fin2["id"])
+        assert not isinstance(recovered, HTTPException)
+        assert recovered["financial_status"] == "cancelled"
+        assert recovered["accounting_status"] == ACCOUNTING_REVERSED
+        assert len(await _invoice_journals(fin2["id"], SOURCE_REVERSAL)) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_post_wins_journal_written_before_claim_cleanup():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+        claimed = await acquire_posting_claim(server.db, fin["id"], token="t1-post-owns")
+        await _write_source_journal(server.db, claimed, POST_USER)
+        t2 = await _unlocked_reverse(fin["id"])
+        assert isinstance(t2, HTTPException) and t2.status_code == 409
+        assert await _invoice_journals(fin["id"], SOURCE_REVERSAL) == []
+
+        finalized = await _unlocked_post(fin["id"])
+        assert not isinstance(finalized, HTTPException)
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        originals = await _invoice_journals(fin["id"], SOURCE_TYPE)
+        assert stored["financial_status"] == "finalized"
+        assert finalized["accounting_status"] == "posted"
+        assert originals[0]["status"] == "posted"
+        assert await _invoice_journals(fin["id"], SOURCE_REVERSAL) == []
+        assert not posting_claim_is_active(stored)
+        _assert_never_finalized_and_reversed(stored, "posted")
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_reverse_wins_post_cannot_restore_finalized():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+        claimed = await acquire_reverse_claim(server.db, fin["id"], token="t1-reverse-owns")
+        assert claimed is not None
+        raced_post = await _unlocked_post(fin["id"])
+        assert not isinstance(raced_post, HTTPException)
+        mid = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert mid["financial_status"] == "finalized"
+        assert reverse_claim_is_active(mid)
+        _assert_never_finalized_and_reversed(mid, "posted")
+
+        finished = await _unlocked_reverse(fin["id"])
+        assert not isinstance(finished, HTTPException)
+        late_post = await _unlocked_post(fin["id"])
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert stored["financial_status"] == "cancelled"
+        assert finished["accounting_status"] == ACCOUNTING_REVERSED
+        if not isinstance(late_post, HTTPException):
+            assert late_post["financial_status"] == "cancelled"
+            assert late_post["accounting_status"] == ACCOUNTING_REVERSED
+        _assert_never_finalized_and_reversed(stored, ACCOUNTING_REVERSED)
+        assert len(await _invoice_journals(fin["id"], SOURCE_REVERSAL)) == 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_reverse_claim_self_heals_when_reversal_journal_exists():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            first = await _reverse(client, inv["id"])
+            assert first.status_code == 200
+        await server.db.sales_invoices.update_one(
+            {"id": fin["id"]},
+            {
+                "$set": {
+                    "financial_status": "finalized",
+                    REVERSE_CLAIM_FIELD: "stale-after-reversal-journal",
+                    REVERSE_CLAIM_AT_FIELD: _stale_reverse_claim_at(),
+                },
+                "$unset": {
+                    "cancelled_at": "",
+                    "cancelled_by": "",
+                    "accounting_reversed_at": "",
+                    "accounting_reversed_by": "",
+                    "accounting_reversal_reason": "",
+                    "accounting_reversal_journal_id": "",
+                },
+            },
+        )
+        healed = await _unlocked_reverse(fin["id"], "Pulihkan setelah crash reverse")
+        assert not isinstance(healed, HTTPException)
+        assert healed["financial_status"] == "cancelled"
+        assert healed["accounting_status"] == ACCOUNTING_REVERSED
+        assert healed["accounting_reversal_journal_id"]
+        assert len(await _invoice_journals(fin["id"], SOURCE_REVERSAL)) == 1
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        _assert_never_finalized_and_reversed(stored, ACCOUNTING_REVERSED)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_invoice_accounting_claim_fields_hidden_on_get_and_list():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+        await acquire_posting_claim(server.db, fin["id"], token="hide-post")
+        await server.db.sales_invoices.update_one(
+            {"id": fin["id"]},
+            {
+                "$set": {
+                    REVERSE_CLAIM_FIELD: "hide-reverse",
+                    REVERSE_CLAIM_AT_FIELD: _fresh_claim_at(),
+                    RECEIPT_CREATE_CLAIM_FIELD: "hide-create",
+                    RECEIPT_CREATE_CLAIM_AT_FIELD: _fresh_claim_at(),
+                }
+            },
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            detail = await client.get(f"/api/sales-invoices/{fin['id']}")
+            assert detail.status_code == 200
+            body = detail.json()["invoice"]
+            _public_claim_fields_hidden(body)
+            assert body["can_reverse_accounting"] is False
+            listed = await client.get("/api/sales-invoices")
+            row = next(i for i in listed.json()["invoices"] if i["id"] == fin["id"])
+            _public_claim_fields_hidden(row)
+        stored = await server.db.sales_invoices.find_one({"id": fin["id"]}, {"_id": 0})
+        assert stored[CLAIM_FIELD] == "hide-post"
+        assert stored.get(CLAIM_AT_FIELD)
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_claims_make_can_reverse_available_again():
+    await _configure_settings()
+    po = await _seed_po()
+    _admin()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            inv = await _create_invoice(client, po["id"])
+            fin = await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+        await server.db.sales_invoices.update_one(
+            {"id": fin["id"]},
+            {
+                "$set": {
+                    CLAIM_FIELD: "stale-post-ui",
+                    CLAIM_AT_FIELD: _stale_post_claim_at(),
+                    REVERSE_CLAIM_FIELD: "stale-reverse-ui",
+                    REVERSE_CLAIM_AT_FIELD: _stale_reverse_claim_at(),
+                }
+            },
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            body = (await client.get(f"/api/sales-invoices/{fin['id']}")).json()["invoice"]
+            _public_claim_fields_hidden(body)
+            assert body["can_reverse_accounting"] is True
     finally:
         app.dependency_overrides.pop(current_user, None)

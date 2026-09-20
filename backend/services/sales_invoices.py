@@ -183,8 +183,11 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
     from services.sales_invoice_posting import (
         ACCOUNTING_NOT_POSTED,
         ACCOUNTING_POSTED,
+        CLAIM_AT_FIELD,
+        CLAIM_FIELD,
         RECEIPT_CREATE_CLAIM_AT_FIELD,
         RECEIPT_CREATE_CLAIM_FIELD,
+        REVERSE_CLAIM_AT_FIELD,
         REVERSE_CLAIM_FIELD,
         accounting_status_from_journal,
         collect_invoice_reverse_receipt_blockers,
@@ -238,8 +241,10 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
                 inv["reverse_blockers"] = await collect_invoice_reverse_receipt_blockers(db, inv["id"])
             else:
                 inv["reverse_blockers"] = []
-        inv.pop("accounting_posting_claim", None)
+        inv.pop(CLAIM_FIELD, None)
+        inv.pop(CLAIM_AT_FIELD, None)
         inv.pop(REVERSE_CLAIM_FIELD, None)
+        inv.pop(REVERSE_CLAIM_AT_FIELD, None)
         inv.pop(RECEIPT_CREATE_CLAIM_FIELD, None)
         inv.pop(RECEIPT_CREATE_CLAIM_AT_FIELD, None)
         inv["can_post_accounting"] = (

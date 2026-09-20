@@ -36,10 +36,14 @@ SOURCE_REVERSAL = "sales_invoice_reversal"
 PERM_POST = "sales_accounting.post"
 PERM_REVERSE = "sales_accounting.reverse"
 CLAIM_FIELD = "accounting_posting_claim"
+CLAIM_AT_FIELD = "accounting_posting_claim_at"
 REVERSE_CLAIM_FIELD = "accounting_reverse_claim"
+REVERSE_CLAIM_AT_FIELD = "accounting_reverse_claim_at"
 RECEIPT_CREATE_CLAIM_FIELD = "receipt_creation_claim"
 RECEIPT_CREATE_CLAIM_AT_FIELD = "receipt_creation_claim_at"
 RECEIPT_CREATE_CLAIM_TTL_SECONDS = 600
+ACCOUNTING_POST_CLAIM_TTL_SECONDS = 600
+ACCOUNTING_REVERSE_CLAIM_TTL_SECONDS = 600
 REVERSAL_REASON_MIN_LEN = 3
 
 CANCEL_CLAIM_MESSAGE = (
@@ -130,16 +134,6 @@ def raise_if_journal_blocks_cancel(journal: Optional[dict]) -> None:
         raise HTTPException(409, CANCEL_POSTED_MESSAGE)
 
 
-def posting_claim_is_active(invoice: Optional[dict]) -> bool:
-    raw = (invoice or {}).get(CLAIM_FIELD)
-    return bool(str(raw or "").strip())
-
-
-def reverse_claim_is_active(invoice: Optional[dict]) -> bool:
-    raw = (invoice or {}).get(REVERSE_CLAIM_FIELD)
-    return bool(str(raw or "").strip())
-
-
 def _parse_claim_at(raw: Any) -> Optional[datetime]:
     text = str(raw or "").strip()
     if not text:
@@ -157,6 +151,70 @@ def _parse_claim_at(raw: Any) -> Optional[datetime]:
 
 def _claim_absent_clause(field: str) -> Dict[str, Any]:
     return {"$or": [{field: {"$exists": False}}, {field: None}, {field: ""}]}
+
+
+def _claim_lease_is_active(
+    doc: Optional[dict],
+    token_field: str,
+    at_field: str,
+    ttl_seconds: int,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Fresh lease only. Token without a valid timestamp is stale/recoverable."""
+    token = str((doc or {}).get(token_field) or "").strip()
+    if not token:
+        return False
+    claimed_at = _parse_claim_at((doc or {}).get(at_field))
+    if claimed_at is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    return (current - claimed_at).total_seconds() < ttl_seconds
+
+
+def _claim_absent_or_stale_clause(
+    token_field: str,
+    at_field: str,
+    ttl_seconds: int,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(seconds=ttl_seconds)
+    return {
+        "$or": [
+            {token_field: {"$exists": False}},
+            {token_field: None},
+            {token_field: ""},
+            {at_field: {"$exists": False}},
+            {at_field: None},
+            {at_field: ""},
+            {at_field: {"$lte": cutoff.isoformat()}},
+        ]
+    }
+
+
+def posting_claim_is_active(invoice: Optional[dict], *, now: Optional[datetime] = None) -> bool:
+    return _claim_lease_is_active(
+        invoice, CLAIM_FIELD, CLAIM_AT_FIELD, ACCOUNTING_POST_CLAIM_TTL_SECONDS, now=now
+    )
+
+
+def reverse_claim_is_active(invoice: Optional[dict], *, now: Optional[datetime] = None) -> bool:
+    return _claim_lease_is_active(
+        invoice, REVERSE_CLAIM_FIELD, REVERSE_CLAIM_AT_FIELD, ACCOUNTING_REVERSE_CLAIM_TTL_SECONDS, now=now
+    )
+
+
+def posting_claim_absent_or_stale_clause(*, now: Optional[datetime] = None) -> Dict[str, Any]:
+    return _claim_absent_or_stale_clause(
+        CLAIM_FIELD, CLAIM_AT_FIELD, ACCOUNTING_POST_CLAIM_TTL_SECONDS, now=now
+    )
+
+
+def reverse_claim_absent_or_stale_clause(*, now: Optional[datetime] = None) -> Dict[str, Any]:
+    return _claim_absent_or_stale_clause(
+        REVERSE_CLAIM_FIELD, REVERSE_CLAIM_AT_FIELD, ACCOUNTING_REVERSE_CLAIM_TTL_SECONDS, now=now
+    )
 
 
 def receipt_create_claim_cutoff_iso(*, now: Optional[datetime] = None) -> str:
@@ -217,11 +275,7 @@ def cancel_unclaimed_filter(invoice_id: str) -> Dict[str, Any]:
     return {
         "id": invoice_id,
         "financial_status": FINANCIAL_FINALIZED,
-        "$or": [
-            {CLAIM_FIELD: {"$exists": False}},
-            {CLAIM_FIELD: None},
-            {CLAIM_FIELD: ""},
-        ],
+        **posting_claim_absent_or_stale_clause(),
     }
 
 
@@ -230,18 +284,29 @@ async def clear_posting_claim(db, invoice_id: str) -> None:
 
     await db.sales_invoices.update_one(
         {"id": str(invoice_id)},
-        {"$unset": {CLAIM_FIELD: ""}, "$set": {"updated_at": now_iso()}},
+        {
+            "$unset": {CLAIM_FIELD: "", CLAIM_AT_FIELD: ""},
+            "$set": {"updated_at": now_iso()},
+        },
     )
 
 
 async def acquire_posting_claim(db, invoice_id: str, *, token: Optional[str] = None) -> Optional[dict]:
-    """Atomically claim a finalized invoice. Adopts an existing stale claim."""
+    """Atomically claim a finalized invoice. Fresh reverse claim blocks it."""
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
     claim_token = str(token or uuid.uuid4())
+    now = now_iso()
     return await db.sales_invoices.find_one_and_update(
-        {"id": str(invoice_id), "financial_status": FINANCIAL_FINALIZED},
-        {"$set": {CLAIM_FIELD: claim_token, "updated_at": now_iso()}},
+        {
+            "id": str(invoice_id),
+            "financial_status": FINANCIAL_FINALIZED,
+            **reverse_claim_absent_or_stale_clause(),
+        },
+        {
+            "$set": {CLAIM_FIELD: claim_token, CLAIM_AT_FIELD: now, "updated_at": now},
+            "$unset": {REVERSE_CLAIM_FIELD: "", REVERSE_CLAIM_AT_FIELD: ""},
+        },
         return_document=ReturnDocument.AFTER,
     )
 
@@ -251,22 +316,36 @@ async def clear_reverse_claim(db, invoice_id: str) -> None:
 
     await db.sales_invoices.update_one(
         {"id": str(invoice_id)},
-        {"$unset": {REVERSE_CLAIM_FIELD: ""}, "$set": {"updated_at": now_iso()}},
+        {
+            "$unset": {REVERSE_CLAIM_FIELD: "", REVERSE_CLAIM_AT_FIELD: ""},
+            "$set": {"updated_at": now_iso()},
+        },
     )
 
 
 async def acquire_reverse_claim(db, invoice_id: str, *, token: Optional[str] = None) -> Optional[dict]:
-    """Atomically claim a finalized invoice for reverse. Adopts a stale reverse claim."""
+    """Atomically claim a finalized invoice for reverse. Fresh post/create claims block it."""
     from services.sales_invoices import FINANCIAL_FINALIZED, now_iso
 
     claim_token = str(token or uuid.uuid4())
+    now = now_iso()
     return await db.sales_invoices.find_one_and_update(
         {
             "id": str(invoice_id),
             "financial_status": FINANCIAL_FINALIZED,
-            **receipt_create_claim_absent_or_stale_clause(),
+            "$and": [
+                posting_claim_absent_or_stale_clause(),
+                receipt_create_claim_absent_or_stale_clause(),
+            ],
         },
-        {"$set": {REVERSE_CLAIM_FIELD: claim_token, "updated_at": now_iso()}},
+        {
+            "$set": {
+                REVERSE_CLAIM_FIELD: claim_token,
+                REVERSE_CLAIM_AT_FIELD: now,
+                "updated_at": now,
+            },
+            "$unset": {CLAIM_FIELD: "", CLAIM_AT_FIELD: ""},
+        },
         return_document=ReturnDocument.AFTER,
     )
 
@@ -299,7 +378,7 @@ async def acquire_receipt_create_claim(db, invoice_id: str, *, token: Optional[s
             "id": str(invoice_id),
             "financial_status": FINANCIAL_FINALIZED,
             "$and": [
-                _claim_absent_clause(REVERSE_CLAIM_FIELD),
+                reverse_claim_absent_or_stale_clause(),
                 create_claim_ok,
             ],
         },
@@ -396,7 +475,9 @@ async def _finalize_invoice_reversal_state(
             "$set": patch,
             "$unset": {
                 REVERSE_CLAIM_FIELD: "",
+                REVERSE_CLAIM_AT_FIELD: "",
                 CLAIM_FIELD: "",
+                CLAIM_AT_FIELD: "",
                 RECEIPT_CREATE_CLAIM_FIELD: "",
                 RECEIPT_CREATE_CLAIM_AT_FIELD: "",
             },
@@ -416,10 +497,24 @@ async def _optional_invoice_lock(enabled: bool):
 
 
 async def restore_finalized_after_cancel_race(db, invoice_id: str) -> None:
+    """Restore operational cancel vs post. Never undo a completed accounting reversal."""
     from services.sales_invoices import FINANCIAL_CANCELLED, FINANCIAL_FINALIZED, now_iso
 
+    journal = await find_sales_invoice_source_journal(db, invoice_id)
+    if accounting_status_from_journal(journal) == ACCOUNTING_REVERSED:
+        return
+    stored = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0}) or {}
+    if stored.get("accounting_reversed_at") or stored.get("accounting_reversal_journal_id"):
+        return
     await db.sales_invoices.update_one(
-        {"id": invoice_id, "financial_status": FINANCIAL_CANCELLED},
+        {
+            "id": invoice_id,
+            "financial_status": FINANCIAL_CANCELLED,
+            "$and": [
+                _claim_absent_clause("accounting_reversed_at"),
+                _claim_absent_clause("accounting_reversal_journal_id"),
+            ],
+        },
         {
             "$set": {"financial_status": FINANCIAL_FINALIZED, "updated_at": now_iso()},
             "$unset": {"cancelled_at": "", "cancelled_by": ""},
@@ -564,7 +659,7 @@ async def post_sales_invoice_accounting(
 
         existing = await find_sales_invoice_source_journal(db, inv["id"])
         if existing:
-            if posting_claim_is_active(inv):
+            if inv.get(CLAIM_FIELD):
                 await clear_posting_claim(db, inv["id"])
             return await get_sales_invoice_detail(db, inv["id"])
 
@@ -577,6 +672,8 @@ async def post_sales_invoice_accounting(
             current = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
             if current and effective_financial_status(current) == FINANCIAL_CANCELLED:
                 raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diposting ke accounting.")
+            if current and reverse_claim_is_active(current):
+                raise HTTPException(409, REVERSE_CLAIM_MESSAGE)
             existing = await find_sales_invoice_source_journal(db, inv["id"])
             if existing:
                 return await get_sales_invoice_detail(db, inv["id"])
@@ -586,6 +683,18 @@ async def post_sales_invoice_accounting(
         if existing:
             await clear_posting_claim(db, inv["id"])
             return await get_sales_invoice_detail(db, inv["id"])
+
+        current = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0}) or claimed
+        if (
+            reverse_claim_is_active(current)
+            or effective_financial_status(current) != FINANCIAL_FINALIZED
+        ):
+            await clear_posting_claim(db, inv["id"])
+            if reverse_claim_is_active(current):
+                raise HTTPException(409, REVERSE_CLAIM_MESSAGE)
+            if effective_financial_status(current) == FINANCIAL_CANCELLED:
+                raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diposting ke accounting.")
+            raise HTTPException(409, "Hanya faktur finalized yang dapat diposting ke accounting.")
 
         try:
             await _write_source_journal(db, claimed, user)
@@ -635,7 +744,7 @@ async def reverse_sales_invoice_accounting(
             raise HTTPException(409, UNPOSTED_REVERSE_MESSAGE)
         if status != ACCOUNTING_POSTED or not existing:
             raise HTTPException(409, UNPOSTED_REVERSE_MESSAGE)
-        if posting_claim_is_active(inv) and status != ACCOUNTING_POSTED:
+        if posting_claim_is_active(inv):
             raise HTTPException(409, POSTING_CLAIM_REVERSE_MESSAGE)
 
         raise_active_receipt_blockers(await collect_invoice_reverse_receipt_blockers(db, inv["id"]))
@@ -652,7 +761,7 @@ async def reverse_sales_invoice_accounting(
                 return await get_sales_invoice_detail(db, inv["id"])
             if current and receipt_create_claim_is_active(current):
                 raise HTTPException(409, RECEIPT_CREATE_CLAIM_REVERSE_MESSAGE)
-            if current and posting_claim_is_active(current) and accounting_status_from_journal(still) != ACCOUNTING_POSTED:
+            if current and posting_claim_is_active(current):
                 raise HTTPException(409, POSTING_CLAIM_REVERSE_MESSAGE)
             raise HTTPException(409, "Reversal accounting gagal karena perubahan bersamaan.")
 
