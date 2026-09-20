@@ -20,10 +20,22 @@ from fastapi import HTTPException
 from services.purchase_common import (
     actor_snapshot,
     get_named_lock,
+    is_cancelled,
     item_identity,
     money_round,
     now_iso,
     qty_round,
+)
+from services.inventory_accounting import (
+    CANONICAL_GR,
+    COST_BASIS_UOM,
+    FINANCIAL_INVENTORY_MODEL_VERSION,
+    REASON_INVALID_UNIT_CONVERSION,
+    REASON_MISSING_MASTER_ITEM,
+    REASON_NON_INVENTORY_ITEM,
+    REASON_UNKNOWN_ITEM_TYPE,
+    annotate_acquisition_event,
+    financial_layer_view,
 )
 
 SETTINGS_KEY = "hpp_valuation"
@@ -46,6 +58,27 @@ UI_RECOG = {
 RECOG_FROM_UI = {v: k for k, v in UI_RECOG.items()}
 
 COGS_UNAVAILABLE_REASON = "no_inventory_issue_ledger"
+INSUFFICIENT_COST_LAYER = "INSUFFICIENT_COST_LAYER"
+REASON_NO_ACTIVE_HPP_VERSION = "NO_ACTIVE_HPP_VERSION"
+REASON_LEGACY_HPP_VERSION = "LEGACY_HPP_VERSION"
+REASON_INVALID_FINANCIAL_UOM_VERSION = "INVALID_FINANCIAL_UOM_VERSION"
+REASON_PURCHASE_INVENTORY_NOT_CONFIGURED = "PURCHASE_INVENTORY_NOT_CONFIGURED"
+REASON_HPP_VERSION_NOT_ACTIVE = "HPP_VERSION_NOT_ACTIVE"
+REASON_FINANCIAL_MODEL_VERSION_MISMATCH = "FINANCIAL_MODEL_VERSION_MISMATCH"
+REASON_FINANCIAL_COST_BASIS_MISMATCH = "FINANCIAL_COST_BASIS_MISMATCH"
+REASON_HPP_METHOD_INVALID = "HPP_METHOD_INVALID"
+REASON_NO_FINANCIAL_INVENTORY_BASIS = "NO_FINANCIAL_INVENTORY_BASIS"
+FINANCIAL_INVENTORY_BASIS_GR = "GOODS_RECEIPT"
+
+
+class InsufficientCostLayerError(ValueError):
+    """Issue qty exceeds available valuation layers. Never a silent partial success."""
+
+    code = INSUFFICIENT_COST_LAYER
+
+    def __init__(self, message: str = "INSUFFICIENT_COST_LAYER"):
+        super().__init__(message)
+        self.code = INSUFFICIENT_COST_LAYER
 
 
 def _dec(v: Any) -> Decimal:
@@ -84,6 +117,12 @@ def default_settings() -> dict:
         "last_recalculation_at": None,
         "last_recalculation_error": None,
         "updated_at": None,
+        "cost_basis_uom": COST_BASIS_UOM,
+        "financial_cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "supported_financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "financial_cogs_ready": False,
+        "financial_cogs_ready_reason": REASON_NO_ACTIVE_HPP_VERSION,
     }
 
 
@@ -113,9 +152,98 @@ def public_settings(doc: Optional[dict]) -> dict:
     return base
 
 
+def financial_uom_normalization_valid(events: List[dict]) -> bool:
+    """True when in-scope inventory GR acquisitions have a valid BASE-UOM snapshot."""
+    skip = {
+        REASON_NON_INVENTORY_ITEM,
+        REASON_UNKNOWN_ITEM_TYPE,
+        REASON_MISSING_MASTER_ITEM,
+    }
+    for ev in events:
+        if str(ev.get("source_type") or "") != "goods_receipt":
+            continue
+        reasons = ev.get("financial_ineligibility_reasons") or []
+        if REASON_INVALID_UNIT_CONVERSION in reasons and not (skip & set(reasons)):
+            return False
+    return True
+
+
+def _persisted_version_field(version: Optional[dict], key: str):
+    """Return the stored version field, or None when the historical doc lacks it."""
+    if not version or key not in version:
+        return None
+    return version.get(key)
+
+
+def count_financial_eligible_acquisitions(events: List[dict]) -> int:
+    """Count canonical GR events that are financially eligible. Does not infer from layers."""
+    count = 0
+    for ev in events:
+        if ev.get("financial_inventory_eligible") is not True:
+            continue
+        if str(ev.get("canonical_source_type") or "") != CANONICAL_GR:
+            continue
+        count += 1
+    return count
+
+
+def assess_version_financial_readiness(version: Optional[dict]) -> Tuple[bool, Optional[str]]:
+    """Pure check of a persisted HPP version. Missing/legacy metadata is not ready."""
+    if not version:
+        return False, REASON_NO_ACTIVE_HPP_VERSION
+    if str(version.get("status") or "") != "ACTIVE":
+        return False, REASON_HPP_VERSION_NOT_ACTIVE
+    if (
+        "financial_uom_normalization_valid" not in version
+        or "financial_inventory_model_version" not in version
+        or "cost_basis_uom" not in version
+        or "financial_inventory_basis" not in version
+        or "financial_eligible_acquisition_count" not in version
+    ):
+        return False, REASON_LEGACY_HPP_VERSION
+    if version.get("financial_uom_normalization_valid") is not True:
+        return False, REASON_INVALID_FINANCIAL_UOM_VERSION
+    if version.get("financial_inventory_model_version") != FINANCIAL_INVENTORY_MODEL_VERSION:
+        return False, REASON_FINANCIAL_MODEL_VERSION_MISMATCH
+    if version.get("cost_basis_uom") != COST_BASIS_UOM:
+        return False, REASON_FINANCIAL_COST_BASIS_MISMATCH
+    if version.get("financial_inventory_basis") != FINANCIAL_INVENTORY_BASIS_GR:
+        return False, REASON_NO_FINANCIAL_INVENTORY_BASIS
+    try:
+        eligible_count = int(version.get("financial_eligible_acquisition_count"))
+    except (TypeError, ValueError):
+        return False, REASON_NO_FINANCIAL_INVENTORY_BASIS
+    if eligible_count <= 0:
+        return False, REASON_NO_FINANCIAL_INVENTORY_BASIS
+    return True, None
+
+
+async def assess_financial_cogs_readiness(db, hpp: dict) -> Tuple[bool, Optional[str]]:
+    from services.purchase_accounting_settings import get_purchase_accounting_settings
+
+    try:
+        normalize_method(hpp.get("method"))
+    except HTTPException:
+        return False, REASON_HPP_METHOD_INVALID
+    purchase = await get_purchase_accounting_settings(db)
+    if not purchase.get("inventory_configured"):
+        return False, REASON_PURCHASE_INVENTORY_NOT_CONFIGURED
+    active_id = str(hpp.get("active_version") or "").strip()
+    if not active_id:
+        return False, REASON_NO_ACTIVE_HPP_VERSION
+    version = await db[VERSIONS].find_one({"id": active_id}, {"_id": 0})
+    return assess_version_financial_readiness(version)
+
+
 async def get_hpp_settings(db) -> dict:
     doc = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0})
-    return public_settings(doc)
+    out = public_settings(doc)
+    ready, reason = await assess_financial_cogs_readiness(db, out)
+    out["financial_cogs_ready"] = ready
+    out["financial_cogs_ready_reason"] = reason
+    out["supported_financial_inventory_model_version"] = FINANCIAL_INVENTORY_MODEL_VERSION
+    out["financial_cost_basis_uom"] = COST_BASIS_UOM
+    return out
 
 
 def _event_sort_key(ev: dict) -> tuple:
@@ -146,6 +274,8 @@ def build_acquisition_events(
     events: List[dict] = []
     if recognition_point == RECOG_PO:
         for po in purchase_orders:
+            if is_cancelled(po):
+                continue
             for li in po.get("lines") or []:
                 qty = qty_round(li.get("ordered_qty") or 0)
                 if _dec(qty) <= 0:
@@ -171,6 +301,8 @@ def build_acquisition_events(
                 })
     else:
         for rec in goods_receipts:
+            if is_cancelled(rec):
+                continue
             po = po_by_id.get(str(rec.get("purchase_order_id") or ""))
             ts = str(rec.get("receipt_date") or rec.get("created_at") or "")
             for li in rec.get("lines") or []:
@@ -197,10 +329,13 @@ def build_acquisition_events(
                     "recognized_qty": qty,
                     "unit_cost": unit,
                     "total_cost": money_round(_dec(qty) * _dec(unit)),
+                    "transaction_uom": li.get("unit") or po_line.get("unit") or "",
                     "purchase_order_id": rec.get("purchase_order_id"),
                     "purchase_order_line_id": li.get("purchase_order_line_id"),
                 })
         for alloc in allocations:
+            if is_cancelled(alloc):
+                continue
             po_line = po_line_by_id.get(str(alloc.get("purchase_order_line_id") or ""))
             if not po_line:
                 continue
@@ -237,7 +372,32 @@ def build_acquisition_events(
     return ordered
 
 
+FINANCIAL_META_KEYS = (
+    "financial_inventory_eligible",
+    "financial_inventory_item_key",
+    "canonical_source_type",
+    "canonical_source_id",
+    "financial_ineligibility_reason",
+    "financial_ineligibility_reasons",
+    "transaction_qty",
+    "transaction_uom",
+    "conversion_factor",
+    "base_qty",
+    "base_uom",
+    "transaction_unit_cost",
+    "base_unit_cost",
+)
+
+
+def _financial_meta(ev: dict) -> dict:
+    return {key: ev[key] for key in FINANCIAL_META_KEYS if key in ev}
+
+
 def fifo_layers_from_events(events: List[dict]) -> List[dict]:
+    """Management layers keep recognized_qty / unit_cost in transaction units.
+
+    Financial Inventory must use financial_layer_view() (base_qty / base_unit_cost).
+    """
     layers = []
     for ev in events:
         qty = qty_round(ev["recognized_qty"])
@@ -257,6 +417,7 @@ def fifo_layers_from_events(events: List[dict]) -> List[dict]:
             "item_code": ev.get("item_code"),
             "master_item_id": ev.get("master_item_id") or "",
             "accurate_item_id": ev.get("accurate_item_id") or "",
+            **_financial_meta(ev),
         })
     return layers
 
@@ -308,6 +469,10 @@ def fifo_consume(layers: List[dict], issues: List[dict]) -> Tuple[List[dict], Li
                 "source_line_id": layer.get("source_line_id"),
             })
             need -= take
+        if need > 0:
+            raise InsufficientCostLayerError(
+                f"{INSUFFICIENT_COST_LAYER}: sisa {qty_round(need)} belum tertutup layer HPP"
+            )
 
     flat = []
     for item_layers in by_item.values():
@@ -364,6 +529,7 @@ def moving_average_from_events(events: List[dict], issues: Optional[List[dict]] 
                 "item_code": payload.get("item_code"),
                 "master_item_id": payload.get("master_item_id") or "",
                 "accurate_item_id": payload.get("accurate_item_id") or "",
+                **_financial_meta(payload),
             })
         else:
             ident = str(payload.get("item_identity") or "")
@@ -371,6 +537,11 @@ def moving_average_from_events(events: List[dict], issues: Optional[List[dict]] 
             qty = _dec(payload.get("qty") or 0)
             if qty <= 0:
                 continue
+            available = st["qty"]
+            if qty > available:
+                raise InsufficientCostLayerError(
+                    f"{INSUFFICIENT_COST_LAYER}: issue {qty_round(qty)} melebihi qty valuasi {qty_round(available)}"
+                )
             avg = st["average_cost"]
             cogs.append({
                 "issue_id": payload.get("issue_id"),
@@ -383,18 +554,30 @@ def moving_average_from_events(events: List[dict], issues: Optional[List[dict]] 
                 "source_id": None,
                 "source_line_id": None,
             })
-            new_qty = st["qty"] - qty
-            if new_qty < 0:
-                new_qty = Decimal("0")
+            new_qty = available - qty
             state[ident] = {"qty": new_qty, "average_cost": avg if new_qty > 0 else Decimal("0")}
     return snapshots, cogs, state
 
 
 async def _load_source_docs(db) -> dict:
-    pos = await db.purchase_orders.find({}, {"_id": 0}).to_list(20000)
-    grs = await db.purchase_goods_receipts.find({}, {"_id": 0}).to_list(20000)
-    allocs = await db.purchase_receipt_po_links.find({}, {"_id": 0}).to_list(20000)
-    return {"purchase_orders": pos, "goods_receipts": grs, "allocations": allocs}
+    active = {"cancelled": {"$ne": True}}
+    pos = await db.purchase_orders.find(active, {"_id": 0}).to_list(20000)
+    grs = await db.purchase_goods_receipts.find(active, {"_id": 0}).to_list(20000)
+    allocs = await db.purchase_receipt_po_links.find(active, {"_id": 0}).to_list(20000)
+    masters = await db.master_items.find(
+        {},
+        {"_id": 0, "id": 1, "item_type": 1, "unit": 1, "accurate_item_id": 1},
+    ).to_list(20000)
+    units = await db.product_unit_settings.find({}, {"_id": 0}).to_list(20000)
+    return {
+        "purchase_orders": pos,
+        "goods_receipts": grs,
+        "allocations": allocs,
+        "masters_by_id": {str(m.get("id") or ""): m for m in masters if m.get("id")},
+        "unit_settings_by_mid": {
+            str(u.get("master_item_id") or ""): u for u in units if u.get("master_item_id")
+        },
+    }
 
 
 async def recalculate_hpp(
@@ -445,6 +628,8 @@ async def recalculate_hpp(
         await db[VERSIONS].insert_one(dict(building))
 
         try:
+            from services.purchase_accounting_settings import get_purchase_accounting_settings
+
             src = await _load_source_docs(db)
             events = build_acquisition_events(
                 method=method,
@@ -453,6 +638,19 @@ async def recalculate_hpp(
                 goods_receipts=src["goods_receipts"],
                 allocations=src["allocations"],
             )
+            purchase = await get_purchase_accounting_settings(db)
+            events = [
+                annotate_acquisition_event(
+                    ev,
+                    masters_by_id=src.get("masters_by_id") or {},
+                    unit_settings_by_mid=src.get("unit_settings_by_mid") or {},
+                    effective_date=purchase.get("inventory_accounting_effective_date"),
+                    inventory_configured=bool(purchase.get("inventory_configured")),
+                )
+                for ev in events
+            ]
+            uom_valid = financial_uom_normalization_valid(events)
+            eligible_count = count_financial_eligible_acquisitions(events)
             if method == METHOD_FIFO:
                 layers, cogs = fifo_consume(fifo_layers_from_events(events), issues or [])
             else:
@@ -466,6 +664,9 @@ async def recalculate_hpp(
                     "version": next_ver,
                     "method": method,
                     "recognition_point": recognition_point,
+                    "cost_basis_uom": COST_BASIS_UOM,
+                    "financial_cost_basis_uom": COST_BASIS_UOM,
+                    "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
                 })
             if layer_docs:
                 await db[LAYERS].insert_many(layer_docs)
@@ -484,6 +685,12 @@ async def recalculate_hpp(
                     "cogs_row_count": len(cogs),
                     "cogs_available": bool(issues),
                     "cogs_unavailable_reason": None if issues else COGS_UNAVAILABLE_REASON,
+                    "cost_basis_uom": COST_BASIS_UOM,
+                    "financial_cost_basis_uom": COST_BASIS_UOM,
+                    "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+                    "financial_uom_normalization_valid": uom_valid,
+                    "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+                    "financial_eligible_acquisition_count": eligible_count,
                     "error": None,
                 }},
             )
@@ -506,7 +713,7 @@ async def recalculate_hpp(
                 "updated_by": actor_snapshot(user),
             }
             await db.app_settings.update_one({"key": SETTINGS_KEY}, {"$set": saved}, upsert=True)
-            return public_settings(saved)
+            return await get_hpp_settings(db)
         except Exception as exc:
             await db[VERSIONS].update_one(
                 {"id": version_id},
@@ -565,7 +772,7 @@ async def query_cost_boundary(
             continue
         if date_to and rec_at[:10] > str(date_to)[:10]:
             continue
-        acquisitions.append({
+        row = {
             "item_identity": l.get("item_identity"),
             "item_name": l.get("item_name"),
             "item_code": l.get("item_code"),
@@ -578,7 +785,16 @@ async def query_cost_boundary(
             "source_line_id": l.get("source_line_id"),
             "source_number": l.get("source_number"),
             "recognized_at": l.get("recognized_at"),
-        })
+            "financial_inventory_eligible": l.get("financial_inventory_eligible"),
+            "financial_inventory_item_key": l.get("financial_inventory_item_key"),
+            "canonical_source_type": l.get("canonical_source_type"),
+            "canonical_source_id": l.get("canonical_source_id"),
+        }
+        for key in FINANCIAL_META_KEYS:
+            if key in l and key not in row:
+                row[key] = l[key]
+        row["financial_view"] = financial_layer_view(l)
+        acquisitions.append(row)
     return {
         "method": settings.get("method"),
         "recognition_point": settings.get("recognition_point"),
@@ -588,6 +804,18 @@ async def query_cost_boundary(
         "recalculated_at": settings.get("last_recalculation_at"),
         "cogs_available": False,
         "cogs_unavailable_reason": COGS_UNAVAILABLE_REASON,
+        "financial_cogs_ready": settings.get("financial_cogs_ready"),
+        "financial_cogs_ready_reason": settings.get("financial_cogs_ready_reason"),
+        "supported_financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": _persisted_version_field(version, "cost_basis_uom"),
+        "financial_cost_basis_uom": _persisted_version_field(version, "financial_cost_basis_uom"),
+        "financial_inventory_model_version": _persisted_version_field(
+            version, "financial_inventory_model_version"
+        ),
+        "financial_inventory_basis": _persisted_version_field(version, "financial_inventory_basis"),
+        "financial_eligible_acquisition_count": _persisted_version_field(
+            version, "financial_eligible_acquisition_count"
+        ),
         "issues": [],
         "acquisitions": acquisitions,
         "date_from": date_from,

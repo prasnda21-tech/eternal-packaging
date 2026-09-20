@@ -50,13 +50,16 @@ export default function HppSettings({ notify, canEdit }) {
             <option value="RATA-RATA">RATA-RATA</option>
           </select>
         </label>
-        <label>Pengakuan HPP
+        <label>Titik Pengakuan HPP
           <select value={recognition} onChange={(e) => setRecognition(e.target.value)} disabled={!canEdit} data-testid="hpp-recognition">
             <option value="purchase_order">Saat Pesanan Pembelian</option>
             <option value="goods_receipt">Saat Penerimaan Barang</option>
           </select>
         </label>
       </div>
+      <p className="muted small" data-testid="hpp-recognition-note">
+        Pengaturan ini mengatur perhitungan valuasi HPP. Accounting Persediaan tetap diakui dari Penerimaan Barang.
+      </p>
       <dl className="confirm-action-dl" data-testid="hpp-recalc-status">
         <div><dt>Metode aktif</dt><dd>{settings?.method || "—"}</dd></div>
         <div><dt>Pengakuan aktif</dt><dd>{settings?.recognition_label || "—"}</dd></div>

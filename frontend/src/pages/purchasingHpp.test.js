@@ -184,6 +184,8 @@ describe("Pembelian workflow UI", () => {
     expect(hpp).toMatch(/Saat Penerimaan Barang/);
     expect(hpp).toMatch(/hpp-confirm-modal/);
     expect(hpp).toMatch(/hpp-last-status/);
+    expect(hpp).toMatch(/Titik Pengakuan HPP/);
+    expect(hpp).toMatch(/Pengaturan ini mengatur perhitungan valuasi HPP. Accounting Persediaan tetap diakui dari Penerimaan Barang./);
     expect(settingsSrc).toMatch(/settings-tab-hpp/);
     expect(settingsSrc).toMatch(/Pengaturan HPP/);
   });

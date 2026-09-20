@@ -528,15 +528,22 @@ async def test_coa_type_lock_from_each_reference_and_mapping():
 
     purchase_ap = await _coa(f"PA{uuid.uuid4().hex[:6]}", "Purchase AP", "APAY")
     purchase_clearing = await _coa(f"PC{uuid.uuid4().hex[:6]}", "Purchase Clearing", "OCLY")
+    purchase_inventory = await _coa(f"PI{uuid.uuid4().hex[:6]}", "Purchase Inventory", "INTR")
+    purchase_cogs = await _coa(f"PG{uuid.uuid4().hex[:6]}", "Purchase COGS", "COGS")
     await server.db.app_settings.insert_one(
         {
             "key": PURCHASE_SETTINGS_KEY,
             "payable_account_id": purchase_ap["id"],
             "purchase_clearing_account_id": purchase_clearing["id"],
+            "inventory_account_id": purchase_inventory["id"],
+            "cogs_account_id": purchase_cogs["id"],
+            "inventory_accounting_effective_date": "2026-10-01",
         }
     )
     await _assert_locked(purchase_ap["id"])
     await _assert_locked(purchase_clearing["id"])
+    await _assert_locked(purchase_inventory["id"])
+    await _assert_locked(purchase_cogs["id"])
 
 
 @pytest.mark.anyio

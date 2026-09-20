@@ -10,6 +10,14 @@ describe("Purchase Accounting Settings UI", () => {
     expect(pageSrc).toMatch(/purchase-accounting-settings/);
     expect(pageSrc).toMatch(/purchase-accounting-payable/);
     expect(pageSrc).toMatch(/purchase-accounting-clearing/);
+    expect(pageSrc).toMatch(/purchase-accounting-inventory/);
+    expect(pageSrc).toMatch(/purchase-accounting-cogs/);
+    expect(pageSrc).toMatch(/purchase-accounting-effective-date/);
+    expect(pageSrc).toMatch(/Hutang Pembelian/);
+    expect(pageSrc).toMatch(/Persediaan &amp; HPP|Persediaan & HPP/);
+    expect(pageSrc).toMatch(/Tanggal mulai mencegah jurnal Inventory\/COGS/);
+    expect(pageSrc).toMatch(/account_type === "INTR"/);
+    expect(pageSrc).toMatch(/account_type === "COGS"/);
     expect(pageSrc).toMatch(/Dr Clearing \/ Cr Hutang Usaha/);
     expect(pageSrc).toMatch(/account_type === "APAY"/);
     expect(pageSrc).toMatch(/account_type === "OCLY"/);

@@ -17,16 +17,35 @@ import server
 from server import app, current_user
 from services.hpp_valuation import (
     COGS_UNAVAILABLE_REASON,
+    COST_BASIS_UOM,
+    FINANCIAL_INVENTORY_MODEL_VERSION,
+    INSUFFICIENT_COST_LAYER,
+    InsufficientCostLayerError,
     METHOD_AVG,
     METHOD_FIFO,
+    FINANCIAL_INVENTORY_BASIS_GR,
+    REASON_FINANCIAL_COST_BASIS_MISMATCH,
+    REASON_FINANCIAL_MODEL_VERSION_MISMATCH,
+    REASON_HPP_VERSION_NOT_ACTIVE,
+    REASON_INVALID_FINANCIAL_UOM_VERSION,
+    REASON_LEGACY_HPP_VERSION,
+    REASON_NO_ACTIVE_HPP_VERSION,
+    REASON_NO_FINANCIAL_INVENTORY_BASIS,
     RECOG_GR,
     RECOG_PO,
+    assess_version_financial_readiness,
     build_acquisition_events,
     fifo_consume,
     fifo_layers_from_events,
     moving_average_from_events,
     normalize_method,
     normalize_recognition,
+)
+from services.inventory_accounting import (
+    REASON_ALLOCATION_NOT_FINANCIAL,
+    REASON_NON_INVENTORY_ITEM,
+    REASON_PURCHASE_ORDER_RECOGNITION,
+    financial_layer_view,
 )
 from services.current_stock import build_stock_rows
 from fastapi import HTTPException
@@ -144,8 +163,9 @@ async def test_hpp_recalc_switches_and_preserves_sources_and_stock():
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             aid = f"hpp{uuid.uuid4().hex[:8]}"
+            mid = f"m-{uuid.uuid4().hex[:8]}"
             req = (await c.post("/api/purchase-requests", json={
-                "lines": [{"item_name": "Film", "requested_qty": 8, "accurate_item_id": aid}],
+                "lines": [{"item_name": "Film", "requested_qty": 8, "accurate_item_id": aid, "master_item_id": mid}],
             })).json()["request"]
             po = (await c.post("/api/purchase-orders", json={
                 "request_id": req["id"], "supplier": "S",
@@ -226,3 +246,281 @@ async def test_failed_rebuild_keeps_prior_version(monkeypatch):
     finally:
         app.dependency_overrides.pop(current_user, None)
         monkeypatch.undo()
+
+
+def _layer_event(event_id, source_id, qty, cost, ident="m:1", ts="2026-01-01"):
+    return {
+        "event_id": event_id,
+        "source_type": "goods_receipt",
+        "source_id": source_id,
+        "source_line_id": event_id,
+        "item_identity": ident,
+        "recognized_at": ts,
+        "recognized_qty": qty,
+        "unit_cost": cost,
+        "total_cost": qty * cost,
+        "item_name": "X",
+        "item_code": "",
+        "master_item_id": "1",
+        "accurate_item_id": "",
+    }
+
+
+@pytest.mark.anyio
+async def test_fifo_example_and_insufficient_layer():
+    events = [
+        _layer_event("l1", "gr1", 500, 400, ts="2026-01-01"),
+        _layer_event("l2", "gr2", 800, 450, ts="2026-01-02"),
+    ]
+    layers = fifo_layers_from_events(events)
+    updated, cogs = fifo_consume(layers, [{"issue_id": "i1", "issued_at": "2026-02-01", "item_identity": "m:1", "qty": 1200}])
+    assert sum(row["total_hpp"] for row in cogs) == 515000
+    remain = {row["layer_id"]: row["remaining_qty"] for row in updated}
+    assert remain["l1"] == 0
+    assert remain["l2"] == 100
+    with pytest.raises(InsufficientCostLayerError) as exc:
+        fifo_consume(
+            fifo_layers_from_events([_layer_event("only", "gr1", 500, 400)]),
+            [{"issue_id": "i2", "issued_at": "2026-02-01", "item_identity": "m:1", "qty": 600}],
+        )
+    assert exc.value.code == INSUFFICIENT_COST_LAYER
+    assert INSUFFICIENT_COST_LAYER in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_moving_average_insufficient_and_same_date_acquisition_first():
+    with pytest.raises(InsufficientCostLayerError) as exc:
+        moving_average_from_events(
+            [_layer_event("only", "gr1", 500, 400)],
+            [{"issue_id": "i2", "issued_at": "2026-02-01", "item_identity": "m:1", "qty": 600}],
+        )
+    assert exc.value.code == INSUFFICIENT_COST_LAYER
+
+    same = "2026-03-01"
+    snaps, cogs, state = moving_average_from_events(
+        [_layer_event("acq", "gr1", 500, 400, ts=same)],
+        [{"issue_id": "iss", "issued_at": same, "item_identity": "m:1", "qty": 200}],
+    )
+    assert cogs[0]["unit_hpp"] == 400.0
+    assert cogs[0]["qty"] == 200
+    assert abs(state["m:1"]["qty"] - 300) < 0.0001
+    assert snaps
+
+
+@pytest.mark.anyio
+async def test_cancelled_po_and_gr_are_excluded_from_acquisition():
+    po_active = {
+        "id": "po-a", "po_number": "PB-A", "order_date": "2026-01-10",
+        "lines": [{"line_id": "ln-a", "ordered_qty": 10, "unit_price": 50, "item_name": "Z", "master_item_id": "m1"}],
+    }
+    po_cancelled = {
+        "id": "po-c", "po_number": "PB-C", "order_date": "2026-01-11", "cancelled": True,
+        "lines": [{"line_id": "ln-c", "ordered_qty": 7, "unit_price": 80, "item_name": "Z", "master_item_id": "m1"}],
+    }
+    po_events = build_acquisition_events(
+        method="FIFO",
+        recognition_point="purchase_order",
+        purchase_orders=[po_active, po_cancelled],
+        goods_receipts=[],
+        allocations=[],
+    )
+    assert [e["source_id"] for e in po_events] == ["po-a"]
+
+    gr_active = {
+        "id": "gr-a", "receipt_number": "GR-A", "purchase_order_id": "po-a", "receipt_date": "2026-01-12",
+        "lines": [{"line_id": "gl-a", "purchase_order_line_id": "ln-a", "received_qty": 4}],
+    }
+    gr_cancelled = {
+        "id": "gr-c", "receipt_number": "GR-C", "purchase_order_id": "po-a", "receipt_date": "2026-01-13",
+        "cancelled": True,
+        "lines": [{"line_id": "gl-c", "purchase_order_line_id": "ln-a", "received_qty": 3}],
+    }
+    gr_events = build_acquisition_events(
+        method="FIFO",
+        recognition_point="goods_receipt",
+        purchase_orders=[po_active],
+        goods_receipts=[gr_active, gr_cancelled],
+        allocations=[],
+    )
+    assert [e["source_id"] for e in gr_events] == ["gr-a"]
+    assert gr_events[0]["recognized_qty"] == 4
+
+
+@pytest.mark.anyio
+async def test_legacy_and_invalid_versions_are_not_financially_ready():
+    ready, reason = assess_version_financial_readiness(None)
+    assert ready is False
+    assert reason == REASON_NO_ACTIVE_HPP_VERSION
+
+    legacy = {"id": "legacy-v1", "status": "ACTIVE", "method": "FIFO"}
+    ready, reason = assess_version_financial_readiness(legacy)
+    assert ready is False
+    assert reason == REASON_LEGACY_HPP_VERSION
+
+    invalid_uom = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": False,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
+    }
+    ready, reason = assess_version_financial_readiness(invalid_uom)
+    assert ready is False
+    assert reason == REASON_INVALID_FINANCIAL_UOM_VERSION
+
+    wrong_model = dict(invalid_uom)
+    wrong_model["financial_uom_normalization_valid"] = True
+    wrong_model["financial_inventory_model_version"] = 99
+    ready, reason = assess_version_financial_readiness(wrong_model)
+    assert ready is False
+    assert reason == REASON_FINANCIAL_MODEL_VERSION_MISMATCH
+
+    missing_model = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": True,
+        "cost_basis_uom": COST_BASIS_UOM,
+    }
+    ready, reason = assess_version_financial_readiness(missing_model)
+    assert ready is False
+    assert reason == REASON_LEGACY_HPP_VERSION
+
+    wrong_basis = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": True,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": "TRANSACTION_UOM",
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
+    }
+    ready, reason = assess_version_financial_readiness(wrong_basis)
+    assert ready is False
+    assert reason == REASON_FINANCIAL_COST_BASIS_MISMATCH
+
+    missing_basis = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": True,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+    }
+    ready, reason = assess_version_financial_readiness(missing_basis)
+    assert ready is False
+    assert reason == REASON_LEGACY_HPP_VERSION
+
+    not_active = {
+        "status": "SUPERSEDED",
+        "financial_uom_normalization_valid": True,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
+    }
+    ready, reason = assess_version_financial_readiness(not_active)
+    assert ready is False
+    assert reason == REASON_HPP_VERSION_NOT_ACTIVE
+
+    zero_eligible = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": True,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 0,
+    }
+    ready, reason = assess_version_financial_readiness(zero_eligible)
+    assert ready is False
+    assert reason == REASON_NO_FINANCIAL_INVENTORY_BASIS
+
+    valid = {
+        "status": "ACTIVE",
+        "financial_uom_normalization_valid": True,
+        "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
+        "cost_basis_uom": COST_BASIS_UOM,
+        "financial_inventory_basis": FINANCIAL_INVENTORY_BASIS_GR,
+        "financial_eligible_acquisition_count": 1,
+    }
+    ready, reason = assess_version_financial_readiness(valid)
+    assert ready is True
+    assert reason is None
+
+
+@pytest.mark.anyio
+async def test_financial_layer_view_uses_base_uom_and_rejects_non_financial():
+    carton = {
+        "recognized_qty": 1,
+        "unit_cost": 500000,
+        "financial_inventory_eligible": True,
+        "financial_inventory_item_key": "m:m1",
+        "canonical_source_type": "purchase_goods_receipt",
+        "canonical_source_id": "gr-1",
+        "base_qty": 1000,
+        "base_uom": "PCS",
+        "base_unit_cost": 500,
+        "total_cost": 500000,
+        "source_type": "goods_receipt",
+    }
+    view = financial_layer_view(carton)
+    assert view["financial_inventory_eligible"] is True
+    assert view["qty"] == 1000
+    assert view["uom"] == "PCS"
+    assert view["unit_cost"] == 500
+    assert view["base_qty"] == 1000
+    assert view["base_unit_cost"] == 500
+    assert view["total_cost"] == 500000
+    assert "recognized_qty" not in view
+
+    same = {
+        "recognized_qty": 100,
+        "unit_cost": 500,
+        "financial_inventory_eligible": True,
+        "financial_inventory_item_key": "m:m1",
+        "canonical_source_type": "purchase_goods_receipt",
+        "canonical_source_id": "gr-2",
+        "base_qty": 100,
+        "base_uom": "PCS",
+        "base_unit_cost": 500,
+        "total_cost": 50000,
+        "source_type": "goods_receipt",
+    }
+    same_view = financial_layer_view(same)
+    assert same_view["qty"] == 100
+    assert same_view["unit_cost"] == 500
+    assert same_view["total_cost"] == 50000
+
+    po_view = financial_layer_view({
+        "source_type": "purchase_order",
+        "canonical_source_type": "purchase_order",
+        "recognized_qty": 10,
+        "unit_cost": 50,
+        "financial_inventory_eligible": False,
+    })
+    assert po_view["financial_inventory_eligible"] is False
+    assert po_view["financial_ineligibility_reason"] == REASON_PURCHASE_ORDER_RECOGNITION
+    assert "qty" not in po_view
+
+    alloc_view = financial_layer_view({
+        "source_type": "goods_receipt_allocation",
+        "canonical_source_type": "goods_receipt_allocation",
+        "recognized_qty": 10,
+        "unit_cost": 50,
+        "base_qty": 10,
+        "base_unit_cost": 50,
+        "financial_inventory_eligible": False,
+    })
+    assert alloc_view["financial_inventory_eligible"] is False
+    assert alloc_view["financial_ineligibility_reason"] == REASON_ALLOCATION_NOT_FINANCIAL
+    assert "qty" not in alloc_view
+
+    service_view = financial_layer_view({
+        "source_type": "goods_receipt",
+        "canonical_source_type": "purchase_goods_receipt",
+        "financial_inventory_eligible": False,
+        "financial_ineligibility_reason": REASON_NON_INVENTORY_ITEM,
+        "recognized_qty": 1,
+        "unit_cost": 100000,
+        "base_qty": 1,
+        "base_unit_cost": 100000,
+        "total_cost": 100000,
+    })
+    assert service_view["financial_inventory_eligible"] is False
+    assert service_view["financial_ineligibility_reason"] == REASON_NON_INVENTORY_ITEM
+    assert "qty" not in service_view
