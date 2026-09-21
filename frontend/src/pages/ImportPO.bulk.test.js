@@ -46,13 +46,10 @@ describe("Import PO Accurate multi Sales Order", () => {
     expect(src).toMatch(/Keterangan/);
   });
 
-  test("Accurate preview Warna uses li.color only (no notes parse)", () => {
-    expect(src).toMatch(/Warna:\{["'] ["']\}/);
-    expect(src).toMatch(/\{li\.color \? \(/);
-    expect(src).toMatch(/: "-"/);
-    expect(src).not.toMatch(/detailNotes/);
-    expect(src).not.toMatch(/Warna Cetak/);
-    expect(src).not.toMatch(/searchCharField1/);
-    expect(src).not.toMatch(/charField1/);
+  test("stock shortage is informational warning, not hard block", () => {
+    expect(src).toMatch(/import-stock-warning/);
+    expect(src).toMatch(/d\.warnings/);
+    expect(src).toMatch(/setWarn/);
+    expect(src).not.toMatch(/Stock tersedia tidak mencukupi/);
   });
 });

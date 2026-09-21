@@ -5,7 +5,6 @@ GET current-stock must not write app_settings / product_stock_state / stock_move
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
 
 from services.current_stock import build_stock_rows, compute_stock_current
 from services.stock_engine_v2 import (
@@ -245,22 +244,22 @@ async def test_get_paths_do_not_write_collections():
 @pytest.mark.anyio
 async def test_accurate_off_does_not_reject_missing_v2_state():
     db = _FakeDB(enabled=False, v2_state=False)
-    await validate_sales_order_availability(
+    warnings = await validate_sales_order_availability(
         db,
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 500}],
     )
+    assert warnings == []
     assert db.app_settings.writes == 0
     assert db.product_stock_state.writes == 0
     assert db.stock_movements.writes == 0
 
 
 @pytest.mark.anyio
-async def test_accurate_on_missing_state_rejects_via_compat_db():
+async def test_accurate_on_missing_state_warns_via_compat_db():
     db = _FakeDB(enabled=True, v2_state=False)
-    with pytest.raises(HTTPException) as ei:
-        await validate_sales_order_availability(
-            db,
-            [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 1}],
-        )
-    assert ei.value.detail == STOCK_INSUFFICIENT_MSG
+    warnings = await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 1}],
+    )
+    assert warnings == [STOCK_INSUFFICIENT_MSG]
 
