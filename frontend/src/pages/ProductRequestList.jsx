@@ -8,6 +8,7 @@ import {
   canReadAllProductRequests,
 } from "../lib/navAccess";
 import { customerSourceLabel, formatError, productSourceLabel } from "../lib/productRequest";
+import ProductRequestDetail from "../components/ProductRequestDetail";
 import "./productRequest.css";
 
 export default function ProductRequestList() {
@@ -48,11 +49,6 @@ export default function ProductRequestList() {
       setError(formatError(err));
     }
   };
-
-  const customer = detail?.customer_snapshot || {};
-  const product = detail?.product_snapshot || {};
-  const creator = detail?.created_by_snapshot || {};
-  const branch = detail?.branch_snapshot || {};
 
   return (
     <div className="prq-page prq-list-page" data-testid="prq-list-page">
@@ -131,23 +127,7 @@ export default function ProductRequestList() {
             <aside className="prq-drawer" data-testid="prq-detail-drawer">
               <h2>{detail.request_number}</h2>
               <p className="muted">Snapshot saat dikirim · {detail.submitted_at}</p>
-              <dl className="prq-dl">
-                <dt>Customer</dt><dd>{customerSourceLabel(detail.customer_source)}</dd>
-                <dt>Nama</dt><dd>{customer.name || "—"}</dd>
-                <dt>PIC</dt><dd>{customer.pic || "—"}</dd>
-                <dt>WhatsApp</dt><dd>{customer.whatsapp || customer.phone || "—"}</dd>
-                <dt>Kota</dt><dd>{customer.city || "—"}</dd>
-                <dt>Produk</dt><dd>{productSourceLabel(detail.product_source)}</dd>
-                <dt>Nama Produk</dt><dd>{product.item_name || product.name || "—"}</dd>
-                <dt>Kode</dt><dd>{product.item_code || "—"}</dd>
-                <dt>Qty</dt><dd>{detail.potential_qty ?? "—"}</dd>
-                <dt>Frekuensi</dt><dd>{detail.frequency || "—"}</dd>
-                <dt>Harga</dt><dd>{detail.target_price ?? "—"}</dd>
-                <dt>Tanggal</dt><dd>{detail.needed_date || "—"}</dd>
-                <dt>Catatan</dt><dd>{detail.request_note || "—"}</dd>
-                <dt>CRM</dt><dd>{creator.name || "—"}</dd>
-                <dt>Cabang</dt><dd>{branch.name || "—"}</dd>
-              </dl>
+              <ProductRequestDetail request={detail} testId="prq-drawer-detail" />
             </aside>
           </>
         )}

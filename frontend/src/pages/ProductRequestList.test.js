@@ -29,6 +29,32 @@ jest.mock("../lib/api", () => ({
   },
 }));
 
+const COMPLETE_SUBMITTED_DETAIL = {
+  id: "r1",
+  request_number: "PPR-1",
+  status: "submitted",
+  submitted_at: "2026-09-20T01:00:00+00:00",
+  customer_source: "new_prospect",
+  customer_snapshot: { name: "Kedai Baru", pic: "Sari", whatsapp: "081298765432", city: "Jakarta" },
+  product_source: "requested_product",
+  product_snapshot: {
+    name: "Paper Cup 12oz",
+    category: "Paper Cup",
+    size: "12 oz",
+    material: "Food Grade Paper",
+    model: "Custom Logo",
+    label: "Requested Product",
+  },
+  potential_qty: 50000,
+  frequency: "Bulanan",
+  target_price: 850,
+  needed_date: "2026-10-15",
+  request_note: "Customer rebranding",
+  request_channel: "Referensi Customer",
+  created_by_snapshot: { name: "Andi" },
+  branch_snapshot: { name: "Surabaya" },
+};
+
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
 const flush = async () => {
@@ -69,19 +95,7 @@ describe("ProductRequestList", () => {
       }],
     });
     mockApi.getProductRequest.mockResolvedValue({
-      request: {
-        id: "r1",
-        request_number: "PPR-1",
-        status: "submitted",
-        submitted_at: "2026-09-20T01:00:00+00:00",
-        customer_source: "master_crm",
-        customer_snapshot: { name: "Renee", pic: "Budi" },
-        product_source: "requested_product",
-        product_snapshot: { name: "Cup" },
-        potential_qty: 50,
-        created_by_snapshot: { name: "Andi" },
-        branch_snapshot: { name: "Surabaya" },
-      },
+      request: COMPLETE_SUBMITTED_DETAIL,
     });
   });
 
@@ -102,8 +116,35 @@ describe("ProductRequestList", () => {
     });
     await flush();
     expect(mockApi.getProductRequest).toHaveBeenCalledWith("r1");
-    expect(container.querySelector('[data-testid="prq-detail-drawer"]').textContent).toMatch(/Renee/);
-    expect(container.querySelector('[data-testid="prq-detail-drawer"]').textContent).toMatch(/Cup/);
+    expect(container.querySelector('[data-testid="prq-detail-drawer"]').textContent).toMatch(/Kedai Baru/);
+    await act(async () => {
+      container.querySelector('[data-testid="prq-detail-tab-product"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="prq-detail-product-name"]').textContent).toBe("Paper Cup 12oz");
+    expect(container.querySelector('[data-testid="prq-detail-product-category"]').textContent).toBe("Paper Cup");
+    expect(container.querySelector('[data-testid="prq-detail-product-size"]').textContent).toBe("12 oz");
+    expect(container.querySelector('[data-testid="prq-detail-product-material"]').textContent).toBe("Food Grade Paper");
+    expect(container.querySelector('[data-testid="prq-detail-product-model"]').textContent).toBe("Custom Logo");
+    await act(async () => {
+      container.querySelector('[data-testid="prq-detail-tab-potential"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="prq-detail-channel"]').textContent).toBe("Referensi Customer");
+  });
+
+  test("CRM receipt-only detail is ignored by the Holding drawer", async () => {
+    mockApi.getProductRequest.mockResolvedValue({
+      request: { id: "r1", request_number: "PPR-1", status: "submitted", receipt_only: true },
+    });
+    await act(async () => {
+      root.render(<ProductRequestList />);
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="prq-row-r1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prq-detail-drawer"]')).toBeFalsy();
+    expect(container.textContent).not.toMatch(/Food Grade Paper/);
   });
 
   test("CRM create-only is redirected to the form", async () => {

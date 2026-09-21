@@ -30,49 +30,8 @@ import {
   selectMasterProduct,
   toPayload,
 } from "../lib/productRequest";
+import ProductRequestDetail from "../components/ProductRequestDetail";
 import "./productRequest.css";
-
-function DetailFields({ request }) {
-  const customer = request?.customer_snapshot || {};
-  const product = request?.product_snapshot || {};
-  const creator = request?.created_by_snapshot || {};
-  const branch = request?.branch_snapshot || {};
-  return (
-    <div className="prq-side" data-testid="prq-readonly-detail">
-      <section className="prq-card">
-        <h2>Ringkasan Permintaan</h2>
-        <div className="prq-side-block">
-          <dl className="prq-dl">
-            <dt>Nomor</dt><dd>{request.request_number}</dd>
-            <dt>Status</dt><dd>{request.status === "submitted" ? "Terkirim" : request.status}</dd>
-            <dt>Customer</dt><dd>{customerSourceLabel(request.customer_source)}</dd>
-            <dt>Nama</dt><dd>{customer.name || "—"}</dd>
-            <dt>PIC</dt><dd>{customer.pic || "—"}</dd>
-            <dt>WhatsApp</dt><dd>{customer.whatsapp || customer.phone || "—"}</dd>
-            <dt>Kota</dt><dd>{customer.city || "—"}</dd>
-          </dl>
-        </div>
-        <div className="prq-side-block">
-          <dl className="prq-dl">
-            <dt>Produk</dt><dd>{productSourceLabel(request.product_source)}</dd>
-            <dt>Nama</dt><dd>{product.item_name || product.name || "—"}</dd>
-            <dt>Kode</dt><dd>{product.item_code || "—"}</dd>
-            <dt>Qty</dt><dd>{request.potential_qty ?? "—"}</dd>
-            <dt>Frekuensi</dt><dd>{request.frequency || "—"}</dd>
-            <dt>Harga</dt><dd>{request.target_price ?? "—"}</dd>
-            <dt>Tanggal</dt><dd>{request.needed_date || "—"}</dd>
-          </dl>
-        </div>
-        <div className="prq-side-block">
-          <dl className="prq-dl">
-            <dt>Pembuat</dt><dd>{creator.name || "—"}</dd>
-            <dt>Cabang</dt><dd>{branch.name || "—"}</dd>
-          </dl>
-        </div>
-      </section>
-    </div>
-  );
-}
 
 export default function ProductRequestForm() {
   const { id } = useParams();
@@ -223,21 +182,17 @@ export default function ProductRequestForm() {
 
   if (readonly) {
     return (
-      <div className="prq-page" data-testid="prq-readonly-page">
+      <div className="prq-page prq-detail-page" data-testid="prq-readonly-page">
         <div className="prq-head">
           <div>
             <h1>Detail Permintaan Produk</h1>
-            <p>Snapshot saat permintaan dikirim.</p>
+            <p>Snapshot saat permintaan dikirim · {readonly.submitted_at}</p>
           </div>
         </div>
-        <div className="prq-body">
-          <section className="prq-card">
-            <h2>{readonly.request_number}</h2>
-            <p className="muted">Status terkirim · {readonly.submitted_at}</p>
-            <p>{readonly.request_note}</p>
-          </section>
-          <DetailFields request={readonly} />
-        </div>
+        <section className="prq-card prq-detail-card">
+          <h2>{readonly.request_number}</h2>
+          <ProductRequestDetail request={readonly} />
+        </section>
         {canReadAll && (
           <div className="prq-actions">
             <span />

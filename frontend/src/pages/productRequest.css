@@ -541,6 +541,50 @@
   padding:16px;
   overflow:auto;
   box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+.prq-detail-page{
+  gap:8px;
+}
+.prq-detail-card{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+}
+.prq-detail{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  min-height:0;
+}
+.prq-detail-tabs{
+  display:flex;
+  gap:6px;
+  flex-shrink:0;
+}
+.prq-detail-tab{
+  border:1px solid var(--line);
+  background:#fff;
+  border-radius:7px;
+  height:28px;
+  padding:0 10px;
+  font:650 12px/1 "IBM Plex Sans",sans-serif;
+  color:var(--soft);
+  cursor:pointer;
+}
+.prq-detail-tab.is-active{
+  background:var(--ep-dark,#0F3D2E);
+  border-color:var(--ep-dark,#0F3D2E);
+  color:#fff;
+}
+.prq-detail section{
+  min-height:0;
+  overflow:visible;
+}
+.prq-detail section[hidden]{
+  display:none;
 }
 .content.content-workspace.content-penjualan-workspace:has(.prq-form-page),
 .content.content-workspace:has(.prq-form-page),
