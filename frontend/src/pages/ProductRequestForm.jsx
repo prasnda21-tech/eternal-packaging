@@ -163,14 +163,21 @@ export default function ProductRequestForm() {
     try {
       const payload = toPayload(form);
       let currentId = requestId;
+      let submitPayload = payload;
       if (!currentId) {
         const created = await api.createProductRequest(payload);
         currentId = created.request.id;
+        const createdForm = formFromRequest(created.request);
         setRequestId(currentId);
+        setForm(createdForm);
+        submitPayload = toPayload(createdForm);
       } else {
-        await api.updateProductRequest(currentId, payload);
+        const updated = await api.updateProductRequest(currentId, payload);
+        const updatedForm = formFromRequest(updated.request);
+        setForm(updatedForm);
+        submitPayload = toPayload(updatedForm);
       }
-      const data = await api.submitProductRequest(currentId, payload);
+      const data = await api.submitProductRequest(currentId, submitPayload);
       setReceipt(data.receipt);
       setReadonly(null);
       setMessage({ type: "ok", text: "Permintaan terkirim." });

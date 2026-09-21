@@ -49,6 +49,12 @@ describe("product request form helpers", () => {
     expect(payload.product_id).toBe(null);
     expect(payload.potential_qty).toBe(10);
     expect(payload.target_price).toBe(850);
+    expect(payload.doc_version).toBeUndefined();
+  });
+
+  test("payload sends the doc_version last read", () => {
+    const payload = toPayload({ ...EMPTY_FORM, doc_version: 3, customer_source: CUSTOMER_NEW, customer_name: "Kedai" });
+    expect(payload.doc_version).toBe(3);
   });
 
   test("submit stays disabled until required fields are complete", () => {

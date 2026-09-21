@@ -173,6 +173,54 @@ describe("ProductRequestForm interactions", () => {
     expect(container.querySelector('[data-testid="prq-receipt-page"]')).toBeFalsy();
   });
 
+  test("submit sends the doc_version returned by update", async () => {
+    mockParams.id = "r1";
+    mockApi.getProductRequest.mockResolvedValue({
+      request: {
+        id: "r1",
+        status: "draft",
+        doc_version: 3,
+        customer_source: "master_crm",
+        customer_id: "C1",
+        customer_snapshot: { name: "Renee" },
+        product_source: "product_master",
+        product_id: "P1",
+        product_snapshot: { item_name: "Cup" },
+        potential_qty: 12,
+        frequency: "Bulanan",
+        target_price: 0,
+        needed_date: "2026-10-15",
+      },
+    });
+    mockApi.updateProductRequest.mockResolvedValue({
+      request: {
+        id: "r1",
+        status: "draft",
+        doc_version: 4,
+        customer_source: "master_crm",
+        customer_id: "C1",
+        customer_snapshot: { name: "Renee" },
+        product_source: "product_master",
+        product_id: "P1",
+        product_snapshot: { item_name: "Cup" },
+        potential_qty: 12,
+        frequency: "Bulanan",
+        target_price: 0,
+        needed_date: "2026-10-15",
+      },
+    });
+    await renderForm();
+    expect(container.querySelector('[data-testid="prq-submit"]').disabled).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="prq-submit"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(mockApi.updateProductRequest).toHaveBeenCalledWith("r1", expect.objectContaining({ doc_version: 3 }));
+    expect(mockApi.submitProductRequest).toHaveBeenCalledWith("r1", expect.objectContaining({ doc_version: 4 }));
+    const submittedVersion = mockApi.submitProductRequest.mock.calls[0][1].doc_version;
+    expect(submittedVersion).toBe(4);
+  });
+
   test("CRM submitted view is receipt only", async () => {
     mockParams.id = "r1";
     mockApi.getProductRequest.mockResolvedValue({

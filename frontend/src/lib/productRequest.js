@@ -25,6 +25,7 @@ export const EMPTY_FORM = {
   needed_date: "",
   request_note: "",
   request_channel: "",
+  doc_version: null,
 };
 
 export function customerSourceLabel(source) {
@@ -116,6 +117,9 @@ export function toPayload(form) {
     request_note: String(form.request_note || "").trim(),
     request_channel: String(form.request_channel || "").trim(),
   };
+  if (Number.isInteger(form.doc_version) && form.doc_version >= 0) {
+    payload.doc_version = form.doc_version;
+  }
   if (form.customer_source === CUSTOMER_MASTER) {
     payload.customer_id = form.customer_id || null;
     payload.customer_name = "";
@@ -173,6 +177,7 @@ export function formFromRequest(request) {
     needed_date: request.needed_date || "",
     request_note: request.request_note || "",
     request_channel: request.request_channel || "",
+    doc_version: Number.isInteger(request.doc_version) ? request.doc_version : null,
   };
 }
 
