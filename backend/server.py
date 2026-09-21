@@ -8582,7 +8582,7 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "updated_at": now,
     }
     from services.physical_stock_engine import attach_order_stock_snapshot
-    await validate_sales_order_availability(db, new.get("line_items") or [])
+    stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
     await attach_sales_ownership(db, new)
     await db.orders.insert_one(new)
@@ -8606,6 +8606,9 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
             "note": "PDF asli import",
             "is_deleted": False,
         })
+    # In-memory only — not persisted; stock shortage is informational for Import PO UI.
+    if stock_warnings:
+        new["stock_warnings"] = list(stock_warnings)
     return new
 
 
@@ -8732,7 +8735,12 @@ async def accurate_import_confirm(payload: ImportPreviewRequest, user=Depends(re
         raise HTTPException(500, "Gagal menyimpan PO baru")
     await db.import_logs.insert_one({**log_base, "status": "success", "message": "PO baru berhasil diimport", "created_po_id": new["id"]})
     saved = await db.orders.find_one({"id": new["id"]}, {"_id": 0})
-    return {"order": saved, "message": "PO berhasil diimport dari Accurate"}
+    warnings = list(new.get("stock_warnings") or [])
+    return {
+        "order": saved,
+        "message": "PO berhasil diimport dari Accurate",
+        "warnings": warnings,
+    }
 
 
 class BulkImportRequest(BaseModel):
@@ -8904,10 +8912,24 @@ async def accurate_import_confirm_bulk(payload: BulkImportRequest, user=Depends(
             await db.import_logs.insert_one({**log_base, "status": "failed", "message": "Insert gagal"})
             results.append({"so_number": sn, "status": "failed", "message": "Gagal menyimpan PO baru"})
             continue
+        stock_warnings = list(new.get("stock_warnings") or [])
         await db.import_logs.insert_one({**log_base, "status": "success", "message": "PO baru berhasil diimport", "created_po_id": new["id"]})
-        results.append({"so_number": sn, "status": "success", "po_id": new["id"], "po_number": new["po_number"]})
+        row = {
+            "so_number": sn,
+            "status": "success",
+            "po_id": new["id"],
+            "po_number": new["po_number"],
+        }
+        if stock_warnings:
+            row["warnings"] = stock_warnings
+        results.append(row)
         imported_count += 1
 
+    all_warnings = []
+    for r in results:
+        for w in r.get("warnings") or []:
+            if w not in all_warnings:
+                all_warnings.append(w)
     return {
         "results": results,
         "summary": {
@@ -8917,6 +8939,7 @@ async def accurate_import_confirm_bulk(payload: BulkImportRequest, user=Depends(
             "failed": sum(1 for r in results if r["status"] == "failed"),
         },
         "message": f"{imported_count} PO berhasil diimport dari Accurate",
+        "warnings": all_warnings,
     }
 
 
@@ -9008,7 +9031,11 @@ async def import_file_confirm(payload: FileConfirmRequest, user=Depends(current_
         raise HTTPException(500, "Gagal menyimpan PO baru")
     await db.import_logs.insert_one({**log_base, "status": "success", "message": f"PO baru berhasil diimport dari {src}", "created_po_id": new["id"]})
     saved = await db.orders.find_one({"id": new["id"]}, {"_id": 0})
-    return {"order": saved, "message": f"PO berhasil diimport dari {src}"}
+    return {
+        "order": saved,
+        "message": f"PO berhasil diimport dari {src}",
+        "warnings": list(new.get("stock_warnings") or []),
+    }
 
 
 from services.sales_deliveries import (
@@ -9670,7 +9697,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     }
 
     from services.physical_stock_engine import attach_order_stock_snapshot
-    await validate_sales_order_availability(db, new_order.get("line_items") or [])
+    stock_warnings = await validate_sales_order_availability(db, new_order.get("line_items") or [])
     await attach_order_stock_snapshot(db, new_order)
     await attach_sales_ownership(db, new_order)
 
@@ -9693,7 +9720,11 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
 
     new_order.pop("_id", None)
     await _audit_po(new_order, "sales_order.create", user, note=f"Buat Pesanan Penjualan {po_num}")
-    return {"order": new_order, "message": "Pesanan Penjualan berhasil dibuat"}
+    return {
+        "order": new_order,
+        "message": "Pesanan Penjualan berhasil dibuat",
+        "warnings": list(stock_warnings or []),
+    }
 
 
 class OrderInfoUpdatePayload(BaseModel):

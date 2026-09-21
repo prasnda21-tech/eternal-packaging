@@ -73,6 +73,7 @@ export default function ImportPO() {
   const [editable, setEditable] = useState(null);    // mutable copy for PDF edits
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [warn, setWarn] = useState("");
   const [status, setStatus] = useState(null);
   const [available, setAvailable] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -151,7 +152,7 @@ export default function ImportPO() {
     setPage(1);
   };
 
-  const resetPreview = () => { setPreview(null); setEditable(null); setErr(""); setImportedMsg(""); setImportedPoId(null); };
+  const resetPreview = () => { setPreview(null); setEditable(null); setErr(""); setWarn(""); setImportedMsg(""); setImportedPoId(null); };
 
   // ---------- Accurate ----------
   const doAccuratePreview = async (e) => {
@@ -166,10 +167,13 @@ export default function ImportPO() {
     finally { setBusy(false); }
   };
   const doAccurateConfirm = async () => {
-    setBusy(true); setErr(""); setImportedMsg("");
+    setBusy(true); setErr(""); setWarn(""); setImportedMsg("");
     try {
       const d = await api.accurateImportConfirm(preview.preview.po_number || soNumber.trim());
       setImportedMsg(d.message);
+      if (Array.isArray(d.warnings) && d.warnings.length) {
+        setWarn(d.warnings.join(" "));
+      }
       setPreview(null); setSoNumber("");
       await loadLogs();
       setTimeout(() => navigate(`/po/${d.order.id}`), 800);
@@ -221,9 +225,13 @@ export default function ImportPO() {
     if (numbers.length === 0) return;
     setBulkBusy(true);
     setErr("");
+    setWarn("");
     try {
       const d = await api.accurateImportConfirmBulk(numbers);
       setBulkResult(d);
+      if (Array.isArray(d.warnings) && d.warnings.length) {
+        setWarn(d.warnings.join(" "));
+      }
       // Refresh list to reflect imported badges + logs
       await loadRecent({ refresh: true });
       await loadLogs();
@@ -282,10 +290,11 @@ export default function ImportPO() {
   };
   const doFileConfirm = async () => {
     if (!preview) return;
-    setBusy(true); setErr(""); setImportedMsg("");
+    setBusy(true); setErr(""); setWarn(""); setImportedMsg("");
     try {
       const d = await api.importFileConfirm(preview.preview);
       setImportedMsg(d.message);
+      if (Array.isArray(d.warnings) && d.warnings.length) setWarn(d.warnings.join(" "));
       setPreview(null); setFile(null);
       if (fileRef.current) fileRef.current.value = "";
       await loadLogs();
@@ -336,13 +345,14 @@ export default function ImportPO() {
     if (!editable) return;
     const vErr = validatePdfPreview(editable);
     if (vErr) { setErr(vErr); return; }
-    setBusy(true); setErr(""); setImportedMsg("");
+    setBusy(true); setErr(""); setWarn(""); setImportedMsg("");
     try {
       const cleaned = { ...editable };
       delete cleaned._parse_confidence;
       cleaned.line_items = cleaned.line_items.map((li) => ({ ...li, quantity: Number(li.quantity) }));
       const d = await api.importFileConfirm(cleaned, "pdf");
       setImportedMsg(d.message);
+      if (Array.isArray(d.warnings) && d.warnings.length) setWarn(d.warnings.join(" "));
       setImportedPoId(d.order.id);
       setPreview(null); setEditable(null); setPdfFile(null);
       if (pdfRef.current) pdfRef.current.value = "";
@@ -676,6 +686,16 @@ export default function ImportPO() {
       )}
 
       {err && <div className="error" data-testid="import-error">{err}</div>}
+      {warn && (
+        <div
+          className="analytics-note"
+          data-testid="import-stock-warning"
+          role="status"
+          style={{ marginBottom: 12, padding: "10px 12px", background: "#fef3c7", borderRadius: 8, color: "#92400e" }}
+        >
+          {warn}
+        </div>
+      )}
       {importedMsg && (
         <div className="import-ok" data-testid="import-ok">
           <CheckCircle2 size={14} /> {importedMsg}

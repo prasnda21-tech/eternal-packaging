@@ -42,7 +42,9 @@ from services.stock_ledger import (
     safe_float,
 )
 
-STOCK_INSUFFICIENT_MSG = "Stock tersedia tidak mencukupi"
+# Informational only — never a hard block on order intake / Import PO.
+STOCK_INSUFFICIENT_MSG = "Stock tidak mencukupi. Order tetap dapat diproses."
+STOCK_INSUFFICIENT_WARNING = STOCK_INSUFFICIENT_MSG
 
 
 def now_iso() -> str:
@@ -482,8 +484,11 @@ async def validate_sales_order_availability(
     line_items: Iterable[dict],
     *,
     exclude_order_id: Optional[str] = None,
-) -> None:
-    """Block SO create/revise when requested qty > available.
+) -> List[str]:
+    """Return informational low-stock warnings for SO create / Import PO.
+
+    Stock shortage (zero / negative / qty > available) must NOT block order intake.
+    Callers may surface the returned warnings to the UI; they must not raise on them.
 
     For revise, exclude_order_id removes that order's current outstanding from the
     denominator so the revision is compared against free stock + its own prior reservation.
@@ -496,7 +501,7 @@ async def validate_sales_order_availability(
 
     settings = await get_physical_stock_settings(db)
     if not bool(settings.get("enabled")):
-        return
+        return []
 
     # Build baseline outstanding excluding this order
     masters = await db.master_items.find({}, {"_id": 0, "id": 1, "accurate_item_id": 1}).to_list(10000)
@@ -539,6 +544,7 @@ async def validate_sales_order_availability(
             continue
         _add(req_bucket, req_alias, ident, li.get("quantity"))
 
+    shortfall = False
     for li in line_items or []:
         ident = _line_item_identity(li)
         keys = identity_keys(ident)
@@ -554,7 +560,12 @@ async def validate_sales_order_availability(
         requested = _get(req_bucket, req_alias, ident)
         available = compute_available(phys, already_out, printed)
         if requested > available + 1e-9:
-            raise HTTPException(status_code=400, detail=STOCK_INSUFFICIENT_MSG)
+            shortfall = True
+            break
+
+    if shortfall:
+        return [STOCK_INSUFFICIENT_WARNING]
+    return []
 
 
 async def apply_stock_opname(

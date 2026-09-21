@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import List
 
 import pytest
-from fastapi import HTTPException
 
 from services.stock_engine_v2 import (
     STOCK_INSUFFICIENT_MSG,
@@ -281,24 +280,27 @@ class _FakeDB:
 
 
 @pytest.mark.anyio
-async def test_validate_so_blocks_when_insufficient():
+async def test_validate_so_warns_when_insufficient_but_does_not_block():
+    """CASE B: Stock Fisik 0 / insufficient — import PASS with warning."""
     db = _FakeDB()
-    with pytest.raises(HTTPException) as ei:
-        await validate_sales_order_availability(
-            db,
-            [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 120}],
-        )
-    assert ei.value.status_code == 400
-    assert ei.value.detail == STOCK_INSUFFICIENT_MSG
+    warnings = await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 120}],
+    )
+    assert warnings == [STOCK_INSUFFICIENT_MSG]
+    assert db.product_stock_state.inserts == []
+    assert db.stock_movements.inserts == []
 
 
 @pytest.mark.anyio
 async def test_validate_so_allows_within_available():
+    """CASE A: Stock Fisik 100, Order 20 — PASS, no warning."""
     db = _FakeDB()
-    await validate_sales_order_availability(
+    warnings = await validate_sales_order_availability(
         db,
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
     )
+    assert warnings == []
 
 
 @pytest.mark.anyio
@@ -312,27 +314,55 @@ async def test_validate_so_off_does_not_block_when_v2_state_missing():
         "stock_out_trigger": "loading_confirmation",
     }]
     db.product_stock_state.docs = []
-    await validate_sales_order_availability(
+    warnings = await validate_sales_order_availability(
         db,
         [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 9999}],
     )
+    assert warnings == []
     assert db.app_settings.updates == []
     assert db.product_stock_state.inserts == []
     assert db.stock_movements.inserts == []
 
 
 @pytest.mark.anyio
-async def test_validate_so_on_missing_state_rejects():
-    """B. ON + no initialized V2 state => reject."""
+async def test_validate_so_on_missing_state_warns_not_rejects():
+    """ON + no initialized V2 state => warning only (treat as zero available)."""
     db = _FakeDB()
     db.product_stock_state.docs = []
-    with pytest.raises(HTTPException) as ei:
-        await validate_sales_order_availability(
-            db,
-            [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 1}],
-        )
-    assert ei.value.status_code == 400
-    assert ei.value.detail == STOCK_INSUFFICIENT_MSG
+    warnings = await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 1}],
+    )
+    assert warnings == [STOCK_INSUFFICIENT_MSG]
+
+
+@pytest.mark.anyio
+async def test_validate_so_negative_stock_current_warns_not_blocks():
+    """CASE C: Stock Saat Ini already negative — Import PASS with warning."""
+    db = _FakeDB()
+    # physical 10, outstanding already 20 => stock current -10, available 0
+    db.orders.docs = [{
+        "id": "existing-o1",
+        "cancelled": False,
+        "line_items": [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
+    }]
+    db.product_stock_state.docs = [{
+        "master_item_id": "m1",
+        "accurate_item_id": "a1",
+        "initialized": True,
+        "status": "INITIALIZED",
+        "total_qty": 10,
+        "unprinted_qty": 10,
+        "printed_qty": 0,
+        "base_uom": "PCS",
+    }]
+    warnings = await validate_sales_order_availability(
+        db,
+        [{"master_item_id": "m1", "accurate_item_id": "a1", "quantity": 20}],
+    )
+    assert warnings == [STOCK_INSUFFICIENT_MSG]
+    assert db.product_stock_state.inserts == []
+    assert db.stock_movements.inserts == []
 
 
 @pytest.mark.anyio
