@@ -142,13 +142,14 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).not.toMatch(/Qty Diterima Sekarang/);
   });
 
-  test("safe cancel requires a reason and uses reversal messaging", () => {
+  test("safe cancel does not require a reason and uses reversal messaging", () => {
     expect(pageSrc).toMatch(/btn-batalkan-receipt-/);
     expect(pageSrc).toMatch(/>\s*Batalkan\s*</);
-    expect(pageSrc).toMatch(/Alasan pembatalan wajib diisi/);
-    expect(pageSrc).toMatch(/api\.cancelPurchaseGoodsReceipt\(cancelTarget\.id, reason\)/);
-    expect(pageSrc).toMatch(/requireReason/);
-    expect(pageSrc).toMatch(/movement reversal/);
+    expect(pageSrc).not.toMatch(/Alasan pembatalan wajib diisi/);
+    expect(pageSrc).not.toMatch(/requireReason/);
+    expect(pageSrc).toMatch(/api\.cancelPurchaseGoodsReceipt\(cancelTarget\.id, ""\)/);
+    expect(pageSrc).toMatch(/menangani reversal secara otomatis/);
+    expect(pageSrc).not.toMatch(/purchase-cancel-reason/);
     expect(apiSrc).toMatch(/cancelPurchaseGoodsReceipt: \(id, reason = ""\)/);
   });
 

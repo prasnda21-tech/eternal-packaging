@@ -11700,6 +11700,7 @@ async def purchase_receipts_create(
 
 class PurchaseReceiptCancelPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
+    reason: str = ""
 
 
 @api_router.post("/purchase-receipts/{receipt_id}/cancel")

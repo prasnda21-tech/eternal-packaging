@@ -58,7 +58,6 @@ export default function PenerimaanBarang() {
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
-  const [cancelReason, setCancelReason] = useState("");
   const [acctTarget, setAcctTarget] = useState(null);
   const [acctBusy, setAcctBusy] = useState(false);
   const [acctErr, setAcctErr] = useState("");
@@ -484,17 +483,11 @@ export default function PenerimaanBarang() {
 
   const openCancelReceipt = (receipt) => {
     setCancelErr("");
-    setCancelReason("");
     setCancelTarget(receipt);
   };
 
   const confirmCancelReceipt = async () => {
     if (!cancelTarget || cancelBusy) return;
-    const reason = cancelReason.trim();
-    if (!reason) {
-      setCancelErr("Alasan pembatalan wajib diisi.");
-      return;
-    }
     setCancelBusy(true);
     setCancelErr("");
     try {
@@ -502,14 +495,13 @@ export default function PenerimaanBarang() {
       if (String(cancelTarget.source || "").toLowerCase() === "manual") {
         await api.cancelManualPurchaseReceipt(
           cancelTarget.accurate_receipt_id || cancelTarget.id,
-          reason,
+          "",
         );
       } else {
-        await api.cancelPurchaseGoodsReceipt(cancelTarget.id, reason);
+        await api.cancelPurchaseGoodsReceipt(cancelTarget.id, "");
       }
       setOk(`Penerimaan ${cancelTarget.receipt_number || ""} berhasil dibatalkan.`);
       setCancelTarget(null);
-      setCancelReason("");
       setOpenId(null);
       await refreshSideData();
       if (cancelledPoId && String(poDetail?.id || "") === String(cancelledPoId)) {
@@ -1250,18 +1242,14 @@ export default function PenerimaanBarang() {
       <PurchaseCancelModal
         open={Boolean(cancelTarget)}
         title="Batalkan Penerimaan Barang?"
-        body="Dokumen tidak dihapus. Jika stock sudah bertambah, sistem akan membuat movement reversal agar stock kembali konsisten."
+        body="Dokumen tidak dihapus. Jika stock sudah bertambah, sistem akan menangani reversal secara otomatis."
         busy={cancelBusy}
         error={cancelErr}
-        reason={cancelReason}
-        onReasonChange={setCancelReason}
-        requireReason
         confirmLabel="Batalkan"
         busyLabel="Membatalkan…"
         onCancel={() => {
           if (!cancelBusy) {
             setCancelTarget(null);
-            setCancelReason("");
           }
         }}
         onConfirm={confirmCancelReceipt}
