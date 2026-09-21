@@ -76,6 +76,18 @@ export default function ProductRequestList() {
       {error && <div className="prq-msg is-error">{error}</div>}
       <div className="prq-list-wrap">
         <table className="prq-table" data-testid="prq-list-table">
+          <colgroup>
+            <col className="prq-col-number" />
+            <col className="prq-col-date" />
+            <col className="prq-col-customer" />
+            <col className="prq-col-csource" />
+            <col className="prq-col-product" />
+            <col className="prq-col-psource" />
+            <col className="prq-col-qty" />
+            <col className="prq-col-crm" />
+            <col className="prq-col-branch" />
+            <col className="prq-col-status" />
+          </colgroup>
           <thead>
             <tr>
               <th>Nomor</th>
@@ -102,7 +114,7 @@ export default function ProductRequestList() {
                 <td>{customerSourceLabel(row.customer_source)}</td>
                 <td>{row.product_name}</td>
                 <td>{productSourceLabel(row.product_source)}</td>
-                <td>{row.potential_qty}</td>
+                <td className="prq-qty">{row.potential_qty}</td>
                 <td>{row.created_by_name}</td>
                 <td>{row.branch_name}</td>
                 <td>Terkirim</td>

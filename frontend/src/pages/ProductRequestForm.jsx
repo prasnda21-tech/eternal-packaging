@@ -244,7 +244,7 @@ export default function ProductRequestForm() {
   }
 
   return (
-    <div className="prq-page" data-testid="prq-form-page">
+    <div className="prq-page prq-form-page" data-testid="prq-form-page">
       <div className="prq-head">
         <div>
           <h1>Permintaan Produk Customer</h1>
@@ -316,7 +316,7 @@ export default function ProductRequestForm() {
               </>
             )}
             {form.customer_source === CUSTOMER_NEW && (
-              <div className="prq-grid is-2">
+              <div className="prq-grid is-customer">
                 <label className="prq-field">
                   <span>Nama Customer *</span>
                   <input data-testid="prq-new-customer-name" value={form.customer_name} onChange={(e) => setForm((p) => ({ ...p, customer_name: e.target.value }))} />
