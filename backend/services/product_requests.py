@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from pymongo import ReturnDocument
 
 from services.purchase_common import (
     actor_snapshot,
@@ -35,8 +36,65 @@ CUSTOMER_MASTER = "master_crm"
 CUSTOMER_NEW = "new_prospect"
 PRODUCT_MASTER = "product_master"
 PRODUCT_REQUESTED = "requested_product"
+VERSION_FIELD = "doc_version"
+
+# Tests assign an awaitable to synchronize concurrent draft writes. Production stays None.
+after_draft_load = None
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+PROTECTED_PAYLOAD_KEYS = frozenset({
+    "id",
+    "request_number",
+    "status",
+    VERSION_FIELD,
+    "created_by_id",
+    "created_by_snapshot",
+    "branch_id",
+    "branch_snapshot",
+    "created_at",
+    "updated_at",
+    "submitted_at",
+    "customer_snapshot",
+    "product_snapshot",
+})
+
+OVERLAY_KEYS = frozenset({
+    "customer_source",
+    "customer_id",
+    "customer_name",
+    "pic",
+    "whatsapp",
+    "phone",
+    "city",
+    "product_source",
+    "product_id",
+    "product_name",
+    "category",
+    "size",
+    "ukuran",
+    "material",
+    "model",
+    "specification",
+    "potential_qty",
+    "frequency",
+    "target_price",
+    "needed_date",
+    "request_note",
+    "note",
+    "request_channel",
+})
+CUSTOMER_IDENTITY_KEYS = ("customer_id", "customer_name", "pic", "whatsapp", "phone", "city")
+PRODUCT_IDENTITY_KEYS = (
+    "product_id",
+    "product_name",
+    "category",
+    "size",
+    "ukuran",
+    "material",
+    "model",
+    "specification",
+)
 
 
 def now_iso() -> str:
@@ -244,6 +302,200 @@ async def _build_product(db, payload: dict, *, require_complete: bool) -> Dict[s
     }
 
 
+def payload_from_stored(doc: dict) -> Dict[str, Any]:
+    """Rebuild validator input from stored snapshots so omitted PATCH keys keep values."""
+    customer = doc.get("customer_snapshot") or {}
+    product = doc.get("product_snapshot") or {}
+    return {
+        "customer_source": doc.get("customer_source"),
+        "customer_id": doc.get("customer_id"),
+        "customer_name": customer.get("name") or "",
+        "pic": customer.get("pic") or "",
+        "whatsapp": customer.get("whatsapp") or customer.get("phone") or "",
+        "phone": customer.get("phone") or "",
+        "city": customer.get("city") or "",
+        "product_source": doc.get("product_source"),
+        "product_id": doc.get("product_id"),
+        "product_name": product.get("name") or product.get("item_name") or "",
+        "category": product.get("category") or "",
+        "size": product.get("size") or "",
+        "material": product.get("material") or "",
+        "model": product.get("model") or product.get("specification") or "",
+        "potential_qty": doc.get("potential_qty"),
+        "frequency": doc.get("frequency") or "",
+        "target_price": doc.get("target_price"),
+        "needed_date": doc.get("needed_date") or "",
+        "request_note": doc.get("request_note") or "",
+        "request_channel": doc.get("request_channel") or "",
+    }
+
+
+def merge_draft_payload(doc: dict, payload: Optional[dict]) -> Dict[str, Any]:
+    incoming = {
+        key: value
+        for key, value in (payload or {}).items()
+        if key in OVERLAY_KEYS and key not in PROTECTED_PAYLOAD_KEYS
+    }
+    if "request_note" not in incoming and "note" in incoming:
+        incoming["request_note"] = incoming["note"]
+    if "size" not in incoming and "ukuran" in incoming:
+        incoming["size"] = incoming["ukuran"]
+    if "model" not in incoming and "specification" in incoming:
+        incoming["model"] = incoming["specification"]
+
+    base = payload_from_stored(doc)
+    stored_customer_source = doc.get("customer_source")
+    stored_product_source = doc.get("product_source")
+    if "customer_source" in incoming and incoming.get("customer_source") != stored_customer_source:
+        for key in CUSTOMER_IDENTITY_KEYS:
+            if key not in incoming:
+                base[key] = None if key == "customer_id" else ""
+    if "product_source" in incoming and incoming.get("product_source") != stored_product_source:
+        for key in PRODUCT_IDENTITY_KEYS:
+            if key not in incoming:
+                base[key] = None if key == "product_id" else ""
+    base.update(incoming)
+    return base
+
+
+_VERSION_OMITTED = object()
+
+
+def _authoritative_version(doc: dict):
+    """Stored draft version. Missing or null is the legacy versionless row."""
+    stored = doc.get(VERSION_FIELD)
+    if isinstance(stored, bool) or not isinstance(stored, int) or stored < 0:
+        return None
+    return stored
+
+
+def _expected_version(payload: Optional[dict]):
+    """Optional client precondition.
+
+    Omitted means the caller did not send one. That is not version 0.
+    Explicit null is the public version of a legacy versionless row.
+    """
+    if not isinstance(payload, dict) or VERSION_FIELD not in payload:
+        return _VERSION_OMITTED
+    raw = payload.get(VERSION_FIELD)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise HTTPException(400, "doc_version tidak valid.")
+    return raw
+
+
+def _reject_client_precondition(doc: dict, expected) -> None:
+    """Additional gate when the client supplies doc_version.
+
+    Omitted doc_version does not enter this gate. The atomic CAS below still
+    uses the version loaded for this request, so overlapping writes stay safe,
+    while a later stale retry that omits the version can still commit.
+    """
+    if expected is _VERSION_OMITTED:
+        return
+    if _authoritative_version(doc) != expected:
+        raise HTTPException(409, "Draft berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
+
+
+def _predicate_version(doc: dict, expected):
+    if expected is _VERSION_OMITTED:
+        return _authoritative_version(doc)
+    return expected
+
+
+def _draft_write_filter(doc: dict, user: dict, expected) -> Dict[str, Any]:
+    filt: Dict[str, Any] = {
+        "id": doc["id"],
+        "created_by_id": actor_user_id(user),
+        "status": STATUS_DRAFT,
+    }
+    version = _predicate_version(doc, expected)
+    if version is None:
+        filt["$or"] = [
+            {VERSION_FIELD: {"$exists": False}},
+            {VERSION_FIELD: None},
+        ]
+    else:
+        filt[VERSION_FIELD] = version
+    return filt
+
+
+def _next_version(doc: dict, expected) -> int:
+    version = _predicate_version(doc, expected)
+    if version is None:
+        return 1
+    return int(version) + 1
+
+
+async def _sync_after_draft_load() -> None:
+    hook = after_draft_load
+    if hook is not None:
+        await hook()
+
+
+async def _load_owned_draft(db, request_id: str, user: dict, *, on_submitted: str) -> dict:
+    doc = await db[COLLECTION].find_one({"id": str(request_id)}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Permintaan produk tidak ditemukan.")
+    if not _owned_by(doc, user):
+        raise HTTPException(403, "Anda tidak dapat mengubah draft milik pengguna lain.")
+    if doc.get("status") != STATUS_DRAFT:
+        raise HTTPException(409, on_submitted)
+    await _sync_after_draft_load()
+    return doc
+
+
+async def _apply_draft_write(
+    db,
+    doc: dict,
+    user: dict,
+    update_fields: Dict[str, Any],
+    *,
+    submitted: bool,
+    expected,
+) -> dict:
+    ts = now_iso()
+    set_fields = {
+        **update_fields,
+        VERSION_FIELD: _next_version(doc, expected),
+        "updated_at": ts,
+        "created_by_id": doc.get("created_by_id"),
+        "created_by_snapshot": doc.get("created_by_snapshot"),
+        "branch_id": doc.get("branch_id"),
+        "branch_snapshot": doc.get("branch_snapshot"),
+        "created_at": doc.get("created_at"),
+        "request_number": doc.get("request_number"),
+        "id": doc.get("id"),
+    }
+    if submitted:
+        set_fields["status"] = STATUS_SUBMITTED
+        set_fields["submitted_at"] = ts
+    else:
+        set_fields["status"] = STATUS_DRAFT
+
+    saved = await db[COLLECTION].find_one_and_update(
+        _draft_write_filter(doc, user, expected),
+        {"$set": set_fields},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+    if saved:
+        return saved
+
+    current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+    if not current:
+        raise HTTPException(404, "Permintaan produk tidak ditemukan.")
+    if not _owned_by(current, user):
+        raise HTTPException(403, "Anda tidak dapat mengubah draft milik pengguna lain.")
+    if current.get("status") != STATUS_DRAFT:
+        raise HTTPException(
+            409,
+            "Permintaan ini sudah dikirim." if submitted else "Permintaan yang sudah dikirim tidak dapat diubah.",
+        )
+    raise HTTPException(409, "Draft berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
+
+
 def _build_potential(payload: dict, *, require_complete: bool) -> Dict[str, Any]:
     qty_raw = payload.get("potential_qty")
     freq_raw = payload.get("frequency")
@@ -315,6 +567,7 @@ def public_view(doc: dict) -> dict:
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
         "submitted_at": doc.get("submitted_at"),
+        VERSION_FIELD: doc.get(VERSION_FIELD),
     }
 
 
@@ -392,6 +645,7 @@ async def create_draft(db, payload: Dict[str, Any], user: dict) -> dict:
             "created_at": ts,
             "updated_at": ts,
             "submitted_at": None,
+            VERSION_FIELD: 0,
         }
 
         async def _alloc():
@@ -402,63 +656,50 @@ async def create_draft(db, payload: Dict[str, Any], user: dict) -> dict:
 
 
 async def update_draft(db, request_id: str, payload: Dict[str, Any], user: dict) -> dict:
-    doc = await db[COLLECTION].find_one({"id": str(request_id)}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Permintaan produk tidak ditemukan.")
-    if doc.get("status") != STATUS_DRAFT:
-        raise HTTPException(403, "Permintaan yang sudah dikirim tidak dapat diubah.")
-    if not _owned_by(doc, user):
-        raise HTTPException(403, "Anda tidak dapat mengubah draft milik pengguna lain.")
-    customer = await _build_customer(db, payload or {}, require_complete=False)
-    product = await _build_product(db, payload or {}, require_complete=False)
-    potential = _build_potential(payload or {}, require_complete=False)
-    actor = actor_snapshot(user)
-    branch = await load_actor_branch(db, user)
-    update = {
-        **customer,
-        **product,
-        **potential,
-        "created_by_id": doc.get("created_by_id"),
-        "created_by_snapshot": doc.get("created_by_snapshot") or actor,
-        "branch_id": doc.get("branch_id") if doc.get("branch_id") is not None else branch["id"],
-        "branch_snapshot": doc.get("branch_snapshot") or branch,
-        "updated_at": now_iso(),
-    }
-    await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": update})
-    saved = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+    doc = await _load_owned_draft(
+        db,
+        request_id,
+        user,
+        on_submitted="Permintaan yang sudah dikirim tidak dapat diubah.",
+    )
+    expected = _expected_version(payload)
+    _reject_client_precondition(doc, expected)
+    merged = merge_draft_payload(doc, payload)
+    customer = await _build_customer(db, merged, require_complete=False)
+    product = await _build_product(db, merged, require_complete=False)
+    potential = _build_potential(merged, require_complete=False)
+    saved = await _apply_draft_write(
+        db,
+        doc,
+        user,
+        {**customer, **product, **potential},
+        submitted=False,
+        expected=expected,
+    )
     return public_view(saved)
 
 
 async def submit_draft(db, request_id: str, payload: Optional[Dict[str, Any]], user: dict) -> dict:
-    doc = await db[COLLECTION].find_one({"id": str(request_id)}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Permintaan produk tidak ditemukan.")
-    if doc.get("status") != STATUS_DRAFT:
-        raise HTTPException(409, "Permintaan ini sudah dikirim.")
-    if not _owned_by(doc, user):
-        raise HTTPException(403, "Anda tidak dapat mengirim draft milik pengguna lain.")
-    merged = dict(doc)
-    if payload:
-        merged.update(payload)
+    doc = await _load_owned_draft(
+        db,
+        request_id,
+        user,
+        on_submitted="Permintaan ini sudah dikirim.",
+    )
+    expected = _expected_version(payload)
+    _reject_client_precondition(doc, expected)
+    merged = merge_draft_payload(doc, payload)
     customer = await _build_customer(db, merged, require_complete=True)
     product = await _build_product(db, merged, require_complete=True)
     potential = _build_potential(merged, require_complete=True)
-    ts = now_iso()
-    update = {
-        **customer,
-        **product,
-        **potential,
-        "status": STATUS_SUBMITTED,
-        "submitted_at": ts,
-        "updated_at": ts,
-        "created_by_id": doc.get("created_by_id"),
-        "created_by_snapshot": doc.get("created_by_snapshot"),
-        "branch_id": doc.get("branch_id"),
-        "branch_snapshot": doc.get("branch_snapshot"),
-        "created_at": doc.get("created_at"),
-    }
-    await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": update})
-    saved = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+    saved = await _apply_draft_write(
+        db,
+        doc,
+        user,
+        {**customer, **product, **potential},
+        submitted=True,
+        expected=expected,
+    )
     return receipt_view(saved)
 
 

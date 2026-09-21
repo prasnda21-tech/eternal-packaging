@@ -1,4 +1,5 @@
 """RBAC + integrity tests for CRM product requests."""
+import asyncio
 import os
 import sys
 import uuid
@@ -100,6 +101,12 @@ async def _seed_masters(db):
     await db[CUSTOMERS].insert_one(dict(customer))
     await db.master_items.insert_one(dict(product))
     return customer, product
+
+
+def _at(payload, version):
+    merged = dict(payload or {})
+    merged["doc_version"] = version
+    return merged
 
 
 def _client_for(user):
@@ -443,7 +450,8 @@ async def test_resubmit_does_not_duplicate_or_mutate_snapshot():
             assert after["status"] == "submitted"
 
             denied_patch = await client.patch(f"/api/product-requests/{rid}", json=payload)
-            assert denied_patch.status_code == 403
+            assert denied_patch.status_code == 409
+            assert "customer_snapshot" not in (denied_patch.json() or {})
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -482,4 +490,451 @@ async def test_builtin_roles_use_real_defaults_without_admin_override():
             assert (await client.get("/api/product-requests")).status_code == 403
             assert (await client.get(f"/api/product-requests/{rid}")).status_code == 403
     finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+def _patch_note_only_json():
+    return {"request_note": "Hanya catatan"}
+
+
+@pytest.mark.anyio
+async def test_partial_patch_keeps_stored_fields_and_empty_submit_uses_draft():
+    import server
+    crm = _user("crm", name="CRM Patch", override={"product_request.create": True, "product_request.read_own_draft": True})
+    await _prepare(server.db, [crm])
+    customer, product = await _seed_masters(server.db)
+    combos = [
+        {
+            **COMPLETE_NEW,
+            "customer_source": "master_crm",
+            "customer_id": customer["id"],
+            "product_source": "product_master",
+            "product_id": product["id"],
+        },
+        {
+            **COMPLETE_NEW,
+            "customer_source": "master_crm",
+            "customer_id": customer["id"],
+            "product_source": "requested_product",
+            "product_id": product["id"],
+        },
+        {
+            **COMPLETE_NEW,
+            "customer_source": "new_prospect",
+            "customer_id": customer["id"],
+            "product_source": "product_master",
+            "product_id": product["id"],
+        },
+        dict(COMPLETE_NEW),
+    ]
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            before = created.json()["request"]
+            patched = await client.patch(f"/api/product-requests/{rid}", json=_patch_note_only_json())
+            assert patched.status_code == 200, patched.text
+            body = patched.json()["request"]
+            assert body["status"] == "draft"
+            assert body["request_note"] == "Hanya catatan"
+            assert body["customer_snapshot"]["name"] == before["customer_snapshot"]["name"]
+            assert body["product_snapshot"]["name"] == before["product_snapshot"]["name"]
+            assert body["potential_qty"] == before["potential_qty"]
+            assert body["frequency"] == before["frequency"]
+            assert body["created_by_id"] == crm["id"]
+
+            spec = await client.patch(f"/api/product-requests/{rid}", json={"material": "PE Coated"})
+            assert spec.status_code == 200, spec.text
+            spec_body = spec.json()["request"]
+            assert spec_body["product_snapshot"]["material"] == "PE Coated"
+            assert spec_body["product_snapshot"]["name"] == "Paper Cup 12oz"
+            assert spec_body["product_snapshot"]["category"] == "Paper Cup"
+            assert spec_body["customer_snapshot"]["name"] == "Kedai Baru"
+
+            switched = await client.patch(f"/api/product-requests/{rid}", json={"customer_source": "master_crm"})
+            assert switched.status_code == 200, switched.text
+            switched_body = switched.json()["request"]
+            assert switched_body["customer_source"] == "master_crm"
+            assert switched_body["customer_id"] is None
+            assert not (switched_body.get("customer_snapshot") or {}).get("name")
+
+            restore = await client.patch(f"/api/product-requests/{rid}", json=COMPLETE_NEW)
+            assert restore.status_code == 200
+            incomplete = await client.post("/api/product-requests", json={"customer_source": "new_prospect"})
+            incomplete_id = incomplete.json()["request"]["id"]
+            before_incomplete = await server.db[COLLECTION].find_one({"id": incomplete_id}, {"_id": 0})
+            denied = await client.post(f"/api/product-requests/{incomplete_id}/submit", json={})
+            assert denied.status_code == 400
+            after_incomplete = await server.db[COLLECTION].find_one({"id": incomplete_id}, {"_id": 0})
+            assert after_incomplete["status"] == "draft"
+            assert after_incomplete.get("submitted_at") is None
+            assert after_incomplete["customer_snapshot"] == before_incomplete["customer_snapshot"]
+
+            for payload in combos:
+                created_combo = await client.post("/api/product-requests", json=payload)
+                assert created_combo.status_code == 200, created_combo.text
+                combo_id = created_combo.json()["request"]["id"]
+                submitted = await client.post(f"/api/product-requests/{combo_id}/submit", json={})
+                assert submitted.status_code == 200, submitted.text
+                receipt = submitted.json()["receipt"]
+                assert receipt["receipt_only"] is True
+                assert "customer_snapshot" not in receipt
+                stored = await server.db[COLLECTION].find_one({"id": combo_id}, {"_id": 0})
+                if payload["customer_source"] == "master_crm":
+                    assert stored["customer_snapshot"]["name"] == customer["name"]
+                else:
+                    assert stored["customer_snapshot"]["name"] == payload["customer_name"]
+                if payload["product_source"] == "product_master":
+                    assert stored["product_snapshot"]["item_name"] == product["item_name"]
+                else:
+                    assert stored["product_snapshot"]["name"] == payload["product_name"]
+                    assert stored["product_snapshot"]["material"] == payload["material"]
+
+            stored_before_forge = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+            forged = await client.patch(f"/api/product-requests/{rid}", json={
+                "request_note": "aman",
+                "created_by_id": "forged",
+                "branch_id": "forged-branch",
+                "status": "submitted",
+                "doc_version": 99,
+                "customer_snapshot": {"name": "FAKE MASTER"},
+                "submitted_at": "1999-01-01T00:00:00+00:00",
+            })
+            assert forged.status_code == 409, forged.text
+            stored_after_forge = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+            assert stored_after_forge["status"] == "draft"
+            assert stored_after_forge["created_by_id"] == crm["id"]
+            assert stored_after_forge["branch_id"] == "br-sby"
+            assert stored_after_forge["customer_snapshot"]["name"] != "FAKE MASTER"
+            assert stored_after_forge["doc_version"] == stored_before_forge["doc_version"]
+            assert stored_after_forge["request_note"] == stored_before_forge["request_note"]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_legacy_versionless_draft_submit_then_patch_conflicts():
+    import server
+    crm = _user("crm", name="CRM Legacy", override={"product_request.create": True})
+    await _prepare(server.db, [crm])
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+        await server.db[COLLECTION].update_one({"id": rid}, {"$unset": {"doc_version": ""}})
+        async with _client_for(crm) as client:
+            submitted = await client.post(f"/api/product-requests/{rid}/submit", json={})
+            assert submitted.status_code == 200, submitted.text
+            assert submitted.json()["receipt"]["receipt_only"] is True
+            patch = await client.patch(f"/api/product-requests/{rid}", json={"request_note": "late"})
+            assert patch.status_code == 409
+            assert "customer_snapshot" not in patch.json()
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        assert stored["status"] == "submitted"
+        assert stored["customer_snapshot"]["name"] == "Kedai Baru"
+        assert stored["request_note"] == "Customer rebranding"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_stale_client_patch_and_submit_do_not_overwrite():
+    import server
+    crm = _user("crm", name="CRM Stale", override={"product_request.create": True, "product_request.read_own_draft": True})
+    await _prepare(server.db, [crm])
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            await server.db[COLLECTION].update_one(
+                {"id": rid},
+                {"$set": {"doc_version": 3, "request_note": "versi-3"}},
+            )
+            seen = await client.get(f"/api/product-requests/{rid}")
+            assert seen.json()["request"]["doc_version"] == 3
+            newer = await client.patch(f"/api/product-requests/{rid}", json=_at({
+                "request_note": "dari tab B",
+            }, 3))
+            assert newer.status_code == 200, newer.text
+            assert newer.json()["request"]["doc_version"] == 4
+
+            stale = await client.patch(f"/api/product-requests/{rid}", json=_at({
+                "request_note": "payload lama tab A",
+                "customer_name": "Nama Lama Tab A",
+            }, 3))
+            assert stale.status_code == 409, stale.text
+            assert "customer_snapshot" not in stale.json()
+
+            stale_submit = await client.post(f"/api/product-requests/{rid}/submit", json=_at(COMPLETE_NEW, 3))
+            assert stale_submit.status_code == 409, stale_submit.text
+
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        assert stored["doc_version"] == 4
+        assert stored["status"] == "draft"
+        assert stored.get("submitted_at") is None
+        assert stored["request_note"] == "dari tab B"
+        assert stored["customer_snapshot"]["name"] == "Kedai Baru"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_matching_doc_version_patch_increments_once():
+    import server
+    crm = _user("crm", name="CRM Match", override={"product_request.create": True})
+    await _prepare(server.db, [crm])
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            current = created.json()["request"]["doc_version"]
+            patched = await client.patch(f"/api/product-requests/{rid}", json=_at({
+                "request_note": "catatan baru",
+            }, current))
+            assert patched.status_code == 200, patched.text
+            body = patched.json()["request"]
+            assert body["doc_version"] == current + 1
+            assert body["request_note"] == "catatan baru"
+            assert body["customer_snapshot"]["name"] == "Kedai Baru"
+            assert body["status"] == "draft"
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        assert stored["doc_version"] == current + 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_overlapping_patches_one_winner():
+    import server
+    import services.product_requests as pr
+    crm = _user("crm", name="CRM Patch Race", override={"product_request.create": True})
+    await _prepare(server.db, [crm])
+    ready = asyncio.Event()
+    go = asyncio.Event()
+    seen = 0
+    lock = asyncio.Lock()
+
+    async def gate():
+        nonlocal seen
+        async with lock:
+            seen += 1
+            if seen >= 2:
+                ready.set()
+        await go.wait()
+
+    pr.after_draft_load = gate
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            version = created.json()["request"]["doc_version"]
+            first = asyncio.create_task(client.patch(
+                f"/api/product-requests/{rid}",
+                json=_at({"request_note": "PEMENANG A"}, version),
+            ))
+            second = asyncio.create_task(client.patch(
+                f"/api/product-requests/{rid}",
+                json=_at({"request_note": "PEMENANG B"}, version),
+            ))
+            await asyncio.wait_for(ready.wait(), timeout=3)
+            go.set()
+            a, b = await asyncio.gather(first, second)
+        assert sorted([a.status_code, b.status_code]) == [200, 409]
+        winner = a if a.status_code == 200 else b
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        assert stored["doc_version"] == version + 1
+        assert stored["request_note"] == winner.json()["request"]["request_note"]
+        assert stored["request_note"] in {"PEMENANG A", "PEMENANG B"}
+        assert stored["customer_snapshot"]["name"] == "Kedai Baru"
+        assert await server.db[COLLECTION].count_documents({"id": rid}) == 1
+    finally:
+        pr.after_draft_load = None
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_omitted_field_preserved_and_explicit_empty_clears():
+    import server
+    crm = _user("crm", name="CRM Empty", override={"product_request.create": True})
+    await _prepare(server.db, [crm])
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            version = created.json()["request"]["doc_version"]
+            omitted = await client.patch(f"/api/product-requests/{rid}", json={"frequency": "Mingguan"})
+            assert omitted.status_code == 200, omitted.text
+            body = omitted.json()["request"]
+            assert body["request_note"] == "Customer rebranding"
+            assert body["request_channel"] == "Referensi Customer"
+            assert body["potential_qty"] == 50000
+            assert body["frequency"] == "Mingguan"
+            assert body["doc_version"] == version + 1
+
+            cleared = await client.patch(f"/api/product-requests/{rid}", json=_at({
+                "request_note": "",
+                "request_channel": None,
+            }, body["doc_version"]))
+            assert cleared.status_code == 200, cleared.text
+            cleared_body = cleared.json()["request"]
+            assert cleared_body["request_note"] == ""
+            assert cleared_body["request_channel"] == ""
+            assert cleared_body["potential_qty"] == 50000
+            assert cleared_body["frequency"] == "Mingguan"
+            assert cleared_body["customer_snapshot"]["name"] == "Kedai Baru"
+            assert cleared_body["doc_version"] == body["doc_version"] + 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_legacy_versionless_patch_accepts_returned_version():
+    import server
+    crm = _user("crm", name="CRM Legacy Patch", override={"product_request.create": True, "product_request.read_own_draft": True})
+    await _prepare(server.db, [crm])
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            await server.db[COLLECTION].update_one({"id": rid}, {"$unset": {"doc_version": ""}})
+            seen = await client.get(f"/api/product-requests/{rid}")
+            returned = seen.json()["request"]["doc_version"]
+            assert returned is None
+            patched = await client.patch(f"/api/product-requests/{rid}", json={
+                "request_note": "sekali",
+                "doc_version": returned,
+            })
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["request"]["doc_version"] == 1
+            assert patched.json()["request"]["request_note"] == "sekali"
+            assert patched.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
+
+            created_null = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            null_id = created_null.json()["request"]["id"]
+            await server.db[COLLECTION].update_one({"id": null_id}, {"$set": {"doc_version": None}})
+            seen_null = await client.get(f"/api/product-requests/{null_id}")
+            assert seen_null.json()["request"]["doc_version"] is None
+            patched_null = await client.patch(f"/api/product-requests/{null_id}", json={
+                "request_note": "null legacy",
+                "doc_version": seen_null.json()["request"]["doc_version"],
+            })
+            assert patched_null.status_code == 200, patched_null.text
+            assert patched_null.json()["request"]["doc_version"] == 1
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        stored_null = await server.db[COLLECTION].find_one({"id": null_id}, {"_id": 0})
+        assert stored["doc_version"] == 1
+        assert stored_null["doc_version"] == 1
+        assert stored_null["request_note"] == "null legacy"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_concurrent_patch_versus_submit_uses_barrier():
+    import server
+    import services.product_requests as pr
+    crm = _user("crm", name="CRM Race", override={"product_request.create": True, "product_request.read_own_draft": True})
+    await _prepare(server.db, [crm])
+    ready = asyncio.Event()
+    go = asyncio.Event()
+    seen = 0
+    lock = asyncio.Lock()
+
+    async def gate():
+        nonlocal seen
+        async with lock:
+            seen += 1
+            if seen >= 2:
+                ready.set()
+        await go.wait()
+
+    pr.after_draft_load = gate
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            original_note = created.json()["request"]["request_note"]
+            patch_task = asyncio.create_task(
+                client.patch(f"/api/product-requests/{rid}", json={"request_note": "LOSER NOTE"})
+            )
+            submit_task = asyncio.create_task(
+                client.post(f"/api/product-requests/{rid}/submit", json={})
+            )
+            await asyncio.wait_for(ready.wait(), timeout=3)
+            go.set()
+            patch_res, submit_res = await asyncio.gather(patch_task, submit_task)
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        assert {patch_res.status_code, submit_res.status_code} == {200, 409}
+        if submit_res.status_code == 200:
+            receipt = submit_res.json()["receipt"]
+            assert receipt["receipt_only"] is True
+            assert "customer_snapshot" not in receipt
+            assert "customer_snapshot" not in (patch_res.json() or {})
+            assert stored["status"] == "submitted"
+            assert stored["request_note"] == original_note
+            assert stored["request_note"] != "LOSER NOTE"
+            assert stored["customer_snapshot"]["name"] == "Kedai Baru"
+        else:
+            body = patch_res.json()["request"]
+            assert body["status"] == "draft"
+            assert body["request_note"] == "LOSER NOTE"
+            assert stored["status"] == "draft"
+            assert stored.get("submitted_at") is None
+            assert submit_res.status_code == 409
+    finally:
+        pr.after_draft_load = None
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_concurrent_double_submit_one_winner():
+    import server
+    import services.product_requests as pr
+    crm = _user("crm", name="CRM Double", override={"product_request.create": True})
+    await _prepare(server.db, [crm])
+    ready = asyncio.Event()
+    go = asyncio.Event()
+    seen = 0
+    lock = asyncio.Lock()
+
+    async def gate():
+        nonlocal seen
+        async with lock:
+            seen += 1
+            if seen >= 2:
+                ready.set()
+        await go.wait()
+
+    pr.after_draft_load = gate
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            rid = created.json()["request"]["id"]
+            first = asyncio.create_task(client.post(f"/api/product-requests/{rid}/submit", json={}))
+            second = asyncio.create_task(client.post(f"/api/product-requests/{rid}/submit", json={
+                **COMPLETE_NEW,
+                "potential_qty": 1,
+                "request_note": "SECOND",
+            }))
+            await asyncio.wait_for(ready.wait(), timeout=3)
+            go.set()
+            a, b = await asyncio.gather(first, second)
+        codes = sorted([a.status_code, b.status_code])
+        assert codes == [200, 409]
+        winner = a if a.status_code == 200 else b
+        receipt = winner.json()["receipt"]
+        assert set(receipt) <= {"id", "request_number", "status", "submitted_at", "receipt_only"}
+        assert receipt["receipt_only"] is True
+        stored = await server.db[COLLECTION].find_one({"id": rid}, {"_id": 0})
+        assert await server.db[COLLECTION].count_documents({"id": rid}) == 1
+        assert stored["status"] == "submitted"
+        if a.status_code == 200:
+            assert stored["potential_qty"] == 50000
+            assert stored["request_note"] == "Customer rebranding"
+        else:
+            assert stored["potential_qty"] == 1
+            assert stored["request_note"] == "SECOND"
+        assert stored["customer_snapshot"]["name"] == "Kedai Baru"
+    finally:
+        pr.after_draft_load = None
         app.dependency_overrides.pop(current_user, None)
