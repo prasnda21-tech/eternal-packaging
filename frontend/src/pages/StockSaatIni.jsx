@@ -11,6 +11,7 @@ export default function StockSaatIni() {
   const { hasPerm } = useAuth();
   const canUpdate = hasPerm("current_stock.update");
   const canOpname = canUpdate;
+  const canHppOpening = hasPerm("settings.hpp.manage");
   const canExport = hasPerm("current_stock.export");
   const [data, setData] = useState(null);
   const canEditPhysical = Boolean(data?.can_correct_physical_stock);
@@ -167,6 +168,11 @@ export default function StockSaatIni() {
           {canOpname && (
             <Link className="ghost" to="/persediaan/stock-opname" data-testid="stock-opname-link">
               Stock Opname
+            </Link>
+          )}
+          {canHppOpening && (
+            <Link className="ghost" to="/persediaan/hpp-awal" data-testid="hpp-opening-link">
+              HPP Awal
             </Link>
           )}
           {canExport && (

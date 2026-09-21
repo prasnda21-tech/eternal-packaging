@@ -167,6 +167,14 @@ from services.stock_opname_import import (
     filter_active_stock_rows,
     revalidate_opname_apply_rows,
 )
+from services.hpp_opening import (
+    build_opening_import_preview,
+    build_opening_template_xlsx,
+    confirm_opening_import,
+    ensure_opening_indexes,
+    load_active_opening_docs,
+    revalidate_opening_apply_rows,
+)
 from services.order_prediction_import import (
     COLLECTION as ORDER_PREDICTION_HISTORY_COLLECTION,
     PERM_IMPORT as ORDER_PREDICTION_IMPORT_PERM,
@@ -11516,6 +11524,138 @@ async def stock_opname_import_apply(
 
 
 
+class HppOpeningImportApply(BaseModel):
+    rows: List[dict]
+    filename: Optional[str] = "upload.xlsx"
+    note: Optional[str] = ""
+    batch_request_id: str
+
+
+@api_router.get("/hpp-opening/export-template")
+async def hpp_opening_export_template(
+    user=Depends(current_user),
+):
+    """Download HPP Awal Excel template. Sensitive — settings.hpp.manage only."""
+    await _require_any_perm(user, "settings.hpp.manage")
+    rows, _source, _last = await _load_v2_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
+    catalog = filter_active_stock_rows(rows, masters)
+    content = build_opening_template_xlsx(catalog)
+    filename = f"hpp-awal-template-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.xlsx"
+    return FastAPIResponse(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.post("/hpp-opening/import/preview")
+async def hpp_opening_import_preview(
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    await _require_any_perm(user, "settings.hpp.manage")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File kosong")
+    rows, _source, _last = await _load_v2_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
+    catalog = filter_active_stock_rows(rows, masters)
+    initialized = {
+        str(d.get("master_item_id") or "").strip()
+        for d in await load_active_opening_docs(db)
+        if d.get("master_item_id")
+    }
+    preview = build_opening_import_preview(
+        data,
+        file.filename or "upload.xlsx",
+        stock_rows=catalog,
+        initialized_master_ids=initialized,
+    )
+    return preview
+
+
+@api_router.post("/hpp-opening/import/confirm")
+async def hpp_opening_import_confirm(
+    payload: HppOpeningImportApply,
+    user=Depends(current_user),
+):
+    await _require_any_perm(user, "settings.hpp.manage")
+    rows, _source, _last = await _load_v2_stock_context()
+    masters = await db.master_items.find({}, {"_id": 0}).to_list(20000)
+    catalog = filter_active_stock_rows(rows, masters)
+    initialized = {
+        str(d.get("master_item_id") or "").strip()
+        for d in await load_active_opening_docs(db)
+        if d.get("master_item_id")
+    }
+    validated_rows = revalidate_opening_apply_rows(
+        payload.rows or [],
+        stock_rows=catalog,
+        initialized_master_ids=initialized,
+        batch_request_id=payload.batch_request_id,
+    )
+    # Snapshot stock state before confirm — must remain unchanged
+    stock_before = {
+        str(r.get("master_item_id") or ""): {
+            "physical_qty": r.get("physical_qty"),
+            "outstanding_so_qty": r.get("outstanding_so_qty"),
+            "printed_qty": r.get("printed_qty"),
+            "unprinted_qty": r.get("unprinted_qty"),
+            "stock_current": r.get("stock_current"),
+        }
+        for r in catalog
+        if r.get("master_item_id")
+    }
+    movements_before = await db.stock_movements.count_documents({})
+    result = await confirm_opening_import(
+        db,
+        preview_rows=validated_rows,
+        filename=payload.filename or "upload.xlsx",
+        user=user,
+        note=payload.note or "",
+        batch_request_id=payload.batch_request_id,
+    )
+    rows_after, _s2, _l2 = await _load_v2_stock_context()
+    stock_after_map = {
+        str(r.get("master_item_id") or ""): {
+            "physical_qty": r.get("physical_qty"),
+            "outstanding_so_qty": r.get("outstanding_so_qty"),
+            "printed_qty": r.get("printed_qty"),
+            "unprinted_qty": r.get("unprinted_qty"),
+            "stock_current": r.get("stock_current"),
+        }
+        for r in rows_after
+        if r.get("master_item_id")
+    }
+    touched = [
+        mid for mid, before in stock_before.items()
+        if stock_after_map.get(mid) != before
+    ]
+    movements_after = await db.stock_movements.count_documents({})
+    result["stock_mutated"] = bool(touched)
+    result["stock_movements_mutated"] = movements_after != movements_before
+    result["stock_guard_touched_ids"] = touched[:20]
+    await _write_audit(
+        "hpp_opening.import_confirm",
+        user,
+        target_email=f"batch:{(result.get('batch') or {}).get('id')}",
+        before=None,
+        after={
+            "filename": payload.filename,
+            "success_count": result.get("success_count"),
+            "failure_count": result.get("failure_count"),
+            "skipped_count": result.get("skipped_count"),
+            "batch_id": (result.get("batch") or {}).get("id"),
+            "active_version": (result.get("settings") or {}).get("active_version"),
+            "stock_mutated": result.get("stock_mutated"),
+            "stock_movements_mutated": result.get("stock_movements_mutated"),
+        },
+        note=payload.note or "Import HPP Awal",
+    )
+    return result
+
+
 class CurrentStockImportApply(BaseModel):
     rows: List[dict]
 
@@ -13545,6 +13685,7 @@ async def seed():
     await db.hpp_cost_versions.create_index("status")
     await db.hpp_cost_layers.create_index("calculation_version")
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
+    await ensure_opening_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes

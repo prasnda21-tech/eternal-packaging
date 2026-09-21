@@ -629,6 +629,11 @@ async def recalculate_hpp(
 
         try:
             from services.purchase_accounting_settings import get_purchase_accounting_settings
+            from services.hpp_opening import (
+                cost_basis_layer_from_doc,
+                load_cost_basis_only_docs,
+                load_opening_acquisition_events,
+            )
 
             src = await _load_source_docs(db)
             events = build_acquisition_events(
@@ -638,6 +643,14 @@ async def recalculate_hpp(
                 goods_receipts=src["goods_receipts"],
                 allocations=src["allocations"],
             )
+            # Opening HPP (qty > 0) is a durable source like PO/GR — inject before annotate.
+            opening_events = await load_opening_acquisition_events(db)
+            if opening_events:
+                events = opening_events + events
+                uniq: Dict[str, dict] = {}
+                for ev in events:
+                    uniq[str(ev["event_id"])] = ev
+                events = sorted(uniq.values(), key=_event_sort_key)
             purchase = await get_purchase_accounting_settings(db)
             events = [
                 annotate_acquisition_event(
@@ -668,6 +681,17 @@ async def recalculate_hpp(
                     "financial_cost_basis_uom": COST_BASIS_UOM,
                     "financial_inventory_model_version": FINANCIAL_INVENTORY_MODEL_VERSION,
                 })
+            # Zero/negative stock openings: audit cost-basis layers only (qty=0, no fake stock).
+            for basis_doc in await load_cost_basis_only_docs(db):
+                layer_docs.append(
+                    cost_basis_layer_from_doc(
+                        basis_doc,
+                        version_id=version_id,
+                        version=next_ver,
+                        method=method,
+                        recognition_point=recognition_point,
+                    )
+                )
             if layer_docs:
                 await db[LAYERS].insert_many(layer_docs)
 

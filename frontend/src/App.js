@@ -53,6 +53,7 @@ const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
 const StockSaatIni = lazy(() => import("./pages/StockSaatIni"));
 const StockOpname = lazy(() => import("./pages/StockOpname"));
+const HppOpening = lazy(() => import("./pages/HppOpening"));
 const PenerimaanBarang = lazy(() => import("./pages/PenerimaanBarang"));
 const PermintaanPembelian = lazy(() => import("./pages/PermintaanPembelian"));
 const PesananPembelian = lazy(() => import("./pages/PesananPembelian"));
@@ -297,6 +298,7 @@ export default function App() {
             <Route path="/persediaan/master-barang-jasa/:id" element={<PermGate anyOf={[NAV_KEYS.masterItems]} alsoAnyOf={["master_items.view"]}><ProductDetail /></PermGate>} />
             <Route path="/persediaan/stock-saat-ini" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.view"]}><StockSaatIni /></PermGate>} />
             <Route path="/persediaan/stock-opname" element={<PermGate anyOf={[NAV_KEYS.currentStock]} alsoAnyOf={["current_stock.update", "current_stock.view"]}><StockOpname /></PermGate>} />
+            <Route path="/persediaan/hpp-awal" element={<PermGate anyOf={["settings.hpp.manage"]}><HppOpening /></PermGate>} />
             <Route path="/persediaan" element={<PersediaanIndex />} />
             <Route path="/buku-besar/akun-perkiraan" element={<PermGate anyOf={[NAV_KEYS.ledgerAccounts, NAV_KEYS.ledger, "ledger.accounts.view", "ledger.accounts.manage"]}><AkunPerkiraan /></PermGate>} />
             <Route path="/buku-besar/jurnal-umum" element={<PermGate anyOf={[NAV_KEYS.ledgerGeneralJournal, NAV_KEYS.ledger, "general_journal.view", "general_journal.manage", "general_journal.post", "general_journal.reverse"]}><JurnalUmum /></PermGate>} />
