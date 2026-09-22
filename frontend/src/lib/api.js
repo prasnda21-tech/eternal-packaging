@@ -816,6 +816,25 @@ export const api = {
   createSalesPwaVisit: (payload) => client.post("/sales-pwa/visits", payload).then((r) => r.data),
   uploadSalesPwaVisitPhoto: (form) => client.post("/sales-pwa/visits/photos", form, { timeout: 60000 }).then((r) => r.data),
   salesPwaVisitPhotoUrl: (photoId) => `${API}/sales-pwa/visits/photos/${encodeURIComponent(photoId)}/file`,
+
+  spkContext: () => client.get("/spk/context").then((r) => r.data),
+  listSpk: (params = {}) => client.get("/spk", { params }).then((r) => r.data),
+  createSpk: (payload) => client.post("/spk", payload).then((r) => r.data),
+  getSpk: (id) => client.get(`/spk/${encodeURIComponent(id)}`).then((r) => r.data),
+  updateSpkDraft: (id, payload) => client.patch(`/spk/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  deleteSpkDraft: (id) => client.delete(`/spk/${encodeURIComponent(id)}`).then((r) => r.data),
+  publishSpk: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/publish`, payload).then((r) => r.data),
+  acknowledgeSpk: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/acknowledge`, payload).then((r) => r.data),
+  startSpk: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/start`, payload).then((r) => r.data),
+  updateSpkProgress: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/progress`, payload).then((r) => r.data),
+  requestSpkVerification: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/verification-request`, payload).then((r) => r.data),
+  verifySpk: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/verify`, payload).then((r) => r.data),
+  cancelSpk: (id, payload) => client.post(`/spk/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
+  uploadSpkFile: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post("/spk/uploads", form).then((r) => r.data);
+  },
 };
 
 export default api;

@@ -115,3 +115,12 @@ export function decisionLabel(decision) {
   if (decision === "rejected") return "Ditolak";
   return decision || "";
 }
+
+/** Desktop path for SPK notices. PO notices stay on the existing /po/:id helper. */
+export function desktopNotificationPath(item) {
+  const eventType = String(item?.event_type || "");
+  const link = String(item?.deep_link || "");
+  if (link.startsWith("/spk/") || link === "/spk") return link;
+  if (eventType.startsWith("spk_") && item?.order_id) return `/spk/${item.order_id}`;
+  return "";
+}

@@ -10,6 +10,7 @@ import {
   clampBellPosition,
   countUnread,
   decisionLabel,
+  desktopNotificationPath,
   sortNotificationsUnreadFirst,
   defaultBellPosition,
   movementExceededThreshold,
@@ -267,8 +268,8 @@ export default function FloatingNotificationBell() {
       }
       setPanelOpen(false);
       // WEB shell must open desktop Detail PO (/po/:id), not mobile deep_link (/m/orders/:id).
-      // order_id is the entity identity; productionSchedulePoHref is the existing desktop path builder.
-      const target = productionSchedulePoHref(item.order_id);
+      // SPK notices are the exception: they open /spk/:id and never a purchase order.
+      const target = desktopNotificationPath(item) || productionSchedulePoHref(item.order_id);
       if (target) navigate(target);
     } catch {
       /* keep unread; do not navigate — same as mobile inbox */

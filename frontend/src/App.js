@@ -7,6 +7,7 @@ import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
+import { SPK_ACCESS_KEYS } from "./lib/spk";
 import { isSalesPwaRole } from "./lib/salesPwa";
 import "@/App.css";
 import "@/ui-system.css";
@@ -74,6 +75,9 @@ const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage
 const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
 const FormShowcase = lazy(() => import("./pages/FormShowcase"));
 const ChatPage = lazy(() => import("./pages/ChatPage"));
+const SpkDashboard = lazy(() => import("./pages/SpkDashboard"));
+const SpkCreate = lazy(() => import("./pages/SpkCreate"));
+const SpkDetail = lazy(() => import("./pages/SpkDetail"));
 const AppShell = lazy(() => import("./components/AppShell"));
 const RouteOptimizerLayout = lazy(() => import("./mobile/RouteOptimizerLayout"));
 const MobileOrdersPage = lazy(() => import("./mobile/MobileOrdersPage"));
@@ -258,6 +262,9 @@ export default function App() {
           </Route>
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/spk/baru" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkCreate /></PermGate>} />
+            <Route path="/spk/:id" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDetail /></PermGate>} />
+            <Route path="/spk" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDashboard /></PermGate>} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />

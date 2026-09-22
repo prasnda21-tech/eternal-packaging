@@ -49,6 +49,10 @@
   --mod:#0F766E; --mod-strong:#115E59; --mod-soft:#F0FDFA; --mod-border:#5EEAD4; --mod-ink:#134E4A;
   --color-input-bg:#ECFEFF; --color-input-border:#22D3EE; --color-input-hover:#06B6D4; --color-input-focus:#0F766E; --color-input-ring:rgba(15,118,110,.26);
 }
+[data-module="spk"] {
+  --mod:#0F766E; --mod-strong:#115E59; --mod-soft:#F0FDFA; --mod-border:#5EEAD4; --mod-ink:#134E4A;
+  --color-input-bg:#ECFEFF; --color-input-border:#22D3EE; --color-input-hover:#06B6D4; --color-input-focus:#0F766E; --color-input-ring:rgba(15,118,110,.26);
+}
 [data-module="cashBank"] {
   --mod:#0891B2; --mod-strong:#0E7490; --mod-soft:#ECFEFF; --mod-border:#67E8F9; --mod-ink:#155E75;
   --color-input-bg:#FFFFFF; --color-input-border:#7DD3FC; --color-input-hover:#38BDF8; --color-input-focus:#0891B2; --color-input-ring:rgba(8,145,178,.28);
