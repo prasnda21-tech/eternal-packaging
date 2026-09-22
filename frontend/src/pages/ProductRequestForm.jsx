@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { Building2, PackagePlus, UserPlus, Users } from "lucide-react";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import ProductRequestCustomerSearch from "../components/ProductRequestCustomerSearch";
 import { useAuth } from "../lib/auth";
 import api from "../lib/api";
+import { armProductRequestBeforeUnload, setProductRequestLeaveGuard } from "../lib/productRequestLeaveGuard";
 import {
   PRODUCT_REQUEST_LIST_PATH,
   PRODUCT_REQUEST_NEW_PATH,
@@ -23,6 +25,7 @@ import {
   customerSourceLabel,
   formFromRequest,
   formatError,
+  productRequestFormsEqual,
   productSourceLabel,
   progressSteps,
   requiredComplete,
@@ -46,6 +49,24 @@ export default function ProductRequestForm() {
   const [readonly, setReadonly] = useState(null);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState({ type: "", text: "" });
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const baselineRef = useRef(EMPTY_FORM);
+  const formRef = useRef(form);
+  const allowLeaveRef = useRef(false);
+  const pendingLeaveRef = useRef(null);
+  const stayPathRef = useRef("/penjualan/permintaan-produk/baru");
+  const stayStateRef = useRef(null);
+  formRef.current = form;
+  stayPathRef.current = id
+    ? `/penjualan/permintaan-produk/${id}`
+    : "/penjualan/permintaan-produk/baru";
+  if (typeof window !== "undefined") stayStateRef.current = window.history.state;
+
+  const adoptForm = (next) => {
+    baselineRef.current = next;
+    formRef.current = next;
+    setForm(next);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +81,7 @@ export default function ProductRequestForm() {
       setRequestId(null);
       setReceipt(null);
       setReadonly(null);
-      setForm(EMPTY_FORM);
+      adoptForm(EMPTY_FORM);
       return undefined;
     }
     let cancelled = false;
@@ -80,12 +101,111 @@ export default function ProductRequestForm() {
           return;
         }
         setRequestId(request.id);
-        setForm(formFromRequest(request));
+        adoptForm(formFromRequest(request));
       })
       .catch((err) => setMessage({ type: "error", text: formatError(err) }))
       .finally(() => { if (!cancelled) setBusy(""); });
     return () => { cancelled = true; };
   }, [id]);
+
+  const editing = !receipt && !readonly;
+  useEffect(() => {
+    if (!editing) return undefined;
+
+    const dirty = () => !productRequestFormsEqual(formRef.current, baselineRef.current);
+
+    const destinationFrom = (node) => {
+      if (!node?.closest) return null;
+      const anchor = node.closest("a[href]");
+      if (anchor) {
+        if (anchor.target === "_blank" || anchor.hasAttribute("download")) return null;
+        let url;
+        try {
+          url = new URL(anchor.getAttribute("href"), window.location.href);
+        } catch {
+          return null;
+        }
+        if (url.origin !== window.location.origin) return null;
+        const dest = `${url.pathname}${url.search}${url.hash}`;
+        const here = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        return dest === here ? null : dest;
+      }
+      const tab = node.closest("[data-workspace-tab]");
+      if (!tab) return null;
+      const closing = Boolean(node.closest(".kb-workspace-tab-close"));
+      const active = tab.getAttribute("data-active") === "1";
+      if (closing) return active ? (tab.getAttribute("data-path") || "close-active") : null;
+      const dest = tab.getAttribute("data-path") || "";
+      if (!dest || dest === window.location.pathname) return null;
+      return dest;
+    };
+
+    const onClick = (event) => {
+      if (allowLeaveRef.current || !dirty()) return;
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const dest = destinationFrom(event.target);
+      if (!dest) return;
+      const anchor = event.target.closest?.("a[href]");
+      const control = anchor || event.target.closest?.("button");
+      event.preventDefault();
+      event.stopPropagation();
+      pendingLeaveRef.current = { kind: "click", el: control };
+      setConfirmLeave(true);
+    };
+
+    document.addEventListener("click", onClick, true);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [editing]);
+
+  useEffect(() => {
+    if (!editing) {
+      setProductRequestLeaveGuard(null);
+      return undefined;
+    }
+    setProductRequestLeaveGuard(() => {
+      if (allowLeaveRef.current === "once") {
+        allowLeaveRef.current = false;
+        return false;
+      }
+      if (allowLeaveRef.current === true) return false;
+      if (productRequestFormsEqual(formRef.current, baselineRef.current)) return false;
+      window.history.pushState(stayStateRef.current, "", stayPathRef.current);
+      pendingLeaveRef.current = { kind: "pop" };
+      setConfirmLeave(true);
+      return true;
+    });
+    return () => setProductRequestLeaveGuard(null);
+  }, [editing]);
+
+  const leaveDirty = editing && !productRequestFormsEqual(form, baselineRef.current);
+  useEffect(() => {
+    if (!leaveDirty) return undefined;
+    const onBeforeUnload = (event) => armProductRequestBeforeUnload(event);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [leaveDirty]);
+
+  const cancelLeave = () => {
+    pendingLeaveRef.current = null;
+    setConfirmLeave(false);
+  };
+
+  const discardLeave = () => {
+    const pending = pendingLeaveRef.current;
+    pendingLeaveRef.current = null;
+    setConfirmLeave(false);
+    if (!pending) return;
+    if (pending.kind === "pop") {
+      allowLeaveRef.current = "once";
+      window.history.back();
+      return;
+    }
+    allowLeaveRef.current = true;
+    pending.el?.click();
+    allowLeaveRef.current = false;
+  };
 
   const complete = useMemo(() => completenessCount(form), [form]);
   const steps = useMemo(() => progressSteps(form), [form]);
@@ -104,8 +224,9 @@ export default function ProductRequestForm() {
       const data = requestId
         ? await api.updateProductRequest(requestId, payload)
         : await api.createProductRequest(payload);
+      const saved = formFromRequest(data.request);
       setRequestId(data.request.id);
-      setForm(formFromRequest(data.request));
+      adoptForm(saved);
       setMessage({ type: "ok", text: "Draft tersimpan." });
       if (!id && data.request.id) navigate(`/penjualan/permintaan-produk/${data.request.id}`, { replace: true });
     } catch (err) {
@@ -128,15 +249,16 @@ export default function ProductRequestForm() {
         currentId = created.request.id;
         const createdForm = formFromRequest(created.request);
         setRequestId(currentId);
-        setForm(createdForm);
+        adoptForm(createdForm);
         submitPayload = toPayload(createdForm);
       } else {
         const updated = await api.updateProductRequest(currentId, payload);
         const updatedForm = formFromRequest(updated.request);
-        setForm(updatedForm);
+        adoptForm(updatedForm);
         submitPayload = toPayload(updatedForm);
       }
       const data = await api.submitProductRequest(currentId, submitPayload);
+      baselineRef.current = formRef.current;
       setReceipt(data.receipt);
       setReadonly(null);
       setMessage({ type: "ok", text: "Permintaan terkirim." });
@@ -167,7 +289,7 @@ export default function ProductRequestForm() {
               data-testid="prq-new-after-submit"
               onClick={() => {
                 setReceipt(null);
-                setForm(EMPTY_FORM);
+                adoptForm(EMPTY_FORM);
                 setRequestId(null);
                 navigate(PRODUCT_REQUEST_NEW_PATH);
               }}
@@ -487,6 +609,23 @@ export default function ProductRequestForm() {
           </button>
         </div>
       </div>
+      {confirmLeave && createPortal(
+        <div className="prq-unsaved" role="presentation" data-testid="prq-unsaved-dialog">
+          <div className="prq-unsaved-card" role="dialog" aria-modal="true" aria-labelledby="prq-unsaved-title">
+            <h2 id="prq-unsaved-title">Perubahan belum disimpan</h2>
+            <p>Isian pada form ini belum disimpan. Tetap di halaman ini, atau buang perubahan untuk pindah.</p>
+            <div className="prq-unsaved-actions">
+              <button type="button" className="prq-btn prq-btn-ghost" data-testid="prq-unsaved-cancel" onClick={cancelLeave}>
+                Batal
+              </button>
+              <button type="button" className="prq-btn prq-btn-primary" data-testid="prq-unsaved-discard" onClick={discardLeave}>
+                Buang Perubahan
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -288,4 +288,199 @@ describe("ProductRequestForm interactions", () => {
     expect(container.querySelector('[data-testid="prq-detail-channel"]').textContent).toBe("Referensi Customer");
     expect(container.querySelector('[data-testid="prq-detail-note"]').textContent).toBe("Customer rebranding");
   });
+
+  const setNote = async (value) => {
+    const note = container.querySelector('[data-testid="prq-note"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(note, value);
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+
+  const click = async (node) => {
+    await act(async () => {
+      node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+    });
+  };
+
+  test("unsaved note blocks tab and menu navigation until discard", async () => {
+    await renderForm();
+    await setNote("catatan belum disimpan");
+    const link = document.createElement("a");
+    link.href = "/penjualan/pesanan-penjualan";
+    let followed = 0;
+    link.addEventListener("click", () => { followed += 1; });
+    document.body.appendChild(link);
+    await click(link);
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-note"]').value).toBe("catatan belum disimpan");
+    expect(followed).toBe(0);
+    await click(document.querySelector('[data-testid="prq-unsaved-cancel"]'));
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-note"]').value).toBe("catatan belum disimpan");
+    expect(followed).toBe(0);
+
+    const tab = document.createElement("div");
+    tab.setAttribute("data-workspace-tab", "1");
+    tab.setAttribute("data-path", "/penjualan/pesanan-penjualan");
+    tab.setAttribute("data-active", "0");
+    const label = document.createElement("button");
+    label.className = "kb-workspace-tab-label";
+    tab.appendChild(label);
+    document.body.appendChild(tab);
+    await click(label);
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeTruthy();
+    await click(document.querySelector('[data-testid="prq-unsaved-discard"]'));
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-note"]').value).toBe("catatan belum disimpan");
+    link.remove();
+    tab.remove();
+  });
+
+  test("beforeunload is armed only while the form is dirty and is removed once", async () => {
+    const added = [];
+    const removed = [];
+    const origAdd = window.addEventListener.bind(window);
+    const origRemove = window.removeEventListener.bind(window);
+    window.addEventListener = (type, fn, cap) => {
+      if (type === "beforeunload") added.push(fn);
+      return origAdd(type, fn, cap);
+    };
+    window.removeEventListener = (type, fn, cap) => {
+      if (type === "beforeunload") removed.push(fn);
+      return origRemove(type, fn, cap);
+    };
+    try {
+      await renderForm();
+      expect(added).toHaveLength(0);
+      await setNote("belum disimpan");
+      expect(added).toHaveLength(1);
+      await setNote("belum disimpan lagi");
+      expect(added).toHaveLength(1);
+      const event = {
+        defaultPrevented: false,
+        returnValue: undefined,
+        preventDefault() { this.defaultPrevented = true; },
+      };
+      added[0](event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(event.returnValue).toBe("");
+      await setNote("");
+      expect(removed).toEqual([added[0]]);
+      const clean = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(clean);
+      expect(clean.defaultPrevented).toBe(false);
+    } finally {
+      window.addEventListener = origAdd;
+      window.removeEventListener = origRemove;
+    }
+  });
+
+  test("discard continues to the SPK workspace tab path", async () => {
+    await renderForm();
+    await setNote("menuju spk");
+    const tab = document.createElement("div");
+    tab.setAttribute("data-workspace-tab", "1");
+    tab.setAttribute("data-path", "/spk");
+    tab.setAttribute("data-active", "0");
+    const label = document.createElement("button");
+    label.className = "kb-workspace-tab-label";
+    let followed = 0;
+    label.addEventListener("click", () => { followed += 1; });
+    tab.appendChild(label);
+    document.body.appendChild(tab);
+    await click(label);
+    expect(document.querySelector("[data-testid='prq-unsaved-dialog']")).toBeTruthy();
+    expect(followed).toBe(0);
+    await click(document.querySelector("[data-testid='prq-unsaved-discard']"));
+    expect(document.querySelector("[data-testid='prq-unsaved-dialog']")).toBeFalsy();
+    expect(followed).toBe(1);
+    expect(tab.getAttribute("data-path")).toBe("/spk");
+    expect(container.querySelector("[data-testid='prq-note']").value).toBe("menuju spk");
+    tab.remove();
+  });
+
+  test("unchanged form does not warn", async () => {
+    await renderForm();
+    const link = document.createElement("a");
+    link.href = "/dashboard";
+    let followed = 0;
+    link.addEventListener("click", () => { followed += 1; });
+    document.body.appendChild(link);
+    await click(link);
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeFalsy();
+    expect(followed).toBe(1);
+    link.remove();
+  });
+
+  test("failed save keeps the note dirty and successful save does not warn", async () => {
+    mockApi.createProductRequest.mockRejectedValueOnce(new Error("jaringan"));
+    await renderForm();
+    await setNote("tetap di form");
+    await click(container.querySelector('[data-testid="prq-save-draft"]'));
+    await flush();
+    expect(container.querySelector('[data-testid="prq-note"]').value).toBe("tetap di form");
+    const link = document.createElement("a");
+    link.href = "/dashboard";
+    document.body.appendChild(link);
+    await click(link);
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeTruthy();
+    await click(document.querySelector('[data-testid="prq-unsaved-cancel"]'));
+    link.remove();
+
+    mockApi.createProductRequest.mockResolvedValueOnce({
+      request: { id: "r9", status: "draft", request_note: "tersimpan" },
+    });
+    await setNote("tersimpan");
+    await click(container.querySelector('[data-testid="prq-save-draft"]'));
+    await flush();
+    expect(mockNavigate).toHaveBeenCalledWith("/penjualan/permintaan-produk/r9", { replace: true });
+    expect(container.querySelector('[data-testid="prq-note"]').value).toBe("tersimpan");
+    const after = document.createElement("a");
+    after.href = "/dashboard";
+    let followed = 0;
+    after.addEventListener("click", () => { followed += 1; });
+    document.body.appendChild(after);
+    await click(after);
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeFalsy();
+    expect(followed).toBe(1);
+    after.remove();
+  });
+
+  test("successful submit leaves the receipt without a warning", async () => {
+    mockParams.id = "r1";
+    mockApi.getProductRequest.mockResolvedValue({
+      request: {
+        id: "r1",
+        status: "draft",
+        doc_version: 1,
+        customer_source: "master_crm",
+        customer_id: "C1",
+        customer_snapshot: { name: "Renee" },
+        product_source: "product_master",
+        product_id: "P1",
+        product_snapshot: { item_name: "Cup" },
+        potential_qty: 12,
+        frequency: "Bulanan",
+        target_price: 0,
+        needed_date: "2026-10-15",
+        request_note: "siap",
+      },
+    });
+    await renderForm();
+    await setNote("diubah lalu dikirim");
+    await click(container.querySelector('[data-testid="prq-submit"]'));
+    await flush();
+    expect(container.querySelector('[data-testid="prq-receipt-page"]')).toBeTruthy();
+    const link = document.createElement("a");
+    link.href = "/penjualan/pesanan-penjualan";
+    let followed = 0;
+    link.addEventListener("click", () => { followed += 1; });
+    document.body.appendChild(link);
+    await click(link);
+    expect(document.querySelector('[data-testid="prq-unsaved-dialog"]')).toBeFalsy();
+    expect(followed).toBe(1);
+    link.remove();
+  });
 });

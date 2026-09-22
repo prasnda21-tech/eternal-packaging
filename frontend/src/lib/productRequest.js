@@ -233,6 +233,19 @@ export function selectMasterProduct(form, item) {
   };
 }
 
+function comparableField(key, value) {
+  if (value == null) return "";
+  if (key === "potential_qty" || key === "target_price" || key === "doc_version") return String(value);
+  return String(value);
+}
+
+/** True when two form snapshots show the same saved input. */
+export function productRequestFormsEqual(left, right) {
+  return Object.keys(EMPTY_FORM).every(
+    (key) => comparableField(key, left?.[key]) === comparableField(key, right?.[key]),
+  );
+}
+
 export function formatError(err) {
   const detail = err?.response?.data?.detail;
   if (typeof detail === "string" && detail) return detail;
