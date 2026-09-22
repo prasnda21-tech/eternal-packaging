@@ -495,6 +495,8 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
             existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
             if existing:
                 await handle_goods_receipt_created(db, existing, user)
+                from services.hpp_cutover import recognize_posted_goods_receipt
+                await recognize_posted_goods_receipt(db, existing, user)
                 return existing
 
         preview = await get_po_receipt_preview(db, po_id)
@@ -577,6 +579,8 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
 
         saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
         await handle_goods_receipt_created(db, saved, user)
+        from services.hpp_cutover import recognize_posted_goods_receipt
+        await recognize_posted_goods_receipt(db, saved, user)
         out = await enrich_goods_receipt(db, saved)
         from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
 

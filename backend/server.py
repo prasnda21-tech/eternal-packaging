@@ -13578,6 +13578,8 @@ async def seed():
     await db.hpp_cost_versions.create_index("status")
     await db.hpp_cost_layers.create_index("calculation_version")
     await db.hpp_cost_layers.create_index([("calculation_version", 1), ("layer_id", 1)], unique=True)
+    from services.hpp_cutover import ensure_indexes as _hpp_cutover_ensure_indexes
+    await _hpp_cutover_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes
