@@ -225,6 +225,7 @@ from services.purchase_accounting_settings_http import register_purchase_account
 from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.balance_sheet_http import register_balance_sheet_routes
+from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
 from services.sales_activity.http import register_sales_activity_routes
 from services.independent_route.http import register_independent_route_routes
@@ -11955,6 +11956,13 @@ register_profit_loss_routes(
     Depends=Depends,
 )
 register_balance_sheet_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_inventory_reconciliation_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,

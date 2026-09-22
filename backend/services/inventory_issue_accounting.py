@@ -77,6 +77,7 @@ CODE_COGS_ACCOUNT = "COGS_ACCOUNT_NOT_CONFIGURED"
 CODE_HPP_METHOD = "INVALID_HPP_METHOD"
 CODE_INVENTORY_ACCOUNT = "INVENTORY_ACCOUNT_INVALID"
 CODE_PERIOD_LOCKED = "PERIOD_LOCKED"
+CODE_INVALID_ACQUISITION_BASIS = "INVALID_ACQUISITION_BASIS"
 CODE_CHRONOLOGY_CONFLICT = "FINANCIAL_CHRONOLOGY_CONFLICT"
 MSG_CHRONOLOGY_CONFLICT = (
     "Pengeluaran HPP yang lebih baru sudah diposting. Pengeluaran bertanggal "
@@ -410,6 +411,69 @@ def _line_acquisition(receipt: dict, basis: dict, line: dict) -> Optional[dict]:
         "total_cost": _money(line.get("total_cost") or line.get("line_financial_amount")),
         "base_uom": line.get("base_uom"),
     }
+
+
+def _receipt_item_keys(receipt: dict) -> set:
+    keys = set()
+    for line in receipt.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        key = financial_inventory_item_key(line)
+        if key:
+            keys.add(key)
+    return keys
+
+
+async def load_live_acquisition_coverage(db) -> Tuple[List[dict], dict]:
+    """Read-only acquisition split.
+
+    A live GR whose eligible lines are not a list of dicts is excluded from the
+    cost set entirely. Its receipt id and stored item keys are reported so
+    costing is not continued from the remaining acquisitions.
+    """
+    report = {"unresolved": False, "item_keys": set(), "receipt_ids": []}
+    live_journals = await load_live_gr_journals_by_receipt(db)
+    if not live_journals:
+        return [], report
+    receipts = await db[GOODS_RECEIPTS].find(
+        {"id": {"$in": list(live_journals.keys())}},
+        {"_id": 0},
+    ).to_list(len(live_journals) + 10)
+    out: List[dict] = []
+    for receipt in receipts or []:
+        rid = str(receipt.get("id") or "")
+        journal = live_journals.get(rid)
+        if not journal or str(journal.get("status") or "") != STATUS_POSTED:
+            continue
+        if journal.get("reversal_of") is not None:
+            continue
+        basis = receipt.get("accounting_posting_basis") or {}
+        if not basis:
+            continue
+        if not isinstance(basis, dict):
+            report["receipt_ids"].append(rid)
+            keys = _receipt_item_keys(receipt)
+            if keys:
+                report["item_keys"].update(keys)
+            else:
+                report["unresolved"] = True
+            continue
+        lines = basis.get("eligible_inventory_lines")
+        if lines is None:
+            continue
+        if not isinstance(lines, list) or any(not isinstance(line, dict) for line in lines):
+            report["receipt_ids"].append(rid)
+            keys = _receipt_item_keys(receipt)
+            if keys:
+                report["item_keys"].update(keys)
+            else:
+                report["unresolved"] = True
+            continue
+        for line in lines:
+            acq = _line_acquisition(receipt, basis, line)
+            if acq:
+                out.append(acq)
+    return out, report
 
 
 async def load_live_acquisitions(db) -> List[dict]:
@@ -915,6 +979,9 @@ def _blocker(code: Optional[str], message: Optional[str] = None) -> Tuple[Option
         CODE_PRE_EFFECTIVE: "Tanggal jurnal sebelum Tanggal Mulai Accounting Persediaan.",
         CODE_COGS_ACCOUNT: "Akun HPP / COGS belum dikonfigurasi.",
         CODE_HPP_METHOD: "Metode HPP finansial tidak valid. Pilih FIFO atau RATA-RATA.",
+        CODE_INVALID_ACQUISITION_BASIS: (
+            "Basis akuisisi GR tidak valid. HPP item ini tidak dihitung dari sisa akuisisi."
+        ),
         CODE_INVENTORY_ACCOUNT: "Akun Persediaan historis tidak valid.",
         CODE_PERIOD_LOCKED: "Periode akuntansi sudah ditutup.",
         CODE_ALREADY_CONSUMED: "Persediaan finansial penerimaan ini sudah dikonsumsi HPP.",
@@ -1175,7 +1242,7 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
             masters[str(row.get("id") or "")] = row
 
     live_journals = await load_live_issue_journals_by_movement(db)
-    acquisitions = await load_live_acquisitions(db)
+    acquisitions, acquisition_coverage = await load_live_acquisition_coverage(db)
     live_issue_bases = await load_live_issue_bases(db)
     from services.inventory_financial_locks import COLLECTION as LOCKS
     locks = {
@@ -1225,6 +1292,22 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
             code, msg = _blocker(cogs_err)
             row["status"] = STATUS_BLOCKED
             row["can_post"] = False
+            row["blocker_code"] = code
+            row["blocker_message"] = msg
+            evaluated.append(row)
+            continue
+        item_key = str(row.get("financial_inventory_item_key") or "")
+        invalid_receipts = acquisition_coverage["receipt_ids"]
+        affected_by_invalid_basis = (
+            acquisition_coverage["unresolved"]
+            or (bool(invalid_receipts) and not item_key)
+            or item_key in acquisition_coverage["item_keys"]
+        )
+        if affected_by_invalid_basis:
+            code, msg = _blocker(CODE_INVALID_ACQUISITION_BASIS)
+            row["status"] = STATUS_BLOCKED
+            row["can_post"] = False
+            row["computed_cogs"] = None
             row["blocker_code"] = code
             row["blocker_message"] = msg
             evaluated.append(row)
