@@ -439,6 +439,28 @@ describe("inventoryMenuItems", () => {
     expect(items.map((item) => item.label)).not.toContain("Stock Saat Ini");
     expect(inventoryMenuItems(has(NAV_KEYS.inventory))).toEqual([]);
   });
+
+  test("does not expose Nilai Persediaan through Stock Saat Ini permission", () => {
+    const items = inventoryMenuItems(has(
+      NAV_KEYS.inventory,
+      NAV_KEYS.currentStock,
+      "current_stock.view",
+    ));
+    expect(items.map((item) => [item.label, item.to])).toEqual([
+      ["Stock Saat Ini", "/persediaan/stock-saat-ini"],
+    ]);
+  });
+
+  test("shows Nilai Persediaan only with its dedicated permission", () => {
+    const items = inventoryMenuItems(has(
+      NAV_KEYS.inventory,
+      NAV_KEYS.inventoryValue,
+      "inventory_valuation.view",
+    ));
+    expect(items.map((item) => [item.label, item.to])).toEqual([
+      ["Nilai Persediaan", "/persediaan/nilai-persediaan"],
+    ]);
+  });
 });
 
 describe("reportsMenuItems", () => {
