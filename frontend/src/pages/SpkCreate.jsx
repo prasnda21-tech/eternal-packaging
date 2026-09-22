@@ -87,7 +87,7 @@ export default function SpkCreate() {
   };
 
   return (
-    <div className="spk-page" data-testid="spk-create-page">
+    <div className="spk-page spk-create-page" data-testid="spk-create-page">
       <header className="spk-head">
         <div>
           <div className="spk-kicker">Buat SPK</div>
@@ -103,6 +103,7 @@ export default function SpkCreate() {
         </div>
       </header>
       {error && <div className="spk-msg is-error" data-testid="spk-create-error">{error}</div>}
+      <div className="spk-create-scroll">
       <div className="spk-row spk-row-2">
         <div className="spk-field">
           <label htmlFor="spk-title">Judul</label>
@@ -234,6 +235,7 @@ export default function SpkCreate() {
         >
           <Plus size={14} /> Tambah Milestone
         </button>
+      </div>
       </div>
     </div>
   );

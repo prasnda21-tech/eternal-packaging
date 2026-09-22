@@ -117,6 +117,19 @@ describe("global workspace tabs", () => {
     expect(byPath["/settings"]).toBeTruthy();
     expect(byPath["/optimasi-rute"]).toBeTruthy();
     expect(byPath["/penjualan/data-pelanggan"]).toBeTruthy();
+    expect(byPath["/spk"]).toMatchObject({ id: "spk", label: "SPK", matchPrefix: true });
+  });
+
+  test("SPK list, create, and detail share one history tab", () => {
+    const list = openOrActivateGlobalTab([], "/spk");
+    const create = openOrActivateGlobalTab(list.tabs, "/spk/baru");
+    const detail = openOrActivateGlobalTab(create.tabs, "/spk/ord-1");
+    expect(detail.tabs).toHaveLength(1);
+    expect(detail.activated).toMatchObject({ id: "spk", path: "/spk", label: "SPK" });
+    expect(globalTabByPath("/spk/baru").id).toBe("spk");
+    const hidden = visibleGlobalWorkspaceCatalog((key) => key === NAV_KEYS.dashboard);
+    expect(hidden.find((tab) => tab.id === "spk")).toBeUndefined();
+    expect(openOrActivateGlobalTab([], "/spk/baru", (key) => key === NAV_KEYS.dashboard).activated).toBe(null);
   });
 
   test("sales outlet detail aliases Aktivitas Sales", () => {

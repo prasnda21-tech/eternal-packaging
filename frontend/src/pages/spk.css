@@ -1,13 +1,33 @@
+/*
+  .kb-workspace-tabs is position:sticky; top: var(--ep-topbar-height).
+  That offset assumes the viewport is the sticky containing block (the topbar
+  sits above .content). This page sets overflow:hidden on .content, which
+  makes .content the containing block, so top:48px shifts the strip down over
+  the title and action buttons. Reset top to 0 so the strip stays in flow
+  directly under the app header. Do not pull the title above the tabs.
+*/
+.content.content-workspace.content-penjualan-workspace:has(.spk-page),
+.content.content-workspace.content-kas-bank-workspace:has(.spk-page),
+.content.content-workspace:has(.spk-page),
 .content:has(.spk-page) {
   max-width: none;
   width: 100%;
   margin: 0;
-  padding: 8px 12px;
+  padding: 0;
   height: calc(100dvh - var(--ep-topbar-height, 48px));
+  max-height: calc(100dvh - var(--ep-topbar-height, 48px));
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   box-sizing: border-box;
+}
+.content.content-workspace:has(.spk-page) > .kb-workspace-tabs,
+.content:has(.spk-page) > .kb-workspace-tabs,
+.content:has(.spk-page) > [data-testid="workspace-tabs"] {
+  top: 0;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .spk-page {
@@ -15,8 +35,9 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   overflow: hidden;
+  padding: 6px 12px 8px;
   color: #0f172a;
 }
 
@@ -25,7 +46,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 40px;
+  min-height: 36px;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 .spk-head h1 {
   margin: 0;
@@ -222,7 +245,7 @@
 .spk-btn-revision { background: #ea580c; color: #fff; }
 .spk-btn-cancel { background: #dc2626; color: #fff; }
 .spk-btn-ghost { background: #fff; color: #334155; border-color: #cbd5e1; }
-.spk-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.spk-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 0 0 auto; }
 
 .spk-form-grid {
   display: grid;
@@ -244,12 +267,23 @@
   color: #475569;
 }
 .spk-field input, .spk-field select, .spk-field textarea {
-  padding: 6px 8px;
-  min-height: 30px;
+  padding: 0 8px;
+  min-height: 28px;
 }
-.spk-field textarea { min-height: 64px; resize: vertical; }
+.spk-field textarea { min-height: 52px; padding: 6px 8px; resize: vertical; line-height: 1.35; }
+.spk-create-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.spk-create-page .spk-row { gap: 6px; }
+.spk-create-page .spk-field { gap: 2px; }
 .spk-readonly {
-  min-height: 30px;
+  min-height: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   padding: 0 8px;
@@ -257,6 +291,37 @@
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   font-size: 12px;
+  box-sizing: border-box;
+}
+
+/* ui-system .content input is min-height:42px / textarea 88px and outranks .spk-field. */
+.content .spk-create-page .spk-field input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .spk-create-page .spk-field select,
+.content .spk-create-page .spk-ms-table input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="range"]):not([type="color"]),
+.content .spk-create-page .spk-ms-table select {
+  min-height: 28px;
+  height: 28px;
+  max-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+.content .spk-create-page .spk-field textarea {
+  min-height: 52px;
+  height: auto;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1.35;
+  resize: vertical;
+  box-sizing: border-box;
+  overflow: auto;
 }
 
 .spk-milestone-scroll { flex: 1; }
@@ -335,7 +400,7 @@
   font-weight: 700;
   color: #155e75;
 }
-.spk-msg { font-size: 12px; padding: 6px 8px; border-radius: 8px; }
+.spk-msg { font-size: 12px; padding: 6px 8px; border-radius: 8px; flex: 0 0 auto; }
 .spk-msg.is-error { background: #fef2f2; color: #991b1b; }
 .spk-empty { padding: 16px; color: #64748b; font-size: 12px; }
 .spk-file-chip { font-size: 11px; background: #e2e8f0; border-radius: 99px; padding: 2px 8px; }
