@@ -167,6 +167,18 @@ def _text(raw: Any) -> str:
     return str(raw if raw is not None else "").strip()
 
 
+def _as_dict_list(raw: Any) -> Optional[List[dict]]:
+    """Return a list of dicts, empty list when the field is absent, else None if malformed."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return None
+    for item in raw:
+        if not isinstance(item, dict):
+            return None
+    return raw
+
+
 def parse_money(raw: Any, *, field: str = "amount") -> Decimal:
     if raw is None or (isinstance(raw, str) and not str(raw).strip()):
         raise InvalidMoneyError(f"{field} kosong")
@@ -649,7 +661,18 @@ def _expected_issue_inventory_credits(basis: dict, anomalies: List[dict], journa
     movement_id = _text(basis.get("movement_id") or journal.get("source_id"))
     journal_id = _text(journal.get("id"))
     if method == METHOD_FIFO:
-        for consumed in basis.get("consumed_acquisitions") or []:
+        consumed_rows = _as_dict_list(basis.get("consumed_acquisitions"))
+        if consumed_rows is None:
+            anomalies.append(_anomaly(
+                code=CODE_INVALID_ACQUISITION_BASIS,
+                message="Basis FIFO memiliki consumed_acquisitions yang tidak valid.",
+                source_type=SOURCE_ISSUE,
+                source_id=movement_id or None,
+                journal_id=journal_id or None,
+                movement_id=movement_id or None,
+            ))
+            return credits
+        for consumed in consumed_rows:
             aid = _text(consumed.get("inventory_account_id"))
             try:
                 amount = parse_money(consumed.get("total_cost"), field="consumed.total_cost")
@@ -704,6 +727,37 @@ def _expected_issue_inventory_credits(basis: dict, anomalies: List[dict], journa
         return credits
     _add_money(credits, aid, amount)
     return credits
+
+
+def _relevant_signed_for_compare(
+    journal_signed: Dict[str, Decimal],
+    expected: Dict[str, Decimal],
+    *,
+    coa: Dict[str, dict],
+    historical_inventory: set,
+    historical_cogs: set,
+) -> Dict[str, Decimal]:
+    """Actual Inventory/COGS signed lines plus every expected key.
+
+    Legitimate pair accounts (clearing/AP and other non-inventory types) stay
+    out of the per-source inventory compare unless they are themselves expected.
+    """
+    actual: Dict[str, Decimal] = {}
+    for aid in set(expected) | set(journal_signed):
+        if not aid:
+            continue
+        if aid in expected:
+            actual[aid] = money_q(journal_signed.get(aid, _money_zero()))
+            continue
+        kind = _classify_inventory_account(
+            aid,
+            coa=coa,
+            historical_inventory=historical_inventory,
+            historical_cogs=historical_cogs,
+        )
+        if kind in {"inventory", "cogs"}:
+            actual[aid] = money_q(journal_signed.get(aid, _money_zero()))
+    return actual
 
 
 def _compare_basis_to_journal(
@@ -953,6 +1007,8 @@ async def build_inventory_reconciliation_context(db) -> dict:
     coverage_complete = True
     rata_rata_used = False
     fifo_used = False
+    rejected_gr_ids: set = set()
+    rejected_issue_ids: set = set()
 
     # Recognize live GR acquisitions from journals first.
     for source_id, journal in sorted(live_gr_journals.items()):
@@ -984,9 +1040,22 @@ async def build_inventory_reconciliation_context(db) -> dict:
         inv_account = _text(basis.get("inventory_account_id"))
         if inv_account:
             historical_inventory.add(inv_account)
+        eligible_lines = _as_dict_list(basis.get("eligible_inventory_lines"))
+        if eligible_lines is None:
+            coverage_complete = False
+            rejected_gr_ids.add(source_id)
+            anomalies.append(_anomaly(
+                code=CODE_INVALID_ACQUISITION_BASIS,
+                message="Basis GR memiliki eligible_inventory_lines yang tidak valid.",
+                source_type=SOURCE_GR,
+                source_id=source_id,
+                journal_id=journal_id or None,
+                receipt_id=source_id,
+            ))
+            continue
         recognized_lines: List[dict] = []
         expected_inventory = _money_zero()
-        for line in basis.get("eligible_inventory_lines") or []:
+        for line in eligible_lines:
             acq = _parse_acquisition_line(
                 receipt, basis, line, journal=journal, anomalies=anomalies
             )
@@ -1007,7 +1076,13 @@ async def build_inventory_reconciliation_context(db) -> dict:
         journal_signed, _ = _signed_lines(journal.get("lines") or [])
         if inv_account:
             expected = {inv_account: expected_inventory}
-            actual = {inv_account: money_q(journal_signed.get(inv_account, _money_zero()))}
+            actual = _relevant_signed_for_compare(
+                journal_signed,
+                expected,
+                coa=coa,
+                historical_inventory=historical_inventory,
+                historical_cogs=historical_cogs,
+            )
             anomalies.extend(_compare_basis_to_journal(
                 expected=expected,
                 actual=actual,
@@ -1047,6 +1122,20 @@ async def build_inventory_reconciliation_context(db) -> dict:
             ))
             continue
         method = parse_financial_hpp_method(basis.get("hpp_method"))
+        if method == METHOD_FIFO:
+            consumed_rows = _as_dict_list(basis.get("consumed_acquisitions"))
+            if consumed_rows is None:
+                coverage_complete = False
+                rejected_issue_ids.add(source_id)
+                anomalies.append(_anomaly(
+                    code=CODE_INVALID_ACQUISITION_BASIS,
+                    message="Basis FIFO memiliki consumed_acquisitions yang tidak valid.",
+                    source_type=SOURCE_ISSUE,
+                    source_id=source_id,
+                    journal_id=journal_id or None,
+                    movement_id=source_id,
+                ))
+                continue
         item_key = _text(basis.get("financial_inventory_item_key") or doc.get("financial_inventory_item_key"))
         if item_key and item_key not in item_keys_order:
             item_keys_order.append(item_key)
@@ -1083,14 +1172,16 @@ async def build_inventory_reconciliation_context(db) -> dict:
         if cogs_account and total_cogs is not None:
             # Journal COGS is a debit (+) while inventory credits are stored positive then negated in B.
             expected_compare[cogs_account] = total_cogs
-        actual_compare = {
-            aid: money_q(journal_signed.get(aid, _money_zero()))
-            for aid in expected_compare
-        }
         # Inventory credits on the journal are negative signed balances.
         for aid in credits:
-            actual_compare[aid] = money_q(journal_signed.get(aid, _money_zero()))
             expected_compare[aid] = money_q(-credits[aid])
+        actual_compare = _relevant_signed_for_compare(
+            journal_signed,
+            expected_compare,
+            coa=coa,
+            historical_inventory=historical_inventory,
+            historical_cogs=historical_cogs,
+        )
         anomalies.extend(_compare_basis_to_journal(
             expected=expected_compare,
             actual=actual_compare,
@@ -1104,7 +1195,7 @@ async def build_inventory_reconciliation_context(db) -> dict:
             fifo_used = True
             consumed_qty = Decimal("0")
             consumed_uom = _text(basis.get("base_uom"))
-            for consumed in basis.get("consumed_acquisitions") or []:
+            for consumed in consumed_rows:
                 key = _text(consumed.get("acquisition_key"))
                 if not key:
                     coverage_complete = False
@@ -1194,11 +1285,18 @@ async def build_inventory_reconciliation_context(db) -> dict:
         remaining_qty_by_acq[key] = acq["base_qty"]
         remaining_value_by_acq[key] = acq["total_cost"]
     for source_id, journal in sorted(live_issue_journals.items()):
+        if source_id in rejected_issue_ids:
+            continue
         doc = issues_by_movement.get(source_id) or {}
         basis = doc.get(POSTING_BASIS_FIELD) or {}
+        if not isinstance(basis, dict):
+            continue
         if parse_financial_hpp_method(basis.get("hpp_method")) != METHOD_FIFO:
             continue
-        for consumed in basis.get("consumed_acquisitions") or []:
+        consumed_rows = _as_dict_list(basis.get("consumed_acquisitions"))
+        if consumed_rows is None:
+            continue
+        for consumed in consumed_rows:
             key = _text(consumed.get("acquisition_key"))
             if key not in remaining_qty_by_acq:
                 continue
@@ -1352,6 +1450,8 @@ async def build_inventory_reconciliation_context(db) -> dict:
         cogs_source.setdefault(aid, _money_zero())
 
     # Pending / excluded coverage — bulk evaluation, never per-movement GET.
+    # Invalid GR bases stay anomalies. The read-only evaluator isolates those
+    # items instead of dropping every other issue.
     evaluations = await evaluate_inventory_issues(db)
     pending_gr: List[dict] = []
     pending_cogs: List[dict] = []
@@ -1388,8 +1488,15 @@ async def build_inventory_reconciliation_context(db) -> dict:
             posting_flags.append(FLAG_RECOVERY_REQUIRED)
             # Financial acquisition is already gone. Keep stored item identity so
             # the physical leftover remains visible as a recovery quantity gap.
-            basis = receipt.get(GR_BASIS_FIELD) or {}
-            for line in (basis.get("eligible_inventory_lines") or []):
+            if rid in rejected_gr_ids:
+                continue
+            basis = receipt.get(GR_BASIS_FIELD)
+            if not isinstance(basis, dict):
+                continue
+            eligible_lines = _as_dict_list(basis.get("eligible_inventory_lines"))
+            if eligible_lines is None:
+                continue
+            for line in eligible_lines:
                 item_key = _text(line.get("financial_inventory_item_key"))
                 master_item_id = _text(line.get("master_item_id"))
                 if not item_key and master_item_id:
@@ -1707,11 +1814,14 @@ def _build_item_rows(
         physical_qty, physical_uom, physical_ready, pending_active = _physical_state(
             stock_states.get(mid)
         )
+        # Only stored physical/financial UOM evidence is comparable. Never
+        # substitute the current master item unit for a missing historical UOM.
         physical_uom_n = _normalize_uom(physical_uom) if physical_uom else ""
+        financial_uom_n = next(iter(financial_uoms)) if len(financial_uoms) == 1 else ""
         quantity_comparable = False
         qty_difference: Optional[Decimal] = None
         quantity_status = QTY_INCOMPLETE
-        base_uom = next(iter(financial_uoms), physical_uom_n or None)
+        base_uom = financial_uom_n or physical_uom_n or None
         if pending_active:
             quantity_status = QTY_IN_PROGRESS
             anomalies.append(_anomaly(
@@ -1735,8 +1845,13 @@ def _build_item_rows(
             ))
         elif not physical_ready:
             quantity_status = QTY_MISSING_PHYSICAL
-            base_uom = next(iter(financial_uoms), None)
-        elif len(financial_uoms) == 1 and physical_uom_n and physical_uom_n != next(iter(financial_uoms)):
+            base_uom = financial_uom_n or None
+        elif not financial_uom_n or not physical_uom_n:
+            quantity_status = QTY_INCOMPLETE
+            quantity_comparable = False
+            qty_difference = None
+            base_uom = financial_uom_n or physical_uom_n or None
+        elif physical_uom_n != financial_uom_n:
             quantity_status = QTY_UOM_MISMATCH
             anomalies.append(_anomaly(
                 code=CODE_UOM_MISMATCH,
@@ -1745,19 +1860,14 @@ def _build_item_rows(
                 source_id=mid or None,
                 blocks_reconciled=False,
             ))
-        elif len(financial_uoms) == 1:
-            base_uom = next(iter(financial_uoms))
-            if physical_qty is None:
-                quantity_status = QTY_MISSING_PHYSICAL
-            else:
-                quantity_comparable = True
-                qty_difference = physical_qty - financial_qty
-                quantity_status = QTY_MATCHED if qty_difference == 0 else QTY_DIFFERENCE
-        elif not financial_uoms and physical_ready:
-            base_uom = physical_uom_n or None
-            quantity_status = QTY_MISSING_PHYSICAL if physical_qty is None else QTY_INCOMPLETE
+        elif physical_qty is None:
+            quantity_status = QTY_MISSING_PHYSICAL
+            base_uom = financial_uom_n
         else:
-            base_uom = next(iter(financial_uoms), physical_uom_n or None)
+            base_uom = financial_uom_n
+            quantity_comparable = True
+            qty_difference = physical_qty - financial_qty
+            quantity_status = QTY_MATCHED if qty_difference == 0 else QTY_DIFFERENCE
 
         # Physical qty is attached once per master item, never copied per GL account.
         physical_out = physical_qty

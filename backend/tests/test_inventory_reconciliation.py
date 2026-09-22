@@ -40,6 +40,7 @@ from services.inventory_reconciliation import (
     CODE_CONSUMED_ACQUISITION_NOT_LIVE,
     CODE_DOCUMENT_POSTED_WITHOUT_JOURNAL,
     CODE_INCOMPLETE_REVERSAL_PAIR,
+    CODE_INVALID_ACQUISITION_BASIS,
     CODE_MISSING_COA,
     CODE_POSTED_JOURNAL_MISSING_BASIS,
     CODE_POSTED_JOURNAL_MISSING_DOCUMENT,
@@ -55,6 +56,7 @@ from services.inventory_reconciliation import (
     FLAG_EXCLUDED_SERVICE,
     PERM_VIEW,
     QTY_IN_PROGRESS,
+    QTY_INCOMPLETE,
     QTY_MATCHED,
     QTY_MISSING_PHYSICAL,
     QTY_UOM_MISMATCH,
@@ -1136,3 +1138,205 @@ async def test_pending_event_get_is_zero_write():
     assert first["read_stability"] == STABILITY_IN_PROGRESS
     assert second["read_stability"] == STABILITY_IN_PROGRESS
     assert inventory["id"] and gr["id"]
+
+
+async def _live_journal(source_type: str, source_id: str) -> dict:
+    journal = await server.db[JOURNAL_ENTRIES].find_one(
+        {"source_type": source_type, "source_id": source_id, "reversal_of": None},
+        {"_id": 0},
+    )
+    assert journal, f"missing live {source_type} journal for {source_id}"
+    return journal
+
+
+async def _append_journal_line(journal_id: str, *, account_id: str, debit=0, credit=0):
+    await server.db[JOURNAL_LINES].insert_one({
+        "id": str(uuid.uuid4()),
+        "journal_id": journal_id,
+        "account_id": account_id,
+        "debit": debit,
+        "credit": credit,
+    })
+
+
+async def test_extra_inventory_lines_on_two_gr_journals_still_anomaly_per_source():
+    inv, clearing, payable, _cogs = await _configure_inventory()
+    other = await _coa("13", "Persediaan Lain", "INTR")
+    mid_a, gr_a, _ = await _seed_posted_gr(qty=10, price=100, inventory=inv)
+    mid_b, gr_b, _ = await _seed_posted_gr(qty=10, price=100, inventory=inv)
+    ja = await _live_journal(SOURCE_GR, gr_a["id"])
+    jb = await _live_journal(SOURCE_GR, gr_b["id"])
+    await _append_journal_line(ja["id"], account_id=other["id"], debit=20)
+    await _append_journal_line(ja["id"], account_id=clearing["id"], credit=20)
+    await _append_journal_line(jb["id"], account_id=other["id"], credit=20)
+    await _append_journal_line(jb["id"], account_id=clearing["id"], debit=20)
+    body = await _summary()
+    extra = [
+        row for row in body["integrity_anomalies"]
+        if row["code"] == CODE_BASIS_JOURNAL_MISMATCH and row["account_id"] == other["id"]
+    ]
+    assert {row["source_id"] for row in extra} == {gr_a["id"], gr_b["id"]}
+    assert {row["source_type"] for row in extra} == {SOURCE_GR}
+    assert len(extra) == 2
+    pair_ids = {clearing["id"], payable["id"]}
+    assert not any(
+        row["code"] == CODE_BASIS_JOURNAL_MISMATCH and row["account_id"] in pair_ids
+        for row in body["integrity_anomalies"]
+    )
+    accounts = await _accounts()
+    other_row = _account_row(accounts, other["id"])
+    assert _money(other_row["financial_inventory_basis_value"]) == _money("0")
+    assert _money(other_row["inventory_source_journal_balance"]) == _money("0")
+    assert _money(_inv(body)["basis_vs_source_difference"]) == _money("0")
+    assert body["reconciliation_status"] != STATUS_RECONCILED
+    assert mid_a and mid_b
+
+
+async def test_extra_inventory_lines_on_two_issue_journals_still_anomaly_per_source():
+    inv, clearing, payable, _cogs = await _configure_inventory()
+    other = await _coa("13", "Persediaan Lain", "INTR")
+    mid, gr, _ = await _seed_posted_gr(qty=100, price=10, inventory=inv)
+    mov_a = await _seed_movement(mid=mid, qty=10, date="2026-10-05T03:00:00Z")
+    mov_b = await _seed_movement(mid=mid, qty=10, date="2026-10-06T03:00:00Z")
+    await _post_issue(mov_a)
+    await _post_issue(mov_b)
+    ja = await _live_journal(SOURCE_ISSUE, mov_a["id"])
+    jb = await _live_journal(SOURCE_ISSUE, mov_b["id"])
+    await _append_journal_line(ja["id"], account_id=other["id"], debit=20)
+    await _append_journal_line(ja["id"], account_id=clearing["id"], credit=20)
+    await _append_journal_line(jb["id"], account_id=other["id"], credit=20)
+    await _append_journal_line(jb["id"], account_id=clearing["id"], debit=20)
+    body = await _summary()
+    extra = [
+        row for row in body["integrity_anomalies"]
+        if row["code"] == CODE_BASIS_JOURNAL_MISMATCH and row["account_id"] == other["id"]
+    ]
+    assert {row["source_id"] for row in extra} == {mov_a["id"], mov_b["id"]}
+    assert {row["source_type"] for row in extra} == {SOURCE_ISSUE}
+    assert len(extra) == 2
+    pair_ids = {clearing["id"], payable["id"]}
+    assert not any(
+        row["code"] == CODE_BASIS_JOURNAL_MISMATCH and row["account_id"] in pair_ids
+        for row in body["integrity_anomalies"]
+    )
+    accounts = await _accounts()
+    other_row = _account_row(accounts, other["id"])
+    assert _money(other_row["financial_inventory_basis_value"]) == _money("0")
+    assert _money(other_row["inventory_source_journal_balance"]) == _money("0")
+    assert _money(_inv(body)["basis_vs_source_difference"]) == _money("0")
+    assert body["reconciliation_status"] != STATUS_RECONCILED
+    assert gr["id"] and payable["id"]
+
+
+async def test_missing_physical_uom_is_incomplete_not_master_fallback():
+    mid, gr, inventory = await _seed_posted_gr(qty=10, price=10)
+    await server.db.master_items.update_one({"id": mid}, {"$set": {"unit": "BOX"}})
+    await _stock(mid, total=10, uom="")
+    items = await _items()
+    row = items["items"][0]
+    assert row["quantity_comparable"] is False
+    assert row["qty_difference"] is None
+    assert row["quantity_status"] == QTY_INCOMPLETE
+    assert row["quantity_status"] != QTY_MATCHED
+    assert row["quantity_status"] != QTY_UOM_MISMATCH
+    assert not any(a["code"] == CODE_UOM_MISMATCH for a in items["integrity_anomalies"])
+    assert inventory["id"] and gr["id"]
+
+
+async def test_malformed_basis_is_anomaly_not_exception():
+    mid, gr, inventory = await _seed_posted_gr(qty=10, price=100)
+    mov = await _seed_movement(mid=mid, qty=4)
+    await _post_issue(mov)
+    await server.db.purchase_goods_receipts.update_one(
+        {"id": gr["id"]},
+        {"$set": {f"{GR_BASIS_FIELD}.eligible_inventory_lines": "not-a-list"}},
+    )
+    await server.db[ISSUE_COLLECTION].update_one(
+        {"movement_id": mov["id"]},
+        {"$set": {f"{POSTING_BASIS_FIELD}.consumed_acquisitions": "not-a-list"}},
+    )
+    async with await client_for(POST_USER) as client:
+        summary_resp = await client.get(SUMMARY)
+        accounts_resp = await client.get(ACCOUNTS)
+        items_resp = await client.get(ITEMS)
+    assert summary_resp.status_code == 200
+    assert accounts_resp.status_code == 200
+    assert items_resp.status_code == 200
+    body = summary_resp.json()
+    assert CODE_INVALID_ACQUISITION_BASIS in _codes(body)
+    assert body["basis_coverage_complete"] is False
+    assert body["reconciliation_status"] == STATUS_INCOMPLETE
+    assert body["reconciliation_status"] != STATUS_RECONCILED
+    invalid_rows = [
+        row for row in body["integrity_anomalies"]
+        if row["code"] == CODE_INVALID_ACQUISITION_BASIS
+    ]
+    assert {row["source_id"] for row in invalid_rows} >= {gr["id"], mov["id"]}
+    assert inventory["id"]
+
+
+async def test_malformed_gr_does_not_drop_valid_pending_and_blocked():
+    inv, *_ = await _configure_inventory()
+    mid_ok, gr_ok, _ = await _seed_posted_gr(qty=1000, price=1000, inventory=inv)
+    mid_bad, gr_bad, _ = await _seed_posted_gr(qty=10, price=100, inventory=inv)
+    await server.db.purchase_goods_receipts.update_one(
+        {"id": gr_bad["id"]},
+        {"$set": {f"{GR_BASIS_FIELD}.eligible_inventory_lines": "not-a-list"}},
+    )
+    pending = await _seed_movement(mid=mid_ok, qty=100)
+    blocked = await _seed_movement(mid=mid_ok, qty=5000, date="2026-10-06T03:00:00Z")
+    before = await _docs_snapshot()
+    rejecting = _RejectingDB(server.db)
+    body = await get_inventory_reconciliation_summary(rejecting)
+    filtered = await get_inventory_reconciliation_items(rejecting, q=mid_ok)
+    after = await _docs_snapshot()
+    assert before == after
+    assert CODE_INVALID_ACQUISITION_BASIS in _codes(body)
+    assert any(
+        row["code"] == CODE_INVALID_ACQUISITION_BASIS and row["source_id"] == gr_bad["id"]
+        for row in body["integrity_anomalies"]
+    )
+    assert _money(_inv(body)["financial_inventory_basis_value"]) == _money("1000000.00")
+    pending_ids = {row["id"] for row in body["pending"]["pending_cogs"]["items"]}
+    waiting_ids = {row["id"] for row in body["pending"]["waiting_earlier_issue"]["items"]}
+    assert pending["id"] in pending_ids
+    assert blocked["id"] in waiting_ids
+    assert blocked["id"] not in pending_ids
+    assert FLAG_PENDING_COGS in body["posting_flags"]
+    assert filtered["total"] >= 1
+    assert CODE_INVALID_ACQUISITION_BASIS in _codes(filtered)
+    assert filtered["reconciliation_status"] == STATUS_INCOMPLETE
+    assert body["basis_coverage_complete"] is False
+    assert mid_bad and gr_ok["id"]
+
+
+async def test_issue_on_malformed_acquisition_is_not_costed_from_remainder():
+    inv, *_ = await _configure_inventory()
+    mid, gr_ok, _ = await _seed_posted_gr(qty=1000, price=10, inventory=inv)
+    _mid_bad, gr_bad, _ = await _seed_posted_gr(qty=1000, price=50, mid=mid, inventory=inv)
+    await server.db.purchase_goods_receipts.update_one(
+        {"id": gr_bad["id"]},
+        {"$set": {f"{GR_BASIS_FIELD}.eligible_inventory_lines": "not-a-list"}},
+    )
+    issue = await _seed_movement(mid=mid, qty=10)
+    before = await _docs_snapshot()
+    rejecting = _RejectingDB(server.db)
+    body = await get_inventory_reconciliation_summary(rejecting)
+    filtered = await get_inventory_reconciliation_items(rejecting, q="other-item")
+    after = await _docs_snapshot()
+    assert before == after
+    pending_ids = {row["id"] for row in body["pending"]["pending_cogs"]["items"]}
+    blocked_rows = {
+        row["id"]: row for row in body["pending"]["blocked_cogs"]["items"]
+    }
+    assert issue["id"] not in pending_ids
+    assert issue["id"] in blocked_rows
+    assert blocked_rows[issue["id"]]["blocker_code"] == CODE_INVALID_ACQUISITION_BASIS
+    assert _money(_inv(body)["financial_inventory_basis_value"]) == _money("10000.00")
+    assert any(
+        row["code"] == CODE_INVALID_ACQUISITION_BASIS and row["source_id"] == gr_bad["id"]
+        for row in body["integrity_anomalies"]
+    )
+    assert CODE_INVALID_ACQUISITION_BASIS in _codes(filtered)
+    assert filtered["reconciliation_status"] == STATUS_INCOMPLETE
+    assert gr_ok["id"]
