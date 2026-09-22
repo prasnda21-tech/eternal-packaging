@@ -85,6 +85,7 @@ async def _prepare(users):
     await db[ORDERS].delete_many({})
     await db[EVENTS].delete_many({})
     await db.notifications.delete_many({"event_type": {"$regex": "^spk_"}})
+    await db.spk_idempotency.delete_many({})
     for user in users:
         await db.users.delete_many({"email": user["email"]})
         await db.users.insert_one(dict(user))
@@ -112,6 +113,7 @@ def _payload(pic_id, **extra):
         "milestones": _milestones(),
     }
     body.update(extra)
+    body.setdefault("idempotency_key", f"test-{uuid.uuid4().hex}")
     return body
 
 
@@ -216,10 +218,10 @@ async def test_publish_requires_target_pic_deadline_milestone_and_unique_numbers
     pic = _user("crm", name="Fahdo", override={"spk.view_own": True, "spk.update_progress": True})
     await _prepare([director, pic])
     async with _client_for(director) as client:
-        draft = await client.post("/api/spk", json={"title": "Draft iklan", "priority": "LOW"})
+        draft = await client.post("/api/spk", json={"title": "Draft iklan", "priority": "LOW", "idempotency_key": "draft-iklan"})
         assert draft.status_code == 200, draft.text
         assert draft.json()["order"]["workflow_status"] == "DRAFT"
-        bad = await client.post("/api/spk", json={"title": "Tanpa milestone", "publish": True, "target_division": "penjualan", "assigned_user_ids": [pic["id"]], "deadline": "2026-09-07", "start_date": "2026-09-01", "instruction": "Kerjakan"})
+        bad = await client.post("/api/spk", json={"title": "Tanpa milestone", "publish": True, "target_division": "penjualan", "assigned_user_ids": [pic["id"]], "deadline": "2026-09-07", "start_date": "2026-09-01", "instruction": "Kerjakan", "idempotency_key": "bad-publish"})
         assert bad.status_code == 400
         uneven = _payload(pic["id"], publish=True)
         uneven["milestones"] = uneven["milestones"][:2]
@@ -417,7 +419,7 @@ async def test_overdue_list_state_and_draft_delete_not_published():
         cancelled = await client.post(f"/api/spk/{order['id']}/cancel", json={"reason": "Arahan berubah", "doc_version": order["doc_version"]})
         assert cancelled.status_code == 200
         assert cancelled.json()["order"]["workflow_status"] == "CANCELLED"
-        draft = await client.post("/api/spk", json={"title": "Draft dibuang"})
+        draft = await client.post("/api/spk", json={"title": "Draft dibuang", "idempotency_key": "draft-dibuang"})
         deleted = await client.delete(f"/api/spk/{draft.json()['order']['id']}")
         assert deleted.status_code == 200
 

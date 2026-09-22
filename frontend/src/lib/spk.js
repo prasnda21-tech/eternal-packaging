@@ -16,6 +16,8 @@ export const SPK_ACCESS_KEYS = [
   "spk.view_all",
   "spk.assign",
   "spk.update_progress",
+  "spk.comment",
+  "spk.correct",
   "spk.verify",
   "spk.cancel",
   "spk.manage",
@@ -23,6 +25,7 @@ export const SPK_ACCESS_KEYS = [
 
 export const STATUS_LABELS = {
   DRAFT: "Draft",
+  RETURNED: "Dikembalikan",
   PUBLISHED: "Terbit",
   ACKNOWLEDGED: "Diterima",
   IN_PROGRESS: "Berjalan",
@@ -50,6 +53,55 @@ export const TYPE_LABELS = {
   CHECKLIST: "Checklist",
   APPROVAL: "Approval",
 };
+
+export const ACTIVE_STATUS_FILTER = "PUBLISHED,ACKNOWLEDGED,IN_PROGRESS,REVISION_REQUIRED";
+
+export const EVENT_LABELS = {
+  CREATE: "Draft dibuat",
+  EDIT: "Draft diedit",
+  PUBLISH: "SPK diterbitkan",
+  REPUBLISH: "SPK diterbitkan ulang",
+  PIC_CHANGE: "PIC diubah",
+  RETURN: "SPK dikembalikan",
+  ACKNOWLEDGE: "SPK diterima",
+  START: "SPK dimulai",
+  PROGRESS_UPDATE: "Progres diperbarui",
+  NOTE: "Catatan ditambahkan",
+  EVIDENCE: "Bukti ditambahkan",
+  CORRECTION: "Nilai dikoreksi",
+  VERIFICATION_REQUEST: "Verifikasi diajukan",
+  VERIFY_REVISION: "Revisi diminta",
+  VERIFY_APPROVE: "Hasil diterima",
+  CANCEL: "SPK dibatalkan",
+};
+
+export function widestSpkTab(hasPerm) {
+  const ids = visibleSpkTabs(hasPerm).map((tab) => tab.id);
+  if (ids.includes("all")) return "all";
+  if (ids.includes("division")) return "division";
+  return "mine";
+}
+
+export function exceedsTarget(milestone) {
+  if (!milestone || milestone.type !== "QUANTITY") return false;
+  if (milestone.exceeds_target) return true;
+  const target = Number(milestone.target_value);
+  const actual = Number(milestone.actual_value);
+  return Number.isFinite(target) && target > 0 && Number.isFinite(actual) && actual > target;
+}
+
+export function newIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `spk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function reuseIdempotencyKey(slot, payload) {
+  const serial = JSON.stringify(payload);
+  if (!slot.current || slot.current.serial !== serial) {
+    slot.current = { serial, key: newIdempotencyKey() };
+  }
+  return slot.current.key;
+}
 
 export function canSeeSpkNav(hasPerm) {
   if (typeof hasPerm !== "function") return false;

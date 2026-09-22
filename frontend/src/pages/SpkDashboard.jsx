@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
 import {
+  ACTIVE_STATUS_FILTER,
   DEADLINE_LABELS,
   PRIORITY_LABELS,
   SPK_NEW_PATH,
@@ -13,6 +14,7 @@ import {
   formatSpkError,
   rowTone,
   visibleSpkTabs,
+  widestSpkTab,
 } from "../lib/spk";
 import "./spk.css";
 
@@ -38,9 +40,13 @@ export default function SpkDashboard() {
   const [pic, setPic] = useState("");
   const [priority, setPriority] = useState("");
   const [deadline, setDeadline] = useState("");
+  const [completedMonth, setCompletedMonth] = useState(false);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
   const [divisions, setDivisions] = useState([]);
   const [pics, setPics] = useState([]);
+  const pageSize = 20;
 
   useEffect(() => {
     if (!tabs.some((item) => item.id === tab)) setTab(tabs[0]?.id || "mine");
@@ -48,11 +54,11 @@ export default function SpkDashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    api.spkContext()
+    api.spkFilters()
       .then((data) => {
         if (cancelled) return;
-        setDivisions(data.context?.divisions || []);
-        setPics(data.context?.pics || []);
+        setDivisions(data.filters?.divisions || []);
+        setPics(data.filters?.pics || []);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -61,20 +67,34 @@ export default function SpkDashboard() {
   useEffect(() => {
     let cancelled = false;
     setError("");
-    api.listSpk({ tab, q, status, division, pic, priority, deadline_state: deadline })
+    api.listSpk({
+      tab,
+      q,
+      status,
+      division,
+      pic,
+      priority,
+      deadline_state: deadline,
+      page,
+      page_size: pageSize,
+      completed_month: completedMonth ? "1" : "",
+    })
       .then((data) => {
         if (cancelled) return;
         setRows(data.orders || []);
         setSummary(data.summary || EMPTY_SUMMARY);
+        setTotal(Number(data.total || 0));
       })
       .catch((err) => { if (!cancelled) setError(formatSpkError(err)); });
     return () => { cancelled = true; };
-  }, [tab, q, status, division, pic, priority, deadline]);
+  }, [tab, q, status, division, pic, priority, deadline, page, completedMonth]);
 
   const applyCard = (nextTab, extra = {}) => {
     if (tabs.some((item) => item.id === nextTab)) setTab(nextTab);
     setStatus(extra.status || "");
     setDeadline(extra.deadline || "");
+    setCompletedMonth(!!extra.completedMonth);
+    setPage(1);
   };
 
   return (
@@ -92,7 +112,7 @@ export default function SpkDashboard() {
       </header>
 
       <div className="spk-cards" data-testid="spk-summary">
-        <button type="button" className="spk-card spk-card-active" onClick={() => applyCard("mine", { status: "IN_PROGRESS" })}>
+        <button type="button" className="spk-card spk-card-active" data-testid="spk-card-active" onClick={() => applyCard(widestSpkTab(hasPerm), { status: ACTIVE_STATUS_FILTER })}>
           <span>Aktif</span><strong data-testid="spk-count-active">{summary.active}</strong>
         </button>
         <button type="button" className="spk-card spk-card-soon" onClick={() => applyCard(tab, { deadline: "DUE_SOON", status: "" })}>
@@ -104,7 +124,7 @@ export default function SpkDashboard() {
         <button type="button" className="spk-card spk-card-verify" onClick={() => applyCard("verification")}>
           <span>Menunggu Verifikasi</span><strong data-testid="spk-count-verify">{summary.waiting_verification}</strong>
         </button>
-        <button type="button" className="spk-card spk-card-done" onClick={() => applyCard(tabs.some((item) => item.id === "all") ? "all" : "mine", { status: "COMPLETED" })}>
+        <button type="button" className="spk-card spk-card-done" data-testid="spk-card-done" onClick={() => applyCard(widestSpkTab(hasPerm), { completedMonth: true })}>
           <span>Selesai bulan ini</span><strong data-testid="spk-count-done">{summary.completed_this_month}</strong>
         </button>
       </div>
@@ -126,24 +146,25 @@ export default function SpkDashboard() {
           ))}
         </div>
         <div className="spk-filters">
-          <input data-testid="spk-search" placeholder="No SPK / judul" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select data-testid="spk-filter-status" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
+          <input data-testid="spk-search" placeholder="No SPK / judul" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
+          <select data-testid="spk-filter-status" value={status} onChange={(e) => { setStatus(e.target.value); setCompletedMonth(false); setPage(1); }} aria-label="Status">
             <option value="">Status</option>
+            {status === ACTIVE_STATUS_FILTER && <option value={ACTIVE_STATUS_FILTER}>Aktif</option>}
             {Object.entries(STATUS_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select>
-          <select data-testid="spk-filter-division" value={division} onChange={(e) => setDivision(e.target.value)} aria-label="Divisi">
+          <select data-testid="spk-filter-division" value={division} onChange={(e) => { setDivision(e.target.value); setPage(1); }} aria-label="Divisi">
             <option value="">Divisi</option>
             {divisions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
-          <select data-testid="spk-filter-pic" value={pic} onChange={(e) => setPic(e.target.value)} aria-label="PIC">
+          <select data-testid="spk-filter-pic" value={pic} onChange={(e) => { setPic(e.target.value); setPage(1); }} aria-label="PIC">
             <option value="">PIC</option>
             {pics.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
-          <select data-testid="spk-filter-priority" value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="Prioritas">
+          <select data-testid="spk-filter-priority" value={priority} onChange={(e) => { setPriority(e.target.value); setPage(1); }} aria-label="Prioritas">
             <option value="">Prioritas</option>
             {Object.entries(PRIORITY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select>
-          <select data-testid="spk-filter-deadline" value={deadline} onChange={(e) => setDeadline(e.target.value)} aria-label="Deadline">
+          <select data-testid="spk-filter-deadline" value={deadline} onChange={(e) => { setDeadline(e.target.value); setPage(1); }} aria-label="Deadline">
             <option value="">Deadline</option>
             <option value="ON_TRACK">On track</option>
             <option value="DUE_SOON">Due ≤3 hari</option>
@@ -208,6 +229,11 @@ export default function SpkDashboard() {
             })}
           </tbody>
         </table>
+      </div>
+      <div className="spk-pager" data-testid="spk-pagination">
+        <button type="button" data-testid="spk-page-prev" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Sebelumnya</button>
+        <span data-testid="spk-page-label">Halaman {page} · {total} SPK</span>
+        <button type="button" data-testid="spk-page-next" disabled={page * pageSize >= total} onClick={() => setPage((value) => value + 1)}>Berikutnya</button>
       </div>
     </div>
   );

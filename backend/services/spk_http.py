@@ -5,7 +5,7 @@ import uuid
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import File, HTTPException, UploadFile
+from fastapi import File, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
@@ -20,6 +20,14 @@ class LoosePayload(BaseModel):
 
 def _dump(payload: Optional[LoosePayload]) -> dict:
     return payload.model_dump() if payload else {}
+
+
+def _with_key(payload: Optional[LoosePayload], idempotency_key: Optional[str]) -> dict:
+    body = _dump(payload)
+    header = str(idempotency_key or "").strip()
+    if header and not str(body.get("idempotency_key") or "").strip():
+        body["idempotency_key"] = header
+    return body
 
 
 def register_spk_routes(
@@ -42,18 +50,23 @@ def register_spk_routes(
         PERM_VIEW_DIVISION,
         PERM_VIEW_OWN,
         acknowledge_spk,
+        add_note,
         cancel_spk,
+        correct_value,
         create_spk,
         decide_verification,
         delete_draft,
         ensure_indexes,
+        filter_metadata,
         form_context,
         get_order,
         list_events,
         list_orders,
+        permission_report,
         publish_spk,
         record_progress,
         request_verification,
+        return_spk,
         start_spk,
         update_draft,
     )
@@ -80,6 +93,18 @@ def register_spk_routes(
         await require_any_perm(user, PERM_CREATE, PERM_ASSIGN, PERM_MANAGE)
         return {"context": await form_context(get_db(), user)}
 
+    @api_router.get("/spk/filters")
+    async def spk_filters(user=Depends(current_user)):
+        await require_any_perm(user, *view_perms)
+        perms = await _perms(user)
+        return {"filters": await filter_metadata(get_db(), user, perms)}
+
+    @api_router.get("/spk/permission-report")
+    async def spk_permission_report(user=Depends(current_user)):
+        if user.get("role") != "admin":
+            raise HTTPException(403, "Hanya admin yang dapat melihat laporan izin SPK.")
+        return await permission_report(get_db())
+
     @api_router.get("/spk")
     async def spk_list(
         tab: Optional[str] = None,
@@ -89,6 +114,9 @@ def register_spk_routes(
         pic: Optional[str] = None,
         priority: Optional[str] = None,
         deadline_state: Optional[str] = None,
+        page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        completed_month: Optional[str] = None,
         user=Depends(current_user),
     ):
         await require_any_perm(user, *view_perms)
@@ -104,13 +132,20 @@ def register_spk_routes(
             pic=pic or "",
             priority=priority or "",
             deadline=deadline_state or "",
+            page=page or 1,
+            page_size=page_size or 20,
+            completed_month=completed_month or "",
         )
 
     @api_router.post("/spk")
-    async def spk_create(payload: Optional[LoosePayload] = None, user=Depends(current_user)):
+    async def spk_create(
+        payload: Optional[LoosePayload] = None,
+        idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+        user=Depends(current_user),
+    ):
         await require_any_perm(user, PERM_CREATE, PERM_MANAGE)
         await ensure_indexes(get_db())
-        return {"order": await create_spk(get_db(), _dump(payload), user)}
+        return {"order": await create_spk(get_db(), _with_key(payload, idempotency_key), user)}
 
     @api_router.get("/spk/{spk_id}")
     async def spk_detail(spk_id: str, user=Depends(current_user)):
@@ -131,10 +166,15 @@ def register_spk_routes(
         return await delete_draft(get_db(), spk_id, user, perms)
 
     @api_router.post("/spk/{spk_id}/publish")
-    async def spk_publish(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
-        await require_any_perm(user, PERM_CREATE, PERM_ASSIGN, PERM_MANAGE)
+    async def spk_publish(
+        spk_id: str,
+        payload: Optional[LoosePayload] = None,
+        idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, PERM_CREATE, PERM_MANAGE)
         perms = await _perms(user)
-        return {"order": await publish_spk(get_db(), spk_id, _dump(payload), user, perms)}
+        return {"order": await publish_spk(get_db(), spk_id, _with_key(payload, idempotency_key), user, perms)}
 
     @api_router.post("/spk/{spk_id}/acknowledge")
     async def spk_acknowledge(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
@@ -148,15 +188,33 @@ def register_spk_routes(
         perms = await _perms(user)
         return {"order": await start_spk(get_db(), spk_id, _dump(payload), user, perms)}
 
+    @api_router.post("/spk/{spk_id}/return")
+    async def spk_return(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
+        await require_any_perm(user, *view_perms)
+        perms = await _perms(user)
+        return {"order": await return_spk(get_db(), spk_id, _dump(payload), user, perms)}
+
+    @api_router.post("/spk/{spk_id}/notes")
+    async def spk_notes(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
+        await require_any_perm(user, *view_perms)
+        perms = await _perms(user)
+        return {"order": await add_note(get_db(), spk_id, _dump(payload), user, perms)}
+
+    @api_router.post("/spk/{spk_id}/correct")
+    async def spk_correct(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
+        await require_any_perm(user, *view_perms)
+        perms = await _perms(user)
+        return {"order": await correct_value(get_db(), spk_id, _dump(payload), user, perms)}
+
     @api_router.post("/spk/{spk_id}/progress")
     async def spk_progress(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
-        await require_any_perm(user, PERM_PROGRESS, PERM_MANAGE)
+        await require_any_perm(user, *view_perms)
         perms = await _perms(user)
         return await record_progress(get_db(), spk_id, _dump(payload), user, perms)
 
     @api_router.post("/spk/{spk_id}/verification-request")
     async def spk_verification_request(spk_id: str, payload: Optional[LoosePayload] = None, user=Depends(current_user)):
-        await require_any_perm(user, PERM_PROGRESS, PERM_MANAGE)
+        await require_any_perm(user, *view_perms)
         perms = await _perms(user)
         return {"order": await request_verification(get_db(), spk_id, _dump(payload), user, perms)}
 
@@ -183,7 +241,7 @@ def register_spk_routes(
         file: UploadFile = File(...),
         user=Depends(current_user),
     ):
-        await require_any_perm(user, PERM_PROGRESS, PERM_CREATE, PERM_MANAGE)
+        await require_any_perm(user, *view_perms)
         raw = await file.read()
         if not raw:
             raise HTTPException(400, "File kosong.")
@@ -220,6 +278,8 @@ def register_spk_routes(
     @api_router.get("/spk/{spk_id}/files/{file_id}")
     async def spk_file(spk_id: str, file_id: str, user=Depends(current_user)):
         await require_any_perm(user, *view_perms)
+        if not file_id or file_id != file_id.strip() or any(ch in file_id for ch in "/\\") or ".." in file_id:
+            raise HTTPException(404, "Lampiran tidak ditemukan.")
         perms = await _perms(user)
         order = await get_order(get_db(), spk_id, user, perms)
         known = {str(item.get("id")) for item in (order.get("attachments") or []) if item.get("kind") == "file"}
