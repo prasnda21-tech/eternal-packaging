@@ -168,14 +168,25 @@ describe("ProductRequestList", () => {
     expect(container.textContent).not.toMatch(/Food Grade Paper/);
   });
 
-  test("CRM create-only is redirected to the form", async () => {
+  test("create-only user sees Draft Saya and continues the existing draft", async () => {
     mockHasPerm.mockImplementation((p) => p === "product_request.create");
+    mockNavigate.mockClear();
     await act(async () => {
       root.render(<ProductRequestList />);
     });
     await flush();
-    expect(container.querySelector('[data-testid="navigate"]').getAttribute("data-to")).toBe("/penjualan/permintaan-produk/baru");
-    expect(mockApi.listProductRequests).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="navigate"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-list-page"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-tab-own-drafts"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-tab-submitted"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-create-from-list"]')).toBeTruthy();
+    expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "own_drafts" });
+    expect(mockApi.listProductRequests).not.toHaveBeenCalledWith({ view: "submitted" });
+    expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft Saya/);
+    await act(async () => {
+      container.querySelector('[data-testid="prq-continue-d1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/penjualan/permintaan-produk/d1");
   });
 
   test("read_all plus create shows Terkirim by default and own draft on Draft Saya", async () => {

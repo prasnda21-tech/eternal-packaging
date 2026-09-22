@@ -27,7 +27,6 @@ export default function ProductRequestList() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!canReadAll && canCreate) return undefined;
     if (!canReadAll && !canSeeOwnDrafts) return undefined;
     let cancelled = false;
     setBusy(true);
@@ -50,11 +49,8 @@ export default function ProductRequestList() {
       .catch((err) => { if (!cancelled) setError(formatError(err)); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
-  }, [canReadAll, canCreate, canSeeOwnDrafts]);
+  }, [canReadAll, canSeeOwnDrafts]);
 
-  if (!canReadAll && canCreate) {
-    return <Navigate to={PRODUCT_REQUEST_NEW_PATH} replace />;
-  }
   if (!canReadAll && !canSeeOwnDrafts) {
     return <Navigate to="/" replace />;
   }
