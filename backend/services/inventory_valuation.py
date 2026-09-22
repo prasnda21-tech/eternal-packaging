@@ -144,6 +144,12 @@ async def build_inventory_valuation_rows(db) -> dict:
         aid = str(master.get("accurate_item_id") or "").strip()
         state = state_by_mid.get(mid) or {}
         stock = float(state.get("total_qty") or 0)
+        stock_state_valid = bool(
+            state
+            and state.get("initialized") is True
+            and state.get("status") == "INITIALIZED"
+            and not state.get("pending_event")
+        )
         position = reconciliation_by_mid.get(mid)
         if not position:
             position = positions.get(mid) or positions.get(f"a:{aid}") or {}
@@ -162,7 +168,7 @@ async def build_inventory_valuation_rows(db) -> dict:
 
         canonical_exists = current_hpp is not None
         published = None
-        if not canonical_exists:
+        if not canonical_exists and stock_state_valid and stock >= 0:
             published = exact_published_candidate(
                 published_candidates,
                 accurate_item_id=aid,
@@ -188,7 +194,7 @@ async def build_inventory_valuation_rows(db) -> dict:
                     "hpp_source": SOURCE_PUBLISHED_FALLBACK,
                 }
 
-        if stock < 0:
+        if not stock_state_valid or stock < 0:
             status = STATUS_QTY_MISMATCH
         elif current_hpp is None:
             status = (
@@ -226,7 +232,8 @@ async def build_inventory_valuation_rows(db) -> dict:
             "inventory_value": inventory_value,
             "hpp_status": status,
             "hpp_reason": (
-                position.get("reconciliation_reason")
+                ("STOCK_STATE_UNAVAILABLE" if not stock_state_valid else None)
+                or position.get("reconciliation_reason")
                 or (
                     original_status
                     if original_status != status
