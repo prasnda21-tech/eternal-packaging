@@ -27,6 +27,8 @@ export const ROLES = {
   operator: "Operator",
   driver: "Driver",
   crm: "CRM",
+  holding_team: "Holding",
+  direktur_utama: "Direktur",
   sales_eternal: "Sales Eternal",
 };
 
