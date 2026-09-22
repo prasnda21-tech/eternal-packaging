@@ -10,6 +10,7 @@ const analytics = fs.readFileSync(path.join(__dirname, "../components/OperatorAn
 const mis = fs.readFileSync(path.join(__dirname, "../components/MasterItemSearchSelect.jsx"), "utf8");
 const master = fs.readFileSync(path.join(__dirname, "MasterBarangJasa.jsx"), "utf8");
 const stock = fs.readFileSync(path.join(__dirname, "StockSaatIni.jsx"), "utf8");
+const inventoryValue = fs.readFileSync(path.join(__dirname, "NilaiPersediaan.jsx"), "utf8");
 const receipt = fs.readFileSync(path.join(__dirname, "PenerimaanBarang.jsx"), "utf8");
 const hook = fs.readFileSync(path.join(__dirname, "../hooks/useDebouncedLiveSearch.js"), "utf8");
 
@@ -65,15 +66,16 @@ describe("product live search wiring", () => {
     expect(analytics).not.toMatch(/<select value=\{item\}/);
   });
 
-  test("Barang/Jasa, Stock Saat Ini, Penerimaan Barang use debounced live list search", () => {
+  test("Persediaan and Penerimaan Barang lists use debounced live search", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
-    for (const src of [master, stock, receipt]) {
+    for (const src of [master, stock, inventoryValue, receipt]) {
       expect(src).toMatch(/useDebouncedLiveSearch/);
       expect(src).not.toMatch(/const \[qInput, setQInput\] = useState/);
       expect(src).not.toMatch(/const \[q, setQ\] = useState/);
     }
     expect(master).toMatch(/master-items-search/);
     expect(stock).toMatch(/stock-search/);
+    expect(inventoryValue).toMatch(/inventory-value-search/);
     expect(receipt).toMatch(/penerimaan-search/);
   });
 
