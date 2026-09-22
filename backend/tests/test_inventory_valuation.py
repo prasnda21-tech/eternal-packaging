@@ -170,6 +170,7 @@ async def test_read_model_summary_statuses_and_exact_value(db):
     assert rows["mismatch"]["inventory_value"] is None
     assert rows["zero"]["stock_fisik"] == 0
     assert rows["zero"]["inventory_value"] == 0
+    assert rows["zero"]["hpp_reason"] is None
     assert rows["negative"]["hpp_status"] == "QTY_MISMATCH"
     assert rows["negative"]["inventory_value"] is None
 

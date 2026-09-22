@@ -191,7 +191,17 @@ async def build_inventory_valuation_rows(db) -> dict:
             "hpp_status": status,
             "hpp_reason": (
                 position.get("reconciliation_reason")
-                or (original_status if original_status != status else None)
+                or (
+                    original_status
+                    if original_status != status
+                    and original_status in {
+                        STATUS_MISSING_COST,
+                        STATUS_NEEDS_COST,
+                        STATUS_NEEDS_UOM,
+                        STATUS_FAILED,
+                    }
+                    else None
+                )
             ),
             "updated_at": _latest_text(
                 position.get("updated_at"),
