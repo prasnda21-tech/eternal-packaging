@@ -402,6 +402,10 @@
 }
 .spk-msg { font-size: 12px; padding: 6px 8px; border-radius: 8px; flex: 0 0 auto; }
 .spk-msg.is-error { background: #fef2f2; color: #991b1b; }
+.spk-msg.is-ok { background: #ecfdf3; color: #166534; }
+.spk-exceeds { color: #9a3412; font-size: 12px; font-weight: 700; }
+.spk-pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.spk-pager button:disabled { opacity: 0.5; }
 .spk-empty { padding: 16px; color: #64748b; font-size: 12px; }
 .spk-file-chip { font-size: 11px; background: #e2e8f0; border-radius: 99px; padding: 2px 8px; }
 

@@ -64,6 +64,8 @@ role_permissions are not rewritten.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -85,6 +87,12 @@ from services.purchase_common import (
 
 ORDERS = "spk_orders"
 EVENTS = "spk_progress_events"
+IDEMPOTENCY = "spk_idempotency"
+# Retries of the same key must still see the stored result. Ninety days is
+# long enough for a human or client retry and short enough that the
+# collection does not grow without a bound. The TTL index is created
+# idempotently by ensure_indexes; it does not rewrite existing SPK documents.
+IDEMPOTENCY_RETENTION_DAYS = 90
 FILES_KIND = "spk"
 PREFIX = "SPK"
 
@@ -100,6 +108,7 @@ STATUS_WAITING = "WAITING_VERIFICATION"
 STATUS_REVISION = "REVISION_REQUIRED"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_CANCELLED = "CANCELLED"
+STATUS_RETURNED = "RETURNED"
 
 WORKFLOW_STATUSES = (
     STATUS_DRAFT,
@@ -110,6 +119,7 @@ WORKFLOW_STATUSES = (
     STATUS_REVISION,
     STATUS_COMPLETED,
     STATUS_CANCELLED,
+    STATUS_RETURNED,
 )
 TERMINAL = {STATUS_COMPLETED, STATUS_CANCELLED}
 ACTIVE_STATUSES = {
@@ -133,6 +143,13 @@ EVENT_VERIFY_REQUEST = "VERIFICATION_REQUEST"
 EVENT_VERIFY_APPROVE = "VERIFY_APPROVE"
 EVENT_VERIFY_REVISION = "VERIFY_REVISION"
 EVENT_CANCEL = "CANCEL"
+EVENT_EDIT = "EDIT"
+EVENT_REPUBLISH = "REPUBLISH"
+EVENT_RETURN = "RETURN"
+EVENT_NOTE = "NOTE"
+EVENT_EVIDENCE = "EVIDENCE"
+EVENT_CORRECTION = "CORRECTION"
+EVENT_PIC_CHANGE = "PIC_CHANGE"
 
 PERM_CREATE = "spk.create"
 PERM_VIEW_OWN = "spk.view_own"
@@ -140,9 +157,18 @@ PERM_VIEW_DIVISION = "spk.view_division"
 PERM_VIEW_ALL = "spk.view_all"
 PERM_ASSIGN = "spk.assign"
 PERM_PROGRESS = "spk.update_progress"
+PERM_COMMENT = "spk.comment"
+PERM_CORRECT = "spk.correct"
 PERM_VERIFY = "spk.verify"
 PERM_CANCEL = "spk.cancel"
 PERM_MANAGE = "spk.manage"
+PIC_ELIGIBLE_PERMS = {
+    PERM_VIEW_OWN,
+    PERM_VIEW_DIVISION,
+    PERM_VIEW_ALL,
+    PERM_PROGRESS,
+    PERM_MANAGE,
+}
 VIEW_PERMS = (PERM_VIEW_OWN, PERM_VIEW_DIVISION, PERM_VIEW_ALL, PERM_MANAGE, PERM_CREATE)
 
 SPK_DIVISIONS = (
@@ -393,33 +419,61 @@ def visibility_query(user: dict, perms: set) -> dict:
     return {"$or": clauses}
 
 
+def _is_assigned(user: dict, doc: dict) -> bool:
+    uid = actor_user_id(user)
+    return bool(uid and uid in (doc.get("assigned_user_ids") or []))
+
+
 def can_update_progress(user: dict, perms: set, doc: dict) -> bool:
+    """Only the assigned PIC may change milestone actuals. Division heads,
+    directors, and admins do not inherit this through a broad permission.
+    """
     if not can_view(user, perms, doc):
         return False
-    if _is_admin(user) or PERM_MANAGE in perms:
-        return True
-    if PERM_PROGRESS not in perms:
-        return False
-    uid = actor_user_id(user)
-    if uid and uid in (doc.get("assigned_user_ids") or []):
-        return True
-    if PERM_VIEW_ALL in perms:
-        return True
-    if PERM_VIEW_DIVISION in perms:
-        divisions = spk_user_division_ids(user)
-        return doc.get("target_division") in divisions or doc.get("source_division") in divisions
-    return False
+    return _is_assigned(user, doc)
 
 
 def can_acknowledge(user: dict, perms: set, doc: dict) -> bool:
     if not can_view(user, perms, doc):
         return False
+    return _is_assigned(user, doc)
+
+
+def can_return(user: dict, perms: set, doc: dict) -> bool:
+    return can_acknowledge(user, perms, doc)
+
+
+def can_correct(user: dict, perms: set, doc: dict) -> bool:
+    """PIC corrects their own entry. Anyone else needs the recorded-correction
+    permission (spk.correct or spk.manage). Role admin alone is not a bypass:
+    the HTTP layer only succeeds because an admin session carries that
+    permission. This is never the normal progress or return endpoint.
+    """
+    if not can_view(user, perms, doc):
+        return False
+    if _is_assigned(user, doc):
+        return True
+    return PERM_CORRECT in perms or PERM_MANAGE in perms
+
+
+def can_add_note(user: dict, perms: set, doc: dict) -> bool:
+    if not can_view(user, perms, doc):
+        return False
+    if doc.get("workflow_status") == STATUS_DRAFT:
+        return False
+    if _is_assigned(user, doc):
+        return True
     uid = actor_user_id(user)
-    if uid and uid in (doc.get("assigned_user_ids") or []):
+    if uid and uid == doc.get("created_by_id"):
         return True
-    if PERM_VIEW_DIVISION in perms and doc.get("target_division") in spk_user_division_ids(user):
-        return True
-    return False
+    return _is_admin(user) or _has(perms, PERM_COMMENT, PERM_VIEW_DIVISION, PERM_VIEW_ALL, PERM_MANAGE)
+
+
+def can_edit_content(user: dict, perms: set, doc: dict) -> bool:
+    if doc.get("workflow_status") not in (STATUS_DRAFT, STATUS_RETURNED):
+        return False
+    uid = actor_user_id(user)
+    return bool(uid and uid == doc.get("created_by_id")) or _is_admin(user) or PERM_MANAGE in perms
 
 
 def can_verify(user: dict, perms: set, doc: dict) -> bool:
@@ -431,6 +485,14 @@ def can_verify(user: dict, perms: set, doc: dict) -> bool:
     if uid and uid in (doc.get("assigned_user_ids") or []) and not (_is_admin(user) or PERM_MANAGE in perms):
         return False
     return True
+
+
+def _public_pic(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name") or "",
+        "role": row.get("role") or "",
+    }
 
 
 def _public_attachment(row: dict) -> dict:
@@ -463,6 +525,7 @@ def _public_milestone(row: dict) -> dict:
         "requires_evidence": bool(row.get("requires_evidence")),
         "evidence_count": int(row.get("evidence_count") or 0),
         "progress_percent": _dec_str(progress),
+        "exceeds_target": str(row.get("type") or "") == "QUANTITY" and _q2(row.get("actual_value")) > _q2(row.get("target_value")) > 0,
         "completed_at": row.get("completed_at"),
         "verified_at": row.get("verified_at"),
         "last_update_at": row.get("last_update_at"),
@@ -501,7 +564,7 @@ def public_order(doc: Optional[dict], *, today: Optional[date] = None, include_m
     current = today or today_wib()
     milestones = list(doc.get("milestones") or [])
     progress = overall_progress_percent(milestones)
-    pics = list(doc.get("assigned_pics") or [])
+    pics = [_public_pic(row) for row in (doc.get("assigned_pics") or [])]
     out = {
         "id": doc.get("id"),
         "spk_number": doc.get("spk_number"),
@@ -530,6 +593,9 @@ def public_order(doc: Optional[dict], *, today: Optional[date] = None, include_m
         "completed_at": doc.get("completed_at"),
         "cancelled_at": doc.get("cancelled_at"),
         "cancellation_reason": doc.get("cancellation_reason"),
+        "return_reason": doc.get("return_reason"),
+        "returned_at": doc.get("returned_at"),
+        "returned_by": doc.get("returned_by") or {},
         "revision_reason": doc.get("revision_reason"),
         "revision_at": doc.get("revision_at"),
         "doc_version": int(doc.get("doc_version") or 1),
@@ -562,6 +628,8 @@ def public_event(doc: dict) -> dict:
         "workflow_status_after": doc.get("workflow_status_after"),
         "evidence": list(doc.get("evidence") or []),
         "evidence_count": len(doc.get("evidence") or []),
+        "reason": doc.get("reason") or "",
+        "idempotency_key": doc.get("idempotency_key") or "",
     }
 
 
@@ -634,6 +702,8 @@ async def ensure_indexes(db) -> None:
     await db[EVENTS].create_index("milestone_id")
     await db[EVENTS].create_index("created_at")
     await db[EVENTS].create_index("idempotency_key", unique=True, sparse=True)
+    await db[IDEMPOTENCY].create_index([("actor_id", 1), ("idempotency_key", 1)], unique=True)
+    await db[IDEMPOTENCY].create_index("retain_until", expireAfterSeconds=0, name="spk_idempotency_retain_until")
 
 
 async def _resolve_pics(db, user_ids: Sequence[str]) -> Tuple[List[dict], List[str]]:
@@ -647,17 +717,20 @@ async def _resolve_pics(db, user_ids: Sequence[str]) -> Tuple[List[dict], List[s
     pics = []
     for uid in ids:
         found = await db.users.find_one(
-            {"$or": [{"id": uid}, {"user_id": uid}], "status": {"$ne": "inactive"}},
+            {"$or": [{"id": uid}, {"user_id": uid}]},
             {"_id": 0, "password_hash": 0},
         )
-        if not found:
-            raise HTTPException(400, "PIC tidak ditemukan atau tidak aktif.")
+        if not found or found.get("status") == "inactive":
+            inactive = found if found and found.get("status") == "inactive" else None
+            label = str((inactive or {}).get("name") or uid)
+            if inactive:
+                raise HTTPException(400, f"PIC tidak aktif: {label}.")
+            raise HTTPException(400, f"PIC tidak ditemukan: {label}.")
         canonical = str(found.get("id") or found.get("user_id") or uid)
         pics.append({
             "id": canonical,
             "name": str(found.get("name") or found.get("email") or canonical),
             "role": str(found.get("role") or ""),
-            "email": str(found.get("email") or ""),
         })
     return pics, [pic["id"] for pic in pics]
 
@@ -677,6 +750,7 @@ def _event_doc(
     status_before: Optional[str] = None,
     evidence: Optional[List[dict]] = None,
     idempotency_key: Optional[str] = None,
+    reason: str = "",
 ) -> dict:
     return {
         "id": str(uuid.uuid4()),
@@ -695,6 +769,7 @@ def _event_doc(
         "workflow_status_before": status_before if status_before is not None else spk.get("workflow_status"),
         "workflow_status_after": spk.get("workflow_status"),
         "evidence": evidence or [],
+        "reason": reason or "",
         "idempotency_key": idempotency_key or str(uuid.uuid4()),
     }
 
@@ -834,7 +909,116 @@ async def next_spk_number(db) -> str:
     return f"{stem}{max_seq + 1:04d}"
 
 
+def _retain_until() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(days=IDEMPOTENCY_RETENTION_DAYS)
+
+
+def _payload_hash(payload: dict) -> str:
+    body = {key: value for key, value in (payload or {}).items() if key != "idempotency_key"}
+    raw = json.dumps(body, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _idempotent(db, user: dict, payload: dict, action: str, runner):
+    """One stored result per user + key + payload. A reused key with a different
+    payload is a conflict. Failures release the key so the same attempt can retry.
+    """
+    await ensure_indexes(db)
+    key = str((payload or {}).get("idempotency_key") or "").strip()
+    if not key:
+        raise HTTPException(400, "Idempotency-Key wajib untuk aksi ini.")
+    if len(key) > 200:
+        raise HTTPException(400, "Idempotency-Key terlalu panjang.")
+    uid = actor_user_id(user)
+    digest = _payload_hash(payload)
+    lock = get_named_lock(f"spk-idem:{uid}:{key}")
+    async with lock:
+        existing = await db[IDEMPOTENCY].find_one({"actor_id": uid, "idempotency_key": key}, {"_id": 0})
+        if existing:
+            if existing.get("payload_hash") != digest:
+                raise HTTPException(409, "Idempotency key sudah digunakan untuk data yang berbeda.")
+            if existing.get("status") == "done" and existing.get("spk_id"):
+                order = await _load(db, existing["spk_id"])
+                if order:
+                    return public_order(order)
+            if existing.get("status") == "pending":
+                raise HTTPException(409, "Permintaan yang sama sedang diproses. Ulangi sebentar lagi.")
+            await db[IDEMPOTENCY].delete_one({"actor_id": uid, "idempotency_key": key})
+        try:
+            await db[IDEMPOTENCY].insert_one({
+                "id": str(uuid.uuid4()),
+                "actor_id": uid,
+                "idempotency_key": key,
+                "action": action,
+                "payload_hash": digest,
+                "status": "pending",
+                "spk_id": "",
+                "created_at": now_iso(),
+                "retain_until": _retain_until(),
+            })
+        except DuplicateKeyError:
+            existing = await db[IDEMPOTENCY].find_one({"actor_id": uid, "idempotency_key": key}, {"_id": 0})
+            if existing and existing.get("payload_hash") != digest:
+                raise HTTPException(409, "Idempotency key sudah digunakan untuk data yang berbeda.")
+            if existing and existing.get("status") == "done" and existing.get("spk_id"):
+                order = await _load(db, existing["spk_id"])
+                if order:
+                    return public_order(order)
+            raise HTTPException(409, "Permintaan yang sama sedang diproses. Ulangi sebentar lagi.")
+        try:
+            result = await runner()
+        except Exception:
+            await db[IDEMPOTENCY].delete_one({"actor_id": uid, "idempotency_key": key, "status": "pending"})
+            raise
+        await db[IDEMPOTENCY].update_one(
+            {"actor_id": uid, "idempotency_key": key},
+            {"$set": {"status": "done", "spk_id": result.get("id") or "", "finished_at": now_iso()}},
+        )
+        return result
+
+
+async def _effective_perms(db, person: dict) -> set:
+    from permissions import ALL_PERMISSIONS, effective_permissions
+    if str((person or {}).get("role") or "") == "admin" or (person or {}).get("is_super_admin"):
+        return set(ALL_PERMISSIONS)
+    docs = await db.role_permissions.find({}, {"_id": 0, "role": 1, "permissions": 1}).to_list(80)
+    override = {doc.get("role"): list(doc.get("permissions") or []) for doc in docs if doc.get("role")}
+    return effective_permissions((person or {}).get("role"), (person or {}).get("permissions_override"), override or None)
+
+
+def _pic_can_receive(perms: set, person: dict) -> bool:
+    if str((person or {}).get("role") or "") == "admin" or (person or {}).get("is_super_admin"):
+        return True
+    return bool(set(perms or ()) & PIC_ELIGIBLE_PERMS)
+
+
+async def _assert_pics_eligible(db, pics: Sequence[dict]) -> None:
+    blocked = []
+    for pic in pics or []:
+        found = await db.users.find_one(
+            {"$or": [{"id": pic.get("id")}, {"user_id": pic.get("id")}]},
+            {"_id": 0, "password_hash": 0},
+        )
+        if not found or found.get("status") == "inactive":
+            blocked.append(str(pic.get("name") or pic.get("id") or "PIC"))
+            continue
+        if not _pic_can_receive(await _effective_perms(db, found), found):
+            blocked.append(str(pic.get("name") or found.get("name") or pic.get("id")))
+    if blocked:
+        names = ", ".join(blocked)
+        raise HTTPException(
+            400,
+            f"PIC tidak dapat menerima tugas SPK: {names}. Pengguna harus aktif dan memiliki akses melihat atau mengerjakan SPK.",
+        )
+
+
 async def create_spk(db, payload: dict, user: dict) -> dict:
+    async def _run():
+        return await _create_spk_once(db, payload, user)
+    return await _idempotent(db, user, payload or {}, "create", _run)
+
+
+async def _create_spk_once(db, payload: dict, user: dict) -> dict:
     publish = bool((payload or {}).get("publish"))
     async with get_named_lock("spk-number"):
         actor = actor_snapshot(user)
@@ -848,6 +1032,8 @@ async def create_spk(db, payload: dict, user: dict) -> dict:
         pics, pic_ids = await _resolve_pics(db, (payload or {}).get("assigned_user_ids") or [])
         if publish and not pic_ids:
             raise HTTPException(400, "PIC wajib dipilih sebelum SPK diterbitkan.")
+        if publish:
+            await _assert_pics_eligible(db, pics)
         ts = now_iso()
         doc = {
             "id": str(uuid.uuid4()),
@@ -894,6 +1080,7 @@ async def create_spk(db, payload: dict, user: dict) -> dict:
             overall_before="0.00",
             overall_after=saved.get("progress_percent"),
             status_before=STATUS_DRAFT if publish else None,
+            idempotency_key=str((payload or {}).get("idempotency_key") or "") or None,
         ))
         if publish:
             await _notify(
@@ -911,11 +1098,10 @@ async def create_spk(db, payload: dict, user: dict) -> dict:
 
 async def update_draft(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
     doc = await _require(db, spk_id, user, perms)
-    if doc.get("workflow_status") != STATUS_DRAFT:
-        raise HTTPException(400, "Hanya draft yang dapat diubah.")
-    uid = actor_user_id(user)
-    if doc.get("created_by_id") != uid and not (_is_admin(user) or PERM_MANAGE in perms):
-        raise HTTPException(403, "Hanya pembuat draft yang dapat mengubah SPK ini.")
+    if not can_edit_content(user, perms, doc):
+        if doc.get("workflow_status") not in (STATUS_DRAFT, STATUS_RETURNED):
+            raise HTTPException(400, "Hanya draft atau SPK yang dikembalikan yang dapat diubah.")
+        raise HTTPException(403, "Hanya pembuat yang dapat mengubah SPK ini.")
     version = _version((payload or {}).get("doc_version") if (payload or {}).get("doc_version") is not None else doc.get("doc_version"))
     header = _apply_header({**doc, **(payload or {})}, strict=False, source_division=doc.get("source_division") or primary_division(user))
     if "milestones" in (payload or {}):
@@ -926,6 +1112,7 @@ async def update_draft(db, spk_id: str, payload: dict, user: dict, perms: set) -
         pics, pic_ids = await _resolve_pics(db, payload.get("assigned_user_ids") or [])
     else:
         pics, pic_ids = list(doc.get("assigned_pics") or []), list(doc.get("assigned_user_ids") or [])
+    before_pics = list(doc.get("assigned_user_ids") or [])
     updated = await _save_version(db, spk_id, version, {
         **header,
         "assigned_pics": pics,
@@ -933,6 +1120,26 @@ async def update_draft(db, spk_id: str, payload: dict, user: dict, perms: set) -
         "milestones": milestones,
         "progress_percent": _dec_str(overall_progress_percent(milestones)),
     })
+    actor = actor_snapshot(user)
+    await _insert_event(db, _event_doc(
+        spk=updated,
+        event_type=EVENT_EDIT,
+        actor=actor,
+        note=updated.get("title") or "",
+        status_before=doc.get("workflow_status"),
+        overall_before=doc.get("progress_percent"),
+        overall_after=updated.get("progress_percent"),
+    ))
+    if before_pics != pic_ids:
+        await _insert_event(db, _event_doc(
+            spk=updated,
+            event_type=EVENT_PIC_CHANGE,
+            actor=actor,
+            note="PIC diperbarui.",
+            status_before=doc.get("workflow_status"),
+            overall_before=doc.get("progress_percent"),
+            overall_after=updated.get("progress_percent"),
+        ))
     return public_order(updated)
 
 
@@ -940,8 +1147,7 @@ async def delete_draft(db, spk_id: str, user: dict, perms: set) -> dict:
     doc = await _require(db, spk_id, user, perms)
     if doc.get("workflow_status") != STATUS_DRAFT:
         raise HTTPException(400, "SPK yang sudah diterbitkan tidak dapat dihapus. Batalkan SPK.")
-    uid = actor_user_id(user)
-    if doc.get("created_by_id") != uid and not (_is_admin(user) or PERM_MANAGE in perms):
+    if not can_edit_content(user, perms, doc):
         raise HTTPException(403, "Hanya pembuat draft yang dapat menghapus SPK ini.")
     progress = await db[EVENTS].count_documents({"spk_id": spk_id, "event_type": EVENT_PROGRESS})
     if progress:
@@ -952,11 +1158,18 @@ async def delete_draft(db, spk_id: str, user: dict, perms: set) -> dict:
 
 
 async def publish_spk(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
+    async def _run():
+        return await _publish_spk_once(db, spk_id, payload, user, perms)
+    body = dict(payload or {})
+    body["spk_id"] = spk_id
+    return await _idempotent(db, user, body, "publish", _run)
+
+
+async def _publish_spk_once(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
     doc = await _require(db, spk_id, user, perms)
-    if doc.get("workflow_status") != STATUS_DRAFT:
-        raise HTTPException(400, "Hanya draft yang dapat diterbitkan.")
-    uid = actor_user_id(user)
-    if doc.get("created_by_id") != uid and not (_is_admin(user) or PERM_MANAGE in perms or PERM_ASSIGN in perms):
+    if doc.get("workflow_status") not in (STATUS_DRAFT, STATUS_RETURNED):
+        raise HTTPException(400, "Hanya draft atau SPK yang dikembalikan yang dapat diterbitkan.")
+    if not can_edit_content(user, perms, doc):
         raise HTTPException(403, "Anda tidak berhak menerbitkan SPK ini.")
     version = _version((payload or {}).get("doc_version", doc.get("doc_version")))
     merged = {**doc, **(payload or {})}
@@ -968,7 +1181,10 @@ async def publish_spk(db, spk_id: str, payload: dict, user: dict, perms: set) ->
         pics, pic_ids = list(doc.get("assigned_pics") or []), list(doc.get("assigned_user_ids") or [])
     if not pic_ids:
         raise HTTPException(400, "PIC wajib dipilih sebelum SPK diterbitkan.")
+    await _assert_pics_eligible(db, pics)
+    uid = actor_user_id(user)
     before = doc.get("workflow_status")
+    republish = before == STATUS_RETURNED
     updated = await _save_version(db, spk_id, version, {
         **header,
         "assigned_pics": pics,
@@ -977,23 +1193,31 @@ async def publish_spk(db, spk_id: str, payload: dict, user: dict, perms: set) ->
         "workflow_status": STATUS_PUBLISHED,
         "published_at": now_iso(),
         "progress_percent": _dec_str(overall_progress_percent(milestones)),
+        "return_reason": None,
+        "returned_at": None,
+        "returned_by": None,
     })
     await _insert_event(db, _event_doc(
         spk=updated,
-        event_type=EVENT_PUBLISH,
+        event_type=EVENT_REPUBLISH if republish else EVENT_PUBLISH,
         actor=actor_snapshot(user),
         status_before=before,
         overall_before=doc.get("progress_percent"),
         overall_after=updated.get("progress_percent"),
+        idempotency_key=str((payload or {}).get("idempotency_key") or "") or None,
     ))
     await _notify(
         db,
         user_ids=updated.get("assigned_user_ids") or [],
-        event_type="spk_assigned",
-        dedupe_id=f"{updated['id']}:publish",
+        event_type="spk_republished" if republish else "spk_assigned",
+        dedupe_id=f"{updated['id']}:{'republish' if republish else 'publish'}:{updated.get('doc_version')}",
         spk=updated,
-        title="SPK ditugaskan",
-        body=f"{updated.get('spk_number')} — {updated.get('title')} ditugaskan kepada Anda.",
+        title="SPK diterbitkan ulang" if republish else "SPK ditugaskan",
+        body=(
+            f"{updated.get('spk_number')} — {updated.get('title')} diterbitkan ulang kepada Anda."
+            if republish else
+            f"{updated.get('spk_number')} — {updated.get('title')} ditugaskan kepada Anda."
+        ),
         actor_id=uid,
     )
     return public_order(updated)
@@ -1024,24 +1248,233 @@ async def _transition(db, spk_id: str, payload: dict, user: dict, perms: set, *,
     return public_order(updated)
 
 
+def _progress_status_error(status: str) -> HTTPException:
+    if status == STATUS_WAITING:
+        return HTTPException(400, "Progress tidak dapat diubah sampai verifikator meminta revisi.")
+    if status in TERMINAL:
+        return HTTPException(400, "Progress tidak dapat diubah.")
+    if status in (STATUS_PUBLISHED, STATUS_ACKNOWLEDGED):
+        return HTTPException(400, "Mulai kerjakan SPK sebelum memperbarui progress.")
+    return HTTPException(400, "Status SPK tidak memungkinkan perubahan progress.")
+
+
+async def _notify_watchers(db, order: dict, user: dict, *, event_type: str, dedupe_id: str, title: str, body: str) -> None:
+    await _notify(
+        db,
+        user_ids=_watchers(order),
+        event_type=event_type,
+        dedupe_id=dedupe_id,
+        spk=order,
+        title=title,
+        body=body,
+        actor_id=actor_user_id(user),
+    )
+
+
 async def acknowledge_spk(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
-    return await _transition(
+    order = await _transition(
         db, spk_id, payload, user, perms,
         allowed_from={STATUS_PUBLISHED},
         new_status=STATUS_ACKNOWLEDGED,
         event_type=EVENT_ACKNOWLEDGE,
         guard=can_acknowledge,
     )
+    await _notify_watchers(
+        db, order, user,
+        event_type="spk_acknowledged",
+        dedupe_id=f"{order['id']}:ack:{order.get('doc_version')}",
+        title="SPK diterima",
+        body=f"{order.get('spk_number')} — {order.get('title')} diterima oleh PIC.",
+    )
+    return order
 
 
 async def start_spk(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
-    return await _transition(
+    order = await _transition(
         db, spk_id, payload, user, perms,
         allowed_from={STATUS_ACKNOWLEDGED},
         new_status=STATUS_IN_PROGRESS,
         event_type=EVENT_START,
         guard=can_acknowledge,
     )
+    await _notify_watchers(
+        db, order, user,
+        event_type="spk_started",
+        dedupe_id=f"{order['id']}:start:{order.get('doc_version')}",
+        title="SPK dimulai",
+        body=f"{order.get('spk_number')} — {order.get('title')} mulai dikerjakan.",
+    )
+    return order
+
+
+async def return_spk(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
+    doc = await _require(db, spk_id, user, perms)
+    if not can_return(user, perms, doc):
+        raise HTTPException(403, "Hanya PIC yang ditugaskan yang dapat mengembalikan SPK.")
+    status = doc.get("workflow_status")
+    if status != STATUS_PUBLISHED:
+        if status in {STATUS_ACKNOWLEDGED, STATUS_IN_PROGRESS, STATUS_REVISION, STATUS_WAITING}:
+            raise HTTPException(400, "SPK yang sudah dimulai tidak dapat dikembalikan. Gunakan catatan kendala atau alur revisi.")
+        raise HTTPException(400, "Hanya SPK terbit yang dapat dikembalikan.")
+    reason = _clean_text((payload or {}).get("reason"), max_len=2000, field="Alasan pengembalian", required=True)
+    if len(reason) < 5:
+        raise HTTPException(400, "Alasan pengembalian minimal 5 karakter.")
+    version = _version((payload or {}).get("doc_version", doc.get("doc_version")))
+    actor = actor_snapshot(user)
+    updated = await _save_version(db, spk_id, version, {
+        "workflow_status": STATUS_RETURNED,
+        "return_reason": reason,
+        "returned_at": now_iso(),
+        "returned_by": actor,
+    })
+    await _insert_event(db, _event_doc(
+        spk=updated,
+        event_type=EVENT_RETURN,
+        actor=actor,
+        note=reason,
+        reason=reason,
+        status_before=status,
+        overall_before=doc.get("progress_percent"),
+        overall_after=updated.get("progress_percent"),
+        idempotency_key=str((payload or {}).get("idempotency_key") or "") or None,
+    ))
+    await _notify_watchers(
+        db, updated, user,
+        event_type="spk_returned",
+        dedupe_id=f"{updated['id']}:return:{updated.get('doc_version')}",
+        title="SPK dikembalikan",
+        body=f"{updated.get('spk_number')} dikembalikan: {reason}",
+    )
+    return public_order(updated)
+
+
+async def add_note(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
+    """Catatan tidak mengubah nilai aktual. Bukti milestone hanya boleh ditambah PIC."""
+    payload = payload or {}
+    doc = await _require(db, spk_id, user, perms)
+    if not can_add_note(user, perms, doc):
+        raise HTTPException(403, "Anda tidak berhak menambah catatan pada SPK ini.")
+    status = doc.get("workflow_status")
+    if status in TERMINAL:
+        raise HTTPException(400, "SPK yang sudah selesai atau dibatalkan tidak dapat diubah.")
+    evidence_only = bool(payload.get("evidence_only"))
+    note = _clean_text(payload.get("note"), max_len=2000, field="Catatan", required=not evidence_only)
+    links = _clean_links(payload.get("links") or payload.get("evidence_links"))
+    assigned = _is_assigned(user, doc)
+    if (payload.get("file_ids") or links) and not assigned:
+        raise HTTPException(403, "Hanya PIC yang dapat menambahkan bukti pada SPK ini.")
+    if (payload.get("file_ids") or links) and status not in PROGRESS_STATUSES:
+        raise HTTPException(400, "Bukti hanya dapat ditambahkan saat SPK berjalan atau revisi.")
+    files = await _take_files(db, spk_id, payload.get("file_ids") or [], user) if assigned else []
+    evidence = links + files
+    if evidence_only and not evidence:
+        raise HTTPException(400, "Bukti wajib dilampirkan.")
+    if not evidence_only and not note:
+        raise HTTPException(400, "Catatan wajib diisi.")
+    milestone_id = str(payload.get("milestone_id") or "").strip()
+    milestones = [dict(row) for row in (doc.get("milestones") or [])]
+    target = next((row for row in milestones if row.get("id") == milestone_id), None) if milestone_id else None
+    if evidence and not target:
+        raise HTTPException(400, "Milestone wajib dipilih saat menambahkan bukti.")
+    version = _version(payload.get("doc_version", doc.get("doc_version")))
+    actor = actor_snapshot(user)
+    ts = now_iso()
+    previous = _dec_str(_q2((target or {}).get("actual_value"))) if target else None
+    if target and evidence:
+        target["evidence_count"] = int(target.get("evidence_count") or 0) + len(evidence)
+        target["last_update_at"] = ts
+    event = _event_doc(
+        spk=doc,
+        event_type=EVENT_EVIDENCE if evidence_only else EVENT_NOTE,
+        actor=actor,
+        note=note or "Bukti ditambahkan.",
+        milestone=target,
+        previous_actual=previous,
+        new_actual=previous,
+        overall_before=doc.get("progress_percent"),
+        overall_after=doc.get("progress_percent"),
+        status_before=status,
+        evidence=evidence,
+        idempotency_key=str(payload.get("idempotency_key") or "") or None,
+    )
+    attachments = list(doc.get("attachments") or [])
+    for item in evidence:
+        attachments.append({
+            **item,
+            "milestone_id": (target or {}).get("id"),
+            "event_id": event["id"],
+            "uploaded_at": ts,
+            "name": item.get("name") or item.get("label") or item.get("url"),
+        })
+    updates = {}
+    if target and evidence:
+        updates["milestones"] = milestones
+        updates["attachments"] = attachments
+    elif not evidence:
+        updates["last_activity_at"] = ts
+    updated = await _save_version(db, spk_id, version, updates or {"last_activity_at": ts})
+    event["workflow_status_after"] = updated.get("workflow_status")
+    await _insert_event(db, event)
+    if files:
+        await _bind_progress_files(db, spk_id, str((target or {}).get("id") or ""), [item["id"] for item in files])
+    return public_order(updated)
+
+
+async def correct_value(db, spk_id: str, payload: dict, user: dict, perms: set) -> dict:
+    """Koreksi tercatat. Bukan endpoint progres biasa dan tidak menghapus event lama."""
+    payload = payload or {}
+    doc = await _require(db, spk_id, user, perms)
+    if not can_correct(user, perms, doc):
+        raise HTTPException(403, "Anda tidak berhak mengoreksi nilai SPK ini.")
+    status = doc.get("workflow_status")
+    if status not in PROGRESS_STATUSES:
+        raise _progress_status_error(status)
+    reason = _clean_text(payload.get("reason"), max_len=2000, field="Alasan koreksi", required=True)
+    if len(reason) < 5:
+        raise HTTPException(400, "Alasan koreksi minimal 5 karakter.")
+    milestone_id = str(payload.get("milestone_id") or "").strip()
+    milestones = [dict(row) for row in (doc.get("milestones") or [])]
+    target = next((row for row in milestones if row.get("id") == milestone_id), None)
+    if not target:
+        raise HTTPException(400, "Milestone tidak ditemukan.")
+    if target.get("type") != "QUANTITY":
+        raise HTTPException(400, "Koreksi nilai hanya untuk milestone kuantitas.")
+    if payload.get("new_actual") is None or payload.get("new_actual") == "":
+        raise HTTPException(400, "Nilai aktual baru wajib diisi.")
+    new_actual = _q2(payload.get("new_actual"))
+    if new_actual < 0:
+        raise HTTPException(400, "Nilai aktual tidak boleh negatif.")
+    previous = _q2(target.get("actual_value"))
+    if new_actual == previous:
+        raise HTTPException(400, "Nilai tidak berubah.")
+    version = _version(payload.get("doc_version", doc.get("doc_version")))
+    ts = now_iso()
+    target["actual_value"] = _dec_str(new_actual)
+    target["last_update_at"] = ts
+    _refresh_milestone_status(target, ts)
+    before_overall = _dec_str(overall_progress_percent(doc.get("milestones") or []))
+    after_overall = _dec_str(overall_progress_percent(milestones))
+    actor = actor_snapshot(user)
+    updated = await _save_version(db, spk_id, version, {
+        "milestones": milestones,
+        "progress_percent": after_overall,
+    })
+    await _insert_event(db, _event_doc(
+        spk=updated,
+        event_type=EVENT_CORRECTION,
+        actor=actor,
+        note=reason,
+        reason=reason,
+        milestone=target,
+        previous_actual=_dec_str(previous),
+        new_actual=_dec_str(new_actual),
+        milestone_progress=_dec_str(milestone_progress_percent(target)),
+        overall_before=before_overall,
+        overall_after=after_overall,
+        status_before=status,
+        idempotency_key=str(payload.get("idempotency_key") or "") or None,
+    ))
+    return public_order(updated)
 
 
 def _clean_links(raw: Any) -> List[dict]:
@@ -1253,7 +1686,7 @@ async def record_progress(db, spk_id: str, payload: dict, user: dict, perms: set
         if not can_update_progress(user, perms, doc):
             raise HTTPException(403, "Anda tidak berhak memperbarui progress SPK ini.")
         if doc.get("workflow_status") not in PROGRESS_STATUSES:
-            raise HTTPException(400, "Mulai kerjakan SPK sebelum memperbarui progress.")
+            raise _progress_status_error(doc.get("workflow_status"))
         version = _version(payload.get("doc_version", doc.get("doc_version")))
         if version != int(doc.get("doc_version") or 0):
             raise HTTPException(409, "SPK berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
@@ -1275,6 +1708,13 @@ async def record_progress(db, spk_id: str, payload: dict, user: dict, perms: set
             new_actual = _q2(payload.get("new_actual"))
             if new_actual < 0:
                 raise HTTPException(400, "Nilai aktual tidak boleh negatif.")
+            previous_dec = _q2(previous)
+            if new_actual < previous_dec:
+                raise HTTPException(400, "Penurunan nilai tidak dapat dilakukan lewat update progres. Gunakan Koreksi Nilai.")
+            if new_actual == 0 and not note:
+                raise HTTPException(400, "Update progres bernilai 0 tanpa catatan ditolak.")
+            if new_actual == previous_dec:
+                raise HTTPException(400, "Nilai tidak berubah. Gunakan Tambah Catatan.")
             target["actual_value"] = _dec_str(new_actual)
             completing = new_actual >= _q2(target.get("target_value")) and _q2(target.get("target_value")) > 0
         elif kind == "CHECKLIST":
@@ -1483,10 +1923,18 @@ async def cancel_spk(db, spk_id: str, payload: dict, user: dict, perms: set) -> 
         event_type=EVENT_CANCEL,
         actor=actor_snapshot(user),
         note=reason,
+        reason=reason,
         status_before=before,
         overall_before=doc.get("progress_percent"),
         overall_after=updated.get("progress_percent"),
     ))
+    await _notify_watchers(
+        db, updated, user,
+        event_type="spk_cancelled",
+        dedupe_id=f"{updated['id']}:cancel:{updated.get('doc_version')}",
+        title="SPK dibatalkan",
+        body=f"{updated.get('spk_number')} dibatalkan: {reason}",
+    )
     return public_order(updated)
 
 
@@ -1520,66 +1968,165 @@ def _summary(rows: Sequence[dict], today: date) -> dict:
     }
 
 
-def _tab_match(doc: dict, tab: str, user: dict, today: date) -> bool:
+def _month_bounds(today: date) -> Tuple[str, str]:
+    start = datetime(today.year, today.month, 1, tzinfo=WIB).astimezone(timezone.utc)
+    if today.month == 12:
+        nxt = datetime(today.year + 1, 1, 1, tzinfo=WIB)
+    else:
+        nxt = datetime(today.year, today.month + 1, 1, tzinfo=WIB)
+    return start.isoformat(), nxt.astimezone(timezone.utc).isoformat()
+
+
+def _combine_query(base: dict, clauses: Sequence[dict]) -> dict:
+    parts = []
+    if base:
+        parts.append(base)
+    parts.extend(clause for clause in clauses if clause)
+    if not parts:
+        return {}
+    if len(parts) == 1:
+        return parts[0]
+    return {"$and": parts}
+
+
+def _tab_clause(tab: str, user: dict, today: date) -> dict:
     key = str(tab or "mine").strip().lower()
     uid = actor_user_id(user)
+    open_status = {"workflow_status": {"$nin": list(TERMINAL)}}
     if key in ("", "mine", "saya"):
-        return uid in (doc.get("assigned_user_ids") or []) or uid == doc.get("created_by_id")
+        return {"$or": [{"assigned_user_ids": uid}, {"created_by_id": uid}]}
     if key in ("division", "divisi"):
-        divisions = spk_user_division_ids(user)
-        return doc.get("target_division") in divisions or doc.get("source_division") in divisions
-    if key in ("all", "semua"):
-        return True
+        divisions = list(spk_user_division_ids(user))
+        return {"$or": [{"target_division": {"$in": divisions}}, {"source_division": {"$in": divisions}}]}
     if key in ("overdue", "terlambat"):
-        return deadline_state(doc.get("workflow_status"), doc.get("deadline"), today) == "OVERDUE"
+        return {**open_status, "deadline": {"$lt": today.isoformat(), "$nin": [None, ""]}}
     if key in ("verification", "verifikasi"):
-        return doc.get("workflow_status") == STATUS_WAITING
-    return True
+        return {"workflow_status": STATUS_WAITING}
+    return {}
 
 
-async def list_orders(db, user: dict, perms: set, *, tab: str = "mine", q: str = "", status: str = "", division: str = "", pic: str = "", priority: str = "", deadline: str = "") -> dict:
-    """Read model only. Deadline state is derived here and never persisted."""
-    if not (_is_admin(user) or _has(perms, *VIEW_PERMS)):
-        raise HTTPException(403, "Anda tidak berhak melihat SPK.")
-    query = visibility_query(user, perms)
-    rows = await db[ORDERS].find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
-    today = today_wib()
-    summary = _summary(rows, today)
-    needle = str(q or "").strip().lower()
-    status_filter = str(status or "").strip().upper()
-    division_filter = str(division or "").strip()
-    pic_filter = str(pic or "").strip()
-    priority_filter = str(priority or "").strip().upper()
-    deadline_filter = str(deadline or "").strip().upper()
-    filtered = []
-    for doc in rows:
-        if not _tab_match(doc, tab, user, today):
-            continue
-        if status_filter and doc.get("workflow_status") != status_filter:
-            continue
-        if division_filter and division_filter not in (doc.get("target_division"), doc.get("source_division")):
-            continue
-        if pic_filter and pic_filter not in (doc.get("assigned_user_ids") or []):
-            continue
-        if priority_filter and doc.get("priority") != priority_filter:
-            continue
-        state = deadline_state(doc.get("workflow_status"), doc.get("deadline"), today)
-        if deadline_filter and (state or "") != deadline_filter:
-            continue
-        if needle:
-            hay = " ".join([
-                str(doc.get("spk_number") or ""),
-                str(doc.get("title") or ""),
-            ]).lower()
-            if needle not in hay:
-                continue
-        filtered.append(public_order(doc, today=today, include_milestones=False))
+def _deadline_clause(state: str, today: date) -> dict:
+    key = str(state or "").strip().upper()
+    if not key:
+        return {}
+    today_s = today.isoformat()
+    soon = (today + timedelta(days=DUE_SOON_DAYS)).isoformat()
+    open_status = {"workflow_status": {"$nin": list(TERMINAL)}}
+    if key == "OVERDUE":
+        return {**open_status, "deadline": {"$lt": today_s, "$nin": [None, ""]}}
+    if key == "DUE_SOON":
+        return {**open_status, "deadline": {"$gte": today_s, "$lte": soon}}
+    if key == "ON_TRACK":
+        return {
+            **open_status,
+            "$or": [
+                {"deadline": {"$in": [None, ""]}},
+                {"deadline": {"$gt": soon}},
+            ],
+        }
+    return {}
+
+
+def _completed_month_clause(today: date) -> dict:
+    start, end = _month_bounds(today)
+    start_z = start.replace("+00:00", "Z")
+    end_z = end.replace("+00:00", "Z")
+    return {
+        "workflow_status": STATUS_COMPLETED,
+        "$or": [
+            {"completed_at": {"$gte": start, "$lt": end}},
+            {"completed_at": {"$gte": start_z, "$lt": end_z}},
+        ],
+    }
+
+
+def _list_tabs(user: dict, perms: set) -> List[str]:
     tabs = ["mine", "overdue", "verification"]
     if PERM_VIEW_DIVISION in perms or PERM_VIEW_ALL in perms or PERM_MANAGE in perms or _is_admin(user):
         tabs.insert(1, "division")
     if PERM_VIEW_ALL in perms or PERM_MANAGE in perms or _is_admin(user):
         tabs.insert(2, "all")
-    return {"orders": filtered, "summary": summary, "tabs": tabs}
+    return tabs
+
+
+def _page_args(page: Any, page_size: Any) -> Tuple[int, int]:
+    try:
+        current = int(page or 1)
+        size = int(page_size or 20)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Halaman tidak valid.") from exc
+    if current < 1 or size < 1:
+        raise HTTPException(400, "Halaman tidak valid.")
+    return current, min(size, 100)
+
+
+async def list_orders(
+    db,
+    user: dict,
+    perms: set,
+    *,
+    tab: str = "mine",
+    q: str = "",
+    status: str = "",
+    division: str = "",
+    pic: str = "",
+    priority: str = "",
+    deadline: str = "",
+    page: Any = 1,
+    page_size: Any = 20,
+    completed_month: Any = "",
+) -> dict:
+    """Read model only. Deadline state is derived here and never persisted."""
+    if not (_is_admin(user) or _has(perms, *VIEW_PERMS)):
+        raise HTTPException(403, "Anda tidak berhak melihat SPK.")
+    current_page, size = _page_args(page, page_size)
+    today = today_wib()
+    visible = visibility_query(user, perms)
+    summary_rows = []
+    summary_cursor = db[ORDERS].find(visible, {"_id": 0, "workflow_status": 1, "deadline": 1, "completed_at": 1})
+    async for row in summary_cursor:
+        summary_rows.append(row)
+    summary = _summary(summary_rows, today)
+    clauses = [_tab_clause(tab, user, today), _deadline_clause(deadline, today)]
+    statuses = [item.strip().upper() for item in str(status or "").split(",") if item.strip()]
+    if statuses:
+        unknown = [item for item in statuses if item not in WORKFLOW_STATUSES]
+        if unknown:
+            raise HTTPException(400, "Status SPK tidak dikenal.")
+        clauses.append({"workflow_status": {"$in": statuses}})
+    if str(completed_month or "").strip() in ("1", "true", "True"):
+        clauses.append(_completed_month_clause(today))
+    division_filter = str(division or "").strip()
+    if division_filter:
+        clauses.append({"$or": [{"target_division": division_filter}, {"source_division": division_filter}]})
+    pic_filter = str(pic or "").strip()
+    if pic_filter:
+        clauses.append({"assigned_user_ids": pic_filter})
+    priority_filter = str(priority or "").strip().upper()
+    if priority_filter:
+        if priority_filter not in PRIORITIES:
+            raise HTTPException(400, "Prioritas tidak dikenal.")
+        clauses.append({"priority": priority_filter})
+    needle = str(q or "").strip()
+    if needle:
+        safe = re.escape(needle)
+        clauses.append({"$or": [
+            {"spk_number": {"$regex": safe, "$options": "i"}},
+            {"title": {"$regex": safe, "$options": "i"}},
+        ]})
+    query = _combine_query(visible, clauses)
+    total = await db[ORDERS].count_documents(query)
+    cursor = db[ORDERS].find(query, {"_id": 0}).sort("updated_at", -1).skip((current_page - 1) * size).limit(size)
+    rows = await cursor.to_list(size)
+    return {
+        "orders": [public_order(doc, today=today, include_milestones=False) for doc in rows],
+        "summary": summary,
+        "tabs": _list_tabs(user, perms),
+        "page": current_page,
+        "page_size": size,
+        "total": total,
+        "total_pages": (total + size - 1) // size if total else 0,
+    }
 
 
 async def get_order(db, spk_id: str, user: dict, perms: set) -> dict:
@@ -1588,15 +2135,23 @@ async def get_order(db, spk_id: str, user: dict, perms: set) -> dict:
     events = [row for row in events if _canonical_event(row)]
     order = public_order(doc)
     order["events"] = [public_event(row) for row in events]
+    status = doc.get("workflow_status")
+    editable = can_edit_content(user, perms, doc)
+    working = can_update_progress(user, perms, doc) and status in PROGRESS_STATUSES
     order["capabilities"] = {
-        "acknowledge": can_acknowledge(user, perms, doc) and doc.get("workflow_status") == STATUS_PUBLISHED,
-        "start": can_acknowledge(user, perms, doc) and doc.get("workflow_status") == STATUS_ACKNOWLEDGED,
-        "update_progress": can_update_progress(user, perms, doc) and doc.get("workflow_status") in PROGRESS_STATUSES,
-        "request_verification": can_update_progress(user, perms, doc) and doc.get("workflow_status") in PROGRESS_STATUSES and milestones_ready(doc.get("milestones") or []),
-        "verify": can_verify(user, perms, doc) and doc.get("workflow_status") == STATUS_WAITING,
-        "cancel": (_is_admin(user) or PERM_CANCEL in perms or PERM_MANAGE in perms) and doc.get("workflow_status") not in TERMINAL,
-        "delete_draft": doc.get("workflow_status") == STATUS_DRAFT and (doc.get("created_by_id") == actor_user_id(user) or _is_admin(user) or PERM_MANAGE in perms),
-        "edit_draft": doc.get("workflow_status") == STATUS_DRAFT and (doc.get("created_by_id") == actor_user_id(user) or _is_admin(user) or PERM_MANAGE in perms),
+        "acknowledge": can_acknowledge(user, perms, doc) and status == STATUS_PUBLISHED,
+        "start": can_acknowledge(user, perms, doc) and status == STATUS_ACKNOWLEDGED,
+        "return_spk": can_return(user, perms, doc) and status == STATUS_PUBLISHED,
+        "update_progress": working,
+        "add_note": can_add_note(user, perms, doc) and status not in TERMINAL and status != STATUS_DRAFT,
+        "add_evidence": working,
+        "correct": can_correct(user, perms, doc) and status in PROGRESS_STATUSES,
+        "request_verification": working and milestones_ready(doc.get("milestones") or []),
+        "verify": can_verify(user, perms, doc) and status == STATUS_WAITING,
+        "cancel": (_is_admin(user) or PERM_CANCEL in perms or PERM_MANAGE in perms) and status not in TERMINAL,
+        "delete_draft": editable and status == STATUS_DRAFT,
+        "edit_draft": editable,
+        "publish": editable and status in (STATUS_DRAFT, STATUS_RETURNED),
     }
     return order
 
@@ -1609,15 +2164,20 @@ async def list_events(db, spk_id: str, user: dict, perms: set) -> List[dict]:
 
 async def form_context(db, user: dict) -> dict:
     branch = await load_actor_branch(db, user)
-    people = await db.users.find({"status": {"$ne": "inactive"}}, {"_id": 0, "id": 1, "user_id": 1, "name": 1, "email": 1, "role": 1, "divisions": 1, "division_ids": 1}).to_list(400)
+    people = await db.users.find(
+        {"status": {"$ne": "inactive"}},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(400)
     pics = []
     for person in people:
         uid = str(person.get("id") or person.get("user_id") or "")
         if not uid:
             continue
+        if not _pic_can_receive(await _effective_perms(db, person), person):
+            continue
         pics.append({
             "id": uid,
-            "name": person.get("name") or person.get("email") or uid,
+            "name": person.get("name") or uid,
             "role": person.get("role") or "",
             "divisions": sorted(spk_user_division_ids(person)),
         })
@@ -1631,4 +2191,40 @@ async def form_context(db, user: dict) -> dict:
         "branch_id": branch.get("id") or "",
         "branch_name": branch.get("name") or "",
         "weight_rule": "Total bobot milestone harus tepat 100 pada saat terbit. Progress dihitung dari bobot, bukan persen manual.",
+    }
+
+
+async def filter_metadata(db, user: dict, perms: set) -> dict:
+    """Opsi filter daftar. Tidak menyertakan konteks form pembuatan atau email."""
+    if not (_is_admin(user) or _has(perms, *VIEW_PERMS)):
+        raise HTTPException(403, "Anda tidak berhak melihat SPK.")
+    visible = visibility_query(user, perms)
+    pics: Dict[str, dict] = {}
+    cursor = db[ORDERS].find(visible, {"_id": 0, "assigned_pics": 1})
+    async for doc in cursor:
+        for pic in doc.get("assigned_pics") or []:
+            pid = str(pic.get("id") or "")
+            if pid and pid not in pics:
+                pics[pid] = {"id": pid, "name": pic.get("name") or pid}
+    return {
+        "divisions": [{"id": key, "label": label} for key, label in SPK_DIVISIONS],
+        "priorities": list(PRIORITIES),
+        "statuses": list(WORKFLOW_STATUSES),
+        "deadline_states": ["ON_TRACK", "DUE_SOON", "OVERDUE"],
+        "pics": list(pics.values()),
+    }
+
+
+async def permission_report(db) -> dict:
+    """Read-only. Saved roles are not modified."""
+    docs = await db.role_permissions.find({}, {"_id": 0, "role": 1, "label": 1, "permissions": 1}).to_list(200)
+    gaps = []
+    for doc in docs:
+        perms = [str(item) for item in (doc.get("permissions") or [])]
+        if any(item.startswith("spk.") for item in perms):
+            continue
+        gaps.append({"role": doc.get("role"), "label": doc.get("label") or doc.get("role") or ""})
+    return {
+        "roles_without_spk": gaps,
+        "note": "Izin SPK tidak ditambahkan otomatis. Aktifkan secara manual di Role & Hak Akses.",
     }

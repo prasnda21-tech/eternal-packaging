@@ -221,6 +221,8 @@ PERMISSION_CATALOG = [
     ("SPK", "spk.view_all", "Lihat semua SPK"),
     ("SPK", "spk.assign", "Tugaskan SPK"),
     ("SPK", "spk.update_progress", "Perbarui progress SPK"),
+    ("SPK", "spk.comment", "Beri catatan pada SPK"),
+    ("SPK", "spk.correct", "Koreksi administratif nilai SPK"),
     ("SPK", "spk.verify", "Verifikasi hasil SPK"),
     ("SPK", "spk.cancel", "Batalkan SPK"),
     ("SPK", "spk.manage", "Kelola SPK"),
@@ -313,6 +315,17 @@ PERMISSION_DESCRIPTIONS = {
     "loading.report_discrepancy": "Izinkan melaporkan selisih qty fisik terhadap Surat Jalan.",
     "loading.view_discrepancy_history": "Izinkan melihat riwayat laporan selisih Loading.",
     "loading.resolve_discrepancy": "Izinkan penanganan administratif selisih (tidak membuka Pengiriman sendiri).",
+    "spk.view_own": "Melihat SPK yang ditugaskan kepada pengguna atau yang ia buat.",
+    "spk.view_division": "Melihat SPK pada divisi pengguna, tanpa mengubah nilai progres PIC lain.",
+    "spk.view_all": "Melihat seluruh SPK antar divisi, tanpa mengubah nilai progres PIC lain.",
+    "spk.create": "Membuat, menyimpan draft, dan menerbitkan SPK antar divisi.",
+    "spk.update_progress": "Menandai bahwa role ini biasa mengerjakan SPK. Nilai progres tetap hanya dapat diubah oleh PIC yang ditugaskan.",
+    "spk.comment": "Menambah catatan pada SPK yang berhak dilihat, tanpa mengubah nilai progres.",
+    "spk.correct": "Koreksi nilai SPK yang tercatat, dengan alasan wajib. Bukan update progres biasa.",
+    "spk.verify": "Menerima hasil atau meminta revisi. PIC tidak dapat memverifikasi SPK yang ditugaskan kepadanya.",
+    "spk.cancel": "Membatalkan SPK yang belum selesai, dengan alasan wajib.",
+    "spk.assign": "Memilih PIC saat menyusun SPK. Tidak memberi hak mengubah progres PIC lain.",
+    "spk.manage": "Kelola administratif SPK, termasuk koreksi tercatat. Tidak memakai endpoint progres biasa.",
 }
 
 ALL_PERMISSIONS = tuple(p for _mod, p, _lbl in PERMISSION_CATALOG)
@@ -750,9 +763,9 @@ ROLE_DEFAULT_PERMISSIONS = {
 # Builtin defaults only. A role saved in Role & Hak Akses (role_permissions)
 # replaces this list entirely, so production customizations do not gain SPK
 # access until an administrator grants the new keys.
-_SPK_STAFF = ["spk.view_own", "spk.update_progress"]
-_SPK_HEAD = ["spk.view_division", "spk.assign", "spk.update_progress", "spk.verify"]
-_SPK_DIREKTUR = ["spk.view_all", "spk.create", "spk.assign", "spk.verify", "spk.cancel"]
+_SPK_STAFF = ["spk.view_own", "spk.update_progress", "spk.comment"]
+_SPK_HEAD = ["spk.view_division", "spk.assign", "spk.update_progress", "spk.comment", "spk.verify"]
+_SPK_DIREKTUR = ["spk.view_all", "spk.create", "spk.assign", "spk.comment", "spk.verify", "spk.cancel"]
 _SPK_ROLE_GRANTS = {
     "direktur_utama": _SPK_DIREKTUR,
     "head_production": _SPK_HEAD,

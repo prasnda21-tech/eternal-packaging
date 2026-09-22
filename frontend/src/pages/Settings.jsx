@@ -989,6 +989,11 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
 
   return (
     <div className="settings-body" data-testid="roles-tab">
+      {currentRole?.is_customized && !(currentRole.permissions || []).some((key) => String(key).startsWith("spk.")) && (
+        <div className="banner" data-testid="spk-role-gap" style={{marginBottom:12}}>
+          Role ini disimpan tanpa izin SPK. Modul SPK tidak muncul sampai admin mengaktifkan izin secara manual. Sistem tidak menambahkan izin SPK secara otomatis.
+        </div>
+      )}
       <div className="roles-layout">
         <aside className="role-sidebar" data-testid="role-sidebar">
           <div className="role-sidebar-title" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>

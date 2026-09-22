@@ -264,6 +264,7 @@ export default function App() {
           <Route element={<Protected><AppShell /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/spk/baru" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkCreate /></PermGate>} />
+            <Route path="/spk/:id/ubah" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkCreate mode="edit" /></PermGate>} />
             <Route path="/spk/:id" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDetail /></PermGate>} />
             <Route path="/spk" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDashboard /></PermGate>} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
