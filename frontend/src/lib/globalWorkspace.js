@@ -19,6 +19,7 @@ import { CASH_BANK_WORKSPACE_TABS } from "./cashBankWorkspace";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 import { createWorkspaceTabApi } from "./workspaceTabs";
 import { hydratePoDetailStoredTab, poDetailWorkspaceTab } from "./poWorkspaceTab";
+import { canSeeSpkNav } from "./spk";
 
 export const GLOBAL_WORKSPACE_STORAGE_PREFIX = "ep.workspaceTabs.";
 
@@ -61,6 +62,10 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
 
   if (canSeeNav(hasPerm, NAV_KEYS.chat) || (typeof hasPerm === "function" && hasPerm("chat.use"))) {
     tabs.push({ id: "chat", path: "/chat", label: "Chat", matchPrefix: true });
+  }
+
+  if (canSeeSpkNav(hasPerm)) {
+    tabs.push({ id: "spk", path: "/spk", label: "SPK", matchPrefix: true });
   }
 
   productionMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));

@@ -377,6 +377,30 @@ describe("ProductRequestForm interactions", () => {
     }
   });
 
+  test("discard continues to the SPK workspace tab path", async () => {
+    await renderForm();
+    await setNote("menuju spk");
+    const tab = document.createElement("div");
+    tab.setAttribute("data-workspace-tab", "1");
+    tab.setAttribute("data-path", "/spk");
+    tab.setAttribute("data-active", "0");
+    const label = document.createElement("button");
+    label.className = "kb-workspace-tab-label";
+    let followed = 0;
+    label.addEventListener("click", () => { followed += 1; });
+    tab.appendChild(label);
+    document.body.appendChild(tab);
+    await click(label);
+    expect(document.querySelector("[data-testid='prq-unsaved-dialog']")).toBeTruthy();
+    expect(followed).toBe(0);
+    await click(document.querySelector("[data-testid='prq-unsaved-discard']"));
+    expect(document.querySelector("[data-testid='prq-unsaved-dialog']")).toBeFalsy();
+    expect(followed).toBe(1);
+    expect(tab.getAttribute("data-path")).toBe("/spk");
+    expect(container.querySelector("[data-testid='prq-note']").value).toBe("menuju spk");
+    tab.remove();
+  });
+
   test("unchanged form does not warn", async () => {
     await renderForm();
     const link = document.createElement("a");

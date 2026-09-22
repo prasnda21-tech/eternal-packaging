@@ -117,6 +117,19 @@ describe("global workspace tabs", () => {
     expect(byPath["/settings"]).toBeTruthy();
     expect(byPath["/optimasi-rute"]).toBeTruthy();
     expect(byPath["/penjualan/data-pelanggan"]).toBeTruthy();
+    expect(byPath["/spk"]).toMatchObject({ id: "spk", label: "SPK", matchPrefix: true });
+  });
+
+  test("SPK list, create, and detail share one history tab", () => {
+    const list = openOrActivateGlobalTab([], "/spk");
+    const create = openOrActivateGlobalTab(list.tabs, "/spk/baru");
+    const detail = openOrActivateGlobalTab(create.tabs, "/spk/ord-1");
+    expect(detail.tabs).toHaveLength(1);
+    expect(detail.activated).toMatchObject({ id: "spk", path: "/spk", label: "SPK" });
+    expect(globalTabByPath("/spk/baru").id).toBe("spk");
+    const hidden = visibleGlobalWorkspaceCatalog((key) => key === NAV_KEYS.dashboard);
+    expect(hidden.find((tab) => tab.id === "spk")).toBeUndefined();
+    expect(openOrActivateGlobalTab([], "/spk/baru", (key) => key === NAV_KEYS.dashboard).activated).toBe(null);
   });
 
   test("product request list, form, and detail share one workspace tab", () => {
@@ -153,7 +166,6 @@ describe("global workspace tabs", () => {
     const aktivitas = openOrActivateGlobalTab([], "/penjualan/aktivitas-sales/outlet/abc");
     expect(aktivitas.activated.id).toBe("aktivitas-sales");
     expect(aktivitas.activated.path).toBe("/penjualan/aktivitas-sales");
-    expect(openOrActivateGlobalTab([], "/spk").activated).toBe(null);
 
     const draft = openOrActivateGlobalTab([], "/penjualan/permintaan-produk/req-1");
     const withSales = openOrActivateGlobalTab(draft.tabs, "/penjualan/pesanan-penjualan");
@@ -168,6 +180,24 @@ describe("global workspace tabs", () => {
     const loaded = loadGlobalWorkspaceTabs(user);
     expect(loaded.find((t) => t.id === "penjualan-permintaan-produk").path).toBe("/penjualan/permintaan-produk/req-1");
     expect(loaded.find((t) => t.id === "pesanan-penjualan").path).toBe("/penjualan/pesanan-penjualan");
+  });
+
+  test("SPK and product request tabs keep separate paths", () => {
+    const catalog = Object.fromEntries(GLOBAL_WORKSPACE_TABS.map((tab) => [tab.id, tab]));
+    expect(catalog.spk).toMatchObject({ id: "spk", path: "/spk", label: "SPK", matchPrefix: true });
+    expect(catalog["penjualan-permintaan-produk"].id).toBe("penjualan-permintaan-produk");
+    expect(catalog.spk.id).not.toBe(catalog["penjualan-permintaan-produk"].id);
+
+    const draft = openOrActivateGlobalTab([], "/penjualan/permintaan-produk/req-1");
+    const spk = openOrActivateGlobalTab(draft.tabs, "/spk");
+    expect(spk.activated).toMatchObject({ id: "spk", path: "/spk" });
+    expect(spk.tabs.find((tab) => tab.id === "penjualan-permintaan-produk").path).toBe("/penjualan/permintaan-produk/req-1");
+    const child = openOrActivateGlobalTab(spk.tabs, "/spk/baru");
+    expect(child.activated.path).toBe("/spk");
+    expect(child.tabs.find((tab) => tab.id === "penjualan-permintaan-produk").path).toBe("/penjualan/permintaan-produk/req-1");
+    const back = openOrActivateGlobalTab(child.tabs, "/penjualan/permintaan-produk/req-1");
+    expect(back.activated.path).toBe("/penjualan/permintaan-produk/req-1");
+    expect(back.tabs.find((tab) => tab.id === "spk").path).toBe("/spk");
   });
 
   test("sales outlet detail aliases Aktivitas Sales", () => {
