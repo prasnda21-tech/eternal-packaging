@@ -11248,6 +11248,74 @@ def _stock_xlsx(rows: list, *, v2: bool = True) -> FastAPIResponse:
     )
 
 
+@api_router.get("/inventory-valuation")
+async def inventory_valuation_list(
+    q: str = "",
+    status_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read-only Stock V2 × canonical moving-average HPP view."""
+    from services.inventory_valuation import (
+        build_inventory_valuation_rows,
+        filter_sort_page,
+    )
+
+    view = await build_inventory_valuation_rows(db)
+    payload = filter_sort_page(
+        view["rows"],
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page=page,
+        page_size=page_size,
+    )
+    payload.update({
+        "summary": view["summary"],
+        "method": view["method"],
+        "active_version": view["active_version"],
+        "cutover_id": view["cutover_id"],
+    })
+    return payload
+
+
+@api_router.get("/inventory-valuation/export")
+async def inventory_valuation_export(
+    q: str = "",
+    status_filter: str = "all",
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+    user=Depends(require_perm("current_stock.export")),
+):
+    """Read-only Excel export; no inventory or HPP data is mutated."""
+    from services.inventory_valuation import (
+        build_inventory_valuation_rows,
+        export_xlsx,
+        filter_sort_page,
+    )
+
+    view = await build_inventory_valuation_rows(db)
+    filtered = filter_sort_page(
+        view["rows"],
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page=1,
+        page_size=max(1, len(view["rows"]) or 1),
+    )["items"]
+    filename = f"nilai-persediaan-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return FastAPIResponse(
+        content=export_xlsx(filtered),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @api_router.get("/current-stock")
 async def current_stock_list(
     q: str = "",
