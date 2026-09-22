@@ -8,6 +8,7 @@ import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import { SPK_ACCESS_KEYS } from "./lib/spk";
+import "./lib/productRequestLeaveGuard";
 import { isSalesPwaRole } from "./lib/salesPwa";
 import "@/App.css";
 import "@/ui-system.css";

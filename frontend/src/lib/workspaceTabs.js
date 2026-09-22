@@ -15,6 +15,8 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
       .filter((t) => t.matchPrefix && (path === t.path || path.startsWith(`${t.path}/`)))
       .sort((a, b) => b.path.length - a.path.length);
     if (prefixed[0]) return prefixed[0];
+    const custom = tabs.find((t) => typeof t.matches === "function" && t.matches(path));
+    if (custom) return custom;
     if (typeof dynamicFromPath === "function") return dynamicFromPath(pathname, meta) || null;
     return null;
   }
@@ -42,6 +44,13 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
             return typeof resolveStoredTab === "function" ? resolveStoredTab(item) : null;
           }
           if (item && typeof item === "object") {
+            const base = item.id ? byId[item.id] : null;
+            const remembered = base?.rememberPath && typeof item.path === "string"
+              ? normalizeWorkspacePath(item.path)
+              : "";
+            if (base && remembered && typeof base.matches === "function" && base.matches(remembered)) {
+              return { ...base, path: remembered };
+            }
             return typeof resolveStoredTab === "function" ? resolveStoredTab(item) : null;
           }
           return null;
@@ -57,6 +66,9 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
     if (!key || typeof sessionStorage === "undefined") return;
     try {
       const payload = (openTabs || []).map((t) => {
+        if (t?.rememberPath && t.path) {
+          return { id: t.id, path: t.path, rememberPath: true };
+        }
         if (!t?.dynamic) return t.id;
         const row = { id: t.id, path: t.path, label: t.label };
         if (t.title) row.title = t.title;
@@ -91,10 +103,20 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
   function openOrActivate(openTabs, pathname, meta) {
     const entry = tabByPath(pathname, meta);
     if (!entry) return { tabs: openTabs || [], activated: null };
+    const path = normalizeWorkspacePath(pathname);
+    const rememberPath = Boolean(entry.rememberPath)
+      && typeof entry.matches === "function"
+      && entry.matches(path);
+    const tracked = rememberPath ? { ...entry, path } : entry;
     const list = Array.isArray(openTabs) ? [...openTabs] : [];
     const idx = list.findIndex((t) => t.id === entry.id);
     if (idx >= 0) {
       const existing = list[idx];
+      if (rememberPath && existing.path !== path) {
+        const updated = { ...existing, path };
+        list[idx] = updated;
+        return { tabs: list, activated: updated };
+      }
       // Dynamic tabs: upgrade label only when navigation meta carries richer
       // info. Null/empty meta (tab click, refresh, back/forward) must keep the
       // existing customer label — never downgrade to PO <order_id>.
@@ -128,8 +150,8 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
       }
       return { tabs: list, activated: existing };
     }
-    list.push(entry);
-    return { tabs: list, activated: entry };
+    list.push(tracked);
+    return { tabs: list, activated: tracked };
   }
 
   function closeTab(openTabs, closeId, activePath) {
