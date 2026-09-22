@@ -645,6 +645,9 @@
 .prq-form-page > .prq-body{
   grid-row:4;
   min-height:0;
+  min-width:0;
+  overflow-x:hidden;
+  overflow-y:auto;
 }
 .prq-form-page > .prq-actions{
   grid-row:5;
