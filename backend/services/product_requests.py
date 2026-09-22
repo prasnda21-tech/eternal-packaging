@@ -593,6 +593,72 @@ def list_row(doc: dict) -> dict:
     }
 
 
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _whole_number(raw: Any) -> Optional[int]:
+    if raw is None or raw == "" or isinstance(raw, bool):
+        return None
+    if isinstance(raw, float) and raw != int(raw):
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_iso_date(value: Any) -> bool:
+    text = str(value or "")
+    if not _ISO_DATE.match(text):
+        return False
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def draft_completeness(doc: dict) -> dict:
+    """Display-only kelengkapan. Mirrors the form required checks; does not write."""
+    customer_source = doc.get("customer_source")
+    product_source = doc.get("product_source")
+    customer = doc.get("customer_snapshot") or {}
+    product = doc.get("product_snapshot") or {}
+    qty = _whole_number(doc.get("potential_qty"))
+    price = _whole_number(doc.get("target_price"))
+    if customer_source == CUSTOMER_MASTER:
+        customer_identity = bool(doc.get("customer_id"))
+    elif customer_source == CUSTOMER_NEW:
+        customer_identity = bool(str(customer.get("name") or "").strip())
+    else:
+        customer_identity = False
+    if product_source == PRODUCT_MASTER:
+        product_identity = bool(doc.get("product_id"))
+    elif product_source == PRODUCT_REQUESTED:
+        product_identity = bool(str(product.get("name") or product.get("item_name") or "").strip())
+    else:
+        product_identity = False
+    checks = (
+        bool(customer_source),
+        customer_identity,
+        bool(product_source),
+        product_identity,
+        qty is not None and qty > 0,
+        bool(str(doc.get("frequency") or "").strip()),
+        price is not None and price >= 0,
+        _is_iso_date(doc.get("needed_date")),
+        len(str(doc.get("request_note") or "")) <= NOTE_MAX_LEN,
+    )
+    return {"done": sum(1 for ok in checks if ok), "total": len(checks)}
+
+
+def draft_list_row(doc: dict) -> dict:
+    row = list_row(doc)
+    row["updated_at"] = doc.get("updated_at")
+    row["completeness"] = draft_completeness(doc)
+    return row
+
+
 def context_view(user: dict, branch: dict) -> dict:
     actor = actor_snapshot(user)
     return {
@@ -736,13 +802,46 @@ async def get_request(db, request_id: str, user: dict, perms: set) -> dict:
     raise HTTPException(403, "Akses ditolak.")
 
 
-async def list_requests(db, user: dict, perms: set) -> List[dict]:
+VIEW_SUBMITTED = "submitted"
+VIEW_OWN_DRAFTS = "own_drafts"
+
+
+async def _submitted_rows(db) -> List[dict]:
+    rows = await db[COLLECTION].find(
+        {"status": STATUS_SUBMITTED},
+        {"_id": 0},
+    ).sort("submitted_at", -1).to_list(500)
+    return [list_row(r) for r in rows]
+
+
+async def _own_draft_rows(db, user: dict) -> List[dict]:
+    rows = await db[COLLECTION].find(
+        {"created_by_id": actor_user_id(user), "status": STATUS_DRAFT},
+        {"_id": 0},
+    ).sort("updated_at", -1).to_list(200)
+    return [draft_list_row(r) for r in rows]
+
+
+async def list_requests(db, user: dict, perms: set, view: Optional[str] = None) -> List[dict]:
+    """read_all sees submitted requests only.
+
+    Own drafts are a separate scope filtered by created_by_id + status=draft.
+    A user who has both permissions must ask for view=own_drafts to see their
+    drafts. read_all never includes another user's draft.
+    """
+    scope = (view or "").strip() or None
+    if scope == VIEW_SUBMITTED:
+        if not can_read_all(perms):
+            raise HTTPException(403, "Daftar terkirim memerlukan product_request.read_all.")
+        return await _submitted_rows(db)
+    if scope == VIEW_OWN_DRAFTS:
+        if not (can_create(perms) or can_read_own_draft(perms)):
+            raise HTTPException(403, "Draft sendiri memerlukan product_request.create atau read_own_draft.")
+        return await _own_draft_rows(db, user)
+    if scope is not None:
+        raise HTTPException(400, "Parameter view tidak dikenal.")
     if can_read_all(perms):
-        rows = await db[COLLECTION].find(
-            {"status": STATUS_SUBMITTED},
-            {"_id": 0},
-        ).sort("submitted_at", -1).to_list(500)
-        return [list_row(r) for r in rows]
+        return await _submitted_rows(db)
     if can_create(perms) or can_read_own_draft(perms):
         rows = await db[COLLECTION].find(
             {"created_by_id": actor_user_id(user)},

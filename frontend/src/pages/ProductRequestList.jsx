@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
+import { Eye, Pencil } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import api from "../lib/api";
 import {
   PRODUCT_REQUEST_NEW_PATH,
   canCreateProductRequest,
   canReadAllProductRequests,
+  canReadOwnProductRequestDraft,
 } from "../lib/navAccess";
 import { customerSourceLabel, formatError, productSourceLabel } from "../lib/productRequest";
 import ProductRequestDetail from "../components/ProductRequestDetail";
@@ -16,26 +18,44 @@ export default function ProductRequestList() {
   const { hasPerm } = useAuth();
   const canCreate = canCreateProductRequest(hasPerm);
   const canReadAll = canReadAllProductRequests(hasPerm);
+  const canSeeOwnDrafts = canReadOwnProductRequestDraft(hasPerm);
+  const [tab, setTab] = useState(canReadAll ? "submitted" : "own_drafts");
   const [rows, setRows] = useState([]);
+  const [drafts, setDrafts] = useState([]);
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!canReadAll) return undefined;
+    if (!canReadAll && canCreate) return undefined;
+    if (!canReadAll && !canSeeOwnDrafts) return undefined;
     let cancelled = false;
     setBusy(true);
-    api.listProductRequests()
-      .then((data) => { if (!cancelled) setRows(data.requests || []); })
+    const jobs = [];
+    if (canReadAll) {
+      jobs.push(
+        api.listProductRequests({ view: "submitted" }).then((data) => {
+          if (!cancelled) setRows(data.requests || []);
+        }),
+      );
+    }
+    if (canSeeOwnDrafts) {
+      jobs.push(
+        api.listProductRequests({ view: "own_drafts" }).then((data) => {
+          if (!cancelled) setDrafts(data.requests || []);
+        }),
+      );
+    }
+    Promise.all(jobs)
       .catch((err) => { if (!cancelled) setError(formatError(err)); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
-  }, [canReadAll]);
+  }, [canReadAll, canCreate, canSeeOwnDrafts]);
 
   if (!canReadAll && canCreate) {
     return <Navigate to={PRODUCT_REQUEST_NEW_PATH} replace />;
   }
-  if (!canReadAll) {
+  if (!canReadAll && !canSeeOwnDrafts) {
     return <Navigate to="/" replace />;
   }
 
@@ -50,12 +70,15 @@ export default function ProductRequestList() {
     }
   };
 
+  const showSubmitted = canReadAll && tab === "submitted";
+  const showDrafts = canSeeOwnDrafts && tab === "own_drafts";
+
   return (
     <div className="prq-page prq-list-page" data-testid="prq-list-page">
       <div className="prq-head prq-list-head" data-testid="prq-list-head">
         <div>
           <h1>Permintaan Produk</h1>
-          <p>Daftar permintaan yang sudah dikirim.</p>
+          <p>{showDrafts ? "Draft milik Anda." : "Daftar permintaan yang sudah dikirim."}</p>
         </div>
         {canCreate && (
           <button
@@ -70,6 +93,35 @@ export default function ProductRequestList() {
       </div>
       <div className="prq-list-body">
       {error && <div className="prq-msg is-error">{error}</div>}
+      <div className="prq-list-tabs" role="tablist" data-testid="prq-list-tabs">
+        {canReadAll && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "submitted"}
+            className={"prq-tab" + (tab === "submitted" ? " is-active" : "")}
+            data-testid="prq-tab-submitted"
+            onClick={() => setTab("submitted")}
+          >
+            Terkirim
+            <span className="prq-count prq-count-submitted" data-testid="prq-count-submitted">{rows.length}</span>
+          </button>
+        )}
+        {canSeeOwnDrafts && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "own_drafts"}
+            className={"prq-tab" + (tab === "own_drafts" ? " is-active" : "")}
+            data-testid="prq-tab-own-drafts"
+            onClick={() => setTab("own_drafts")}
+          >
+            Draft Saya
+            <span className="prq-count prq-count-draft" data-testid="prq-count-draft">{drafts.length}</span>
+          </button>
+        )}
+      </div>
+      {showSubmitted && (
       <div className="prq-list-wrap">
         <table className="prq-table" data-testid="prq-list-table">
           <colgroup>
@@ -83,6 +135,7 @@ export default function ProductRequestList() {
             <col className="prq-col-crm" />
             <col className="prq-col-branch" />
             <col className="prq-col-status" />
+            <col className="prq-col-action" />
           </colgroup>
           <thead>
             <tr>
@@ -96,11 +149,12 @@ export default function ProductRequestList() {
               <th>CRM</th>
               <th>Cabang</th>
               <th>Status</th>
+              <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
             {!busy && rows.length === 0 && (
-              <tr><td colSpan={10}>Belum ada permintaan terkirim.</td></tr>
+              <tr><td colSpan={11}>Belum ada permintaan terkirim.</td></tr>
             )}
             {rows.map((row) => (
               <tr key={row.id} data-testid={`prq-row-${row.id}`} onClick={() => openDetail(row)}>
@@ -113,12 +167,82 @@ export default function ProductRequestList() {
                 <td className="prq-qty">{row.potential_qty}</td>
                 <td>{row.created_by_name}</td>
                 <td>{row.branch_name}</td>
-                <td>Terkirim</td>
+                <td><span className="prq-status prq-status-submitted">Terkirim</span></td>
+                <td>
+                  <button
+                    type="button"
+                    className="prq-btn prq-btn-view"
+                    data-testid={`prq-view-${row.id}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openDetail(row);
+                    }}
+                  >
+                    <Eye size={12} /> Lihat Detail
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      )}
+      {showDrafts && (
+      <div className="prq-list-wrap">
+        <table className="prq-table prq-draft-table" data-testid="prq-draft-table">
+          <colgroup>
+            <col className="prq-col-number" />
+            <col className="prq-col-date" />
+            <col className="prq-col-customer" />
+            <col className="prq-col-product" />
+            <col className="prq-col-qty" />
+            <col className="prq-col-progress" />
+            <col className="prq-col-status" />
+            <col className="prq-col-action" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Nomor</th>
+              <th>Tanggal Update</th>
+              <th>Customer</th>
+              <th>Produk</th>
+              <th>Qty Potensi</th>
+              <th>Kelengkapan</th>
+              <th>Status</th>
+              <th>Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!busy && drafts.length === 0 && (
+              <tr><td colSpan={8}>Belum ada draft.</td></tr>
+            )}
+            {drafts.map((row) => (
+              <tr key={row.id} data-testid={`prq-draft-row-${row.id}`}>
+                <td>{row.request_number}</td>
+                <td>{(row.updated_at || row.created_at || "").slice(0, 10)}</td>
+                <td>{row.customer_name}</td>
+                <td>{row.product_name}</td>
+                <td className="prq-qty">{row.potential_qty ?? ""}</td>
+                <td data-testid={`prq-draft-complete-${row.id}`}>
+                  {row.completeness ? `${row.completeness.done}/${row.completeness.total}` : "—"}
+                </td>
+                <td><span className="prq-status prq-status-draft">Draft</span></td>
+                <td>
+                  <button
+                    type="button"
+                    className="prq-btn prq-btn-continue"
+                    data-testid={`prq-continue-${row.id}`}
+                    onClick={() => navigate(`/penjualan/permintaan-produk/${row.id}`)}
+                  >
+                    <Pencil size={12} /> Lanjutkan
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      )}
       </div>
       <div className="prq-drawer-root" hidden={!detail} data-testid="prq-detail-drawer-root">
         {detail && (
