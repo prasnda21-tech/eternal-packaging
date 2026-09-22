@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
@@ -7,6 +7,7 @@ import { ROLES } from "../lib/constants";
 import { canAccessRoutePage } from "../lib/independentRoute";
 import { NAV_KEYS, cashBankMenuItems, cashBankNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
+import { canSeeSpkNav } from "../lib/spk";
 import { moduleFromPath } from "../lib/uiModule";
 import { mergeWorkspaceTabsPreview } from "../lib/workspaceTabsPreview";
 import BrandMark from "./BrandMark";
@@ -352,6 +353,7 @@ export default function AppShell() {
   const settingsItems = settingsMenuItems(hasPerm);
   void productionNav.deliveryToday;
   const showDashboard = hasPerm(NAV_KEYS.dashboard);
+  const showSpk = canSeeSpkNav(hasPerm);
   const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
   const showRouteOptimizer = canAccessRoutePage(hasPerm);
   const showSettings = hasPerm(NAV_KEYS.settings);
@@ -386,6 +388,15 @@ export default function AppShell() {
               testid="top-nav-dashboard"
               label="Dashboard"
               icon={LayoutDashboard}
+              onNavigate={closeFlyout}
+            />
+          )}
+          {showSpk && (
+            <RailNavLink
+              to="/spk"
+              testid="top-nav-spk"
+              label="SPK"
+              icon={ClipboardPlus}
               onNavigate={closeFlyout}
             />
           )}

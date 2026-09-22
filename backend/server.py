@@ -190,6 +190,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
+from services.spk_http import register_spk_routes
 from services.customer_pricing_http import register_customer_pricing_routes
 from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
@@ -11806,6 +11807,14 @@ register_product_request_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_spk_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_customer_pricing_routes(
     api_router,
     get_db=lambda: db,
@@ -13514,6 +13523,8 @@ async def seed():
     await db.purchase_requests.create_index("created_at")
     from services.product_requests import ensure_indexes as _product_request_ensure_indexes
     await _product_request_ensure_indexes(db)
+    from services.spk import ensure_indexes as _spk_ensure_indexes
+    await _spk_ensure_indexes(db)
     await db.purchase_orders.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.purchase_orders, "po_number")
     await db.purchase_orders.create_index("request_id")

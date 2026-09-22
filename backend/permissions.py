@@ -215,6 +215,15 @@ PERMISSION_CATALOG = [
     ("Chat", "chat.use", "Gunakan Chat Internal"),
     ("Chat", "chat.group.manage", "Kelola Grup Chat"),
     ("Chat", "chat.moderate", "Moderasi Chat"),
+    ("SPK", "spk.create", "Buat SPK Antar Divisi"),
+    ("SPK", "spk.view_own", "Lihat SPK sendiri"),
+    ("SPK", "spk.view_division", "Lihat SPK divisi"),
+    ("SPK", "spk.view_all", "Lihat semua SPK"),
+    ("SPK", "spk.assign", "Tugaskan SPK"),
+    ("SPK", "spk.update_progress", "Perbarui progress SPK"),
+    ("SPK", "spk.verify", "Verifikasi hasil SPK"),
+    ("SPK", "spk.cancel", "Batalkan SPK"),
+    ("SPK", "spk.manage", "Kelola SPK"),
     # Customer Approval (design)
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
@@ -293,6 +302,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.cash_bank.mutasi", "Menu Mutasi Kas & Bank"),
     ("Akses Menu", "nav.cash_bank.reconciliation", "Menu Rekonsiliasi Bank"),
     ("Akses Menu", "nav.chat", "Menu Chat"),
+    ("Akses Menu", "nav.spk", "Menu SPK Antar Divisi"),
     ("Akses Menu", "nav.configured", "Akses menu sudah dikonfigurasi"),
 ]
 
@@ -339,6 +349,7 @@ NAV_ALWAYS_VISIBLE = (
 
 NAV_MENU_ITEMS = (
     ("nav.dashboard", "Dashboard", None),
+    ("nav.spk", "SPK Antar Divisi", None),
     ("nav.production", "Produksi", None),
     ("nav.production_schedule", "Jadwal Produksi", "nav.production"),
     ("nav.delivery_schedule", "Jadwal Pengiriman", "nav.production"),
@@ -601,6 +612,8 @@ def derived_nav_permissions(existing: set) -> set:
         # Rekonsiliasi: only when view or reconcile (not auto from post/reverse alone
         # beyond the shared parent — mutasi is read-only via view).
         nav.add("nav.cash_bank.reconciliation")
+    if any(str(k).startswith("spk.") for k in existing):
+        nav.add("nav.spk")
     return nav
 
 
@@ -733,6 +746,27 @@ ROLE_DEFAULT_PERMISSIONS = {
         "sales.pwa.visit.create",
     ],
 }
+
+# Builtin defaults only. A role saved in Role & Hak Akses (role_permissions)
+# replaces this list entirely, so production customizations do not gain SPK
+# access until an administrator grants the new keys.
+_SPK_STAFF = ["spk.view_own", "spk.update_progress"]
+_SPK_HEAD = ["spk.view_division", "spk.assign", "spk.update_progress", "spk.verify"]
+_SPK_DIREKTUR = ["spk.view_all", "spk.create", "spk.assign", "spk.verify", "spk.cancel"]
+_SPK_ROLE_GRANTS = {
+    "direktur_utama": _SPK_DIREKTUR,
+    "head_production": _SPK_HEAD,
+    "head_operations": _SPK_HEAD,
+    "designer": _SPK_STAFF,
+    "screener": _SPK_STAFF,
+    "helper": _SPK_STAFF,
+    "operator": _SPK_STAFF,
+    "driver": _SPK_STAFF,
+    "crm": _SPK_STAFF,
+    "sales_eternal": _SPK_STAFF,
+}
+for _spk_role, _spk_keys in _SPK_ROLE_GRANTS.items():
+    ROLE_DEFAULT_PERMISSIONS[_spk_role] = list(ROLE_DEFAULT_PERMISSIONS.get(_spk_role, [])) + list(_spk_keys)
 
 # Builtin roles get derived nav.* defaults so first-load matches current sidebar.
 for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):

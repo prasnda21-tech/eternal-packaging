@@ -14,6 +14,7 @@ export const UI_MODULES = {
   reports: "reports",
   ledger: "ledger",
   cashBank: "cashBank",
+  spk: "spk",
 };
 
 export function moduleFromPath(pathname = "") {
@@ -39,6 +40,7 @@ export function moduleFromPath(pathname = "") {
   ) {
     return UI_MODULES.production;
   }
+  if (path.startsWith("/spk")) return UI_MODULES.spk;
   if (path.startsWith("/chat")) return UI_MODULES.dashboard;
   if (path.startsWith("/dashboard")) return UI_MODULES.dashboard;
   return UI_MODULES.dashboard;
