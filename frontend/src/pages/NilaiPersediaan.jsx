@@ -15,6 +15,8 @@ const STATUS_LABELS = {
   QTY_MISMATCH: "Qty Tidak Cocok",
   FAILED: "Gagal",
 };
+const CENTER_CELL = { textAlign: "center", verticalAlign: "middle" };
+const CENTER_SORT = { justifyContent: "center", width: "100%" };
 
 function statusLabel(status, source) {
   if (status === "OK" && source === "PUBLISHED_CUSTOMER_PRICING_FALLBACK") {
@@ -226,26 +228,26 @@ export default function NilaiPersediaan() {
         <table className="prod-table master-items-table" data-testid="inventory-value-table">
           <thead>
             <tr>
-              <th className="col-fit">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("code")}>Kode</button>
+              <th className="col-fit" style={CENTER_CELL}>
+                <button type="button" className="prod-th-label is-sort" style={CENTER_SORT} onClick={() => cycleSort("code")}>Kode</button>
               </th>
               <th className="col-text">
                 <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("name")}>Nama</button>
               </th>
-              <th className="col-fit">Satuan</th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("stock_fisik")}>Stock Fisik</button>
+              <th className="col-fit" style={CENTER_CELL}>Satuan</th>
+              <th className="col-fit num" style={CENTER_CELL}>
+                <button type="button" className="prod-th-label is-sort" style={CENTER_SORT} onClick={() => cycleSort("stock_fisik")}>Stock Fisik</button>
               </th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("current_hpp")}>HPP Rata-Rata</button>
+              <th className="col-fit num" style={CENTER_CELL}>
+                <button type="button" className="prod-th-label is-sort" style={CENTER_SORT} onClick={() => cycleSort("current_hpp")}>HPP Rata-Rata</button>
               </th>
-              <th className="col-fit num">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("inventory_value")}>Nilai Persediaan</button>
+              <th className="col-fit num" style={CENTER_CELL}>
+                <button type="button" className="prod-th-label is-sort" style={CENTER_SORT} onClick={() => cycleSort("inventory_value")}>Nilai Persediaan</button>
               </th>
-              <th className="col-fit">
-                <button type="button" className="prod-th-label is-sort" onClick={() => cycleSort("hpp_status")}>Status HPP</button>
+              <th className="col-fit" style={CENTER_CELL}>
+                <button type="button" className="prod-th-label is-sort" style={CENTER_SORT} onClick={() => cycleSort("hpp_status")}>Status HPP</button>
               </th>
-              <th className="col-fit">Terakhir Update</th>
+              <th className="col-fit" style={CENTER_CELL}>Terakhir Update</th>
             </tr>
           </thead>
           <tbody data-testid="inventory-value-tbody" data-search-state={tableView}>
@@ -271,17 +273,17 @@ export default function NilaiPersediaan() {
                   data-testid={`inventory-value-row-${key}`}
                   className={item.hpp_status === "QTY_MISMATCH" ? "stock-neg" : ""}
                 >
-                  <td className="col-fit mono">{item.item_code || "—"}</td>
+                  <td className="col-fit mono" style={CENTER_CELL}>{item.item_code || "—"}</td>
                   <td className="col-text">{item.item_name || "—"}</td>
-                  <td className="col-fit">{item.unit || "—"}</td>
-                  <td className="col-fit num mono">{fmtQty(item.stock_fisik)}</td>
-                  <td className="col-fit num mono" data-testid={`inventory-value-hpp-${key}`}>
+                  <td className="col-fit" style={CENTER_CELL}>{item.unit || "—"}</td>
+                  <td className="col-fit num mono" style={CENTER_CELL}>{fmtQty(item.stock_fisik)}</td>
+                  <td className="col-fit num mono" style={CENTER_CELL} data-testid={`inventory-value-hpp-${key}`}>
                     {hasHpp ? formatRupiah(item.current_hpp) : "Belum Ada HPP"}
                   </td>
-                  <td className="col-fit num mono" data-testid={`inventory-value-amount-${key}`}>
+                  <td className="col-fit num mono" style={CENTER_CELL} data-testid={`inventory-value-amount-${key}`}>
                     {hasValue ? formatRupiah(item.inventory_value) : "—"}
                   </td>
-                  <td className="col-fit">
+                  <td className="col-fit" style={CENTER_CELL}>
                     <span
                       className={`inventory-value-status is-${String(item.hpp_status || "missing").toLowerCase()}`}
                       title={item.hpp_reason || ""}
@@ -289,7 +291,7 @@ export default function NilaiPersediaan() {
                       {statusLabel(item.hpp_status, item.hpp_source)}
                     </span>
                   </td>
-                  <td className="col-fit small nowrap">
+                  <td className="col-fit small nowrap" style={CENTER_CELL}>
                     {item.updated_at ? formatDate(item.updated_at) : "—"}
                   </td>
                 </tr>
