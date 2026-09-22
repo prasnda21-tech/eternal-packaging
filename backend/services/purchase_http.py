@@ -542,3 +542,24 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
     ):
         await require_any_perm(user, "settings.hpp.view", "settings.hpp.manage", "purchase_orders.view")
         return await query_cost_boundary(get_db(), date_from=date_from, date_to=date_to, item_identity_key=item_identity)
+
+    @api_router.post("/settings/hpp/cutover/confirm")
+    async def confirm_hpp_cutover_endpoint(payload: LoosePayload, user=Depends(current_user)):
+        await require_any_perm(user, "settings.hpp.manage")
+        from services.hpp_cutover import confirm_cutover
+        return await confirm_cutover(get_db(), _dump(payload), user)
+
+    @api_router.post("/settings/hpp/cutover/recover")
+    async def recover_hpp_cutover_endpoint(user=Depends(current_user)):
+        await require_any_perm(user, "settings.hpp.manage")
+        from services.hpp_cutover import recover_stale_cutover_lease
+        return await recover_stale_cutover_lease(get_db())
+
+    @api_router.get("/settings/hpp/cutover/reconciliation")
+    async def hpp_cutover_reconciliation_endpoint(
+        cutover_id: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "settings.hpp.view", "settings.hpp.manage")
+        from services.hpp_cutover import list_reconciliation
+        return {"rows": await list_reconciliation(get_db(), cutover_id)}

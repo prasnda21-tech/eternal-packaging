@@ -116,7 +116,9 @@ class MockCollection:
         items = await cursor.to_list(1)
         return items[0] if items else None
 
-    async def update_one(self, filter_q, update, upsert=False):
+    async def update_one(self, filter_q, update, upsert=False, **_kwargs):
+        # Match Motor's call surface (including array_filters) so unrelated
+        # delivery PDF metadata writes cannot make this stock-only mock flaky.
         self.mutation_count += 1
         doc = await self.find_one(filter_q)
         if doc:
