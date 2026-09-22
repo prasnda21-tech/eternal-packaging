@@ -570,15 +570,18 @@ async def rebuild_cutover_valuation(
             "updated_by": actor_snapshot(user),
         })
         if activate_cutover:
-            activated = await db[CUTOVERS].update_one(
-                {"cutover_id": cutover["cutover_id"], "status": STATUS_BUILDING},
-                {"$set": {
-                    "status": STATUS_ACTIVE,
-                    "activated_at": now_iso(),
-                    "baseline_version_id": version_id,
-                    "active_marker": "ACTIVE",
-                }},
-            )
+            try:
+                activated = await db[CUTOVERS].update_one(
+                    {"cutover_id": cutover["cutover_id"], "status": STATUS_BUILDING},
+                    {"$set": {
+                        "status": STATUS_ACTIVE,
+                        "activated_at": now_iso(),
+                        "baseline_version_id": version_id,
+                        "active_marker": "ACTIVE",
+                    }},
+                )
+            except DuplicateKeyError:
+                raise _http(409, "CONFLICT", "Cutover HPP aktif sudah dibuat oleh proses lain.")
             if activated.modified_count != 1:
                 raise RuntimeError("cutover activation CAS failed")
         settings = await get_hpp_settings(db)
@@ -648,6 +651,17 @@ async def confirm_cutover(db, payload: dict, user: Optional[dict] = None) -> dic
         raise HTTPException(400, "Minimal satu baris baseline wajib diisi.")
     owner = str((actor_snapshot(user) or {}).get("id") or uuid.uuid4())
     await _acquire_lease(db, CLAIM_CONFIRM, owner, request_id)
+    active = await get_active_cutover(db)
+    if active:
+        await _release_lease(db, CLAIM_CONFIRM, owner, request_id, "IDLE")
+        if active.get("client_request_id") == request_id:
+            return {
+                "cutover": active,
+                "settings": await get_hpp_settings(db),
+                "reconciliation": await list_reconciliation(db, active["cutover_id"]),
+                "idempotent": True,
+            }
+        raise _http(409, "CONFLICT", "Cutover HPP aktif sudah dibuat oleh proses lain.")
     cutover_id = str(uuid.uuid4())
     created = now_iso()
     cutover = {

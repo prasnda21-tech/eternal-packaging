@@ -324,15 +324,30 @@ async def test_e_recalc_failure_is_not_success(db, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_f_concurrent_confirm_one_winner(db):
+async def test_f_concurrent_confirm_one_winner(db, monkeypatch):
     import asyncio
+    from services import hpp_cutover
+
     mid = "sku-f"
     await _stock(db, mid, 40)
     await _settings(db)
+    first_done = asyncio.Event()
+    real_acquire = hpp_cutover._acquire_lease
+
+    async def ordered_acquire(database, claim_id, owner, request_id):
+        if claim_id == hpp_cutover.CLAIM_CONFIRM and request_id == "req-f-2":
+            await first_done.wait()
+        return await real_acquire(database, claim_id, owner, request_id)
+
+    monkeypatch.setattr(hpp_cutover, "_acquire_lease", ordered_acquire)
 
     async def attempt(request_id, user_id):
         user = {**USER, "id": user_id}
-        return await confirm_cutover(db, _payload(request_id, mid, 500), user)
+        try:
+            return await confirm_cutover(db, _payload(request_id, mid, 500), user)
+        finally:
+            if request_id == "req-f-1":
+                first_done.set()
 
     results = await asyncio.gather(
         attempt("req-f-1", "user-1"),
