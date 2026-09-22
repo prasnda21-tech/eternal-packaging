@@ -18,7 +18,11 @@ from services.hpp_cutover import (
     recover_stale_cutover_lease,
 )
 from services.hpp_valuation import recalculate_hpp
-from services.purchase_goods_receipts import create_purchase_goods_receipt
+from services.purchase_goods_receipts import (
+    cancel_purchase_goods_receipt,
+    create_purchase_goods_receipt,
+)
+from services.purchase_invoices import create_purchase_invoice
 
 DB_NAME = "eternal_hpp_cutover_foundation"
 USER = {"id": "cutover-user", "name": "Cutover", "role": "admin", "email": "c@x"}
@@ -515,3 +519,429 @@ async def test_zero_and_negative_stock_do_not_fake_qty(db):
     assert stock["total_qty"] == -5
     assert await db.hpp_cost_layers.count_documents({"master_item_id": "sku-neg"}) == 0
     assert await db.hpp_valuation_cutovers.count_documents({"status": "ACTIVE", "client_request_id": "req-neg"}) == 0
+
+
+async def _po(
+    db,
+    *,
+    po_id,
+    mid,
+    aid,
+    qty,
+    unit,
+    unit_price,
+    line_id=None,
+):
+    line_id = line_id or f"line-{po_id}"
+    await db.purchase_orders.insert_one({
+        "id": po_id,
+        "po_number": f"PB-{po_id}",
+        "supplier": "Supplier",
+        "cancelled": False,
+        "physical_stock_snapshot": {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "sales_delivery",
+        },
+        "lines": [{
+            "line_id": line_id,
+            "line_idx": 0,
+            "master_item_id": mid,
+            "accurate_item_id": aid,
+            "item_code": aid,
+            "item_name": aid,
+            "unit": unit,
+            "ordered_qty": qty,
+            "unit_price": unit_price,
+        }],
+    })
+    return line_id
+
+
+@pytest.mark.anyio
+async def test_1_base_uom_gr_uses_base_qty_and_base_unit_cost(db):
+    mid = "sku-base-uom"
+    aid = "acc-base-uom"
+    await _stock(db, mid, 0, aid)
+    await db.master_items.insert_one({
+        "id": mid,
+        "accurate_item_id": aid,
+        "unit": "PCS",
+        "item_name": "Base UOM",
+    })
+    await db.product_unit_settings.insert_one({
+        "master_item_id": mid,
+        "base_uom": "PCS",
+        "transaction_uom": "DUS",
+        "conversion_factor": 1000,
+    })
+    await _settings(db)
+    opened = await confirm_cutover(
+        db,
+        _payload("hardening-1", mid, 500, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-base-uom",
+        mid=mid,
+        aid=aid,
+        qty=1,
+        unit="DUS",
+        unit_price=500000,
+    )
+    await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-base-uom",
+        "idempotency_key": "gr-base-uom",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 1}],
+    }, USER)
+
+    event = await db.hpp_recognition_events.find_one(
+        {"source_type": "GOODS_RECEIPT"},
+        {"_id": 0},
+    )
+    assert event["transaction_qty"] == 1
+    assert event["transaction_uom"] == "DUS"
+    assert event["conversion_factor"] == 1000
+    assert event["base_qty"] == 1000
+    assert event["base_uom"] == "PCS"
+    assert event["qty"] == 1000
+    assert event["unit_cost"] == 500
+    assert event["total_cost"] == 500000
+    row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert row["stock_fisik"] == 1000
+    assert row["valuation_qty"] == 1000
+    assert row["difference"] == 0
+    assert row["current_hpp"] == 500
+    assert row["valuation_value"] == 500000
+    assert row["hpp_status"] == "OK"
+
+
+@pytest.mark.anyio
+async def test_2_normal_gr_moving_average(db):
+    mid = "sku-normal-gr"
+    aid = "acc-normal-gr"
+    await _stock(db, mid, 100, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    opened = await confirm_cutover(
+        db,
+        _payload("hardening-2", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-normal-gr",
+        mid=mid,
+        aid=aid,
+        qty=50,
+        unit="PCS",
+        unit_price=1200,
+    )
+    await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-normal-gr",
+        "idempotency_key": "gr-normal",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 50}],
+    }, USER)
+    row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert row["valuation_qty"] == 150
+    assert row["valuation_value"] == 160000
+    assert row["exact_average"].startswith("1066.666")
+    assert row["hpp_status"] == "OK"
+
+
+@pytest.mark.anyio
+async def test_3_and_4_gr_cancel_reverses_hpp_once(db):
+    mid = "sku-cancel-gr"
+    aid = "acc-cancel-gr"
+    await _stock(db, mid, 100, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    opened = await confirm_cutover(
+        db,
+        _payload("hardening-3", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-cancel-gr",
+        mid=mid,
+        aid=aid,
+        qty=50,
+        unit="PCS",
+        unit_price=1200,
+    )
+    receipt = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-cancel-gr",
+        "idempotency_key": "gr-cancel",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 50}],
+    }, USER)
+    before = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert before["valuation_qty"] == 150
+    assert before["valuation_value"] == 160000
+
+    first = await cancel_purchase_goods_receipt(db, receipt["id"], USER, "local test")
+    assert first["cancelled"] is True
+    after = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert after["stock_fisik"] == 100
+    assert after["valuation_qty"] == 100
+    assert after["valuation_value"] == 100000
+    assert after["current_hpp"] == 1000
+    assert after["hpp_status"] == "OK"
+    original = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    reversal = await db.hpp_recognition_events.find_one(
+        {"source_key": {"$regex": f"^gr-reversal:{receipt['id']}:"}},
+        {"_id": 0},
+    )
+    assert original["status"] == "REVERSED"
+    assert reversal["status"] == "REVERSED"
+    assert reversal["original_event_id"] == original["event_id"]
+    assert reversal["qty"] == 50
+    assert reversal["unit_cost"] == 1200
+    assert reversal["created_by"]["id"] == USER["id"]
+
+    reversal_count = await db.hpp_recognition_events.count_documents({
+        "source_key": {"$regex": f"^gr-reversal:{receipt['id']}:"},
+    })
+    movement_count = await db.stock_movements.count_documents({})
+    second = await cancel_purchase_goods_receipt(db, receipt["id"], USER, "retry")
+    assert second["cancelled"] is True
+    assert await db.hpp_recognition_events.count_documents({
+        "source_key": {"$regex": f"^gr-reversal:{receipt['id']}:"},
+    }) == reversal_count
+    assert await db.stock_movements.count_documents({}) == movement_count
+    retry_row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert retry_row["valuation_qty"] == 100
+    assert retry_row["valuation_value"] == 100000
+
+
+@pytest.mark.anyio
+async def test_5_hpp_failure_after_stock_success_retries_only_hpp(db, monkeypatch):
+    from services import hpp_cutover
+
+    mid = "sku-hpp-retry"
+    aid = "acc-hpp-retry"
+    await _stock(db, mid, 100, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    opened = await confirm_cutover(
+        db,
+        _payload("hardening-5", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-hpp-retry",
+        mid=mid,
+        aid=aid,
+        qty=50,
+        unit="PCS",
+        unit_price=1200,
+    )
+    body = {
+        "purchase_order_id": "po-hpp-retry",
+        "idempotency_key": "gr-hpp-retry",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 50}],
+    }
+    real_rebuild = hpp_cutover.rebuild_cutover_valuation
+
+    async def fail_rebuild(*_args, **_kwargs):
+        raise RuntimeError("forced HPP rebuild failure")
+
+    monkeypatch.setattr(hpp_cutover, "rebuild_cutover_valuation", fail_rebuild)
+    with pytest.raises(RuntimeError, match="forced HPP"):
+        await create_purchase_goods_receipt(db, body, USER)
+    assert await db.purchase_goods_receipts.count_documents({"idempotency_key": "gr-hpp-retry"}) == 1
+    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 150
+    assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 1
+    failed = await db.hpp_recognition_events.find_one({"source_type": "GOODS_RECEIPT"}, {"_id": 0})
+    assert failed["status"] == "FAILED"
+    failed_row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert failed_row["hpp_status"] == "FAILED"
+    assert failed_row["difference"] == 50
+
+    monkeypatch.setattr(hpp_cutover, "rebuild_cutover_valuation", real_rebuild)
+    receipt = await create_purchase_goods_receipt(db, body, USER)
+    assert receipt["id"]
+    assert await db.purchase_goods_receipts.count_documents({"idempotency_key": "gr-hpp-retry"}) == 1
+    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 150
+    assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 1
+    repaired = await db.hpp_recognition_events.find_one({"source_type": "GOODS_RECEIPT"}, {"_id": 0})
+    assert repaired["status"] == "RECOGNIZED"
+    row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert row["hpp_status"] == "OK"
+    assert row["valuation_qty"] == 150
+    assert row["valuation_value"] == 160000
+
+
+@pytest.mark.anyio
+async def test_6_missing_cost_is_needs_cost_not_zero_hpp(db):
+    mid = "sku-missing-cost"
+    aid = "acc-missing-cost"
+    await _stock(db, mid, 100, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    opened = await confirm_cutover(
+        db,
+        _payload("hardening-6", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-missing-cost",
+        mid=mid,
+        aid=aid,
+        qty=50,
+        unit="PCS",
+        unit_price=0,
+    )
+    await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-missing-cost",
+        "idempotency_key": "gr-missing-cost",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 50}],
+    }, USER)
+    event = await db.hpp_recognition_events.find_one(
+        {"source_type": "GOODS_RECEIPT"},
+        {"_id": 0},
+    )
+    assert event["status"] == "NEEDS_COST"
+    assert event["unit_cost"] is None
+    assert event["total_cost"] is None
+    row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert row["stock_fisik"] == 150
+    assert row["valuation_qty"] == 100
+    assert row["difference"] == 50
+    assert row["hpp_status"] == "NEEDS_COST"
+    assert row["reconciliation_reason"] == "NEEDS_COST"
+
+
+@pytest.mark.anyio
+async def test_7_missing_uom_is_needs_uom_not_wrong_valuation(db):
+    mid = "sku-missing-uom"
+    aid = "acc-missing-uom"
+    await _stock(db, mid, 100, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    opened = await confirm_cutover(
+        db,
+        _payload("hardening-7", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-missing-uom",
+        mid=mid,
+        aid=aid,
+        qty=1,
+        unit="DUS",
+        unit_price=500000,
+    )
+    await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-missing-uom",
+        "idempotency_key": "gr-missing-uom",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 1}],
+    }, USER)
+    event = await db.hpp_recognition_events.find_one(
+        {"source_type": "GOODS_RECEIPT"},
+        {"_id": 0},
+    )
+    assert event["status"] == "NEEDS_UOM"
+    assert event["qty"] is None
+    assert event["unit_cost"] is None
+    assert event["total_cost"] is None
+    row = await _row(db, opened["cutover"]["cutover_id"], mid)
+    assert row["valuation_qty"] == 100
+    assert row["valuation_value"] == 100000
+    assert row["hpp_status"] == "NEEDS_UOM"
+    assert row["reconciliation_reason"] == "NEEDS_UOM"
+
+
+@pytest.mark.anyio
+async def test_8_customer_pricing_remains_byte_for_byte_unchanged(db):
+    mid = "sku-pricing-guard"
+    aid = "acc-pricing-guard"
+    await _stock(db, mid, 10, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    fixture = {
+        "id": "pricing-guard",
+        "products": [{
+            "accurate_item_id": aid,
+            "master_item_id": mid,
+            "manual_hpp": 335,
+            "hpp_snapshot": 335,
+            "tier_prices": [400, 390],
+        }],
+        "pricing_mode": "HPP_FORMULA",
+        "profit_mode": "HPP_PLUS_FIXED",
+        "hpp_source": "MANUAL_HPP",
+    }
+    await db.customer_pricing_versions.insert_one(fixture)
+    before = await db.customer_pricing_versions.find_one({"id": "pricing-guard"})
+    await confirm_cutover(
+        db,
+        _payload("hardening-8", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-pricing-guard",
+        mid=mid,
+        aid=aid,
+        qty=1,
+        unit="PCS",
+        unit_price=1000,
+    )
+    await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-pricing-guard",
+        "idempotency_key": "gr-pricing-guard",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 1}],
+    }, USER)
+    after = await db.customer_pricing_versions.find_one({"id": "pricing-guard"})
+    assert after == before
+
+
+@pytest.mark.anyio
+async def test_9_purchase_invoice_creates_no_stock_or_hpp_event(db):
+    mid = "sku-invoice-guard"
+    aid = "acc-invoice-guard"
+    await _stock(db, mid, 100, aid)
+    await db.master_items.insert_one({"id": mid, "accurate_item_id": aid, "unit": "PCS"})
+    await _settings(db)
+    await confirm_cutover(
+        db,
+        _payload("hardening-9", mid, 1000, accurate_item_id=aid),
+        USER,
+    )
+    po_line = await _po(
+        db,
+        po_id="po-invoice-guard",
+        mid=mid,
+        aid=aid,
+        qty=50,
+        unit="PCS",
+        unit_price=1200,
+    )
+    receipt = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": "po-invoice-guard",
+        "idempotency_key": "gr-invoice-guard",
+        "lines": [{"purchase_order_line_id": po_line, "received_qty": 50}],
+    }, USER)
+    stock_before = await db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
+    movement_count = await db.stock_movements.count_documents({})
+    hpp_count = await db.hpp_recognition_events.count_documents({})
+    invoice = await create_purchase_invoice(db, {
+        "invoice_source": "receipt",
+        "receipt_id": receipt["id"],
+        "purchase_order_id": "po-invoice-guard",
+        "idempotency_key": "invoice-guard",
+        "lines": [{"purchase_order_line_id": po_line, "invoice_qty": 50}],
+    }, USER)
+    assert invoice["id"]
+    stock_after = await db.product_stock_state.find_one({"master_item_id": mid}, {"_id": 0})
+    assert stock_after == stock_before
+    assert await db.stock_movements.count_documents({}) == movement_count
+    assert await db.hpp_recognition_events.count_documents({}) == hpp_count

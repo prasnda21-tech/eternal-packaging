@@ -438,6 +438,11 @@ async def _execute_operational_goods_receipt_cancel(
             user=user,
             order_id=doc.get("purchase_order_id"),
         )
+        # HPP reversal is durable and idempotent. Run it after Stock V2 reversal
+        # and before marking the receipt cancelled so retry can finish only the
+        # incomplete HPP side without creating another receipt or stock event.
+        from services.hpp_cutover import reverse_goods_receipt_hpp
+        await reverse_goods_receipt_hpp(db, doc, user)
         fields = cancellation_fields(user, reason)
         fields.update({
             "status": "CANCELLED",

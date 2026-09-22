@@ -35,6 +35,13 @@ from services.hpp_valuation import (
     normalize_method,
     normalize_recognition,
 )
+from services.inventory_accounting import (
+    CANONICAL_GR,
+    InvalidUnitConversionError,
+    financial_inventory_item_key,
+    financial_uom_snapshot,
+    resolve_conversion_from_setting,
+)
 from services.purchase_common import actor_snapshot, item_identity, money_round, now_iso, qty_round
 
 CUTOVERS = "hpp_valuation_cutovers"
@@ -50,12 +57,16 @@ STATUS_FAILED = "FAILED"
 STATUS_NEEDS_RECOVERY = "NEEDS_RECOVERY"
 STATUS_RECOGNIZED = "RECOGNIZED"
 STATUS_NEEDS_COST = "NEEDS_COST"
+STATUS_NEEDS_UOM = "NEEDS_UOM"
+STATUS_PENDING = "PENDING"
+STATUS_REVERSED = "REVERSED"
 STATUS_OK = "OK"
 STATUS_QTY_MISMATCH = "QTY_MISMATCH"
 STATUS_MISSING_COST = "MISSING_COST"
 
 SOURCE_OPENING = "OPENING_HPP"
 SOURCE_GOODS_RECEIPT = "GOODS_RECEIPT"
+SOURCE_GOODS_RECEIPT_REVERSAL = "GOODS_RECEIPT_REVERSAL"
 REASON_NEGATIVE = "NEGATIVE_PHYSICAL_STOCK"
 
 LEASE_SECONDS = 120
@@ -238,10 +249,24 @@ def _events_from_baseline_and_recognition(cutover: dict, lines: List[dict], reco
             "recognized_at": posted,
             "recognized_qty": rec["qty"],
             "unit_cost": rec["unit_cost"],
+            "total_cost": rec.get("total_cost"),
             "master_item_id": rec.get("master_item_id") or "",
             "accurate_item_id": rec.get("accurate_item_id") or "",
             "item_name": rec.get("item_name"),
             "item_code": rec.get("item_code"),
+            "financial_inventory_item_key": rec.get("financial_inventory_item_key"),
+            "canonical_source_type": rec.get("canonical_source_type"),
+            "canonical_source_id": rec.get("canonical_source_id"),
+            "financial_inventory_eligible": rec.get("financial_inventory_eligible"),
+            "financial_ineligibility_reason": rec.get("financial_ineligibility_reason"),
+            "financial_ineligibility_reasons": rec.get("financial_ineligibility_reasons") or [],
+            "transaction_qty": rec.get("transaction_qty"),
+            "transaction_uom": rec.get("transaction_uom"),
+            "conversion_factor": rec.get("conversion_factor"),
+            "base_qty": rec.get("base_qty"),
+            "base_uom": rec.get("base_uom"),
+            "transaction_unit_cost": rec.get("transaction_unit_cost"),
+            "base_unit_cost": rec.get("base_unit_cost"),
         })
     future.sort(key=lambda row: (str(row.get("recognized_at") or ""), str(row.get("event_id") or "")))
     return events + future
@@ -331,11 +356,19 @@ async def list_reconciliation(db, cutover_id: Optional[str] = None) -> List[dict
     recognitions = await db[EVENTS].find({"cutover_id": cutover["cutover_id"]}, {"_id": 0}).to_list(20000)
     events = _events_from_baseline_and_recognition(cutover, lines, recognitions)
     positions = _running_position(events) if events else {}
-    needs_cost_ids = {
-        str(row.get("master_item_id") or "")
-        for row in recognitions
-        if row.get("status") == STATUS_NEEDS_COST
-    }
+    event_statuses: Dict[str, set] = {}
+    event_reasons: Dict[str, str] = {}
+    for recognition in recognitions:
+        mid = str(recognition.get("master_item_id") or "")
+        if mid:
+            event_statuses.setdefault(mid, set()).add(recognition.get("status"))
+            status = recognition.get("status")
+            if status in {STATUS_FAILED, STATUS_PENDING}:
+                event_reasons[mid] = STATUS_FAILED
+            elif status == STATUS_NEEDS_UOM and event_reasons.get(mid) != STATUS_FAILED:
+                event_reasons[mid] = STATUS_NEEDS_UOM
+            elif status == STATUS_NEEDS_COST and not event_reasons.get(mid):
+                event_reasons[mid] = STATUS_NEEDS_COST
     rows = []
     for line in lines:
         mid = line["master_item_id"]
@@ -349,7 +382,11 @@ async def list_reconciliation(db, cutover_id: Optional[str] = None) -> List[dict
         difference = float(Decimal(str(stock_qty)) - Decimal(str(pos["valuation_qty"])))
         if line.get("hpp_status") == STATUS_QTY_MISMATCH:
             status = STATUS_QTY_MISMATCH
-        elif line.get("hpp_status") == STATUS_NEEDS_COST or mid in needs_cost_ids:
+        elif STATUS_FAILED in event_statuses.get(mid, set()) or STATUS_PENDING in event_statuses.get(mid, set()):
+            status = STATUS_FAILED
+        elif STATUS_NEEDS_UOM in event_statuses.get(mid, set()):
+            status = STATUS_NEEDS_UOM
+        elif line.get("hpp_status") == STATUS_NEEDS_COST or STATUS_NEEDS_COST in event_statuses.get(mid, set()):
             status = STATUS_NEEDS_COST
         elif line.get("hpp_status") == STATUS_MISSING_COST:
             status = STATUS_MISSING_COST
@@ -371,7 +408,7 @@ async def list_reconciliation(db, cutover_id: Optional[str] = None) -> List[dict
             "exact_average": str(pos["exact_average"]),
             "valuation_value": pos["valuation_value"],
             "hpp_status": status,
-            "reconciliation_reason": line.get("reconciliation_reason"),
+            "reconciliation_reason": event_reasons.get(mid) or line.get("reconciliation_reason"),
             "cutover_status": cutover.get("status"),
         })
     return rows
@@ -765,6 +802,117 @@ def _line_cost(line: dict) -> Optional[float]:
     return cost
 
 
+async def _canonical_receipt_line(
+    db,
+    *,
+    receipt: dict,
+    line: dict,
+    po_lines: Dict[str, dict],
+) -> dict:
+    """Resolve one GR line to BASE UOM using the canonical accounting helper."""
+    po_line_id = str(line.get("purchase_order_line_id") or "").strip()
+    po_line = po_lines.get(po_line_id) or {}
+    mid = str(line.get("master_item_id") or po_line.get("master_item_id") or "").strip()
+    aid = str(line.get("accurate_item_id") or po_line.get("accurate_item_id") or "").strip()
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0}) if mid else None
+    setting = await db.product_unit_settings.find_one({"master_item_id": mid}, {"_id": 0}) if mid else None
+    transaction_uom = line.get("unit") or po_line.get("unit") or (master or {}).get("unit")
+    cost = _line_cost(po_line)
+    qty = qty_round(line.get("received_qty") or line.get("quantity") or 0)
+    common = {
+        "master_item_id": mid,
+        "accurate_item_id": aid,
+        "item_identity": item_identity({"master_item_id": mid, "accurate_item_id": aid}),
+        "item_code": line.get("item_code") or po_line.get("item_code") or "",
+        "item_name": line.get("item_name") or po_line.get("item_name") or "",
+        "purchase_order_id": receipt.get("purchase_order_id"),
+        "purchase_order_line_id": po_line_id,
+        "transaction_qty": qty,
+        "transaction_uom": transaction_uom,
+        "transaction_unit_cost": cost,
+        "canonical_source_type": CANONICAL_GR,
+        "canonical_source_id": receipt.get("id"),
+        "financial_inventory_item_key": financial_inventory_item_key({"master_item_id": mid}),
+    }
+    if cost is None:
+        return {
+            **common,
+            "status": STATUS_NEEDS_COST,
+            "reason": STATUS_NEEDS_COST,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": STATUS_NEEDS_COST,
+            "financial_ineligibility_reasons": [STATUS_NEEDS_COST],
+        }
+    if not master:
+        return {
+            **common,
+            "status": STATUS_NEEDS_UOM,
+            "reason": STATUS_NEEDS_UOM,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": STATUS_NEEDS_UOM,
+            "financial_ineligibility_reasons": [STATUS_NEEDS_UOM],
+        }
+    factor, tx_uom, base_uom, conversion_error = resolve_conversion_from_setting(
+        master=master,
+        setting=setting,
+        transaction_uom=transaction_uom,
+    )
+    if conversion_error:
+        return {
+            **common,
+            "transaction_uom": tx_uom,
+            "base_uom": base_uom,
+            "status": STATUS_NEEDS_UOM,
+            "reason": STATUS_NEEDS_UOM,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": STATUS_NEEDS_UOM,
+            "financial_ineligibility_reasons": [STATUS_NEEDS_UOM],
+        }
+    try:
+        snapshot = financial_uom_snapshot(
+            transaction_qty=qty,
+            transaction_uom=tx_uom,
+            conversion_factor=factor,
+            base_uom=base_uom,
+            transaction_unit_cost=cost,
+        )
+    except InvalidUnitConversionError:
+        return {
+            **common,
+            "transaction_uom": tx_uom,
+            "base_uom": base_uom,
+            "status": STATUS_NEEDS_UOM,
+            "reason": STATUS_NEEDS_UOM,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": STATUS_NEEDS_UOM,
+            "financial_ineligibility_reasons": [STATUS_NEEDS_UOM],
+        }
+    return {
+        **common,
+        **snapshot,
+        "status": STATUS_PENDING,
+        "reason": None,
+        "qty": snapshot["base_qty"],
+        "unit_cost": snapshot["base_unit_cost"],
+        "total_cost": snapshot["total_cost"],
+        "financial_inventory_eligible": True,
+        "financial_ineligibility_reason": None,
+        "financial_ineligibility_reasons": [],
+    }
+
+
 async def recognize_posted_goods_receipt(db, receipt: dict, user: Optional[dict] = None) -> List[dict]:
     """Record future GR cost after the receipt document is stored.
 
@@ -779,57 +927,281 @@ async def recognize_posted_goods_receipt(db, receipt: dict, user: Optional[dict]
         return []
     posted_at = now_iso()
     receipt_date = str(receipt.get("receipt_date") or "")[:10]
+    po = await db.purchase_orders.find_one(
+        {"id": str(receipt.get("purchase_order_id") or "")},
+        {"_id": 0, "lines": 1},
+    )
+    po_lines = {
+        str(row.get("line_id") or ""): row
+        for row in ((po or {}).get("lines") or [])
+    }
     stored: List[dict] = []
-    inserted_recognized = False
+    ready_ids: List[str] = []
+    processing_token = str(uuid.uuid4())
+    busy_valid_event = False
     for line in receipt.get("lines") or []:
         line_id = str(line.get("line_id") or line.get("purchase_order_line_id") or "").strip()
         if not line_id:
             continue
         source_key = f"gr:{receipt_id}:{line_id}"
         existing = await db[EVENTS].find_one({"source_key": source_key}, {"_id": 0})
-        if existing:
+        reversal = await db[EVENTS].find_one(
+            {"source_key": f"gr-reversal:{receipt_id}:{line_id}"},
+            {"_id": 0, "status": 1},
+        )
+        if (
+            existing
+            and (
+                existing.get("status") in {STATUS_RECOGNIZED, STATUS_REVERSED}
+                or existing.get("failure_action") == "REVERSE"
+                or reversal is not None
+            )
+        ):
             stored.append(existing)
             continue
-        mid = str(line.get("master_item_id") or "").strip()
-        aid = str(line.get("accurate_item_id") or "").strip()
-        qty = qty_round(line.get("received_qty") or line.get("quantity") or 0)
-        cost = _line_cost(line)
-        status = STATUS_RECOGNIZED if cost is not None and _dec(qty) > 0 else STATUS_NEEDS_COST
+        canonical = await _canonical_receipt_line(
+            db,
+            receipt=receipt,
+            line=line,
+            po_lines=po_lines,
+        )
+        event_id = str((existing or {}).get("event_id") or uuid.uuid4())
         doc = {
-            "event_id": str(uuid.uuid4()),
+            "event_id": event_id,
             "source_type": SOURCE_GOODS_RECEIPT,
             "source_key": source_key,
-            "master_item_id": mid,
-            "item_identity": item_identity({"master_item_id": mid, "accurate_item_id": aid}),
-            "accurate_item_id": aid,
-            "item_code": line.get("item_code") or "",
-            "item_name": line.get("item_name") or "",
-            "qty": qty,
-            "unit_cost": cost,
-            "total_cost": money_round(_dec(qty) * _dec(cost)) if cost is not None else None,
-            "status": status,
-            "recognized_at": posted_at,
+            **canonical,
+            "status": canonical["status"],
+            "recognized_at": (existing or {}).get("recognized_at") or posted_at,
             "receipt_date": receipt_date,
             "cutover_id": active["cutover_id"],
-            "created_at": posted_at,
+            "created_at": (existing or {}).get("created_at") or posted_at,
+            "updated_at": posted_at,
+            "last_error": None,
+            "failure_action": None,
         }
-        try:
-            await db[EVENTS].insert_one(dict(doc))
-        except DuplicateKeyError:
-            existing = await db[EVENTS].find_one({"source_key": source_key}, {"_id": 0})
-            if existing:
-                stored.append(existing)
-            continue
-        if status == STATUS_RECOGNIZED:
-            inserted_recognized = True
+        if existing:
+            await db[EVENTS].update_one(
+                {"source_key": source_key, "status": existing.get("status")},
+                {"$set": doc},
+            )
+        else:
+            try:
+                await db[EVENTS].insert_one(dict(doc))
+            except DuplicateKeyError:
+                raced = await db[EVENTS].find_one({"source_key": source_key}, {"_id": 0})
+                if raced:
+                    stored.append(raced)
+                continue
+        if canonical["status"] == STATUS_PENDING:
+            claimed = await db[EVENTS].find_one_and_update(
+                {
+                    "event_id": event_id,
+                    "status": STATUS_PENDING,
+                    "$or": [
+                        {"processing_token": {"$exists": False}},
+                        {"processing_token": None},
+                        {"processing_lease_expires_at": {"$lt": posted_at}},
+                    ],
+                },
+                {"$set": {
+                    "processing_token": processing_token,
+                    "processing_lease_expires_at": _expires(),
+                    "updated_at": posted_at,
+                }},
+                return_document=ReturnDocument.AFTER,
+            )
+            if claimed:
+                ready_ids.append(event_id)
+            else:
+                busy_valid_event = True
         stored.append({key: value for key, value in doc.items() if key != "_id"})
-    if inserted_recognized:
-        await rebuild_cutover_valuation(
-            db,
-            active,
-            user=user,
-            requested_method=METHOD_AVG,
-            requested_recognition=RECOG_GR,
-            activate_cutover=False,
+    if busy_valid_event and not ready_ids:
+        raise _http(
+            409,
+            STATUS_PENDING,
+            "Recognition HPP untuk penerimaan ini sedang diproses. Retry aman.",
         )
-    return stored
+    if ready_ids:
+        await db[EVENTS].update_many(
+            {
+                "event_id": {"$in": ready_ids},
+                "status": STATUS_PENDING,
+                "processing_token": processing_token,
+            },
+            {"$set": {"status": STATUS_RECOGNIZED, "recognized_at": posted_at, "updated_at": posted_at}},
+        )
+        try:
+            await rebuild_cutover_valuation(
+                db,
+                active,
+                user=user,
+                requested_method=METHOD_AVG,
+                requested_recognition=RECOG_GR,
+                activate_cutover=False,
+            )
+        except Exception as exc:
+            await db[EVENTS].update_many(
+                {
+                    "event_id": {"$in": ready_ids},
+                    "status": STATUS_RECOGNIZED,
+                    "processing_token": processing_token,
+                },
+                {"$set": {
+                    "status": STATUS_FAILED,
+                    "failure_action": "RECOGNIZE",
+                    "last_error": str(exc),
+                    "updated_at": now_iso(),
+                }, "$unset": {
+                    "processing_token": "",
+                    "processing_lease_expires_at": "",
+                }},
+            )
+            raise
+        await db[EVENTS].update_many(
+            {
+                "event_id": {"$in": ready_ids},
+                "status": STATUS_RECOGNIZED,
+                "processing_token": processing_token,
+            },
+            {
+                "$set": {"last_error": None, "failure_action": None, "updated_at": now_iso()},
+                "$unset": {
+                    "processing_token": "",
+                    "processing_lease_expires_at": "",
+                },
+            },
+        )
+    return await db[EVENTS].find(
+        {"source_key": {"$in": [
+            f"gr:{receipt_id}:{str(line.get('line_id') or line.get('purchase_order_line_id') or '').strip()}"
+            for line in receipt.get("lines") or []
+            if str(line.get("line_id") or line.get("purchase_order_line_id") or "").strip()
+        ]}},
+        {"_id": 0},
+    ).to_list(5000)
+
+
+async def reverse_goods_receipt_hpp(
+    db,
+    receipt: dict,
+    user: Optional[dict] = None,
+) -> List[dict]:
+    """Audit and reverse GR HPP exactly once without deleting the source event."""
+    receipt_id = str(receipt.get("id") or "").strip()
+    if not receipt_id:
+        return []
+    active = await get_active_cutover(db)
+    actor = actor_snapshot(user)
+    stamp = now_iso()
+    reversal_ids: List[str] = []
+    original_ids: List[str] = []
+    requires_rebuild = False
+    for line in receipt.get("lines") or []:
+        line_id = str(line.get("line_id") or line.get("purchase_order_line_id") or "").strip()
+        if not line_id:
+            continue
+        original_key = f"gr:{receipt_id}:{line_id}"
+        original = await db[EVENTS].find_one({"source_key": original_key}, {"_id": 0})
+        if not original:
+            continue
+        reversal_key = f"gr-reversal:{receipt_id}:{line_id}"
+        reversal = await db[EVENTS].find_one({"source_key": reversal_key}, {"_id": 0})
+        if reversal and reversal.get("status") == STATUS_REVERSED:
+            continue
+        was_recognized = (
+            original.get("status") == STATUS_RECOGNIZED
+            or (
+                original.get("status") == STATUS_FAILED
+                and original.get("failure_action") == "REVERSE"
+                and original.get("reversal_was_recognized") is True
+            )
+        )
+        reversal_id = str((reversal or {}).get("event_id") or uuid.uuid4())
+        reversal_doc = {
+            "event_id": reversal_id,
+            "source_type": SOURCE_GOODS_RECEIPT_REVERSAL,
+            "source_key": reversal_key,
+            "original_event_id": original.get("event_id"),
+            "original_source_key": original_key,
+            "source_receipt_id": receipt_id,
+            "source_line_id": line_id,
+            "master_item_id": original.get("master_item_id"),
+            "item_identity": original.get("item_identity"),
+            "qty": original.get("qty"),
+            "unit_cost": original.get("unit_cost"),
+            "total_cost": original.get("total_cost"),
+            "status": STATUS_PENDING,
+            "recognized_at": stamp,
+            "receipt_date": original.get("receipt_date"),
+            "cutover_id": original.get("cutover_id"),
+            "created_at": (reversal or {}).get("created_at") or stamp,
+            "updated_at": stamp,
+            "created_by": actor,
+        }
+        if reversal:
+            await db[EVENTS].update_one(
+                {"source_key": reversal_key, "status": reversal.get("status")},
+                {"$set": reversal_doc},
+            )
+        else:
+            try:
+                await db[EVENTS].insert_one(dict(reversal_doc))
+            except DuplicateKeyError:
+                continue
+        await db[EVENTS].update_one(
+            {"event_id": original["event_id"]},
+            {"$set": {
+                "status": STATUS_REVERSED,
+                "reversed_at": stamp,
+                "reversed_by": actor,
+                "reversal_event_id": reversal_id,
+                "reversal_was_recognized": was_recognized,
+                "failure_action": None,
+                "last_error": None,
+                "updated_at": stamp,
+            }},
+        )
+        reversal_ids.append(reversal_id)
+        original_ids.append(original["event_id"])
+        requires_rebuild = requires_rebuild or was_recognized
+    if not reversal_ids:
+        return []
+    try:
+        if requires_rebuild and active:
+            await rebuild_cutover_valuation(
+                db,
+                active,
+                user=user,
+                requested_method=METHOD_AVG,
+                requested_recognition=RECOG_GR,
+                activate_cutover=False,
+            )
+    except Exception as exc:
+        await db[EVENTS].update_many(
+            {"event_id": {"$in": original_ids}},
+            {"$set": {
+                "status": STATUS_FAILED,
+                "failure_action": "REVERSE",
+                "last_error": str(exc),
+                "updated_at": now_iso(),
+            }},
+        )
+        await db[EVENTS].update_many(
+            {"event_id": {"$in": reversal_ids}},
+            {"$set": {
+                "status": STATUS_FAILED,
+                "failure_action": "REVERSE",
+                "last_error": str(exc),
+                "updated_at": now_iso(),
+            }},
+        )
+        raise
+    await db[EVENTS].update_many(
+        {"event_id": {"$in": reversal_ids}, "status": STATUS_PENDING},
+        {"$set": {"status": STATUS_REVERSED, "updated_at": now_iso()}},
+    )
+    return await db[EVENTS].find(
+        {"event_id": {"$in": reversal_ids}},
+        {"_id": 0},
+    ).to_list(5000)
