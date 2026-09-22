@@ -169,6 +169,55 @@ def test_tracking_payload_has_exact_sj():
     assert "object_key" not in str(payload)
 
 
+def test_unsigned_sj_stays_listed_without_signature_status():
+    order = _base_order()
+    order["surat_jalan_files"][0].pop("signed_storage_path")
+    before = [dict(f) for f in order["surat_jalan_files"]]
+    payload = public_payload(order, "token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    assert order["surat_jalan_files"] == before
+    sj = payload["documents"]["surat_jalan"]
+    assert len(sj) == 1
+    assert sj[0]["id"] == "sj-a1"
+    assert sj[0]["sj_number"] == "SJ/A1"
+    assert sj[0]["has_signed"] is False
+    assert "signed_at" not in sj[0]
+    assert "recipient_name" not in sj[0]
+
+
+def test_signed_sj_appears_once_with_same_identity_and_sibling_unchanged():
+    order = _base_order()
+    order["surat_jalan_files"] = [
+        {
+            **order["surat_jalan_files"][0],
+            "signed_at": "2026-09-01T10:07:00+00:00",
+            "signed_recipient_name": "Andi Penerima",
+        },
+        {
+            "id": "sj-b",
+            "name": "SJ-B.pdf",
+            "sj_number": "SJ/B",
+            "shipment_id": "ship-b",
+            "storage_path": "eternal-packaging/surat-jalan/ord-track-sig/sj-b.pdf",
+            "content_type": "application/pdf",
+        },
+    ]
+    before_ids = [(f["id"], f["sj_number"]) for f in order["surat_jalan_files"]]
+    payload = public_payload(order, "token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    assert [(f["id"], f["sj_number"]) for f in order["surat_jalan_files"]] == before_ids
+    assert is_public_payload_safe(payload)
+    sj = payload["documents"]["surat_jalan"]
+    assert [row["id"] for row in sj] == ["sj-a1", "sj-b"]
+    assert sj[0]["sj_number"] == "SJ/A1"
+    assert sj[0]["shipment_id"] == "ship-a"
+    assert sj[0]["has_signed"] is True
+    assert sj[0]["signed_at"] == "2026-09-01T10:07:00+00:00"
+    assert sj[0]["recipient_name"] == "Andi Penerima"
+    assert sj[1]["sj_number"] == "SJ/B"
+    assert sj[1]["has_signed"] is False
+    assert "signed_at" not in sj[1]
+    assert "sj-other-order" not in str(payload)
+
+
 def test_tracking_a_evidence_isolated_from_b_ids():
     payload = public_payload(_base_order(), "token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     blob = str(payload)

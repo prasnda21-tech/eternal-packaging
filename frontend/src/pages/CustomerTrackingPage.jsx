@@ -142,6 +142,7 @@ export default function CustomerTrackingPage() {
   const proofs = (data?.delivery_proofs || []).slice(0, 5);
   const designDocs = data?.documents?.design_approved || [];
   const sjDocs = data?.documents?.surat_jalan || [];
+  const signedSjDocs = sjDocs.filter((d) => d?.has_signed);
   const shipmentsEvidence = data?.shipments_evidence || [];
   const summary = data?.summary || {};
   const items = summary.items || [];
@@ -332,6 +333,47 @@ export default function CustomerTrackingPage() {
                   );
                 })}
               </div>
+              {signedSjDocs.length > 0 && (
+                <div className="tracking-doc-group" data-testid="tracking-surat-jalan">
+                  {signedSjDocs.map((d) => (
+                    <article
+                      key={d.id}
+                      className="tracking-doc-row"
+                      data-testid={`tracking-sj-${d.id}`}
+                      data-shipment-id={d.shipment_id || ""}
+                    >
+                      <span className="tracking-doc-ico"><FileText size={16} /></span>
+                      <div>
+                        <strong>{d.sj_number || d.name || "Surat Jalan"}</strong>
+                        <span className="muted small">
+                          Bertanda tangan
+                          {d.recipient_name ? ` · ${d.recipient_name}` : ""}
+                          {d.signed_at ? ` · ${historyTimeLabel(d.signed_at)}` : ""}
+                        </span>
+                      </div>
+                      <div className="tracking-doc-actions" data-testid={`tracking-sj-${d.id}-actions`}>
+                        <a
+                          href={publicApiUrl(d.preview_url)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ghost sm"
+                          data-testid={`tracking-sj-${d.id}-open`}
+                        >
+                          Lihat PDF
+                        </a>
+                        <a
+                          href={publicApiUrl(d.download_url)}
+                          className="ghost sm"
+                          download={d.name || "surat-jalan.pdf"}
+                          data-testid={`tracking-sj-${d.id}-download`}
+                        >
+                          Unduh
+                        </a>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
             </section>
 
             <nav className="tracking-utils" data-testid="tracking-help">
@@ -569,9 +611,9 @@ export default function CustomerTrackingPage() {
               ))}
             </div>
           )}
-          {sjDocs.length > 0 && (
-            <div className="tracking-doc-group" data-testid="tracking-surat-jalan">
-              {sjDocs.map((d) => (
+          {sjDocs.some((d) => !d?.has_signed) && (
+            <div className="tracking-doc-group" data-testid="tracking-surat-jalan-unsigned">
+              {sjDocs.filter((d) => !d?.has_signed).map((d) => (
                 <article key={d.id} className="tracking-doc-row" data-testid={`tracking-sj-${d.id}`}>
                   <span className="tracking-doc-ico"><FileText size={16} /></span>
                   <div>

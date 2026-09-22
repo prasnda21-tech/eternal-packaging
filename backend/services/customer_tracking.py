@@ -165,7 +165,9 @@ def public_surat_jalan_documents(order: dict, token: str) -> List[Dict[str, Any]
             continue
         if not (f.get("storage_path") or f.get("signed_storage_path") or f.get("data_url")):
             continue
-        docs.append({
+        signed_at = str(f.get("signed_at") or "").strip()
+        recipient_name = str(f.get("signed_recipient_name") or "").strip()
+        row = {
             "id": fid,
             "name": f.get("name") or f.get("sj_number") or "Surat Jalan",
             "sj_number": f.get("sj_number") or "",
@@ -175,7 +177,12 @@ def public_surat_jalan_documents(order: dict, token: str) -> List[Dict[str, Any]
             "has_signed": bool(str(f.get("signed_storage_path") or "").strip()),
             "preview_url": f"/api/public/tracking/{t}/surat-jalan/{fid}?disposition=inline",
             "download_url": f"/api/public/tracking/{t}/surat-jalan/{fid}?disposition=attachment",
-        })
+        }
+        if signed_at:
+            row["signed_at"] = signed_at
+        if recipient_name:
+            row["recipient_name"] = recipient_name
+        docs.append(row)
     return docs
 
 
@@ -382,6 +389,28 @@ def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
     return payload
 
 
+def _public_sj_row(d: dict) -> Dict[str, Any]:
+    """Customer-safe Surat Jalan row. Omits empty signature fields."""
+    row = {
+        "id": d.get("id"),
+        "name": d.get("name"),
+        "sj_number": d.get("sj_number") or "",
+        "shipment_id": d.get("shipment_id"),
+        "content_type": d.get("content_type") or "application/pdf",
+        "kind": "surat_jalan",
+        "has_signed": bool(d.get("has_signed")),
+        "preview_url": d.get("preview_url"),
+        "download_url": d.get("download_url"),
+    }
+    signed_at = str(d.get("signed_at") or "").strip()
+    if signed_at:
+        row["signed_at"] = signed_at
+    recipient_name = str(d.get("recipient_name") or "").strip()
+    if recipient_name:
+        row["recipient_name"] = recipient_name
+    return row
+
+
 def collect_public_keys(payload: dict) -> set:
     keys = set()
 
@@ -406,6 +435,7 @@ def is_public_payload_safe(payload: dict) -> bool:
         "delivery_history", "driver_name", "item", "qty", "time", "vehicle_plate", "photos",
         "documents", "design_approved", "surat_jalan", "name", "content_type", "kind",
         "preview_url", "download_url", "sj_number", "shipment_id", "has_signed",
+        "signed_at",
         "shipments_evidence", "confirmation_id", "sj_file_id", "recipient",
         "recipient_name", "recipient_signed_at", "has_signed_sj",
         "driver", "driver_name", "driver_signed_at",
@@ -540,17 +570,7 @@ def build_router(deps: dict) -> APIRouter:
                     if isinstance(d, dict) and d.get("id") and d.get("preview_url")
                 ],
                 "surat_jalan": [
-                    {
-                        "id": d.get("id"),
-                        "name": d.get("name"),
-                        "sj_number": d.get("sj_number") or "",
-                        "shipment_id": d.get("shipment_id"),
-                        "content_type": d.get("content_type") or "application/pdf",
-                        "kind": "surat_jalan",
-                        "has_signed": bool(d.get("has_signed")),
-                        "preview_url": d.get("preview_url"),
-                        "download_url": d.get("download_url"),
-                    }
+                    _public_sj_row(d)
                     for d in (docs.get("surat_jalan") or [])
                     if isinstance(d, dict) and d.get("id") and d.get("preview_url")
                 ],
