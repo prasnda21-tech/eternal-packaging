@@ -149,6 +149,84 @@ describe("Customer tracking one-screen dashboard", () => {
     await act(async () => { root.unmount(); });
   });
 
+  test("unsigned surat jalan stays on the tile and is not listed as signed", async () => {
+    api.publicTracking.mockResolvedValue({
+      ...payload,
+      documents: {
+        design_approved: [],
+        surat_jalan: [{
+          id: "sj-open",
+          sj_number: "SJ/OPEN",
+          shipment_id: "ship-open",
+          has_signed: false,
+          preview_url: "/api/public/tracking/tok/surat-jalan/sj-open?disposition=inline",
+          download_url: "/api/public/tracking/tok/surat-jalan/sj-open?disposition=attachment",
+        }],
+      },
+    });
+    const { host, root } = await mountAt(390);
+    const tile = host.querySelector('[data-testid="tracking-doc-tile-sj"]');
+    expect(tile.disabled).toBe(false);
+    expect(tile.textContent).toMatch(/Tersedia/);
+    expect(tile.textContent).not.toMatch(/Bertanda tangan/);
+    expect(host.querySelector('[data-testid="tracking-surat-jalan"]')).toBeFalsy();
+    expect(host.querySelector('[data-testid="tracking-sj-sj-open"]')).toBeFalsy();
+    expect(api.publicTracking).toHaveBeenCalledTimes(1);
+    await act(async () => { root.unmount(); });
+  });
+
+  test("signed surat jalan appears once with identity and signature status", async () => {
+    api.publicTracking.mockResolvedValue({
+      ...payload,
+      order_number: "PO-2025-00123",
+      documents: {
+        design_approved: [],
+        surat_jalan: [
+          {
+            id: "sj-a1",
+            name: "SJ-A1.pdf",
+            sj_number: "SJ/A1",
+            shipment_id: "ship-a",
+            has_signed: true,
+            signed_at: "2026-09-01T10:07:00+00:00",
+            recipient_name: "Andi Penerima",
+            preview_url: "/api/public/tracking/tok/surat-jalan/sj-a1?disposition=inline",
+            download_url: "/api/public/tracking/tok/surat-jalan/sj-a1?disposition=attachment",
+          },
+          {
+            id: "sj-b",
+            name: "SJ-B.pdf",
+            sj_number: "SJ/B",
+            shipment_id: "ship-b",
+            has_signed: false,
+            preview_url: "/api/public/tracking/tok/surat-jalan/sj-b?disposition=inline",
+            download_url: "/api/public/tracking/tok/surat-jalan/sj-b?disposition=attachment",
+          },
+        ],
+      },
+    });
+    const { host, root } = await mountAt(390);
+    const section = host.querySelector('[data-testid="tracking-surat-jalan"]');
+    expect(section).toBeTruthy();
+    const rows = section.querySelectorAll(":scope > article");
+    expect(rows).toHaveLength(1);
+    const row = host.querySelector('[data-testid="tracking-sj-sj-a1"]');
+    expect(row.textContent).toMatch(/SJ\/A1/);
+    expect(row.textContent).toMatch(/Bertanda tangan/);
+    expect(row.textContent).toMatch(/Andi Penerima/);
+    expect(row.getAttribute("data-shipment-id")).toBe("ship-a");
+    expect(row.textContent).not.toMatch(/SJ\/B/);
+    expect(host.querySelector('[data-testid="tracking-sj-sj-b"]')).toBeFalsy();
+    expect(host.querySelectorAll('[data-testid="tracking-sj-sj-a1"]')).toHaveLength(1);
+    expect(host.querySelector('[data-testid="tracking-sj-sj-a1-open"]').getAttribute("href"))
+      .toMatch(/\/surat-jalan\/sj-a1/);
+    expect(host.querySelector('[data-testid="tracking-order-number"]').textContent).toBe("PO-2025-00123");
+    expect(host.querySelector('[data-testid="tracking-doc-tile-sj"]').textContent).toMatch(/Bertanda tangan/);
+    expect(api.publicTracking).toHaveBeenCalledTimes(1);
+    expect(api.publicTracking).toHaveBeenCalledWith("tok-public-aaaaaaaaaaaaaaaa");
+    await act(async () => { root.unmount(); });
+  });
+
   test("public tracking fetch stays GET and token is not rewritten", async () => {
     const { root } = await mountAt(390);
     expect(api.publicTracking).toHaveBeenCalledWith("tok-public-aaaaaaaaaaaaaaaa");

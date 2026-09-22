@@ -113,6 +113,74 @@ describe("customer tracking status labels", () => {
     expect(railTone("waiting")).toBe("wait");
   });
 
+  test("unsigned surat jalan tile stays available without signature status", () => {
+    const tiles = documentTiles({
+      documents: {
+        design_approved: [],
+        surat_jalan: [{
+          id: "sj-open",
+          sj_number: "SJ/OPEN",
+          preview_url: "/api/public/tracking/t/surat-jalan/sj-open",
+          has_signed: false,
+        }],
+      },
+      delivery_proofs: [],
+    });
+    expect(tiles.find((t) => t.key === "sj")).toMatchObject({
+      available: true,
+      status: "Tersedia",
+      href: "/api/public/tracking/t/surat-jalan/sj-open",
+    });
+  });
+
+  test("unsigned sibling tile stays Tersedia when another surat jalan is signed", () => {
+    const tiles = documentTiles({
+      documents: {
+        design_approved: [],
+        surat_jalan: [
+          {
+            id: "sj-open",
+            sj_number: "SJ/OPEN",
+            preview_url: "/api/public/tracking/t/surat-jalan/sj-open",
+            has_signed: false,
+          },
+          {
+            id: "sj-a1",
+            sj_number: "SJ/A1",
+            preview_url: "/api/public/tracking/t/surat-jalan/sj-a1",
+            has_signed: true,
+          },
+        ],
+      },
+      delivery_proofs: [],
+    });
+    expect(tiles.find((t) => t.key === "sj")).toMatchObject({
+      available: true,
+      status: "Tersedia",
+      href: "/api/public/tracking/t/surat-jalan/sj-open",
+    });
+  });
+
+  test("signed surat jalan tile reports signature status and the same href", () => {
+    const tiles = documentTiles({
+      documents: {
+        design_approved: [],
+        surat_jalan: [{
+          id: "sj-a1",
+          sj_number: "SJ/A1",
+          preview_url: "/api/public/tracking/t/surat-jalan/sj-a1",
+          has_signed: true,
+        }],
+      },
+      delivery_proofs: [],
+    });
+    expect(tiles.find((t) => t.key === "sj")).toMatchObject({
+      available: true,
+      status: "Bertanda tangan",
+      href: "/api/public/tracking/t/surat-jalan/sj-a1",
+    });
+  });
+
   test("document tiles keep payment unavailable and disable empty hrefs", () => {
     const tiles = documentTiles({
       documents: {

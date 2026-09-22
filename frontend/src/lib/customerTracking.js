@@ -241,6 +241,7 @@ export function compactItemSummary(items) {
 export function documentTiles(data) {
   const designDocs = data?.documents?.design_approved || [];
   const sjDocs = data?.documents?.surat_jalan || [];
+  const sjPreview = sjDocs[0]?.preview_url || "";
   const evidence = data?.shipments_evidence || [];
   const proofs = (data?.delivery_proofs || []).slice(0, 5);
   const approval = data?.design_approval;
@@ -271,9 +272,9 @@ export function documentTiles(data) {
     {
       key: "sj",
       label: "Surat Jalan",
-      available: Boolean(sjDocs[0]?.preview_url),
-      status: sjDocs[0]?.preview_url ? "Tersedia" : "Belum tersedia",
-      href: sjDocs[0]?.preview_url || "",
+      available: Boolean(sjPreview),
+      status: sjDocs[0]?.has_signed ? "Bertanda tangan" : (sjPreview ? "Tersedia" : "Belum tersedia"),
+      href: sjPreview,
       kind: "pdf",
     },
     {
