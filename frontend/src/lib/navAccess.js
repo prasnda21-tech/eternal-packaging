@@ -197,6 +197,10 @@ export function canReadAllProductRequests(hasPerm) {
   return canSeeNav(hasPerm, "product_request.read_all");
 }
 
+export function canReadOwnProductRequestDraft(hasPerm) {
+  return canCreateProductRequest(hasPerm) || canSeeNav(hasPerm, "product_request.read_own_draft");
+}
+
 export function productRequestEntryPath(hasPerm) {
   if (canReadAllProductRequests(hasPerm)) return PRODUCT_REQUEST_LIST_PATH;
   if (canCreateProductRequest(hasPerm)) return PRODUCT_REQUEST_NEW_PATH;

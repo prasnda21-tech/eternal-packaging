@@ -189,7 +189,7 @@ export const api = {
   accurateImportAvailable: () => client.get(`/accurate/import/available`).then((r) => r.data),
   productRequestContext: () => client.get(`/product-requests/context`).then((r) => r.data),
   productRequestCustomers: (params = {}) => client.get(`/product-requests/customers`, { params }).then((r) => r.data),
-  listProductRequests: () => client.get(`/product-requests`).then((r) => r.data),
+  listProductRequests: (params = {}) => client.get(`/product-requests`, { params }).then((r) => r.data),
   getProductRequest: (id) => client.get(`/product-requests/${encodeURIComponent(id)}`).then((r) => r.data),
   createProductRequest: (payload) => client.post(`/product-requests`, payload).then((r) => r.data),
   updateProductRequest: (id, payload) => client.patch(`/product-requests/${encodeURIComponent(id)}`, payload).then((r) => r.data),

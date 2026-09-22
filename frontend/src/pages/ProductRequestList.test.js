@@ -29,6 +29,38 @@ jest.mock("../lib/api", () => ({
   },
 }));
 
+jest.mock("lucide-react", () => new Proxy({}, {
+  get: (_target, prop) => {
+    if (prop === "__esModule") return true;
+    return (props) => <span data-icon={String(prop)} {...props} />;
+  },
+}), { virtual: true });
+
+const SUBMITTED_ROW = {
+  id: "r1",
+  request_number: "PPR-1",
+  submitted_at: "2026-09-20T01:00:00+00:00",
+  customer_name: "Renee",
+  customer_source: "master_crm",
+  product_name: "Cup",
+  product_source: "requested_product",
+  potential_qty: 50,
+  created_by_name: "Andi",
+  branch_name: "Surabaya",
+  status: "submitted",
+};
+
+const OWN_DRAFT = {
+  id: "d1",
+  request_number: "PPR-D1",
+  updated_at: "2026-09-21T02:00:00+00:00",
+  customer_name: "Draft Saya",
+  product_name: "Bowl",
+  potential_qty: 12,
+  status: "draft",
+  completeness: { done: 4, total: 9 },
+};
+
 const COMPLETE_SUBMITTED_DETAIL = {
   id: "r1",
   request_number: "PPR-1",
@@ -79,20 +111,9 @@ describe("ProductRequestList", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     mockHasPerm.mockImplementation((p) => p === "product_request.read_all" || p === "product_request.create");
-    mockApi.listProductRequests.mockResolvedValue({
-      requests: [{
-        id: "r1",
-        request_number: "PPR-1",
-        submitted_at: "2026-09-20T01:00:00+00:00",
-        customer_name: "Renee",
-        customer_source: "master_crm",
-        product_name: "Cup",
-        product_source: "requested_product",
-        potential_qty: 50,
-        created_by_name: "Andi",
-        branch_name: "Surabaya",
-        status: "submitted",
-      }],
+    mockApi.listProductRequests.mockImplementation((params = {}) => {
+      if (params.view === "own_drafts") return Promise.resolve({ requests: [OWN_DRAFT] });
+      return Promise.resolve({ requests: [SUBMITTED_ROW] });
     });
     mockApi.getProductRequest.mockResolvedValue({
       request: COMPLETE_SUBMITTED_DETAIL,
@@ -147,12 +168,67 @@ describe("ProductRequestList", () => {
     expect(container.textContent).not.toMatch(/Food Grade Paper/);
   });
 
-  test("CRM create-only is redirected to the form", async () => {
+  test("create-only user sees Draft Saya and continues the existing draft", async () => {
     mockHasPerm.mockImplementation((p) => p === "product_request.create");
+    mockNavigate.mockClear();
     await act(async () => {
       root.render(<ProductRequestList />);
     });
     await flush();
-    expect(container.querySelector('[data-testid="navigate"]').getAttribute("data-to")).toBe("/penjualan/permintaan-produk/baru");
+    expect(container.querySelector('[data-testid="navigate"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-list-page"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-tab-own-drafts"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-tab-submitted"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-create-from-list"]')).toBeTruthy();
+    expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "own_drafts" });
+    expect(mockApi.listProductRequests).not.toHaveBeenCalledWith({ view: "submitted" });
+    expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft Saya/);
+    await act(async () => {
+      container.querySelector('[data-testid="prq-continue-d1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/penjualan/permintaan-produk/d1");
+  });
+
+  test("read_all plus create shows Terkirim by default and own draft on Draft Saya", async () => {
+    await act(async () => {
+      root.render(<ProductRequestList />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prq-tab-submitted"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-count-submitted"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="prq-count-draft"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Renee/);
+    expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Terkirim/);
+    expect(container.querySelector('[data-testid="prq-view-r1"]').textContent).toMatch(/Lihat Detail/);
+    expect(container.querySelector('[data-testid="prq-draft-table"]')).toBeFalsy();
+    expect(container.textContent).not.toMatch(/Draft Orang Lain/);
+    expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "submitted" });
+    expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "own_drafts" });
+
+    await act(async () => {
+      container.querySelector('[data-testid="prq-tab-own-drafts"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft Saya/);
+    expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft/);
+    expect(container.querySelector('[data-testid="prq-draft-complete-d1"]').textContent).toBe("4/9");
+    expect(container.querySelector('[data-testid="prq-list-table"]')).toBeFalsy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="prq-continue-d1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/penjualan/permintaan-produk/d1");
+  });
+
+  test("read_all without create does not show Draft Saya", async () => {
+    mockHasPerm.mockImplementation((p) => p === "product_request.read_all");
+    await act(async () => {
+      root.render(<ProductRequestList />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prq-tab-submitted"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-tab-own-drafts"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeTruthy();
+    expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "submitted" });
+    expect(mockApi.listProductRequests).not.toHaveBeenCalledWith({ view: "own_drafts" });
   });
 });

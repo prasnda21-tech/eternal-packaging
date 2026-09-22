@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
 
@@ -56,7 +56,10 @@ def register_product_request_routes(
         return {"context": await get_form_context(get_db(), user)}
 
     @api_router.get("/product-requests")
-    async def list_product_requests_endpoint(user=Depends(current_user)):
+    async def list_product_requests_endpoint(
+        view: Optional[str] = Query(None),
+        user=Depends(current_user),
+    ):
         await require_any_perm(
             user,
             "product_request.create",
@@ -64,7 +67,7 @@ def register_product_request_routes(
             "product_request.read_all",
         )
         perms = await _perms(user)
-        return {"requests": await list_requests(get_db(), user, perms)}
+        return {"requests": await list_requests(get_db(), user, perms, view=view)}
 
     @api_router.post("/product-requests")
     async def create_product_request_endpoint(

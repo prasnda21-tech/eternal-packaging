@@ -938,3 +938,105 @@ async def test_concurrent_double_submit_one_winner():
     finally:
         pr.after_draft_load = None
         app.dependency_overrides.pop(current_user, None)
+
+
+def _ids(response):
+    return {row["id"] for row in response.json()["requests"]}
+
+
+@pytest.mark.anyio
+async def test_read_all_and_create_split_submitted_and_own_drafts():
+    """Own drafts stay visible to their creator without exposing anyone else's draft."""
+    import server
+    creator = _user(
+        "direktur_utama",
+        name="Direktur Combo",
+        override={"product_request.read_all": True, "product_request.create": True, "product_request.read_own_draft": True},
+    )
+    other = _user(
+        "crm",
+        name="CRM Lain",
+        override={"product_request.create": True, "product_request.read_own_draft": True},
+    )
+    read_all_only = _user(
+        "holding_team",
+        name="Holding Only",
+        override={"product_request.read_all": True, "product_request.create": False, "product_request.read_own_draft": False},
+    )
+    create_only = _user(
+        "crm",
+        name="CRM Own",
+        override={"product_request.create": True, "product_request.read_own_draft": True, "product_request.read_all": False},
+    )
+    await _prepare(server.db, [creator, other, read_all_only, create_only])
+    try:
+        async with _client_for(creator) as client:
+            own_draft = await client.post("/api/product-requests", json={"customer_source": "new_prospect", "customer_name": "Draft Direktur"})
+            assert own_draft.status_code == 200, own_draft.text
+            own_draft_id = own_draft.json()["request"]["id"]
+            own_draft_version = own_draft.json()["request"]["doc_version"]
+            own_submit_created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            own_submit_id = own_submit_created.json()["request"]["id"]
+            own_submit_version = own_submit_created.json()["request"]["doc_version"]
+            submitted = await client.post(f"/api/product-requests/{own_submit_id}/submit", json=COMPLETE_NEW)
+            assert submitted.status_code == 200, submitted.text
+
+        async with _client_for(other) as client:
+            foreign_draft = await client.post("/api/product-requests", json={"customer_source": "new_prospect", "customer_name": "Draft Orang Lain"})
+            foreign_draft_id = foreign_draft.json()["request"]["id"]
+            foreign_submit_created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            foreign_submit_id = foreign_submit_created.json()["request"]["id"]
+            foreign_submitted = await client.post(f"/api/product-requests/{foreign_submit_id}/submit", json=COMPLETE_NEW)
+            assert foreign_submitted.status_code == 200, foreign_submitted.text
+
+        async with _client_for(create_only) as client:
+            create_draft = await client.post("/api/product-requests", json={"customer_source": "new_prospect", "customer_name": "Draft CRM"})
+            create_draft_id = create_draft.json()["request"]["id"]
+            listed = await client.get("/api/product-requests")
+            assert create_draft_id in _ids(listed)
+            assert foreign_draft_id not in _ids(listed)
+            scoped = await client.get("/api/product-requests", params={"view": "own_drafts"})
+            assert scoped.status_code == 200
+            assert _ids(scoped) == {create_draft_id}
+            assert scoped.json()["requests"][0]["status"] == "draft"
+            denied_submitted = await client.get("/api/product-requests", params={"view": "submitted"})
+            assert denied_submitted.status_code == 403
+
+        async with _client_for(read_all_only) as client:
+            submitted_rows = await client.get("/api/product-requests", params={"view": "submitted"})
+            assert submitted_rows.status_code == 200
+            submitted_ids = _ids(submitted_rows)
+            assert own_submit_id in submitted_ids
+            assert foreign_submit_id in submitted_ids
+            assert own_draft_id not in submitted_ids
+            assert foreign_draft_id not in submitted_ids
+            assert create_draft_id not in submitted_ids
+            denied_drafts = await client.get("/api/product-requests", params={"view": "own_drafts"})
+            assert denied_drafts.status_code == 403
+            foreign_get = await client.get(f"/api/product-requests/{foreign_draft_id}")
+            assert foreign_get.status_code == 403
+
+        async with _client_for(creator) as client:
+            submitted_rows = await client.get("/api/product-requests", params={"view": "submitted"})
+            assert submitted_rows.status_code == 200
+            submitted_ids = _ids(submitted_rows)
+            assert own_submit_id in submitted_ids
+            assert foreign_submit_id in submitted_ids
+            assert own_draft_id not in submitted_ids
+            assert foreign_draft_id not in submitted_ids
+            own_rows = await client.get("/api/product-requests", params={"view": "own_drafts"})
+            assert own_rows.status_code == 200
+            assert _ids(own_rows) == {own_draft_id}
+            draft_row = own_rows.json()["requests"][0]
+            assert draft_row["status"] == "draft"
+            assert draft_row["customer_name"] == "Draft Direktur"
+            assert "completeness" in draft_row
+            foreign_get = await client.get(f"/api/product-requests/{foreign_draft_id}")
+            assert foreign_get.status_code == 403
+            own_get = await client.get(f"/api/product-requests/{own_draft_id}")
+            assert own_get.status_code == 200
+            assert own_get.json()["request"]["doc_version"] == own_draft_version
+            stored_submit = await server.db[COLLECTION].find_one({"id": own_submit_id}, {"_id": 0, "doc_version": 1})
+            assert stored_submit["doc_version"] == own_submit_version + 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
