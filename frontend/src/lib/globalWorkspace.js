@@ -65,7 +65,21 @@ export function visibleGlobalWorkspaceCatalog(hasPerm) {
 
   productionMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   taskMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
-  salesMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item, salesIdByPath[item.to])));
+  salesMenuItems(hasPerm).forEach((item) => {
+    const tab = itemToTab(item, salesIdByPath[item.to]);
+    if (tab.path === "/penjualan/permintaan-produk" || tab.path.startsWith("/penjualan/permintaan-produk/")) {
+      tabs.push({
+        ...tab,
+        id: "penjualan-permintaan-produk",
+        rememberPath: true,
+        matches(path) {
+          return path === "/penjualan/permintaan-produk" || path.startsWith("/penjualan/permintaan-produk/");
+        },
+      });
+      return;
+    }
+    tabs.push(tab);
+  });
   purchasingMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   inventoryMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   cashBankMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item, cashBankIdByPath[item.to])));

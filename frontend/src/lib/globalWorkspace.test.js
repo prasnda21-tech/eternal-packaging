@@ -119,6 +119,57 @@ describe("global workspace tabs", () => {
     expect(byPath["/penjualan/data-pelanggan"]).toBeTruthy();
   });
 
+  test("product request list, form, and detail share one workspace tab", () => {
+    const list = openOrActivateGlobalTab([], "/penjualan/permintaan-produk");
+    const form = openOrActivateGlobalTab(list.tabs, "/penjualan/permintaan-produk/baru");
+    const detail = openOrActivateGlobalTab(form.tabs, "/penjualan/permintaan-produk/req-1");
+    expect(detail.tabs).toHaveLength(1);
+    expect(detail.activated.id).toBe("penjualan-permintaan-produk");
+    expect(detail.activated.path).toBe("/penjualan/permintaan-produk/req-1");
+    expect(globalTabByPath("/penjualan/permintaan-produk/baru").id).toBe("penjualan-permintaan-produk");
+    expect(globalTabByPath("/penjualan/pesanan-penjualan").id).not.toBe("penjualan-permintaan-produk");
+  });
+
+  test("crm entry path still opens the product request tab on detail", () => {
+    const crm = (key) => [
+      "nav.sales",
+      "nav.sales.product_requests",
+      "product_request.create",
+      "product_request.read_own_draft",
+      "nav.sales.sales_order",
+    ].includes(key);
+    const opened = openOrActivateGlobalTab([], "/penjualan/permintaan-produk/req-9", crm);
+    expect(opened.activated.id).toBe("penjualan-permintaan-produk");
+    expect(opened.activated.path).toBe("/penjualan/permintaan-produk/req-9");
+    const neighbor = openOrActivateGlobalTab(opened.tabs, "/penjualan/pesanan-penjualan", crm);
+    expect(neighbor.tabs.map((t) => t.id)).toEqual(["penjualan-permintaan-produk", "pesanan-penjualan"]);
+    expect(neighbor.tabs.find((t) => t.id === "pesanan-penjualan").path).toBe("/penjualan/pesanan-penjualan");
+  });
+
+  test("rememberPath stays on product requests and does not retarget other tabs", () => {
+    const sales = openOrActivateGlobalTab([], "/penjualan/pesanan-penjualan");
+    expect(sales.activated.path).toBe("/penjualan/pesanan-penjualan");
+    expect(sales.activated.rememberPath).toBeUndefined();
+    const aktivitas = openOrActivateGlobalTab([], "/penjualan/aktivitas-sales/outlet/abc");
+    expect(aktivitas.activated.id).toBe("aktivitas-sales");
+    expect(aktivitas.activated.path).toBe("/penjualan/aktivitas-sales");
+    expect(openOrActivateGlobalTab([], "/spk").activated).toBe(null);
+
+    const draft = openOrActivateGlobalTab([], "/penjualan/permintaan-produk/req-1");
+    const withSales = openOrActivateGlobalTab(draft.tabs, "/penjualan/pesanan-penjualan");
+    const back = openOrActivateGlobalTab(withSales.tabs, "/penjualan/permintaan-produk/req-1");
+    expect(back.tabs.find((t) => t.id === "penjualan-permintaan-produk").path).toBe("/penjualan/permintaan-produk/req-1");
+    expect(back.tabs.find((t) => t.id === "pesanan-penjualan").path).toBe("/penjualan/pesanan-penjualan");
+    expect(back.activated.path).not.toBe("/penjualan/permintaan-produk/baru");
+
+    const user = { id: "remember-path-user" };
+    sessionStorage.clear();
+    saveGlobalWorkspaceTabs(user, back.tabs);
+    const loaded = loadGlobalWorkspaceTabs(user);
+    expect(loaded.find((t) => t.id === "penjualan-permintaan-produk").path).toBe("/penjualan/permintaan-produk/req-1");
+    expect(loaded.find((t) => t.id === "pesanan-penjualan").path).toBe("/penjualan/pesanan-penjualan");
+  });
+
   test("sales outlet detail aliases Aktivitas Sales", () => {
     const a = openOrActivateGlobalTab([], "/penjualan/aktivitas-sales");
     const b = openOrActivateGlobalTab(a.tabs, "/penjualan/aktivitas-sales/outlet/abc");

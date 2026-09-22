@@ -7,6 +7,7 @@ import {
   clearCustomerMode,
   clearProductMode,
   requiredComplete,
+  productRequestFormsEqual,
   selectMasterCustomer,
   selectMasterProduct,
   toPayload,
@@ -72,5 +73,12 @@ describe("product request form helpers", () => {
       needed_date: "2026-10-15",
     };
     expect(requiredComplete(complete)).toBe(true);
+  });
+
+  test("saved snapshot matches numeric qty and empty notes", () => {
+    const loaded = { ...EMPTY_FORM, potential_qty: 12, target_price: 0, request_note: "" };
+    const typed = { ...EMPTY_FORM, potential_qty: "12", target_price: "0", request_note: null };
+    expect(productRequestFormsEqual(loaded, typed)).toBe(true);
+    expect(productRequestFormsEqual(loaded, { ...typed, request_note: "belum disimpan" })).toBe(false);
   });
 });

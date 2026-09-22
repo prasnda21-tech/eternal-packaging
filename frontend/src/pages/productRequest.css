@@ -713,3 +713,23 @@
   margin:0;
   padding:4px 56px 4px 8px;
 }
+.prq-unsaved{
+  position:fixed;
+  inset:0;
+  z-index:80;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(15,23,42,.45);
+  padding:16px;
+}
+.prq-unsaved-card{
+  width:min(420px, 100%);
+  background:#fff;
+  border-radius:10px;
+  padding:16px;
+  box-shadow:0 12px 40px rgba(15,23,42,.2);
+}
+.prq-unsaved-card h2{margin:0 0 8px;font-size:16px}
+.prq-unsaved-card p{margin:0 0 14px;font-size:13px;line-height:1.45}
+.prq-unsaved-actions{display:flex;justify-content:flex-end;gap:8px}
