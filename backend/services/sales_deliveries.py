@@ -589,8 +589,7 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
     else:
         delivery_status = "SEBAGIAN"
 
-    next_shipment_index = len(existing_deliveries) + 1
-    suggested_sj = derive_sj_number(po_number, next_shipment_index)
+    next_shipment_index, suggested_sj = await allocate_sales_delivery_identity(db, po_id, po_number)
 
     return {
         "po_id": po_id,
@@ -624,6 +623,68 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
         "deliveries": existing_deliveries,
         "delivery_location": persistable_delivery_location(order.get("delivery_location")),
     }
+
+
+_SJ_ALLOCATION_ATTEMPTS = 8
+_CONCURRENT_CONFLICT = "Terjadi konflik transaksi bersamaan. Silakan muat ulang dan coba lagi."
+
+
+async def allocate_sales_delivery_identity(db, po_id: str, po_number: str) -> Tuple[int, str]:
+    """Next free (shipment_index, sj_number) under the unique indexes.
+
+    Active-row count is not that cursor. A deleted earlier Surat Jalan leaves
+    the higher shipment_index in place, and sj_number is unique across POs.
+    Repeating count+1 inserts the same key and the retry reports a false 409.
+    """
+    max_index = 0
+    existing = await db.sales_deliveries.find(
+        {"po_id": po_id},
+        {"shipment_index": 1, "_id": 0},
+    ).to_list(1000)
+    for doc in existing:
+        try:
+            idx = int((doc or {}).get("shipment_index") or 0)
+        except (TypeError, ValueError):
+            idx = 0
+        if idx > max_index:
+            max_index = idx
+
+    shipment_index = max_index + 1
+    for _ in range(_SJ_ALLOCATION_ATTEMPTS):
+        sj = derive_sj_number(po_number, shipment_index)
+        index_taken = await db.sales_deliveries.find_one(
+            {"po_id": po_id, "shipment_index": shipment_index},
+            {"_id": 1},
+        )
+        sj_taken = await db.sales_deliveries.find_one({"sj_number": sj}, {"_id": 1})
+        if not index_taken and not sj_taken:
+            return shipment_index, sj
+        shipment_index += 1
+    raise HTTPException(
+        409,
+        "Nomor Surat Jalan tidak dapat dialokasikan karena bentrok dengan dokumen yang sudah ada.",
+    )
+
+
+def _assert_fresh_delivery_qty(summary: Dict[str, Any], validated_lines: List[dict]) -> None:
+    """Reject a retry that would overship after another delivery committed."""
+    if not summary.get("can_create_delivery"):
+        raise HTTPException(
+            400,
+            "Kuantitas PO ini sudah dipenuhi oleh pengiriman lain yang selesai terlebih dahulu.",
+        )
+    by_idx = {l["line_idx"]: l for l in summary.get("lines") or []}
+    for item in validated_lines:
+        target = by_idx.get(item["line_idx"]) or {}
+        remain = int(target.get("remaining_qty") or 0)
+        unit = target.get("unit") or "pcs"
+        if int(item["qty"]) > remain:
+            name = target.get("name") or "item"
+            raise HTTPException(
+                400,
+                f"Kuantitas pengiriman untuk '{name}' ({item['qty']} {unit}) "
+                f"melebihi sisa PO yang tersedia ({remain} {unit}).",
+            )
 
 
 async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
@@ -745,13 +806,9 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
         # Retry loop in case of race condition / concurrent submission
         max_retries = 3
         for attempt in range(max_retries):
-            # Count existing valid deliveries to determine authoritative shipment_index
-            existing_count = await db.sales_deliveries.count_documents({
-                "po_id": summary["po_id"],
-                "is_cancelled": {"$ne": True}
-            })
-            shipment_index = existing_count + 1
-            authoritative_sj = derive_sj_number(po_number, shipment_index)
+            shipment_index, authoritative_sj = await allocate_sales_delivery_identity(
+                db, summary["po_id"], po_number
+            )
 
             delivery_id = str(uuid.uuid4())
             delivery_doc = {
@@ -804,8 +861,20 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
 
             try:
                 await db.sales_deliveries.insert_one(delivery_doc)
-                delivery_doc.pop("_id", None)
+            except DuplicateKeyError:
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
+                # Real race: another insert took this key. Do not reuse a stale
+                # count, and do not ship more than the quantity still remaining.
+                fresh_summary = await get_po_delivery_summary(db, order)
+                _assert_fresh_delivery_qty(fresh_summary, validated_lines)
+                summary = fresh_summary
+                if attempt == max_retries - 1:
+                    raise HTTPException(409, _CONCURRENT_CONFLICT)
+                continue
 
+            delivery_doc.pop("_id", None)
+            try:
                 # Auto-register corresponding Surat Jalan into PO records
                 shipment_entry = {
                     "id": delivery_id,
@@ -880,15 +949,6 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 except Exception:
                     logger.exception("surat jalan created notifications failed")
                 return delivery_doc
-            except DuplicateKeyError:
-                if claimed_stock:
-                    await release_sales_delivery_stock(db, claimed_stock)
-                # Concurrent submit detected: re-fetch summary and retry
-                fresh_summary = await get_po_delivery_summary(db, order)
-                if not fresh_summary["can_create_delivery"]:
-                    raise HTTPException(400, "Kuantitas PO ini sudah dipenuhi oleh pengiriman lain yang selesai terlebih dahulu.")
-                if attempt == max_retries - 1:
-                    raise HTTPException(409, "Terjadi konflik transaksi bersamaan. Silakan muat ulang dan coba lagi.")
             except Exception:
                 if claimed_stock:
                     await release_sales_delivery_stock(db, claimed_stock)
