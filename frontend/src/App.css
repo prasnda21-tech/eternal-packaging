@@ -3591,6 +3591,27 @@ html:has(.prod-schedule-page) #root{
 .stock-neg td{background:#fdf3f1}
 .stock-neg-val{color:var(--red);font-weight:700}
 .prod-table thead th .prod-th-label{color:inherit}
+.inventory-value-summary{display:grid;grid-template-columns:2fr repeat(3,minmax(0,1fr));border:1px solid var(--line);background:#fff;margin-bottom:12px}
+.inventory-value-summary-card{display:flex;flex-direction:column;gap:5px;padding:12px 14px;border-right:1px solid var(--line);min-width:0}
+.inventory-value-summary-card:last-child{border-right:0}
+.inventory-value-summary-card span{font:10px 'IBM Plex Mono';letter-spacing:.09em;text-transform:uppercase;color:var(--soft)}
+.inventory-value-summary-card strong{font:18px 'IBM Plex Mono';font-variant-numeric:tabular-nums;color:var(--ink)}
+.inventory-value-summary-card.is-total strong{font-size:21px;color:var(--green)}
+.inventory-value-summary-card.is-problem strong{color:var(--red)}
+.inventory-value-status{display:inline-flex;align-items:center;white-space:nowrap;padding:3px 7px;border:1px solid var(--line);border-radius:999px;font:600 10px 'IBM Plex Mono';letter-spacing:.03em}
+.inventory-value-status.is-ok{color:#17613b;background:#eef8f2;border-color:#b8dbc7}
+.inventory-value-status.is-missing_cost,.inventory-value-status.is-needs_cost{color:#7a5a13;background:#fff8e5;border-color:#e8d59d}
+.inventory-value-status.is-needs_uom,.inventory-value-status.is-qty_mismatch,.inventory-value-status.is-failed{color:#9b2f20;background:#fdf0ed;border-color:#e7b9b1}
+@media (max-width:900px){
+  .inventory-value-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inventory-value-summary-card:nth-child(2){border-right:0}
+  .inventory-value-summary-card:nth-child(-n+2){border-bottom:1px solid var(--line)}
+}
+@media (max-width:560px){
+  .inventory-value-summary{grid-template-columns:1fr}
+  .inventory-value-summary-card{border-right:0;border-bottom:1px solid var(--line)}
+  .inventory-value-summary-card:last-child{border-bottom:0}
+}
 
 /* -------- Status Pengiriman Barang (Accurate-like monitoring grid) -------- */
 html:has(.ship-status-page),

@@ -259,6 +259,30 @@ def test_head_production_gets_dashboard_nav():
     assert "schedule.edit" in hp
 
 
+def test_inventory_valuation_is_admin_and_holding_only_by_default():
+    for role in ("admin", "holding_team"):
+        permissions = set(ROLE_DEFAULT_PERMISSIONS[role])
+        assert "inventory_valuation.view" in permissions
+        assert "inventory_valuation.export" in permissions
+        assert "nav.inventory.inventory_value" in permissions
+    for role in (
+        "head_production",
+        "head_operations",
+        "operator",
+        "helper",
+        "screener",
+        "designer",
+        "driver",
+        "crm",
+        "direktur_utama",
+        "sales_eternal",
+    ):
+        permissions = set(ROLE_DEFAULT_PERMISSIONS[role])
+        assert "inventory_valuation.view" not in permissions, role
+        assert "inventory_valuation.export" not in permissions, role
+        assert "nav.inventory.inventory_value" not in permissions, role
+
+
 def test_designer_gets_designer_task_nav_not_scheduling():
     designer = set(ROLE_DEFAULT_PERMISSIONS["designer"])
     assert "design.upload" in designer

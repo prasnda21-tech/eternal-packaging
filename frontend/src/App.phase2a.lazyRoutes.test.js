@@ -65,6 +65,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
       "MasterBarangJasa",
       "ProductDetail",
       "StockSaatIni",
+      "NilaiPersediaan",
       "StockOpname",
       "PenerimaanBarang",
       "PermintaanPembelian",
