@@ -213,6 +213,21 @@ describe("PO Detail delivery cards", () => {
     expect(css).toMatch(/po-pair-grid/);
   });
 
+  test("Pengiriman keeps Lihat Surat Jalan in the preview dialog", () => {
+    const slot = detail.slice(detail.indexOf('id="po-stage-pengiriman"'), detail.indexOf('data-testid="notes-panel"'));
+    const viewButton = fs.readFileSync(path.join(__dirname, "../components/SuratJalanViewButton.jsx"), "utf8");
+    const preview = fs.readFileSync(path.join(__dirname, "../components/SuratJalanPreviewModal.jsx"), "utf8");
+    expect(slot).toMatch(/SuratJalanViewButton/);
+    expect(slot).toMatch(/terkirim-sj-lihat/);
+    expect(slot).not.toMatch(/\/m\/orders\//);
+    expect(viewButton).toMatch(/SuratJalanPreviewModal/);
+    expect(viewButton).toMatch(/Lihat Surat Jalan/);
+    expect(preview).toMatch(/role="dialog"/);
+    expect(preview).not.toMatch(/navigate\(/);
+    expect(css).toMatch(/\.sj-preview-body\{[^}]*overflow-y:auto/);
+    expect(css).toMatch(/\.modal-inner\.sj-preview-inner\{[^}]*max-height:calc\(100dvh - 32px\)/);
+  });
+
   test("Detail PO card headers are solid without gradients", () => {
     const start = css.indexOf(".po-detail .panel-head,");
     const end = css.indexOf(".po-detail .qty-ops-title{");
