@@ -136,3 +136,497 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* Buat Pesanan Penjualan — compact one-page workspace.
+   Height is locked once on AppShell. This form fills that area and does not set 100vh. */
+
+.so-create-workspace {
+  --so-teal: #0f766e;
+  --so-line: #e2e8e6;
+  --so-ink: #172126;
+  --so-muted: #64748b;
+  --so-notif-safe: 96px;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  box-sizing: border-box;
+  background: #f4f6f5;
+  color: var(--so-ink);
+  position: relative;
+}
+.so-create-workspace .so-create-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.so-create-workspace .so-create-header,
+.so-create-workspace .so-create-actionbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  max-height: 64px;
+  height: 60px;
+  background: #fff;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+}
+.so-create-workspace .so-create-header {
+  padding: 0 12px;
+  border-bottom: 1px solid var(--so-line);
+}
+.so-create-workspace .so-create-header h1,
+.so-create-workspace .so-create-drawer-head h2 {
+  margin: 0;
+  color: var(--so-ink);
+}
+.so-create-workspace .so-create-header h1 {
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.so-create-workspace .so-create-back,
+.so-create-workspace .so-create-help,
+.so-create-workspace .so-create-auto,
+.so-create-workspace .so-create-repeat,
+.so-create-workspace .so-create-add,
+.so-create-workspace .so-create-detail,
+.so-create-workspace .so-create-more > button,
+.so-create-workspace .so-drawer-done,
+.so-create-workspace .so-create-drawer-x {
+  font: 600 13px/1 "IBM Plex Sans", sans-serif;
+  border: 1px solid #d5ddd9;
+  background: #fff;
+  color: var(--so-ink);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.so-create-workspace .so-create-back,
+.so-create-workspace .so-create-help,
+.so-create-workspace .so-create-drawer-x {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.so-create-workspace .so-create-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: 4px;
+}
+.so-create-workspace .so-create-progress span,
+.so-create-workspace .so-create-totals,
+.so-create-workspace .so-create-note {
+  font-size: 12px;
+}
+.so-create-workspace .so-create-progress span {
+  font-weight: 650;
+  color: #3f4d48;
+  white-space: nowrap;
+}
+.so-create-workspace .so-create-meter {
+  width: 88px;
+  height: 4px;
+  border-radius: 99px;
+  background: #e2e8e6;
+  overflow: hidden;
+}
+.so-create-workspace .so-create-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--so-teal);
+}
+.so-create-workspace .so-create-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.so-create-workspace .so-create-chip.is-incomplete { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.so-create-workspace .so-create-chip.is-complete { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.so-create-workspace .so-create-detail {
+  margin-left: auto;
+  height: 32px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.so-create-workspace .so-create-detail.is-error { border-color: #dc2626; color: #b91c1c; }
+.so-create-workspace .so-create-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+}
+.so-create-workspace .so-create-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+.so-create-workspace .so-create-banner.is-error { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+.so-create-workspace .so-create-banner.is-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
+.so-create-workspace .so-create-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 1.4fr);
+  gap: 10px 14px;
+  padding: 12px 14px;
+  background: #fff;
+  border-bottom: 1px solid var(--so-line);
+  flex: 0 0 auto;
+}
+.so-create-workspace .so-create-field-address { grid-column: span 2; }
+.so-create-workspace .so-create-field label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 650;
+  color: #334155;
+}
+.so-create-workspace .so-req { color: #dc2626; }
+.so-create-workspace .so-create-field.is-error .so-line-input,
+.so-create-workspace .so-create-field.is-error .mis-input { border-color: #dc2626; }
+.so-create-workspace .so-create-inline,
+.so-create-workspace .so-create-actions,
+.so-create-workspace .so-create-totals,
+.so-create-workspace .so-create-line-toolbar,
+.so-create-workspace .so-create-drawer-head,
+.so-create-workspace .so-create-drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.so-create-workspace .so-create-inline,
+.so-create-workspace .so-create-search,
+.so-create-workspace .so-create-inline .mis-root { min-width: 0; }
+.so-create-workspace .so-create-inline .mis-root { flex: 1 1 auto; }
+.so-create-workspace .so-line-input,
+.so-create-workspace .mis-input,
+.so-create-workspace .so-create-search input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d5ddd9;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--so-ink);
+  font-family: "IBM Plex Sans", sans-serif;
+}
+.so-create-workspace .so-line-input,
+.so-create-workspace .mis-input {
+  height: 40px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+.so-create-workspace textarea.so-line-input { height: 40px; padding-top: 8px; resize: none; }
+.so-create-workspace .so-create-auto,
+.so-create-workspace .so-create-repeat {
+  height: 40px;
+  padding: 0 10px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.so-create-workspace .so-create-repeat:disabled,
+.so-create-workspace .so-create-save:disabled,
+.so-create-workspace .so-create-more-menu button:disabled { cursor: not-allowed; opacity: 0.6; }
+.so-create-workspace .so-create-note { margin-top: 3px; line-height: 1.3; color: #0369a1; }
+.so-create-workspace .so-create-note.is-warn { color: #b45309; }
+.so-create-workspace .so-create-lines {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #fff;
+}
+.so-create-workspace .so-create-line-toolbar {
+  padding: 8px 12px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--so-line);
+}
+.so-create-workspace .so-create-search { position: relative; flex: 1 1 220px; max-width: 360px; }
+.so-create-workspace .so-create-search svg {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #94a3b8;
+  pointer-events: none;
+}
+.so-create-workspace .so-create-search input { height: 36px; padding: 0 28px; font-size: 13px; }
+.so-create-workspace .so-create-search button {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  padding: 2px;
+}
+.so-create-workspace .so-create-add,
+.so-create-workspace .so-create-more > button {
+  height: 32px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.so-create-workspace .so-create-add { margin-left: auto; }
+.so-create-workspace .so-create-lines-scroll { min-width: 0; min-height: 0; }
+.so-create-workspace .so-create-lines-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.so-create-workspace .so-create-lines-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+  color: #475569;
+  font: 700 11px/1.2 "IBM Plex Sans", sans-serif;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 6px;
+  border-bottom: 1px solid var(--so-line);
+  white-space: nowrap;
+}
+.so-create-workspace .so-create-lines-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid #eef2f1;
+  vertical-align: middle;
+  background: #fff;
+}
+.so-create-workspace .so-col-no { width: 36px; color: var(--so-muted); font-weight: 700; }
+.so-create-workspace .so-col-name { min-width: 240px; }
+.so-create-workspace .so-col-code { width: 110px; }
+.so-create-workspace .so-col-process { width: 120px; }
+.so-create-workspace .so-col-qty { width: 84px; }
+.so-create-workspace .so-col-unit { width: 72px; }
+.so-create-workspace .so-col-color { width: 120px; }
+.so-create-workspace .so-col-notes { min-width: 140px; }
+.so-create-workspace .so-col-action { width: 48px; text-align: center; }
+.so-create-workspace .so-line-mode {
+  display: inline-flex;
+  margin-bottom: 4px;
+  border: 1px solid #d5ddd9;
+  border-radius: 7px;
+  overflow: hidden;
+}
+.so-create-workspace .so-line-mode button {
+  border: 0;
+  background: #fff;
+  color: #475569;
+  font: 600 11px/1 "IBM Plex Sans", sans-serif;
+  height: 22px;
+  padding: 0 7px;
+  cursor: pointer;
+}
+.so-create-workspace .so-line-mode button[aria-pressed="true"] { background: #f0fdfa; color: var(--so-teal); }
+.so-create-workspace .so-create-lines .so-line-input,
+.so-create-workspace .so-create-lines .mis-input { height: 32px; font-size: 13px; border-radius: 6px; }
+.so-create-workspace .so-col-action button {
+  border: 0;
+  background: transparent;
+  color: #dc2626;
+  cursor: pointer;
+  padding: 4px;
+}
+.so-create-workspace .so-col-action button:disabled { color: #cbd5e1; cursor: not-allowed; }
+.so-create-workspace .so-create-empty { padding: 16px; text-align: center; color: var(--so-muted); }
+.so-create-workspace .so-create-actionbar {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px 0 14px;
+  border-top: 1px solid var(--so-line);
+}
+.so-create-workspace .so-create-totals { gap: 16px; min-width: 0; font-size: 13px; color: #334155; }
+.so-create-workspace .so-create-filter-count { margin-left: 6px; color: var(--so-muted); font-weight: 500; }
+.so-create-workspace .so-create-actions { flex: 0 0 auto; }
+.so-create-workspace .so-create-more { position: relative; }
+.so-create-workspace .so-create-more > button { height: 40px; }
+.so-create-workspace .so-create-more-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 160px;
+  background: #fff;
+  border: 1px solid var(--so-line);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  padding: 4px;
+  z-index: 5;
+}
+.so-create-workspace .so-create-more-menu button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: 600 13px/1.2 "IBM Plex Sans", sans-serif;
+  cursor: pointer;
+}
+.so-create-workspace .so-create-more-menu button:hover { background: #f4f6f5; }
+.so-create-workspace .so-create-save,
+.so-create-workspace .so-drawer-done {
+  border: 0;
+  background: var(--so-teal);
+  color: #fff;
+}
+.so-create-workspace .so-create-save {
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font: 700 14px/1 "IBM Plex Sans", sans-serif;
+  cursor: pointer;
+}
+.so-create-workspace input:focus,
+.so-create-workspace select:focus,
+.so-create-workspace textarea:focus {
+  outline: 2px solid rgba(8, 145, 178, 0.35);
+  border-color: #0891b2;
+}
+.so-create-workspace .so-create-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: rgba(15, 23, 42, 0.28);
+  z-index: 30;
+  cursor: pointer;
+}
+.so-create-workspace .so-create-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 460px;
+  max-width: 100%;
+  background: #fff;
+  border-left: 1px solid var(--so-line);
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.08);
+}
+.so-create-workspace .so-create-drawer-head,
+.so-create-workspace .so-create-drawer-foot { justify-content: space-between; padding: 10px 12px; flex: 0 0 auto; }
+.so-create-workspace .so-create-drawer-head { border-bottom: 1px solid var(--so-line); }
+.so-create-workspace .so-create-drawer-head h2 { font-size: 15px; }
+.so-create-workspace .so-create-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.so-create-workspace .so-create-drawer-foot { border-top: 1px solid var(--so-line); justify-content: flex-end; }
+.so-create-workspace .so-drawer-done { height: 36px; padding: 0 14px; border-color: var(--so-teal); }
+
+@media (max-width: 1200px) {
+  .so-create-workspace .so-create-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .so-create-workspace .so-create-field-customer { grid-column: span 2; }
+}
+@media (min-width: 1024px) {
+  .app-shell:has(.so-create-workspace) {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .app-shell:has(.so-create-workspace) .app-sidebar { height: 100%; max-height: 100%; }
+  .app-main:has(.so-create-workspace) {
+    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+  .app-main:has(.so-create-workspace) .topbar { flex-shrink: 0; }
+  .content:has(.so-create-workspace) {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-width: none;
+    width: 100%;
+    margin: 0;
+    padding: 0 !important;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .so-create-workspace,
+  .so-create-workspace .so-create-form,
+  .so-create-workspace .so-create-lines { overflow: hidden; }
+  .so-create-workspace { max-height: 100%; }
+  .so-create-workspace .so-create-lines,
+  .so-create-workspace .so-create-lines-scroll { flex: 1 1 auto; }
+  .so-create-workspace .so-create-lines-scroll { overflow: auto; }
+  .so-create-workspace .so-create-actionbar { padding-right: var(--so-notif-safe); }
+}
+@media (max-width: 1023px) {
+  .app-shell:has(.so-create-workspace),
+  .app-main:has(.so-create-workspace),
+  .content:has(.so-create-workspace),
+  .so-create-workspace,
+  .so-create-workspace .so-create-form,
+  .so-create-workspace .so-create-lines {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  .so-create-workspace .so-create-lines-scroll {
+    overflow-x: auto;
+    overflow-y: visible;
+    flex: none;
+    max-height: none;
+  }
+  .so-create-workspace .so-create-actionbar { padding-right: 12px; }
+  .so-create-workspace .so-create-drawer,
+  .so-create-workspace .so-create-drawer-backdrop { position: fixed; }
+  .so-create-workspace .so-create-drawer { width: calc(100% - 8px); top: 0; right: 0; bottom: 0; }
+}
+@media (max-width: 720px) {
+  .so-create-workspace .so-create-header,
+  .so-create-workspace .so-create-actionbar {
+    height: auto;
+    max-height: none;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+  }
+  .so-create-workspace .so-create-fields { grid-template-columns: 1fr; }
+  .so-create-workspace .so-create-field-address,
+  .so-create-workspace .so-create-field-customer { grid-column: auto; }
+  .so-create-workspace .so-create-totals { flex-wrap: wrap; gap: 6px 12px; }
+}
