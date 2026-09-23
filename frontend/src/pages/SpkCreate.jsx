@@ -1,10 +1,203 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
-import { ClipboardPlus, Plus, Save, Trash2 } from "lucide-react";
+import { ChevronDown, ClipboardPlus, Plus, Save, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { PRIORITY_LABELS, TYPE_LABELS, formatSpkError, newIdempotencyKey, weightTotal } from "../lib/spk";
 import "./spk.css";
+
+const PIC_LIMIT = 12;
+const EMPTY_PICS = [];
+
+function uniqueIds(ids) {
+  const seen = [];
+  (ids || []).forEach((id) => {
+    if (!seen.includes(id)) seen.push(id);
+  });
+  return seen;
+}
+
+function picInTargetDivision(pic, division) {
+  if (!division || !Array.isArray(pic?.divisions)) return false;
+  return pic.divisions.some((item) => String(item) === String(division));
+}
+
+function assignedIdsForDivision(ids, catalog, division) {
+  const allowed = new Set(
+    (catalog || []).filter((pic) => picInTargetDivision(pic, division)).map((pic) => pic.id),
+  );
+  return uniqueIds(ids).filter((id) => allowed.has(id));
+}
+
+function PicMultiSelect({ pics, catalog, selectedIds, onToggle, division, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [box, setBox] = useState(null);
+  const rootRef = useRef(null);
+  const panelRef = useRef(null);
+  const triggerRef = useRef(null);
+  const names = useMemo(() => {
+    const map = new Map();
+    (catalog || []).forEach((pic) => map.set(pic.id, pic.name || ""));
+    (pics || []).forEach((pic) => map.set(pic.id, pic.name || ""));
+    return map;
+  }, [catalog, pics]);
+  const summary = selectedIds.length === 0
+    ? "Pilih PIC"
+    : selectedIds.length === 1
+      ? (names.get(selectedIds[0]) || "Pilih PIC")
+      : `${selectedIds.length} PIC dipilih`;
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return pics;
+    return pics.filter((pic) => String(pic.name || "").toLowerCase().includes(needle));
+  }, [pics, query]);
+  const atMax = selectedIds.length >= PIC_LIMIT;
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setBox(null);
+      return undefined;
+    }
+    const update = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const margin = 8;
+      const width = Math.min(rect.width, window.innerWidth - margin * 2);
+      let left = rect.left;
+      if (left + width > window.innerWidth - margin) left = window.innerWidth - width - margin;
+      if (left < margin) left = margin;
+      const maxPanel = 300;
+      let top = rect.bottom + 4;
+      if (top + maxPanel > window.innerHeight - margin) {
+        top = Math.max(margin, window.innerHeight - margin - maxPanel);
+      }
+      setBox({ top, left, width });
+    };
+    update();
+    const onPointer = (event) => {
+      const target = event.target;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    const onScroll = (event) => {
+      if (panelRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    const onResize = () => setOpen(false);
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    setOpen(false);
+    setQuery("");
+  }, [division]);
+
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+
+  const panel = open && box ? (
+    <div
+      id="spk-pic-panel"
+      ref={panelRef}
+      className="spk-pic-panel"
+      role="group"
+      aria-labelledby="spk-pic-label"
+      data-testid="spk-pic-panel"
+      style={{ top: box.top, left: box.left, width: box.width }}
+    >
+      <input
+        type="search"
+        className="spk-pic-search"
+        placeholder="Cari PIC"
+        aria-label="Cari PIC"
+        data-testid="spk-pic-search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <div className="spk-pic-list">
+        {visible.map((pic) => {
+          const checked = selectedIds.includes(pic.id);
+          const disabled = !checked && atMax;
+          return (
+            <label
+              key={pic.id}
+              className={disabled ? "spk-pic-option is-disabled" : "spk-pic-option"}
+              data-testid="spk-pic-option"
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={disabled}
+                onChange={() => onToggle(pic.id)}
+              />
+              {pic.name}
+            </label>
+          );
+        })}
+        {visible.length === 0 && (
+          <div className="spk-empty" data-testid="spk-pic-empty">
+            {query.trim() || pics.length > 0 ? "PIC tidak ditemukan" : "Tidak ada PIC yang dapat menerima tugas."}
+          </div>
+        )}
+      </div>
+      {atMax && <div className="spk-pic-max" data-testid="spk-pic-max">Maksimal 12 PIC</div>}
+    </div>
+  ) : null;
+
+  return (
+    <div className="spk-pic-field" ref={rootRef} id="spk-pic" data-testid="spk-pic">
+      <button
+        type="button"
+        id="spk-pic-trigger"
+        ref={triggerRef}
+        className="spk-pic-trigger"
+        data-testid="spk-pic-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls="spk-pic-panel"
+        disabled={disabled}
+        onClick={() => { if (!disabled) setOpen((value) => !value); }}
+      >
+        <span data-testid="spk-pic-summary">{summary}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {selectedIds.length > 0 && (
+        <div className="spk-pic-chips" data-testid="spk-pic-chips">
+          {selectedIds.map((id) => {
+            const name = names.get(id) || "";
+            if (!name) return null;
+            return (
+              <span key={id} className="spk-pic-chip" data-testid="spk-pic-chip">
+                <span>{name}</span>
+                <button type="button" aria-label={`Hapus ${name}`} onClick={() => onToggle(id)}>×</button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {disabled && <div className="spk-empty" data-testid="spk-pic-need-division">Pilih divisi tujuan terlebih dahulu</div>}
+      {panel && createPortal(panel, document.body)}
+    </div>
+  );
+}
 
 function blankMilestone(weight = "100") {
   return {
@@ -98,10 +291,11 @@ export default function SpkCreate({ mode } = {}) {
     return () => { cancelled = true; };
   }, [editId, navigate]);
 
+  const picCatalog = context?.pics || EMPTY_PICS;
   const pics = useMemo(() => {
-    const all = context?.pics || [];
-    return [...all].sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
-  }, [context]);
+    const divisionPics = picCatalog.filter((pic) => picInTargetDivision(pic, targetDivision));
+    return [...divisionPics].sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  }, [picCatalog, targetDivision]);
 
   const total = weightTotal(milestones);
   const weightOk = total === 100;
@@ -110,20 +304,34 @@ export default function SpkCreate({ mode } = {}) {
     setMilestones((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
   };
 
+  const changeDivision = (value) => {
+    setTargetDivision(value);
+    if (value !== targetDivision) setPicIds([]);
+  };
+
   const togglePic = (id) => {
     setPicIds((current) => {
-      if (current.includes(id)) return current.filter((item) => item !== id);
-      if (current.length >= 12) {
-        setError("Maksimal 12 PIC.");
-        return current;
-      }
-      setError("");
-      return [...current, id];
+      const unique = uniqueIds(current);
+      if (unique.includes(id)) return unique.filter((item) => item !== id);
+      if (!pics.some((pic) => pic.id === id)) return unique;
+      if (unique.length >= PIC_LIMIT) return unique;
+      return [...unique, id];
     });
   };
 
   const submit = async (publish) => {
     if (lock.current) return;
+    const selected = uniqueIds(picIds);
+    const assignedUserIds = assignedIdsForDivision(selected, picCatalog, targetDivision);
+    if (selected.length !== assignedUserIds.length) {
+      setPicIds(assignedUserIds);
+      setError("PIC tidak sesuai divisi tujuan.");
+      return;
+    }
+    if (assignedUserIds.length > PIC_LIMIT) {
+      setError("Maksimal 12 PIC");
+      return;
+    }
     lock.current = true;
     setBusy(true);
     setError("");
@@ -132,7 +340,7 @@ export default function SpkCreate({ mode } = {}) {
         title,
         priority,
         target_division: targetDivision,
-        assigned_user_ids: picIds,
+        assigned_user_ids: assignedUserIds,
         start_date: startDate,
         deadline,
         instruction,
@@ -204,27 +412,22 @@ export default function SpkCreate({ mode } = {}) {
       <div className="spk-row spk-row-3">
         <div className="spk-field">
           <label htmlFor="spk-division">Divisi Tujuan</label>
-          <select id="spk-division" data-testid="spk-target-division" value={targetDivision} onChange={(e) => setTargetDivision(e.target.value)}>
+          <select id="spk-division" data-testid="spk-target-division" value={targetDivision} onChange={(e) => changeDivision(e.target.value)}>
             {(context?.divisions || [{ id: "penjualan", label: "Penjualan" }]).map((item) => (
               <option key={item.id} value={item.id}>{item.label}</option>
             ))}
           </select>
         </div>
         <div className="spk-field">
-          <div className="spk-section-label">PIC (maksimal 12)</div>
-          <div id="spk-pic" data-testid="spk-pic">
-            {pics.map((pic) => (
-              <label key={pic.id} className="spk-check" data-testid="spk-pic-option">
-                <input
-                  type="checkbox"
-                  checked={picIds.includes(pic.id)}
-                  onChange={() => togglePic(pic.id)}
-                />
-                {pic.name}
-              </label>
-            ))}
-            {pics.length === 0 && <div className="spk-empty">Tidak ada PIC yang dapat menerima tugas.</div>}
-          </div>
+          <label id="spk-pic-label" className="spk-section-label" htmlFor="spk-pic-trigger">PIC (maksimal 12)</label>
+          <PicMultiSelect
+            pics={pics}
+            catalog={picCatalog}
+            selectedIds={picIds}
+            onToggle={togglePic}
+            division={targetDivision}
+            disabled={!targetDivision}
+          />
         </div>
         <div className="spk-field">
           <label>Cabang</label>

@@ -142,9 +142,25 @@
 }
 .spk-filters input { flex: 1; }
 
-.spk-table-scroll, .spk-panel-scroll, .spk-milestone-scroll {
+.spk-table-scroll, .spk-panel-scroll {
   min-height: 0;
   overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+/* Milestone rows grow with the form. Vertical scroll stays on .spk-create-scroll.
+   overflow-y is hidden (not visible) so overflow-x:auto is not forced back to auto. */
+.spk-milestone-scroll {
+  flex: 0 0 auto;
+  height: auto;
+  max-height: none;
+  min-height: auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   background: #fff;
@@ -274,7 +290,9 @@
 .spk-create-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -324,7 +342,7 @@
   overflow: auto;
 }
 
-.spk-milestone-scroll { flex: 1; }
+.spk-ms-table { min-width: 720px; }
 .spk-ms-table input, .spk-ms-table select {
   width: 100%;
   height: 28px;
@@ -408,6 +426,131 @@
 .spk-pager button:disabled { opacity: 0.5; }
 .spk-empty { padding: 16px; color: #64748b; font-size: 12px; }
 .spk-file-chip { font-size: 11px; background: #e2e8f0; border-radius: 99px; padding: 2px 8px; }
+
+.spk-pic-field { position: relative; min-width: 0; }
+.spk-pic-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.spk-pic-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spk-pic-trigger:disabled { opacity: 0.55; cursor: not-allowed; }
+.spk-pic-trigger svg { flex: 0 0 auto; }
+.spk-pic-trigger:focus-visible,
+.spk-pic-search:focus-visible,
+.spk-pic-option input:focus-visible,
+.spk-pic-chip button:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
+}
+.spk-pic-panel {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+.spk-pic-search {
+  flex: 0 0 auto;
+  height: 28px;
+  margin: 8px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.spk-pic-list {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.spk-pic-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #0f172a;
+}
+.spk-pic-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+}
+.spk-pic-option.is-disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+.spk-pic-max {
+  flex: 0 0 auto;
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #b91c1c;
+}
+.spk-pic-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.spk-pic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 0 2px 0 8px;
+  border-radius: 99px;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.spk-pic-chip span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.spk-pic-chip button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  color: #334155;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
 
 @media (max-width: 1100px) {
   .spk-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
