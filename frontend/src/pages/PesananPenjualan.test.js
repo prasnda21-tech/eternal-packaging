@@ -258,10 +258,12 @@ describe("Pesanan Penjualan Line Items UX & Live Search", () => {
     },
   ];
 
-  test("1. search input exists directly above line item list with placeholder", () => {
-    expect(src).toMatch(/data-testid="line-items-search-input"/);
-    expect(src).toMatch(/placeholder="Cari barang \/ jasa\.\.\."/);
+  test("1. item search lives on each row, not as a second global search", () => {
+    expect(src).not.toMatch(/data-testid="line-items-search-input"/);
+    expect(src).not.toMatch(/placeholder="Cari barang \/ jasa\.\.\."/);
     expect(src).not.toMatch(/btn-search-line-items/);
+    expect(src).toMatch(/testId=\{`line-item-search-\$\{originalIndex\}`\}/);
+    expect(src).toMatch(/placeholder="Cari nama \/ kode barang…"/);
   });
 
   test("2. full item list visible when search empty", () => {
@@ -339,14 +341,19 @@ describe("Pesanan Penjualan Line Items UX & Live Search", () => {
     expect(updatedLines[0].name).toBe("Dus A");
   });
 
-  test("9. item list scrolls inside the workspace and keeps a sticky header", () => {
+  test("9. item table grows with the page and does not own a vertical scroller", () => {
     const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     expect(src).toMatch(/data-testid="line-items-table-container"/);
-    expect(src).toMatch(/data-scroll-owner="line-items"/);
+    expect(src).toMatch(/data-scroll-owner=\{viewMode === "create" \? "page" : undefined\}/);
+    expect(src).not.toMatch(/data-scroll-owner="line-items"/);
     expect(src).not.toMatch(/minHeight:\s*"380px"/);
     expect(src).not.toMatch(/maxHeight:\s*"560px"/);
-    expect(css).toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*sticky/);
-    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow:\s*auto/);
+    expect(css).toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*static/);
+    expect(css).not.toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*sticky/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-x:\s*auto/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*visible/);
+    expect(css).not.toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow:\s*auto/);
+    expect(css).not.toMatch(/\.so-create-lines-scroll\s*\{[^}]*max-height:\s*\d+vh/);
   });
 });
 

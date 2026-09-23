@@ -44,12 +44,12 @@
 }
 
 .mis-list {
-  /* Measured .mis-option height on Pesanan Penjualan: 53px. */
+  /* Measured .mis-option height on Pesanan Penjualan: 53px. Cap stays within 280–320px. */
   --mis-option-height: 53px;
   --mis-list-pad-y: 4px;
   --mis-list-max: calc((var(--mis-option-height) * 5) + (var(--mis-list-pad-y) * 2));
   position: fixed;
-  z-index: 80;
+  z-index: 65;
   margin: 0;
   padding: 4px 0;
   list-style: none;
