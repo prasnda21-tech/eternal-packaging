@@ -1,5 +1,6 @@
 import { FileText } from "lucide-react";
 import { Link } from "react-router-dom";
+import { formatSalesDate } from "../lib/salesPwa";
 
 function Row({ label, available, to, state, meta }) {
   return (
@@ -19,6 +20,16 @@ function Row({ label, available, to, state, meta }) {
 
 function viewerPath(orderId, kind, documentId) {
   return `/sales/po/${encodeURIComponent(orderId)}/dokumen/${encodeURIComponent(kind)}/${encodeURIComponent(documentId)}`;
+}
+
+function sjMeta(sj) {
+  if (!sj?.has_signed) return sj?.date || "";
+  const parts = [];
+  if (sj.date) parts.push(sj.date);
+  parts.push("Sudah ditandatangani");
+  if (sj.recipient_name) parts.push(sj.recipient_name);
+  if (sj.signed_at) parts.push(formatSalesDate(sj.signed_at));
+  return parts.join(" · ");
 }
 
 export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
@@ -44,7 +55,7 @@ export default function SalesPwaDocumentSheet({ orderId, data, onClose }) {
             available={sj.available}
             to={sj.available ? viewerPath(orderId, "sj", sj.id) : null}
             state={viewerState}
-            meta={sj.date}
+            meta={sjMeta(sj)}
           />
         ))}
         {(data.invoices || []).map((inv) => (
