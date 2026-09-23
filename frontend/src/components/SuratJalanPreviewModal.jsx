@@ -40,6 +40,36 @@ export default function SuratJalanPreviewModal({
   }, [open, order?.id, list.length]);
 
   useEffect(() => {
+    if (!open) return undefined;
+    const body = document.body;
+    const html = document.documentElement;
+    const previous = {
+      bodyOverflow: body.style.overflow,
+      htmlOverflow: html.style.overflow,
+    };
+    const scrollX = window.scrollX || html.scrollLeft || 0;
+    const scrollY = window.scrollY || html.scrollTop || 0;
+    body.style.overflow = "hidden";
+    html.style.overflow = "hidden";
+    return () => {
+      body.style.overflow = previous.bodyOverflow;
+      html.style.overflow = previous.htmlOverflow;
+      if (window.scrollX !== scrollX || window.scrollY !== scrollY) {
+        window.scrollTo(scrollX, scrollY);
+      }
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event) => {
+      if (event.key === "Escape") onClose?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  useEffect(() => {
     const fileId = active?.file_id || active?.id;
     const kindHint = active ? isPreviewableSj(active) : null;
     if (!open || !fileId || !order?.id) return undefined;
@@ -99,7 +129,7 @@ export default function SuratJalanPreviewModal({
   };
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" data-testid="sj-preview-modal" onClick={onClose}>
+    <div className="modal sj-preview-modal" role="dialog" aria-modal="true" data-testid="sj-preview-modal" onClick={onClose}>
       <div className="modal-inner modal-wide sj-preview-inner" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>SURAT JALAN</h3>
@@ -159,7 +189,7 @@ export default function SuratJalanPreviewModal({
             )}
           </div>
         </div>
-        <div className="delete-modal-actions">
+        <div className="delete-modal-actions sj-preview-footer" data-testid="sj-preview-footer">
           <button type="button" className="ghost" onClick={onClose} data-testid="sj-preview-close">Tutup</button>
           {canDownload && fileAvailable && (active?.file_id || active?.id) ? (
             <button type="button" className="primary" onClick={onDownload} data-testid="sj-preview-download">Download</button>
