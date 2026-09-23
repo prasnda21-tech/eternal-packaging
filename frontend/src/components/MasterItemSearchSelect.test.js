@@ -3,8 +3,10 @@ import {
   isDuplicateAccurateItem,
   listboxViewState,
   masterItemOptionKey,
+  MASTER_ITEM_LIST_MAX_PX,
   MASTER_ITEM_LIST_VISIBLE_ROWS,
   MASTER_ITEM_SEARCH_DEBOUNCE_MS,
+  placeMasterItemListBox,
   shouldApplySearchResult,
 } from "./MasterItemSearchSelect";
 import { filterFacetOptions, listboxViewState as facetViewState } from "./FacetSearchSelect";
@@ -104,6 +106,41 @@ describe("MasterItemSearchSelect 5-row list capacity", () => {
     expect(src).not.toMatch(/Array\.from\(\s*\{\s*length:\s*5/);
     expect(src).not.toMatch(/fake empty/);
     expect(css).not.toMatch(/min-height:\s*var\(--mis-list-max\)/);
+  });
+
+  test("dropdown opens upward when the space below the input is too small", () => {
+    expect(MASTER_ITEM_LIST_MAX_PX).toBeGreaterThanOrEqual(280);
+    expect(MASTER_ITEM_LIST_MAX_PX).toBeLessThanOrEqual(320);
+    expect(src).toMatch(/createPortal/);
+    expect(src).toMatch(/data-overlay="portal"/);
+    expect(src).toMatch(/data-placement=\{listBox\.placement\}/);
+    expect(src).toMatch(/placeMasterItemListBox/);
+    expect(css).toMatch(/position:\s*fixed/);
+    expect(css).toMatch(/z-index:\s*65/);
+    const below = placeMasterItemListBox(
+      { top: 80, bottom: 120, left: 40, width: 220 },
+      { width: 1366, height: 768 },
+      300,
+    );
+    expect(below.placement).toBe("below");
+    expect(below.top).toBe(124);
+    expect(below.width).toBeGreaterThanOrEqual(280);
+    const above = placeMasterItemListBox(
+      { top: 640, bottom: 680, left: 40, width: 360 },
+      { width: 1366, height: 768 },
+      300,
+    );
+    expect(above.placement).toBe("above");
+    expect(above.top).toBeLessThan(640);
+    expect(above.top + above.maxHeight).toBeLessThanOrEqual(640);
+    expect(above.maxHeight).toBeLessThanOrEqual(300);
+    const loading = placeMasterItemListBox(
+      { top: 400, bottom: 440, left: 40, width: 360 },
+      { width: 1366, height: 768 },
+      50,
+    );
+    expect(loading.placement).toBe("below");
+    expect(loading.maxHeight).toBeGreaterThan(200);
   });
 
   test("click still selects the exact option identity; same name stays separate", () => {
