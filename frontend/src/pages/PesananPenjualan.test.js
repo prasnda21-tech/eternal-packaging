@@ -339,12 +339,14 @@ describe("Pesanan Penjualan Line Items UX & Live Search", () => {
     expect(updatedLines[0].name).toBe("Dus A");
   });
 
-  test("9. item list container has enlarged scrollable layout and sticky table header", () => {
+  test("9. item list scrolls inside the workspace and keeps a sticky header", () => {
+    const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     expect(src).toMatch(/data-testid="line-items-table-container"/);
-    expect(src).toMatch(/overflowY:\s*"auto"/);
-    expect(src).toMatch(/maxHeight:\s*"560px"/);
-    expect(src).toMatch(/minHeight:\s*"380px"/);
-    expect(src).toMatch(/position:\s*"sticky"/);
+    expect(src).toMatch(/data-scroll-owner="line-items"/);
+    expect(src).not.toMatch(/minHeight:\s*"380px"/);
+    expect(src).not.toMatch(/maxHeight:\s*"560px"/);
+    expect(css).toMatch(/\.so-create-lines-table thead th\s*\{[^}]*position:\s*sticky/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow:\s*auto/);
   });
 });
 
