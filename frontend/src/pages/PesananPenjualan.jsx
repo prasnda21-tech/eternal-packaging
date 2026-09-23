@@ -313,7 +313,6 @@ export default function PesananPenjualan() {
   const [formBusy, setFormBusy] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
-  const [lineSearchQuery, setLineSearchQuery] = useState("");
   const [lineModes, setLineModes] = useState({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerIssueField, setDrawerIssueField] = useState("");
@@ -441,11 +440,6 @@ export default function PesananPenjualan() {
     repeatAbortRef.current?.abort();
     repeatRequestCustomerIdRef.current = null;
   }, []);
-
-  const filteredLineItems = useMemo(
-    () => filterPoLineItems(formData.line_items, lineSearchQuery),
-    [formData.line_items, lineSearchQuery]
-  );
 
   const loadOrdersAbortRef = useRef(null);
 
@@ -862,7 +856,6 @@ export default function PesananPenjualan() {
     });
     setFormErr("");
     setSuccessMsg("");
-    setLineSearchQuery("");
     setLineModes({});
     setDrawerOpen(false);
     setDrawerIssueField("");
@@ -1077,10 +1070,11 @@ export default function PesananPenjualan() {
   return (
     <div
       className={viewMode === "create"
-        ? "sales-order-page so-create-workspace"
+        ? `sales-order-page so-create-workspace${drawerOpen ? " is-drawer-open" : ""}`
         : "sales-order-page penjualan-page penjualan-workspace"}
       data-testid="sales-order-page"
       data-view={viewMode}
+      data-scroll-owner={viewMode === "create" ? "page" : undefined}
       style={viewMode === "create" ? undefined : { padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}
     >
       {viewMode === "list" && (
@@ -1138,55 +1132,49 @@ export default function PesananPenjualan() {
       {viewMode === "create" && (
         <form className="so-create-form" onSubmit={handleFormSubmit} data-testid="sales-order-form">
           <header className="so-create-header" data-testid="so-create-header">
-            <button
-              type="button"
-              className="so-create-back"
-              onClick={() => setViewMode("list")}
-              data-testid="back-to-list-btn"
-              aria-label="Kembali ke daftar"
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <h1 data-testid="sales-order-title">Buat Pesanan Penjualan</h1>
-            <button
-              type="button"
-              className="so-create-help"
-              title="Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
-              aria-label="Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
-            >
-              <CircleHelp size={14} />
-            </button>
-            <div className="so-create-progress" data-testid="so-create-progress">
-              <span data-testid="so-progress-label">{formProgress.label}</span>
-              <div
-                className="so-create-meter"
-                role="progressbar"
-                aria-valuenow={formProgress.completed}
-                aria-valuemin={0}
-                aria-valuemax={formProgress.total}
-                aria-label={`Kelengkapan formulir ${formProgress.label}`}
+            <div className="so-create-heading">
+              <h1 data-testid="sales-order-title">Buat Pesanan Penjualan</h1>
+              <div className="so-create-progress" data-testid="so-create-progress">
+                <span data-testid="so-progress-label">{formProgress.label}</span>
+                <span
+                  className={`so-create-chip${formProgress.complete ? " is-complete" : " is-incomplete"}`}
+                  data-testid="so-status-chip"
+                >
+                  {formProgress.statusLabel}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="so-create-help"
+                title="Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
+                aria-label="Struktur data, validasi, dan alur workflow sama persis dengan PO Masuk / Import PO"
               >
-                <span style={{ width: `${formProgress.total ? (formProgress.completed / formProgress.total) * 100 : 0}%` }} />
-        </div>
-      </div>
-            <span
-              className={`so-create-chip${formProgress.complete ? " is-complete" : " is-incomplete"}`}
-              data-testid="so-status-chip"
-            >
-              {formProgress.statusLabel}
-            </span>
-            <button
-              type="button"
-              ref={detailBtnRef}
-              className={`so-create-detail${drawerIssueField ? " is-error" : ""}`}
-              data-testid="btn-detail-tambahan"
-              aria-expanded={drawerOpen}
-              aria-controls="so-extra-drawer"
-              onClick={() => (drawerOpen ? closeDrawer() : setDrawerOpen(true))}
-            >
-              Detail Tambahan
-              {drawerIssueField ? <span className="so-create-dot" data-testid="so-drawer-error-dot" /> : null}
-            </button>
+                <CircleHelp size={14} />
+              </button>
+            </div>
+            <div className="so-create-header-actions">
+              <button
+                type="button"
+                ref={detailBtnRef}
+                className={`so-create-detail${drawerIssueField ? " is-error" : ""}`}
+                data-testid="btn-detail-tambahan"
+                aria-expanded={drawerOpen}
+                aria-controls="so-extra-drawer"
+                onClick={() => (drawerOpen ? closeDrawer() : setDrawerOpen(true))}
+              >
+                Detail Tambahan
+                {drawerIssueField ? <span className="so-create-dot" data-testid="so-drawer-error-dot" /> : null}
+              </button>
+              <button
+                type="button"
+                className="so-create-back"
+                onClick={() => setViewMode("list")}
+                data-testid="back-to-list-btn"
+                aria-label="Kembali ke daftar"
+              >
+                <ArrowLeft size={16} /> Kembali
+              </button>
+            </div>
           </header>
 
           {formErr && (
@@ -1300,7 +1288,7 @@ export default function PesananPenjualan() {
                 value={formData.address}
                 onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
                 placeholder="Alamat jalan, gedung, nomor, patokan"
-                rows={1}
+                rows={2}
                 data-testid="input-address"
                 aria-invalid={fieldHasError("address") || undefined}
               />
@@ -1309,26 +1297,9 @@ export default function PesananPenjualan() {
 
           <div className="so-create-lines" data-so-region="lines">
             <div className="so-create-line-toolbar" data-testid="so-line-toolbar">
-              <div className="so-create-search">
-                <Search size={14} />
-                <input
-                  type="text"
-                  data-testid="line-items-search-input"
-                  value={lineSearchQuery}
-                  onChange={(e) => setLineSearchQuery(e.target.value)}
-                  placeholder="Cari barang / jasa..."
-                />
-                {lineSearchQuery && (
-                  <button
-                    type="button"
-                    data-testid="btn-clear-line-search"
-                    onClick={() => setLineSearchQuery("")}
-                    title="Bersihkan pencarian"
-                    aria-label="Bersihkan pencarian"
-                  >
-                    <X size={14} />
-                  </button>
-                )}
+              <div className="so-create-line-heading">
+                <h2>Daftar Item</h2>
+                <span data-testid="so-line-count">{formData.line_items.length} item</span>
               </div>
               <button
                 type="button"
@@ -1351,12 +1322,11 @@ export default function PesananPenjualan() {
             <div
               className="so-create-lines-scroll"
               data-testid="line-items-table-container"
-              data-scroll-owner="line-items"
             >
               <table className="so-create-lines-table">
                 <thead>
                   <tr>
-                    <th className="so-col-no">#</th>
+                    <th className="so-col-no" scope="col">#</th>
                     <th className="so-col-name">Barang / Jasa <span className="so-req">*</span></th>
                     <th className="so-col-code">Kode</th>
                     <th className="so-col-process">Proses</th>
@@ -1368,18 +1338,18 @@ export default function PesananPenjualan() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredLineItems.length === 0 ? (
+                  {formData.line_items.length === 0 ? (
                     <tr>
                       <td colSpan={9} data-testid="line-items-empty-state" className="so-create-empty">
                         Tidak ada barang/jasa yang cocok.
                       </td>
                     </tr>
                   ) : (
-                    filteredLineItems.map(({ line, originalIndex }) => {
+                    formData.line_items.map((line, originalIndex) => {
                       const mode = lineModes[line.rowKey] || "master";
                       return (
                         <tr key={line.rowKey} data-testid={`line-item-row-${originalIndex}`}>
-                          <td className="so-col-no">{originalIndex + 1}</td>
+                          <td className="so-col-no" data-testid={`line-item-number-${originalIndex}`}>{originalIndex + 1}</td>
                           <td className="so-col-name">
                             <div className="so-line-mode" role="group" aria-label={`Mode barang baris ${originalIndex + 1}`}>
                               <button
@@ -1514,11 +1484,6 @@ export default function PesananPenjualan() {
             <div className="so-create-totals">
               <span data-testid="so-total-items">
                 Total Item: <strong>{formData.line_items.length}</strong>
-                {lineSearchQuery.trim() && (
-                  <span className="so-create-filter-count">
-                    (Menampilkan {filteredLineItems.length} dari {formData.line_items.length})
-                  </span>
-                )}
               </span>
               <span data-testid="so-total-qty">
                 Total Quantity: <strong>{totalQty.toLocaleString("id-ID")} pcs</strong>
@@ -1629,7 +1594,7 @@ export default function PesananPenjualan() {
                 </div>
                 <div className="so-create-drawer-foot">
                   <button type="button" className="so-drawer-done" data-testid="so-drawer-done" onClick={closeDrawer}>
-                    Selesai
+                    Tutup
                   </button>
                 </div>
               </aside>

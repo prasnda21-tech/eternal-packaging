@@ -651,22 +651,69 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(api.createSalesOrder).not.toHaveBeenCalled();
   });
 
-  test("workspace CSS is page-scoped and keeps desktop and mobile scroll contracts", () => {
+  test("workspace CSS lets the page scroll and keeps the action bar in flow", () => {
     const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
     const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
     expect(page).toMatch(/hasPerm\("sales_order\.create"\) \|\| hasPerm\("po\.edit"\) \|\| user\?\.role === "admin"/);
-    expect(css).toMatch(/--so-notif-safe:\s*96px/);
-    expect(css).toMatch(/padding-right:\s*var\(--so-notif-safe\)/);
-    expect(css).toMatch(/\.app-shell:has\(\.so-create-workspace\)\s*\{[^}]*height:\s*100dvh/);
+    expect(css).not.toMatch(/--so-notif-safe:\s*96px/);
+    expect(css).not.toMatch(/\.app-shell:has\(\.so-create-workspace\)\s*\{[^}]*height:\s*100dvh/);
+    expect(css).not.toMatch(/\.app-shell:has\(\.so-create-workspace\)\s*\{[^}]*overflow:\s*hidden/);
     expect(css).not.toMatch(/\.so-create-workspace\s*\{[^}]*100vh/);
-    expect(css).toMatch(/min-height:\s*0/);
-    expect(css).toMatch(/@media \(max-width: 1023px\)[\s\S]*overflow:\s*visible/);
-    expect(css).toMatch(/@media \(min-width: 1024px\)[\s\S]*\.so-create-lines-scroll\s*\{[^}]*overflow:\s*auto/);
+    expect(css).toMatch(/\.content:has\(\.so-create-workspace\)\s*\{[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*overflow-y:\s*visible/);
+    expect(css).toMatch(/\.so-create-lines-scroll\s*\{[^}]*max-height:\s*none/);
+    expect(css).toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*static/);
+    expect(css).not.toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*fixed/);
+    expect(css).not.toMatch(/\.so-create-actionbar\s*\{[^}]*position:\s*sticky/);
+    expect(css).toMatch(/@media \(min-width: 1024px\)\s*\{\s*\.so-create-workspace \.so-create-actionbar\s*\{[^}]*padding-right:\s*72px/);
     expect(css).not.toMatch(/(^|\n)\s*(input|table|\.card|\.btn)\s*[,{]/);
     expect(css).not.toMatch(/\.po-detail/);
     expect(detail).not.toMatch(/so-create-workspace/);
     expect(page).toMatch(/data-testid="so-create-actionbar"/);
     expect(page).toMatch(/data-testid="btn-submit-sales-order"/);
+    expect(page).toMatch(/data-scroll-owner=\{viewMode === "create" \? "page" : undefined\}/);
+  });
+
+  test("first row is visible as number 1 and there is no global item search", async () => {
+    await openCreate();
+    expect(container.querySelector('[data-testid="line-items-search-input"]')).toBeNull();
+    expect(container.querySelector('[data-testid="line-item-row-0"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="line-item-number-0"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="line-item-search-0-input"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="sales-order-page"]').getAttribute("data-scroll-owner")).toBe("page");
+    const table = container.querySelector('[data-testid="line-items-table-container"]');
+    expect(table.getAttribute("data-scroll-owner")).toBeNull();
+  });
+
+  test("item autocomplete portals to the document and closes on Escape and outside click", async () => {
+    api.masterItemsPicker.mockResolvedValue({
+      items: [{ id: "m1", accurate_item_id: "a1", item_name: "Box Karton", item_code: "BX-01", unit: "pcs" }],
+    });
+    await openCreate();
+    const search = container.querySelector('[data-testid="line-item-search-0-input"]');
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, "box");
+    });
+    await tick(350);
+    const list = document.body.querySelector('[data-testid="line-item-search-0-list"]');
+    expect(list).toBeTruthy();
+    expect(list.getAttribute("data-overlay")).toBe("portal");
+    expect(container.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, "box");
+    });
+    await tick(350);
+    expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeTruthy();
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
   });
 });

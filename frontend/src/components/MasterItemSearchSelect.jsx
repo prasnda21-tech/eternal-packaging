@@ -6,6 +6,44 @@ import "./masterItemSearchSelect.css";
 export const MASTER_ITEM_SEARCH_DEBOUNCE_MS = 300;
 export const MASTER_ITEM_SEARCH_PAGE_SIZE = 40;
 export const MASTER_ITEM_LIST_VISIBLE_ROWS = 5;
+export const MASTER_ITEM_LIST_MAX_PX = 300;
+
+/**
+ * Viewport overlay box for the item list.
+ * Opens upward when the space below the input cannot hold the list.
+ */
+export function placeMasterItemListBox(rect, viewport, measuredHeight = MASTER_ITEM_LIST_MAX_PX) {
+  if (!rect || !viewport) return null;
+  const gutter = 8;
+  const gap = 4;
+  const vw = Number(viewport.width) || 0;
+  const vh = Number(viewport.height) || 0;
+  const minWidth = Math.min(280, Math.max(vw - gutter * 2, 0));
+  const width = Math.min(
+    Math.max(Number(rect.width) || 0, minWidth),
+    Math.max(vw - gutter * 2, 0),
+  );
+  const maxLeft = Math.max(gutter, vw - width - gutter);
+  const left = Math.min(Math.max(gutter, Number(rect.left) || gutter), maxLeft);
+  const spaceBelow = Math.max(0, vh - Number(rect.bottom) - gutter);
+  const spaceAbove = Math.max(0, Number(rect.top) - gutter);
+  const measured = Number(measuredHeight);
+  const content = Number.isFinite(measured) && measured > 0 ? measured : MASTER_ITEM_LIST_MAX_PX;
+  const openBelow = spaceBelow >= Math.min(MASTER_ITEM_LIST_MAX_PX, 160) || spaceBelow >= spaceAbove;
+  const available = Math.max(0, (openBelow ? spaceBelow : spaceAbove) - gap);
+  const maxHeight = Math.max(0, Math.min(MASTER_ITEM_LIST_MAX_PX, available));
+  const usedHeight = Math.min(maxHeight, content);
+  const top = openBelow
+    ? Number(rect.bottom) + gap
+    : Math.max(gutter, Number(rect.top) - gap - usedHeight);
+  return {
+    top: Math.round(top),
+    left: Math.round(left),
+    width: Math.round(width),
+    maxHeight: Math.round(maxHeight),
+    placement: openBelow ? "below" : "above",
+  };
+}
 
 export function formatMasterItemLabel(item) {
   if (!item) return "";
@@ -132,13 +170,31 @@ export default function MasterItemSearchSelect({
 
   const placeList = useCallback(() => {
     const anchor = rootRef.current;
-    if (!anchor || typeof window === "undefined") return;
+    if (!anchor || !anchor.isConnected || typeof window === "undefined") {
+      setOpen(false);
+      setListBox(null);
+      return;
+    }
     const rect = anchor.getBoundingClientRect();
-    const gutter = 8;
-    const width = Math.min(rect.width, Math.max(window.innerWidth - gutter * 2, 0));
-    const left = Math.max(gutter, Math.min(rect.left, window.innerWidth - width - gutter));
-    const top = rect.bottom + 4;
-    setListBox({ top, left, width });
+    const measured = listRef.current ? listRef.current.scrollHeight : 0;
+    const next = placeMasterItemListBox(rect, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }, measured);
+    if (!next) return;
+    setListBox((prev) => {
+      if (
+        prev
+        && prev.top === next.top
+        && prev.left === next.left
+        && prev.width === next.width
+        && prev.maxHeight === next.maxHeight
+        && prev.placement === next.placement
+      ) {
+        return prev;
+      }
+      return next;
+    });
   }, []);
 
   useLayoutEffect(() => {
@@ -154,6 +210,12 @@ export default function MasterItemSearchSelect({
       window.removeEventListener("scroll", placeList, true);
     };
   }, [open, disabled, readOnly, placeList, view, items.length]);
+
+  useLayoutEffect(() => {
+    if (!open || disabled || readOnly || !listBox) return undefined;
+    placeList();
+    return undefined;
+  }, [open, disabled, readOnly, listBox, placeList]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -263,11 +325,14 @@ export default function MasterItemSearchSelect({
           role="listbox"
           data-testid={`${testId}-list`}
           data-view={view}
+          data-overlay="portal"
+          data-placement={listBox.placement}
           data-visible-rows={MASTER_ITEM_LIST_VISIBLE_ROWS}
           style={{
             top: listBox.top,
             left: listBox.left,
             width: listBox.width,
+            maxHeight: listBox.maxHeight,
           }}
         >
           {view === "loading" && (
