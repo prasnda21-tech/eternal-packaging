@@ -35,6 +35,7 @@ const TILE_ICONS = {
   [NAV_KEYS.purchaseReceipts]: Package,
   [NAV_KEYS.masterItems]: Package,
   [NAV_KEYS.currentStock]: Boxes,
+  [NAV_KEYS.inventoryValue]: Coins,
   [NAV_KEYS.analytics]: FileBarChart,
   [NAV_KEYS.statusPo]: TableIcon,
   [NAV_KEYS.shipmentStatus]: Truck,

@@ -1,0 +1,226 @@
+"""Read-only Nilai Persediaan over local Stock V2 and HPP fixtures."""
+import os
+import sys
+from io import BytesIO
+from pathlib import Path
+
+import pytest
+from motor.motor_asyncio import AsyncIOMotorClient
+from openpyxl import load_workbook
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+
+from services.inventory_valuation import (
+    build_inventory_valuation_rows,
+    export_xlsx,
+    filter_sort_page,
+)
+
+DB_NAME = "eternal_inventory_valuation_test"
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
+async def db():
+    client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    database = client[DB_NAME]
+    await client.drop_database(DB_NAME)
+    yield database
+    await client.drop_database(DB_NAME)
+    client.close()
+
+
+async def _master_stock(db, mid, code, stock):
+    await db.master_items.insert_one({
+        "id": mid,
+        "accurate_item_id": f"aid-{mid}",
+        "item_code": code,
+        "item_name": f"Item {code}",
+        "item_type": "INVENTORY",
+        "unit": "PCS",
+        "is_active": True,
+    })
+    await db.product_stock_state.insert_one({
+        "_id": mid,
+        "master_item_id": mid,
+        "accurate_item_id": f"aid-{mid}",
+        "base_uom": "PCS",
+        "total_qty": stock,
+        "status": "INITIALIZED",
+        "initialized": True,
+        "updated_at": "2026-09-22T10:00:00+00:00",
+    })
+
+
+def _baseline(cutover_id, mid, qty, cost):
+    return {
+        "cutover_id": cutover_id,
+        "master_item_id": mid,
+        "item_identity": f"a:aid-{mid}",
+        "accurate_item_id": f"aid-{mid}",
+        "item_code": mid,
+        "item_name": mid,
+        "stock_fisik_snapshot": qty,
+        "opening_unit_cost": cost,
+        "opening_total_cost": qty * cost,
+        "valuation_qty": qty,
+        "base_uom": "PCS",
+        "source": "OPENING_HPP",
+        "hpp_status": "OK",
+        "reconciliation_reason": None,
+    }
+
+
+@pytest.mark.anyio
+async def test_read_model_summary_statuses_and_exact_value(db):
+    cutover_id = "cutover-ui"
+    await db.hpp_valuation_cutovers.insert_one({
+        "cutover_id": cutover_id,
+        "status": "ACTIVE",
+        "active_marker": "ACTIVE",
+        "method": "RATA-RATA",
+        "recognition_point": "goods_receipt",
+        "created_at": "2026-09-22T09:00:00+00:00",
+        "activated_at": "2026-09-22T09:00:00+00:00",
+    })
+    await db.app_settings.insert_one({
+        "key": "hpp_valuation",
+        "method": "RATA-RATA",
+        "recognition_point": "goods_receipt",
+        "active_version": "version-ui",
+    })
+    await db.hpp_cost_versions.insert_one({
+        "id": "version-ui",
+        "status": "ACTIVE",
+        "method": "RATA-RATA",
+        "recalculated_at": "2026-09-22T11:00:00+00:00",
+    })
+
+    await _master_stock(db, "ok", "OK-001", 150)
+    await _master_stock(db, "missing", "MISS-001", 10)
+    await _master_stock(db, "uom", "UOM-001", 1)
+    await _master_stock(db, "mismatch", "QTY-001", 5)
+    await _master_stock(db, "zero", "ZERO-001", 0)
+    await _master_stock(db, "negative", "NEG-001", -2)
+    await db.master_items.insert_one({
+        "id": "service",
+        "item_code": "SERVICE",
+        "item_name": "Jasa",
+        "item_type": "SERVICE",
+        "unit": "JASA",
+        "is_active": True,
+    })
+
+    await db.hpp_valuation_baseline_lines.insert_many([
+        _baseline(cutover_id, "ok", 100, 1000),
+        _baseline(cutover_id, "uom", 0, 1000),
+        _baseline(cutover_id, "mismatch", 4, 100),
+        _baseline(cutover_id, "zero", 0, 1000),
+        _baseline(cutover_id, "negative", 0, 1000),
+    ])
+    await db.hpp_recognition_events.insert_many([
+        {
+            "event_id": "event-ok",
+            "source_type": "GOODS_RECEIPT",
+            "source_key": "gr:ok:line",
+            "master_item_id": "ok",
+            "item_identity": "a:aid-ok",
+            "accurate_item_id": "aid-ok",
+            "qty": 50,
+            "unit_cost": 1200,
+            "total_cost": 60000,
+            "status": "RECOGNIZED",
+            "recognized_at": "2026-09-22T10:30:00+00:00",
+            "cutover_id": cutover_id,
+        },
+        {
+            "event_id": "event-uom",
+            "source_type": "GOODS_RECEIPT",
+            "source_key": "gr:uom:line",
+            "master_item_id": "uom",
+            "item_identity": "a:aid-uom",
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "status": "NEEDS_UOM",
+            "recognized_at": "2026-09-22T10:40:00+00:00",
+            "cutover_id": cutover_id,
+        },
+    ])
+
+    view = await build_inventory_valuation_rows(db)
+    rows = {row["master_item_id"]: row for row in view["rows"]}
+    assert "service" not in rows
+    assert rows["ok"]["stock_fisik"] == 150
+    assert rows["ok"]["valuation_qty"] == 150
+    assert rows["ok"]["current_hpp"] == 1066.67
+    assert rows["ok"]["inventory_value"] == 160000
+    assert rows["ok"]["hpp_status"] == "OK"
+    assert rows["missing"]["hpp_status"] == "MISSING_COST"
+    assert rows["missing"]["current_hpp"] is None
+    assert rows["missing"]["inventory_value"] is None
+    assert rows["uom"]["hpp_status"] == "NEEDS_UOM"
+    assert rows["uom"]["inventory_value"] is None
+    assert rows["mismatch"]["hpp_status"] == "QTY_MISMATCH"
+    assert rows["mismatch"]["inventory_value"] is None
+    assert rows["zero"]["stock_fisik"] == 0
+    assert rows["zero"]["inventory_value"] == 0
+    assert rows["zero"]["hpp_reason"] is None
+    assert rows["negative"]["hpp_status"] == "QTY_MISMATCH"
+    assert rows["negative"]["inventory_value"] is None
+
+    assert view["summary"] == {
+        "total_inventory_value": 160000,
+        "valued_items": 1,
+        "items_without_hpp": 4,
+        "problem_items": 3,
+    }
+
+
+@pytest.mark.anyio
+async def test_search_filter_pagination_and_export_are_read_only(db):
+    await _master_stock(db, "a", "AA-001", 0)
+    await _master_stock(db, "b", "BB-001", 0)
+    before_stock = await db.product_stock_state.find({}, {"_id": 0}).sort("_id", 1).to_list(10)
+    before_movements = await db.stock_movements.count_documents({})
+    before_pricing = await db.customer_pricing_versions.count_documents({})
+
+    view = await build_inventory_valuation_rows(db)
+    page = filter_sort_page(
+        view["rows"],
+        q="BB",
+        status_filter="missing",
+        sort_by="code",
+        sort_dir="asc",
+        page=1,
+        page_size=25,
+    )
+    assert page["total"] == 1
+    assert page["items"][0]["item_code"] == "BB-001"
+
+    payload = export_xlsx(page["items"])
+    workbook = load_workbook(BytesIO(payload), data_only=True)
+    sheet = workbook["Nilai Persediaan"]
+    assert [cell.value for cell in sheet[1]] == [
+        "Kode",
+        "Nama",
+        "Satuan",
+        "Stock Fisik",
+        "HPP Rata-Rata",
+        "Nilai Persediaan",
+        "Status HPP",
+        "Terakhir Update",
+    ]
+    assert sheet["A2"].value == "BB-001"
+    assert sheet["E2"].value is None
+    assert sheet["F2"].value == 0
+
+    after_stock = await db.product_stock_state.find({}, {"_id": 0}).sort("_id", 1).to_list(10)
+    assert after_stock == before_stock
+    assert await db.stock_movements.count_documents({}) == before_movements
+    assert await db.customer_pricing_versions.count_documents({}) == before_pricing
