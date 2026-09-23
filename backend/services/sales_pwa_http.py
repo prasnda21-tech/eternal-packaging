@@ -146,15 +146,16 @@ def register_sales_pwa_routes(
         )
         if not delivery:
             raise HTTPException(404, "Surat Jalan tidak ditemukan")
-        path = ""
-        for f in order.get("surat_jalan_files") or []:
-            if isinstance(f, dict) and str(f.get("shipment_id") or "") == sid:
-                path = str(f.get("storage_path") or "").strip()
-                if path:
-                    break
+        entry = spwa.sj_file_for_shipment(order.get("surat_jalan_files"), sid)
+        kind, path = spwa.sj_byte_source(entry)
         if not path:
             raise HTTPException(404, "File Surat Jalan belum tersedia")
-        data, ct = await _file_bytes(path)
+        try:
+            data, ct = await _file_bytes(path)
+        except HTTPException as exc:
+            if exc.status_code == 404 and kind == "signed":
+                raise HTTPException(404, "PDF Surat Jalan bertanda tangan tidak ditemukan")
+            raise
         headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"}
         return FastAPIResponse(content=data, media_type=ct or "application/pdf", headers=headers)
 

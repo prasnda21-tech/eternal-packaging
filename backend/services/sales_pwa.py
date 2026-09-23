@@ -256,6 +256,7 @@ async def _cursor_rows(cursor) -> List[dict]:
 
 
 def _strip_file_bytes(files: Any) -> List[dict]:
+    """Internal file index. Storage paths stay here and must not be copied to API rows."""
     out = []
     for f in files or []:
         if not isinstance(f, dict):
@@ -263,11 +264,65 @@ def _strip_file_bytes(files: Any) -> List[dict]:
         out.append({
             "id": f.get("id"),
             "name": f.get("name") or f.get("original_filename"),
-            "storage_path": f.get("storage_path"),
+            "storage_path": str(f.get("storage_path") or "").strip(),
+            "signed_storage_path": str(f.get("signed_storage_path") or "").strip(),
+            "signed_at": str(f.get("signed_at") or "").strip(),
+            "signed_recipient_name": str(f.get("signed_recipient_name") or "").strip(),
             "content_type": f.get("content_type"),
             "shipment_id": f.get("shipment_id"),
         })
     return out
+
+
+def sj_file_for_shipment(files: Any, shipment_id: str) -> Optional[dict]:
+    """Match the existing PWA identity: surat_jalan_files.shipment_id == sales_deliveries.id."""
+    sid = str(shipment_id or "").strip()
+    if not sid:
+        return None
+    for entry in files or []:
+        if isinstance(entry, dict) and str(entry.get("shipment_id") or "").strip() == sid:
+            return entry
+    return None
+
+
+def sj_byte_source(entry: Optional[dict]) -> tuple:
+    """Exclusive byte source. A recorded signed rendition is never replaced by the original.
+
+    Returns (kind, path) where kind is "signed", "original", or "none".
+    The path is internal and must not be copied into an API response.
+    """
+    if not isinstance(entry, dict):
+        return "none", ""
+    signed = str(entry.get("signed_storage_path") or "").strip()
+    if signed:
+        return "signed", signed
+    original = str(entry.get("storage_path") or "").strip()
+    if original:
+        return "original", original
+    return "none", ""
+
+
+def _sj_document_row(delivery: dict, file_meta: Optional[dict]) -> dict:
+    meta = file_meta or {}
+    signed_path = str(meta.get("signed_storage_path") or "").strip()
+    storage_path = str(meta.get("storage_path") or "").strip()
+    row = {
+        "id": delivery.get("id"),
+        "number": delivery.get("sj_number"),
+        "qty": delivery.get("total_qty"),
+        "date": delivery.get("delivery_date"),
+        "status": delivery.get("status"),
+        "available": bool(signed_path or storage_path),
+        "has_signed": bool(signed_path),
+    }
+    if signed_path:
+        signed_at = str(meta.get("signed_at") or "").strip()
+        recipient_name = str(meta.get("signed_recipient_name") or "").strip()
+        if signed_at:
+            row["signed_at"] = signed_at
+        if recipient_name:
+            row["recipient_name"] = recipient_name
+    return row
 
 
 def _proof_public(proof: dict) -> dict:
@@ -868,16 +923,8 @@ async def get_sales_pwa_documents(db, user: dict, order_id: str) -> dict:
     }
     sj_rows = []
     for d in sorted(deliveries, key=lambda x: (x.get("shipment_index") or 0, x.get("sj_number") or "")):
-        sid = d.get("id")
-        file_meta = sj_files.get(str(sid or ""))
-        sj_rows.append({
-            "id": sid,
-            "number": d.get("sj_number"),
-            "qty": d.get("total_qty"),
-            "date": d.get("delivery_date"),
-            "status": d.get("status"),
-            "available": bool(file_meta and file_meta.get("storage_path")),
-        })
+        file_meta = sj_files.get(str(d.get("id") or ""))
+        sj_rows.append(_sj_document_row(d, file_meta))
     inv_rows = []
     for inv in invoices:
         inv_rows.append({
